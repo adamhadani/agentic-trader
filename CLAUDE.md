@@ -19,6 +19,9 @@ The **Cash-Plus Futures Copilot** is an automated personal trading copilot for a
 
 ### Running the Application (`copilot` CLI)
 - Status: `uv run copilot status`
+- Positions: `uv run copilot positions`
+- Execute: `uv run copilot execute <signal_id>`
+- Close position: `uv run copilot close <signal_id> [exit_price]`
 - Scan (live): `uv run copilot scan`
 - Scan (dry-run, no alerts/db updates): `uv run copilot scan --dry-run`
 - Scan (deterministic rule fallback, no LLM call): `uv run copilot scan --no-llm`
@@ -44,7 +47,11 @@ The **Cash-Plus Futures Copilot** is an automated personal trading copilot for a
 ---
 
 ## 3. Architecture & Key Directory Layout
-- `agentic_trader/config.py` & `config/config.yaml`: Multipliers, tick sizes, risk ceilings, and env var loader.
+- `agentic_trader/broker/`:
+  - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`, `BrokerPosition`).
+  - `paper.py`: `PaperBroker` executing simulated fills against live CME micro quotes without risking capital.
+  - `tradovate.py`: `TradovateBroker` for headless cloud REST API execution with native server-side OCO brackets.
+- `agentic_trader/config.py` & `config/config.yaml`: Multipliers, tick sizes, risk ceilings, execution mode, and env var loader.
 - `agentic_trader/data/market_data.py`: Multi-timeframe bar data fetcher (Daily, 4h, 1h via `yfinance`).
 - `agentic_trader/screeners/`:
   - `indicators.py`: Vectorized technical indicators (EMA, RSI-Wilder, ATR, Bollinger, Keltner, Squeeze).
@@ -53,8 +60,8 @@ The **Cash-Plus Futures Copilot** is an automated personal trading copilot for a
   - `calendar.py`: Economic calendar parser and macro lockout logic.
   - `evaluator.py`: LiteLLM trade evaluator, schema validation, and invariant enforcement.
   - `prompts.py`: System prompt and structured few-shot evaluation prompts.
-- `agentic_trader/storage/db.py`: SQLite persistence (`data/copilot.db`), deduplication, and active notional exposure tracking.
-- `agentic_trader/notifier/telegram_bot.py`: Alert card formatting, Telegram inline callback dispatcher, and bot commands (`/status`, `/scan`, `/help`).
+- `agentic_trader/storage/db.py`: SQLite persistence (`data/signals.db`), deduplication, `broker_order_id`, and active notional exposure tracking.
+- `agentic_trader/notifier/telegram_bot.py`: Alert card formatting, Telegram inline callback dispatcher, and bot commands (`/status`, `/scan`, `/positions`, `/close`, `/help`).
 - `evals/`: Promptfoo configuration and evaluation benchmarks.
 - `scripts/`: macOS `launchd.sh` daemon supervision script.
 
@@ -69,6 +76,7 @@ When writing or modifying logic, NEVER violate these core constraints:
 5. **Structural Stop Distance**: Minimum stop distance $\ge 1.5 \times \text{ATR}(14)$. Anchor behind swing highs/lows with this floor.
 6. **Macro Lockout**: NO entry alerts within $[-60\text{m}, +30\text{m}]$ of Tier-1 releases (CPI, PPI, FOMC, NFP).
 7. **Signal Deduplication**: No duplicate signal for the same contract + strategy within 12 hours.
+8. **Execution Safety**: Execution button callbacks must never directly mark signals `EXECUTED`. They must route through `broker.submit_entry_order()`. If rejected or failed, status becomes `FAILED` without locking notional capacity.
 
 ---
 

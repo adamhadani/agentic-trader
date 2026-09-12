@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS signals (
     exit_price REAL,
     exit_timestamp DATETIME,
     realized_pnl REAL,
-    exit_reason TEXT
+    exit_reason TEXT,
+    broker_order_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_recent_signals
@@ -49,6 +50,7 @@ class SignalDatabase:
                 ("exit_timestamp", "DATETIME"),
                 ("realized_pnl", "REAL"),
                 ("exit_reason", "TEXT"),
+                ("broker_order_id", "TEXT"),
             ]:
                 if col not in existing_cols:
                     conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {col_type}")
@@ -65,6 +67,7 @@ class SignalDatabase:
                 ("exit_timestamp", "DATETIME"),
                 ("realized_pnl", "REAL"),
                 ("exit_reason", "TEXT"),
+                ("broker_order_id", "TEXT"),
             ]:
                 if col not in existing_cols:
                     await db.execute(f"ALTER TABLE signals ADD COLUMN {col} {col_type}")
@@ -142,6 +145,35 @@ class SignalDatabase:
                 "UPDATE signals SET status = ? WHERE id = ?",
                 (status, signal_id),
             )
+            await db.commit()
+
+    async def update_signal_execution(
+        self,
+        signal_id: int,
+        broker_order_id: str | None,
+        fill_price: float | None = None,
+        status: str = "EXECUTED",
+    ):
+        """Record broker order ID and execution status, optionally updating entry price to actual fill."""
+        async with aiosqlite.connect(self.db_path) as db:
+            if fill_price is not None:
+                await db.execute(
+                    """
+                    UPDATE signals
+                    SET status = ?, broker_order_id = ?, entry_price = ?
+                    WHERE id = ?
+                    """,
+                    (status, broker_order_id, fill_price, signal_id),
+                )
+            else:
+                await db.execute(
+                    """
+                    UPDATE signals
+                    SET status = ?, broker_order_id = ?
+                    WHERE id = ?
+                    """,
+                    (status, broker_order_id, signal_id),
+                )
             await db.commit()
 
     async def get_signal_by_id(self, signal_id: int) -> dict | None:

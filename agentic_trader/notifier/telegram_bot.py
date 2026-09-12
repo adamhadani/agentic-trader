@@ -22,10 +22,28 @@ def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
     portfolio_cash: float = 100000.0,
+    execution_mode: str = "paper",
 ) -> str:
     """Format alert message matching Section 8 of the specification."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+
+    mode_lower = execution_mode.lower()
+    if mode_lower == "paper":
+        exec_instr = (
+            f"1. Click <b>[ 🚀 Execute (Paper) ]</b> to simulate entry for 1 <code>{html.escape(eval_res.contract)}</code> at <code>{eval_res.entry_price:,.2f}</code>.\n"
+            f"2. Fills against live market quote; synthetic bracket stop at <code>{eval_res.stop_loss:,.2f}</code>.\n"
+        )
+    elif mode_lower == "tradovate":
+        exec_instr = (
+            f"1. Click <b>[ 🚀 Approve & Execute ]</b> to submit 1 <code>{html.escape(eval_res.contract)}</code> via Tradovate REST API.\n"
+            f"2. Server-side OCO brackets placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
+        )
+    else:
+        exec_instr = (
+            f"1. Buy/Sell 1 <code>{html.escape(eval_res.contract)}</code> at Market/Limit <code>{eval_res.entry_price:,.2f}</code>.\n"
+            f"2. Upon fill, immediately submit a resting <b>Stop Order</b> at <code>{eval_res.stop_loss:,.2f}</code> (GTC).\n"
+        )
 
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
@@ -41,9 +59,8 @@ def format_alert_card(
         f"• <b>Macro Check:</b> {macro_status}\n\n"
         f"📝 <b>Thesis:</b>\n"
         f"{html.escape(eval_res.thesis_summary)}\n\n"
-        f"⚠️ <b>Execution Instruction (Robinhood):</b>\n"
-        f"1. Buy/Sell 1 <code>{html.escape(eval_res.contract)}</code> at Market/Limit <code>{eval_res.entry_price:,.2f}</code>.\n"
-        f"2. Upon fill, immediately submit a resting <b>Stop Order</b> at <code>{eval_res.stop_loss:,.2f}</code> (GTC).\n"
+        f"⚡ <b>Execution ({execution_mode.upper()}):</b>\n"
+        f"{exec_instr}"
     )
     return text
 
@@ -52,10 +69,28 @@ def format_terminal_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
     portfolio_cash: float = 100000.0,
+    execution_mode: str = "paper",
 ) -> str:
     """ASCII/plain text formatted card for terminal display."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+
+    mode_lower = execution_mode.lower()
+    if mode_lower == "paper":
+        exec_instr = (
+            f"1. Run 'copilot execute <id>' or click [Execute (Paper)] in Telegram.\n"
+            f"2. Simulates fill against live quote; bracket stop at {eval_res.stop_loss:,.2f}."
+        )
+    elif mode_lower == "tradovate":
+        exec_instr = (
+            f"1. Run 'copilot execute <id>' or click [Approve & Execute] in Telegram.\n"
+            f"2. Sends API bracket order to Tradovate; OCO stop at {eval_res.stop_loss:,.2f}."
+        )
+    else:
+        exec_instr = (
+            f"1. Buy/Sell 1 {eval_res.contract} at {eval_res.entry_price:,.2f}.\n"
+            f"2. Place resting Stop Order at {eval_res.stop_loss:,.2f} (GTC)."
+        )
 
     border = "=" * 65
     return f"""
@@ -76,9 +111,8 @@ Strategy: {strategy}
 📝 Thesis:
 {eval_res.thesis_summary}
 
-⚠️ Execution Instruction (Robinhood):
-1. Buy/Sell 1 {eval_res.contract} at {eval_res.entry_price:,.2f}.
-2. Place resting Stop Order at {eval_res.stop_loss:,.2f} (GTC).
+⚡ Execution ({execution_mode.upper()}):
+{exec_instr}
 {border}
 """
 
@@ -123,19 +157,23 @@ class TelegramNotifier:
         chat_id: str | None,
         db: SignalDatabase,
         portfolio_cash: float = 100000.0,
+        execution_mode: str = "paper",
         status_provider: Callable[[], Awaitable[str]] | None = None,
         scan_runner: Callable[[], Awaitable[str]] | None = None,
         positions_provider: Callable[[], Awaitable[str]] | None = None,
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
+        execute_handler: Callable[[int], Awaitable[tuple[bool, str]]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.db = db
         self.portfolio_cash = portfolio_cash
+        self.execution_mode = execution_mode
         self.status_provider = status_provider
         self.scan_runner = scan_runner
         self.positions_provider = positions_provider
         self.close_handler = close_handler
+        self.execute_handler = execute_handler
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
@@ -238,20 +276,28 @@ class TelegramNotifier:
         query = update.callback_query
         if not query or not query.data:
             return
-        await query.answer()
         data = query.data
         msg = query.message
 
         if data.startswith("exec_"):
             signal_id = int(data.split("_")[1])
-            await self.db.update_signal_status(signal_id, "EXECUTED")
-            await query.edit_message_reply_markup(reply_markup=None)
-            if msg and hasattr(msg, "reply_text"):
-                await msg.reply_text(
-                    f"✅ Signal #{signal_id} acknowledged: status set to EXECUTED. Position is now active in risk tracking."
-                )
+            if self.execute_handler:
+                await query.answer("Submitting order to broker...")
+                await query.edit_message_reply_markup(reply_markup=None)
+                _success, reply_text = await self.execute_handler(signal_id)
+                if msg and hasattr(msg, "reply_text"):
+                    await msg.reply_text(reply_text, parse_mode="HTML")
+            else:
+                await query.answer()
+                await self.db.update_signal_status(signal_id, "EXECUTED")
+                await query.edit_message_reply_markup(reply_markup=None)
+                if msg and hasattr(msg, "reply_text"):
+                    await msg.reply_text(
+                        f"✅ Signal #{signal_id} acknowledged: status set to EXECUTED. Position is now active in risk tracking."
+                    )
 
         elif data.startswith("dism_"):
+            await query.answer()
             signal_id = int(data.split("_")[1])
             await self.db.update_signal_status(signal_id, "DISMISSED")
             await query.edit_message_reply_markup(reply_markup=None)
@@ -265,16 +311,25 @@ class TelegramNotifier:
         signal_id: int,
     ) -> int | None:
         # Always output to terminal/logs
-        print(format_terminal_card(eval_res, strategy, self.portfolio_cash))
+        print(format_terminal_card(eval_res, strategy, self.portfolio_cash, execution_mode=self.execution_mode))
 
         if not self.is_configured() or not self.app:
             logger.info("Telegram not configured or token missing. Alert displayed on terminal.")
             return None
 
-        card_html = format_alert_card(eval_res, strategy, self.portfolio_cash)
+        card_html = format_alert_card(eval_res, strategy, self.portfolio_cash, execution_mode=self.execution_mode)
+
+        mode_lower = self.execution_mode.lower()
+        if mode_lower == "paper":
+            exec_btn_text = "🚀 Execute (Paper)"
+        elif mode_lower == "tradovate":
+            exec_btn_text = "🚀 Approve & Execute"
+        else:
+            exec_btn_text = "✅ Acknowledge & Tracking"
+
         keyboard = [
             [
-                InlineKeyboardButton("✅ Acknowledge & Tracking", callback_data=f"exec_{signal_id}"),
+                InlineKeyboardButton(exec_btn_text, callback_data=f"exec_{signal_id}"),
                 InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}"),
             ]
         ]

@@ -10,6 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.agent.calendar import EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
+from agentic_trader.broker import BaseBroker, OrderRequest, create_broker
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
@@ -30,6 +31,7 @@ class FuturesCopilot:
         self.config = config
         self.db = SignalDatabase(config.db_path)
         self.data_fetcher = MarketDataFetcher()
+        self.broker: BaseBroker = create_broker(config=config, data_fetcher=self.data_fetcher)
         self.strategy_engine = StrategyEngine(config)
         self.calendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.evaluator = RiskEvaluator(config, calendar=self.calendar)
@@ -38,10 +40,12 @@ class FuturesCopilot:
             chat_id=config.telegram_chat_id,
             db=self.db,
             portfolio_cash=config.portfolio.cash,
+            execution_mode=config.execution_mode,
             status_provider=self.get_status_text_html,
             scan_runner=self.run_scan_summary_html,
             positions_provider=self.get_positions_summary_html,
             close_handler=self.close_position_manual,
+            execute_handler=self.execute_signal_by_id,
         )
 
     async def run_scan(self, use_llm: bool = True, dry_run: bool = False):
@@ -199,6 +203,16 @@ class FuturesCopilot:
                     else (entry_price - current_price) * multiplier
                 )
 
+                # Close position at broker
+                try:
+                    await self.broker.close_position(
+                        contract=contract,
+                        exit_reason=exit_reason,
+                        exit_price=current_price,
+                    )
+                except Exception as e:
+                    logger.warning("Broker close_position exception for %s: %s", contract, e)
+
                 await self.db.close_position(
                     signal_id=signal_id,
                     exit_price=current_price,
@@ -315,6 +329,16 @@ class FuturesCopilot:
         final_exit = exit_price or self.data_fetcher.fetch_latest_price(ticker) or entry
         realized_pnl = (final_exit - entry) * multiplier if direction == "LONG" else (entry - final_exit) * multiplier
 
+        # Close position at broker
+        try:
+            await self.broker.close_position(
+                contract=contract,
+                exit_reason="MANUAL_CLOSE",
+                exit_price=final_exit,
+            )
+        except Exception as e:
+            logger.warning("Broker close_position exception for %s: %s", contract, e)
+
         status = "CLOSED_WIN" if realized_pnl >= 0 else "CLOSED_LOSS"
         await self.db.close_position(
             signal_id=signal_id,
@@ -341,6 +365,86 @@ class FuturesCopilot:
             f"• Realized P&amp;L: <b>{pnl_sign}${abs(realized_pnl):,.2f}</b>\n"
             f"• Notional capacity released."
         )
+
+    async def execute_signal_by_id(self, signal_id: int) -> tuple[bool, str]:
+        """
+        Execute an approved signal via the configured broker (Paper or Tradovate).
+        Enforces risk invariants before submission and records the fill order ID in SQLite.
+        """
+        sig = await self.db.get_signal_by_id(signal_id)
+        if not sig:
+            return False, f"❌ Signal #{signal_id} not found."
+        if sig["status"] != "PENDING":
+            return False, (
+                f"❌ Signal #{signal_id} is in status <b>{sig['status']}</b> (only PENDING signals can be executed)."
+            )
+
+        contract = sig["contract"]
+        direction = sig["direction"].upper()
+        contract_info = self.config.contracts.get(contract)
+        ticker = contract_info.ticker if contract_info else f"{contract.strip('/').upper()}=F"
+
+        # Re-verify portfolio risk limits prior to live execution
+        active_count = await self.db.get_active_contract_count()
+        if active_count >= self.config.portfolio.max_concurrent_contracts:
+            return False, (
+                f"⚠️ <b>Execution Rejected:</b> Maximum concurrent contracts ({self.config.portfolio.max_concurrent_contracts}) reached."
+            )
+
+        current_exposure = await self.db.get_active_notional_exposure()
+        if current_exposure + sig["notional_value"] > self.config.portfolio.max_notional_exposure:
+            return False, (
+                f"⚠️ <b>Execution Rejected:</b> Order notional (${sig['notional_value']:,.2f}) would breach "
+                f"${self.config.portfolio.max_notional_exposure:,.2f} maximum portfolio notional ceiling."
+            )
+
+        # Transition status to SUBMITTING to prevent duplicate / concurrent trigger
+        await self.db.update_signal_status(signal_id, "SUBMITTING")
+
+        req = OrderRequest(
+            signal_id=signal_id,
+            contract=contract,
+            ticker=ticker,
+            direction=direction,
+            entry_price=float(sig["entry_price"]),
+            stop_loss=float(sig["stop_loss"]),
+            take_profit=float(sig["take_profit"]),
+            quantity=1,
+        )
+
+        try:
+            order_result = await self.broker.submit_entry_order(req)
+        except Exception as e:
+            logger.exception("Error calling broker.submit_entry_order")
+            await self.db.update_signal_status(signal_id, "FAILED")
+            return False, f"❌ <b>Broker Submission Error:</b> {e}"
+
+        if order_result.success:
+            fill_price = order_result.fill_price or float(sig["entry_price"])
+            await self.db.update_signal_execution(
+                signal_id=signal_id,
+                broker_order_id=order_result.order_id,
+                fill_price=fill_price,
+                status="EXECUTED",
+            )
+            msg = (
+                f"🚀 <b>ORDER EXECUTED ({self.config.execution_mode.upper()})</b>\n"
+                f"• <b>Contract:</b> 1x {contract} ({direction})\n"
+                f"• <b>Fill Price:</b> <code>{fill_price:,.2f}</code>\n"
+                f"• <b>Broker Order ID:</b> <code>{order_result.order_id}</code>\n"
+                f"• <b>Stop Loss:</b> <code>{sig['stop_loss']:,.2f}</code> | <b>Target:</b> <code>{sig['take_profit']:,.2f}</code>\n"
+                f"• <i>Position is now active in risk tracking.</i>"
+            )
+            return True, msg
+        else:
+            await self.db.update_signal_status(signal_id, "FAILED")
+            err = order_result.error_message or "Unknown broker rejection"
+            msg = (
+                f"❌ <b>Execution Failed ({self.config.execution_mode.upper()}):</b>\n"
+                f"<code>{err}</code>\n"
+                f"Signal #{signal_id} marked as FAILED. No portfolio exposure was locked."
+            )
+            return False, msg
 
     async def show_status(self):
         current_exposure = await self.db.get_active_notional_exposure()
@@ -461,6 +565,9 @@ async def async_main():
     close_parser.add_argument("signal_id", type=int, help="Signal ID to close")
     close_parser.add_argument("price", type=float, nargs="?", default=None, help="Optional exit fill price")
 
+    exec_parser = subparsers.add_parser("execute", help="Execute an approved signal via the configured broker")
+    exec_parser.add_argument("signal_id", type=int, help="Signal ID to execute")
+
     subparsers.add_parser("test-alert", help="Send a synthetic test alert to verify Telegram and formatting")
     subparsers.add_parser("listen", help="Start Telegram Bot callback listener only")
     subparsers.add_parser("eval", help="Run Promptfoo benchmark evaluation against LLM risk prompts")
@@ -471,6 +578,7 @@ async def async_main():
     args = parser.parse_args()
     config = load_config()
     copilot = FuturesCopilot(config)
+    await copilot.broker.connect()
 
     if args.command == "scan":
         await copilot.run_scan(use_llm=not args.no_llm, dry_run=args.dry_run)
@@ -481,6 +589,18 @@ async def async_main():
     elif args.command == "close":
         res = await copilot.close_position_manual(args.signal_id, args.price)
         clean_text = res.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
+        print(clean_text)
+    elif args.command == "execute":
+        _success, res = await copilot.execute_signal_by_id(args.signal_id)
+        clean_text = (
+            res.replace("<b>", "")
+            .replace("</b>", "")
+            .replace("<code>", "")
+            .replace("</code>", "")
+            .replace("<i>", "")
+            .replace("</i>", "")
+            .replace("• ", "  * ")
+        )
         print(clean_text)
     elif args.command == "test-alert":
         await copilot.send_test_alert()

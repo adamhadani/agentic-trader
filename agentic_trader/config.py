@@ -101,6 +101,15 @@ class AppConfig(BaseModel):
     finnhub_api_key: str | None = None
     db_path: str = str(WORKSPACE_ROOT / "data" / "signals.db")
 
+    # Broker Execution Configuration
+    execution_mode: str = "paper"  # "paper", "tradovate", "manual"
+    tradovate_api_key: str | None = None
+    tradovate_api_secret: str | None = None
+    tradovate_username: str | None = None
+    tradovate_password: str | None = None
+    tradovate_account_id: str | None = None
+    tradovate_environment: str = "demo"  # "demo" or "live"
+
 
 def load_config(config_path: str | None = None) -> AppConfig:
     load_envrc()
@@ -122,6 +131,13 @@ def load_config(config_path: str | None = None) -> AppConfig:
     gemini_key = os.getenv("GEMINI_API_KEY")
     finnhub_key = os.getenv("FINNHUB_API_KEY")
     db_path = os.getenv("DB_PATH", str(WORKSPACE_ROOT / "data" / "signals.db"))
+    execution_mode = os.getenv("EXECUTION_MODE", "paper").lower()
+    tradovate_api_key = os.getenv("TRADOVATE_API_KEY")
+    tradovate_api_secret = os.getenv("TRADOVATE_API_SECRET")
+    tradovate_username = os.getenv("TRADOVATE_USERNAME")
+    tradovate_password = os.getenv("TRADOVATE_PASSWORD")
+    tradovate_account_id = os.getenv("TRADOVATE_ACCOUNT_ID")
+    tradovate_env = os.getenv("TRADOVATE_ENVIRONMENT", "demo").lower()
 
     if os.getenv("PORTFOLIO_CASH"):
         cfg_dict.setdefault("portfolio", {})["cash"] = float(os.environ["PORTFOLIO_CASH"])
@@ -145,5 +161,12 @@ def load_config(config_path: str | None = None) -> AppConfig:
         gemini_api_key=gemini_key,
         finnhub_api_key=finnhub_key,
         db_path=db_path,
+        execution_mode=execution_mode,
+        tradovate_api_key=tradovate_api_key,
+        tradovate_api_secret=tradovate_api_secret,
+        tradovate_username=tradovate_username,
+        tradovate_password=tradovate_password,
+        tradovate_account_id=tradovate_account_id,
+        tradovate_environment=tradovate_env,
     )
     return config
