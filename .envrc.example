@@ -28,5 +28,6 @@ export MAX_NOTIONAL_EXPOSURE="60000"
 
 # --- LangSmith Tracing & Evals (Optional) ---
 export LANGCHAIN_TRACING_V2="false"
+export LANGSMITH_API_KEY=""
 export LANGCHAIN_API_KEY=""
 export LANGCHAIN_PROJECT="futures-copilot"

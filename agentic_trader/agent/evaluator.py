@@ -39,6 +39,14 @@ class RiskEvaluator:
         self.config = config
         self.calendar = calendar or EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
 
+        # Wire up LangSmith tracing if credentials exist in environment
+        if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):
+            if "langsmith" not in litellm.success_callback:
+                litellm.success_callback.append("langsmith")
+            if "langsmith" not in litellm.failure_callback:
+                litellm.failure_callback.append("langsmith")
+            logger.info("LangSmith tracing auto-enabled for LiteLLM evaluator")
+
     def calculate_levels_deterministic(
         self, candidate: ScreenerCandidate
     ) -> tuple[float, float, float, float, float, float, float]:
