@@ -274,11 +274,15 @@ async def async_main():
     elif args.command == "eval":
         logger.info("Running Promptfoo evaluation benchmark on risk prompts...")
         config_file = WORKSPACE_ROOT / "evals" / "promptfooconfig.yaml"
+        provider = config.llm_model.replace("/", ":") if "/" in config.llm_model else f"openai:{config.llm_model}"
+        logger.info("Evaluating production model: %s (Promptfoo provider: %s)", config.llm_model, provider)
         proc = await asyncio.create_subprocess_exec(
             "npx",
             "-y",
             "promptfoo",
             "eval",
+            "--providers",
+            provider,
             "-c",
             str(config_file),
             "--no-cache",
