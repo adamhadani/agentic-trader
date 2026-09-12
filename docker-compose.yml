@@ -1,0 +1,27 @@
+services:
+  copilot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: futures-copilot
+    restart: unless-stopped
+    volumes:
+      # Mount host data directory to persist SQLite signals & logs across container restarts
+      - ./data:/app/data
+    env_file:
+      # Optional local environment file (.env or similar)
+      - path: .env
+        required: false
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-4o}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - PORTFOLIO_CASH=${PORTFOLIO_CASH:-100000}
+      - MAX_NOTIONAL_EXPOSURE=${MAX_NOTIONAL_EXPOSURE:-60000}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-futures-copilot}
+    command: ["copilot", "daemon"]
