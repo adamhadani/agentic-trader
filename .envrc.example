@@ -1,0 +1,27 @@
+. .venv/bin/activate
+
+# ==============================================================================
+# Cash-Plus Futures Copilot - Environment Configuration
+# ==============================================================================
+
+# --- Telegram Notifier Configuration ---
+# Required for sending alerts and handling interactive button callbacks
+export TELEGRAM_BOT_TOKEN="your_telegram_bot_token_here"
+export TELEGRAM_CHAT_ID="your_telegram_chat_id_here"
+
+# --- LLM Provider Configuration ---
+# Set the model name and provide the corresponding API key.
+# LiteLLM format supported: e.g. "openai/gpt-4o", "anthropic/claude-3-5-sonnet-20241022", "gemini/gemini-2.5-flash"
+export LLM_MODEL="openai/gpt-4o"
+export OPENAI_API_KEY=""
+export GEMINI_API_KEY=""
+export ANTHROPIC_API_KEY=""
+
+# --- Economic Calendar / Macro Feed (Optional override) ---
+# Defaults to built-in free macro release calendar/ForexFactory scraper.
+# If using Finnhub or another API:
+export FINNHUB_API_KEY=""
+
+# --- Portfolio & Risk Overrides (Optional) ---
+export PORTFOLIO_CASH="100000"
+export MAX_NOTIONAL_EXPOSURE="60000"

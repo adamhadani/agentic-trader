@@ -1,0 +1,87 @@
+[project]
+name = "agentic-trader"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "apscheduler>=3.11.3",
+    "httpx>=0.28.1",
+    "litellm>=1.100.1",
+    "numpy>=2.5.3",
+    "pandas>=3.0.5",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.3",
+    "python-telegram-bot>=22.8",
+    "pyyaml>=6.0.3",
+    "scipy>=1.18.1",
+    "yfinance>=1.7.0",
+]
+
+[project.scripts]
+copilot = "agentic_trader.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.7",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.mypy]
+namespace_packages = true
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint]
+ignore = [
+    "T201",    # allow print statement in CLI
+    "E501",    # line length handled by ruff format
+    "G004",    # allow f-strings in logging
+    "BLE001",  # allow catching generic Exception in top-level runners and resilient scrapers
+    "S110",    # allow try-except-pass in fallback routines
+]
+
+
+extend-select = [
+    "A",     # flake8-builtins
+    "B",     # flake8-bugbear
+    "E",     # pycodestyle
+    "F",     # Pyflakes
+    "G",     # flake8-logging-format
+    "I",     # isort
+    "PERF",  # perflint
+    "PLC",   # Pylint (Convention)
+    "SIM",   # flake8-simplify
+    "T",     # flake8-debugger
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["agentic_trader"]
+lines-after-imports = 2

@@ -1,0 +1,68 @@
+import pytest
+
+from agentic_trader.storage.db import SignalDatabase
+
+
+@pytest.fixture
+def temp_db(tmp_path):
+    db_file = tmp_path / "test_signals.db"
+    return SignalDatabase(str(db_file))
+
+
+@pytest.mark.asyncio
+async def test_signal_database_operations(temp_db):
+    # Check no duplicate initially
+    is_dup = await temp_db.is_duplicate_recent("/MES", "TREND_PULLBACK", hours=12)
+    assert not is_dup
+
+    # Record a signal
+    sig_id = await temp_db.record_signal(
+        contract="/MES",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=5800.0,
+        stop_loss=5760.0,
+        take_profit=5880.0,
+        risk_dollars=200.0,
+        reward_dollars=400.0,
+        notional_value=29000.0,
+        status="PENDING",
+    )
+    assert sig_id > 0
+
+    # Now it should be detected as duplicate within 12 hours
+    is_dup = await temp_db.is_duplicate_recent("/MES", "TREND_PULLBACK", hours=12)
+    assert is_dup
+
+    # Different contract or strategy should NOT be duplicate
+    assert not await temp_db.is_duplicate_recent("/MNQ", "TREND_PULLBACK", hours=12)
+    assert not await temp_db.is_duplicate_recent("/MES", "SQUEEZE_BREAKOUT", hours=12)
+
+    # Initial active exposure should be 0 because status is PENDING
+    assert await temp_db.get_active_notional_exposure() == 0.0
+
+    # Update to EXECUTED
+    await temp_db.update_signal_status(sig_id, "EXECUTED")
+    assert await temp_db.get_active_notional_exposure() == 29000.0
+    assert await temp_db.get_active_contract_count() == 1
+
+    # Record second executed signal
+    await temp_db.record_signal(
+        contract="/MNQ",
+        strategy="SQUEEZE_BREAKOUT",
+        direction="LONG",
+        entry_price=20000.0,
+        stop_loss=19900.0,
+        take_profit=20200.0,
+        risk_dollars=200.0,
+        reward_dollars=400.0,
+        notional_value=40000.0,
+        status="EXECUTED",
+    )
+    assert await temp_db.get_active_notional_exposure() == 69000.0
+    assert await temp_db.get_active_contract_count() == 2
+
+    # Dismiss first signal
+    await temp_db.update_signal_status(sig_id, "DISMISSED")
+    assert await temp_db.get_active_notional_exposure() == 40000.0
+    assert await temp_db.get_active_contract_count() == 1

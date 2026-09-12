@@ -1,0 +1,149 @@
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_envrc():
+    """Load export KEY=VAL lines from .envrc if present."""
+    envrc_path = WORKSPACE_ROOT / ".envrc"
+    if not envrc_path.exists():
+        return
+    try:
+        with open(envrc_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                match = re.match(r'^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["\']?(.*?)["\']?$', line)
+                if match:
+                    key, val = match.groups()
+                    if key not in os.environ or not os.environ[key]:
+                        os.environ[key] = val
+    except Exception:
+        pass
+
+
+load_envrc()
+
+
+class ContractConfig(BaseModel):
+    ticker: str
+    name: str
+    multiplier: float
+    tick_size: float
+
+
+class PortfolioConfig(BaseModel):
+    cash: float = 100000.0
+    max_notional_exposure: float = 60000.0
+    max_concurrent_contracts: int = 2
+
+
+class RiskConfig(BaseModel):
+    min_risk_reward_ratio: float = 2.0
+    min_stop_atr_multiple: float = 1.5
+    deduplication_hours: int = 12
+    lockout_pre_event_minutes: int = 60
+    lockout_post_event_minutes: int = 30
+
+
+class TrendPullbackConfig(BaseModel):
+    enabled: bool = True
+    daily_ema_fast: int = 50
+    daily_ema_slow: int = 200
+    trigger_ema_span: int = 20
+    trigger_atr_distance_mult: float = 0.5
+    rsi_period: int = 14
+    atr_period: int = 14
+
+
+class SqueezeBreakoutConfig(BaseModel):
+    enabled: bool = True
+    bb_length: int = 20
+    bb_std: float = 2.0
+    kc_length: int = 20
+    kc_atr_mult: float = 1.5
+    min_squeeze_bars: int = 5
+    volume_factor: float = 1.3
+    volume_sma_period: int = 20
+
+
+class StrategyConfig(BaseModel):
+    trend_pullback: TrendPullbackConfig = Field(default_factory=TrendPullbackConfig)
+    squeeze_breakout: SqueezeBreakoutConfig = Field(default_factory=SqueezeBreakoutConfig)
+
+
+class SchedulerConfig(BaseModel):
+    cron_hour_interval: int = 4
+
+
+class AppConfig(BaseModel):
+    portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
+    contracts: dict[str, ContractConfig] = Field(default_factory=dict)
+    risk: RiskConfig = Field(default_factory=RiskConfig)
+    strategies: StrategyConfig = Field(default_factory=StrategyConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+
+    # Environment variables
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    llm_model: str = "openai/gpt-4o"
+    openai_api_key: str | None = None
+    anthropic_api_key: str | None = None
+    gemini_api_key: str | None = None
+    finnhub_api_key: str | None = None
+    db_path: str = str(WORKSPACE_ROOT / "data" / "signals.db")
+
+
+def load_config(config_path: str | None = None) -> AppConfig:
+    load_envrc()
+    if not config_path:
+        config_path = str(WORKSPACE_ROOT / "config" / "config.yaml")
+
+    cfg_dict: dict[str, Any] = {}
+    path = Path(config_path)
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            cfg_dict = yaml.safe_load(f) or {}
+
+    # Environment overrides
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_chat = os.getenv("TELEGRAM_CHAT_ID")
+    llm_model = os.getenv("LLM_MODEL", "openai/gpt-4o")
+    openai_key = os.getenv("OPENAI_API_KEY")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    finnhub_key = os.getenv("FINNHUB_API_KEY")
+    db_path = os.getenv("DB_PATH", str(WORKSPACE_ROOT / "data" / "signals.db"))
+
+    if os.getenv("PORTFOLIO_CASH"):
+        cfg_dict.setdefault("portfolio", {})["cash"] = float(os.environ["PORTFOLIO_CASH"])
+    if os.getenv("MAX_NOTIONAL_EXPOSURE"):
+        cfg_dict.setdefault("portfolio", {})["max_notional_exposure"] = float(os.environ["MAX_NOTIONAL_EXPOSURE"])
+
+    config = AppConfig(
+        portfolio=PortfolioConfig(**cfg_dict.get("portfolio", {})),
+        contracts={k: ContractConfig(**v) for k, v in cfg_dict.get("contracts", {}).items()},
+        risk=RiskConfig(**cfg_dict.get("risk", {})),
+        strategies=StrategyConfig(
+            trend_pullback=TrendPullbackConfig(**cfg_dict.get("strategies", {}).get("trend_pullback", {})),
+            squeeze_breakout=SqueezeBreakoutConfig(**cfg_dict.get("strategies", {}).get("squeeze_breakout", {})),
+        ),
+        scheduler=SchedulerConfig(**cfg_dict.get("scheduler", {})),
+        telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
+        telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
+        llm_model=llm_model,
+        openai_api_key=openai_key,
+        anthropic_api_key=anthropic_key,
+        gemini_api_key=gemini_key,
+        finnhub_api_key=finnhub_key,
+        db_path=db_path,
+    )
+    return config
