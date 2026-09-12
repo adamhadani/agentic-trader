@@ -20,7 +20,11 @@ CREATE TABLE IF NOT EXISTS signals (
     notional_value REAL,
     status TEXT DEFAULT 'PENDING',
     telegram_message_id INTEGER,
-    raw_response TEXT
+    raw_response TEXT,
+    exit_price REAL,
+    exit_timestamp DATETIME,
+    realized_pnl REAL,
+    exit_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_recent_signals
@@ -35,14 +39,35 @@ class SignalDatabase:
         self.init_sync()
 
     def init_sync(self):
-        """Synchronously initialize schema if not present."""
+        """Synchronously initialize schema if not present and migrate new columns."""
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript(SCHEMA)
+            cursor = conn.execute("PRAGMA table_info(signals)")
+            existing_cols = {row[1] for row in cursor.fetchall()}
+            for col, col_type in [
+                ("exit_price", "REAL"),
+                ("exit_timestamp", "DATETIME"),
+                ("realized_pnl", "REAL"),
+                ("exit_reason", "TEXT"),
+            ]:
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {col_type}")
             conn.commit()
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_path) as db:
             await db.executescript(SCHEMA)
+            cursor = await db.execute("PRAGMA table_info(signals)")
+            rows = await cursor.fetchall()
+            existing_cols = {row[1] for row in rows}
+            for col, col_type in [
+                ("exit_price", "REAL"),
+                ("exit_timestamp", "DATETIME"),
+                ("realized_pnl", "REAL"),
+                ("exit_reason", "TEXT"),
+            ]:
+                if col not in existing_cols:
+                    await db.execute(f"ALTER TABLE signals ADD COLUMN {col} {col_type}")
             await db.commit()
 
     async def is_duplicate_recent(self, contract: str, strategy: str, hours: int = 12) -> bool:
@@ -148,3 +173,37 @@ class SignalDatabase:
             cursor = await db.execute("SELECT * FROM signals ORDER BY timestamp DESC LIMIT ?", (limit,))
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def get_active_positions(self) -> list[dict]:
+        """Fetch all currently active (EXECUTED) positions."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM signals WHERE status = 'EXECUTED' ORDER BY timestamp ASC")
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def close_position(
+        self,
+        signal_id: int,
+        exit_price: float,
+        exit_reason: str,
+        realized_pnl: float,
+        status: str,
+    ) -> bool:
+        """Close an active position and record exit metrics."""
+        utc_now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE signals
+                SET status = ?,
+                    exit_price = ?,
+                    exit_timestamp = ?,
+                    realized_pnl = ?,
+                    exit_reason = ?
+                WHERE id = ? AND status = 'EXECUTED'
+                """,
+                (status, exit_price, utc_now, realized_pnl, exit_reason, signal_id),
+            )
+            await db.commit()
+            return bool(cursor.rowcount > 0)

@@ -40,6 +40,8 @@ class FuturesCopilot:
             portfolio_cash=config.portfolio.cash,
             status_provider=self.get_status_text_html,
             scan_runner=self.run_scan_summary_html,
+            positions_provider=self.get_positions_summary_html,
+            close_handler=self.close_position_manual,
         )
 
     async def run_scan(self, use_llm: bool = True, dry_run: bool = False):
@@ -139,6 +141,206 @@ class FuturesCopilot:
                 logger.exception(f"Error scanning {contract}")
 
         logger.info(f"=== Scan Complete: {total_candidates} candidates evaluated, {total_alerts} alerts emitted ===")
+        # Monitor any active positions for stop loss or take profit crossings
+        await self.monitor_positions()
+
+    async def monitor_positions(self) -> int:
+        """
+        Check real-time price against Stop Loss and Take Profit for all active (EXECUTED) positions.
+        Returns the number of positions closed during this check.
+        """
+        active_positions = await self.db.get_active_positions()
+        if not active_positions:
+            logger.debug("No active positions to monitor.")
+            return 0
+
+        logger.info("Monitoring %d active position(s)...", len(active_positions))
+        closed_count = 0
+
+        for pos in active_positions:
+            signal_id = pos["id"]
+            contract = pos["contract"]
+            direction = pos["direction"].upper()
+            entry_price = float(pos["entry_price"])
+            stop_loss = float(pos["stop_loss"])
+            take_profit = float(pos["take_profit"])
+            strategy = pos["strategy"]
+
+            contract_info = self.config.contracts.get(contract)
+            ticker = contract_info.ticker if contract_info else "MES=F"
+            multiplier = contract_info.multiplier if contract_info else 5.0
+
+            current_price = self.data_fetcher.fetch_latest_price(ticker)
+            if current_price is None:
+                logger.warning("Could not fetch latest quote for %s (%s). Skipping check.", contract, ticker)
+                continue
+
+            hit_tp = False
+            hit_sl = False
+
+            if direction == "LONG":
+                if current_price >= take_profit:
+                    hit_tp = True
+                elif current_price <= stop_loss:
+                    hit_sl = True
+            elif direction == "SHORT":
+                if current_price <= take_profit:
+                    hit_tp = True
+                elif current_price >= stop_loss:
+                    hit_sl = True
+
+            if hit_tp or hit_sl:
+                exit_reason = "TAKE_PROFIT" if hit_tp else "STOP_LOSS"
+                status = "CLOSED_WIN" if hit_tp else "CLOSED_LOSS"
+
+                realized_pnl = (
+                    (current_price - entry_price) * multiplier
+                    if direction == "LONG"
+                    else (entry_price - current_price) * multiplier
+                )
+
+                await self.db.close_position(
+                    signal_id=signal_id,
+                    exit_price=current_price,
+                    exit_reason=exit_reason,
+                    realized_pnl=realized_pnl,
+                    status=status,
+                )
+                closed_count += 1
+
+                await self.notifier.send_exit_alert(
+                    contract=contract,
+                    direction=direction,
+                    exit_reason=exit_reason,
+                    entry_price=entry_price,
+                    exit_price=current_price,
+                    realized_pnl=realized_pnl,
+                    strategy=strategy,
+                )
+
+        return closed_count
+
+    async def show_positions(self):
+        """Display active positions in terminal."""
+        positions = await self.db.get_active_positions()
+        print("=" * 65)
+        print("CASH-PLUS FUTURES COPILOT: ACTIVE POSITIONS")
+        print("=" * 65)
+        if not positions:
+            print("  (No active positions currently tracked)")
+        else:
+            total_unrealized = 0.0
+            for pos in positions:
+                contract = pos["contract"]
+                direction = pos["direction"].upper()
+                entry = float(pos["entry_price"])
+                sl = float(pos["stop_loss"])
+                tp = float(pos["take_profit"])
+                contract_info = self.config.contracts.get(contract)
+                ticker = contract_info.ticker if contract_info else "MES=F"
+                multiplier = contract_info.multiplier if contract_info else 5.0
+
+                current = self.data_fetcher.fetch_latest_price(ticker) or entry
+                pnl = (current - entry) * multiplier if direction == "LONG" else (entry - current) * multiplier
+                total_unrealized += pnl
+                pnl_str = f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
+                print(
+                    f"  #{pos['id']} {contract} {direction} | Entry: {entry:,.2f} | Current: {current:,.2f} | "
+                    f"Stop: {sl:,.2f} | Target: {tp:,.2f} | PnL: {pnl_str}"
+                )
+            print("-" * 65)
+            tot_str = f"+${total_unrealized:,.2f}" if total_unrealized >= 0 else f"-${abs(total_unrealized):,.2f}"
+            print(f"Total Unrealized PnL: {tot_str}")
+        print("=" * 65)
+
+    async def get_positions_summary_html(self) -> str:
+        """Format HTML message of tracked positions for Telegram /positions."""
+        positions = await self.db.get_active_positions()
+        if not positions:
+            return (
+                "📋 <b>ACTIVE POSITIONS (0)</b>\n\n"
+                "<i>No active positions currently tracked.</i>\n"
+                "When trade signals are acknowledged in Telegram, they appear here."
+            )
+
+        total_unrealized_pnl = 0.0
+        lines = [f"📋 <b>ACTIVE POSITIONS ({len(positions)})</b>\n"]
+
+        for pos in positions:
+            contract = pos["contract"]
+            direction = pos["direction"].upper()
+            entry = float(pos["entry_price"])
+            sl = float(pos["stop_loss"])
+            tp = float(pos["take_profit"])
+            contract_info = self.config.contracts.get(contract)
+            ticker = contract_info.ticker if contract_info else "MES=F"
+            multiplier = contract_info.multiplier if contract_info else 5.0
+
+            current_price = self.data_fetcher.fetch_latest_price(ticker) or entry
+            pnl = (current_price - entry) * multiplier if direction == "LONG" else (entry - current_price) * multiplier
+            total_unrealized_pnl += pnl
+
+            pnl_sign = "+" if pnl >= 0 else "-"
+            pnl_str = f"{pnl_sign}${abs(pnl):,.2f}"
+
+            lines.append(
+                f"• <b>#{pos['id']} {contract} ({direction})</b>\n"
+                f"  Entry: <code>{entry:,.2f}</code> | Current: <code>{current_price:,.2f}</code>\n"
+                f"  Stop: <code>{sl:,.2f}</code> | Target: <code>{tp:,.2f}</code>\n"
+                f"  Unrealized P&amp;L: <b>{pnl_str}</b>\n"
+            )
+
+        tot_sign = "+" if total_unrealized_pnl >= 0 else "-"
+        lines.append(f"\n<b>Total Unrealized P&amp;L:</b> {tot_sign}${abs(total_unrealized_pnl):,.2f}")
+        lines.append("\n💡 <i>To close a trade manually:</i> <code>/close &lt;id&gt; [exit_price]</code>")
+        return "\n".join(lines)
+
+    async def close_position_manual(self, signal_id: int, exit_price: float | None = None) -> str:
+        """Manually close a position (via Telegram /close or CLI)."""
+        pos = await self.db.get_signal_by_id(signal_id)
+        if not pos:
+            return f"❌ Signal #{signal_id} not found."
+        if pos["status"] != "EXECUTED":
+            return (
+                f"❌ Signal #{signal_id} is in status <b>{pos['status']}</b> (only EXECUTED positions can be closed)."
+            )
+
+        contract = pos["contract"]
+        direction = pos["direction"].upper()
+        entry = float(pos["entry_price"])
+        contract_info = self.config.contracts.get(contract)
+        multiplier = contract_info.multiplier if contract_info else 5.0
+        ticker = contract_info.ticker if contract_info else "MES=F"
+
+        final_exit = exit_price or self.data_fetcher.fetch_latest_price(ticker) or entry
+        realized_pnl = (final_exit - entry) * multiplier if direction == "LONG" else (entry - final_exit) * multiplier
+
+        status = "CLOSED_WIN" if realized_pnl >= 0 else "CLOSED_LOSS"
+        await self.db.close_position(
+            signal_id=signal_id,
+            exit_price=final_exit,
+            exit_reason="MANUAL_CLOSE",
+            realized_pnl=realized_pnl,
+            status=status,
+        )
+
+        await self.notifier.send_exit_alert(
+            contract=contract,
+            direction=direction,
+            exit_reason="MANUAL_CLOSE",
+            entry_price=entry,
+            exit_price=final_exit,
+            realized_pnl=realized_pnl,
+            strategy=pos["strategy"],
+        )
+
+        pnl_sign = "+" if realized_pnl >= 0 else "-"
+        return (
+            f"✅ <b>Position #{signal_id} Closed ({contract} {direction})</b>\n"
+            f"• Exit Price: <code>{final_exit:,.2f}</code>\n"
+            f"• Realized P&amp;L: <b>{pnl_sign}${abs(realized_pnl):,.2f}</b>\n"
+            f"• Notional capacity released."
+        )
 
     async def show_status(self):
         current_exposure = await self.db.get_active_notional_exposure()
@@ -254,6 +456,11 @@ async def async_main():
     scan_parser.add_argument("--dry-run", action="store_true", help="Scan without persisting or emitting alerts")
 
     subparsers.add_parser("status", help="Display current portfolio exposure and recent signals")
+    subparsers.add_parser("positions", help="Display active tracked positions and unrealized P&L")
+    close_parser = subparsers.add_parser("close", help="Manually close an active position")
+    close_parser.add_argument("signal_id", type=int, help="Signal ID to close")
+    close_parser.add_argument("price", type=float, nargs="?", default=None, help="Optional exit fill price")
+
     subparsers.add_parser("test-alert", help="Send a synthetic test alert to verify Telegram and formatting")
     subparsers.add_parser("listen", help="Start Telegram Bot callback listener only")
     subparsers.add_parser("eval", help="Run Promptfoo benchmark evaluation against LLM risk prompts")
@@ -269,6 +476,12 @@ async def async_main():
         await copilot.run_scan(use_llm=not args.no_llm, dry_run=args.dry_run)
     elif args.command == "status":
         await copilot.show_status()
+    elif args.command == "positions":
+        await copilot.show_positions()
+    elif args.command == "close":
+        res = await copilot.close_position_manual(args.signal_id, args.price)
+        clean_text = res.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
+        print(clean_text)
     elif args.command == "test-alert":
         await copilot.send_test_alert()
     elif args.command == "eval":
@@ -318,8 +531,16 @@ async def async_main():
             args=[not args.no_llm, False],
             next_run_time=datetime.now(UTC),
         )
+        # Schedule automated position monitoring every 15 minutes
+        scheduler.add_job(
+            copilot.monitor_positions,
+            "interval",
+            minutes=15,
+            id="position_monitor",
+            next_run_time=datetime.now(UTC),
+        )
         scheduler.start()
-        logger.info(f"Scheduler started: scanning every {interval} hours.")
+        logger.info(f"Scheduler started: scanning every {interval}h, monitoring positions every 15m.")
 
         if copilot.notifier.is_configured() and copilot.notifier.app and copilot.notifier.app.updater:
             logger.info("Starting Telegram Bot listener for interactive callbacks...")

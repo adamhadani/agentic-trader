@@ -122,3 +122,23 @@ class MarketDataFetcher:
             hourly=df_1h,
         )
         return market_data
+
+    def fetch_latest_price(self, ticker: str) -> float | None:
+        """Fetch the current market quote for a ticker."""
+        try:
+            t = yf.Ticker(ticker)
+            price = t.fast_info.get("lastPrice")
+            if price is not None and not pd.isna(price):
+                return float(price)
+        except Exception:
+            pass
+
+        try:
+            df = yf.download(ticker, period="1d", interval="5m", progress=False)
+            clean = self._clean_yfinance_df(df)
+            if not clean.empty:
+                return float(clean["Close"].iloc[-1])
+        except Exception:
+            pass
+
+        return None

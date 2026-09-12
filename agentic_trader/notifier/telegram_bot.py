@@ -83,6 +83,39 @@ Strategy: {strategy}
 """
 
 
+def format_exit_card(
+    contract: str,
+    direction: str,
+    exit_reason: str,
+    entry_price: float,
+    exit_price: float,
+    realized_pnl: float,
+    strategy: str,
+) -> str:
+    """Format exit notification card for Take Profit, Stop Loss, or Manual Close."""
+    if "PROFIT" in exit_reason.upper():
+        icon = "🎯 TAKE PROFIT REACHED"
+    elif "STOP" in exit_reason.upper():
+        icon = "🛑 STOP LOSS TRIGGERED"
+    else:
+        icon = "ℹ️ POSITION CLOSED"
+
+    pnl_sign = "+" if realized_pnl >= 0 else "-"
+    pnl_str = f"{pnl_sign}${abs(realized_pnl):,.2f}"
+
+    text = (
+        f"<b>{icon}: 1x {html.escape(contract)} ({html.escape(direction)})</b>\n"
+        f"<b>Strategy:</b> {html.escape(strategy)}\n\n"
+        f"📊 <b>Exit Execution Details</b>\n"
+        f"• <b>Entry Price:</b> <code>{entry_price:,.2f}</code>\n"
+        f"• <b>Exit Price:</b> <code>{exit_price:,.2f}</code>\n"
+        f"• <b>Realized P&amp;L:</b> <b>{pnl_str}</b>\n"
+        f"• <b>Reason:</b> {html.escape(exit_reason)}\n\n"
+        f"🛡️ <i>Active open exposure has been released back to available notional capacity.</i>\n"
+    )
+    return text
+
+
 class TelegramNotifier:
     def __init__(
         self,
@@ -92,6 +125,8 @@ class TelegramNotifier:
         portfolio_cash: float = 100000.0,
         status_provider: Callable[[], Awaitable[str]] | None = None,
         scan_runner: Callable[[], Awaitable[str]] | None = None,
+        positions_provider: Callable[[], Awaitable[str]] | None = None,
+        close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
@@ -99,6 +134,8 @@ class TelegramNotifier:
         self.portfolio_cash = portfolio_cash
         self.status_provider = status_provider
         self.scan_runner = scan_runner
+        self.positions_provider = positions_provider
+        self.close_handler = close_handler
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
@@ -123,6 +160,8 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler(["start", "help"], self.handle_help_command))
             self.app.add_handler(CommandHandler("status", self.handle_status_command))
             self.app.add_handler(CommandHandler("scan", self.handle_scan_command))
+            self.app.add_handler(CommandHandler("positions", self.handle_positions_command))
+            self.app.add_handler(CommandHandler("close", self.handle_close_command))
 
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -131,6 +170,8 @@ class TelegramNotifier:
             "🤖 <b>Cash-Plus Futures Copilot</b>\n\n"
             "<b>Available Commands:</b>\n"
             "• /status - View portfolio exposure, cash base, and macro events\n"
+            "• /positions - View active tracked trades and unrealized P&amp;L\n"
+            "• /close &lt;id&gt; [price] - Manually close a tracked trade and record fill\n"
             "• /scan - Trigger an on-demand quantitative scan across micro futures\n"
             "• /help - Display this command overview\n\n"
             "<b>Risk Invariants Enforced:</b>\n"
@@ -141,6 +182,38 @@ class TelegramNotifier:
             "• Macro Lockout: 60m before / 30m after Tier-1 events"
         )
         await update.message.reply_text(help_text, parse_mode="HTML")
+
+    async def handle_positions_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        if self.positions_provider:
+            resp = await self.positions_provider()
+            await update.message.reply_text(resp, parse_mode="HTML")
+        else:
+            await update.message.reply_text("Positions provider not attached.")
+
+    async def handle_close_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "Usage: <code>/close &lt;signal_id&gt; [exit_price]</code>\nExample: <code>/close 2 5845.00</code>",
+                parse_mode="HTML",
+            )
+            return
+        try:
+            signal_id = int(args[0])
+            exit_price = float(args[1]) if len(args) > 1 else None
+        except ValueError:
+            await update.message.reply_text("Invalid signal ID or price format. Use: /close <id> [price]")
+            return
+
+        if self.close_handler:
+            resp = await self.close_handler(signal_id, exit_price)
+            await update.message.reply_text(resp, parse_mode="HTML")
+        else:
+            await update.message.reply_text("Close handler not attached.")
 
     async def handle_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -219,4 +292,48 @@ class TelegramNotifier:
             return msg.message_id
         except Exception as e:
             logger.error(f"Failed to dispatch Telegram alert message: {e}")
+            return None
+
+    async def send_exit_alert(
+        self,
+        contract: str,
+        direction: str,
+        exit_reason: str,
+        entry_price: float,
+        exit_price: float,
+        realized_pnl: float,
+        strategy: str,
+    ) -> int | None:
+        """Send notification when a Take Profit, Stop Loss, or Manual Exit occurs."""
+        card_html = format_exit_card(
+            contract=contract,
+            direction=direction,
+            exit_reason=exit_reason,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            realized_pnl=realized_pnl,
+            strategy=strategy,
+        )
+        logger.info(
+            "Exit event: %s %s via %s @ %s (Realized PnL: $%.2f)",
+            contract,
+            direction,
+            exit_reason,
+            exit_price,
+            realized_pnl,
+        )
+
+        if not self.is_configured() or not self.app:
+            return None
+
+        try:
+            bot = self.app.bot
+            msg = await bot.send_message(
+                chat_id=self.chat_id,
+                text=card_html,
+                parse_mode="HTML",
+            )
+            return msg.message_id
+        except Exception as e:
+            logger.error(f"Failed to dispatch Telegram exit alert: {e}")
             return None
