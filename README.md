@@ -27,7 +27,33 @@ An automated personal trading copilot designed for a "Cash-Plus" portfolio ($100
 
 ---
 
-## 3. Configuration & Environment (`.envrc`)
+## 3. System Prerequisites & Homebrew Dependencies
+
+On macOS, install the required development tools and linters using [Homebrew](https://brew.sh/):
+
+```bash
+# Core package manager & Python runner
+brew install uv
+
+# Dockerfile linter (enforced in pre-commit)
+brew install hadolint
+
+# SQLite CLI for database inspection
+brew install sqlite
+
+# Node / npx (required for running Promptfoo evals via `copilot eval`)
+brew install node
+
+# Optional: Shell environment manager for .envrc
+brew install direnv
+
+# Optional: Docker Desktop (for containerized runs)
+brew install --cask docker
+```
+
+---
+
+## 4. Configuration & Environment (`.envrc`)
 
 Copy `.envrc.example` to `.envrc` and fill in your secrets:
 
@@ -61,7 +87,7 @@ export MAX_NOTIONAL_EXPOSURE="60000"
 
 ---
 
-## 4. CLI Usage & Subcommands
+## 5. CLI Usage & Subcommands
 
 Run commands via `uv run copilot <command>` or `copilot <command>` (if the virtualenv is active):
 
@@ -111,7 +137,7 @@ uv run copilot listen
 
 ---
 
-## 5. LLM Prompt Evaluations (Promptfoo)
+## 6. LLM Prompt Evaluations (Promptfoo)
 
 We use [Promptfoo](https://www.promptfoo.dev/) for deterministic benchmark evaluations of our trade evaluation prompts against hard risk invariants.
 
@@ -130,7 +156,7 @@ npx -y promptfoo eval -c evals/promptfooconfig.yaml --no-cache
 
 ---
 
-## 6. Background Deployment & Supervision
+## 7. Background Deployment & Supervision
 
 ### macOS `launchd` (Recommended for Local Mac)
 To keep the copilot running continuously during trading hours with automatic restarts:
@@ -157,7 +183,7 @@ docker compose down
 
 ---
 
-## 7. Development & Quality Assurance
+## 8. Development & Quality Assurance
 
 This repository enforces strict code quality via `pre-commit`:
 

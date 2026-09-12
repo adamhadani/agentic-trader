@@ -11,8 +11,9 @@ The **Cash-Plus Futures Copilot** is an automated personal trading copilot for a
 
 ## 2. Common Commands
 
-### Virtual Environment & Dependency Management
-- Manage environment with `uv`. Python 3.12+ (managed locally as 3.14).
+### Virtual Environment & System Dependencies
+- Install Homebrew prerequisites: `brew install uv hadolint sqlite node`
+- Manage Python environment with `uv` (Python >=3.14).
 - Sync dependencies: `uv sync`
 - Install pre-commit hooks: `uv run pre-commit install`
 
