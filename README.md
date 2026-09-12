@@ -29,39 +29,49 @@ An automated personal trading copilot designed for a "Cash-Plus" portfolio ($100
 
 ## 3. Configuration & Environment (`.envrc`)
 
-Environment tokens and overrides are configured in `.envrc`:
+Copy `.envrc.example` to `.envrc` and fill in your secrets:
 
 ```bash
-# Telegram Bot Token & Chat ID
-export TELEGRAM_BOT_TOKEN="your_telegram_bot_token_here"
-export TELEGRAM_CHAT_ID="your_telegram_chat_id_here"
+cp .envrc.example .envrc
+# Edit with your API keys:
+direnv allow  # or source .envrc
+```
 
-# LLM Provider Key & Model
-export LLM_MODEL="openai/gpt-5.6" # or gemini/gemini-2.5-flash, anthropic/claude-3-5-sonnet-20241022
+Key environment variables:
+```bash
+# Telegram Bot Configuration
+export TELEGRAM_BOT_TOKEN="your_bot_token"
+export TELEGRAM_CHAT_ID="your_chat_id"
+
+# LLM Provider Key & Model (LiteLLM format)
+export LLM_MODEL="openai/gpt-5.6" # or anthropic/claude-3-5-sonnet, gemini/gemini-2.5-flash
 export OPENAI_API_KEY="sk-..."
-export GEMINI_API_KEY=""
-export ANTHROPIC_API_KEY=""
+
+# Optional: LangSmith LLM Tracing & Observability
+export LANGCHAIN_TRACING_V2="false"
+export LANGSMITH_API_KEY="" # or LANGCHAIN_API_KEY
+export LANGCHAIN_PROJECT="futures-copilot"
 
 # Optional Portfolio Overrides
 export PORTFOLIO_CASH="100000"
 export MAX_NOTIONAL_EXPOSURE="60000"
 ```
 
-*Note: If Telegram credentials are not yet set, the copilot prints formatted alert cards directly to the terminal for local review.*
+*Note: If Telegram credentials are not set, the copilot prints formatted alert cards directly to the terminal for local review.*
 
 ---
 
-## 4. Usage & CLI Commands
+## 4. CLI Usage & Subcommands
 
-All commands can be run with `uv run copilot <command>` or `uv run python -m agentic_trader.main <command>`:
+Run commands via `uv run copilot <command>` or `copilot <command>` (if the virtualenv is active):
 
-### Check Portfolio Status & Recent Signals
+### Check Portfolio Status & Signals
 ```bash
 uv run copilot status
 ```
 Displays current cash base, active notional exposure, effective leverage, macro calendar context, and recent signals from the SQLite database.
 
-### Run a One-Time Market Scan
+### Run a Market Scan
 ```bash
 # Live scan with LLM evaluation and alerting
 uv run copilot scan
@@ -69,7 +79,7 @@ uv run copilot scan
 # Dry-run scan (evaluates setups without saving to DB or dispatching alerts)
 uv run copilot scan --dry-run
 
-# Run scan using deterministic risk rules (bypassing LLM calls)
+# Run scan using deterministic structural rules (bypassing LLM calls)
 uv run copilot scan --no-llm
 ```
 
@@ -77,18 +87,93 @@ uv run copilot scan --no-llm
 ```bash
 uv run copilot test-alert
 ```
-Dispatches a synthetic `/MES` trade signal card to verify Telegram connectivity and layout formatting.
+Dispatches a synthetic `/MES` trade signal card to verify Telegram formatting and inline buttons.
 
-### Start Background Daemon & Scheduler
+### Run Background Daemon
 ```bash
 uv run copilot daemon
 ```
-Starts APScheduler running scans every 4 hours aligned with candle closes, and starts the Telegram Bot callback listener for real-time button clicks (`[ ✅ Acknowledge & Tracking ]` and `[ ❌ Dismiss Signal ]`).
+Starts APScheduler running scans every 4 hours aligned with candle closes, and starts the two-way Telegram Bot listener.
+
+### Telegram Two-Way Interaction
+When the daemon or listener is running, you can message the bot directly in Telegram:
+- `/start` or `/help` - Command menu and system usage
+- `/status` - Current active exposure, open notional, leverage, and last 5 signals
+- `/scan` - Trigger an immediate manual market scan across all micro contracts
+- **Interactive Inline Buttons**:
+  - `[ ✅ Acknowledge & Tracking ]` -> Marks signal as `EXECUTED` in SQLite, updating active portfolio notional exposure.
+  - `[ ❌ Dismiss Signal ]` -> Marks signal as `DISMISSED`.
+
+To test Telegram listening in isolation without running the scanner scheduler:
+```bash
+uv run copilot listen
+```
 
 ---
 
-## 5. Running the Test Suite
+## 5. LLM Prompt Evaluations (Promptfoo)
+
+We use [Promptfoo](https://www.promptfoo.dev/) for deterministic benchmark evaluations of our trade evaluation prompts against hard risk invariants.
+
+Run the test suite anytime:
 ```bash
+uv run copilot eval
+# or directly:
+npx -y promptfoo eval -c evals/promptfooconfig.yaml --no-cache
+```
+
+`copilot eval` automatically maps your configured production `LLM_MODEL` (e.g. `openai/gpt-5.6`) to Promptfoo, testing 4 critical scenarios:
+1. Valid Bullish Trend-Pullback on `/MES` (verifies approval, $R:R \ge 2.0$, stop $\ge 1.5 \times \text{ATR}$).
+2. Macro Event Lockout during Tier-1 CPI (verifies rejection).
+3. Poor Risk-to-Reward / Overhead Resistance (verifies rejection).
+4. Portfolio Notional Exposure Ceiling Violation ($>\$60\text{k}$ total open exposure, verifies rejection).
+
+---
+
+## 6. Background Deployment & Supervision
+
+### macOS `launchd` (Recommended for Local Mac)
+To keep the copilot running continuously during trading hours with automatic restarts:
+```bash
+./scripts/launchd.sh install   # Installs ~/Library/LaunchAgents/com.agentictrader.copilot.plist and starts daemon
+./scripts/launchd.sh status    # Check if launchd is running the service
+./scripts/launchd.sh logs      # Tail data/copilot.log in real time
+./scripts/launchd.sh stop      # Temporarily pause service
+./scripts/launchd.sh uninstall # Unload and remove plist
+```
+
+### Docker & Docker Compose
+To run containerized with persistent SQLite storage:
+```bash
+# Build and run in detached mode
+docker compose up -d
+
+# View container logs
+docker compose logs -f
+
+# Stop container
+docker compose down
+```
+
+---
+
+## 7. Development & Quality Assurance
+
+This repository enforces strict code quality via `pre-commit`:
+
+```bash
+# Install git hooks
+uv run pre-commit install
+
+# Run all checks manually
+uv run pre-commit run --all-files
+
+# Run pytest unit tests
 uv run pytest
 ```
-Runs the 13 automated unit tests covering technical indicators, strategy screeners, SQLite deduplication and exposure tracking, and risk evaluator invariants.
+Included pre-commit hooks:
+- **ruff**: Linter and formatter
+- **mypy**: Type checking across the codebase
+- **pytest**: Automated unit tests
+- **uv-lock**: Lockfile consistency checks
+- **pre-commit-hooks**: File sanitization, trailing whitespace, secrets detection
