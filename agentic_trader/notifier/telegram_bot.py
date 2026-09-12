@@ -1,11 +1,13 @@
 import html
 import logging
+from collections.abc import Awaitable, Callable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
 )
 
@@ -88,11 +90,15 @@ class TelegramNotifier:
         chat_id: str | None,
         db: SignalDatabase,
         portfolio_cash: float = 100000.0,
+        status_provider: Callable[[], Awaitable[str]] | None = None,
+        scan_runner: Callable[[], Awaitable[str]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.db = db
         self.portfolio_cash = portfolio_cash
+        self.status_provider = status_provider
+        self.scan_runner = scan_runner
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
@@ -106,9 +112,54 @@ class TelegramNotifier:
     def is_configured(self) -> bool:
         return bool(self.bot_token and self.chat_id and "your_" not in self.bot_token and "your_" not in self.chat_id)
 
+    def _is_authorized(self, update: Update) -> bool:
+        if not update.effective_chat:
+            return False
+        return str(update.effective_chat.id) == str(self.chat_id)
+
     def _register_handlers(self):
         if self.app:
             self.app.add_handler(CallbackQueryHandler(self.handle_button_callback))
+            self.app.add_handler(CommandHandler(["start", "help"], self.handle_help_command))
+            self.app.add_handler(CommandHandler("status", self.handle_status_command))
+            self.app.add_handler(CommandHandler("scan", self.handle_scan_command))
+
+    async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        help_text = (
+            "🤖 <b>Cash-Plus Futures Copilot</b>\n\n"
+            "<b>Available Commands:</b>\n"
+            "• /status - View portfolio exposure, cash base, and macro events\n"
+            "• /scan - Trigger an on-demand quantitative scan across micro futures\n"
+            "• /help - Display this command overview\n\n"
+            "<b>Risk Invariants Enforced:</b>\n"
+            "• Sizing: 1 micro contract (/MES, /MNQ, /MGC, /MCL)\n"
+            "• Exposure Cap: $60,000 max total open notional\n"
+            "• Stop Distance: ≥ 1.5x ATR\n"
+            "• Reward-to-Risk: ≥ 2.0:1\n"
+            "• Macro Lockout: 60m before / 30m after Tier-1 events"
+        )
+        await update.message.reply_text(help_text, parse_mode="HTML")
+
+    async def handle_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        if self.status_provider:
+            status_text = await self.status_provider()
+            await update.message.reply_text(status_text, parse_mode="HTML")
+        else:
+            await update.message.reply_text("Status provider not attached.")
+
+    async def handle_scan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        await update.message.reply_text("🔍 Running quantitative scan across micro futures...")
+        if self.scan_runner:
+            result_text = await self.scan_runner()
+            await update.message.reply_text(result_text, parse_mode="HTML")
+        else:
+            await update.message.reply_text("Scan runner not attached.")
 
     async def handle_button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query

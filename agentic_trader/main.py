@@ -36,6 +36,8 @@ class FuturesCopilot:
             chat_id=config.telegram_chat_id,
             db=self.db,
             portfolio_cash=config.portfolio.cash,
+            status_provider=self.get_status_text_html,
+            scan_runner=self.run_scan_summary_html,
         )
 
     async def run_scan(self, use_llm: bool = True, dry_run: bool = False):
@@ -169,7 +171,44 @@ class FuturesCopilot:
                 )
         print("=" * 65)
 
+    async def get_status_text_html(self) -> str:
+        current_exposure = await self.db.get_active_notional_exposure()
+        active_count = await self.db.get_active_contract_count()
+        eff_leverage = current_exposure / self.config.portfolio.cash
+        macro_summary = await self.calendar.get_macro_summary_for_prompt()
+        signals = await self.db.get_recent_signals(limit=5)
+
+        signals_text = ""
+        if not signals:
+            signals_text = "\n<i>(No recorded signals)</i>"
+        else:
+            for s in signals:
+                signals_text += f"\n• #{s['id']} [{s['status']}] {s['contract']} {s['direction']} @ {s['entry_price']:,.2f} (Risk: ${s['risk_dollars']:.2f})"
+
+        return (
+            "📊 <b>CASH-PLUS COPILOT: STATUS</b>\n\n"
+            f"• <b>Cash Base:</b> ${self.config.portfolio.cash:,.2f}\n"
+            f"• <b>Active Exposure:</b> ${current_exposure:,.2f} ({eff_leverage:.2f}x leverage)\n"
+            f"• <b>Notional Cap:</b> ${self.config.portfolio.max_notional_exposure:,.2f} (0.6x max)\n"
+            f"• <b>Active Positions:</b> {active_count} contracts\n"
+            f"• <b>LLM Model:</b> <code>{self.config.llm_model}</code>\n\n"
+            f"🛡️ <b>Macro Context:</b>\n{macro_summary}\n\n"
+            f"🕒 <b>Recent Signals:</b>{signals_text}"
+        )
+
+    async def run_scan_summary_html(self) -> str:
+        count_before = len(await self.db.get_recent_signals(limit=100))
+        await self.run_scan(use_llm=True, dry_run=False)
+        count_after = len(await self.db.get_recent_signals(limit=100))
+        new_alerts = count_after - count_before
+        if new_alerts > 0:
+            return (
+                f"✅ <b>Scan Complete:</b> {new_alerts} new trade setup(s) identified and alert cards dispatched above."
+            )
+        return "✅ <b>Scan Complete:</b> Evaluated all micro contracts (/MES, /MNQ, /MGC, /MCL). No setups met quantitative triggers at current candle."
+
     async def send_test_alert(self):
+
         print("Sending synthetic test alert card...")
         test_eval = LLMTradeEvaluation(
             approved=True,
