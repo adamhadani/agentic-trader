@@ -31,3 +31,14 @@ export LANGCHAIN_TRACING_V2="false"
 export LANGSMITH_API_KEY=""
 export LANGCHAIN_API_KEY=""
 export LANGCHAIN_PROJECT="futures-copilot"
+
+# --- Broker Execution & Automated Trading ---
+# Mode: "paper" (dry-run/simulated fills, default), "robinhood" (live), or "manual" (copilot cards only)
+export EXECUTION_MODE="paper"
+
+# --- Robinhood Account Credentials (Required only if EXECUTION_MODE="robinhood") ---
+export ROBINHOOD_USERNAME=""
+export ROBINHOOD_PASSWORD=""
+# TOTP MFA Secret Key (alphanumeric seed from Robinhood Authenticator setup)
+export ROBINHOOD_MFA_SECRET=""
+export ROBINHOOD_ACCOUNT_NUMBER=""
