@@ -214,6 +214,7 @@ async def async_main():
 
     subparsers.add_parser("status", help="Display current portfolio exposure and recent signals")
     subparsers.add_parser("test-alert", help="Send a synthetic test alert to verify Telegram and formatting")
+    subparsers.add_parser("listen", help="Start Telegram Bot callback listener only")
 
     daemon_parser = subparsers.add_parser("daemon", help="Start continuous scheduler and Telegram listener")
     daemon_parser.add_argument("--no-llm", action="store_true", help="Disable LLM evaluation")
@@ -228,6 +229,22 @@ async def async_main():
         await copilot.show_status()
     elif args.command == "test-alert":
         await copilot.send_test_alert()
+    elif args.command == "listen":
+        if not copilot.notifier.is_configured() or not copilot.notifier.app or not copilot.notifier.app.updater:
+            logger.error("Telegram is not configured in .envrc")
+            return
+        logger.info("Starting Telegram Bot listener... (press Ctrl+C to stop)")
+        await copilot.notifier.app.initialize()
+        await copilot.notifier.app.start()
+        await copilot.notifier.app.updater.start_polling()
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt, SystemExit:
+            logger.info("Stopping listener...")
+            await copilot.notifier.app.updater.stop()
+            await copilot.notifier.app.stop()
+            await copilot.notifier.app.shutdown()
     elif args.command == "daemon":
         scheduler = AsyncIOScheduler()
         interval = config.scheduler.cron_hour_interval
@@ -253,6 +270,7 @@ async def async_main():
                 await asyncio.sleep(1)
         except KeyboardInterrupt, SystemExit:
             logger.info("Shutting down daemon...")
+
             scheduler.shutdown()
             if copilot.notifier.app and copilot.notifier.app.updater:
                 await copilot.notifier.app.updater.stop()
