@@ -213,6 +213,8 @@ class RiskEvaluator:
             recent_swing_high=candidate.recent_swing_high,
             trigger_detail=candidate.trigger_detail,
             current_open_notional=current_open_notional,
+            contract_notional=contract_notional,
+            projected_notional=projected_notional,
             macro_summary=macro_summary,
         )
 

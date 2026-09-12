@@ -13,7 +13,7 @@ Rules for evaluating trade candidates:
    - /MNQ: $2.00 per point
    - /MGC: $10.00 per point
    - /MCL: $100.00 per point
-6. Portfolio Constraints: Total open notional exposure across all positions must not exceed $60,000.
+6. Portfolio Constraints: Total open notional exposure across all positions must not exceed $60,000. If Projected Total Exposure exceeds $60,000, you MUST reject the trade candidate.
 
 You must output valid, schema-compliant JSON only. No markdown fences, no prose or meta-explanations.
 """
@@ -36,9 +36,12 @@ Candidate Details:
 - Strategy Trigger Notes: {trigger_detail}
 
 Current Portfolio & Macro Context:
-- Current Open Notional Exposure: ${current_open_notional:,.2f} / $60,000 max
+- Current Open Notional Exposure: ${current_open_notional:,.2f}
+- Candidate Notional Exposure: ${contract_notional:,.2f}
+- Projected Total Exposure if Approved: ${projected_notional:,.2f} (Max Limit: $60,000.00)
 - Economic Calendar Status:
 {macro_summary}
+
 
 Respond with a JSON object with keys:
 "approved" (boolean),

@@ -2,13 +2,15 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
+import sys
 from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.agent.calendar import EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
-from agentic_trader.config import AppConfig, load_config
+from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.screeners.strategies import StrategyEngine
@@ -254,6 +256,7 @@ async def async_main():
     subparsers.add_parser("status", help="Display current portfolio exposure and recent signals")
     subparsers.add_parser("test-alert", help="Send a synthetic test alert to verify Telegram and formatting")
     subparsers.add_parser("listen", help="Start Telegram Bot callback listener only")
+    subparsers.add_parser("eval", help="Run Promptfoo benchmark evaluation against LLM risk prompts")
 
     daemon_parser = subparsers.add_parser("daemon", help="Start continuous scheduler and Telegram listener")
     daemon_parser.add_argument("--no-llm", action="store_true", help="Disable LLM evaluation")
@@ -268,6 +271,22 @@ async def async_main():
         await copilot.show_status()
     elif args.command == "test-alert":
         await copilot.send_test_alert()
+    elif args.command == "eval":
+        logger.info("Running Promptfoo evaluation benchmark on risk prompts...")
+        config_file = WORKSPACE_ROOT / "evals" / "promptfooconfig.yaml"
+        proc = await asyncio.create_subprocess_exec(
+            "npx",
+            "-y",
+            "promptfoo",
+            "eval",
+            "-c",
+            str(config_file),
+            "--no-cache",
+            env=os.environ.copy(),
+        )
+        rc = await proc.wait()
+        sys.exit(rc)
+
     elif args.command == "listen":
         if not copilot.notifier.is_configured() or not copilot.notifier.app or not copilot.notifier.app.updater:
             logger.error("Telegram is not configured in .envrc")

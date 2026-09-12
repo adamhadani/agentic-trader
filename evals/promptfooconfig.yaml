@@ -1,0 +1,141 @@
+description: "Cash-Plus Futures Copilot - Risk Evaluator Prompt Benchmark"
+
+prompts:
+  - file://prompts/evaluator.json
+
+providers:
+  - id: openai:gpt-4o-mini
+    config:
+      temperature: 0.1
+      response_format:
+        type: json_object
+
+tests:
+  # ----------------------------------------------------------------------------
+  # Scenario 1: Textbook Bullish Trend-Pullback on /MES
+  # ----------------------------------------------------------------------------
+  - description: "Textbook Bullish Pullback - Clear macro, trend aligned"
+    vars:
+      contract: "/MES"
+      multiplier: "5.00"
+      tick_size: "0.25"
+      strategy: "TREND_PULLBACK"
+      direction: "LONG"
+      current_price: "5812.50"
+      ema_20: "5808.00"
+      ema_50: "5775.00"
+      ema_200: "5680.00"
+      rsi_14: "42.50"
+      atr_14: "28.50"
+      min_stop_distance: "42.75"
+      recent_swing_low: "5768.00"
+      recent_swing_high: "5850.00"
+      trigger_detail: "Daily Close > 50 > 200 EMA. 4h RSI dipped to 41 and recovered to 42.5 near 20 EMA."
+      current_open_notional: "0.00"
+      contract_notional: "29062.50"
+      projected_notional: "29062.50"
+      macro_summary: "Macro Clear: No Tier-1 US economic releases (CPI, PPI, FOMC, NFP) scheduled in the next 24 hours."
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const d = JSON.parse(output);
+          return d.approved === true &&
+                 d.direction === 'LONG' &&
+                 d.risk_reward_ratio >= 2.0 &&
+                 d.stop_distance_points >= 40.0 &&
+                 d.stop_loss < d.entry_price &&
+                 d.take_profit > d.entry_price;
+
+  # ----------------------------------------------------------------------------
+  # Scenario 2: Counter-Trend Trap on /MNQ (Must be Rejected)
+  # ----------------------------------------------------------------------------
+  - description: "Counter-Trend Trap - Long attempt in confirmed downtrend"
+    vars:
+      contract: "/MNQ"
+      multiplier: "2.00"
+      tick_size: "0.25"
+      strategy: "TREND_PULLBACK"
+      direction: "LONG"
+      current_price: "19800.00"
+      ema_20: "19780.00"
+      ema_50: "20100.00"
+      ema_200: "20500.00"
+      rsi_14: "43.00"
+      atr_14: "150.00"
+      min_stop_distance: "225.00"
+      recent_swing_low: "19500.00"
+      recent_swing_high: "20000.00"
+      trigger_detail: "Price is below 50 and 200 EMA on daily. 4h RSI oversold bounce."
+      current_open_notional: "0.00"
+      contract_notional: "39600.00"
+      projected_notional: "39600.00"
+      macro_summary: "Macro Clear: No Tier-1 releases scheduled in the next 24 hours."
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const d = JSON.parse(output);
+          return d.approved === false && d.rejection_reason !== null;
+
+  # ----------------------------------------------------------------------------
+  # Scenario 3: Imminent Macro Catalyst (CPI within 2 hours)
+  # ----------------------------------------------------------------------------
+  - description: "Imminent Macro Catalyst - CPI in 90 minutes"
+    vars:
+      contract: "/MGC"
+      multiplier: "10.00"
+      tick_size: "0.10"
+      strategy: "SQUEEZE_BREAKOUT"
+      direction: "LONG"
+      current_price: "2650.00"
+      ema_20: "2645.00"
+      ema_50: "2630.00"
+      ema_200: "2600.00"
+      rsi_14: "58.00"
+      atr_14: "18.00"
+      min_stop_distance: "27.00"
+      recent_swing_low: "2620.00"
+      recent_swing_high: "2660.00"
+      trigger_detail: "Squeeze fired after 6 bars. Candle closed above BB Upper with 1.8x volume."
+      current_open_notional: "0.00"
+      contract_notional: "26500.00"
+      projected_notional: "26500.00"
+      macro_summary: "Upcoming Tier-1 releases in next 24 hours:\n- Consumer Price Index (CPI) at 12:30 UTC (in 90 minutes)"
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const d = JSON.parse(output);
+          return d.approved === false || d.macro_clearance === false;
+
+  # ----------------------------------------------------------------------------
+  # Scenario 4: Excessive Open Notional Ceiling Exceeded
+  # ----------------------------------------------------------------------------
+  - description: "Excessive Open Notional - Existing exposure $45,000 + /MES $29k > $60k"
+    vars:
+      contract: "/MES"
+      multiplier: "5.00"
+      tick_size: "0.25"
+      strategy: "TREND_PULLBACK"
+      direction: "LONG"
+      current_price: "5812.50"
+      ema_20: "5808.00"
+      ema_50: "5775.00"
+      ema_200: "5680.00"
+      rsi_14: "42.50"
+      atr_14: "28.50"
+      min_stop_distance: "42.75"
+      recent_swing_low: "5768.00"
+      recent_swing_high: "5850.00"
+      trigger_detail: "Daily Close > 50 > 200 EMA. 4h RSI bounce."
+      current_open_notional: "45000.00"
+      contract_notional: "29062.50"
+      projected_notional: "74062.50"
+      macro_summary: "Macro Clear: No Tier-1 releases scheduled."
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const d = JSON.parse(output);
+          return d.approved === false;
