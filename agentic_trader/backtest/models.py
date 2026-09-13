@@ -1,0 +1,61 @@
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from agentic_trader.constants import AssetClass, Direction, ExitReason, StrategyType
+
+
+@dataclass
+class BacktestTrade:
+    """Represents a simulated executed trade in the backtester."""
+
+    symbol: str
+    asset_class: AssetClass
+    strategy: StrategyType
+    direction: Direction
+    entry_timestamp: datetime
+    entry_price: float
+    quantity: float
+    stop_loss: float
+    take_profit: float
+    risk_dollars: float
+    exit_timestamp: datetime | None = None
+    exit_price: float | None = None
+    exit_reason: ExitReason | None = None
+    pnl_dollars: float | None = None
+    pnl_pct: float | None = None
+    duration_bars: int = 0
+
+
+@dataclass
+class EquityPoint:
+    """Snapshot of portfolio equity and drawdown at a point in time."""
+
+    timestamp: datetime
+    portfolio_equity: float
+    cash_reserve: float
+    drawdown_pct: float
+
+
+@dataclass
+class BacktestResult:
+    """Aggregated performance results and trade log from a backtest run."""
+
+    starting_cash: float
+    ending_equity: float
+    strategy_pnl: float
+    strategy_return_pct: float
+    cash_yield_pnl: float
+    combined_total_pnl: float
+    combined_return_pct: float
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
+    win_rate: float
+    profit_factor: float
+    max_drawdown_pct: float
+    sharpe_ratio: float
+    sortino_ratio: float
+    annualized_return_pct: float
+    avg_trade_duration_bars: float
+    trades: list[BacktestTrade] = field(default_factory=list)
+    equity_curve: list[EquityPoint] = field(default_factory=list)

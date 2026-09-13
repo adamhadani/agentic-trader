@@ -11,6 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector
+from agentic_trader.backtest import BacktestEngine, format_backtest_report
 from agentic_trader.broker import BaseBroker, OrderRequest, create_broker
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
 from agentic_trader.constants import (
@@ -756,10 +757,46 @@ async def async_main():
     db_subparsers.add_parser("current", help="Display the current database migration revision")
     db_subparsers.add_parser("history", help="Show the list of all migration revisions")
 
+    backtest_parser = subparsers.add_parser(
+        "backtest",
+        help="Run offline historical backtest",
+        description="Run offline historical backtest",
+    )
+    backtest_parser.add_argument(
+        "--symbols",
+        type=str,
+        default="SPY,QQQ,/MES",
+        help="Comma-separated list of symbols to backtest (default: 'SPY,QQQ,/MES')",
+    )
+    backtest_parser.add_argument(
+        "--strategy",
+        choices=["all", "trend_pullback", "squeeze_breakout"],
+        default="all",
+        help="Strategy to evaluate (default: all)",
+    )
+    backtest_parser.add_argument(
+        "--lookback",
+        type=str,
+        default="2y",
+        help="Historical lookback period (e.g. 1y, 2y, 5y; default: 2y)",
+    )
+    backtest_parser.add_argument(
+        "--cash",
+        type=float,
+        default=100000.0,
+        help="Initial cash reserve (default: 100,000.0)",
+    )
+    backtest_parser.add_argument(
+        "--risk-free-rate",
+        type=float,
+        default=0.045,
+        help="Annualized cash reserve risk-free yield (default: 0.045 / 4.5 percent)",
+    )
+
     args = parser.parse_args()
     config = load_config()
     copilot = FuturesCopilot(config)
-    if args.command != "db":
+    if args.command not in ("db", "backtest"):
         await copilot.broker.connect()
 
     if args.command == "db":
@@ -797,6 +834,27 @@ async def async_main():
             asset_class=args.asset_class,
             symbols=sym_list,
         )
+    elif args.command == "backtest":
+        sym_list = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        engine = BacktestEngine(
+            config=config,
+            initial_cash=args.cash,
+            risk_free_rate=args.risk_free_rate,
+        )
+        logger.info(
+            "Running offline backtest across %s (lookback: %s, strategy: %s)...",
+            sym_list,
+            args.lookback,
+            args.strategy,
+        )
+        result = await asyncio.to_thread(
+            engine.run,
+            symbols=sym_list,
+            strategy_filter=args.strategy,
+            lookback=args.lookback,
+        )
+        report = format_backtest_report(result, sym_list, args.lookback, args.strategy)
+        print(report)
     elif args.command == "status":
         await copilot.show_status()
     elif args.command == "positions":

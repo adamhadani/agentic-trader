@@ -170,7 +170,7 @@ class StrategyEngine:
         rsi = float(latest["RSI_14"])
 
         # Prior squeeze requirement: Squeeze count prior to breakout >= 5
-        prior_squeeze_count = int(prev["Squeeze_Count"])
+        prior_squeeze_count = int(prev["Squeeze_Count"]) if "Squeeze_Count" in prev else 0
         had_squeeze = prior_squeeze_count >= cfg.min_squeeze_bars
 
         # Volume condition: Volume > 1.3 * SMA(Volume, 20)
