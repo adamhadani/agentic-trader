@@ -44,6 +44,41 @@ MONTE CARLO RISK RESAMPLING ({mc.n_simulations:,d} Bootstrap Iterations)
 • 95% Conditional VaR (CVaR):     {mc.cvar_95_pct:12.2f}%
 """
 
+    attribution_section = ""
+    if result.attribution:
+        attr = result.attribution
+        factor_lines = "\n".join(
+            f"  • {f.factor_name:30s} ${f.pnl_dollars:+10,.2f} ({f.return_contribution_pct:+.2f}%) | "
+            f"{f.trade_count:2d} trades | Win: {f.win_rate:4.1f}% | PF: {f.profit_factor:4.2f}"
+            for f in attr.factors
+        )
+        active_regimes = [r for r in attr.regimes if r.trade_count > 0]
+        if not active_regimes:
+            active_regimes = attr.regimes[:2]
+        regime_lines = "\n".join(
+            f"  • {r.regime:20s} ${r.pnl_dollars:+10,.2f} | "
+            f"{r.trade_count:2d} trades | Win: {r.win_rate:4.1f}% | PF: {r.profit_factor:4.2f}"
+            for r in active_regimes
+        )
+        active_assets = [a for a in attr.asset_classes if a.trade_count > 0]
+        asset_lines = "\n".join(
+            f"  • {a.name:20s} ${a.pnl_dollars:+10,.2f} ({a.pct_of_total_pnl:4.1f}% of Alpha) | "
+            f"{a.trade_count:2d} trades | Win: {a.win_rate:4.1f}%"
+            for a in active_assets
+        )
+        attribution_section = f"""{sub_border}
+FACTOR & REGIME ATTRIBUTION
+{sub_border}
+Quantitative Factor Breakdown:
+{factor_lines}
+
+Macro Volatility Regime Breakdown:
+{regime_lines}
+
+Asset Class Exposure:
+{asset_lines}
+"""
+
     friction_lines = ""
     alpha_label = "• Pure Strategy Alpha P&L:      "
     if result.total_commissions > 0.0 or result.total_slippage > 0.0:
@@ -77,7 +112,7 @@ RISK-ADJUSTED METRICS & DRAWDOWN
 • Sortino Ratio:                {result.sortino_ratio:12.2f}
 • Maximum Drawdown:             {result.max_drawdown_pct:12.2f}%
 • Profit Factor:                {result.profit_factor:12.2f}
-{mc_section}{sub_border}
+{mc_section}{attribution_section}{sub_border}
 TRADE STATISTICS
 {sub_border}
 • Total Executed Trades:        {result.total_trades:12d}

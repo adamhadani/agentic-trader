@@ -5,6 +5,7 @@ import pandas as pd
 import yfinance as yf
 
 from agentic_trader.agent.evaluator import RiskEvaluator
+from agentic_trader.backtest.attribution import calculate_performance_attribution
 from agentic_trader.backtest.metrics import (
     calculate_drawdown,
     calculate_profit_factor,
@@ -106,6 +107,8 @@ class BacktestEngine:
         strategy_filter: str = "all",
         lookback: str = "2y",
         initial_trades: list[BacktestTrade] | None = None,
+        enable_attribution: bool = True,
+        vix_df: pd.DataFrame | None = None,
     ) -> BacktestResult:
         """
         Execute backtest simulation over the specified symbols and date timeline.
@@ -427,7 +430,7 @@ class BacktestEngine:
         total_slippage = round(sum(t.slippage_dollars for t in closed_trades), 2)
         gross_strategy_pnl = round(strategy_pnl + total_commissions + total_slippage, 2)
 
-        return BacktestResult(
+        result = BacktestResult(
             starting_cash=self.initial_cash,
             ending_equity=ending_equity,
             strategy_pnl=round(strategy_pnl, 2),
@@ -451,3 +454,6 @@ class BacktestEngine:
             total_commissions=total_commissions,
             total_slippage=total_slippage,
         )
+        if enable_attribution and closed_trades:
+            result.attribution = calculate_performance_attribution(result, vix_df=vix_df)
+        return result

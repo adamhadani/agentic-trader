@@ -867,6 +867,12 @@ class FuturesCopilot:
             if mc:
                 mc_line = f"\n• <b>95% Worst DD (Monte Carlo):</b> <code>{mc.ci_95th_drawdown_pct:.1f}%</code> (95% VaR: {mc.var_95_pct:.1f}%)"
 
+        attr_line = ""
+        if res.attribution and res.attribution.factors:
+            top_f = max(res.attribution.factors, key=lambda f: f.pnl_dollars)
+            if top_f.pnl_dollars != 0:
+                attr_line = f"\n• <b>Top Driver:</b> {top_f.factor_name} (+${top_f.pnl_dollars:,.2f})"
+
         return (
             f"📈 <b>BACKTEST SIMULATION: {symbol.upper()} ({lookback})</b>\n\n"
             f"• <b>Total Net Return:</b> <code>{res.combined_return_pct:+.2f}%</code>\n"
@@ -876,6 +882,7 @@ class FuturesCopilot:
             f"• <b>Win Rate:</b> <code>{res.win_rate:.1f}%</code> ({res.total_trades} trades)\n"
             f"• <b>Profit Factor:</b> <code>{res.profit_factor:.2f}</code>\n"
             f"• <b>Cash-Plus Yield Accrued:</b> +${res.cash_yield_pnl:,.2f}"
+            f"{attr_line}"
             f"{mc_line}"
         )
 
@@ -1036,6 +1043,12 @@ async def async_main():
         default=False,
         help="Disable commissions and bid-ask slippage (frictionless execution)",
     )
+    backtest_parser.add_argument(
+        "--no-attribution",
+        action="store_true",
+        default=False,
+        help="Disable factor and regime performance attribution breakdown",
+    )
 
     optimize_parser = subparsers.add_parser(
         "optimize",
@@ -1182,6 +1195,7 @@ async def async_main():
             symbols=sym_list,
             strategy_filter=args.strategy,
             lookback=args.lookback,
+            enable_attribution=not args.no_attribution,
         )
         if args.monte_carlo and result.trades:
             result.monte_carlo = run_monte_carlo_simulation(

@@ -57,6 +57,53 @@ class MonteCarloResult:
 
 
 @dataclass
+class FactorAttribution:
+    """Performance contribution decomposed by quantitative strategy factor."""
+
+    factor_name: str
+    pnl_dollars: float
+    return_contribution_pct: float
+    trade_count: int
+    win_rate: float
+    profit_factor: float
+    pct_of_total_alpha: float
+
+
+@dataclass
+class RegimeAttribution:
+    """Strategy performance metrics segmented by macro market regime."""
+
+    regime: str
+    trade_count: int
+    pnl_dollars: float
+    win_rate: float
+    profit_factor: float
+    avg_trade_pnl: float
+
+
+@dataclass
+class AssetClassAttribution:
+    """Performance contribution segmented by asset class or sector cluster."""
+
+    name: str
+    trade_count: int
+    pnl_dollars: float
+    win_rate: float
+    profit_factor: float
+    pct_of_total_pnl: float
+
+
+@dataclass
+class PerformanceAttributionResult:
+    """Aggregated multi-dimensional performance attribution."""
+
+    factors: list[FactorAttribution] = field(default_factory=list)
+    regimes: list[RegimeAttribution] = field(default_factory=list)
+    asset_classes: list[AssetClassAttribution] = field(default_factory=list)
+    sectors: list[AssetClassAttribution] = field(default_factory=list)
+
+
+@dataclass
 class BacktestResult:
     """Aggregated performance results and trade log from a backtest run."""
 
@@ -83,3 +130,4 @@ class BacktestResult:
     gross_strategy_pnl: float = 0.0
     total_commissions: float = 0.0
     total_slippage: float = 0.0
+    attribution: PerformanceAttributionResult | None = None

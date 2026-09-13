@@ -22,6 +22,8 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 12** | Monte Carlo Risk Simulation in Backtester | **Completed** | Resample trade returns and drawdown distributions with 95%/99% VaR and CVaR confidence bounds |
 | **Phase 13** | Slippage & Realistic Fee/Commission Modeling | **Completed** | Exchange clearing fees, NFA fees, broker commissions, and volume-weighted bid-ask spread slippage |
 | **Phase 14** | Automated Scheduled Retuning Daemon | **Completed** | Background weekend calibration job updating strategy config thresholds based on rolling WFE |
+| **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **Completed** | Real-time WebSocket connection to Tradovate order socket with circuit-breaker failover |
+| **Phase 16** | Cross-Asset Factor & Regime Attribution | **Completed** | Factor decomposition (Momentum, Volatility, Carry) and Sharpe attribution across market regimes |
 
 ---
 
@@ -331,10 +333,70 @@ Maintain optimal, non-stale algorithmic strategy parameters by scheduling automa
 
 ---
 
+## Phase 15: Tradovate WebSocket Stream & Broker Redundancy
+
+### Objective
+Provide sub-second real-time event-driven trade updates for Tradovate futures executions, proactive REST order/position reconciliation, and high-availability broker redundancy with circuit-breaker automated failover and recovery probing.
+
+### Key Deliverables
+1. **Tradovate Real-Time WebSocket Streaming (`TradovateBroker.start_trade_stream`, `stop_trade_stream`)**:
+   - Establishes persistent WebSocket connection to Tradovate order socket (`wss://demo.tradovateapi.com/v1/websocket` or live).
+   - Handles SockJS open frames (`o`), heartbeat keep-alive responses (`h` -> `[]`), and session authorization frames (`authorize\n1\n\n{token}`).
+   - Parses incoming data frames (`a[...]`) for `props` entity updates (`fill` and filled `order` bracket executions).
+   - Classifies stop-loss (`STOP_LOSS`), take-profit (`TAKE_PROFIT`), and manual exits, dispatching `ReconciliationEvent` instances.
+2. **Tradovate REST Order & Position Reconciliation (`TradovateBroker.reconcile_positions`)**:
+   - Queries `/position/list` to inspect active contracts and open positions.
+   - Detects when active positions in SQLite are no longer open at the broker.
+   - Inspects `/order/list` and `/fill/list` to match filled exit orders, calculate realized P&L based on contract point multipliers (/MES=5, /MNQ=2, /MGC=10, /MCL=100), and return `ReconciliationEvent` records.
+3. **High-Availability Broker Redundancy (`RedundantBroker`)**:
+   - Implements `BaseBroker` interface wrapping primary broker (e.g. Tradovate or Alpaca) and fallback broker (e.g. PaperBroker).
+   - Circuit Breaker pattern with states `CLOSED` (healthy), `OPEN` (failover active), and `HALF_OPEN` (recovery probing).
+   - Configurable `max_consecutive_failures` (default 3), `recovery_probe_interval_seconds` (default 60s), and `auto_failback`.
+   - Aggregates positions and non-duplicating reconciliation events across both primary and fallback brokers.
+4. **Configuration & Factory Wiring**:
+   - `RedundancyConfig` added to `config.py` with environment variable overrides (`BROKER_REDUNDANCY_ENABLED`, `BROKER_FALLBACK_MODE`).
+   - `create_broker` automatically wraps primary and fallback brokers into `RedundantBroker` when enabled.
+
+### Implementation Summary
+- **Tradovate Broker Enhancements (`agentic_trader/broker/tradovate.py`)**: Added WebSocket SockJS streaming listener, REST position reconciliation, and `/cashBalance/get` balance discovery.
+- **Redundant Broker Engine (`agentic_trader/broker/redundant.py`)**: Implemented `RedundantBroker` with circuit-breaker state machine, order failover, and recovery cooldown probing.
+- **Factory & Config (`agentic_trader/broker/__init__.py`, `agentic_trader/config.py`)**: Exported `RedundantBroker`, `CircuitState`, and wired `RedundancyConfig` into `AppConfig` and `create_broker()`.
+- **Test Suite (`tests/test_tradovate_stream_and_redundancy.py`)**: 6 comprehensive unit tests verifying account balance fetching, REST exit reconciliation with contract root matching, WebSocket SockJS parsing, circuit breaker failover, half-open recovery, and factory instantiation.
+
+---
+
+## Phase 16: Cross-Asset Factor & Regime Attribution
+
+### Objective
+Quantify alpha sources and risk concentrations through multi-dimensional performance attribution: decomposing portfolio P&L across quantitative strategy factors (Momentum, Volatility Breakout, Cash Carry Yield), segmenting execution expectancy across macro market regimes (`COMPRESSED`, `NORMAL`, `ELEVATED`, `EXTREME`), and analyzing cross-asset class and sector cluster contributions.
+
+### Key Deliverables
+1. **Multi-Factor Return Decomposition (`agentic_trader/backtest/attribution.py`)**:
+   - Isolates Trend-Pullback momentum alpha, Squeeze-Breakout expansion alpha, and cash-plus risk-free treasury accrual.
+   - Calculates trade counts, win rates, profit factors, return contributions (% of capital), and factor alpha share (% of total strategy gains).
+2. **Macro Volatility Regime Attribution**:
+   - Matches trade entry timestamps against historical VIX levels to classify execution conditions (`COMPRESSED` < 15, `NORMAL` 15-22, `ELEVATED` 22-30, `EXTREME` > 30).
+   - Computes regime-specific expectancy, win rates, profit factors, and average P&L to evaluate which environments generate genuine strategy alpha versus chop.
+3. **Cross-Asset & Sector Cluster Analytics**:
+   - Segregates performance across asset classes (Futures, Equities, Crypto) and sector clusters (`US Broad Market`, `US Tech`, `Precious Metals`, `Energy`, `US Treasuries`).
+4. **Institutional Reporting & CLI Integration**:
+   - Integrated `FACTOR & REGIME ATTRIBUTION` section into institutional ASCII report (`format_backtest_report`).
+   - Added `--no-attribution` flag to `copilot backtest` CLI command.
+   - Embedded top alpha driver highlighting in Telegram mobile `/backtest` summaries.
+
+### Implementation Summary
+- **Attribution Engine (`agentic_trader/backtest/attribution.py`)**: Implemented `calculate_performance_attribution()` supporting VIX alignment, factor isolation, and sector mapping.
+- **Data Models (`agentic_trader/backtest/models.py`, `agentic_trader/backtest/__init__.py`)**: Added `FactorAttribution`, `RegimeAttribution`, `AssetClassAttribution`, and `PerformanceAttributionResult`.
+- **Simulation Engine (`agentic_trader/backtest/engine.py`)**: Attached automated attribution calculation to `BacktestEngine.run()` output.
+- **Reporting & Mobile (`agentic_trader/backtest/reporting.py`, `agentic_trader/main.py`)**: Enhanced ASCII report with factor/regime tables and Telegram summary cards.
+- **Test Suite (`tests/test_attribution.py`)**: 3 unit tests verifying factor decomposition, VIX regime segmentation, asset class attribution, and report formatting.
+
+---
+
 ## Next Horizon: Upcoming Strategic Targets
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **In Progress** | Real-time WebSocket connection to Tradovate order socket with automatic reconnect and fallback |
-| **Phase 16** | Cross-Asset Factor & Regime Attribution | **Planned** | Factor decomposition (Momentum, Volatility, Carry) and Sharpe attribution across market regimes |
-| **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **Planned** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |
+| **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **In Progress** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |
+| **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **Planned** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
+| **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **Planned** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |
