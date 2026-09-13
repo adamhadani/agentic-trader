@@ -152,6 +152,14 @@ class FrictionConfig(BaseModel):
     equity_slippage_pct: float = 0.0002
 
 
+class RedundancyConfig(BaseModel):
+    enabled: bool = False
+    fallback_mode: str = "paper"
+    max_consecutive_failures: int = 3
+    recovery_probe_interval_seconds: float = 60.0
+    auto_failback: bool = True
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -160,6 +168,7 @@ class AppConfig(BaseModel):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     regime: RegimeConfig = Field(default_factory=RegimeConfig)
     friction: FrictionConfig = Field(default_factory=FrictionConfig)
+    redundancy: RedundancyConfig = Field(default_factory=RedundancyConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None
@@ -179,6 +188,7 @@ class AppConfig(BaseModel):
     tradovate_password: str | None = None
     tradovate_account_id: str | None = None
     tradovate_environment: str = "demo"  # "demo" or "live"
+    tradovate_ws_url: str | None = None
 
     # Alpaca Execution Configuration
     alpaca_api_key: str | None = None
@@ -245,6 +255,13 @@ def load_config(config_path: str | None = None) -> AppConfig:
     if os.getenv("MAX_NOTIONAL_EXPOSURE"):
         cfg_dict.setdefault("portfolio", {})["max_notional_exposure"] = float(os.environ["MAX_NOTIONAL_EXPOSURE"])
 
+    tradovate_ws_url = os.getenv("TRADOVATE_WS_URL")
+    redundancy_cfg = cfg_dict.get("redundancy", {})
+    if os.getenv("BROKER_REDUNDANCY_ENABLED"):
+        redundancy_cfg["enabled"] = os.getenv("BROKER_REDUNDANCY_ENABLED", "").lower() in ("true", "1", "yes")
+    if os.getenv("BROKER_FALLBACK_MODE"):
+        redundancy_cfg["fallback_mode"] = os.getenv("BROKER_FALLBACK_MODE", "").lower()
+
     config = AppConfig(
         portfolio=PortfolioConfig(**cfg_dict.get("portfolio", {})),
         contracts={k: ContractConfig(**v) for k, v in cfg_dict.get("contracts", {}).items()},
@@ -256,6 +273,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         scheduler=SchedulerConfig(**cfg_dict.get("scheduler", {})),
         regime=RegimeConfig(**cfg_dict.get("regime", {})),
         friction=FrictionConfig(**cfg_dict.get("friction", {})),
+        redundancy=RedundancyConfig(**redundancy_cfg),
         telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
         telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
         llm_model=llm_model,
@@ -272,6 +290,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         tradovate_password=tradovate_password,
         tradovate_account_id=tradovate_account_id,
         tradovate_environment=tradovate_env,
+        tradovate_ws_url=tradovate_ws_url,
         alpaca_api_key=alpaca_api_key,
         alpaca_api_secret=alpaca_api_secret,
         alpaca_base_url=alpaca_base_url,

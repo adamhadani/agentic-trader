@@ -21,6 +21,7 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 11** | Walk-Forward Out-of-Sample Validation in Research | **Completed** | Rolling train/test windows in research to guard against parameter overfitting |
 | **Phase 12** | Monte Carlo Risk Simulation in Backtester | **Completed** | Resample trade returns and drawdown distributions with 95%/99% VaR and CVaR confidence bounds |
 | **Phase 13** | Slippage & Realistic Fee/Commission Modeling | **Completed** | Exchange clearing fees, NFA fees, broker commissions, and volume-weighted bid-ask spread slippage |
+| **Phase 14** | Automated Scheduled Retuning Daemon | **Completed** | Background weekend calibration job updating strategy config thresholds based on rolling WFE |
 
 ---
 
@@ -302,10 +303,38 @@ Incorporate real-world exchange clearing fees, regulatory costs, broker commissi
 
 ---
 
+## Phase 14: Automated Scheduled Retuning Daemon
+
+### Objective
+Maintain optimal, non-stale algorithmic strategy parameters by scheduling automatic walk-forward recalibration during weekend market closures, filtering overfitted candidates via Walk-Forward Efficiency (WFE) and Sharpe metrics, persisting robust parameters, and broadcasting audit reports to Telegram.
+
+### Key Deliverables
+1. **`AutoRetuner` Engine (`agentic_trader/research/retuner.py`)**:
+   - Executes multi-symbol, multi-strategy walk-forward optimization across rolling historical folds.
+   - Enforces minimum Walk-Forward Efficiency (WFE >= 0.50) and out-of-sample Sharpe thresholds (Sharpe >= 0.70) to discard overfitted parameter regimes.
+   - Persists robust parameters into timestamped JSON/YAML calibration records.
+   - Generates HTML executive summaries formatted for Telegram mobile broadcast.
+   - Directly exports calibrated parameters to active `config.yaml` with backup preservation.
+2. **Scheduled Daemon Execution (`agentic_trader/main.py`)**:
+   - Integrated cron job into APScheduler (`copilot daemon`) running during weekend closures (e.g. Sunday 18:00 UTC).
+   - Async execution via `asyncio.to_thread()` ensuring zero blocking of active risk management loops.
+   - Mobile notification delivery via `TelegramNotifier.send_message()`.
+3. **CLI Subcommand (`agentic_trader/main.py`)**:
+   - Dedicated `copilot retune` command with `--symbols`, `--strategy`, `--min-wfe`, `--min-sharpe`, and `--export-config` flags.
+
+### Implementation Summary
+- **Daemon Engine (`agentic_trader/research/retuner.py`, `agentic_trader/research/__init__.py`)**: Implemented `AutoRetuner` class with calibration persistence, config updates, and HTML reporting.
+- **Config & Schedule (`agentic_trader/config.py`)**: Added `retune_enabled`, `retune_day_of_week`, `retune_hour`, and `retune_minute` to `SchedulerConfig`.
+- **CLI & Dispatch (`agentic_trader/main.py`)**: Added `retune` parser subcommand and integrated `run_auto_retune()` into daemon scheduler.
+- **Telegram Dispatch (`agentic_trader/notifier/telegram_bot.py`)**: Added generic `send_message()` helper for formatted audit broadcasts.
+- **Test Suite (`tests/test_retuner.py`)**: 5 unit tests verifying initialization, successful retune filtering, strict threshold rejection, persistence save/load, and config export.
+
+---
+
 ## Next Horizon: Upcoming Strategic Targets
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 14** | Automated Scheduled Retuning Daemon | **Planned** | Background weekend calibration job updating strategy config thresholds based on rolling WFE |
-| **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **Planned** | Real-time WebSocket connection to Tradovate broker API with multi-broker fallback |
+| **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **In Progress** | Real-time WebSocket connection to Tradovate order socket with automatic reconnect and fallback |
 | **Phase 16** | Cross-Asset Factor & Regime Attribution | **Planned** | Factor decomposition (Momentum, Volatility, Carry) and Sharpe attribution across market regimes |
+| **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **Planned** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |

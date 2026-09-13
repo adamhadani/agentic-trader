@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "scipy>=1.18.1",
     "sqlalchemy>=2.0.38",
+    "websockets>=13.0.0",
     "yfinance>=1.7.0",
 ]
 
