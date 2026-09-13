@@ -58,6 +58,7 @@ class RiskEvaluator:
         self.calendar: BaseEconomicCalendar = calendar or EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.regime_detector: RegimeDetector = regime_detector or RegimeDetector(config=config.regime)
         self.data_fetcher = data_fetcher
+        litellm.drop_params = True
 
         # Wire up LangSmith tracing if credentials exist in environment
         if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):
