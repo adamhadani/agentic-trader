@@ -195,7 +195,7 @@ uv run pre-commit install
 The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`:
 
 ```bash
-# Run pytest unit test suite (216 tests)
+# Run pytest unit test suite (217 tests)
 uv run pytest
 
 # Run pytest with code coverage report
