@@ -14,6 +14,7 @@ from telegram.ext import (
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.constants import (
     DEFAULT_PORTFOLIO_CASH,
+    AssetClass,
     ExecutionMode,
     ExitReason,
     SignalStatus,
@@ -34,31 +35,38 @@ def format_alert_card(
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
 
+    qty = getattr(eval_res, "quantity", 1.0)
+    asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+    if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
+        qty_str = f"{qty:g} shares"
+    else:
+        qty_str = f"{qty:g}x"
+
     mode_lower = execution_mode.lower()
     if mode_lower == ExecutionMode.PAPER:
         exec_instr = (
-            f"1. Click <b>[ 🚀 Execute (Paper) ]</b> to simulate entry for 1 <code>{html.escape(eval_res.contract)}</code> at <code>{eval_res.entry_price:,.2f}</code>.\n"
+            f"1. Click <b>[ 🚀 Execute (Paper) ]</b> to simulate entry for {qty_str} <code>{html.escape(eval_res.contract)}</code> at <code>{eval_res.entry_price:,.2f}</code>.\n"
             f"2. Fills against live market quote; synthetic bracket stop at <code>{eval_res.stop_loss:,.2f}</code>.\n"
         )
     elif mode_lower == ExecutionMode.TRADOVATE:
         exec_instr = (
-            f"1. Click <b>[ 🚀 Approve & Execute ]</b> to submit 1 <code>{html.escape(eval_res.contract)}</code> via Tradovate REST API.\n"
+            f"1. Click <b>[ 🚀 Approve & Execute ]</b> to submit {qty_str} <code>{html.escape(eval_res.contract)}</code> via Tradovate REST API.\n"
             f"2. Server-side OCO brackets placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
         )
     elif mode_lower == ExecutionMode.ALPACA:
         exec_instr = (
-            f"1. Click <b>[ 🚀 Execute (Alpaca) ]</b> to submit 1 <code>{html.escape(eval_res.contract)}</code> via Alpaca Trading API.\n"
+            f"1. Click <b>[ 🚀 Execute (Alpaca) ]</b> to submit {qty_str} <code>{html.escape(eval_res.contract)}</code> via Alpaca Trading API.\n"
             f"2. Server-side bracket order placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
         )
     else:
         exec_instr = (
-            f"1. Buy/Sell 1 <code>{html.escape(eval_res.contract)}</code> at Market/Limit <code>{eval_res.entry_price:,.2f}</code>.\n"
+            f"1. Buy/Sell {qty_str} <code>{html.escape(eval_res.contract)}</code> at Market/Limit <code>{eval_res.entry_price:,.2f}</code>.\n"
             f"2. Upon fill, immediately submit a resting <b>Stop Order</b> at <code>{eval_res.stop_loss:,.2f}</code> (GTC).\n"
         )
 
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
-        f"🚨 <b>TRADE SIGNAL: 1x {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
+        f"🚨 <b>TRADE SIGNAL: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
         f"<b>Strategy:</b> {html.escape(strategy)}\n\n"
         f"📊 <b>Levels</b>\n"
         f"• <b>Entry Price:</b> <code>{eval_res.entry_price:,.2f}</code>\n"
@@ -86,6 +94,13 @@ def format_terminal_card(
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
 
+    qty = getattr(eval_res, "quantity", 1.0)
+    asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+    if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
+        qty_str = f"{qty:g} shares"
+    else:
+        qty_str = f"{qty:g}x"
+
     mode_lower = execution_mode.lower()
     if mode_lower == ExecutionMode.PAPER:
         exec_instr = (
@@ -104,14 +119,14 @@ def format_terminal_card(
         )
     else:
         exec_instr = (
-            f"1. Buy/Sell 1 {eval_res.contract} at {eval_res.entry_price:,.2f}.\n"
+            f"1. Buy/Sell {qty_str} {eval_res.contract} at {eval_res.entry_price:,.2f}.\n"
             f"2. Place resting Stop Order at {eval_res.stop_loss:,.2f} (GTC)."
         )
 
     border = "=" * 65
     return f"""
 {border}
-🚨 TRADE SIGNAL: 1x {eval_res.contract} ({eval_res.direction})
+🚨 TRADE SIGNAL: {qty_str} {eval_res.contract} ({eval_res.direction})
 Strategy: {strategy}
 
 📊 Levels
@@ -120,6 +135,7 @@ Strategy: {strategy}
 • Target:      {eval_res.take_profit:,.2f} (+{eval_res.target_distance_points:.2f} pts | +${eval_res.reward_dollars:,.2f} [{eval_res.risk_reward_ratio:.1f}:1])
 
 🛡️ Risk & Portfolio Context
+• Asset Class:      {asset_class}
 • Capital Risk:     {risk_pct}% of ${portfolio_cash:,.0f}
 • Notional Value:   ${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)
 • Macro Check:      {macro_status}

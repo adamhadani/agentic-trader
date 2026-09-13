@@ -5,6 +5,7 @@ import pytest
 from agentic_trader.agent.calendar import EconomicCalendar, MacroEvent
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.config import load_config
+from agentic_trader.constants import AssetClass
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
@@ -97,3 +98,44 @@ async def test_macro_lockout_rejection(config):
     assert eval_res.approved is False
     assert "Macro Event Lockout" in eval_res.rejection_reason
     assert eval_res.macro_clearance is False
+
+
+@pytest.mark.asyncio
+async def test_equity_dynamic_sizing(config):
+    evaluator = RiskEvaluator(config)
+    # Equity AAPL at 150.00 with ATR=2.0 and swing low=146.00
+    candidate = ScreenerCandidate(
+        contract="AAPL",
+        symbol="AAPL",
+        asset_class=AssetClass.EQUITY,
+        timeframe="4h",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        current_price=150.0,
+        ema_20=150.0,
+        ema_50=145.0,
+        ema_200=140.0,
+        rsi_14=42.0,
+        atr_14=2.0,
+        candle_timestamp="2026-09-12T16:00:00Z",
+        recent_swing_low=146.0,
+        recent_swing_high=155.0,
+        trigger_detail="Equity AAPL test pullback",
+    )
+
+    eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
+
+    assert eval_res.approved is True
+    assert eval_res.contract == "AAPL"
+    assert eval_res.asset_class == AssetClass.EQUITY
+    # Stop distance is 150 - (146 - 0.02) = 4.02 (or >= 1.5 * 2 = 3.0)
+    assert eval_res.stop_distance_points == pytest.approx(4.02, abs=0.05)
+    # Target distance must be >= 2x stop distance
+    assert eval_res.target_distance_points >= eval_res.stop_distance_points * 2.0
+    # Dynamic share sizing: target risk $250 / $4.02 = 62 shares
+    assert eval_res.quantity == 62.0
+    # Total risk dollars: 62 * 4.02 ~= $249.24 (<= $250)
+    assert eval_res.risk_dollars <= 250.0
+    assert eval_res.risk_dollars > 200.0
+    # Notional value: 62 * $150 = $9,300
+    assert eval_res.notional_value == pytest.approx(9300.0, abs=50.0)

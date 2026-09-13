@@ -1,12 +1,16 @@
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import Direction, StrategyType
+from agentic_trader.constants import AssetClass, Direction, StrategyType
 from agentic_trader.data.market_data import ContractMarketData
 
 
 class ScreenerCandidate(BaseModel):
     contract: str
+    symbol: str = Field(default="")
+    asset_class: AssetClass = Field(default=AssetClass.FUTURES)
     timeframe: str
     strategy: str
     direction: str
@@ -21,12 +25,18 @@ class ScreenerCandidate(BaseModel):
     recent_swing_high: float
     trigger_detail: str
 
+    def model_post_init(self, context: Any, /) -> None:
+        if not self.symbol:
+            self.symbol = self.contract
+
 
 class StrategyEngine:
     def __init__(self, config: AppConfig):
         self.config = config
 
-    def check_trend_pullback(self, data: ContractMarketData) -> ScreenerCandidate | None:
+    def check_trend_pullback(
+        self, data: ContractMarketData, asset_class: AssetClass = AssetClass.FUTURES
+    ) -> ScreenerCandidate | None:
         """
         Evaluate Strategy A: Trend-Pullback on Daily + 4-Hour data.
         """
@@ -83,6 +93,8 @@ class StrategyEngine:
             if min_recent_rsi < 45.0 and rsi_current >= 40.0:
                 return ScreenerCandidate(
                     contract=data.contract,
+                    symbol=data.contract,
+                    asset_class=asset_class,
                     timeframe="4h",
                     strategy=StrategyType.TREND_PULLBACK,
                     direction=Direction.LONG,
@@ -104,6 +116,8 @@ class StrategyEngine:
             if max_recent_rsi > 55.0 and rsi_current <= 60.0:
                 return ScreenerCandidate(
                     contract=data.contract,
+                    symbol=data.contract,
+                    asset_class=asset_class,
                     timeframe="4h",
                     strategy=StrategyType.TREND_PULLBACK,
                     direction=Direction.SHORT,
@@ -121,7 +135,12 @@ class StrategyEngine:
 
         return None
 
-    def check_squeeze_breakout(self, data: ContractMarketData, timeframe: str = "4h") -> ScreenerCandidate | None:
+    def check_squeeze_breakout(
+        self,
+        data: ContractMarketData,
+        timeframe: str = "4h",
+        asset_class: AssetClass = AssetClass.FUTURES,
+    ) -> ScreenerCandidate | None:
         """
         Evaluate Strategy B: Volatility Squeeze Breakout on 4h or 1h data.
         """
@@ -169,6 +188,8 @@ class StrategyEngine:
         if close > bb_upper and prev_close <= prev_bb_upper:
             return ScreenerCandidate(
                 contract=data.contract,
+                symbol=data.contract,
+                asset_class=asset_class,
                 timeframe=timeframe,
                 strategy=StrategyType.SQUEEZE_BREAKOUT,
                 direction=Direction.LONG,
@@ -188,6 +209,8 @@ class StrategyEngine:
         if close < bb_lower and prev_close >= prev_bb_lower:
             return ScreenerCandidate(
                 contract=data.contract,
+                symbol=data.contract,
+                asset_class=asset_class,
                 timeframe=timeframe,
                 strategy=StrategyType.SQUEEZE_BREAKOUT,
                 direction=Direction.SHORT,
@@ -205,18 +228,26 @@ class StrategyEngine:
 
         return None
 
-    def scan_contract(self, data: ContractMarketData) -> list[ScreenerCandidate]:
+    def scan_contract(
+        self, data: ContractMarketData, asset_class: AssetClass = AssetClass.FUTURES
+    ) -> list[ScreenerCandidate]:
         candidates: list[ScreenerCandidate] = []
-        pullback = self.check_trend_pullback(data)
+        pullback = self.check_trend_pullback(data, asset_class=asset_class)
         if pullback:
             candidates.append(pullback)
 
-        squeeze_4h = self.check_squeeze_breakout(data, timeframe="4h")
+        squeeze_4h = self.check_squeeze_breakout(data, timeframe="4h", asset_class=asset_class)
         if squeeze_4h:
             candidates.append(squeeze_4h)
 
-        squeeze_1h = self.check_squeeze_breakout(data, timeframe="1h")
+        squeeze_1h = self.check_squeeze_breakout(data, timeframe="1h", asset_class=asset_class)
         if squeeze_1h:
             candidates.append(squeeze_1h)
 
         return candidates
+
+    def scan_instrument(
+        self, data: ContractMarketData, asset_class: AssetClass = AssetClass.FUTURES
+    ) -> list[ScreenerCandidate]:
+        """Alias for scan_contract supporting generalized multi-asset instruments."""
+        return self.scan_contract(data, asset_class=asset_class)

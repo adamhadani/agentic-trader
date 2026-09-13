@@ -13,6 +13,7 @@ from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.broker import BaseBroker, OrderRequest, create_broker
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
 from agentic_trader.constants import (
+    AssetClass,
     Direction,
     ExitReason,
     SignalStatus,
@@ -54,12 +55,23 @@ class FuturesCopilot:
             execute_handler=self.execute_signal_by_id,
         )
 
-    async def run_scan(self, use_llm: bool = True, dry_run: bool = False):
+    async def run_scan(
+        self,
+        use_llm: bool = True,
+        dry_run: bool = False,
+        asset_class: str = "all",
+        symbols: list[str] | None = None,
+    ):
         logger.info("=== Starting Quantitative Scan ===")
         current_exposure = await self.db.get_active_notional_exposure()
-        active_count = await self.db.get_active_contract_count()
+        active_count = await self.db.get_active_position_count()
+        max_positions = getattr(
+            self.config.portfolio,
+            "max_concurrent_positions",
+            self.config.portfolio.max_concurrent_contracts,
+        )
         logger.info(
-            f"Portfolio Status: {active_count} active contracts | "
+            f"Portfolio Status: {active_count}/{max_positions} active positions | "
             f"Open Notional: ${current_exposure:,.2f} / ${self.config.portfolio.max_notional_exposure:,.2f} max"
         )
 
@@ -77,15 +89,25 @@ class FuturesCopilot:
         total_candidates = 0
         total_alerts = 0
 
+        target_syms = [s.strip().upper() for s in symbols] if symbols else None
+
         for contract, info in self.config.contracts.items():
-            logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker})...")
+            clean_contract = contract.strip("/").upper()
+            if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
+                continue
+
+            inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
+            if asset_class and asset_class.lower() != "all" and str(inst_class).lower() != asset_class.lower():
+                continue
+
+            logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
             try:
                 data = self.data_fetcher.fetch_data(contract, info.ticker)
                 if data.daily.empty or data.four_hour.empty:
                     logger.warning(f"Insufficient data for {contract}, skipping.")
                     continue
 
-                candidates = self.strategy_engine.scan_contract(data)
+                candidates = self.strategy_engine.scan_contract(data, asset_class=inst_class)
                 for candidate in candidates:
                     total_candidates += 1
                     logger.info(
@@ -151,6 +173,8 @@ class FuturesCopilot:
                         notional_value=eval_res.notional_value,
                         status=SignalStatus.PENDING,
                         raw_response=eval_res.model_dump_json(),
+                        asset_class=str(eval_res.asset_class),
+                        quantity=eval_res.quantity,
                     )
 
                     # Dispatch alert
@@ -250,16 +274,26 @@ class FuturesCopilot:
                 entry = float(pos["entry_price"])
                 sl = float(pos["stop_loss"])
                 tp = float(pos["take_profit"])
+                qty = float(pos.get("quantity") or 1.0)
                 contract_info = self.config.contracts.get(contract)
-                ticker = contract_info.ticker if contract_info else "MES=F"
-                multiplier = contract_info.multiplier if contract_info else 5.0
+                ticker = (
+                    contract_info.ticker
+                    if contract_info
+                    else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
+                )
+                multiplier = contract_info.multiplier if contract_info else (5.0 if contract.startswith("/") else 1.0)
 
                 current = self.data_fetcher.fetch_latest_price(ticker) or entry
-                pnl = (current - entry) * multiplier if direction == Direction.LONG else (entry - current) * multiplier
+                pnl = (
+                    (current - entry) * multiplier * qty
+                    if direction == Direction.LONG
+                    else (entry - current) * multiplier * qty
+                )
                 total_unrealized += pnl
                 pnl_str = f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
+                qty_label = f"{qty:g}x" if contract.startswith("/") else f"{qty:g} shs"
                 print(
-                    f"  #{pos['id']} {contract} {direction} | Entry: {entry:,.2f} | Current: {current:,.2f} | "
+                    f"  #{pos['id']} {qty_label} {contract} {direction} | Entry: {entry:,.2f} | Current: {current:,.2f} | "
                     f"Stop: {sl:,.2f} | Target: {tp:,.2f} | PnL: {pnl_str}"
                 )
             print("-" * 65)
@@ -286,23 +320,29 @@ class FuturesCopilot:
             entry = float(pos["entry_price"])
             sl = float(pos["stop_loss"])
             tp = float(pos["take_profit"])
+            qty = float(pos.get("quantity") or 1.0)
             contract_info = self.config.contracts.get(contract)
-            ticker = contract_info.ticker if contract_info else "MES=F"
-            multiplier = contract_info.multiplier if contract_info else 5.0
+            ticker = (
+                contract_info.ticker
+                if contract_info
+                else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
+            )
+            multiplier = contract_info.multiplier if contract_info else (5.0 if contract.startswith("/") else 1.0)
 
             current_price = self.data_fetcher.fetch_latest_price(ticker) or entry
             pnl = (
-                (current_price - entry) * multiplier
+                (current_price - entry) * multiplier * qty
                 if direction == Direction.LONG
-                else (entry - current_price) * multiplier
+                else (entry - current_price) * multiplier * qty
             )
             total_unrealized_pnl += pnl
 
             pnl_sign = "+" if pnl >= 0 else "-"
             pnl_str = f"{pnl_sign}${abs(pnl):,.2f}"
+            qty_label = f"{qty:g}x" if contract.startswith("/") else f"{qty:g} shs"
 
             lines.append(
-                f"• <b>#{pos['id']} {contract} ({direction})</b>\n"
+                f"• <b>#{pos['id']} {qty_label} {contract} ({direction})</b>\n"
                 f"  Entry: <code>{entry:,.2f}</code> | Current: <code>{current_price:,.2f}</code>\n"
                 f"  Stop: <code>{sl:,.2f}</code> | Target: <code>{tp:,.2f}</code>\n"
                 f"  Unrealized P&amp;L: <b>{pnl_str}</b>\n"
@@ -326,25 +366,40 @@ class FuturesCopilot:
         contract = pos["contract"]
         direction = pos["direction"].upper()
         entry = float(pos["entry_price"])
+        qty = float(pos.get("quantity") or 1.0)
         contract_info = self.config.contracts.get(contract)
-        multiplier = contract_info.multiplier if contract_info else 5.0
-        ticker = contract_info.ticker if contract_info else "MES=F"
-
-        final_exit = exit_price or self.data_fetcher.fetch_latest_price(ticker) or entry
-        realized_pnl = (
-            (final_exit - entry) * multiplier if direction == Direction.LONG else (entry - final_exit) * multiplier
+        multiplier = contract_info.multiplier if contract_info else (5.0 if contract.startswith("/") else 1.0)
+        ticker = (
+            contract_info.ticker
+            if contract_info
+            else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
         )
 
+        if exit_price is not None:
+            final_exit = exit_price
+        else:
+            live = self.data_fetcher.fetch_latest_price(ticker)
+            final_exit = live if live is not None else entry
+
+        if direction == Direction.LONG:
+            realized_pnl = round((final_exit - entry) * multiplier * qty, 2)
+        else:
+            realized_pnl = round((entry - final_exit) * multiplier * qty, 2)
+
         logger.info(
-            "Manually closing position #%d for %s (Exit: %.2f, Realized PnL: $%.2f)",
+            "Manual close requested for signal #%d (%s %s %g qty) at %.2f (PnL: $%.2f)",
             signal_id,
             contract,
+            direction,
+            qty,
             final_exit,
             realized_pnl,
             extra={
                 "signal_id": signal_id,
                 "contract": contract,
                 "direction": direction,
+                "quantity": qty,
+                "entry_price": entry,
                 "exit_price": final_exit,
                 "realized_pnl": realized_pnl,
             },
@@ -354,8 +409,10 @@ class FuturesCopilot:
         try:
             await self.broker.close_position(
                 contract=contract,
+                symbol=contract,
                 exit_reason=ExitReason.MANUAL_CLOSE,
                 exit_price=final_exit,
+                quantity=qty,
             )
         except Exception as e:
             logger.warning(
@@ -408,14 +465,27 @@ class FuturesCopilot:
         contract = sig["contract"]
         direction = sig["direction"].upper()
         contract_info = self.config.contracts.get(contract)
-        ticker = contract_info.ticker if contract_info else f"{contract.strip('/').upper()}=F"
+        asset_class = sig.get("asset_class") or (
+            contract_info.asset_class
+            if contract_info
+            else (AssetClass.FUTURES if contract.startswith("/") else AssetClass.EQUITY)
+        )
+        ticker = (
+            contract_info.ticker
+            if contract_info
+            else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
+        )
+        quantity = float(sig.get("quantity") or 1.0)
 
         # Re-verify portfolio risk limits prior to live execution
-        active_count = await self.db.get_active_contract_count()
-        if active_count >= self.config.portfolio.max_concurrent_contracts:
-            return False, (
-                f"⚠️ <b>Execution Rejected:</b> Maximum concurrent contracts ({self.config.portfolio.max_concurrent_contracts}) reached."
-            )
+        active_count = await self.db.get_active_position_count()
+        max_positions = getattr(
+            self.config.portfolio,
+            "max_concurrent_positions",
+            self.config.portfolio.max_concurrent_contracts,
+        )
+        if active_count >= max_positions:
+            return False, (f"⚠️ <b>Execution Rejected:</b> Maximum concurrent positions ({max_positions}) reached.")
 
         current_exposure = await self.db.get_active_notional_exposure()
         if current_exposure + sig["notional_value"] > self.config.portfolio.max_notional_exposure:
@@ -430,12 +500,14 @@ class FuturesCopilot:
         req = OrderRequest(
             signal_id=signal_id,
             contract=contract,
+            symbol=contract,
             ticker=ticker,
+            asset_class=asset_class,
             direction=direction,
             entry_price=float(sig["entry_price"]),
             stop_loss=float(sig["stop_loss"]),
             take_profit=float(sig["take_profit"]),
-            quantity=1,
+            quantity=quantity,
         )
 
         try:
@@ -605,6 +677,18 @@ async def async_main():
     scan_parser = subparsers.add_parser("scan", help="Run an immediate quantitative scan")
     scan_parser.add_argument("--no-llm", action="store_true", help="Disable LLM evaluation (use deterministic rules)")
     scan_parser.add_argument("--dry-run", action="store_true", help="Scan without persisting or emitting alerts")
+    scan_parser.add_argument(
+        "--asset-class",
+        choices=["all", "futures", "equity"],
+        default="all",
+        help="Filter universe by asset class (default: all)",
+    )
+    scan_parser.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="Comma-separated list of symbols to scan (e.g. 'SPY,QQQ,/MES')",
+    )
 
     subparsers.add_parser("status", help="Display current portfolio exposure and recent signals")
     subparsers.add_parser("positions", help="Display active tracked positions and unrealized P&L")
@@ -628,7 +712,13 @@ async def async_main():
     await copilot.broker.connect()
 
     if args.command == "scan":
-        await copilot.run_scan(use_llm=not args.no_llm, dry_run=args.dry_run)
+        sym_list = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
+        await copilot.run_scan(
+            use_llm=not args.no_llm,
+            dry_run=args.dry_run,
+            asset_class=args.asset_class,
+            symbols=sym_list,
+        )
     elif args.command == "status":
         await copilot.show_status()
     elif args.command == "positions":

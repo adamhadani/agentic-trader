@@ -2,28 +2,87 @@ portfolio:
   cash: 100000.0
   max_notional_exposure: 60000.0
   max_concurrent_contracts: 2
+  max_concurrent_positions: 4
+  default_equity_risk_dollars: 250.0
 
 contracts:
+  # Micro Futures
   "/MES":
     ticker: "MES=F"
     name: "Micro E-mini S&P 500"
     multiplier: 5.0
     tick_size: 0.25
+    asset_class: "futures"
   "/MNQ":
     ticker: "MNQ=F"
     name: "Micro E-mini Nasdaq-100"
     multiplier: 2.0
     tick_size: 0.25
+    asset_class: "futures"
   "/MGC":
     ticker: "MGC=F"
     name: "Micro Gold"
     multiplier: 10.0
     tick_size: 0.10
+    asset_class: "futures"
   "/MCL":
     ticker: "MCL=F"
     name: "Micro WTI Crude Oil"
     multiplier: 100.0
     tick_size: 0.01
+    asset_class: "futures"
+
+  # Core Liquid ETFs
+  "SPY":
+    ticker: "SPY"
+    name: "SPDR S&P 500 ETF Trust"
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
+  "QQQ":
+    ticker: "QQQ"
+    name: "Invesco QQQ Trust"
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
+  "IWM":
+    ticker: "IWM"
+    name: "iShares Russell 2000 ETF"
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
+  "GLD":
+    ticker: "GLD"
+    name: "SPDR Gold Shares"
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
+  "TLT":
+    ticker: "TLT"
+    name: "iShares 20+ Year Treasury Bond ETF"
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
+
+  # Mega-Cap Tech Leaders
+  "AAPL":
+    ticker: "AAPL"
+    name: "Apple Inc."
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
+  "MSFT":
+    ticker: "MSFT"
+    name: "Microsoft Corporation"
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
+  "NVDA":
+    ticker: "NVDA"
+    name: "NVIDIA Corporation"
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
 
 risk:
   min_risk_reward_ratio: 2.0

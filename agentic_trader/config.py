@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from agentic_trader.constants import AssetClass
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -36,14 +38,32 @@ load_envrc()
 class ContractConfig(BaseModel):
     ticker: str
     name: str
-    multiplier: float
-    tick_size: float
+    multiplier: float = 1.0
+    tick_size: float = 0.01
+    asset_class: AssetClass = AssetClass.FUTURES
+    target_risk_dollars: float | None = None
+
+    @field_validator("asset_class", mode="before")
+    @classmethod
+    def parse_asset_class(cls, v: Any) -> AssetClass:
+        if isinstance(v, str):
+            v_upper = v.strip().upper()
+            if hasattr(AssetClass, v_upper):
+                return AssetClass(v_upper)
+        if isinstance(v, AssetClass):
+            return v
+        return AssetClass.FUTURES
+
+
+InstrumentConfig = ContractConfig
 
 
 class PortfolioConfig(BaseModel):
     cash: float = 100000.0
     max_notional_exposure: float = 60000.0
     max_concurrent_contracts: int = 2
+    max_concurrent_positions: int = 4
+    default_equity_risk_dollars: float = 250.0
 
 
 class RiskConfig(BaseModel):

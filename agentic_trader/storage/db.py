@@ -63,7 +63,8 @@ class SignalDatabase:
                     realized_pnl REAL,
                     exit_reason TEXT,
                     broker_order_id TEXT,
-                    asset_class TEXT DEFAULT 'FUTURES'
+                    asset_class TEXT DEFAULT 'FUTURES',
+                    quantity REAL DEFAULT 1.0
                 );
                 """
             )
@@ -76,6 +77,7 @@ class SignalDatabase:
                 ("exit_reason", "TEXT"),
                 ("broker_order_id", "TEXT"),
                 ("asset_class", "TEXT"),
+                ("quantity", "REAL DEFAULT 1.0"),
             ]:
                 if col not in existing_cols:
                     conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {col_type}")
@@ -118,6 +120,7 @@ class SignalDatabase:
         raw_response: str | None = None,
         status: str = SignalStatus.PENDING,
         asset_class: str = AssetClass.FUTURES,
+        quantity: float = 1.0,
     ) -> int:
         """Insert a new trade signal record into the database."""
         async with self.session_factory() as session:
@@ -135,6 +138,7 @@ class SignalDatabase:
                 raw_response=raw_response,
                 status=str(status),
                 asset_class=str(asset_class),
+                quantity=float(quantity),
             )
             session.add(rec)
             await session.commit()
@@ -196,6 +200,10 @@ class SignalDatabase:
             res = await session.execute(stmt)
             val = res.scalar()
             return int(val) if val is not None else 0
+
+    async def get_active_position_count(self) -> int:
+        """Count of active EXECUTED positions across all asset classes."""
+        return await self.get_active_contract_count()
 
     async def get_recent_signals(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return the most recent signals ordered by timestamp descending."""

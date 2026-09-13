@@ -9,7 +9,11 @@ from pydantic import BaseModel, Field
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import CALLBACK_LANGSMITH, Direction
+from agentic_trader.constants import (
+    CALLBACK_LANGSMITH,
+    AssetClass,
+    Direction,
+)
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
@@ -33,6 +37,8 @@ class LLMTradeEvaluation(BaseModel):
     effective_leverage: float
     macro_clearance: bool
     thesis_summary: str
+    quantity: float = 1.0
+    asset_class: AssetClass = AssetClass.FUTURES
 
 
 class RiskEvaluator:
@@ -53,15 +59,25 @@ class RiskEvaluator:
 
     def calculate_levels_deterministic(
         self, candidate: ScreenerCandidate
-    ) -> tuple[float, float, float, float, float, float, float]:
+    ) -> tuple[float, float, float, float, float, float, float, float]:
         """
-        Calculate structural stop loss and 2:1 profit target deterministically.
+        Calculate structural stop loss, 2:1 profit target, and dynamic position sizing deterministically.
         Returns:
-            (stop_loss, take_profit, stop_pts, target_pts, risk_dollars, reward_dollars, notional_value)
+            (stop_loss, take_profit, stop_pts, target_pts, risk_dollars, reward_dollars, notional_value, quantity)
         """
         contract_info = self.config.contracts.get(candidate.contract)
-        multiplier = contract_info.multiplier if contract_info else 5.0
-        tick_size = contract_info.tick_size if contract_info else 0.25
+        asset_class = (
+            getattr(candidate, "asset_class", None)
+            or (contract_info.asset_class if contract_info else None)
+            or (AssetClass.FUTURES if candidate.contract.startswith("/") else AssetClass.EQUITY)
+        )
+
+        if asset_class == AssetClass.EQUITY:
+            multiplier = contract_info.multiplier if contract_info else 1.0
+            tick_size = contract_info.tick_size if contract_info else 0.01
+        else:
+            multiplier = contract_info.multiplier if contract_info else 5.0
+            tick_size = contract_info.tick_size if contract_info else 0.25
 
         entry = candidate.current_price
         min_stop_distance = self.config.risk.min_stop_atr_multiple * candidate.atr_14
@@ -78,9 +94,6 @@ class RiskEvaluator:
             take_profit = round(round((entry + target_distance) / tick_size) * tick_size, 2)
             target_distance = round(take_profit - entry, 2)
 
-            risk_dollars = round(stop_distance * multiplier, 2)
-            reward_dollars = round(target_distance * multiplier, 2)
-
         else:  # SHORT
             structural_stop = candidate.recent_swing_high + (2 * tick_size)
             stop_distance = max(structural_stop - entry, min_stop_distance)
@@ -91,10 +104,22 @@ class RiskEvaluator:
             take_profit = round(round((entry - target_distance) / tick_size) * tick_size, 2)
             target_distance = round(entry - take_profit, 2)
 
-            risk_dollars = round(stop_distance * multiplier, 2)
-            reward_dollars = round(target_distance * multiplier, 2)
+        # Dynamic position sizing: fixed dollar risk for equities, 1 contract for futures
+        if asset_class == AssetClass.EQUITY:
+            target_risk = (
+                contract_info.target_risk_dollars
+                if contract_info and contract_info.target_risk_dollars
+                else self.config.portfolio.default_equity_risk_dollars
+            )
+            per_share_risk = max(stop_distance * multiplier, 0.01)
+            quantity = max(1.0, float(int(target_risk / per_share_risk)))
+        else:
+            quantity = 1.0
 
-        notional_value = round(entry * multiplier, 2)
+        risk_dollars = round(stop_distance * multiplier * quantity, 2)
+        reward_dollars = round(target_distance * multiplier * quantity, 2)
+        notional_value = round(entry * multiplier * quantity, 2)
+
         return (
             stop_loss,
             take_profit,
@@ -103,6 +128,7 @@ class RiskEvaluator:
             risk_dollars,
             reward_dollars,
             notional_value,
+            quantity,
         )
 
     async def evaluate_candidate(
@@ -111,18 +137,35 @@ class RiskEvaluator:
         current_open_notional: float = 0.0,
         use_llm: bool = True,
     ) -> LLMTradeEvaluation:
-        contract_info = self.config.contracts.get(candidate.contract)
-        multiplier = contract_info.multiplier if contract_info else 5.0
-        tick_size = contract_info.tick_size if contract_info else 0.25
+        # Compute deterministic baseline levels and position sizing first
+        (
+            stop_loss,
+            take_profit,
+            stop_distance,
+            target_distance,
+            risk_dollars,
+            reward_dollars,
+            notional_value,
+            quantity,
+        ) = self.calculate_levels_deterministic(candidate)
+
         entry = candidate.current_price
-        contract_notional = round(entry * multiplier, 2)
-        projected_notional = current_open_notional + contract_notional
+        contract_info = self.config.contracts.get(candidate.contract)
+        asset_class = (
+            getattr(candidate, "asset_class", None)
+            or (contract_info.asset_class if contract_info else None)
+            or (AssetClass.FUTURES if candidate.contract.startswith("/") else AssetClass.EQUITY)
+        )
+        multiplier = contract_info.multiplier if contract_info else (1.0 if asset_class == AssetClass.EQUITY else 5.0)
+        tick_size = contract_info.tick_size if contract_info else (0.01 if asset_class == AssetClass.EQUITY else 0.25)
+        effective_leverage = round(notional_value / self.config.portfolio.cash, 2)
+        projected_notional = current_open_notional + notional_value
 
         # 1. Check Portfolio Exposure Limit ($60,000 max)
         if projected_notional > self.config.portfolio.max_notional_exposure:
             return LLMTradeEvaluation(
                 approved=False,
-                rejection_reason=f"Exposure limit exceeded: Adding {candidate.contract} (${contract_notional:,.2f}) would bring total exposure to ${projected_notional:,.2f} (cap is ${self.config.portfolio.max_notional_exposure:,.2f}).",
+                rejection_reason=f"Exposure limit exceeded: Adding {candidate.contract} (${notional_value:,.2f}) would bring total exposure to ${projected_notional:,.2f} (cap is ${self.config.portfolio.max_notional_exposure:,.2f}).",
                 contract=candidate.contract,
                 direction=candidate.direction,
                 entry_price=entry,
@@ -133,10 +176,12 @@ class RiskEvaluator:
                 risk_reward_ratio=2.0,
                 risk_dollars=0.0,
                 reward_dollars=0.0,
-                notional_value=contract_notional,
-                effective_leverage=round(contract_notional / self.config.portfolio.cash, 2),
+                notional_value=notional_value,
+                effective_leverage=effective_leverage,
                 macro_clearance=True,
                 thesis_summary="Rejected by risk manager: portfolio notional ceiling reached.",
+                quantity=quantity,
+                asset_class=asset_class,
             )
 
         # 2. Check Macro Lockout Window
@@ -158,23 +203,14 @@ class RiskEvaluator:
                 risk_reward_ratio=2.0,
                 risk_dollars=0.0,
                 reward_dollars=0.0,
-                notional_value=contract_notional,
-                effective_leverage=round(contract_notional / self.config.portfolio.cash, 2),
+                notional_value=notional_value,
+                effective_leverage=effective_leverage,
                 macro_clearance=False,
                 thesis_summary=f"Rejected: macro lockout active for '{lock_event.title}'.",
+                quantity=quantity,
+                asset_class=asset_class,
             )
 
-        # Compute deterministic baseline levels
-        (
-            stop_loss,
-            take_profit,
-            stop_distance,
-            target_distance,
-            risk_dollars,
-            reward_dollars,
-            notional_value,
-        ) = self.calculate_levels_deterministic(candidate)
-        effective_leverage = round(notional_value / self.config.portfolio.cash, 2)
         macro_summary = await self.calendar.get_macro_summary_for_prompt()
 
         # If LLM evaluation is disabled or no LLM keys provided, return deterministic evaluation
@@ -205,6 +241,8 @@ class RiskEvaluator:
                 effective_leverage=effective_leverage,
                 macro_clearance=True,
                 thesis_summary=f"Quantitative trigger verified: {candidate.trigger_detail} Macro cleared.",
+                quantity=quantity,
+                asset_class=asset_class,
             )
 
         # 3. Call LLM for final reasoning & thesis synthesis
@@ -225,7 +263,7 @@ class RiskEvaluator:
             recent_swing_high=candidate.recent_swing_high,
             trigger_detail=candidate.trigger_detail,
             current_open_notional=current_open_notional,
-            contract_notional=contract_notional,
+            contract_notional=notional_value,
             projected_notional=projected_notional,
             macro_summary=macro_summary,
         )
@@ -253,6 +291,8 @@ class RiskEvaluator:
             data["entry_price"] = entry
             data["notional_value"] = notional_value
             data["effective_leverage"] = effective_leverage
+            data["quantity"] = quantity
+            data["asset_class"] = asset_class
 
             # Invalidation guarantee: stop distance >= 1.5 * ATR
             llm_stop = float(data.get("stop_loss", stop_loss))
@@ -276,8 +316,8 @@ class RiskEvaluator:
             data["stop_distance_points"] = round(llm_stop_dist, 2)
             data["target_distance_points"] = round(llm_target_dist, 2)
             data["risk_reward_ratio"] = max(2.0, rr)
-            data["risk_dollars"] = round(llm_stop_dist * multiplier, 2)
-            data["reward_dollars"] = round(llm_target_dist * multiplier, 2)
+            data["risk_dollars"] = round(llm_stop_dist * multiplier * quantity, 2)
+            data["reward_dollars"] = round(llm_target_dist * multiplier * quantity, 2)
 
             return LLMTradeEvaluation(**data)
 
@@ -304,4 +344,6 @@ class RiskEvaluator:
                 effective_leverage=effective_leverage,
                 macro_clearance=True,
                 thesis_summary=f"Automated thesis: {candidate.trigger_detail} (LLM fallback used: {e})",
+                quantity=quantity,
+                asset_class=asset_class,
             )

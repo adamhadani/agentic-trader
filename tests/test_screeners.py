@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from agentic_trader.config import load_config
+from agentic_trader.constants import AssetClass
 from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.screeners.strategies import StrategyEngine
 
@@ -135,3 +136,26 @@ def test_squeeze_breakout_trigger(config):
     assert candidate is not None
     assert candidate.strategy == "SQUEEZE_BREAKOUT"
     assert candidate.direction == "LONG"
+
+
+def test_equity_screener_candidate(config):
+    engine = StrategyEngine(config)
+    data = create_mock_market_data(
+        daily_close=500.0,
+        daily_ema50=490.0,
+        daily_ema200=470.0,
+        four_h_close=500.0,
+        four_h_ema20=500.0,
+        four_h_rsi_seq=[48.0, 42.0, 41.0, 44.0],
+        four_h_atr=5.0,
+    )
+    data.contract = "SPY"
+    data.ticker = "SPY"
+
+    candidates = engine.scan_contract(data, asset_class=AssetClass.EQUITY)
+    assert len(candidates) >= 1
+    c = candidates[0]
+    assert c.contract == "SPY"
+    assert c.symbol == "SPY"
+    assert c.asset_class == AssetClass.EQUITY
+    assert c.direction == "LONG"

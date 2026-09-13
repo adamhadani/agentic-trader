@@ -19,6 +19,7 @@ from agentic_trader.constants import (
     ExitReason,
     OrderSide,
     OrderType,
+    SignalStatus,
 )
 from agentic_trader.main import FuturesCopilot
 from agentic_trader.storage.db import SignalDatabase
@@ -554,3 +555,47 @@ async def test_copilot_monitor_positions_via_reconciliation(tmp_path):
     assert sig["status"] == "CLOSED_WIN"
     assert sig["exit_price"] == 5905.0
     assert sig["realized_pnl"] == 525.0
+
+
+@pytest.mark.asyncio
+async def test_copilot_execute_equity_signal_with_shares(tmp_path):
+    db_path = str(tmp_path / "test_equity_exec.db")
+    config = load_config()
+    config.execution_mode = "paper"
+    config.db_path = db_path
+
+    copilot = FuturesCopilot(config)
+    await copilot.db.init_db()
+
+    # Record equity signal with 35 shares
+    sig_id = await copilot.db.record_signal(
+        contract="SPY",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=500.0,
+        stop_loss=493.0,
+        take_profit=514.0,
+        risk_dollars=245.0,
+        reward_dollars=490.0,
+        notional_value=17500.0,
+        status=SignalStatus.PENDING,
+        asset_class=AssetClass.EQUITY,
+        quantity=35.0,
+    )
+
+    success, msg = await copilot.execute_signal_by_id(sig_id)
+    assert success is True
+    assert "Executed" in msg or "Order ID" in msg
+
+    # Verify signal in database is EXECUTED and quantity preserved
+    sig = await copilot.db.get_signal_by_id(sig_id)
+    assert sig is not None
+    assert sig["status"] == SignalStatus.EXECUTED
+    assert sig["quantity"] == 35.0
+    assert sig["asset_class"] == AssetClass.EQUITY
+
+    # Verify position exists in broker
+    positions = await copilot.broker.get_positions()
+    assert len(positions) == 1
+    assert positions[0].symbol == "SPY"
+    assert positions[0].quantity == 35.0

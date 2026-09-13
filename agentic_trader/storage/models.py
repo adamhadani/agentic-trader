@@ -36,6 +36,7 @@ class SignalRecord(Base):
     exit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     broker_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
     asset_class: Mapped[str | None] = mapped_column(String, default=AssetClass.FUTURES, nullable=True)
+    quantity: Mapped[float] = mapped_column(Float, default=1.0, nullable=True)
 
     __table_args__ = (Index("idx_recent_signals", "contract", "strategy", "timestamp"),)
 
@@ -72,4 +73,5 @@ class SignalRecord(Base):
             "exit_reason": self.exit_reason,
             "broker_order_id": self.broker_order_id,
             "asset_class": self.asset_class or AssetClass.FUTURES,
+            "quantity": float(self.quantity) if self.quantity is not None else 1.0,
         }
