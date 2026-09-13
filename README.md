@@ -195,9 +195,9 @@ uv run pre-commit install
 The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`:
 
 ```bash
-# Run all pre-commit hooks (ruff, mypy, hadolint, uv-lock, pytest runner)
-uv run pre-commit run --all-files
-
-# Run pytest unit test suite (157 tests)
+# Run pytest unit test suite (216 tests)
 uv run pytest
+
+# Run pytest with code coverage report
+uv run pytest --cov=agentic_trader --cov-report=term-missing
 ```

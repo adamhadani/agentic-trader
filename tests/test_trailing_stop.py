@@ -5,13 +5,6 @@ import pytest
 from agentic_trader.agent.copilot import FuturesCopilot as CopilotFC, TradingCopilot as CopilotTC
 from agentic_trader.config import load_config
 from agentic_trader.main import FuturesCopilot, FuturesCopilot as MainFC, TradingCopilot as MainTC
-from agentic_trader.storage.db import SignalDatabase
-
-
-@pytest.fixture
-def temp_db(tmp_path):
-    db_file = tmp_path / "test_trailing.db"
-    return SignalDatabase(str(db_file))
 
 
 @pytest.mark.asyncio

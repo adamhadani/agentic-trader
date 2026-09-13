@@ -7,14 +7,6 @@ from agentic_trader.config import load_config
 from agentic_trader.constants import Direction, ExitReason, SignalStatus
 from agentic_trader.main import FuturesCopilot
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_alert_card, format_terminal_card
-from agentic_trader.storage.db import SignalDatabase
-
-
-@pytest.fixture
-def temp_db(tmp_path):
-    db_file = str(tmp_path / "test_telegram.db")
-    db = SignalDatabase(db_file)
-    return db
 
 
 @pytest.mark.asyncio

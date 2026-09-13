@@ -1,19 +1,15 @@
 import asyncio
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 
 from agentic_trader.agent.calendar import EconomicCalendar, MacroEvent
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
-from agentic_trader.config import load_config
 from agentic_trader.constants import AssetClass, StrategyType, VolatilityRegime
+from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
 from agentic_trader.screeners.strategies import ScreenerCandidate
-
-
-@pytest.fixture
-def config():
-    return load_config()
 
 
 def create_candidate(direction="LONG", price=5800.0, atr=20.0, swing_low=5770.0, swing_high=5830.0):
@@ -222,3 +218,47 @@ async def test_squeeze_breakout_allowed_in_normal_regime(config):
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
     assert eval_res.approved is True
+
+
+@pytest.mark.asyncio
+async def test_evaluator_correlation_group_limit(config):
+    """Test that a new candidate is rejected if its correlation group is at capacity."""
+    evaluator = RiskEvaluator(config)
+    candidate = create_candidate(direction="LONG")
+    # Active position already in US Equities group (e.g. SPY LONG)
+    active_positions = [{"contract": "SPY", "direction": "LONG", "notional_value": 25000.0}]
+
+    eval_res = await evaluator.evaluate_candidate(
+        candidate,
+        current_open_notional=25000.0,
+        active_positions=active_positions,
+        use_llm=False,
+    )
+
+    assert eval_res.approved is False
+    assert "Correlation limit exceeded" in (eval_res.rejection_reason or "")
+    assert "us_broad_market" in (eval_res.rejection_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_evaluator_market_session_rejection(config):
+    mock_session_provider = AsyncMock()
+    mock_session_provider.get_session_info = AsyncMock(
+        return_value=MarketSessionInfo(
+            symbol="/MES",
+            asset_class=AssetClass.FUTURES,
+            is_open=False,
+            is_rth=False,
+            session_type=MarketSessionType.HOLIDAY_HALT,
+            current_time=datetime.now(UTC),
+            details="Christmas Day Holiday Closure",
+        )
+    )
+
+    evaluator = RiskEvaluator(config, session_provider=mock_session_provider)
+    candidate = create_candidate(direction="LONG")
+
+    eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
+
+    assert eval_res.approved is False
+    assert "Market Session Filter" in (eval_res.rejection_reason or "")

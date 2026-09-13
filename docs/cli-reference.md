@@ -63,6 +63,9 @@ uv run copilot scan --asset-class equity
 
 # Specific symbol override
 uv run copilot scan --symbols /MES,/MNQ,SPY
+
+# Bypass session hours and market closure check (e.g. testing off-hours)
+uv run copilot scan --bypass-session-filter --dry-run
 ```
 
 ### `copilot execute <signal_id>`
@@ -140,6 +143,13 @@ uv run copilot backtest --symbols SPY,QQQ,IWM --strategy trend_pullback --lookba
 
 # Run with Monte Carlo simulation (1,000 runs)
 uv run copilot backtest --symbols /MES --monte-carlo --mc-sims 1000
+
+# Trailing stop policy options:
+# --trailing-stop-mode: none, breakeven_and_trail, chandelier_atr (default)
+uv run copilot backtest --symbols SPY --trailing-stop-mode chandelier_atr --trail-trigger-r 1.5 --trail-atr-multiple 1.5
+
+# Retail breakeven test (moving stop to entry at 1.0R):
+uv run copilot backtest --symbols /MES --trailing-stop-mode breakeven_and_trail --breakeven-trigger-r 1.0
 
 # Frictionless benchmark
 uv run copilot backtest --no-friction

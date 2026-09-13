@@ -264,3 +264,24 @@ def test_ensure_et_timezone_normalization():
     local_dt = datetime(2026, 9, 16, 17, 0, tzinfo=tz_plus_3)  # 17:00 IDT (UTC+3) = 10:00 EDT (UTC-4)
     et_from_local = ensure_et(local_dt)
     assert et_from_local.hour == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("instrument_type", "dt", "expected_active"),
+    [
+        ("crypto", datetime(2026, 9, 16, 10, 0, tzinfo=ET), True),
+        ("crypto", datetime(2026, 12, 25, 12, 0, tzinfo=ET), True),  # 24/7 even on Christmas
+        ("futures", datetime(2026, 9, 16, 10, 0, tzinfo=ET), True),  # Wednesday 10:00 ET
+        ("futures", datetime(2026, 9, 16, 17, 30, tzinfo=ET), False),  # CME daily halt 17:00-18:00
+        ("futures", datetime(2026, 12, 25, 12, 0, tzinfo=ET), False),  # Christmas day halt
+        ("equity", datetime(2026, 9, 16, 10, 0, tzinfo=ET), True),  # Wednesday RTH
+        ("equity", datetime(2026, 9, 16, 18, 0, tzinfo=ET), False),  # Outside RTH
+        ("all", datetime(2026, 9, 16, 10, 0, tzinfo=ET), True),  # Normal trading day
+    ],
+)
+async def test_composite_is_session_active(instrument_type: str, dt: datetime, expected_active: bool):
+    provider = CompositeMarketSessionProvider(config=None, alpaca_client=None)
+    active, reason = await provider.is_session_active(instrument_type, timestamp=dt)
+    assert active is expected_active
+    assert isinstance(reason, str)

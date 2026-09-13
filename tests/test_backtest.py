@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from agentic_trader.backtest.engine import BacktestEngine
 from agentic_trader.backtest.metrics import (
@@ -16,14 +15,9 @@ from agentic_trader.backtest.metrics import (
 )
 from agentic_trader.backtest.models import BacktestResult, BacktestTrade, EquityPoint
 from agentic_trader.backtest.reporting import format_backtest_report
-from agentic_trader.config import AppConfig, TrailingStopConfig, load_config
+from agentic_trader.config import TrailingStopConfig
 from agentic_trader.constants import AssetClass, Direction, ExitReason, StrategyType
 from agentic_trader.data.market_data import ContractMarketData
-
-
-@pytest.fixture
-def config() -> AppConfig:
-    return load_config()
 
 
 def create_trade(

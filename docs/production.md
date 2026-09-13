@@ -74,20 +74,27 @@ copilot daemon
 
 Before launching the production daemon, verify the following steps:
 
-### 1. Environment Secrets (`.env` or `.envrc`)
+### 1. Pre-Flight System Doctor (`copilot doctor`)
+Execute automated diagnostic probes across all 7 subsystems (database, risk limits, Telegram bot, Alpaca Paper API, Tradovate, Finnhub macro calendar, and LLM model):
+```bash
+uv run copilot doctor
+```
+Ensure all required checks display `✅ PASS` before proceeding.
+
+### 2. Environment Secrets (`.env` or `.envrc`)
 Ensure all credentials are populated:
 ```bash
 # Verify environment configuration
 uv run python -c "from agentic_trader.config import load_config; cfg = load_config(); print('Config loaded:', cfg.execution_mode, 'Cash: $', cfg.portfolio.cash)"
 ```
 
-### 2. Database Schema Migration
+### 3. Database Schema Migration
 Ensure SQLite database schema is migrated to the latest revision:
 ```bash
 uv run copilot db upgrade head
 ```
 
-### 3. Verify Broker Connectivity & Notification Pipeline
+### 4. Verify Notification Pipeline & Sizing Buttons
 Send a synthetic signal card to verify Telegram connectivity and broker button dispatch:
 ```bash
 uv run copilot test-alert
