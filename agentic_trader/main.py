@@ -27,6 +27,7 @@ from agentic_trader.constants import (
     StrategyType,
 )
 from agentic_trader.data.market_data import MarketDataFetcher
+from agentic_trader.execution import SlicedExecutionEngine
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.research import (
     AutoRetuner,
@@ -70,6 +71,7 @@ class FuturesCopilot:
             regime_detector=self.regime_detector,
             data_fetcher=self.data_fetcher,
         )
+        self.execution_engine = SlicedExecutionEngine(config=self.config)
         self.notifier = TelegramNotifier(
             bot_token=config.telegram_bot_token,
             chat_id=config.telegram_chat_id,
@@ -665,10 +667,10 @@ class FuturesCopilot:
         )
 
         try:
-            order_result = await self.broker.submit_entry_order(req)
+            order_result = await self.execution_engine.execute_order(req, self.broker)
         except Exception as e:
             logger.exception(
-                "Error calling broker.submit_entry_order for signal #%d",
+                "Error calling execution_engine.execute_order for signal #%d",
                 signal_id,
                 extra={"signal_id": signal_id, "error": str(e)},
             )

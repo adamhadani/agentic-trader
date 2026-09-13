@@ -25,6 +25,7 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **Completed** | Real-time WebSocket connection to Tradovate order socket with circuit-breaker failover |
 | **Phase 16** | Cross-Asset Factor & Regime Attribution | **Completed** | Factor decomposition (Momentum, Volatility, Carry) and Sharpe attribution across market regimes |
 | **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **Completed** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |
+| **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **Completed** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
 
 ---
 
@@ -423,9 +424,37 @@ Scale trade allocation dynamically inversely with market volatility and statisti
 
 ---
 
+## Phase 18: Execution Microstructure & Adaptive TWAP/VWAP Slicing
+
+### Objective
+Minimize market impact, spread crossing penalty, and adverse selection for larger trade allocations (e.g. multi-contract micro futures $\ge 2$ and large equity allocations $\ge 100$ shares) through algorithmic execution slicing (TWAP, Adaptive VWAP) combined with microstructure price-collar limits.
+
+### Key Deliverables
+1. **Microstructure Execution Models (`agentic_trader/execution/models.py`)**:
+   - `ChildSlice`: Slice ID, index, slice quantity, target price, collar limit price, status (`PENDING`, `SUBMITTED`, `FILLED`, `SKIPPED_COLLAR`, `FAILED`), fill price, timestamp, and broker order ID.
+   - `ExecutionPlan`: Master execution plan tracking total quantity, filled quantity, weighted average fill price, child slice breakdown, and bracket order IDs.
+2. **Algorithmic Slicing & Price Collar Engine (`agentic_trader/execution/slicer.py`)**:
+   - `compute_price_collar()`: Computes directional price collar ceiling (LONG) or floor (SHORT) based on ticks (futures) or percentage (equities), protecting against momentum runaways.
+   - `slice_quantities()`: Supports discrete integer distributions for futures contracts (e.g. 3 contracts over 2 slices $\to$ [2, 1]) and continuous volume-weighted profiles for equities.
+   - `plan_order()`: Automatically routes sub-threshold orders to immediate execution, while slicing multi-contract / multi-share orders into TWAP or VWAP execution schedules.
+3. **Execution Engine (`agentic_trader/execution/engine.py`)**:
+   - `SlicedExecutionEngine`: Dispatches child slices sequentially across configured time intervals (`twap_interval_seconds`).
+   - Checks real-time market quote before slice dispatch to verify that price action has not breached the microstructure collar.
+   - Aggregates child fills, computes true volume-weighted average fill price, and returns an unified `OrderResult`.
+4. **Configuration & Live Dispatch Wiring**:
+   - `ExecutionConfig` added to `config.py` (`algorithm`, `twap_slices`, `twap_interval_seconds`, `price_collar_ticks`, `price_collar_pct`, `vwap_intraday_profile`).
+   - `FuturesCopilot.execute_signal()` routed through `self.execution_engine.execute_order()`, preserving 100% backward compatibility when `algorithm == "immediate"`.
+
+### Implementation Summary
+- **Execution Package (`agentic_trader/execution/`)**: Built `models.py`, `slicer.py`, and `engine.py`.
+- **Configuration (`agentic_trader/config.py`, `config/config.yaml`)**: Added `ExecutionConfig`, wired into `AppConfig` and `load_config()`.
+- **Copilot Integration (`agentic_trader/main.py`)**: Attached `self.execution_engine` to `FuturesCopilot` and routed signal executions.
+- **Test Suite (`tests/test_execution_microstructure.py`)**: 6 unit tests validating price collar calculations, discrete futures slicing, equity VWAP profiles, size threshold filtering, TWAP execution simulation, and price collar breach protection.
+
+---
+
 ## Next Horizon: Upcoming Strategic Targets
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **In Progress** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
-| **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **Planned** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |
+| **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **In Progress** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |

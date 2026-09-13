@@ -173,6 +173,17 @@ class PositionSizingConfig(BaseModel):
     baseline_win_rate: float = 0.50
 
 
+class ExecutionConfig(BaseModel):
+    algorithm: str = "immediate"  # "immediate", "twap", "vwap"
+    min_slice_quantity_futures: float = 2.0
+    min_slice_quantity_equity: float = 100.0
+    twap_slices: int = 4
+    twap_interval_seconds: float = 5.0
+    price_collar_ticks: float = 2.0
+    price_collar_pct: float = 0.001
+    vwap_intraday_profile: list[float] = Field(default_factory=lambda: [0.25, 0.15, 0.10, 0.10, 0.15, 0.25])
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -183,6 +194,7 @@ class AppConfig(BaseModel):
     friction: FrictionConfig = Field(default_factory=FrictionConfig)
     redundancy: RedundancyConfig = Field(default_factory=RedundancyConfig)
     sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None
@@ -282,6 +294,10 @@ def load_config(config_path: str | None = None) -> AppConfig:
     if os.getenv("TARGET_RISK_PCT"):
         sizing_cfg["target_risk_pct"] = float(os.environ["TARGET_RISK_PCT"])
 
+    exec_cfg = cfg_dict.get("execution", {})
+    if os.getenv("EXECUTION_ALGORITHM"):
+        exec_cfg["algorithm"] = os.getenv("EXECUTION_ALGORITHM", "").lower()
+
     config = AppConfig(
         portfolio=PortfolioConfig(**cfg_dict.get("portfolio", {})),
         contracts={k: ContractConfig(**v) for k, v in cfg_dict.get("contracts", {}).items()},
@@ -295,6 +311,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         friction=FrictionConfig(**cfg_dict.get("friction", {})),
         redundancy=RedundancyConfig(**redundancy_cfg),
         sizing=PositionSizingConfig(**sizing_cfg),
+        execution=ExecutionConfig(**exec_cfg),
         telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
         telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
         llm_model=llm_model,

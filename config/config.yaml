@@ -130,3 +130,12 @@ sizing:
   min_shares: 1.0
   kelly_fraction: 0.5
   baseline_win_rate: 0.50
+
+execution:
+  algorithm: "immediate" # "immediate", "twap", "vwap"
+  min_slice_quantity_futures: 2.0 # minimum contracts to trigger algorithmic slicing
+  min_slice_quantity_equity: 100.0 # minimum shares to trigger algorithmic slicing
+  twap_slices: 4
+  twap_interval_seconds: 5.0
+  price_collar_ticks: 2.0 # max allowable ticks from base entry price
+  price_collar_pct: 0.001 # 0.10% price collar for equities
