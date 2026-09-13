@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 from agentic_trader.backtest.models import BacktestResult
 
 
@@ -121,5 +125,65 @@ TRADE STATISTICS
 • Win Rate:                     {result.win_rate:11.2f}%
 • Average Duration:             {result.avg_trade_duration_bars:11.1f} bars
 {top_trades_text}{border}
+"""
+    return report.strip()
+
+
+def format_stress_test_report(results: list) -> str:
+    """Format an ASCII report of historical crisis stress test results."""
+    border = "=" * 92
+    sub_border = "-" * 92
+
+    header = (
+        f"{border}\n"
+        f"PORTFOLIO STRESS TESTING: HISTORICAL MACRO CRISIS REPLAY\n"
+        f"{border}\n"
+        f"{'CRISIS SCENARIO':<34} {'TIMELINE':<22} {'RETURN':<10} {'MAX DD':<10} {'TRADES':<8} {'STATUS':<8}\n"
+        f"{sub_border}\n"
+    )
+
+    rows = []
+    for r in results:
+        sc = r.scenario
+        timeline = f"{sc.start_date}..{sc.end_date}"
+        ret_str = f"{r.net_return_pct:+.2f}%"
+        dd_str = f"{r.max_drawdown_pct:.2f}%"
+        rows.append(
+            f"{sc.name[:33]:<34} {timeline:<22} {ret_str:<10} {dd_str:<10} {r.total_trades:<8d} {r.pass_fail:<8}"
+        )
+
+    body = "\n".join(rows) if rows else "No stress scenarios executed."
+    footer = f"\n{border}"
+    return (header + body + footer).strip()
+
+
+def format_instantaneous_shock_report(shock: Any) -> str:
+    """Format an ASCII summary of instantaneous portfolio shock testing."""
+    border = "=" * 68
+    sub_border = "-" * 68
+
+    breakdown_lines = ""
+    for sym, pnl in shock.shock_breakdown.items():
+        breakdown_lines += f"  • {sym:<10}: ${pnl:+12,.2f}\n"
+
+    margin_warn = (
+        "⚠️ CRITICAL (Potential Margin Call)" if shock.margin_call_risk else "✅ ACCEPTABLE (Within Risk Budget)"
+    )
+
+    report = f"""
+{border}
+PORTFOLIO STRESS TEST: INSTANTANEOUS FACTOR SHOCK SIMULATION
+{border}
+Active Open Positions:        {shock.current_open_positions:12d}
+Total Open Notional Exposure: ${shock.total_open_notional:12,.2f}
+Immediate P&L Shock Impact:   ${shock.immediate_pnl_impact:+12,.2f}
+Post-Shock Portfolio Equity:  ${shock.post_shock_equity:12,.2f}
+Post-Shock Drawdown:          {shock.post_shock_drawdown_pct:12.2f}%
+Margin & Liquidation Status:  {margin_warn}
+{sub_border}
+FACTOR SHOCK P&L BREAKDOWN
+{sub_border}
+{breakdown_lines.strip()}
+{border}
 """
     return report.strip()

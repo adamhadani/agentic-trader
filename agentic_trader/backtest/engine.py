@@ -62,6 +62,8 @@ class BacktestEngine:
         self,
         symbol: str,
         lookback: str = "2y",
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> ContractMarketData:
         """Fetch and prepare historical data for a symbol via yfinance."""
         contract_info = self.config.contracts.get(symbol)
@@ -71,18 +73,26 @@ class BacktestEngine:
             else (f"{symbol.strip('/').upper()}=F" if symbol.startswith("/") else symbol)
         )
 
-        logger.info("Fetching historical data for %s (%s, lookback=%s)...", symbol, ticker, lookback)
         yf_ticker = yf.Ticker(ticker)
 
-        df_daily = yf_ticker.history(period=lookback, interval="1d")
+        if start_date and end_date:
+            logger.info("Fetching historical data for %s (%s, from %s to %s)...", symbol, ticker, start_date, end_date)
+            df_daily = yf_ticker.history(start=start_date, end=end_date, interval="1d")
+        else:
+            logger.info("Fetching historical data for %s (%s, lookback=%s)...", symbol, ticker, lookback)
+            df_daily = yf_ticker.history(period=lookback, interval="1d")
+
         df_daily = self.data_fetcher._clean_yfinance_df(df_daily)
         df_daily = self.data_fetcher.compute_daily_indicators(df_daily)
 
         # 1h data for 4h resampling (yfinance supports up to 730d 1h data)
         try:
-            df_1h = yf_ticker.history(
-                period=lookback if lookback in ("1mo", "3mo", "6mo", "1y", "2y") else "2y", interval="1h"
-            )
+            if start_date and end_date:
+                df_1h = yf_ticker.history(start=start_date, end=end_date, interval="1h")
+            else:
+                df_1h = yf_ticker.history(
+                    period=lookback if lookback in ("1mo", "3mo", "6mo", "1y", "2y") else "2y", interval="1h"
+                )
             df_1h = self.data_fetcher._clean_yfinance_df(df_1h)
             df_1h = self.data_fetcher.compute_intraday_indicators(df_1h)
             df_4h = self.data_fetcher.resample_to_4h(df_1h)
@@ -106,6 +116,8 @@ class BacktestEngine:
         market_data_map: dict[str, ContractMarketData] | None = None,
         strategy_filter: str = "all",
         lookback: str = "2y",
+        start_date: str | None = None,
+        end_date: str | None = None,
         initial_trades: list[BacktestTrade] | None = None,
         enable_attribution: bool = True,
         vix_df: pd.DataFrame | None = None,
@@ -116,11 +128,27 @@ class BacktestEngine:
         # Load market data if not provided
         data_map: dict[str, ContractMarketData] = {}
         if market_data_map:
-            data_map = market_data_map
+            if start_date and end_date:
+                # Filter provided market data to date window
+                for sym, cmd in market_data_map.items():
+                    sub_d = cmd.daily.loc[start_date:end_date] if not cmd.daily.empty else cmd.daily
+                    sub_4h = cmd.four_hour.loc[start_date:end_date] if not cmd.four_hour.empty else cmd.four_hour
+                    sub_1h = cmd.hourly.loc[start_date:end_date] if not cmd.hourly.empty else cmd.hourly
+                    data_map[sym] = ContractMarketData(
+                        contract=cmd.contract,
+                        ticker=cmd.ticker,
+                        daily=sub_d,
+                        four_hour=sub_4h if not sub_4h.empty else sub_d,
+                        hourly=sub_1h if not sub_1h.empty else sub_d,
+                    )
+            else:
+                data_map = market_data_map
         else:
             for sym in symbols:
                 try:
-                    data_map[sym] = self.fetch_historical_market_data(sym, lookback=lookback)
+                    data_map[sym] = self.fetch_historical_market_data(
+                        sym, lookback=lookback, start_date=start_date, end_date=end_date
+                    )
                 except Exception as e:
                     logger.error("Failed to load historical data for %s: %s", sym, e)
 

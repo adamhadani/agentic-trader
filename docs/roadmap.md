@@ -26,6 +26,7 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 16** | Cross-Asset Factor & Regime Attribution | **Completed** | Factor decomposition (Momentum, Volatility, Carry) and Sharpe attribution across market regimes |
 | **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **Completed** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |
 | **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **Completed** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
+| **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **Completed** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |
 
 ---
 
@@ -453,8 +454,47 @@ Minimize market impact, spread crossing penalty, and adverse selection for large
 
 ---
 
-## Next Horizon: Upcoming Strategic Targets
+## Phase 19: Portfolio Stress Testing & Historical Macro Crisis Replay
+
+### Objective
+Provide quantitative stress testing and tail-risk evaluation by replaying strategy execution across severe historical macro crises (2008 Global Financial Crisis, 2020 COVID Liquidity Crash, 2022 Inflation & Rate Hiking Shock, 2011 US Debt Downgrade) and simulating instantaneous cross-asset factor shocks.
+
+### Key Deliverables
+1. **Curated Crisis Scenario Catalog (`CRISIS_CATALOG`)**:
+   - `2008_gfc`: 2008 Global Financial Crisis & Lehman Collapse (`2008-01-01` to `2009-03-31`, SPY -50.8%).
+   - `2020_covid`: 2020 COVID Liquidity Shock (`2020-02-01` to `2020-04-30`, SPY -33.7%).
+   - `2022_inflation`: 2022 Fed Rate Hiking & Tech Drawdown (`2022-01-01` to `2022-10-31`, SPY -24.5%).
+   - `2011_debt_ceiling`: 2011 US Debt Ceiling & Sovereign Downgrade (`2011-07-01` to `2011-10-31`, SPY -18.6%).
+   - `2015_flash_crash`: 2015 China Devaluation & August Flash Crash (`2015-08-01` to `2015-10-31`, SPY -12.1%).
+2. **Automated Pre-2019 Micro-Futures Proxy Resolution**:
+   - CME launched micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`) in May 2019.
+   - For historical windows prior to May 2019, `CrisisReplayEngine.resolve_proxy_symbols()` automatically maps micro contracts to high-liquidity ETF proxies (`/MES` $\to$ `SPY`, `/MNQ` $\to$ `QQQ`, `/MGC` $\to$ `GLD`, `/MCL` $\to$ `USO`), guaranteeing complete historical data coverage back to 2007.
+3. **Historical Crisis Strategy Replay**:
+   - Replays strategy bar-by-bar through the exact crisis timeframe using `BacktestEngine` with dynamic `start_date` and `end_date` bounds.
+   - Computes peak-to-trough maximum drawdown, strategy total return, annualized return, benchmark return, relative alpha, Sharpe ratio, win rate, and drawdown duration (days).
+4. **Instantaneous Parametric Factor Shock Engine**:
+   - Evaluates instantaneous mark-to-market portfolio drawdowns under severe macro stress without requiring bar feeds:
+     - `equity_market_crash`: Equities -20%, Tech -25%, Gold +5%, Crude -15%, Treasuries +8%.
+     - `stagflation_shock`: Equities -10%, Crude +35%, Gold +12%, Treasuries -6%.
+     - `rate_shock`: Equities -8%, Treasuries -15%, Gold -5%.
+     - `liquidity_crisis`: Equities -15%, Gold -8%, Crude -20%, Treasuries +5%.
+5. **Institutional Stress Reporting & CLI Integration**:
+   - Added `format_stress_test_report()` and `format_instantaneous_shock_report()` to `reporting.py`.
+   - Integrated `copilot stress` CLI command with flags: `--scenario` (`all`, `2008_gfc`, `2020_covid`, `2022_inflation`, `2011_debt_ceiling`, `2015_flash_crash`, `shock`), `--symbols`, `--strategy`, and `--cash`.
+
+### Implementation Summary
+- **Stress Engine (`agentic_trader/backtest/stress.py`)**: Implemented `CrisisReplayEngine`, `CrisisScenario`, `ScenarioStressResult`, `InstantaneousShockResult`, and `CRISIS_CATALOG`.
+- **Backtest Boundaries (`agentic_trader/backtest/engine.py`)**: Added `start_date` and `end_date` support to data fetching and simulation execution.
+- **Reporting (`agentic_trader/backtest/reporting.py`)**: Added institutional crisis tables with colorized drawdown risk levels.
+- **CLI Subcommand (`agentic_trader/main.py`)**: Added `stress` subcommand to Typer CLI.
+- **Test Suite (`tests/test_stress_testing.py`)**: 7 unit tests covering scenario lookups, proxy resolution, replay execution, instantaneous shocks, and CLI commands.
+
+---
+
+## Next Horizon: Advanced Quantitative Infrastructure (Phases 20+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **In Progress** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |
+| **Phase 20** | Options Implied Volatility Surface & GEX (Gamma Exposure) | **Planned** | Option chain analytics, zero-DTE skew, Put/Call volume ratio, market maker gamma positioning |
+| **Phase 21** | Real-Time Prometheus Metrics & Grafana Observability | **Planned** | Live operational telemetry, order execution latency, Sharpe/PnL Prometheus exporter |
+| **Phase 22** | Cointegration & Statistical Pairs Trading Screener | **Planned** | Engle-Granger / Johansen cointegration tests for mean-reverting equity and futures spreads |

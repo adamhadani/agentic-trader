@@ -14,7 +14,10 @@ from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import (
     BacktestEngine,
+    CrisisReplayEngine,
     format_backtest_report,
+    format_instantaneous_shock_report,
+    format_stress_test_report,
     run_monte_carlo_simulation,
 )
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
@@ -1137,10 +1140,41 @@ async def async_main():
         help="Target config file to export all updated parameters (e.g. config/config.yaml)",
     )
 
+    stress_parser = subparsers.add_parser(
+        "stress",
+        help="Run portfolio stress testing against historical macro crises and shocks",
+        description="Run portfolio stress testing against historical macro crises and shocks",
+    )
+    stress_parser.add_argument(
+        "--scenario",
+        type=str,
+        default="all",
+        choices=["all", "2008_gfc", "2020_covid", "2022_inflation", "shock"],
+        help="Crisis scenario to replay or 'shock' for instantaneous factor stress (default: all)",
+    )
+    stress_parser.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="Comma-separated symbols to test (default: scenario defaults)",
+    )
+    stress_parser.add_argument(
+        "--strategy",
+        choices=["all", "trend_pullback", "squeeze_breakout"],
+        default="all",
+        help="Strategy to evaluate (default: all)",
+    )
+    stress_parser.add_argument(
+        "--cash",
+        type=float,
+        default=None,
+        help="Starting cash amount in dollars (default: config.portfolio.cash)",
+    )
+
     args = parser.parse_args()
     config = load_config()
     copilot = FuturesCopilot(config)
-    if args.command not in ("db", "backtest", "optimize", "retune"):
+    if args.command not in ("db", "backtest", "optimize", "retune", "stress"):
         await copilot.broker.connect()
 
     if args.command == "db":
@@ -1262,6 +1296,34 @@ async def async_main():
         if args.export_config:
             count = retuner.export_all_to_config(args.export_config)
             print(f"\n[OK] Exported {count} calibrated parameter sets to {args.export_config}")
+    elif args.command == "stress":
+        stress_engine = CrisisReplayEngine(config=config)
+        syms = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
+        if args.scenario == "shock":
+            positions = await copilot.db.get_active_positions()
+            shock_res = stress_engine.simulate_instantaneous_shock(
+                active_positions=positions,
+                cash=args.cash or config.portfolio.cash,
+            )
+            print(format_instantaneous_shock_report(shock_res))
+        elif args.scenario == "all":
+            results = await asyncio.to_thread(
+                stress_engine.replay_all_crises,
+                symbols=syms,
+                strategy_filter=args.strategy,
+                initial_cash=args.cash,
+            )
+            print(format_stress_test_report(results))
+        else:
+            scenario_key = args.scenario.upper()
+            single_stress_res = await asyncio.to_thread(
+                stress_engine.replay_scenario,
+                scenario_id=scenario_key,
+                symbols=syms,
+                strategy_filter=args.strategy,
+                initial_cash=args.cash,
+            )
+            print(format_stress_test_report([single_stress_res]))
     elif args.command == "status":
         await copilot.show_status()
     elif args.command == "positions":
