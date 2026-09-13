@@ -11,8 +11,8 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 1** | Real-Time Broker Order Reconciliation & Fill Streaming | **Completed** | Background position reconciliation loop, WebSocket fill events (Alpaca / Tradovate) |
 | **Phase 2** | Multi-Asset Screener Expansion (Equities & Liquid ETFs) | **Completed** | Equity universe config, multi-asset technical screener, dollar-risk sizing |
 | **Phase 3** | Persistence & Migration Hardening (Alembic) | **Completed** | Alembic database migrations, multi-backend support (PostgreSQL ready) |
-| **Phase 4** | Macro & Volatility Regime Filter | **Next** | `RegimeDetector` (`^VIX`, `^TNX`, `DX-Y`), quantitative regime context in LLM prompts |
-| **Phase 5** | Offline Vectorized Backtester & Performance Analytics | Queued | Historical strategy backtesting, equity curve simulation, Sharpe/drawdown metrics |
+| **Phase 4** | Macro & Volatility Regime Filter | **Completed** | `RegimeDetector` (`^VIX`, `^TNX`, `DX-Y`), quantitative regime context in LLM prompts |
+| **Phase 5** | Offline Vectorized Backtester & Performance Analytics | **Next** | Historical strategy backtesting, equity curve simulation, Sharpe/drawdown metrics |
 
 ---
 
