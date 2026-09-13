@@ -70,6 +70,9 @@ class FuturesCopilot:
             positions_provider=self.get_positions_summary_html,
             close_handler=self.close_position_manual,
             execute_handler=self.execute_signal_by_id,
+            perf_provider=self.get_performance_summary_html,
+            regime_provider=self.get_regime_summary_html,
+            backtest_runner=self.run_backtest_summary_html,
         )
 
     async def run_scan(
@@ -675,6 +678,75 @@ class FuturesCopilot:
                 f"✅ <b>Scan Complete:</b> {new_alerts} new trade setup(s) identified and alert cards dispatched above."
             )
         return "✅ <b>Scan Complete:</b> Evaluated all micro contracts (/MES, /MNQ, /MGC, /MCL). No setups met quantitative triggers at current candle."
+
+    async def get_performance_summary_html(self) -> str:
+        stats = await self.db.get_closed_positions_stats()
+        active_exposure = await self.db.get_active_notional_exposure()
+        active_count = await self.db.get_active_position_count()
+
+        pnl_sign = "+" if stats["total_pnl"] >= 0 else "-"
+        abs_pnl = abs(stats["total_pnl"])
+        color_pnl = "🟢" if stats["total_pnl"] >= 0 else "🔴"
+
+        recent_trades_text = ""
+        if not stats["trades"]:
+            recent_trades_text = "\n<i>(No closed trades recorded yet)</i>"
+        else:
+            for t in stats["trades"][:5]:
+                t_pnl = t.get("realized_pnl") or 0.0
+                t_sign = "+" if t_pnl >= 0 else "-"
+                recent_trades_text += (
+                    f"\n• #{t['id']} <b>{t['contract']}</b> ({t['direction']}) "
+                    f"via {t['strategy']}: {t_sign}${abs(t_pnl):,.2f} [{t['exit_reason'] or 'CLOSED'}]"
+                )
+
+        return (
+            "📊 <b>CASH-PLUS COPILOT: PERFORMANCE ATTRIBUTION</b>\n\n"
+            f"• <b>Realized Net Alpha:</b> {color_pnl} <code>{pnl_sign}${abs_pnl:,.2f}</code>\n"
+            f"• <b>Win Rate:</b> <b>{stats['win_rate']:.1f}%</b> ({stats['wins']} wins / {stats['losses']} losses)\n"
+            f"• <b>Profit Factor:</b> <code>{stats['profit_factor']:.2f}</code>\n"
+            f"• <b>Gross Profits:</b> +${stats['gross_profit']:,.2f}\n"
+            f"• <b>Gross Losses:</b> -${stats['gross_loss']:,.2f}\n"
+            f"• <b>Active Open Risk:</b> {active_count} positions (${active_exposure:,.2f} notional)\n\n"
+            f"🕒 <b>Recent Closed Trades:</b>{recent_trades_text}"
+        )
+
+    async def get_regime_summary_html(self) -> str:
+        regime = await self.regime_detector.get_regime()
+        tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "N/A"
+        dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "N/A"
+        breakout_str = "Allowed ✅" if regime.breakout_allowed else "Suppressed ⚠️ (Extreme Volatility)"
+
+        vix_color = "🟢" if regime.vix < 15.0 else ("🟡" if regime.vix < 22.0 else "🔴")
+
+        return (
+            "🌐 <b>MARKET VOLATILITY & MACRO REGIME</b>\n\n"
+            f"• <b>VIX Level:</b> {vix_color} <code>{regime.vix:.2f}</code> ({regime.vix_regime.value.upper()})\n"
+            f"• <b>10-Year Treasury Yield (^TNX):</b> <code>{tnx_str}</code>\n"
+            f"• <b>US Dollar Index (DX-Y):</b> <code>{dxy_str}</code>\n"
+            f"• <b>Squeeze Breakouts:</b> <b>{breakout_str}</b>\n\n"
+            f"📝 <b>Quantitative Assessment:</b>\n"
+            f"<i>{regime.summary_text}</i>"
+        )
+
+    async def run_backtest_summary_html(self, symbol: str = "SPY", lookback: str = "1y") -> str:
+        engine = BacktestEngine(config=self.config)
+        res = await asyncio.to_thread(
+            engine.run,
+            symbols=[symbol],
+            strategy_filter="all",
+            lookback=lookback,
+        )
+        return (
+            f"📈 <b>BACKTEST SIMULATION: {symbol.upper()} ({lookback})</b>\n\n"
+            f"• <b>Total Net Return:</b> <code>{res.combined_return_pct:+.2f}%</code>\n"
+            f"• <b>Annualized Return (CAGR):</b> <code>{res.annualized_return_pct:+.2f}%</code>\n"
+            f"• <b>Sharpe Ratio:</b> <code>{res.sharpe_ratio:.2f}</code>\n"
+            f"• <b>Max Drawdown:</b> <code>{res.max_drawdown_pct:.2f}%</code>\n"
+            f"• <b>Win Rate:</b> <code>{res.win_rate:.1f}%</code> ({res.total_trades} trades)\n"
+            f"• <b>Profit Factor:</b> <code>{res.profit_factor:.2f}</code>\n"
+            f"• <b>Cash-Plus Yield Accrued:</b> +${res.cash_yield_pnl:,.2f}"
+        )
 
     async def send_test_alert(self):
         print("Sending synthetic test alert card...")

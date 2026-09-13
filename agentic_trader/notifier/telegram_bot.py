@@ -200,6 +200,9 @@ class TelegramNotifier:
         positions_provider: Callable[[], Awaitable[str]] | None = None,
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
         execute_handler: Callable[[int], Awaitable[tuple[bool, str]]] | None = None,
+        perf_provider: Callable[[], Awaitable[str]] | None = None,
+        regime_provider: Callable[[], Awaitable[str]] | None = None,
+        backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
@@ -211,6 +214,9 @@ class TelegramNotifier:
         self.positions_provider = positions_provider
         self.close_handler = close_handler
         self.execute_handler = execute_handler
+        self.perf_provider = perf_provider
+        self.regime_provider = regime_provider
+        self.backtest_runner = backtest_runner
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
@@ -237,6 +243,9 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("scan", self.handle_scan_command))
             self.app.add_handler(CommandHandler("positions", self.handle_positions_command))
             self.app.add_handler(CommandHandler("close", self.handle_close_command))
+            self.app.add_handler(CommandHandler("perf", self.handle_perf_command))
+            self.app.add_handler(CommandHandler("regime", self.handle_regime_command))
+            self.app.add_handler(CommandHandler("backtest", self.handle_backtest_command))
 
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -246,17 +255,32 @@ class TelegramNotifier:
             "<b>Available Commands:</b>\n"
             "• /status - View portfolio exposure, cash base, and macro events\n"
             "• /positions - View active tracked trades and unrealized P&amp;L\n"
+            "• /perf - View cumulative closed trade performance and win rate\n"
+            "• /regime - View real-time VIX, 10Y yield, and Dollar Index regime\n"
+            "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
             "• /close &lt;id&gt; [price] - Manually close a tracked trade and record fill\n"
-            "• /scan - Trigger an on-demand quantitative scan across micro futures\n"
+            "• /scan - Trigger an on-demand quantitative scan across universe\n"
             "• /help - Display this command overview\n\n"
             "<b>Risk Invariants Enforced:</b>\n"
-            "• Sizing: 1 micro contract (/MES, /MNQ, /MGC, /MCL)\n"
+            "• Sizing: 1 micro contract (/MES, /MNQ, /MGC, /MCL) or fractional equity shares\n"
             "• Exposure Cap: $60,000 max total open notional\n"
             "• Stop Distance: ≥ 1.5x ATR\n"
             "• Reward-to-Risk: ≥ 2.0:1\n"
             "• Macro Lockout: 60m before / 30m after Tier-1 events"
         )
-        await update.message.reply_text(help_text, parse_mode="HTML")
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("🔍 Scan Now", callback_data="cmd_scan"),
+                    InlineKeyboardButton("📈 Positions", callback_data="cmd_positions"),
+                ],
+                [
+                    InlineKeyboardButton("📊 Performance", callback_data="cmd_perf"),
+                    InlineKeyboardButton("🌐 Macro Regime", callback_data="cmd_regime"),
+                ],
+            ]
+        )
+        await update.message.reply_text(help_text, parse_mode="HTML", reply_markup=keyboard)
 
     async def handle_positions_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -266,6 +290,44 @@ class TelegramNotifier:
             await update.message.reply_text(resp, parse_mode="HTML")
         else:
             await update.message.reply_text("Positions provider not attached.")
+
+    async def handle_perf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        if self.perf_provider:
+            resp = await self.perf_provider()
+            await update.message.reply_text(resp, parse_mode="HTML")
+        else:
+            await update.message.reply_text("Performance provider not attached.")
+
+    async def handle_regime_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        if self.regime_provider:
+            resp = await self.regime_provider()
+            await update.message.reply_text(resp, parse_mode="HTML")
+        else:
+            await update.message.reply_text("Regime provider not attached.")
+
+    async def handle_backtest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        args = context.args or []
+        symbol = args[0].upper() if len(args) > 0 else "SPY"
+        lookback = args[1] if len(args) > 1 else "1y"
+
+        await update.message.reply_text(
+            f"⏳ Running backtest simulation for <b>{html.escape(symbol)}</b> ({html.escape(lookback)})...",
+            parse_mode="HTML",
+        )
+        if self.backtest_runner:
+            try:
+                resp = await self.backtest_runner(symbol, lookback)
+                await update.message.reply_text(resp, parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Backtest error: {e}")
+        else:
+            await update.message.reply_text("Backtest runner not attached.")
 
     async def handle_close_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -293,16 +355,28 @@ class TelegramNotifier:
     async def handle_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("🔍 Run Scan", callback_data="cmd_scan"),
+                    InlineKeyboardButton("📈 Positions", callback_data="cmd_positions"),
+                ],
+                [
+                    InlineKeyboardButton("📊 Performance", callback_data="cmd_perf"),
+                    InlineKeyboardButton("🌐 Macro Regime", callback_data="cmd_regime"),
+                ],
+            ]
+        )
         if self.status_provider:
             status_text = await self.status_provider()
-            await update.message.reply_text(status_text, parse_mode="HTML")
+            await update.message.reply_text(status_text, parse_mode="HTML", reply_markup=keyboard)
         else:
             await update.message.reply_text("Status provider not attached.")
 
     async def handle_scan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
-        await update.message.reply_text("🔍 Running quantitative scan across micro futures...")
+        await update.message.reply_text("🔍 Running quantitative scan across universe...")
         if self.scan_runner:
             result_text = await self.scan_runner()
             await update.message.reply_text(result_text, parse_mode="HTML")
@@ -316,7 +390,27 @@ class TelegramNotifier:
         data = query.data
         msg = query.message
 
-        if data.startswith("exec_"):
+        if data == "cmd_scan":
+            await query.answer("Running quantitative scan...")
+            if self.scan_runner and msg and hasattr(msg, "reply_text"):
+                res = await self.scan_runner()
+                await msg.reply_text(res, parse_mode="HTML")
+        elif data == "cmd_positions":
+            await query.answer()
+            if self.positions_provider and msg and hasattr(msg, "reply_text"):
+                res = await self.positions_provider()
+                await msg.reply_text(res, parse_mode="HTML")
+        elif data == "cmd_perf":
+            await query.answer()
+            if self.perf_provider and msg and hasattr(msg, "reply_text"):
+                res = await self.perf_provider()
+                await msg.reply_text(res, parse_mode="HTML")
+        elif data == "cmd_regime":
+            await query.answer()
+            if self.regime_provider and msg and hasattr(msg, "reply_text"):
+                res = await self.regime_provider()
+                await msg.reply_text(res, parse_mode="HTML")
+        elif data.startswith("exec_"):
             signal_id = int(data.split("_")[1])
             logger.info(
                 "Execution button clicked for signal #%d",

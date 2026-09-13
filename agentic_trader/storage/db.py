@@ -273,3 +273,44 @@ class SignalDatabase:
             await session.commit()
             rowcount = getattr(res, "rowcount", 0)
             return bool(rowcount > 0)
+
+    async def get_closed_positions_stats(self) -> dict[str, Any]:
+        """Aggregate closed trade statistics (P&L, win rate, profit factor, trade list)."""
+        async with self.session_factory() as session:
+            stmt = (
+                select(SignalRecord)
+                .where(SignalRecord.status.in_([SignalStatus.CLOSED_WIN, SignalStatus.CLOSED_LOSS]))
+                .order_by(SignalRecord.exit_timestamp.desc())
+            )
+            res = await session.execute(stmt)
+            closed = res.scalars().all()
+
+            total_trades = len(closed)
+            wins = sum(
+                1 for r in closed if r.status == SignalStatus.CLOSED_WIN or (r.realized_pnl and r.realized_pnl > 0)
+            )
+            losses = total_trades - wins
+            win_rate = (wins / total_trades * 100.0) if total_trades > 0 else 0.0
+
+            total_pnl = sum(r.realized_pnl or 0.0 for r in closed)
+            gross_profit = sum((r.realized_pnl or 0.0) for r in closed if (r.realized_pnl or 0.0) > 0)
+            gross_loss = abs(sum((r.realized_pnl or 0.0) for r in closed if (r.realized_pnl or 0.0) < 0))
+
+            if gross_loss > 0:
+                profit_factor = round(gross_profit / gross_loss, 2)
+            elif gross_profit > 0:
+                profit_factor = 999.99
+            else:
+                profit_factor = 0.0
+
+            return {
+                "total_trades": total_trades,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": round(win_rate, 2),
+                "total_pnl": round(total_pnl, 2),
+                "gross_profit": round(gross_profit, 2),
+                "gross_loss": round(gross_loss, 2),
+                "profit_factor": profit_factor,
+                "trades": [r.to_dict() for r in closed],
+            }

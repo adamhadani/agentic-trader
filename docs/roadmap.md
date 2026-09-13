@@ -14,9 +14,9 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 4** | Macro & Volatility Regime Filter | **Completed** | `RegimeDetector` (`^VIX`, `^TNX`, `DX-Y`), quantitative regime context in LLM prompts |
 | **Phase 5** | Offline Vectorized Backtester & Performance Analytics | **Completed** | Historical strategy backtesting, equity curve simulation, Sharpe/drawdown metrics |
 | **Phase 6** | VectorBT Research & Parameter Grid Optimization | **Completed** | High-throughput tensor parameter search (`copilot optimize`), NumPy fallback |
-| **Phase 7** | Dynamic Strategy Configuration & Parameter Export | **In Progress** | Parameterize strategy screeners via config, export optimal params from CLI |
-| **Phase 8** | Telegram Interactive Commands (`/perf`, `/regime`, `/backtest`) | **Planned** | Mobile oversight, live portfolio performance attribution, real-time regime view |
-| **Phase 9** | Real-Time WebSocket Streaming for Alpaca (`TradingStream`) | **Planned** | Sub-second event-driven fills, bracket execution, and liquidation push alerts |
+| **Phase 7** | Dynamic Strategy Configuration & Parameter Export | **Completed** | Parameterize strategy screeners via config, export optimal params from CLI |
+| **Phase 8** | Telegram Interactive Commands (`/perf`, `/regime`, `/backtest`) | **Completed** | Mobile oversight, live portfolio performance attribution, real-time regime view |
+| **Phase 9** | Real-Time WebSocket Streaming for Alpaca (`TradingStream`) | **In Progress** | Sub-second event-driven fills, bracket execution, and liquidation push alerts |
 | **Phase 10** | Portfolio Risk Budgeting & Correlation Filtering | **Planned** | Sector/asset class allocation caps, cross-asset correlation guardrails |
 | **Phase 11** | Walk-Forward Out-of-Sample Validation in Research | **Planned** | Rolling train/test windows in research to guard against parameter overfitting |
 
@@ -158,8 +158,17 @@ Empower mobile oversight, real-time risk checks, and quick analytics directly fr
    - Query SQLite for cumulative closed trades (`CLOSED_WIN`, `CLOSED_LOSS`), total realized P&L, win rate %, and current open positions with unrealized risk.
 2. **`/regime` Command**:
    - Query current real-time VIX level, 10-Year Treasury yield (`^TNX`), and Dollar Index (`DX-Y.NYB`) with qualitative status (e.g. "Low Volatility Compression", "Normal", "Extreme Volatility").
-3. **Interactive Buttons**:
-   - Inline action buttons to trigger `/scan` or check `/status` without typing.
+3. **`/backtest` Command**:
+   - On-demand backtesting from Telegram (e.g. `/backtest SPY 1y`) returning Total Net Return, CAGR, Sharpe, Drawdown, and Cash-Plus Yield.
+4. **Interactive Buttons**:
+   - Inline action buttons to trigger `/scan`, check `/positions`, view `/perf`, or inspect `/regime` without typing.
+
+### Implementation Summary
+- **Database Analytics (`agentic_trader/storage/db.py`)**: Added `get_closed_positions_stats()` aggregating total trades, wins/losses, win rate %, gross profit/loss, and profit factor.
+- **Bot Handlers (`agentic_trader/notifier/telegram_bot.py`)**: Implemented `/perf`, `/regime`, and `/backtest` command handlers, alongside inline buttons (`cmd_scan`, `cmd_positions`, `cmd_perf`, `cmd_regime`).
+- **Copilot Integration (`agentic_trader/main.py`)**: Added `get_performance_summary_html`, `get_regime_summary_html`, and `run_backtest_summary_html` to `FuturesCopilot` and wired them to `TelegramNotifier`.
+- **Test Suite (`tests/test_telegram_interactive.py`)**: 3 test cases validating closed positions stats math, HTML formatting, command dispatch, and interactive button callbacks.
+
 
 ---
 
