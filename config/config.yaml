@@ -151,3 +151,20 @@ telemetry:
   metrics_enabled: true
   metrics_host: "0.0.0.0"
   metrics_port: 9108
+
+pairs:
+  p_value_threshold: 0.05
+  min_half_life_bars: 1.0
+  max_half_life_bars: 60.0
+  lookback_days: 252
+  z_score_lookback: 30
+  z_entry_threshold: 2.0
+  z_exit_threshold: 0.5
+  default_pairs:
+    - ["SPY", "QQQ"]
+    - ["SPY", "IWM"]
+    - ["QQQ", "IWM"]
+    - ["GLD", "SLV"]
+    - ["XLE", "USO"]
+    - ["V", "MA"]
+    - ["EWA", "EWC"]

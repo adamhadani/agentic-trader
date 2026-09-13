@@ -7,6 +7,7 @@ import click
 from agentic_trader.cli.commands.backtest import backtest
 from agentic_trader.cli.commands.db import db_group
 from agentic_trader.cli.commands.options import gex
+from agentic_trader.cli.commands.pairs import pairs
 from agentic_trader.cli.commands.research import optimize, retune
 from agentic_trader.cli.commands.scan import scan
 from agentic_trader.cli.commands.service import daemon, eval_command, listen
@@ -51,6 +52,7 @@ cli.add_command(optimize)
 cli.add_command(retune)
 cli.add_command(stress)
 cli.add_command(gex)
+cli.add_command(pairs)
 cli.add_command(metrics)
 cli.add_command(daemon)
 cli.add_command(listen)

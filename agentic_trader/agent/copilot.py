@@ -21,6 +21,7 @@ from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.execution import SlicedExecutionEngine
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
+from agentic_trader.pairs import PairEvaluation, PairsScreener, format_pairs_telegram
 from agentic_trader.research import AutoRetuner
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.db import SignalDatabase
@@ -55,6 +56,10 @@ class FuturesCopilot:
             risk_free_rate=config.options.risk_free_rate,
             cache_ttl_seconds=config.options.cache_ttl_seconds,
         )
+        self.pairs_screener = PairsScreener(
+            data_fetcher=self.data_fetcher,
+            config=self.config.pairs,
+        )
         self.notifier = TelegramNotifier(
             bot_token=config.telegram_bot_token,
             chat_id=config.telegram_chat_id,
@@ -70,6 +75,7 @@ class FuturesCopilot:
             regime_provider=self.get_regime_summary_html,
             backtest_runner=self.run_backtest_summary_html,
             gex_provider=self.run_gex_summary_html,
+            pairs_provider=self.run_pairs_summary_html,
         )
         self.metrics = global_metrics
         self.metrics_server = (
@@ -920,6 +926,26 @@ class FuturesCopilot:
             return format_gex_telegram(profile)
         except Exception as e:
             return f"❌ Failed to calculate GEX for {symbol}: {e}"
+
+    async def scan_pairs(
+        self,
+        pairs: list[tuple[str, str]] | None = None,
+        lookback_days: int | None = None,
+    ) -> list[PairEvaluation]:
+        """Scan cross-asset pairs for cointegration and statistical arbitrage opportunities."""
+        return await asyncio.to_thread(
+            self.pairs_screener.scan_pairs,
+            pairs=pairs,
+            lookback_days=lookback_days,
+        )
+
+    async def run_pairs_summary_html(self) -> str:
+        """Run statistical pairs screener and format as Telegram HTML."""
+        try:
+            results = await self.scan_pairs()
+            return format_pairs_telegram(results)
+        except Exception as e:
+            return f"❌ Failed to evaluate pairs: {e}"
 
     async def run_auto_retune(
         self,

@@ -572,9 +572,52 @@ Provide enterprise-grade operational telemetry and observability via native Prom
 
 ---
 
-## Next Horizon: Advanced Quantitative Infrastructure (Phases 22+)
+---
+
+## Phase 22: Cointegration & Statistical Pairs Trading Screener
+
+### Objective
+Provide institutional-grade statistical arbitrage capabilities by scanning cross-asset pairs for cointegration (Engle-Granger two-step method), estimating mean-reversion speed via Ornstein-Uhlenbeck continuous-time / AR(1) half-life modeling, and generating dynamic rolling $Z$-score entry/exit spread signals.
+
+### Key Deliverables
+1. **Engle-Granger Two-Step Cointegration Test (`agentic_trader/pairs/cointegration.py`)**:
+   - Computes OLS hedge ratio $\beta$ and intercept $\alpha$: $Y_t = \beta X_t + \alpha + \epsilon_t$.
+   - Performs Augmented Dickey-Fuller (ADF) unit root test on residuals $\epsilon_t$, checking for stationarity and extracting exact $p$-values and critical values (1%, 5%, 10%).
+2. **Ornstein-Uhlenbeck Half-Life Modeling (`agentic_trader/pairs/cointegration.py`)**:
+   - Fits mean-reverting process $\Delta \epsilon_t = \theta \epsilon_{t-1} + c + \eta_t$.
+   - For mean-reverting spreads ($\theta < 0$), calculates exact half-life $T_{\text{half}} = -\frac{\ln(2)}{\theta}$ in trading bars.
+   - Filters out non-stationary or unfeasibly slow-reverting pairs ($T_{\text{half}} > 60$ bars).
+3. **Dynamic Rolling Spread & $Z$-Score Signal Engine**:
+   - Tracks instantaneous spread $S_t = Y_t - (\beta X_t + \alpha)$ with rolling mean and rolling standard deviation over a 30-day window.
+   - Computes rolling $Z$-score: $Z_t = \frac{S_t - \mu_{S, t}}{\sigma_{S, t}}$.
+   - Triggers signals:
+     - $Z \le -2.0$: `BUY_SPREAD` (Long Asset Y, Short Asset X).
+     - $Z \ge +2.0$: `SELL_SPREAD` (Short Asset Y, Long Asset X).
+     - $|Z| \le 0.5$: `EXIT_SPREAD` (Mean-reversion achieved, close spread).
+     - Otherwise: `NEUTRAL`.
+4. **Institutional Pairs Screener & Universe Scanning (`agentic_trader/pairs/screener.py`)**:
+   - Evaluates custom candidate pairs or default institutional pairs: `SPY/QQQ`, `SPY/IWM`, `QQQ/IWM`, `GLD/SLV`, `XLE/USO`, `V/MA`, `EWA/EWC`.
+   - Automatically maps micro-futures symbols (`/MES`, `/MNQ`, `/MGC`, `/MCL`) to liquid ETF proxies.
+   - Supports arbitrary pairwise combination generation (`screener.generate_pairwise_combinations(["SPY", "QQQ", "IWM", "GLD"])`).
+5. **Institutional Reporting & Telegram Interactive Bot Integration**:
+   - `format_pairs_report()`: Institutional ASCII table displaying pair, hedge ratio $\beta$, ADF $p$-value, half-life, current spread, $Z$-score, signal, and leg actions.
+   - `format_pairs_telegram()`: HTML card for mobile Telegram delivery.
+   - `copilot pairs` Click CLI command supporting `--pair`, `--symbols`, `--lookback`, `--p-value`, `--z-entry`, `--z-exit`, and `--json`.
+   - `/pairs` Telegram interactive command.
+
+### Implementation Summary
+- **Pairs Package (`agentic_trader/pairs/`)**: Created `models.py`, `cointegration.py`, `screener.py`, `reporting.py`, and `__init__.py`.
+- **Configuration (`agentic_trader/config.py`, `config/config.yaml`)**: Added `PairsConfig` model (`p_value_threshold`, `min_half_life_bars`, `max_half_life_bars`, `lookback_days`, `z_score_lookback`, `z_entry_threshold`, `z_exit_threshold`, `default_pairs`).
+- **CLI Subcommand (`agentic_trader/cli/commands/pairs.py`, `agentic_trader/cli/main.py`)**: Registered `copilot pairs` Click command.
+- **Telegram Bot (`agentic_trader/notifier/telegram_bot.py`)**: Registered `/pairs` command handler and help documentation.
+- **Copilot Integration (`agentic_trader/agent/copilot.py`)**: Attached `self.pairs_screener` to `FuturesCopilot`.
+- **Test Suite (`tests/test_pairs.py`)**: 9 comprehensive unit tests covering synthetic cointegrated series detection, independent random walk rejection, Ornstein-Uhlenbeck half-life math, rolling Z-score calculation, screener scanning, ASCII/Telegram formatters, Click CLI execution, and Telegram bot dispatch. Total unit test suite: 157 passed tests.
+
+---
+
+## Next Horizon: Advanced Quantitative Infrastructure (Phases 23+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 22** | Cointegration & Statistical Pairs Trading Screener | **Planned** | Engle-Granger / Johansen cointegration tests for mean-reverting equity and futures spreads |
 | **Phase 23** | Real-Time FIX Protocol Broker Gateway | **Planned** | Direct institutional DMA connectivity via QuickFIX / Python FIX engine |
+| **Phase 24** | Multi-Horizon Cross-Asset Lead-Lag Engine | **Planned** | Information share and Granger causality for lead-lag futures arbitrage |

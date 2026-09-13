@@ -204,6 +204,7 @@ class TelegramNotifier:
         regime_provider: Callable[[], Awaitable[str]] | None = None,
         backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
         gex_provider: Callable[[str], Awaitable[str]] | None = None,
+        pairs_provider: Callable[[], Awaitable[str]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
@@ -219,6 +220,7 @@ class TelegramNotifier:
         self.regime_provider = regime_provider
         self.backtest_runner = backtest_runner
         self.gex_provider = gex_provider
+        self.pairs_provider = pairs_provider
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
@@ -249,6 +251,7 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("regime", self.handle_regime_command))
             self.app.add_handler(CommandHandler("backtest", self.handle_backtest_command))
             self.app.add_handler(CommandHandler("gex", self.handle_gex_command))
+            self.app.add_handler(CommandHandler("pairs", self.handle_pairs_command))
 
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -260,6 +263,7 @@ class TelegramNotifier:
             "• /positions - View active tracked trades and unrealized P&amp;L\n"
             "• /perf - View cumulative closed trade performance and win rate\n"
             "• /regime - View real-time VIX, 10Y yield, and Dollar Index regime\n"
+            "• /pairs - View statistical arbitrage pairs, cointegration &amp; Z-scores\n"
             "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
             "• /close &lt;id&gt; [price] - Manually close a tracked trade and record fill\n"
@@ -351,6 +355,22 @@ class TelegramNotifier:
                 await update.message.reply_text(f"❌ GEX error: {e}")
         else:
             await update.message.reply_text("GEX provider not attached.")
+
+    async def handle_pairs_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        await update.message.reply_text(
+            "📐 Screening cross-asset pairs for cointegration & statistical arbitrage...",
+            parse_mode="HTML",
+        )
+        if self.pairs_provider:
+            try:
+                resp = await self.pairs_provider()
+                await update.message.reply_text(resp, parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Pairs screening error: {e}")
+        else:
+            await update.message.reply_text("Pairs provider not attached.")
 
     async def handle_close_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
