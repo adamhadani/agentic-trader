@@ -38,7 +38,12 @@ class AlpacaBroker(BaseBroker):
         self.is_paper = getattr(config, "alpaca_paper", True)
         self.api_key = getattr(config, "alpaca_api_key", None)
         self.api_secret = getattr(config, "alpaca_api_secret", None)
-        self.base_url = getattr(config, "alpaca_base_url", None)
+        base_url_raw = getattr(config, "alpaca_base_url", None)
+        if base_url_raw:
+            self.base_url: str | None = base_url_raw.strip().rstrip("/").removesuffix("/v2").rstrip("/")
+        else:
+            self.base_url = None
+
         if self.base_url and "paper" in self.base_url.lower():
             self.is_paper = True
         self.client: TradingClient | None = client
