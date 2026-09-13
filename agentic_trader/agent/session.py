@@ -5,9 +5,11 @@ from agentic_trader.market.session import (
     CMEFuturesSessionProvider,
     CompositeMarketSessionProvider,
     CryptoSessionProvider,
+    MarketHolidayCalendar,
     MarketSessionInfo,
     MarketSessionProtocol,
     MarketSessionType,
+    ensure_et,
 )
 
 
@@ -16,7 +18,9 @@ __all__ = [
     "CMEFuturesSessionProvider",
     "CompositeMarketSessionProvider",
     "CryptoSessionProvider",
+    "MarketHolidayCalendar",
     "MarketSessionInfo",
     "MarketSessionProtocol",
     "MarketSessionType",
+    "ensure_et",
 ]

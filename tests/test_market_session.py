@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -10,7 +10,9 @@ from agentic_trader.market.session import (
     CMEFuturesSessionProvider,
     CompositeMarketSessionProvider,
     CryptoSessionProvider,
+    MarketHolidayCalendar,
     MarketSessionType,
+    ensure_et,
 )
 
 
@@ -147,3 +149,118 @@ async def test_composite_market_session_routing():
     eq_info = await composite.get_session_info("SPY", wed_rth)
     assert eq_info.asset_class == AssetClass.EQUITY
     assert eq_info.is_rth is True
+
+
+def test_market_holiday_calendar_calculations():
+    cal = MarketHolidayCalendar.get_year_calendar(2026)
+    statutory = cal["statutory_holidays"]
+
+    # 2026 statutory holidays
+    assert date(2026, 1, 1) in statutory  # New Year's Day
+    assert date(2026, 1, 19) in statutory  # MLK Day
+    assert date(2026, 2, 16) in statutory  # Presidents' Day
+    assert date(2026, 4, 3) in statutory  # Good Friday
+    assert date(2026, 5, 25) in statutory  # Memorial Day
+    assert date(2026, 6, 19) in statutory  # Juneteenth
+    assert date(2026, 7, 3) in statutory  # July 4th observed (Fri)
+    assert date(2026, 9, 7) in statutory  # Labor Day
+    assert date(2026, 11, 26) in statutory  # Thanksgiving Day
+    assert date(2026, 12, 25) in statutory  # Christmas Day
+
+    # Early close
+    assert date(2026, 11, 27) in cal["early_closes"]  # Black Friday
+    assert date(2026, 12, 24) in cal["early_closes"]  # Christmas Eve (Thursday)
+
+
+@pytest.mark.asyncio
+async def test_cme_holiday_session_behavior():
+    provider = CMEFuturesSessionProvider()
+
+    # 1. Thanksgiving Day (2026-11-26)
+    # Morning: Open in ETH (halts at 13:00 ET)
+    tg_morning = datetime(2026, 11, 26, 10, 0, tzinfo=ET)
+    info_tg_morn = await provider.get_session_info("/MES", tg_morning)
+    assert info_tg_morn.is_open is True
+    assert info_tg_morn.is_rth is False
+    assert info_tg_morn.session_type == MarketSessionType.ETH
+
+    # Afternoon: CME 13:00 - 18:00 ET Halt
+    tg_halt = datetime(2026, 11, 26, 14, 30, tzinfo=ET)
+    info_tg_halt = await provider.get_session_info("/MES", tg_halt)
+    assert info_tg_halt.is_open is False
+    assert info_tg_halt.session_type == MarketSessionType.HOLIDAY_HALT
+    assert info_tg_halt.next_open == datetime(2026, 11, 26, 18, 0, tzinfo=ET)
+
+    # Evening: Reopened for trade date Nov 27
+    tg_eve = datetime(2026, 11, 26, 19, 0, tzinfo=ET)
+    info_tg_eve = await provider.get_session_info("/MES", tg_eve)
+    assert info_tg_eve.is_open is True
+    assert info_tg_eve.session_type == MarketSessionType.ETH
+
+    # 2. Christmas Day (2026-12-25) - Full Day Halt until 18:00 ET
+    xmas_midday = datetime(2026, 12, 25, 12, 0, tzinfo=ET)
+    info_xmas = await provider.get_session_info("/MES", xmas_midday)
+    assert info_xmas.is_open is False
+    assert info_xmas.session_type == MarketSessionType.HOLIDAY_HALT
+
+    # 3. Good Friday (2026-04-03) - Halts at 09:15 ET
+    gf_late = datetime(2026, 4, 3, 10, 0, tzinfo=ET)
+    info_gf = await provider.get_session_info("/MES", gf_late)
+    assert info_gf.is_open is False
+    assert info_gf.session_type == MarketSessionType.HOLIDAY_HALT
+
+    # 4. Black Friday (2026-11-27) - Early Close at 13:15 ET
+    bf_rth = datetime(2026, 11, 27, 10, 30, tzinfo=ET)
+    info_bf_rth = await provider.get_session_info("/MES", bf_rth)
+    assert info_bf_rth.is_open is True
+    assert info_bf_rth.is_rth is True
+    assert info_bf_rth.session_type == MarketSessionType.RTH
+
+    bf_closed = datetime(2026, 11, 27, 14, 0, tzinfo=ET)
+    info_bf_closed = await provider.get_session_info("/MES", bf_closed)
+    assert info_bf_closed.is_open is False
+    assert info_bf_closed.session_type == MarketSessionType.HOLIDAY_HALT
+
+
+@pytest.mark.asyncio
+async def test_equity_holiday_session_behavior():
+    provider = AlpacaMarketSessionProvider(trading_client=None)
+
+    # Thanksgiving Day (2026-11-26) at 11:00 ET -> Closed all day
+    tg = datetime(2026, 11, 26, 11, 0, tzinfo=ET)
+    info_tg = await provider.get_session_info("SPY", timestamp=tg)
+    assert info_tg.is_open is False
+    assert info_tg.is_rth is False
+    assert info_tg.session_type == MarketSessionType.HOLIDAY_HALT
+
+    # Black Friday (2026-11-27) at 11:00 ET -> RTH
+    bf_rth = datetime(2026, 11, 27, 11, 0, tzinfo=ET)
+    info_bf_rth = await provider.get_session_info("SPY", timestamp=bf_rth)
+    assert info_bf_rth.is_open is True
+    assert info_bf_rth.is_rth is True
+    assert info_bf_rth.session_type == MarketSessionType.RTH
+
+    # Black Friday at 13:30 ET -> Post-market / ETH
+    bf_post = datetime(2026, 11, 27, 13, 30, tzinfo=ET)
+    info_bf_post = await provider.get_session_info("SPY", timestamp=bf_post)
+    assert info_bf_post.is_open is False
+    assert info_bf_post.session_type == MarketSessionType.ETH
+
+
+def test_ensure_et_timezone_normalization():
+    # Naive timestamp assumes UTC
+    naive_dt = datetime(2026, 9, 16, 14, 0)  # noqa: DTZ001  # 14:00 UTC = 10:00 ET
+    et_dt = ensure_et(naive_dt)
+    assert et_dt.tzinfo == ET
+    assert et_dt.hour == 10
+
+    # Aware UTC timestamp
+    utc_dt = datetime(2026, 9, 16, 14, 0, tzinfo=UTC)
+    et_from_utc = ensure_et(utc_dt)
+    assert et_from_utc.hour == 10
+
+    # Other timezone (e.g. UTC+3)
+    tz_plus_3 = ZoneInfo("Asia/Jerusalem")
+    local_dt = datetime(2026, 9, 16, 17, 0, tzinfo=tz_plus_3)  # 17:00 IDT (UTC+3) = 10:00 EDT (UTC-4)
+    et_from_local = ensure_et(local_dt)
+    assert et_from_local.hour == 10

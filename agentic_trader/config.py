@@ -264,11 +264,12 @@ class SessionConfig(BaseModel):
 
 class TrailingStopConfig(BaseModel):
     enabled: bool = True
-    breakeven_trigger_r: float = 1.0
+    mode: str = "chandelier_atr"  # "chandelier_atr", "breakeven_and_trail", "none"
+    breakeven_trigger_r: float | None = None  # Optional; None prevents expectancy degradation from entry-anchoring
     breakeven_buffer_dollars: float = 5.0
     trail_trigger_r: float = 1.5
     trail_atr_multiple: float = 1.5
-    trail_step_ticks: int = 4
+    trail_step_ticks: int = 2
 
 
 class AppConfig(BaseModel):

@@ -2,8 +2,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from agentic_trader.agent.copilot import FuturesCopilot as CopilotFC, TradingCopilot as CopilotTC
 from agentic_trader.config import load_config
-from agentic_trader.main import FuturesCopilot
+from agentic_trader.main import FuturesCopilot, FuturesCopilot as MainFC, TradingCopilot as MainTC
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -135,3 +136,67 @@ async def test_manage_trailing_stops_short_breakeven(temp_db):
         assert sig["stop_loss"] == 19997.5
         assert sig["raw_response"] == "BREAKEVEN"
         copilot.notifier.send_trailing_stop_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_manage_trailing_stops_chandelier_atr_no_breakeven(temp_db):
+    """Verify that under chandelier_atr mode with breakeven_trigger_r=None,
+
+    stops do NOT move to breakeven at 1.0-1.4R, but ratchet via ATR trailing at >= 1.5R.
+    """
+    config = load_config()
+    config.db_path = temp_db.db_path
+    config.trailing_stop.enabled = True
+    config.trailing_stop.mode = "chandelier_atr"
+    config.trailing_stop.breakeven_trigger_r = None
+    config.trailing_stop.trail_trigger_r = 1.5
+    config.trailing_stop.trail_atr_multiple = 1.5
+    config.trailing_stop.trail_step_ticks = 2
+
+    copilot = FuturesCopilot(config)
+    copilot.notifier.send_trailing_stop_alert = AsyncMock()
+
+    # Entry: 5800.0, Stop: 5760.0 (Risk = 40 pts = $200)
+    sig_id = await temp_db.record_signal(
+        contract="/MES",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=5800.0,
+        stop_loss=5760.0,
+        take_profit=5880.0,
+        risk_dollars=200.0,
+        reward_dollars=400.0,
+        notional_value=29000.0,
+        status="EXECUTED",
+    )
+
+    active_positions = await temp_db.get_active_positions()
+
+    # 1. Price moves to 5848.0 (+48 pts / 40 pts risk = +1.2R)
+    # Because breakeven_trigger_r is None, stop should NOT move to entry!
+    with patch.object(copilot.data_fetcher, "fetch_latest_price", return_value=5848.0):
+        updates = await copilot.manage_trailing_stops(active_positions)
+        assert updates == 0
+
+        sig = await temp_db.get_signal_by_id(sig_id)
+        assert sig["stop_loss"] == 5760.0
+        copilot.notifier.send_trailing_stop_alert.assert_not_called()
+
+    # 2. Price advances to 5880.0 (+80 pts = +2.0R >= 1.5R Trailing Trigger)
+    # Trail distance = 1.5 * 40 pts = 60 pts. Proposed trail stop = 5880 - 60 = 5820.0
+    with patch.object(copilot.data_fetcher, "fetch_latest_price", return_value=5880.0):
+        updates = await copilot.manage_trailing_stops(active_positions)
+        assert updates == 1
+
+        sig = await temp_db.get_signal_by_id(sig_id)
+        assert sig["stop_loss"] == 5820.0
+        assert sig["raw_response"] == "TRAILING_STOP"
+        copilot.notifier.send_trailing_stop_alert.assert_called_once()
+        assert copilot.notifier.send_trailing_stop_alert.call_args[1]["reason"] == "TRAILING_STOP"
+
+
+def test_trading_copilot_alias_identity():
+    """Verify FuturesCopilot is an identical backward-compatible alias of TradingCopilot."""
+    assert CopilotFC is CopilotTC
+    assert MainFC is MainTC
+    assert MainFC is CopilotTC

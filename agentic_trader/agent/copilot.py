@@ -23,6 +23,16 @@ from agentic_trader.market.session import CompositeMarketSessionProvider
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
 from agentic_trader.pairs import PairEvaluation, PairsScreener, format_pairs_telegram
+from agentic_trader.presentation.formatters import (
+    ExecutionResultView,
+    ManualCloseResultView,
+    PerformanceSummaryReport,
+    PortfolioStatusReport,
+    PositionsReport,
+    PositionView,
+    TelegramHtmlFormatter,
+    TerminalFormatter,
+)
 from agentic_trader.research import AutoRetuner
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.db import SignalDatabase
@@ -32,7 +42,7 @@ from agentic_trader.telemetry import MetricsServer, global_metrics
 logger = logging.getLogger("copilot")
 
 
-class FuturesCopilot:
+class TradingCopilot:
     """Core autonomous trading copilot orchestrating universe scanning, risk evaluation,
 
     broker order execution, real-time trade monitoring, and metrics exposition.
@@ -102,6 +112,7 @@ class FuturesCopilot:
         dry_run: bool = False,
         asset_class: str = "all",
         symbols: list[str] | None = None,
+        bypass_session_filter: bool = False,
     ):
         logger.info("=== Starting Quantitative Scan ===")
         regime = await self.regime_detector.get_regime()
@@ -118,6 +129,17 @@ class FuturesCopilot:
             f"Portfolio Status: {active_count}/{max_positions} active positions | "
             f"Open Notional: ${current_exposure:,.2f} / ${self.config.portfolio.max_notional_exposure:,.2f} max"
         )
+        session_allowed, session_reason = await self.session_provider.is_session_active(
+            instrument_type=asset_class or "all"
+        )
+        if not session_allowed and not bypass_session_filter:
+            logger.info(
+                "Market session filter inactive (%s): %s. Skipping universe scan.",
+                asset_class,
+                session_reason,
+                extra={"event": "session_blocked", "asset_class": asset_class, "reason": session_reason},
+            )
+            return
 
         in_lockout, lock_event = await self.calendar.is_in_lockout_window(
             pre_minutes=self.config.risk.lockout_pre_event_minutes,
@@ -126,7 +148,12 @@ class FuturesCopilot:
         if in_lockout and lock_event:
             logger.warning(
                 f"Macro Lockout Active: '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}. "
-                "No entry alerts will be emitted during this window."
+                "No entry alerts will be emitted during this window.",
+                extra={
+                    "event": "macro_lockout_active",
+                    "lock_event": lock_event.title,
+                    "event_time": str(lock_event.timestamp),
+                },
             )
             return
 
@@ -161,6 +188,7 @@ class FuturesCopilot:
                         candidate.strategy,
                         candidate.current_price,
                         extra={
+                            "event": "candidate_found",
                             "contract": candidate.contract,
                             "direction": candidate.direction,
                             "strategy": candidate.strategy,
@@ -180,7 +208,11 @@ class FuturesCopilot:
                             candidate.contract,
                             candidate.strategy,
                             self.config.risk.deduplication_hours,
-                            extra={"contract": candidate.contract, "strategy": candidate.strategy},
+                            extra={
+                                "event": "duplicate_signal_skipped",
+                                "contract": candidate.contract,
+                                "strategy": candidate.strategy,
+                            },
                         )
                         continue
 
@@ -196,7 +228,11 @@ class FuturesCopilot:
                         logger.info(
                             "Candidate rejected by risk engine: %s",
                             eval_res.rejection_reason,
-                            extra={"contract": candidate.contract, "rejection_reason": eval_res.rejection_reason},
+                            extra={
+                                "event": "candidate_rejected",
+                                "contract": candidate.contract,
+                                "rejection_reason": eval_res.rejection_reason,
+                            },
                         )
                         continue
 
@@ -227,6 +263,27 @@ class FuturesCopilot:
                         raw_response=eval_res.model_dump_json(),
                         asset_class=str(eval_res.asset_class),
                         quantity=eval_res.quantity,
+                    )
+
+                    logger.info(
+                        "Signal #%d approved and recorded: %s %s via %s (risk: $%.2f, notional: $%.2f)",
+                        sig_id,
+                        eval_res.contract,
+                        eval_res.direction,
+                        candidate.strategy,
+                        eval_res.risk_dollars,
+                        eval_res.notional_value,
+                        extra={
+                            "event": "signal_approved",
+                            "signal_id": sig_id,
+                            "contract": eval_res.contract,
+                            "direction": eval_res.direction,
+                            "strategy": candidate.strategy,
+                            "risk_dollars": eval_res.risk_dollars,
+                            "notional_value": eval_res.notional_value,
+                            "quantity": eval_res.quantity,
+                            "entry_price": eval_res.entry_price,
+                        },
                     )
 
                     # Dispatch alert
@@ -511,31 +568,42 @@ class FuturesCopilot:
                     favorable_dist = current_price - entry
                     r_multiple = favorable_dist / initial_risk
 
-                    # 1. Breakeven Trigger
-                    target_be_stop = entry + buffer_pts
-                    if r_multiple >= ts_config.breakeven_trigger_r and current_stop < target_be_stop:
-                        logger.info(
-                            "Position #%d (%s LONG) hit Breakeven (+%.2fR): Moving stop from %.2f to %.2f",
-                            sig_id,
-                            contract,
-                            r_multiple,
-                            current_stop,
-                            target_be_stop,
-                        )
-                        await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
-                        await self.notifier.send_trailing_stop_alert(
-                            signal_id=sig_id,
-                            contract=contract,
-                            direction=direction,
-                            old_stop=current_stop,
-                            new_stop=target_be_stop,
-                            current_price=current_price,
-                            reason="BREAKEVEN",
-                        )
-                        current_stop = target_be_stop
-                        updates_count += 1
+                    # 1. Breakeven Trigger (opt-in if breakeven_trigger_r is configured)
+                    if ts_config.breakeven_trigger_r is not None and r_multiple >= ts_config.breakeven_trigger_r:
+                        target_be_stop = entry + buffer_pts
+                        if current_stop < target_be_stop:
+                            logger.info(
+                                "Position #%d (%s LONG) hit Breakeven (+%.2fR): Moving stop from %.2f to %.2f",
+                                sig_id,
+                                contract,
+                                r_multiple,
+                                current_stop,
+                                target_be_stop,
+                                extra={
+                                    "event": "breakeven_ratchet",
+                                    "contract": contract,
+                                    "direction": direction,
+                                    "signal_id": sig_id,
+                                    "r_multiple": round(r_multiple, 2),
+                                    "old_stop": current_stop,
+                                    "new_stop": target_be_stop,
+                                    "current_price": current_price,
+                                },
+                            )
+                            await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
+                            await self.notifier.send_trailing_stop_alert(
+                                signal_id=sig_id,
+                                contract=contract,
+                                direction=direction,
+                                old_stop=current_stop,
+                                new_stop=target_be_stop,
+                                current_price=current_price,
+                                reason="BREAKEVEN",
+                            )
+                            current_stop = target_be_stop
+                            updates_count += 1
 
-                    # 2. Dynamic Trailing Stop Trigger
+                    # 2. Dynamic Trailing Stop Trigger (Chandelier ATR / ATR distance)
                     if r_multiple >= ts_config.trail_trigger_r:
                         trail_dist = max(initial_risk, initial_risk * ts_config.trail_atr_multiple)
                         proposed_trail_stop = current_price - trail_dist
@@ -547,6 +615,16 @@ class FuturesCopilot:
                                 r_multiple,
                                 current_stop,
                                 proposed_trail_stop,
+                                extra={
+                                    "event": "trailing_stop_ratchet",
+                                    "contract": contract,
+                                    "direction": direction,
+                                    "signal_id": sig_id,
+                                    "r_multiple": round(r_multiple, 2),
+                                    "old_stop": current_stop,
+                                    "new_stop": proposed_trail_stop,
+                                    "current_price": current_price,
+                                },
                             )
                             await self.db.update_position_stop(
                                 sig_id, proposed_trail_stop, raw_response="TRAILING_STOP"
@@ -566,31 +644,42 @@ class FuturesCopilot:
                     favorable_dist = entry - current_price
                     r_multiple = favorable_dist / initial_risk
 
-                    # 1. Breakeven Trigger
-                    target_be_stop = entry - buffer_pts
-                    if r_multiple >= ts_config.breakeven_trigger_r and current_stop > target_be_stop:
-                        logger.info(
-                            "Position #%d (%s SHORT) hit Breakeven (+%.2fR): Moving stop from %.2f to %.2f",
-                            sig_id,
-                            contract,
-                            r_multiple,
-                            current_stop,
-                            target_be_stop,
-                        )
-                        await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
-                        await self.notifier.send_trailing_stop_alert(
-                            signal_id=sig_id,
-                            contract=contract,
-                            direction=direction,
-                            old_stop=current_stop,
-                            new_stop=target_be_stop,
-                            current_price=current_price,
-                            reason="BREAKEVEN",
-                        )
-                        current_stop = target_be_stop
-                        updates_count += 1
+                    # 1. Breakeven Trigger (opt-in if breakeven_trigger_r is configured)
+                    if ts_config.breakeven_trigger_r is not None and r_multiple >= ts_config.breakeven_trigger_r:
+                        target_be_stop = entry - buffer_pts
+                        if current_stop > target_be_stop:
+                            logger.info(
+                                "Position #%d (%s SHORT) hit Breakeven (+%.2fR): Moving stop from %.2f to %.2f",
+                                sig_id,
+                                contract,
+                                r_multiple,
+                                current_stop,
+                                target_be_stop,
+                                extra={
+                                    "event": "breakeven_ratchet",
+                                    "contract": contract,
+                                    "direction": direction,
+                                    "signal_id": sig_id,
+                                    "r_multiple": round(r_multiple, 2),
+                                    "old_stop": current_stop,
+                                    "new_stop": target_be_stop,
+                                    "current_price": current_price,
+                                },
+                            )
+                            await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
+                            await self.notifier.send_trailing_stop_alert(
+                                signal_id=sig_id,
+                                contract=contract,
+                                direction=direction,
+                                old_stop=current_stop,
+                                new_stop=target_be_stop,
+                                current_price=current_price,
+                                reason="BREAKEVEN",
+                            )
+                            current_stop = target_be_stop
+                            updates_count += 1
 
-                    # 2. Dynamic Trailing Stop Trigger
+                    # 2. Dynamic Trailing Stop Trigger (Chandelier ATR / ATR distance)
                     if r_multiple >= ts_config.trail_trigger_r:
                         trail_dist = max(initial_risk, initial_risk * ts_config.trail_atr_multiple)
                         proposed_trail_stop = current_price + trail_dist
@@ -602,6 +691,16 @@ class FuturesCopilot:
                                 r_multiple,
                                 current_stop,
                                 proposed_trail_stop,
+                                extra={
+                                    "event": "trailing_stop_ratchet",
+                                    "contract": contract,
+                                    "direction": direction,
+                                    "signal_id": sig_id,
+                                    "r_multiple": round(r_multiple, 2),
+                                    "old_stop": current_stop,
+                                    "new_stop": proposed_trail_stop,
+                                    "current_price": current_price,
+                                },
                             )
                             await self.db.update_position_stop(
                                 sig_id, proposed_trail_stop, raw_response="TRAILING_STOP"
@@ -617,65 +716,20 @@ class FuturesCopilot:
                             )
                             updates_count += 1
             except Exception as e:
-                logger.warning("Error evaluating trailing stop for position #%s: %s", pos.get("id"), e)
+                logger.warning(
+                    "Error evaluating trailing stop for position #%s: %s",
+                    pos.get("id"),
+                    e,
+                    extra={"signal_id": pos.get("id"), "error": str(e)},
+                )
 
         return updates_count
 
-    async def show_positions(self):
-        """Display active positions in terminal."""
+    async def get_positions_report(self) -> PositionsReport:
+        """Construct a decoupled PositionsReport DTO containing all active tracked positions."""
         positions = await self.db.get_active_positions()
-        print("=" * 65)
-        print("CASH-PLUS TRADING COPILOT: ACTIVE POSITIONS")
-        print("=" * 65)
-        if not positions:
-            print("  (No active positions currently tracked)")
-        else:
-            total_unrealized = 0.0
-            for pos in positions:
-                contract = pos["contract"]
-                direction = pos["direction"].upper()
-                entry = float(pos["entry_price"])
-                sl = float(pos["stop_loss"])
-                tp = float(pos["take_profit"])
-                qty = float(pos.get("quantity") or 1.0)
-                contract_info = self.config.contracts.get(contract)
-                ticker = (
-                    contract_info.ticker
-                    if contract_info
-                    else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
-                )
-                multiplier = contract_info.multiplier if contract_info else (5.0 if contract.startswith("/") else 1.0)
-
-                current = self.data_fetcher.fetch_latest_price(ticker) or entry
-                pnl = (
-                    (current - entry) * multiplier * qty
-                    if direction == Direction.LONG
-                    else (entry - current) * multiplier * qty
-                )
-                total_unrealized += pnl
-                pnl_str = f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
-                qty_label = f"{qty:g}x" if contract.startswith("/") else f"{qty:g} shs"
-                print(
-                    f"  #{pos['id']} {qty_label} {contract} {direction} | Entry: {entry:,.2f} | Current: {current:,.2f} | "
-                    f"Stop: {sl:,.2f} | Target: {tp:,.2f} | PnL: {pnl_str}"
-                )
-            print("-" * 65)
-            tot_str = f"+${total_unrealized:,.2f}" if total_unrealized >= 0 else f"-${abs(total_unrealized):,.2f}"
-            print(f"Total Unrealized PnL: {tot_str}")
-        print("=" * 65)
-
-    async def get_positions_summary_html(self) -> str:
-        """Format HTML message of tracked positions for Telegram /positions."""
-        positions = await self.db.get_active_positions()
-        if not positions:
-            return (
-                "📋 <b>ACTIVE POSITIONS (0)</b>\n\n"
-                "<i>No active positions currently tracked.</i>\n"
-                "When trade signals are acknowledged in Telegram, they appear here."
-            )
-
+        pos_views: list[PositionView] = []
         total_unrealized_pnl = 0.0
-        lines = [f"📋 <b>ACTIVE POSITIONS ({len(positions)})</b>\n"]
 
         for pos in positions:
             contract = pos["contract"]
@@ -700,30 +754,69 @@ class FuturesCopilot:
             )
             total_unrealized_pnl += pnl
 
-            pnl_sign = "+" if pnl >= 0 else "-"
-            pnl_str = f"{pnl_sign}${abs(pnl):,.2f}"
-            qty_label = f"{qty:g}x" if contract.startswith("/") else f"{qty:g} shs"
-
-            lines.append(
-                f"• <b>#{pos['id']} {qty_label} {contract} ({direction})</b>\n"
-                f"  Entry: <code>{entry:,.2f}</code> | Current: <code>{current_price:,.2f}</code>\n"
-                f"  Stop: <code>{sl:,.2f}</code> | Target: <code>{tp:,.2f}</code>\n"
-                f"  Unrealized P&amp;L: <b>{pnl_str}</b>\n"
+            pos_views.append(
+                PositionView(
+                    id=int(pos["id"]),
+                    contract=contract,
+                    direction=direction,
+                    quantity=qty,
+                    entry_price=entry,
+                    current_price=current_price,
+                    stop_loss=sl,
+                    take_profit=tp,
+                    unrealized_pnl=pnl,
+                    multiplier=multiplier,
+                    strategy=pos.get("strategy", ""),
+                    executed_at=pos.get("executed_at"),
+                )
             )
 
-        tot_sign = "+" if total_unrealized_pnl >= 0 else "-"
-        lines.append(f"\n<b>Total Unrealized P&amp;L:</b> {tot_sign}${abs(total_unrealized_pnl):,.2f}")
-        lines.append("\n💡 <i>To close a trade manually:</i> <code>/close &lt;id&gt; [exit_price]</code>")
-        return "\n".join(lines)
+        perf_stats = await self.db.get_closed_positions_stats()
+        realized_pnl = float(perf_stats.get("total_pnl", 0.0))
+
+        return PositionsReport(
+            positions=pos_views,
+            total_unrealized_pnl=round(total_unrealized_pnl, 2),
+            total_realized_pnl=round(realized_pnl, 2),
+            active_count=len(pos_views),
+        )
+
+    async def show_positions(self) -> None:
+        """Display active positions in terminal."""
+        report = await self.get_positions_report()
+        print(TerminalFormatter.format_positions_table(report))
+
+    async def get_positions_summary_html(self) -> str:
+        """Format HTML message of tracked positions for Telegram /positions."""
+        report = await self.get_positions_report()
+        return TelegramHtmlFormatter.format_positions_html(report)
 
     async def close_position_manual(self, signal_id: int, exit_price: float | None = None) -> str:
         """Manually close a position (via Telegram /close or CLI)."""
         pos = await self.db.get_signal_by_id(signal_id)
         if not pos:
-            return f"❌ Signal #{signal_id} not found."
+            return TelegramHtmlFormatter.format_manual_close_html(
+                ManualCloseResultView(
+                    signal_id=signal_id,
+                    contract="",
+                    direction="",
+                    exit_price=0.0,
+                    realized_pnl=0.0,
+                    success=False,
+                    error_message=f"Signal #{signal_id} not found.",
+                )
+            )
         if pos["status"] != SignalStatus.EXECUTED:
-            return (
-                f"❌ Signal #{signal_id} is in status <b>{pos['status']}</b> (only EXECUTED positions can be closed)."
+            return TelegramHtmlFormatter.format_manual_close_html(
+                ManualCloseResultView(
+                    signal_id=signal_id,
+                    contract=pos.get("contract", ""),
+                    direction=pos.get("direction", ""),
+                    exit_price=0.0,
+                    realized_pnl=0.0,
+                    success=False,
+                    error_message=f"Signal #{signal_id} is in status {pos['status']} (only EXECUTED positions can be closed).",
+                )
             )
 
         contract = pos["contract"]
@@ -758,6 +851,7 @@ class FuturesCopilot:
             final_exit,
             realized_pnl,
             extra={
+                "event": "manual_close_request",
                 "signal_id": signal_id,
                 "contract": contract,
                 "direction": direction,
@@ -804,13 +898,16 @@ class FuturesCopilot:
             strategy=pos["strategy"],
         )
 
-        pnl_sign = "+" if realized_pnl >= 0 else "-"
-        return (
-            f"✅ <b>Position #{signal_id} Closed ({contract} {direction})</b>\n"
-            f"• Exit Price: <code>{final_exit:,.2f}</code>\n"
-            f"• Realized P&amp;L: <b>{pnl_sign}${abs(realized_pnl):,.2f}</b>\n"
-            f"• Notional capacity released."
+        view = ManualCloseResultView(
+            signal_id=signal_id,
+            contract=contract,
+            direction=direction,
+            exit_price=final_exit,
+            realized_pnl=realized_pnl,
+            quantity=qty,
+            success=True,
         )
+        return TelegramHtmlFormatter.format_manual_close_html(view)
 
     async def execute_signal_by_id(self, signal_id: int, quantity: float | None = None) -> tuple[bool, str]:
         """
@@ -918,21 +1015,21 @@ class FuturesCopilot:
                     "execution_mode": self.config.execution_mode,
                 },
             )
-            qty_label = (
-                f"{target_qty:g} shares"
-                if (asset_class == AssetClass.EQUITY or not contract.startswith("/"))
-                else f"{target_qty:g}x"
+            view = ExecutionResultView(
+                signal_id=signal_id,
+                contract=contract,
+                direction=direction,
+                quantity=target_qty,
+                fill_price=fill_price,
+                broker_order_id=order_result.order_id,
+                notional_value=notional_value,
+                risk_dollars=risk_dollars,
+                stop_loss=float(sig["stop_loss"]),
+                take_profit=float(sig["take_profit"]),
+                execution_mode=self.config.execution_mode.upper(),
+                success=True,
             )
-            msg = (
-                f"🚀 <b>ORDER EXECUTED ({self.config.execution_mode.upper()})</b>\n"
-                f"• <b>Contract:</b> {qty_label} {contract} ({direction})\n"
-                f"• <b>Fill Price:</b> <code>{fill_price:,.2f}</code>\n"
-                f"• <b>Broker Order ID:</b> <code>{order_result.order_id}</code>\n"
-                f"• <b>Notional:</b> <code>${notional_value:,.2f}</code> | <b>Risk:</b> <code>${risk_dollars:,.2f}</code>\n"
-                f"• <b>Stop Loss:</b> <code>{sig['stop_loss']:,.2f}</code> | <b>Target:</b> <code>{sig['take_profit']:,.2f}</code>\n"
-                f"• <i>Position is now active in risk tracking.</i>"
-            )
-            return True, msg
+            return True, TelegramHtmlFormatter.format_execution_html(view)
         else:
             await self.db.update_signal_status(signal_id, SignalStatus.FAILED)
             err = order_result.error_message or "Unknown broker rejection"
@@ -941,89 +1038,66 @@ class FuturesCopilot:
                 signal_id,
                 self.config.execution_mode,
                 err,
-                extra={"signal_id": signal_id, "error": err, "execution_mode": self.config.execution_mode},
+                extra={
+                    "event": "signal_execution_rejected",
+                    "signal_id": signal_id,
+                    "error": err,
+                    "execution_mode": self.config.execution_mode,
+                },
             )
-            msg = (
-                f"❌ <b>Execution Failed ({self.config.execution_mode.upper()}):</b>\n"
-                f"• <b>Contract:</b> {contract} ({direction})\n"
-                f"• <b>Error:</b> {err}"
+            view = ExecutionResultView(
+                signal_id=signal_id,
+                contract=contract,
+                direction=direction,
+                quantity=target_qty,
+                fill_price=0.0,
+                broker_order_id=None,
+                notional_value=notional_value,
+                risk_dollars=risk_dollars,
+                stop_loss=float(sig["stop_loss"]),
+                take_profit=float(sig["take_profit"]),
+                execution_mode=self.config.execution_mode.upper(),
+                success=False,
+                error_message=err,
             )
-            return False, msg
+            return False, TelegramHtmlFormatter.format_execution_html(view)
 
-    async def show_status(self):
+    async def get_status_report(self) -> PortfolioStatusReport:
+        """Construct a decoupled PortfolioStatusReport DTO."""
         current_exposure = await self.db.get_active_notional_exposure()
         active_count = await self.db.get_active_contract_count()
-        eff_leverage = current_exposure / self.config.portfolio.cash
-
-        print("=" * 65)
-        print("CASH-PLUS TRADING COPILOT: PORTFOLIO & RISK STATUS")
-        print("=" * 65)
-        print(f"Cash Base:            ${self.config.portfolio.cash:,.2f}")
-        print(f"Max Notional Ceiling: ${self.config.portfolio.max_notional_exposure:,.2f} (0.6x max leverage)")
-        print(f"Active Exposure:      ${current_exposure:,.2f} ({eff_leverage:.2f}x effective leverage)")
-        print(f"Active Position Count:{active_count} contracts")
-        print(f"Telegram Configured:  {self.notifier.is_configured()}")
-        print(f"LLM Model Configured: {self.config.llm_model}")
-        print("-" * 65)
-
+        eff_leverage = current_exposure / self.config.portfolio.cash if self.config.portfolio.cash > 0 else 0.0
         macro_summary = await self.calendar.get_macro_summary_for_prompt()
         regime = await self.regime_detector.get_regime()
-        print("Macro Calendar Context:")
-        print(macro_summary)
-        print("-" * 65)
-        print("Market Volatility & Macro Regime Context:")
-        print(f"  • Volatility Regime: {regime.vix_regime.value} (VIX: {regime.vix:.2f})")
-        print(f"  • 10Y Yield (^TNX):  {f'{regime.tnx:.2f}%' if regime.tnx is not None else 'N/A'}")
-        print(f"  • Dollar Index (DXY):{f'{regime.dxy:.2f}' if regime.dxy is not None else 'N/A'}")
-        print(f"  • Breakouts Status:  {'Allowed' if regime.breakout_allowed else 'Suppressed (Extreme Volatility)'}")
-        print("-" * 65)
-
         signals = await self.db.get_recent_signals(limit=10)
-        print(f"Recent Signals ({len(signals)}):")
-        if not signals:
-            print("  (No signals in database)")
-        else:
-            for s in signals:
-                print(
-                    f"  #{s['id']} [{s['status']}] {s['timestamp']} | {s['contract']} {s['direction']} "
-                    f"via {s['strategy']} @ {s['entry_price']} (Risk: ${s['risk_dollars']:.2f})"
-                )
-        print("=" * 65)
+
+        return PortfolioStatusReport(
+            cash_base=self.config.portfolio.cash,
+            max_notional_exposure=self.config.portfolio.max_notional_exposure,
+            active_exposure=current_exposure,
+            effective_leverage=eff_leverage,
+            active_position_count=active_count,
+            telegram_configured=self.notifier.is_configured(),
+            llm_model=self.config.llm_model,
+            execution_mode=self.config.execution_mode.upper(),
+            macro_calendar_summary=macro_summary,
+            vix=regime.vix,
+            vix_regime=regime.vix_regime.value,
+            tnx=regime.tnx,
+            dxy=regime.dxy,
+            breakout_allowed=regime.breakout_allowed,
+            recent_signals=signals,
+        )
+
+    async def show_status(self) -> None:
+        """Display portfolio and risk status in terminal."""
+        report = await self.get_status_report()
+        print(TerminalFormatter.format_status_dashboard(report))
 
     async def get_status_text_html(self) -> str:
-        current_exposure = await self.db.get_active_notional_exposure()
-        active_count = await self.db.get_active_contract_count()
-        eff_leverage = current_exposure / self.config.portfolio.cash
-        macro_summary = await self.calendar.get_macro_summary_for_prompt()
-        regime = await self.regime_detector.get_regime()
-        signals = await self.db.get_recent_signals(limit=5)
-
-        signals_text = ""
-        if not signals:
-            signals_text = "\n<i>(No recorded signals)</i>"
-        else:
-            for s in signals:
-                signals_text += (
-                    f"\n• #{s['id']} [{s['status']}] {s['contract']} {s['direction']} "
-                    f"@ {s['entry_price']:,.2f} (Risk: ${s['risk_dollars']:.2f})"
-                )
-
-        tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "N/A"
-        dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "N/A"
-        breakout_str = "Allowed" if regime.breakout_allowed else "Suppressed (Extreme Volatility)"
-
-        return (
-            "📊 <b>CASH-PLUS COPILOT: STATUS</b>\n\n"
-            f"• <b>Cash Base:</b> ${self.config.portfolio.cash:,.2f}\n"
-            f"• <b>Active Exposure:</b> ${current_exposure:,.2f} ({eff_leverage:.2f}x leverage)\n"
-            f"• <b>Notional Cap:</b> ${self.config.portfolio.max_notional_exposure:,.2f} (0.6x max)\n"
-            f"• <b>Active Positions:</b> {active_count} contracts\n"
-            f"• <b>LLM Model:</b> <code>{self.config.llm_model}</code>\n"
-            f"• <b>Volatility Regime:</b> {regime.vix_regime.value} (VIX: {regime.vix:.2f})\n"
-            f"• <b>Macro Indicators:</b> 10Y: {tnx_str} | DXY: {dxy_str} | Breakouts: {breakout_str}\n\n"
-            f"🛡️ <b>Macro Context:</b>\n{macro_summary}\n\n"
-            f"🕒 <b>Recent Signals:</b>{signals_text}"
-        )
+        """Format HTML status message for Telegram /status."""
+        report = await self.get_status_report()
+        return TelegramHtmlFormatter.format_status_html(report)
 
     async def run_scan_summary_html(self) -> str:
         count_before = len(await self.db.get_recent_signals(limit=100))
@@ -1040,56 +1114,31 @@ class FuturesCopilot:
         )
 
     async def get_performance_summary_html(self) -> str:
+        """Format HTML performance attribution for Telegram /performance."""
         stats = await self.db.get_closed_positions_stats()
         active_exposure = await self.db.get_active_notional_exposure()
         active_count = await self.db.get_active_position_count()
-
-        pnl_sign = "+" if stats["total_pnl"] >= 0 else "-"
-        abs_pnl = abs(stats["total_pnl"])
-        color_pnl = "🟢" if stats["total_pnl"] >= 0 else "🔴"
-
-        recent_trades_text = ""
-        if not stats["trades"]:
-            recent_trades_text = "\n<i>(No closed trades recorded yet)</i>"
-        else:
-            for t in stats["trades"][:5]:
-                t_pnl = t.get("realized_pnl") or 0.0
-                t_sign = "+" if t_pnl >= 0 else "-"
-                recent_trades_text += (
-                    f"\n• #{t['id']} <b>{t['contract']}</b> ({t['direction']}) "
-                    f"via {t['strategy']}: {t_sign}${abs(t_pnl):,.2f} [{t['exit_reason'] or 'CLOSED'}]"
-                )
-
-        return (
-            "📊 <b>CASH-PLUS COPILOT: PERFORMANCE ATTRIBUTION</b>\n\n"
-            f"• <b>Realized Net Alpha:</b> {color_pnl} <code>{pnl_sign}${abs_pnl:,.2f}</code>\n"
-            f"• <b>Win Rate:</b> <b>{stats['win_rate']:.1f}%</b> ({stats['wins']} wins / {stats['losses']} losses)\n"
-            f"• <b>Profit Factor:</b> <code>{stats['profit_factor']:.2f}</code>\n"
-            f"• <b>Gross Profits:</b> +${stats['gross_profit']:,.2f}\n"
-            f"• <b>Gross Losses:</b> -${stats['gross_loss']:,.2f}\n"
-            f"• <b>Active Open Risk:</b> {active_count} positions (${active_exposure:,.2f} notional)\n\n"
-            f"🕒 <b>Recent Closed Trades:</b>{recent_trades_text}"
+        report = PerformanceSummaryReport(
+            total_pnl=float(stats.get("total_pnl", 0.0)),
+            win_rate=float(stats.get("win_rate", 0.0)),
+            wins=int(stats.get("wins", 0)),
+            losses=int(stats.get("losses", 0)),
+            profit_factor=float(stats.get("profit_factor", 0.0)),
+            gross_profit=float(stats.get("gross_profit", 0.0)),
+            gross_loss=float(stats.get("gross_loss", 0.0)),
+            active_open_positions=active_count,
+            active_notional_exposure=active_exposure,
+            recent_trades=stats.get("trades", []),
         )
+        return TelegramHtmlFormatter.format_performance_html(report)
 
     async def get_regime_summary_html(self) -> str:
+        """Format HTML volatility and macro regime for Telegram /regime."""
         regime = await self.regime_detector.get_regime()
-        tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "N/A"
-        dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "N/A"
-        breakout_str = "Allowed ✅" if regime.breakout_allowed else "Suppressed ⚠️ (Extreme Volatility)"
-
-        vix_color = "🟢" if regime.vix < 15.0 else ("🟡" if regime.vix < 22.0 else "🔴")
-
-        return (
-            "🌐 <b>MARKET VOLATILITY & MACRO REGIME</b>\n\n"
-            f"• <b>VIX Level:</b> {vix_color} <code>{regime.vix:.2f}</code> ({regime.vix_regime.value.upper()})\n"
-            f"• <b>10-Year Treasury Yield (^TNX):</b> <code>{tnx_str}</code>\n"
-            f"• <b>US Dollar Index (DX-Y):</b> <code>{dxy_str}</code>\n"
-            f"• <b>Squeeze Breakouts:</b> <b>{breakout_str}</b>\n\n"
-            f"📝 <b>Quantitative Assessment:</b>\n"
-            f"<i>{regime.summary_text}</i>"
-        )
+        return TelegramHtmlFormatter.format_regime_html(regime)
 
     async def run_backtest_summary_html(self, symbol: str = "SPY", lookback: str = "1y") -> str:
+        """Run on-demand backtest and format result as Telegram HTML."""
         engine = BacktestEngine(config=self.config)
         res = await asyncio.to_thread(
             engine.run,
@@ -1097,30 +1146,9 @@ class FuturesCopilot:
             strategy_filter="all",
             lookback=lookback,
         )
-        mc_line = ""
         if len(res.trades) >= 3:
-            mc = run_monte_carlo_simulation(res.trades, starting_cash=res.starting_cash, n_simulations=500)
-            if mc:
-                mc_line = f"\n• <b>95% Worst DD (Monte Carlo):</b> <code>{mc.ci_95th_drawdown_pct:.1f}%</code> (95% VaR: {mc.var_95_pct:.1f}%)"
-
-        attr_line = ""
-        if res.attribution and res.attribution.factors:
-            top_f = max(res.attribution.factors, key=lambda f: f.pnl_dollars)
-            if top_f.pnl_dollars != 0:
-                attr_line = f"\n• <b>Top Driver:</b> {top_f.factor_name} (+${top_f.pnl_dollars:,.2f})"
-
-        return (
-            f"📈 <b>BACKTEST SIMULATION: {symbol.upper()} ({lookback})</b>\n\n"
-            f"• <b>Total Net Return:</b> <code>{res.combined_return_pct:+.2f}%</code>\n"
-            f"• <b>Annualized Return (CAGR):</b> <code>{res.annualized_return_pct:+.2f}%</code>\n"
-            f"• <b>Sharpe Ratio:</b> <code>{res.sharpe_ratio:.2f}</code>\n"
-            f"• <b>Max Drawdown:</b> <code>{res.max_drawdown_pct:.2f}%</code>\n"
-            f"• <b>Win Rate:</b> <code>{res.win_rate:.1f}%</code> ({res.total_trades} trades)\n"
-            f"• <b>Profit Factor:</b> <code>{res.profit_factor:.2f}</code>\n"
-            f"• <b>Cash-Plus Yield Accrued:</b> +${res.cash_yield_pnl:,.2f}"
-            f"{attr_line}"
-            f"{mc_line}"
-        )
+            res.monte_carlo = run_monte_carlo_simulation(res.trades, starting_cash=res.starting_cash, n_simulations=500)
+        return TelegramHtmlFormatter.format_backtest_html(res, symbols=[symbol], lookback=lookback, strategy="all")
 
     async def run_gex_summary_html(self, symbol: str = "SPY") -> str:
         try:
@@ -1227,3 +1255,9 @@ class FuturesCopilot:
             status=SignalStatus.PENDING,
         )
         await self.notifier.send_signal_alert(test_eval, StrategyType.TREND_PULLBACK, sig_id)
+
+
+# Backward-compatibility alias
+FuturesCopilot = TradingCopilot
+
+__all__ = ["FuturesCopilot", "TradingCopilot"]

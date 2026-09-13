@@ -200,8 +200,9 @@ session:
 
 trailing_stop:
   enabled: true
-  breakeven_trigger_r: 1.0
+  mode: "chandelier_atr" # "chandelier_atr" (quant high-water mark), "breakeven_and_trail", "none"
+  breakeven_trigger_r: null # null avoids expectancy degradation from entry-price anchoring
   breakeven_buffer_dollars: 5.0
   trail_trigger_r: 1.5
   trail_atr_multiple: 1.5
-  trail_step_ticks: 4
+  trail_step_ticks: 2
