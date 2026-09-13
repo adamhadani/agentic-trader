@@ -530,9 +530,51 @@ Provide quantitative options market telemetry by analyzing real-time option chai
 
 ---
 
-## Next Horizon: Advanced Quantitative Infrastructure (Phases 21+)
+---
+
+## Phase 21: Real-Time Prometheus Metrics & Observability + Modular Click CLI Refactoring
+
+### Objective
+Provide enterprise-grade operational telemetry and observability via native Prometheus exposition (gauges, counters, histograms), standalone or daemon-embedded async HTTP exporter server (`/metrics` and `/healthz`), and refactor monolithic `main.py` into a clean, modular Click-based CLI package architecture (`agentic_trader/cli/`). Additionally, integrate rust-accelerated impacted test analysis (`pytest-impacted[fast]`) into developer workflows and pre-commit hooks.
+
+### Key Deliverables
+1. **Thread-Safe Prometheus Metrics Collector (`agentic_trader/telemetry/collector.py`, `models.py`)**:
+   - `MetricsCollector`: Fully thread-safe in-memory store supporting `set_gauge`, `inc_counter`, `observe_histogram`, and `reset`.
+   - Formats live metrics strictly complying with Prometheus plain-text exposition format 0.0.4.
+   - Built-in operational metrics: `trader_up`, `trader_account_cash_dollars`, `trader_active_positions_count`, `trader_orders_filled_total`, and order execution latency histograms.
+2. **Lightweight Asynchronous HTTP Exporter Server (`agentic_trader/telemetry/server.py`)**:
+   - `MetricsServer`: Native `asyncio.start_server` lightweight HTTP daemon with zero external web framework dependencies.
+   - Serves `GET /metrics` with `Content-Type: text/plain; version=0.0.4; charset=utf-8` and `GET /healthz` for Kubernetes/Docker container liveness probes.
+   - Embeds seamlessly into continuous background trading daemons (`copilot daemon`) or runs standalone (`copilot metrics --serve`).
+3. **Modular Click CLI Architecture (`agentic_trader/cli/`)**:
+   - Refactored monolithic 1,578-line `main.py` into 11-line entrypoint forwarding to modular Click CLI package.
+   - Subcommand implementations cleanly separated into dedicated modules:
+     - `scan.py`: Universe scanning and LLM risk gating (`copilot scan`).
+     - `trade.py`: Position tracking, manual orders, and closure (`status`, `positions`, `execute`, `close`, `test-alert`).
+     - `backtest.py`: Historical backtesting with friction and attribution (`copilot backtest`).
+     - `research.py`: Walk-forward parameter grid optimization and auto-retuning (`optimize`, `retune`).
+     - `stress.py`: Macro crisis replay and instantaneous factor shocks (`copilot stress`).
+     - `options.py`: Market maker gamma exposure and volatility surface (`copilot gex`).
+     - `telemetry.py`: Live metrics snapshot and exporter server (`copilot metrics`).
+     - `service.py`: Daemon scheduling, streaming, and bot polling (`daemon`, `listen`, `eval`).
+     - `db.py`: Alembic database migration management (`copilot db upgrade`, `downgrade`, `current`, `history`).
+   - 100% backward-compatible: `from agentic_trader.main import FuturesCopilot` and all subprocess CLI test invocations preserved.
+4. **Rust-Accelerated Impacted Test Runner (`pytest-impacted[fast]`)**:
+   - Added `pytest-impacted[fast]` (powered by Ruff's Rust parser + Rayon parallel AST discovery) to development dependencies.
+   - Configured `.pre-commit-config.yaml` to run `pytest --impacted --impacted-module=agentic_trader --impacted-tests-dir=tests`, reducing pre-commit overhead while guaranteeing test coverage.
+
+### Implementation Summary
+- **Telemetry Package (`agentic_trader/telemetry/`)**: Implemented `models.py`, `collector.py`, `server.py`, and `__init__.py`.
+- **Configuration (`agentic_trader/config.py`, `config/config.yaml`)**: Added `TelemetryConfig` model (`metrics_enabled`, `metrics_host`, `metrics_port`).
+- **CLI Submodule Package (`agentic_trader/cli/`)**: Created modular command hierarchy and decorators in `agentic_trader/cli/`.
+- **Copilot Extraction (`agentic_trader/agent/copilot.py`)**: Extracted core orchestration logic into clean copilot module.
+- **Test Suite (`tests/test_telemetry.py`)**: 8 comprehensive unit tests covering gauge/counter/histogram collection, reset operations, HTTP `/metrics` and `/healthz` endpoints, and Click/subprocess CLI invocations. Total unit test suite: 148 passed tests.
+
+---
+
+## Next Horizon: Advanced Quantitative Infrastructure (Phases 22+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 21** | Real-Time Prometheus Metrics & Observability | **Planned** | Live operational telemetry, order execution latency, Sharpe/PnL Prometheus exporter |
 | **Phase 22** | Cointegration & Statistical Pairs Trading Screener | **Planned** | Engle-Granger / Johansen cointegration tests for mean-reverting equity and futures spreads |
+| **Phase 23** | Real-Time FIX Protocol Broker Gateway | **Planned** | Direct institutional DMA connectivity via QuickFIX / Python FIX engine |

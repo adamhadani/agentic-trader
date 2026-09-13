@@ -146,3 +146,8 @@ options:
   max_expirations: 3
   risk_free_rate: 0.045
   cache_ttl_seconds: 60
+
+telemetry:
+  metrics_enabled: true
+  metrics_host: "0.0.0.0"
+  metrics_port: 9108

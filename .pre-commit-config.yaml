@@ -56,7 +56,7 @@ repos:
     pass_filenames: false
   - id: pytest
     name: pytest runner
-    entry: bash -ec "uv run python -m pytest tests"
+    entry: bash -ec "uv run python -m pytest tests --impacted --impacted-module=agentic_trader --impacted-tests-dir=tests"
     language: system
     types: [python]
     pass_filenames: false

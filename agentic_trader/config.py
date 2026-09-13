@@ -192,6 +192,12 @@ class OptionsConfig(BaseModel):
     cache_ttl_seconds: int = 60
 
 
+class TelemetryConfig(BaseModel):
+    metrics_enabled: bool = True
+    metrics_host: str = "0.0.0.0"
+    metrics_port: int = 9108
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -204,6 +210,7 @@ class AppConfig(BaseModel):
     sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     options: OptionsConfig = Field(default_factory=OptionsConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None
@@ -322,6 +329,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         sizing=PositionSizingConfig(**sizing_cfg),
         execution=ExecutionConfig(**exec_cfg),
         options=OptionsConfig(**cfg_dict.get("options", {})),
+        telemetry=TelemetryConfig(**cfg_dict.get("telemetry", {})),
         telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
         telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
         llm_model=llm_model,
