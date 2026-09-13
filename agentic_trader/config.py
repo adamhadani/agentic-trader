@@ -7,9 +7,20 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 
 from agentic_trader.constants import (
+    DEFAULT_BACKTEST_LOOKBACK,
+    DEFAULT_CALIBRATIONS_FILENAME,
+    DEFAULT_MIN_OOS_SHARPE,
+    DEFAULT_MIN_WARMUP_BARS,
+    DEFAULT_MIN_WFE,
+    DEFAULT_MONTE_CARLO_SIMULATIONS,
+    DEFAULT_PORTFOLIO_CASH,
+    DEFAULT_RANDOM_SEED,
+    DEFAULT_RISK_FREE_RATE,
+    DEFAULT_TRAIN_RATIO,
     DEFAULT_VIX_COMPRESSED_THRESHOLD,
     DEFAULT_VIX_ELEVATED_THRESHOLD,
     DEFAULT_VIX_EXTREME_THRESHOLD,
+    DEFAULT_WALK_FORWARD_SPLITS,
     AssetClass,
 )
 
@@ -225,6 +236,26 @@ class PairsConfig(BaseModel):
     )
 
 
+class BacktestConfig(BaseModel):
+    initial_cash: float = DEFAULT_PORTFOLIO_CASH
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE
+    max_concurrent_positions: int = 4
+    lookback: str = DEFAULT_BACKTEST_LOOKBACK
+    monte_carlo_simulations: int = DEFAULT_MONTE_CARLO_SIMULATIONS
+    monte_carlo_seed: int = DEFAULT_RANDOM_SEED
+    min_warmup_bars: int = DEFAULT_MIN_WARMUP_BARS
+    apply_friction: bool = True
+
+
+class ResearchConfig(BaseModel):
+    lookback: str = "2y"
+    walk_forward_splits: int = DEFAULT_WALK_FORWARD_SPLITS
+    train_ratio: float = DEFAULT_TRAIN_RATIO
+    min_wfe: float = DEFAULT_MIN_WFE
+    min_oos_sharpe: float = DEFAULT_MIN_OOS_SHARPE
+    calibrations_filename: str = DEFAULT_CALIBRATIONS_FILENAME
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -239,6 +270,8 @@ class AppConfig(BaseModel):
     options: OptionsConfig = Field(default_factory=OptionsConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     pairs: PairsConfig = Field(default_factory=PairsConfig)
+    backtest: BacktestConfig = Field(default_factory=BacktestConfig)
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None

@@ -17,7 +17,10 @@ from agentic_trader.backtest.models import BacktestResult, BacktestTrade, Equity
 from agentic_trader.config import AppConfig, InstrumentConfig, load_config
 from agentic_trader.constants import (
     DEFAULT_MAX_NOTIONAL_EXPOSURE,
+    DEFAULT_MIN_WARMUP_BARS,
     DEFAULT_PORTFOLIO_CASH,
+    DEFAULT_RISK_FREE_RATE,
+    TRADING_DAYS_PER_YEAR,
     AssetClass,
     Direction,
     ExitReason,
@@ -31,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 class BacktestEngine:
-    """
-    Offline vectorized & bar-by-bar backtesting simulation engine.
+    """Offline vectorized & bar-by-bar backtesting simulation engine.
+
     Executes live screening algorithms across historical multi-asset data,
     evaluates bracket exits, and simulates the combined Cash-Plus portfolio equity curve.
     """
@@ -41,7 +44,7 @@ class BacktestEngine:
         self,
         config: AppConfig | None = None,
         initial_cash: float = DEFAULT_PORTFOLIO_CASH,
-        risk_free_rate: float = 0.045,
+        risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
         max_concurrent_positions: int = 4,
         max_notional_exposure: float = DEFAULT_MAX_NOTIONAL_EXPOSURE,
         apply_friction: bool = True,
@@ -162,8 +165,8 @@ class BacktestEngine:
                 all_dates.update(md.daily.index)
 
         sorted_timeline = sorted(all_dates)
-        if len(sorted_timeline) < 20:
-            raise ValueError("Insufficient historical bars for backtest execution (< 20 bars).")
+        if len(sorted_timeline) < DEFAULT_MIN_WARMUP_BARS:
+            raise ValueError(f"Insufficient historical bars for backtest execution (< {DEFAULT_MIN_WARMUP_BARS} bars).")
 
         cash_reserve = self.initial_cash
         open_trades: list[BacktestTrade] = [t for t in initial_trades] if initial_trades else []
@@ -171,8 +174,8 @@ class BacktestEngine:
         equity_points: list[EquityPoint] = []
         cumulative_cash_yield = 0.0
 
-        daily_rf_rate = self.risk_free_rate / 252.0
-        min_warmup_bars = 20
+        daily_rf_rate = self.risk_free_rate / float(TRADING_DAYS_PER_YEAR)
+        min_warmup_bars = DEFAULT_MIN_WARMUP_BARS
 
         for idx, current_date in enumerate(sorted_timeline):
             # Accrue daily risk-free interest on cash reserves

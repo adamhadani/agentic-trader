@@ -5,6 +5,15 @@ from typing import Any
 
 import pandas as pd
 
+from agentic_trader.constants import (
+    CALENDAR_DAYS_PER_YEAR,
+    DEFAULT_GEX_REGIME_THRESHOLD,
+    DEFAULT_IMPLIED_VOLATILITY,
+    DEFAULT_RISK_FREE_RATE,
+    DEFAULT_TIME_TO_EXPIRY_DAYS,
+    GEX_MILLION_CONVERSION,
+    OPTIONS_CONTRACT_MULTIPLIER,
+)
 from agentic_trader.options.models import GammaExposureProfile, GammaRegime, StrikeGEX
 
 
@@ -12,8 +21,8 @@ def black_scholes_gamma(
     spot: float,
     strike: float,
     time_to_expiry_years: float,
-    risk_free_rate: float = 0.045,
-    implied_volatility: float = 0.20,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    implied_volatility: float = DEFAULT_IMPLIED_VOLATILITY,
 ) -> float:
     """Calculates analytical Black-Scholes Gamma (second derivative of option price w.r.t spot).
 
@@ -42,7 +51,7 @@ class GEXCalculator:
     Gamma Flip levels, and Put/Call positioning metrics from option chains.
     """
 
-    def __init__(self, risk_free_rate: float = 0.045):
+    def __init__(self, risk_free_rate: float = DEFAULT_RISK_FREE_RATE):
         self.risk_free_rate = risk_free_rate
 
     def calculate_gex(
@@ -76,12 +85,15 @@ class GEXCalculator:
 
                 oi = int(row.get("openInterest", 0) or 0)
                 vol = int(row.get("volume", 0) or 0)
-                iv = float(row.get("impliedVolatility", 0.20) or 0.20)
-                dte = float(row.get("dte_years", row.get("time_to_expiry", 14.0 / 365.0)) or 14.0 / 365.0)
+                iv = float(row.get("impliedVolatility", DEFAULT_IMPLIED_VOLATILITY) or DEFAULT_IMPLIED_VOLATILITY)
+                default_dte = DEFAULT_TIME_TO_EXPIRY_DAYS / CALENDAR_DAYS_PER_YEAR
+                dte = float(row.get("dte_years", row.get("time_to_expiry", default_dte)) or default_dte)
 
                 gamma = black_scholes_gamma(underlying_price, k, dte, self.risk_free_rate, iv)
                 # Call GEX: Gamma * OI * 100 shares * spot^2 * 0.01 / 1,000,000 ($ Millions / 1% move)
-                call_gex = gamma * oi * 100.0 * (underlying_price**2) * 0.01 / 1_000_000.0
+                call_gex = (
+                    gamma * oi * OPTIONS_CONTRACT_MULTIPLIER * (underlying_price**2) * 0.01 / GEX_MILLION_CONVERSION
+                )
 
                 if k not in strike_data:
                     strike_data[k] = {
@@ -105,12 +117,15 @@ class GEXCalculator:
 
                 oi = int(row.get("openInterest", 0) or 0)
                 vol = int(row.get("volume", 0) or 0)
-                iv = float(row.get("impliedVolatility", 0.20) or 0.20)
-                dte = float(row.get("dte_years", row.get("time_to_expiry", 14.0 / 365.0)) or 14.0 / 365.0)
+                iv = float(row.get("impliedVolatility", DEFAULT_IMPLIED_VOLATILITY) or DEFAULT_IMPLIED_VOLATILITY)
+                default_dte = DEFAULT_TIME_TO_EXPIRY_DAYS / CALENDAR_DAYS_PER_YEAR
+                dte = float(row.get("dte_years", row.get("time_to_expiry", default_dte)) or default_dte)
 
                 gamma = black_scholes_gamma(underlying_price, k, dte, self.risk_free_rate, iv)
                 # Put GEX is negative dealer gamma
-                put_gex = -(gamma * oi * 100.0 * (underlying_price**2) * 0.01 / 1_000_000.0)
+                put_gex = -(
+                    gamma * oi * OPTIONS_CONTRACT_MULTIPLIER * (underlying_price**2) * 0.01 / GEX_MILLION_CONVERSION
+                )
 
                 if k not in strike_data:
                     strike_data[k] = {
@@ -183,9 +198,9 @@ class GEXCalculator:
         total_put_gex = round(total_put_gex, 2)
 
         # Gamma Regime determination
-        if total_net_gex > 5.0:
+        if total_net_gex > DEFAULT_GEX_REGIME_THRESHOLD:
             regime = GammaRegime.POSITIVE_GAMMA
-        elif total_net_gex < -5.0:
+        elif total_net_gex < -DEFAULT_GEX_REGIME_THRESHOLD:
             regime = GammaRegime.NEGATIVE_GAMMA
         else:
             regime = GammaRegime.NEUTRAL

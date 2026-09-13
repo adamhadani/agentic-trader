@@ -10,6 +10,15 @@ import pandas as pd
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller
 
+from agentic_trader.constants import (
+    DEFAULT_PAIRS_LOOKBACK,
+    DEFAULT_PAIRS_P_VALUE_THRESHOLD,
+    DEFAULT_SPREAD_Z_ENTRY,
+    DEFAULT_SPREAD_Z_EXIT,
+    FLOAT_EPSILON,
+    MIN_COINTEGRATION_BARS,
+    MIN_HALF_LIFE_BARS,
+)
 from agentic_trader.pairs.models import CointegrationResult, SignalType, SpreadSignal
 
 
@@ -25,7 +34,7 @@ def compute_half_life(residuals: pd.Series) -> float:
         Half-life = infinity
     """
     cleaned = residuals.dropna()
-    if len(cleaned) < 10:
+    if len(cleaned) < MIN_HALF_LIFE_BARS:
         return float("inf")
 
     delta_res = cleaned.diff().dropna()
@@ -42,7 +51,7 @@ def compute_half_life(residuals: pd.Series) -> float:
     # param index 1 is lagged_res slope θ
     theta = float(ar_model.params.iloc[1])
 
-    if theta < -1e-6:
+    if theta < -FLOAT_EPSILON:
         half_life = -math.log(2.0) / theta
         return float(half_life)
     return float("inf")
@@ -53,7 +62,7 @@ def run_engle_granger_test(
     series_x: pd.Series,
     asset_y_name: str | None = None,
     asset_x_name: str | None = None,
-    p_value_threshold: float = 0.05,
+    p_value_threshold: float = DEFAULT_PAIRS_P_VALUE_THRESHOLD,
 ) -> CointegrationResult:
     """Execute two-step Engle-Granger cointegration test.
 
@@ -65,7 +74,7 @@ def run_engle_granger_test(
     x_name = asset_x_name or str(series_x.name or "Asset_X")
 
     aligned = pd.concat([series_y, series_x], axis=1).dropna()
-    if len(aligned) < 20:
+    if len(aligned) < MIN_COINTEGRATION_BARS:
         return CointegrationResult(
             asset_y=y_name,
             asset_x=x_name,
@@ -123,7 +132,7 @@ def calculate_rolling_spread_zscore(
     series_x: pd.Series,
     beta: float,
     alpha: float,
-    lookback: int = 30,
+    lookback: int = DEFAULT_PAIRS_LOOKBACK,
 ) -> pd.DataFrame:
     """Compute instantaneous spread S_t = Y_t - (β * X_t + α) and rolling Z-score."""
     aligned = pd.concat([series_y, series_x], axis=1).dropna()
@@ -159,8 +168,8 @@ def generate_spread_signal(
     spread_mean: float,
     spread_std: float,
     z_score: float,
-    z_entry: float = 2.0,
-    z_exit: float = 0.5,
+    z_entry: float = DEFAULT_SPREAD_Z_ENTRY,
+    z_exit: float = DEFAULT_SPREAD_Z_EXIT,
 ) -> SpreadSignal:
     """Evaluate current Z-score against statistical arbitrage entry and exit bands."""
     if math.isnan(z_score) or math.isnan(spread_std) or spread_std <= 0:

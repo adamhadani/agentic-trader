@@ -5,6 +5,13 @@ from pathlib import Path
 from typing import Any
 
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
+from agentic_trader.constants import (
+    DEFAULT_CALIBRATIONS_FILENAME,
+    DEFAULT_MIN_OOS_SHARPE,
+    DEFAULT_MIN_WFE,
+    DEFAULT_OPTIMIZATION_LOOKBACK,
+    DEFAULT_WALK_FORWARD_SPLITS,
+)
 from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.research.models import ParameterCandidate
 from agentic_trader.research.optimizer import ParameterGridOptimizer
@@ -15,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 class AutoRetuner:
-    """
-    Automated parameter re-calibration daemon engine.
+    """Automated parameter re-calibration daemon engine.
+
     Executes walk-forward out-of-sample optimization on a recurring schedule
     (e.g., weekend market closure), filters overfitted candidates via Walk-Forward
     Efficiency (WFE), and persists robust parameters for live strategy screening.
@@ -29,15 +36,16 @@ class AutoRetuner:
     ):
         self.config = config or load_config()
         self.optimizer = ParameterGridOptimizer(self.config)
-        self.calibrations_path = Path(calibrations_path or (WORKSPACE_ROOT / "data" / "calibrated_parameters.json"))
+        filename = getattr(self.config.research, "calibrations_filename", DEFAULT_CALIBRATIONS_FILENAME)
+        self.calibrations_path = Path(calibrations_path or (WORKSPACE_ROOT / "data" / filename))
 
     def run_retune(
         self,
         symbols: list[str] | None = None,
         strategies: list[str] | None = None,
-        min_wfe: float = 0.50,
-        min_sharpe: float = 0.80,
-        lookback: str = "2y",
+        min_wfe: float = DEFAULT_MIN_WFE,
+        min_sharpe: float = DEFAULT_MIN_OOS_SHARPE,
+        lookback: str = DEFAULT_OPTIMIZATION_LOOKBACK,
         market_data_map: dict[str, ContractMarketData] | None = None,
     ) -> dict[str, Any]:
         """
@@ -73,7 +81,7 @@ class AutoRetuner:
                         lookback=lookback,
                         market_data=md,
                         walk_forward=True,
-                        splits=3,
+                        splits=getattr(self.config.research, "walk_forward_splits", DEFAULT_WALK_FORWARD_SPLITS),
                     )
 
                     # Filter candidates meeting robust WFE and OOS Sharpe
