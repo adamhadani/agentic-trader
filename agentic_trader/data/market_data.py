@@ -62,6 +62,7 @@ class MarketDataFetcher:
         res["EMA_50"] = calculate_ema(res["Close"], span=50)
         res["EMA_200"] = calculate_ema(res["Close"], span=200)
         res["ATR_14"] = calculate_atr(res["High"], res["Low"], res["Close"], period=14)
+        res["RSI_14"] = calculate_rsi(res["Close"], period=14)
         return res
 
     def compute_intraday_indicators(self, df: pd.DataFrame) -> pd.DataFrame:

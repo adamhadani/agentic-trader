@@ -23,6 +23,7 @@ from agentic_trader.constants import (
 )
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
+from agentic_trader.research import ParameterGridOptimizer, format_optimization_report
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.migrations import (
@@ -793,10 +794,40 @@ async def async_main():
         help="Annualized cash reserve risk-free yield (default: 0.045 / 4.5 percent)",
     )
 
+    optimize_parser = subparsers.add_parser(
+        "optimize",
+        help="Run quantitative parameter grid search and sensitivity analysis",
+        description="Run quantitative parameter grid search and sensitivity analysis",
+    )
+    optimize_parser.add_argument(
+        "--symbol",
+        type=str,
+        default="SPY",
+        help="Symbol to optimize against (default: 'SPY')",
+    )
+    optimize_parser.add_argument(
+        "--strategy",
+        choices=["trend_pullback", "squeeze_breakout"],
+        default="trend_pullback",
+        help="Strategy to optimize (default: trend_pullback)",
+    )
+    optimize_parser.add_argument(
+        "--lookback",
+        type=str,
+        default="2y",
+        help="Historical lookback period (e.g. 1y, 2y, 5y; default: 2y)",
+    )
+    optimize_parser.add_argument(
+        "--top-n",
+        type=int,
+        default=5,
+        help="Number of top parameter combinations to display (default: 5)",
+    )
+
     args = parser.parse_args()
     config = load_config()
     copilot = FuturesCopilot(config)
-    if args.command not in ("db", "backtest"):
+    if args.command not in ("db", "backtest", "optimize"):
         await copilot.broker.connect()
 
     if args.command == "db":
@@ -855,6 +886,22 @@ async def async_main():
         )
         report = format_backtest_report(result, sym_list, args.lookback, args.strategy)
         print(report)
+    elif args.command == "optimize":
+        optimizer = ParameterGridOptimizer(config=config)
+        logger.info(
+            "Running parameter optimization for %s (strategy: %s, lookback: %s)...",
+            args.symbol,
+            args.strategy,
+            args.lookback,
+        )
+        opt_res = await asyncio.to_thread(
+            optimizer.run,
+            symbol=args.symbol,
+            strategy=args.strategy,
+            lookback=args.lookback,
+        )
+        opt_report = format_optimization_report(opt_res, top_n=args.top_n)
+        print(opt_report)
     elif args.command == "status":
         await copilot.show_status()
     elif args.command == "positions":
