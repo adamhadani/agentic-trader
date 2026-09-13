@@ -5,7 +5,7 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any
 
-from agentic_trader.agent.copilot import FuturesCopilot
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import AppConfig, load_config
 
 
@@ -19,8 +19,8 @@ def coro[F: Callable[..., Any]](f: F) -> F:
     return wrapper  # type: ignore[return-value]
 
 
-def get_copilot_and_config() -> tuple[FuturesCopilot, AppConfig]:
-    """Load configuration and initialize FuturesCopilot instance."""
+def get_copilot_and_config() -> tuple[TradingCopilot, AppConfig]:
+    """Load configuration and initialize TradingCopilot instance."""
     config = load_config()
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     return copilot, config

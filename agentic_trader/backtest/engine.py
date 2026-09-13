@@ -14,7 +14,7 @@ from agentic_trader.backtest.metrics import (
     calculate_win_rate,
 )
 from agentic_trader.backtest.models import BacktestResult, BacktestTrade, EquityPoint
-from agentic_trader.config import AppConfig, InstrumentConfig, load_config
+from agentic_trader.config import AppConfig, InstrumentConfig, TrailingStopConfig, load_config
 from agentic_trader.constants import (
     DEFAULT_MAX_NOTIONAL_EXPOSURE,
     DEFAULT_MIN_WARMUP_BARS,
@@ -48,6 +48,7 @@ class BacktestEngine:
         max_concurrent_positions: int = 4,
         max_notional_exposure: float = DEFAULT_MAX_NOTIONAL_EXPOSURE,
         apply_friction: bool = True,
+        trailing_stop: TrailingStopConfig | None = None,
     ):
         self.config = config or load_config()
         self.initial_cash = initial_cash
@@ -56,6 +57,7 @@ class BacktestEngine:
         self.max_notional_exposure = max_notional_exposure
         self.apply_friction = apply_friction
         self.friction = self.config.friction
+        self.trailing_stop = trailing_stop if trailing_stop is not None else getattr(self.config, "trailing_stop", None)
 
         self.strategy_engine = StrategyEngine(self.config)
         self.evaluator = RiskEvaluator(self.config)
@@ -70,10 +72,16 @@ class BacktestEngine:
     ) -> ContractMarketData:
         """Fetch and prepare historical data for a symbol via yfinance."""
         contract_info = self.config.contracts.get(symbol)
+        if not contract_info and not symbol.startswith("/"):
+            contract_info = self.config.contracts.get(f"/{symbol}")
         ticker = (
             contract_info.ticker
             if contract_info
-            else (f"{symbol.strip('/').upper()}=F" if symbol.startswith("/") else symbol)
+            else (
+                f"{symbol.strip('/').upper()}=F"
+                if symbol.startswith("/") or symbol in ("ES", "NQ", "MES", "MNQ", "MGC", "MCL", "GC", "CL")
+                else symbol
+            )
         )
 
         yf_ticker = yf.Ticker(ticker)
@@ -124,10 +132,13 @@ class BacktestEngine:
         initial_trades: list[BacktestTrade] | None = None,
         enable_attribution: bool = True,
         vix_df: pd.DataFrame | None = None,
+        trailing_stop: TrailingStopConfig | None = None,
     ) -> BacktestResult:
         """
         Execute backtest simulation over the specified symbols and date timeline.
         """
+        ts_cfg = trailing_stop if trailing_stop is not None else self.trailing_stop
+
         # Load market data if not provided
         data_map: dict[str, ContractMarketData] = {}
         if market_data_map:
@@ -212,7 +223,11 @@ class BacktestEngine:
                     if low <= trade.stop_loss:
                         closed = True
                         exit_price = trade.stop_loss
-                        exit_reason = ExitReason.STOP_LOSS
+                        exit_reason = (
+                            ExitReason.TRAILING_STOP
+                            if trade.initial_stop_loss > 0 and trade.stop_loss > trade.initial_stop_loss
+                            else ExitReason.STOP_LOSS
+                        )
                     elif high >= trade.take_profit:
                         closed = True
                         exit_price = trade.take_profit
@@ -221,7 +236,11 @@ class BacktestEngine:
                     if high >= trade.stop_loss:
                         closed = True
                         exit_price = trade.stop_loss
-                        exit_reason = ExitReason.STOP_LOSS
+                        exit_reason = (
+                            ExitReason.TRAILING_STOP
+                            if trade.initial_stop_loss > 0 and trade.stop_loss < trade.initial_stop_loss
+                            else ExitReason.STOP_LOSS
+                        )
                     elif low <= trade.take_profit:
                         closed = True
                         exit_price = trade.take_profit
@@ -269,6 +288,58 @@ class BacktestEngine:
                     cash_reserve += net_pnl
                     closed_trades.append(trade)
                 else:
+                    if ts_cfg and ts_cfg.enabled:
+                        bar_atr = float(bar.get("ATR", 0.0)) if "ATR" in bar else 0.0
+                        tick_size = contract_info.tick_size if contract_info else 0.25
+                        min_step = tick_size * ts_cfg.trail_step_ticks
+                        buffer_pts = (ts_cfg.breakeven_buffer_dollars / multiplier) if multiplier > 0 else 0.5
+
+                        if trade.direction == Direction.LONG:
+                            trade.high_water_mark = max(trade.high_water_mark, high)
+                            fav_dist = trade.high_water_mark - trade.entry_price
+                            init_risk = abs(trade.entry_price - trade.initial_stop_loss)
+                            r_mult = fav_dist / init_risk if init_risk > 0 else 0.0
+
+                            # Breakeven ratchet (opt-in if breakeven_trigger_r is set)
+                            if ts_cfg.breakeven_trigger_r is not None and r_mult >= ts_cfg.breakeven_trigger_r:
+                                be_stop = trade.entry_price + buffer_pts
+                                if be_stop > trade.stop_loss:
+                                    trade.stop_loss = round(be_stop, 2)
+
+                            # Dynamic Trailing stop ratchet (Chandelier ATR / ATR distance from high water mark)
+                            if r_mult >= ts_cfg.trail_trigger_r:
+                                trail_dist = (
+                                    ts_cfg.trail_atr_multiple * bar_atr
+                                    if bar_atr > 0
+                                    else max(init_risk, init_risk * ts_cfg.trail_atr_multiple)
+                                )
+                                proposed_trail = trade.high_water_mark - trail_dist
+                                if proposed_trail > trade.stop_loss + min_step:
+                                    trade.stop_loss = round(proposed_trail, 2)
+
+                        elif trade.direction == Direction.SHORT:
+                            trade.low_water_mark = min(trade.low_water_mark, low)
+                            fav_dist = trade.entry_price - trade.low_water_mark
+                            init_risk = abs(trade.entry_price - trade.initial_stop_loss)
+                            r_mult = fav_dist / init_risk if init_risk > 0 else 0.0
+
+                            # Breakeven ratchet (opt-in if breakeven_trigger_r is set)
+                            if ts_cfg.breakeven_trigger_r is not None and r_mult >= ts_cfg.breakeven_trigger_r:
+                                be_stop = trade.entry_price - buffer_pts
+                                if be_stop < trade.stop_loss:
+                                    trade.stop_loss = round(be_stop, 2)
+
+                            # Dynamic Trailing stop ratchet (Chandelier ATR / ATR distance from low water mark)
+                            if r_mult >= ts_cfg.trail_trigger_r:
+                                trail_dist = (
+                                    ts_cfg.trail_atr_multiple * bar_atr
+                                    if bar_atr > 0
+                                    else max(init_risk, init_risk * ts_cfg.trail_atr_multiple)
+                                )
+                                proposed_trail = trade.low_water_mark + trail_dist
+                                if proposed_trail < trade.stop_loss - min_step:
+                                    trade.stop_loss = round(proposed_trail, 2)
+
                     active_trades_remaining.append(trade)
 
             open_trades = active_trades_remaining
@@ -300,10 +371,11 @@ class BacktestEngine:
                         continue
 
                     sub_daily = sym_md.daily.iloc[: loc_idx + 1]
+                    end_of_bar = current_date + pd.Timedelta(days=1)
                     sub_4h = sym_md.four_hour
-                    if not sub_4h.empty and sub_4h.index[0] <= current_date:
-                        sub_4h = sub_4h[sub_4h.index <= current_date]
-                    if sub_4h.empty:
+                    if not sub_4h.empty:
+                        sub_4h = sub_4h[sub_4h.index < end_of_bar]
+                    if sub_4h.empty or len(sub_4h) < 10:
                         sub_4h = sub_daily
 
                     sub_market_data = ContractMarketData(
@@ -389,6 +461,9 @@ class BacktestEngine:
                                 risk_dollars=risk_dollars,
                                 commission=entry_comm,
                                 slippage_dollars=entry_slip_dollars,
+                                initial_stop_loss=stop_loss,
+                                high_water_mark=entry_price,
+                                low_water_mark=entry_price,
                             )
                             open_trades.append(trade)
                             current_open_notional += notional_value

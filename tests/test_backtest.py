@@ -16,7 +16,7 @@ from agentic_trader.backtest.metrics import (
 )
 from agentic_trader.backtest.models import BacktestResult, BacktestTrade, EquityPoint
 from agentic_trader.backtest.reporting import format_backtest_report
-from agentic_trader.config import AppConfig, load_config
+from agentic_trader.config import AppConfig, TrailingStopConfig, load_config
 from agentic_trader.constants import AssetClass, Direction, ExitReason, StrategyType
 from agentic_trader.data.market_data import ContractMarketData
 
@@ -377,3 +377,85 @@ def test_cli_backtest_help():
     assert "--monte-carlo" in proc.stdout
     assert "--mc-sims" in proc.stdout
     assert "--no-friction" in proc.stdout
+    assert "--trailing-stop-mode" in proc.stdout
+    assert "--trail-trigger-r" in proc.stdout
+    assert "--trail-atr-multiple" in proc.stdout
+
+
+def test_backtest_engine_trailing_stop_simulation(config):
+    """Test that BacktestEngine ratchets trailing stop and exits with TRAILING_STOP."""
+    engine = BacktestEngine(
+        config=config,
+        initial_cash=100000.0,
+        apply_friction=False,
+        trailing_stop=TrailingStopConfig(
+            enabled=True,
+            mode="chandelier_atr",
+            breakeven_trigger_r=None,
+            trail_trigger_r=1.5,
+            trail_atr_multiple=1.5,
+            trail_step_ticks=1,
+        ),
+    )
+
+    dates = pd.date_range("2026-01-01", periods=30, freq="B", tz="UTC")
+    # Bar 20: Entry at 100.0 (Stop: 90.0, TP: 130.0, Risk: 10.0)
+    # Bar 21: High reaches 118.0 (+18 pts = +1.8R >= 1.5R).
+    #         ATR = 4.0. Trail dist = 1.5 * 4 = 6.0 pts.
+    #         Proposed trail stop = 118 - 6 = 112.0.
+    # Bar 22: Price pulls back: Low drops to 110.0 (<= 112.0 trail stop).
+    #         Should exit at 112.0 with TRAILING_STOP!
+    df_daily = pd.DataFrame(
+        {
+            "Open": [100.0] * 30,
+            "High": [102.0] * 30,
+            "Low": [98.0] * 30,
+            "Close": [100.0] * 30,
+            "Volume": [10000.0] * 30,
+            "ATR": [4.0] * 30,
+            "ATR_14": [4.0] * 30,
+            "EMA_20": [100.0] * 30,
+            "EMA_50": [95.0] * 30,
+            "EMA_200": [90.0] * 30,
+            "RSI_14": [50.0] * 30,
+        },
+        index=dates,
+    )
+    df_daily.loc[dates[21], "High"] = 118.0
+    df_daily.loc[dates[21], "Low"] = 99.0
+    df_daily.loc[dates[21], "Close"] = 116.0
+
+    df_daily.loc[dates[22], "High"] = 115.0
+    df_daily.loc[dates[22], "Low"] = 110.0  # Triggers trailing stop at 112.0
+    df_daily.loc[dates[22], "Close"] = 111.0
+
+    md = ContractMarketData(
+        contract="XYZ",
+        ticker="XYZ",
+        daily=df_daily,
+        four_hour=df_daily,
+        hourly=df_daily,
+    )
+
+    trade = BacktestTrade(
+        symbol="XYZ",
+        asset_class=AssetClass.EQUITY,
+        strategy=StrategyType.TREND_PULLBACK,
+        direction=Direction.LONG,
+        entry_timestamp=dates[20],
+        entry_price=100.0,
+        quantity=10.0,
+        stop_loss=90.0,
+        take_profit=130.0,
+        risk_dollars=100.0,
+        initial_stop_loss=90.0,
+        high_water_mark=100.0,
+        low_water_mark=100.0,
+    )
+
+    res = engine.run(symbols=["XYZ"], market_data_map={"XYZ": md}, initial_trades=[trade])
+    assert res.total_trades == 1
+    closed_trade = res.trades[0]
+    assert closed_trade.exit_reason == ExitReason.TRAILING_STOP
+    assert closed_trade.exit_price == 112.0
+    assert closed_trade.pnl_dollars == (112.0 - 100.0) * 1.0 * 10.0  # +$120.0 locked in profit!

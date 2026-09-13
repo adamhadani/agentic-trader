@@ -74,10 +74,14 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
 - `agentic_trader/constants.py`: Centralized domain constants, symbols, multipliers, tick sizes, HTTP timeouts, URLs, and status strings.
 - `agentic_trader/cli/`: Modular Click CLI package hierarchy (`main.py` and `commands/` for `scan`, `trade`, `backtest`, `research`, `stress`, `options`, `pairs`, `telemetry`, `service`, `db`).
 - `agentic_trader/agent/`:
-  - `copilot.py`: `FuturesCopilot` orchestration engine.
+  - `copilot.py`: `TradingCopilot` orchestration engine (`FuturesCopilot` backward-compatibility alias).
   - `evaluator.py`: LiteLLM trade evaluator and risk invariant gating.
   - `calendar.py`: Economic calendar with macro lockout detection (`ForexFactoryCalendar`).
   - `regime.py`: Real-time market regime classifier (VIX, 10Y Treasury yield, Dollar Index).
+- `agentic_trader/presentation/`:
+  - `formatters.py`: Decoupled presentation DTOs (`PositionView`, `PositionsReport`, `PortfolioStatusReport`, `ExecutionResultView`, `PerformanceSummaryReport`) and formatters (`TerminalFormatter`, `TelegramHtmlFormatter`).
+- `agentic_trader/market/`:
+  - `session.py`: Market session & trading hours protocol (`MarketSessionProtocol`), CME Globex holiday calendar (`MarketHolidayCalendar`), timezone normalization (`ensure_et`), and composite routing (`CompositeMarketSessionProvider`).
 - `agentic_trader/broker/`:
   - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`).
   - `paper.py`: Simulated paper execution with dynamic contract multipliers.
@@ -94,7 +98,7 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
   - `collector.py`: Thread-safe Prometheus metrics registry (`MetricsCollector`).
   - `server.py`: Lightweight async HTTP server serving `/metrics` and `/healthz`.
 - `agentic_trader/screeners/`: Technical indicators (EMA, Wilder RSI, ATR, Bollinger, Keltner, Squeeze) and strategy rules.
-- `agentic_trader/backtest/`: Backtest engine, transaction friction, Cash-Plus attribution, Monte Carlo simulation, and crisis replay.
+- `agentic_trader/backtest/`: Backtest engine, transaction friction, Cash-Plus attribution, Monte Carlo simulation, crisis replay, and dynamic Chandelier ATR trailing stop ratcheting.
 - `agentic_trader/research/`: VectorBT-based parameter grid optimizer and rolling walk-forward cross-validation engine.
 - `agentic_trader/storage/`: SQLAlchemy 2.0 ORM models (`SignalRecord`, `PositionModel`, `TradeAuditModel`) backing SQLite (`data/signals.db`).
 - `agentic_trader/notifier/telegram_bot.py`: Interactive Telegram bot with command handlers (`/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/backtest`, `/close`, `/scan`) and execution buttons.

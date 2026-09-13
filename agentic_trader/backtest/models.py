@@ -26,6 +26,9 @@ class BacktestTrade:
     duration_bars: int = 0
     commission: float = 0.0
     slippage_dollars: float = 0.0
+    initial_stop_loss: float = 0.0
+    high_water_mark: float = 0.0
+    low_water_mark: float = 0.0
 
 
 @dataclass
