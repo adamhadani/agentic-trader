@@ -43,7 +43,7 @@ def test_cli_root_help(runner: CliRunner):
     [
         ("status", "--help"),
         ("positions", "--help"),
-        ("scan", "--dry-run"),
+        ("scan", "--bypass-session-filter"),
         ("execute", "--qty"),
         ("close", "--price"),
         ("doctor", "pre-flight"),
@@ -63,6 +63,26 @@ def test_cli_subcommands_help(runner: CliRunner, command_name: str, expected_hel
     result = runner.invoke(cli, [command_name, "--help"])
     assert result.exit_code == 0, f"Command {command_name} --help failed: {result.output}"
     assert expected_help_str in result.output
+
+
+def test_cli_scan_smoke(runner: CliRunner):
+    """Verify copilot scan runs cleanly with mocked copilot and passes bypass_session_filter."""
+    with patch("agentic_trader.cli.commands.scan.get_copilot_and_config") as mock_get:
+        mock_copilot = MagicMock()
+        mock_copilot.broker = MagicMock()
+        mock_copilot.broker.connect = AsyncMock()
+        mock_copilot.run_scan = AsyncMock()
+        mock_get.return_value = (mock_copilot, MagicMock())
+
+        result = runner.invoke(cli, ["scan", "--dry-run", "--no-llm", "--bypass-session-filter", "--symbols", "SPY"])
+        assert result.exit_code == 0
+        mock_copilot.run_scan.assert_called_once_with(
+            use_llm=False,
+            dry_run=True,
+            asset_class="all",
+            symbols=["SPY"],
+            bypass_session_filter=True,
+        )
 
 
 def test_cli_doctor_smoke(runner: CliRunner):

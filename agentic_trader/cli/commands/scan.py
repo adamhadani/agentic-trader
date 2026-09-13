@@ -30,12 +30,19 @@ from agentic_trader.cli.utils import coro, get_copilot_and_config
     default=None,
     help="Comma-separated symbols to scan (e.g. 'ES,NQ' or 'BTC/USD')",
 )
+@click.option(
+    "--bypass-session-filter",
+    is_flag=True,
+    default=False,
+    help="Bypass market session hours and holiday halt gating",
+)
 @coro
 async def scan(
     no_llm: bool,
     dry_run: bool,
     asset_class: str,
     symbols: str | None,
+    bypass_session_filter: bool = False,
 ) -> None:
     """Scan watchlists and run LLM risk evaluation."""
     copilot, _config = get_copilot_and_config()
@@ -47,4 +54,5 @@ async def scan(
         dry_run=dry_run,
         asset_class=asset_class,
         symbols=sym_list,
+        bypass_session_filter=bypass_session_filter,
     )

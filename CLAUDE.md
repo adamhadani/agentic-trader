@@ -57,7 +57,9 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
 - **Pre-commit checks (mandatory before any commit)**:
   `uv run pre-commit run --all-files`
 - **Run test suite**:
-  `uv run pytest` (157 unit tests)
+  `uv run pytest` (217 unit tests)
+- **Run test suite with code coverage**:
+  `uv run pytest --cov=agentic_trader --cov-report=term-missing`
 - **Rust-accelerated impacted tests**:
   `uv run pytest tests --impacted --impacted-module=agentic_trader --impacted-tests-dir=tests`
 - **Linter & Formatter**:
