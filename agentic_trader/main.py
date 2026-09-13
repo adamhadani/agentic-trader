@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from agentic_trader.agent.calendar import EconomicCalendar
+from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.broker import BaseBroker, OrderRequest, create_broker
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
@@ -39,7 +39,7 @@ class FuturesCopilot:
         self.data_fetcher = MarketDataFetcher()
         self.broker: BaseBroker = create_broker(config=config, data_fetcher=self.data_fetcher)
         self.strategy_engine = StrategyEngine(config)
-        self.calendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
+        self.calendar: BaseEconomicCalendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.evaluator = RiskEvaluator(config, calendar=self.calendar)
         self.notifier = TelegramNotifier(
             bot_token=config.telegram_bot_token,

@@ -6,7 +6,7 @@ import re
 import litellm
 from pydantic import BaseModel, Field
 
-from agentic_trader.agent.calendar import EconomicCalendar
+from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import CALLBACK_LANGSMITH, Direction
@@ -36,9 +36,9 @@ class LLMTradeEvaluation(BaseModel):
 
 
 class RiskEvaluator:
-    def __init__(self, config: AppConfig, calendar: EconomicCalendar | None = None):
+    def __init__(self, config: AppConfig, calendar: BaseEconomicCalendar | None = None):
         self.config = config
-        self.calendar = calendar or EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
+        self.calendar: BaseEconomicCalendar = calendar or EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
 
         # Wire up LangSmith tracing if credentials exist in environment
         if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):

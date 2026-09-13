@@ -59,7 +59,7 @@ The **Cash-Plus Trading Copilot** is an automated personal trading copilot for a
   - `indicators.py`: Vectorized technical indicators (EMA, RSI-Wilder, ATR, Bollinger, Keltner, Squeeze).
   - `strategies.py`: Quantitative screening algorithms (Strategy A: Trend-Pullback; Strategy B: Squeeze Breakout).
 - `agentic_trader/agent/`:
-  - `calendar.py`: Economic calendar parser and macro lockout logic.
+  - `calendar.py`: Economic calendar interface (`BaseEconomicCalendar`, `EconomicCalendarProtocol`) and default `ForexFactoryCalendar` with macro lockout detection.
   - `evaluator.py`: LiteLLM trade evaluator, schema validation, and invariant enforcement.
   - `prompts.py`: System prompt and structured few-shot evaluation prompts.
 - `agentic_trader/storage/`:
