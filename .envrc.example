@@ -33,7 +33,7 @@ export LANGCHAIN_API_KEY=""
 export LANGCHAIN_PROJECT="futures-copilot"
 
 # --- Broker Execution & Automated Trading ---
-# Mode: "paper" (simulated fills against live quotes, default), "tradovate" (API execution), or "manual"
+# Mode: "paper" (simulated fills against live quotes, default), "tradovate" (API execution), "alpaca" (equities/crypto execution), or "manual"
 export EXECUTION_MODE="paper"
 
 # --- Tradovate Credentials (Required only if EXECUTION_MODE="tradovate") ---
@@ -44,3 +44,9 @@ export TRADOVATE_API_SECRET=""
 export TRADOVATE_USERNAME=""
 export TRADOVATE_PASSWORD=""
 export TRADOVATE_ACCOUNT_ID=""
+
+# --- Alpaca Credentials (Required only if EXECUTION_MODE="alpaca") ---
+# APCA_API_KEY_ID and APCA_API_SECRET_KEY for paper or live trading
+export APCA_API_KEY_ID=""
+export APCA_API_SECRET_KEY=""
+export ALPACA_PAPER="true"

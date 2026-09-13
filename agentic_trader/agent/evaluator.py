@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from agentic_trader.agent.calendar import EconomicCalendar
 from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
 from agentic_trader.config import AppConfig
+from agentic_trader.constants import CALLBACK_LANGSMITH, Direction
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
@@ -41,11 +42,14 @@ class RiskEvaluator:
 
         # Wire up LangSmith tracing if credentials exist in environment
         if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):
-            if "langsmith" not in litellm.success_callback:
-                litellm.success_callback.append("langsmith")
-            if "langsmith" not in litellm.failure_callback:
-                litellm.failure_callback.append("langsmith")
-            logger.info("LangSmith tracing auto-enabled for LiteLLM evaluator")
+            if CALLBACK_LANGSMITH not in litellm.success_callback:
+                litellm.success_callback.append(CALLBACK_LANGSMITH)
+            if CALLBACK_LANGSMITH not in litellm.failure_callback:
+                litellm.failure_callback.append(CALLBACK_LANGSMITH)
+            logger.info(
+                "LangSmith tracing auto-enabled for LiteLLM evaluator",
+                extra={"callback": CALLBACK_LANGSMITH, "model": self.config.llm_model},
+            )
 
     def calculate_levels_deterministic(
         self, candidate: ScreenerCandidate
@@ -62,7 +66,7 @@ class RiskEvaluator:
         entry = candidate.current_price
         min_stop_distance = self.config.risk.min_stop_atr_multiple * candidate.atr_14
 
-        if candidate.direction.upper() == "LONG":
+        if str(candidate.direction).upper() in ("LONG", str(Direction.LONG)):
             # Anchor behind recent swing low, but enforce >= 1.5 * ATR
             structural_stop = candidate.recent_swing_low - (2 * tick_size)
             stop_distance = max(entry - structural_stop, min_stop_distance)
@@ -278,7 +282,11 @@ class RiskEvaluator:
             return LLMTradeEvaluation(**data)
 
         except Exception as e:
-            logger.warning(f"LLM evaluation failed ({e}), falling back to deterministic risk engine.")
+            logger.warning(
+                "LLM evaluation failed (%s), falling back to deterministic risk engine.",
+                e,
+                extra={"contract": candidate.contract, "strategy": candidate.strategy, "error": str(e)},
+            )
             return LLMTradeEvaluation(
                 approved=True,
                 rejection_reason=None,

@@ -2,25 +2,61 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from agentic_trader.constants import AssetClass, Direction, OrderClass, OrderSide, OrderType, TimeInForce
 
 
 class OrderRequest(BaseModel):
-    """Specification for submitting a micro futures order with bracket exits."""
+    """
+    Generalized multi-asset order specification.
+    Supports futures, equities, crypto, and derivatives with bracket or simple order structures.
+    """
 
-    signal_id: int
-    contract: str  # e.g. "/MES", "/MNQ", "/MGC", "/MCL"
-    ticker: str  # e.g. "MES=F"
-    direction: str  # "LONG" or "SHORT"
-    entry_price: float
-    stop_loss: float
-    take_profit: float
-    quantity: int = 1
-    order_type: str = "LIMIT"  # "LIMIT" or "MARKET"
+    symbol: str = Field(default="", description="Trading symbol (e.g. '/MES', 'SPY', 'AAPL', 'BTC/USD')")
+    contract: str | None = Field(default=None, description="Legacy futures contract alias")
+    ticker: str | None = Field(default=None, description="Underlying quote ticker (e.g. 'MES=F')")
+    asset_class: AssetClass = Field(default=AssetClass.FUTURES)
+    direction: Direction | str = Field(default=Direction.LONG)
+    side: OrderSide | str | None = Field(default=None)
+    quantity: float = Field(default=1.0, gt=0)
+    order_type: OrderType | str = Field(default=OrderType.LIMIT)
+    order_class: OrderClass | str = Field(default=OrderClass.BRACKET)
+    time_in_force: TimeInForce | str = Field(default=TimeInForce.GTC)
+    entry_price: float | None = Field(default=None)
+    stop_loss: float | None = Field(default=None)
+    take_profit: float | None = Field(default=None)
+    signal_id: int | None = Field(default=None)
+    client_order_id: str | None = Field(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reconcile_symbol_and_side(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # If contract is provided without symbol, mirror to symbol
+            if "contract" in data and not data.get("symbol"):
+                data["symbol"] = data["contract"]
+            elif "symbol" in data and not data.get("contract"):
+                data["contract"] = data["symbol"]
+
+            # Derive side from direction if not specified
+            direction = str(data.get("direction", Direction.LONG)).upper()
+            if not data.get("side"):
+                data["side"] = OrderSide.BUY if direction in ("LONG", "BUY") else OrderSide.SELL
+
+            # Default ticker to symbol if missing
+            if not data.get("ticker") and data.get("symbol"):
+                data["ticker"] = data["symbol"]
+        return data
+
+    @property
+    def is_bracket(self) -> bool:
+        """True if order includes stop-loss and take-profit exit targets."""
+        return bool(self.stop_loss is not None and self.take_profit is not None)
 
 
 class OrderResult(BaseModel):
-    """Result returned by broker execution."""
+    """Execution result returned by broker."""
 
     success: bool
     order_id: str | None = None
@@ -29,21 +65,37 @@ class OrderResult(BaseModel):
     error_message: str | None = None
     bracket_orders: dict[str, str] = Field(default_factory=dict)
     raw_response: dict[str, Any] = Field(default_factory=dict)
+    status: str | None = None
 
 
 class BrokerPosition(BaseModel):
-    """Active position reported by broker."""
+    """Active open position reported by broker."""
 
-    contract: str
-    direction: str  # "LONG" or "SHORT"
-    quantity: int
-    entry_price: float
-    current_price: float | None = None
-    unrealized_pnl: float | None = None
+    symbol: str = Field(default="")
+    contract: str | None = Field(default=None)
+    asset_class: AssetClass = Field(default=AssetClass.FUTURES)
+    direction: Direction | str = Field(default=Direction.LONG)
+    quantity: float = Field(default=1.0)
+    entry_price: float = Field(default=0.0)
+    current_price: float | None = Field(default=None)
+    unrealized_pnl: float | None = Field(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_symbol_contract(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "contract" in data and not data.get("symbol"):
+                data["symbol"] = data["contract"]
+            elif "symbol" in data and not data.get("contract"):
+                data["contract"] = data["symbol"]
+        return data
 
 
 class BaseBroker(ABC):
-    """Abstract Base Class for futures broker execution engines."""
+    """
+    Abstract Base Class for multi-asset execution brokers.
+    Provides standard interfaces for futures, equities, crypto, and derivatives.
+    """
 
     @abstractmethod
     async def connect(self) -> bool:
@@ -53,24 +105,37 @@ class BaseBroker(ABC):
     async def disconnect(self) -> None:
         """Tear down active connections or sessions."""
 
+    async def submit_order(self, request: OrderRequest) -> OrderResult:
+        """
+        Submit a general order (market, limit, stop, or bracket).
+        Default implementation delegates to submit_entry_order for backward compatibility.
+        """
+        return await self.submit_entry_order(request)
+
     @abstractmethod
     async def submit_entry_order(self, request: OrderRequest) -> OrderResult:
         """
-        Submit entry order with bracket stop loss and take profit targets.
+        Submit an entry order with optional bracket targets.
         Must return OrderResult indicating success or failure.
         """
 
     @abstractmethod
     async def close_position(
         self,
-        contract: str,
-        exit_reason: str,
+        symbol: str | None = None,
+        exit_reason: str = "MANUAL_CLOSE",
         exit_price: float | None = None,
+        quantity: float | None = None,
+        contract: str | None = None,
     ) -> OrderResult:
         """
-        Close an open position for a given contract.
+        Close an open position for a given symbol or contract.
         """
 
     @abstractmethod
     async def get_positions(self) -> list[BrokerPosition]:
         """Fetch active positions currently open at the broker."""
+
+    async def get_account_balance(self) -> dict[str, float]:
+        """Fetch current cash balance and portfolio value if supported by broker."""
+        return {}

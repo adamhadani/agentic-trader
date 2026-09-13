@@ -3,6 +3,12 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from agentic_trader.constants import (
+    DEFAULT_LOCKOUT_POST_EVENT_MINUTES,
+    DEFAULT_LOCKOUT_PRE_EVENT_MINUTES,
+    FOREX_FACTORY_JSON_FEED_URL,
+)
+
 
 TIER_1_KEYWORDS = [
     "cpi",
@@ -53,7 +59,7 @@ class EconomicCalendar:
         try:
             async with httpx.AsyncClient(timeout=6.0) as client:
                 resp = await client.get(
-                    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+                    FOREX_FACTORY_JSON_FEED_URL,
                     headers={"User-Agent": "Mozilla/5.0"},
                 )
                 if resp.status_code == 200:
@@ -95,8 +101,8 @@ class EconomicCalendar:
 
     async def is_in_lockout_window(
         self,
-        pre_minutes: int = 60,
-        post_minutes: int = 30,
+        pre_minutes: int = DEFAULT_LOCKOUT_PRE_EVENT_MINUTES,
+        post_minutes: int = DEFAULT_LOCKOUT_POST_EVENT_MINUTES,
         now: datetime | None = None,
     ) -> tuple[bool, MacroEvent | None]:
         """

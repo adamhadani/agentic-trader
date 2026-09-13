@@ -5,6 +5,7 @@ requires-python = ">=3.14"
 dependencies = [
     "aiosqlite>=0.22.1",
     "apscheduler>=3.11.3",
+    "greenlet>=3.5.5",
     "httpx>=0.28.1",
     "litellm>=1.100.1",
     "numpy>=2.5.3",
@@ -15,6 +16,7 @@ dependencies = [
     "python-telegram-bot>=22.8",
     "pyyaml>=6.0.3",
     "scipy>=1.18.1",
+    "sqlalchemy>=2.0.38",
     "yfinance>=1.7.0",
 ]
 

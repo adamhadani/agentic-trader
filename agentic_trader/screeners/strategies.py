@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from agentic_trader.config import AppConfig
+from agentic_trader.constants import Direction, StrategyType
 from agentic_trader.data.market_data import ContractMarketData
 
 
@@ -83,8 +84,8 @@ class StrategyEngine:
                 return ScreenerCandidate(
                     contract=data.contract,
                     timeframe="4h",
-                    strategy="TREND_PULLBACK",
-                    direction="LONG",
+                    strategy=StrategyType.TREND_PULLBACK,
+                    direction=Direction.LONG,
                     current_price=round(close_4h, 2),
                     ema_20=round(ema20_4h, 2),
                     ema_50=round(ema50_4h, 2),
@@ -104,8 +105,8 @@ class StrategyEngine:
                 return ScreenerCandidate(
                     contract=data.contract,
                     timeframe="4h",
-                    strategy="TREND_PULLBACK",
-                    direction="SHORT",
+                    strategy=StrategyType.TREND_PULLBACK,
+                    direction=Direction.SHORT,
                     current_price=round(close_4h, 2),
                     ema_20=round(ema20_4h, 2),
                     ema_50=round(ema50_4h, 2),
@@ -169,8 +170,8 @@ class StrategyEngine:
             return ScreenerCandidate(
                 contract=data.contract,
                 timeframe=timeframe,
-                strategy="SQUEEZE_BREAKOUT",
-                direction="LONG",
+                strategy=StrategyType.SQUEEZE_BREAKOUT,
+                direction=Direction.LONG,
                 current_price=round(close, 2),
                 ema_20=round(ema20, 2),
                 ema_50=round(ema50, 2),
@@ -188,8 +189,8 @@ class StrategyEngine:
             return ScreenerCandidate(
                 contract=data.contract,
                 timeframe=timeframe,
-                strategy="SQUEEZE_BREAKOUT",
-                direction="SHORT",
+                strategy=StrategyType.SQUEEZE_BREAKOUT,
+                direction=Direction.SHORT,
                 current_price=round(close, 2),
                 ema_20=round(ema20, 2),
                 ema_50=round(ema50, 2),

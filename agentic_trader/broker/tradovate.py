@@ -6,12 +6,10 @@ import httpx
 
 from agentic_trader.broker.base import BaseBroker, BrokerPosition, OrderRequest, OrderResult
 from agentic_trader.config import AppConfig
+from agentic_trader.constants import TRADOVATE_DEMO_URL, TRADOVATE_LIVE_URL, Direction
 
 
 logger = logging.getLogger(__name__)
-
-TRADOVATE_DEMO_URL = "https://demo.tradovateapi.com/v1"
-TRADOVATE_LIVE_URL = "https://live.tradovateapi.com/v1"
 
 
 class TradovateBroker(BaseBroker):
@@ -120,11 +118,11 @@ class TradovateBroker(BaseBroker):
                 )
 
         headers = {"Authorization": f"Bearer {self._access_token}"}
-        action = "Buy" if request.direction.upper() == "LONG" else "Sell"
+        action = "Buy" if str(request.direction).upper() in ("LONG", str(Direction.LONG)) else "Sell"
         exit_action = "Sell" if action == "Buy" else "Buy"
 
         # Symbol resolution: strip leading '/' and map micro futures
-        symbol = request.contract.strip("/").upper()
+        symbol = request.symbol.strip("/").upper()
 
         # Tradovate OSO / Bracket order payload
         payload: dict[str, Any] = {
@@ -132,8 +130,8 @@ class TradovateBroker(BaseBroker):
             "accountId": self._account_id,
             "action": action,
             "symbol": symbol,
-            "orderQty": request.quantity,
-            "orderType": "Limit" if request.order_type == "LIMIT" else "Market",
+            "orderQty": int(request.quantity),
+            "orderType": "Limit" if str(request.order_type).upper() == "LIMIT" else "Market",
             "price": request.entry_price,
             "isAutomated": True,
             "bracket1": {
@@ -149,17 +147,29 @@ class TradovateBroker(BaseBroker):
         }
 
         try:
-            logger.info("Submitting Tradovate bracket order for %s %d %s...", action, request.quantity, symbol)
+            logger.info(
+                "Submitting Tradovate bracket order for %s %d %s...",
+                action,
+                int(request.quantity),
+                symbol,
+                extra={"symbol": symbol, "action": action, "quantity": request.quantity, "broker": "TradovateBroker"},
+            )
             resp = await self.client.post("/order/placebracketorder", json=payload, headers=headers)
             data = resp.json()
 
             if resp.status_code != 200 or data.get("error"):
                 err_msg = data.get("errorText", str(data))
-                logger.error("Tradovate order submission error: %s", err_msg)
+                logger.error(
+                    "Tradovate order submission error: %s", err_msg, extra={"error": err_msg, "symbol": symbol}
+                )
                 return OrderResult(success=False, error_message=err_msg, raw_response=data)
 
             order_id = str(data.get("orderId", data.get("id", "")))
-            logger.info("Tradovate order placed successfully: Order ID %s", order_id)
+            logger.info(
+                "Tradovate order placed successfully: Order ID %s",
+                order_id,
+                extra={"order_id": order_id, "symbol": symbol, "broker": "TradovateBroker"},
+            )
 
             return OrderResult(
                 success=True,
@@ -178,13 +188,16 @@ class TradovateBroker(BaseBroker):
 
     async def close_position(
         self,
-        contract: str,
-        exit_reason: str,
+        symbol: str | None = None,
+        exit_reason: str = "MANUAL_CLOSE",
         exit_price: float | None = None,
+        quantity: float | None = None,
+        contract: str | None = None,
     ) -> OrderResult:
         """
-        Close position for a given contract via Tradovate liquidation endpoint or offsetting market order.
+        Close position for a given symbol via Tradovate liquidation endpoint or offsetting market order.
         """
+        target_symbol = symbol or contract or ""
         if not self._access_token or not self.client:
             connected = await self.connect()
             if not connected or not self.client:
@@ -194,22 +207,29 @@ class TradovateBroker(BaseBroker):
                 )
 
         headers = {"Authorization": f"Bearer {self._access_token}"}
-        symbol = contract.strip("/").upper()
+        clean_symbol = target_symbol.strip("/").upper()
 
         payload = {
             "accountId": self._account_id,
-            "contract": symbol,
+            "contract": clean_symbol,
             "admin": False,
         }
 
         try:
-            logger.info("Liquidating Tradovate position for %s (Reason: %s)...", symbol, exit_reason)
+            logger.info(
+                "Liquidating Tradovate position for %s (Reason: %s)...",
+                clean_symbol,
+                exit_reason,
+                extra={"symbol": clean_symbol, "exit_reason": exit_reason, "broker": "TradovateBroker"},
+            )
             resp = await self.client.post("/order/liquidateposition", json=payload, headers=headers)
             data = resp.json()
 
             if resp.status_code != 200 or data.get("error"):
                 err_msg = data.get("errorText", str(data))
-                logger.error("Tradovate liquidation error: %s", err_msg)
+                logger.error(
+                    "Tradovate liquidation error: %s", err_msg, extra={"error": err_msg, "symbol": clean_symbol}
+                )
                 return OrderResult(success=False, error_message=err_msg, raw_response=data)
 
             order_id = str(data.get("orderId", f"LIQ-{int(datetime.now(UTC).timestamp())}"))

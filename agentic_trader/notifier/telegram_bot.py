@@ -12,6 +12,12 @@ from telegram.ext import (
 )
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
+from agentic_trader.constants import (
+    DEFAULT_PORTFOLIO_CASH,
+    ExecutionMode,
+    ExitReason,
+    SignalStatus,
+)
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -21,23 +27,28 @@ logger = logging.getLogger(__name__)
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
-    portfolio_cash: float = 100000.0,
-    execution_mode: str = "paper",
+    portfolio_cash: float = DEFAULT_PORTFOLIO_CASH,
+    execution_mode: str = ExecutionMode.PAPER,
 ) -> str:
     """Format alert message matching Section 8 of the specification."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
 
     mode_lower = execution_mode.lower()
-    if mode_lower == "paper":
+    if mode_lower == ExecutionMode.PAPER:
         exec_instr = (
             f"1. Click <b>[ 🚀 Execute (Paper) ]</b> to simulate entry for 1 <code>{html.escape(eval_res.contract)}</code> at <code>{eval_res.entry_price:,.2f}</code>.\n"
             f"2. Fills against live market quote; synthetic bracket stop at <code>{eval_res.stop_loss:,.2f}</code>.\n"
         )
-    elif mode_lower == "tradovate":
+    elif mode_lower == ExecutionMode.TRADOVATE:
         exec_instr = (
             f"1. Click <b>[ 🚀 Approve & Execute ]</b> to submit 1 <code>{html.escape(eval_res.contract)}</code> via Tradovate REST API.\n"
             f"2. Server-side OCO brackets placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
+        )
+    elif mode_lower == ExecutionMode.ALPACA:
+        exec_instr = (
+            f"1. Click <b>[ 🚀 Execute (Alpaca) ]</b> to submit 1 <code>{html.escape(eval_res.contract)}</code> via Alpaca Trading API.\n"
+            f"2. Server-side bracket order placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
         )
     else:
         exec_instr = (
@@ -68,23 +79,28 @@ def format_alert_card(
 def format_terminal_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
-    portfolio_cash: float = 100000.0,
-    execution_mode: str = "paper",
+    portfolio_cash: float = DEFAULT_PORTFOLIO_CASH,
+    execution_mode: str = ExecutionMode.PAPER,
 ) -> str:
     """ASCII/plain text formatted card for terminal display."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
 
     mode_lower = execution_mode.lower()
-    if mode_lower == "paper":
+    if mode_lower == ExecutionMode.PAPER:
         exec_instr = (
             f"1. Run 'copilot execute <id>' or click [Execute (Paper)] in Telegram.\n"
             f"2. Simulates fill against live quote; bracket stop at {eval_res.stop_loss:,.2f}."
         )
-    elif mode_lower == "tradovate":
+    elif mode_lower == ExecutionMode.TRADOVATE:
         exec_instr = (
             f"1. Run 'copilot execute <id>' or click [Approve & Execute] in Telegram.\n"
             f"2. Sends API bracket order to Tradovate; OCO stop at {eval_res.stop_loss:,.2f}."
+        )
+    elif mode_lower == ExecutionMode.ALPACA:
+        exec_instr = (
+            f"1. Run 'copilot execute <id>' or click [Execute (Alpaca)] in Telegram.\n"
+            f"2. Sends bracket order to Alpaca API; stop at {eval_res.stop_loss:,.2f}."
         )
     else:
         exec_instr = (
@@ -127,9 +143,9 @@ def format_exit_card(
     strategy: str,
 ) -> str:
     """Format exit notification card for Take Profit, Stop Loss, or Manual Close."""
-    if "PROFIT" in exit_reason.upper():
+    if ExitReason.TAKE_PROFIT in exit_reason.upper():
         icon = "🎯 TAKE PROFIT REACHED"
-    elif "STOP" in exit_reason.upper():
+    elif ExitReason.STOP_LOSS in exit_reason.upper():
         icon = "🛑 STOP LOSS TRIGGERED"
     else:
         icon = "ℹ️ POSITION CLOSED"
@@ -156,8 +172,8 @@ class TelegramNotifier:
         bot_token: str | None,
         chat_id: str | None,
         db: SignalDatabase,
-        portfolio_cash: float = 100000.0,
-        execution_mode: str = "paper",
+        portfolio_cash: float = DEFAULT_PORTFOLIO_CASH,
+        execution_mode: str = ExecutionMode.PAPER,
         status_provider: Callable[[], Awaitable[str]] | None = None,
         scan_runner: Callable[[], Awaitable[str]] | None = None,
         positions_provider: Callable[[], Awaitable[str]] | None = None,
@@ -281,6 +297,11 @@ class TelegramNotifier:
 
         if data.startswith("exec_"):
             signal_id = int(data.split("_")[1])
+            logger.info(
+                "Execution button clicked for signal #%d",
+                signal_id,
+                extra={"signal_id": signal_id, "action": "execute", "execution_mode": self.execution_mode},
+            )
             if self.execute_handler:
                 await query.answer("Submitting order to broker...")
                 await query.edit_message_reply_markup(reply_markup=None)
@@ -289,20 +310,25 @@ class TelegramNotifier:
                     await msg.reply_text(reply_text, parse_mode="HTML")
             else:
                 await query.answer()
-                await self.db.update_signal_status(signal_id, "EXECUTED")
+                await self.db.update_signal_status(signal_id, SignalStatus.EXECUTED)
                 await query.edit_message_reply_markup(reply_markup=None)
                 if msg and hasattr(msg, "reply_text"):
                     await msg.reply_text(
-                        f"✅ Signal #{signal_id} acknowledged: status set to EXECUTED. Position is now active in risk tracking."
+                        f"✅ Signal #{signal_id} acknowledged: status set to {SignalStatus.EXECUTED}. Position is now active in risk tracking."
                     )
 
         elif data.startswith("dism_"):
             await query.answer()
             signal_id = int(data.split("_")[1])
-            await self.db.update_signal_status(signal_id, "DISMISSED")
+            logger.info(
+                "Dismiss button clicked for signal #%d",
+                signal_id,
+                extra={"signal_id": signal_id, "action": "dismiss"},
+            )
+            await self.db.update_signal_status(signal_id, SignalStatus.DISMISSED)
             await query.edit_message_reply_markup(reply_markup=None)
             if msg and hasattr(msg, "reply_text"):
-                await msg.reply_text(f"❌ Signal #{signal_id} DISMISSED.")
+                await msg.reply_text(f"❌ Signal #{signal_id} {SignalStatus.DISMISSED}.")
 
     async def send_signal_alert(
         self,
@@ -314,16 +340,21 @@ class TelegramNotifier:
         print(format_terminal_card(eval_res, strategy, self.portfolio_cash, execution_mode=self.execution_mode))
 
         if not self.is_configured() or not self.app:
-            logger.info("Telegram not configured or token missing. Alert displayed on terminal.")
+            logger.info(
+                "Telegram not configured or token missing. Alert displayed on terminal.",
+                extra={"signal_id": signal_id, "contract": eval_res.contract, "strategy": strategy},
+            )
             return None
 
         card_html = format_alert_card(eval_res, strategy, self.portfolio_cash, execution_mode=self.execution_mode)
 
         mode_lower = self.execution_mode.lower()
-        if mode_lower == "paper":
+        if mode_lower == ExecutionMode.PAPER:
             exec_btn_text = "🚀 Execute (Paper)"
-        elif mode_lower == "tradovate":
+        elif mode_lower == ExecutionMode.TRADOVATE:
             exec_btn_text = "🚀 Approve & Execute"
+        elif mode_lower == ExecutionMode.ALPACA:
+            exec_btn_text = "🚀 Execute (Alpaca)"
         else:
             exec_btn_text = "✅ Acknowledge & Tracking"
 
@@ -344,9 +375,25 @@ class TelegramNotifier:
                 reply_markup=reply_markup,
             )
             await self.db.update_telegram_message_id(signal_id, msg.message_id)
+            logger.info(
+                "Telegram signal alert dispatched for signal #%d",
+                signal_id,
+                extra={
+                    "signal_id": signal_id,
+                    "message_id": msg.message_id,
+                    "contract": eval_res.contract,
+                    "strategy": strategy,
+                    "direction": eval_res.direction,
+                    "entry_price": eval_res.entry_price,
+                },
+            )
             return msg.message_id
         except Exception as e:
-            logger.error(f"Failed to dispatch Telegram alert message: {e}")
+            logger.error(
+                "Failed to dispatch Telegram alert message: %s",
+                e,
+                extra={"signal_id": signal_id, "contract": eval_res.contract, "error": str(e)},
+            )
             return None
 
     async def send_exit_alert(
@@ -376,6 +423,15 @@ class TelegramNotifier:
             exit_reason,
             exit_price,
             realized_pnl,
+            extra={
+                "contract": contract,
+                "direction": direction,
+                "exit_reason": exit_reason,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "realized_pnl": realized_pnl,
+                "strategy": strategy,
+            },
         )
 
         if not self.is_configured() or not self.app:
@@ -390,5 +446,9 @@ class TelegramNotifier:
             )
             return msg.message_id
         except Exception as e:
-            logger.error(f"Failed to dispatch Telegram exit alert: {e}")
+            logger.error(
+                "Failed to dispatch Telegram exit alert: %s",
+                e,
+                extra={"contract": contract, "exit_reason": exit_reason, "error": str(e)},
+            )
             return None

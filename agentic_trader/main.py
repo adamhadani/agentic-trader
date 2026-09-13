@@ -12,6 +12,12 @@ from agentic_trader.agent.calendar import EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.broker import BaseBroker, OrderRequest, create_broker
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
+from agentic_trader.constants import (
+    Direction,
+    ExitReason,
+    SignalStatus,
+    StrategyType,
+)
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.screeners.strategies import StrategyEngine
@@ -83,8 +89,17 @@ class FuturesCopilot:
                 for candidate in candidates:
                     total_candidates += 1
                     logger.info(
-                        f"Found setup: {candidate.contract} {candidate.direction} "
-                        f"via {candidate.strategy} at {candidate.current_price:.2f}"
+                        "Found setup: %s %s via %s at %.2f",
+                        candidate.contract,
+                        candidate.direction,
+                        candidate.strategy,
+                        candidate.current_price,
+                        extra={
+                            "contract": candidate.contract,
+                            "direction": candidate.direction,
+                            "strategy": candidate.strategy,
+                            "price": candidate.current_price,
+                        },
                     )
 
                     # Deduplication check
@@ -95,8 +110,11 @@ class FuturesCopilot:
                     )
                     if is_dup:
                         logger.info(
-                            f"Skipping duplicate signal: {candidate.contract} {candidate.strategy} "
-                            f"already alerted within {self.config.risk.deduplication_hours} hours."
+                            "Skipping duplicate signal: %s %s already alerted within %d hours.",
+                            candidate.contract,
+                            candidate.strategy,
+                            self.config.risk.deduplication_hours,
+                            extra={"contract": candidate.contract, "strategy": candidate.strategy},
                         )
                         continue
 
@@ -108,7 +126,11 @@ class FuturesCopilot:
                     )
 
                     if not eval_res.approved:
-                        logger.info(f"Candidate rejected by risk engine: {eval_res.rejection_reason}")
+                        logger.info(
+                            "Candidate rejected by risk engine: %s",
+                            eval_res.rejection_reason,
+                            extra={"contract": candidate.contract, "rejection_reason": eval_res.rejection_reason},
+                        )
                         continue
 
                     if dry_run:
@@ -116,7 +138,7 @@ class FuturesCopilot:
                         print(format_terminal_card(eval_res, candidate.strategy, self.config.portfolio.cash))
                         continue
 
-                    # Record to SQLite database
+                    # Record to database
                     sig_id = await self.db.record_signal(
                         contract=eval_res.contract,
                         strategy=candidate.strategy,
@@ -127,7 +149,7 @@ class FuturesCopilot:
                         risk_dollars=eval_res.risk_dollars,
                         reward_dollars=eval_res.reward_dollars,
                         notional_value=eval_res.notional_value,
-                        status="PENDING",
+                        status=SignalStatus.PENDING,
                         raw_response=eval_res.model_dump_json(),
                     )
 
@@ -182,25 +204,42 @@ class FuturesCopilot:
             hit_tp = False
             hit_sl = False
 
-            if direction == "LONG":
+            if direction == Direction.LONG:
                 if current_price >= take_profit:
                     hit_tp = True
                 elif current_price <= stop_loss:
                     hit_sl = True
-            elif direction == "SHORT":
+            elif direction == Direction.SHORT:
                 if current_price <= take_profit:
                     hit_tp = True
                 elif current_price >= stop_loss:
                     hit_sl = True
 
             if hit_tp or hit_sl:
-                exit_reason = "TAKE_PROFIT" if hit_tp else "STOP_LOSS"
-                status = "CLOSED_WIN" if hit_tp else "CLOSED_LOSS"
+                exit_reason = ExitReason.TAKE_PROFIT if hit_tp else ExitReason.STOP_LOSS
+                status = SignalStatus.CLOSED_WIN if hit_tp else SignalStatus.CLOSED_LOSS
 
                 realized_pnl = (
                     (current_price - entry_price) * multiplier
-                    if direction == "LONG"
+                    if direction == Direction.LONG
                     else (entry_price - current_price) * multiplier
+                )
+
+                logger.info(
+                    "Position %s %s hit %s at %.2f (Realized PnL: $%.2f)",
+                    contract,
+                    direction,
+                    exit_reason,
+                    current_price,
+                    realized_pnl,
+                    extra={
+                        "signal_id": signal_id,
+                        "contract": contract,
+                        "direction": direction,
+                        "exit_reason": exit_reason,
+                        "exit_price": current_price,
+                        "realized_pnl": realized_pnl,
+                    },
                 )
 
                 # Close position at broker
@@ -211,7 +250,12 @@ class FuturesCopilot:
                         exit_price=current_price,
                     )
                 except Exception as e:
-                    logger.warning("Broker close_position exception for %s: %s", contract, e)
+                    logger.warning(
+                        "Broker close_position exception for %s: %s",
+                        contract,
+                        e,
+                        extra={"contract": contract, "error": str(e)},
+                    )
 
                 await self.db.close_position(
                     signal_id=signal_id,
@@ -255,7 +299,7 @@ class FuturesCopilot:
                 multiplier = contract_info.multiplier if contract_info else 5.0
 
                 current = self.data_fetcher.fetch_latest_price(ticker) or entry
-                pnl = (current - entry) * multiplier if direction == "LONG" else (entry - current) * multiplier
+                pnl = (current - entry) * multiplier if direction == Direction.LONG else (entry - current) * multiplier
                 total_unrealized += pnl
                 pnl_str = f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
                 print(
@@ -291,7 +335,11 @@ class FuturesCopilot:
             multiplier = contract_info.multiplier if contract_info else 5.0
 
             current_price = self.data_fetcher.fetch_latest_price(ticker) or entry
-            pnl = (current_price - entry) * multiplier if direction == "LONG" else (entry - current_price) * multiplier
+            pnl = (
+                (current_price - entry) * multiplier
+                if direction == Direction.LONG
+                else (entry - current_price) * multiplier
+            )
             total_unrealized_pnl += pnl
 
             pnl_sign = "+" if pnl >= 0 else "-"
@@ -314,7 +362,7 @@ class FuturesCopilot:
         pos = await self.db.get_signal_by_id(signal_id)
         if not pos:
             return f"❌ Signal #{signal_id} not found."
-        if pos["status"] != "EXECUTED":
+        if pos["status"] != SignalStatus.EXECUTED:
             return (
                 f"❌ Signal #{signal_id} is in status <b>{pos['status']}</b> (only EXECUTED positions can be closed)."
             )
@@ -327,23 +375,45 @@ class FuturesCopilot:
         ticker = contract_info.ticker if contract_info else "MES=F"
 
         final_exit = exit_price or self.data_fetcher.fetch_latest_price(ticker) or entry
-        realized_pnl = (final_exit - entry) * multiplier if direction == "LONG" else (entry - final_exit) * multiplier
+        realized_pnl = (
+            (final_exit - entry) * multiplier if direction == Direction.LONG else (entry - final_exit) * multiplier
+        )
+
+        logger.info(
+            "Manually closing position #%d for %s (Exit: %.2f, Realized PnL: $%.2f)",
+            signal_id,
+            contract,
+            final_exit,
+            realized_pnl,
+            extra={
+                "signal_id": signal_id,
+                "contract": contract,
+                "direction": direction,
+                "exit_price": final_exit,
+                "realized_pnl": realized_pnl,
+            },
+        )
 
         # Close position at broker
         try:
             await self.broker.close_position(
                 contract=contract,
-                exit_reason="MANUAL_CLOSE",
+                exit_reason=ExitReason.MANUAL_CLOSE,
                 exit_price=final_exit,
             )
         except Exception as e:
-            logger.warning("Broker close_position exception for %s: %s", contract, e)
+            logger.warning(
+                "Broker close_position exception for %s: %s",
+                contract,
+                e,
+                extra={"contract": contract, "error": str(e)},
+            )
 
-        status = "CLOSED_WIN" if realized_pnl >= 0 else "CLOSED_LOSS"
+        status = SignalStatus.CLOSED_WIN if realized_pnl >= 0 else SignalStatus.CLOSED_LOSS
         await self.db.close_position(
             signal_id=signal_id,
             exit_price=final_exit,
-            exit_reason="MANUAL_CLOSE",
+            exit_reason=ExitReason.MANUAL_CLOSE,
             realized_pnl=realized_pnl,
             status=status,
         )
@@ -351,7 +421,7 @@ class FuturesCopilot:
         await self.notifier.send_exit_alert(
             contract=contract,
             direction=direction,
-            exit_reason="MANUAL_CLOSE",
+            exit_reason=ExitReason.MANUAL_CLOSE,
             entry_price=entry,
             exit_price=final_exit,
             realized_pnl=realized_pnl,
@@ -368,13 +438,13 @@ class FuturesCopilot:
 
     async def execute_signal_by_id(self, signal_id: int) -> tuple[bool, str]:
         """
-        Execute an approved signal via the configured broker (Paper or Tradovate).
+        Execute an approved signal via the configured broker (Paper, Tradovate, or Alpaca).
         Enforces risk invariants before submission and records the fill order ID in SQLite.
         """
         sig = await self.db.get_signal_by_id(signal_id)
         if not sig:
             return False, f"❌ Signal #{signal_id} not found."
-        if sig["status"] != "PENDING":
+        if sig["status"] != SignalStatus.PENDING:
             return False, (
                 f"❌ Signal #{signal_id} is in status <b>{sig['status']}</b> (only PENDING signals can be executed)."
             )
@@ -399,7 +469,7 @@ class FuturesCopilot:
             )
 
         # Transition status to SUBMITTING to prevent duplicate / concurrent trigger
-        await self.db.update_signal_status(signal_id, "SUBMITTING")
+        await self.db.update_signal_status(signal_id, SignalStatus.SUBMITTING)
 
         req = OrderRequest(
             signal_id=signal_id,
@@ -415,8 +485,12 @@ class FuturesCopilot:
         try:
             order_result = await self.broker.submit_entry_order(req)
         except Exception as e:
-            logger.exception("Error calling broker.submit_entry_order")
-            await self.db.update_signal_status(signal_id, "FAILED")
+            logger.exception(
+                "Error calling broker.submit_entry_order for signal #%d",
+                signal_id,
+                extra={"signal_id": signal_id, "error": str(e)},
+            )
+            await self.db.update_signal_status(signal_id, SignalStatus.FAILED)
             return False, f"❌ <b>Broker Submission Error:</b> {e}"
 
         if order_result.success:
@@ -425,7 +499,18 @@ class FuturesCopilot:
                 signal_id=signal_id,
                 broker_order_id=order_result.order_id,
                 fill_price=fill_price,
-                status="EXECUTED",
+                status=SignalStatus.EXECUTED,
+            )
+            logger.info(
+                "Signal #%d executed successfully via broker (%s)",
+                signal_id,
+                self.config.execution_mode,
+                extra={
+                    "signal_id": signal_id,
+                    "order_id": order_result.order_id,
+                    "fill_price": fill_price,
+                    "execution_mode": self.config.execution_mode,
+                },
             )
             msg = (
                 f"🚀 <b>ORDER EXECUTED ({self.config.execution_mode.upper()})</b>\n"
@@ -437,8 +522,15 @@ class FuturesCopilot:
             )
             return True, msg
         else:
-            await self.db.update_signal_status(signal_id, "FAILED")
+            await self.db.update_signal_status(signal_id, SignalStatus.FAILED)
             err = order_result.error_message or "Unknown broker rejection"
+            logger.warning(
+                "Signal #%d execution rejected by broker (%s): %s",
+                signal_id,
+                self.config.execution_mode,
+                err,
+                extra={"signal_id": signal_id, "error": err, "execution_mode": self.config.execution_mode},
+            )
             msg = (
                 f"❌ <b>Execution Failed ({self.config.execution_mode.upper()}):</b>\n"
                 f"<code>{err}</code>\n"
@@ -516,13 +608,12 @@ class FuturesCopilot:
         return "✅ <b>Scan Complete:</b> Evaluated all micro contracts (/MES, /MNQ, /MGC, /MCL). No setups met quantitative triggers at current candle."
 
     async def send_test_alert(self):
-
         print("Sending synthetic test alert card...")
         test_eval = LLMTradeEvaluation(
             approved=True,
             rejection_reason=None,
             contract="/MES",
-            direction="LONG",
+            direction=Direction.LONG,
             entry_price=5812.50,
             stop_loss=5769.75,
             take_profit=5898.00,
@@ -546,9 +637,9 @@ class FuturesCopilot:
             risk_dollars=test_eval.risk_dollars,
             reward_dollars=test_eval.reward_dollars,
             notional_value=test_eval.notional_value,
-            status="PENDING",
+            status=SignalStatus.PENDING,
         )
-        await self.notifier.send_signal_alert(test_eval, "TREND_PULLBACK", sig_id)
+        await self.notifier.send_signal_alert(test_eval, StrategyType.TREND_PULLBACK, sig_id)
 
 
 async def async_main():

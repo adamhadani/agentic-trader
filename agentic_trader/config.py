@@ -102,13 +102,18 @@ class AppConfig(BaseModel):
     db_path: str = str(WORKSPACE_ROOT / "data" / "signals.db")
 
     # Broker Execution Configuration
-    execution_mode: str = "paper"  # "paper", "tradovate", "manual"
+    execution_mode: str = "paper"  # "paper", "tradovate", "alpaca", "manual"
     tradovate_api_key: str | None = None
     tradovate_api_secret: str | None = None
     tradovate_username: str | None = None
     tradovate_password: str | None = None
     tradovate_account_id: str | None = None
     tradovate_environment: str = "demo"  # "demo" or "live"
+
+    # Alpaca Execution Configuration
+    alpaca_api_key: str | None = None
+    alpaca_api_secret: str | None = None
+    alpaca_paper: bool = True
 
 
 def load_config(config_path: str | None = None) -> AppConfig:
@@ -139,6 +144,10 @@ def load_config(config_path: str | None = None) -> AppConfig:
     tradovate_account_id = os.getenv("TRADOVATE_ACCOUNT_ID")
     tradovate_env = os.getenv("TRADOVATE_ENVIRONMENT", "demo").lower()
 
+    alpaca_api_key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY")
+    alpaca_api_secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET")
+    alpaca_paper = os.getenv("ALPACA_PAPER", "true").lower() in ("true", "1", "yes")
+
     if os.getenv("PORTFOLIO_CASH"):
         cfg_dict.setdefault("portfolio", {})["cash"] = float(os.environ["PORTFOLIO_CASH"])
     if os.getenv("MAX_NOTIONAL_EXPOSURE"):
@@ -168,5 +177,8 @@ def load_config(config_path: str | None = None) -> AppConfig:
         tradovate_password=tradovate_password,
         tradovate_account_id=tradovate_account_id,
         tradovate_environment=tradovate_env,
+        alpaca_api_key=alpaca_api_key,
+        alpaca_api_secret=alpaca_api_secret,
+        alpaca_paper=alpaca_paper,
     )
     return config
