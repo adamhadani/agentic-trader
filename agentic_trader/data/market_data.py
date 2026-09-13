@@ -143,3 +143,24 @@ class MarketDataFetcher:
             pass
 
         return None
+
+    def calculate_correlation(self, ticker_a: str, ticker_b: str, lookback_days: int = 60) -> float | None:
+        """Compute Pearson return correlation between two tickers over lookback period."""
+        if ticker_a.strip().upper() == ticker_b.strip().upper():
+            return 1.0
+        try:
+            data_a = self.fetch_data(ticker_a, ticker_a)
+            data_b = self.fetch_data(ticker_b, ticker_b)
+            if data_a.daily.empty or data_b.daily.empty:
+                return None
+            close_a = data_a.daily["Close"].tail(lookback_days).pct_change().dropna()
+            close_b = data_b.daily["Close"].tail(lookback_days).pct_change().dropna()
+            combined = pd.concat([close_a, close_b], axis=1, join="inner")
+            if len(combined) < 15:
+                return None
+            corr = float(combined.iloc[:, 0].corr(combined.iloc[:, 1]))
+            if pd.isna(corr):
+                return None
+            return round(corr, 4)
+        except Exception:
+            return None

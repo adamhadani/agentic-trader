@@ -63,12 +63,31 @@ class ContractConfig(BaseModel):
 InstrumentConfig = ContractConfig
 
 
+DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
+    "us_broad_market": ["/MES", "/ES", "SPY", "VOO", "IVV"],
+    "us_tech": ["/MNQ", "/NQ", "QQQ", "XLK"],
+    "us_smallcap": ["/M2K", "/RTY", "IWM"],
+    "gold": ["/MGC", "/GC", "GLD", "IAU"],
+    "crude_oil": ["/MCL", "/CL", "USO"],
+    "us_treasuries": ["/ZN", "/ZB", "TLT", "IEF"],
+    "crypto_btc": ["BTC/USD", "BTCUSD", "/MBT", "BITO"],
+    "crypto_eth": ["ETH/USD", "ETHUSD", "/MET"],
+}
+
+
 class PortfolioConfig(BaseModel):
     cash: float = 100000.0
     max_notional_exposure: float = 60000.0
     max_concurrent_contracts: int = 2
     max_concurrent_positions: int = 4
     default_equity_risk_dollars: float = 250.0
+    max_futures_exposure: float = 40000.0
+    max_equity_exposure: float = 40000.0
+    max_crypto_exposure: float = 20000.0
+    max_correlated_positions: int = 1
+    max_correlation_threshold: float = 0.85
+    enable_dynamic_correlation: bool = False
+    correlation_groups: dict[str, list[str]] = Field(default_factory=lambda: dict(DEFAULT_CORRELATION_GROUPS))
 
 
 class RiskConfig(BaseModel):

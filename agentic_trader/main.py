@@ -59,7 +59,12 @@ class FuturesCopilot:
         self.strategy_engine = StrategyEngine(config)
         self.calendar: BaseEconomicCalendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.regime_detector = RegimeDetector(config=config.regime)
-        self.evaluator = RiskEvaluator(config, calendar=self.calendar, regime_detector=self.regime_detector)
+        self.evaluator = RiskEvaluator(
+            config,
+            calendar=self.calendar,
+            regime_detector=self.regime_detector,
+            data_fetcher=self.data_fetcher,
+        )
         self.notifier = TelegramNotifier(
             bot_token=config.telegram_bot_token,
             chat_id=config.telegram_chat_id,
@@ -89,6 +94,7 @@ class FuturesCopilot:
         logger.info("Current market volatility context: %s", regime.summary_text)
         current_exposure = await self.db.get_active_notional_exposure()
         active_count = await self.db.get_active_position_count()
+        active_positions = await self.db.get_active_positions()
         max_positions = getattr(
             self.config.portfolio,
             "max_concurrent_positions",
@@ -169,6 +175,7 @@ class FuturesCopilot:
                         candidate,
                         current_open_notional=current_exposure,
                         use_llm=use_llm,
+                        active_positions=active_positions,
                     )
 
                     if not eval_res.approved:
@@ -218,6 +225,15 @@ class FuturesCopilot:
                     total_alerts += 1
                     # Update exposure in memory for subsequent checks in this run
                     current_exposure += eval_res.notional_value
+                    active_positions.append(
+                        {
+                            "contract": eval_res.contract,
+                            "symbol": eval_res.contract,
+                            "direction": eval_res.direction,
+                            "asset_class": str(eval_res.asset_class),
+                            "notional_value": eval_res.notional_value,
+                        }
+                    )
 
             except Exception:
                 logger.exception(f"Error scanning {contract}")

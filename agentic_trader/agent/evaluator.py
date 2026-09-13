@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from typing import Any
 
 import litellm
 from pydantic import BaseModel, Field
@@ -9,13 +10,14 @@ from pydantic import BaseModel, Field
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
 from agentic_trader.agent.regime import RegimeDetector
-from agentic_trader.config import AppConfig
+from agentic_trader.config import DEFAULT_CORRELATION_GROUPS, AppConfig
 from agentic_trader.constants import (
     CALLBACK_LANGSMITH,
     AssetClass,
     Direction,
     StrategyType,
 )
+from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
@@ -49,10 +51,12 @@ class RiskEvaluator:
         config: AppConfig,
         calendar: BaseEconomicCalendar | None = None,
         regime_detector: RegimeDetector | None = None,
+        data_fetcher: MarketDataFetcher | None = None,
     ):
         self.config = config
         self.calendar: BaseEconomicCalendar = calendar or EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.regime_detector: RegimeDetector = regime_detector or RegimeDetector(config=config.regime)
+        self.data_fetcher = data_fetcher
 
         # Wire up LangSmith tracing if credentials exist in environment
         if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):
@@ -144,6 +148,7 @@ class RiskEvaluator:
         candidate: ScreenerCandidate,
         current_open_notional: float = 0.0,
         use_llm: bool = True,
+        active_positions: list[dict[str, Any]] | None = None,
     ) -> LLMTradeEvaluation:
         # Compute deterministic baseline levels and position sizing first
         (
@@ -191,6 +196,133 @@ class RiskEvaluator:
                 quantity=quantity,
                 asset_class=asset_class,
             )
+
+        # 1b. Check Asset Class Allocation Cap
+        positions_list = active_positions or []
+        current_ac_notional = 0.0
+        for p in positions_list:
+            p_ac = str(p.get("asset_class") or "").upper()
+            if p_ac == str(asset_class).upper():
+                current_ac_notional += float(p.get("notional_value") or 0.0)
+
+        projected_ac_notional = current_ac_notional + notional_value
+        ac_limit: float | None = None
+        if asset_class == AssetClass.FUTURES:
+            ac_limit = getattr(self.config.portfolio, "max_futures_exposure", None)
+        elif asset_class == AssetClass.EQUITY:
+            ac_limit = getattr(self.config.portfolio, "max_equity_exposure", None)
+        elif asset_class == AssetClass.CRYPTO:
+            ac_limit = getattr(self.config.portfolio, "max_crypto_exposure", None)
+
+        if ac_limit is not None and projected_ac_notional > ac_limit:
+            return LLMTradeEvaluation(
+                approved=False,
+                rejection_reason=(
+                    f"Asset class limit exceeded: Adding {candidate.contract} (${notional_value:,.2f} {asset_class}) "
+                    f"would bring {asset_class} exposure to ${projected_ac_notional:,.2f} "
+                    f"(cap is ${ac_limit:,.2f})."
+                ),
+                contract=candidate.contract,
+                direction=candidate.direction,
+                entry_price=entry,
+                stop_loss=entry,
+                take_profit=entry,
+                stop_distance_points=0.0,
+                target_distance_points=0.0,
+                risk_reward_ratio=2.0,
+                risk_dollars=0.0,
+                reward_dollars=0.0,
+                notional_value=notional_value,
+                effective_leverage=effective_leverage,
+                macro_clearance=True,
+                thesis_summary=f"Rejected by risk manager: {asset_class} allocation budget reached.",
+                quantity=quantity,
+                asset_class=asset_class,
+            )
+
+        # 1c. Check Correlation Group Filtering
+        corr_groups = getattr(self.config.portfolio, "correlation_groups", None) or DEFAULT_CORRELATION_GROUPS
+        cand_syms = {candidate.contract.upper(), candidate.contract.strip("/").upper()}
+        max_corr_positions = getattr(self.config.portfolio, "max_correlated_positions", 1)
+
+        for group_name, members in corr_groups.items():
+            norm_members = {m.strip("/").upper() for m in members} | {m.upper() for m in members}
+            if cand_syms & norm_members:
+                matching_active: list[dict[str, Any]] = []
+                for pos in positions_list:
+                    pos_contract = str(pos.get("contract") or pos.get("symbol") or "")
+                    pos_syms = {pos_contract.upper(), pos_contract.strip("/").upper()}
+                    if pos_syms & norm_members:
+                        pos_dir = str(pos.get("direction", "")).upper()
+                        cand_dir = str(candidate.direction).upper()
+                        if pos_dir == cand_dir:
+                            matching_active.append(pos)
+
+                if len(matching_active) >= max_corr_positions:
+                    active_syms = ", ".join(str(p.get("contract") or p.get("symbol")) for p in matching_active)
+                    return LLMTradeEvaluation(
+                        approved=False,
+                        rejection_reason=(
+                            f"Correlation limit exceeded: Group '{group_name}' already has {len(matching_active)} "
+                            f"active {candidate.direction} position(s) ({active_syms}) "
+                            f"(max allowed: {max_corr_positions})."
+                        ),
+                        contract=candidate.contract,
+                        direction=candidate.direction,
+                        entry_price=entry,
+                        stop_loss=entry,
+                        take_profit=entry,
+                        stop_distance_points=0.0,
+                        target_distance_points=0.0,
+                        risk_reward_ratio=2.0,
+                        risk_dollars=0.0,
+                        reward_dollars=0.0,
+                        notional_value=notional_value,
+                        effective_leverage=effective_leverage,
+                        macro_clearance=True,
+                        thesis_summary=f"Rejected by risk manager: Correlation group '{group_name}' cap reached.",
+                        quantity=quantity,
+                        asset_class=asset_class,
+                    )
+
+        # 1d. Check Statistical Return Correlation (if enabled)
+        enable_dyn_corr = getattr(self.config.portfolio, "enable_dynamic_correlation", False)
+        max_corr_thresh = getattr(self.config.portfolio, "max_correlation_threshold", 0.85)
+        if enable_dyn_corr and self.data_fetcher and positions_list:
+            cand_info = self.config.contracts.get(candidate.contract)
+            cand_ticker = cand_info.ticker if cand_info else candidate.contract
+            for pos in positions_list:
+                pos_dir = str(pos.get("direction", "")).upper()
+                if pos_dir != str(candidate.direction).upper():
+                    continue
+                pos_contract = str(pos.get("contract") or pos.get("symbol") or "")
+                pos_info = self.config.contracts.get(pos_contract)
+                pos_ticker = pos_info.ticker if pos_info else pos_contract
+                corr = self.data_fetcher.calculate_correlation(cand_ticker, pos_ticker)
+                if corr is not None and corr >= max_corr_thresh:
+                    return LLMTradeEvaluation(
+                        approved=False,
+                        rejection_reason=(
+                            f"Statistical correlation limit exceeded: {candidate.contract} has high return correlation "
+                            f"({corr:.2f} >= {max_corr_thresh}) with active position {pos_contract} in the same direction ({candidate.direction})."
+                        ),
+                        contract=candidate.contract,
+                        direction=candidate.direction,
+                        entry_price=entry,
+                        stop_loss=entry,
+                        take_profit=entry,
+                        stop_distance_points=0.0,
+                        target_distance_points=0.0,
+                        risk_reward_ratio=2.0,
+                        risk_dollars=0.0,
+                        reward_dollars=0.0,
+                        notional_value=notional_value,
+                        effective_leverage=effective_leverage,
+                        macro_clearance=True,
+                        thesis_summary=f"Rejected by risk manager: High return correlation with {pos_contract}.",
+                        quantity=quantity,
+                        asset_class=asset_class,
+                    )
 
         # 2. Check Macro Lockout Window
         in_lockout, lock_event = await self.calendar.is_in_lockout_window(
