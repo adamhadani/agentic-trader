@@ -3,6 +3,15 @@ import logging
 import numpy as np
 
 from agentic_trader.backtest.models import BacktestTrade, MonteCarloResult
+from agentic_trader.constants import (
+    DEFAULT_MONTE_CARLO_SIMULATIONS,
+    DEFAULT_RANDOM_SEED,
+    DEFAULT_RUIN_THRESHOLD_HIGH_PCT,
+    DEFAULT_RUIN_THRESHOLD_LOW_PCT,
+    DEFAULT_VAR_CONFIDENCE_PCT,
+    FLOAT_EPSILON,
+    MIN_TRADES_FOR_MONTE_CARLO,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -11,19 +20,20 @@ logger = logging.getLogger(__name__)
 def run_monte_carlo_simulation(
     trades: list[BacktestTrade],
     starting_cash: float,
-    n_simulations: int = 1000,
-    random_seed: int = 42,
+    n_simulations: int = DEFAULT_MONTE_CARLO_SIMULATIONS,
+    random_seed: int = DEFAULT_RANDOM_SEED,
 ) -> MonteCarloResult | None:
-    """
-    Run bootstrap Monte Carlo resampling across historical executed trades.
+    """Run bootstrap Monte Carlo resampling across historical executed trades.
 
     Resamples trade sequences with replacement to evaluate final equity, drawdown
     distributions, risk of ruin, and Value at Risk (VaR / CVaR) bounds.
     """
     closed_trades = [t for t in trades if t.pnl_dollars is not None]
-    if len(closed_trades) < 3:
+    if len(closed_trades) < MIN_TRADES_FOR_MONTE_CARLO:
         logger.warning(
-            "Insufficient trades (%d) to run Monte Carlo simulation (minimum 3 required).", len(closed_trades)
+            "Insufficient trades (%d) to run Monte Carlo simulation (minimum %d required).",
+            len(closed_trades),
+            MIN_TRADES_FOR_MONTE_CARLO,
         )
         return None
 
@@ -65,7 +75,7 @@ def run_monte_carlo_simulation(
     sim_stds = np.std(resampled_pnls, axis=1)
     # Annualization factor approximation (assume ~50 trades/year if not specified)
     annual_factor = np.sqrt(max(10, n_trades))
-    valid_mask = sim_stds > 1e-6
+    valid_mask = sim_stds > FLOAT_EPSILON
     sim_sharpes = np.zeros_like(sim_means)
     sim_sharpes[valid_mask] = (sim_means[valid_mask] / sim_stds[valid_mask]) * annual_factor
 
@@ -81,11 +91,12 @@ def run_monte_carlo_simulation(
     ci_5th_sharpe = round(float(np.percentile(sim_sharpes, 5)), 2)
 
     # Risk of ruin (percentage of paths reaching DD >= threshold)
-    ror_10 = round(float(np.mean(max_drawdowns >= 10.0) * 100.0), 2)
-    ror_20 = round(float(np.mean(max_drawdowns >= 20.0) * 100.0), 2)
+    ror_10 = round(float(np.mean(max_drawdowns >= DEFAULT_RUIN_THRESHOLD_LOW_PCT) * 100.0), 2)
+    ror_20 = round(float(np.mean(max_drawdowns >= DEFAULT_RUIN_THRESHOLD_HIGH_PCT) * 100.0), 2)
 
     # Value at Risk (VaR 95%) and Conditional VaR (CVaR 95% / Expected Shortfall) on trade returns
-    pnl_5th = float(np.percentile(pnl_pcts, 5))
+    var_tail_pct = 100.0 - DEFAULT_VAR_CONFIDENCE_PCT
+    pnl_5th = float(np.percentile(pnl_pcts, var_tail_pct))
     var_95 = round(abs(min(0.0, pnl_5th)), 2)
 
     tail_losses = pnl_pcts[pnl_pcts <= pnl_5th]

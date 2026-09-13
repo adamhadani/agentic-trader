@@ -3,6 +3,7 @@ from datetime import datetime
 
 import pandas as pd
 
+from agentic_trader.agent.regime import classify_vix_level
 from agentic_trader.backtest.metrics import calculate_profit_factor, calculate_win_rate
 from agentic_trader.backtest.models import (
     AssetClassAttribution,
@@ -12,46 +13,16 @@ from agentic_trader.backtest.models import (
     PerformanceAttributionResult,
     RegimeAttribution,
 )
-from agentic_trader.constants import AssetClass, StrategyType
+from agentic_trader.constants import SECTOR_MAP, AssetClass, StrategyType, VolatilityRegime
 
 
 logger = logging.getLogger(__name__)
-
-SECTOR_MAP: dict[str, str] = {
-    "/MES": "US Broad Market",
-    "/ES": "US Broad Market",
-    "SPY": "US Broad Market",
-    "VOO": "US Broad Market",
-    "IVV": "US Broad Market",
-    "/MNQ": "US Tech",
-    "/NQ": "US Tech",
-    "QQQ": "US Tech",
-    "XLK": "US Tech",
-    "AAPL": "US Tech",
-    "MSFT": "US Tech",
-    "NVDA": "US Tech",
-    "/M2K": "US Small Cap",
-    "/RTY": "US Small Cap",
-    "IWM": "US Small Cap",
-    "/MGC": "Precious Metals",
-    "/GC": "Precious Metals",
-    "GLD": "Precious Metals",
-    "IAU": "Precious Metals",
-    "/MCL": "Energy",
-    "/CL": "Energy",
-    "USO": "Energy",
-    "XLE": "Energy",
-    "/ZN": "US Treasuries",
-    "/ZB": "US Treasuries",
-    "TLT": "US Treasuries",
-    "IEF": "US Treasuries",
-}
 
 
 def _get_regime_for_date(dt: datetime, vix_df: pd.DataFrame | None) -> str:
     """Classify macro volatility regime for a given trade entry date."""
     if vix_df is None or vix_df.empty:
-        return "NORMAL"
+        return str(VolatilityRegime.NORMAL)
     try:
         lookup_ts = pd.Timestamp(dt)
         clean_vix = vix_df.copy()
@@ -65,18 +36,10 @@ def _get_regime_for_date(dt: datetime, vix_df: pd.DataFrame | None) -> str:
 
         asof_loc = clean_vix.index.get_indexer([lookup_ts], method="pad")[0]
         val = float(clean_vix["Close"].iloc[0]) if asof_loc == -1 else float(clean_vix["Close"].iloc[asof_loc])
-
-        if val < 15.0:
-            return "COMPRESSED"
-        elif val <= 22.0:
-            return "NORMAL"
-        elif val <= 30.0:
-            return "ELEVATED"
-        else:
-            return "EXTREME"
+        return str(classify_vix_level(val))
     except Exception as e:
         logger.debug("Regime classification fallback on date %s: %s", dt, e)
-        return "NORMAL"
+        return str(VolatilityRegime.NORMAL)
 
 
 def calculate_performance_attribution(
@@ -157,7 +120,7 @@ def calculate_performance_attribution(
     )
 
     # 2. Macro Volatility Regime Attribution
-    regimes = ["COMPRESSED", "NORMAL", "ELEVATED", "EXTREME"]
+    regimes = [str(r.value) for r in VolatilityRegime]
     trade_regimes = {id(t): _get_regime_for_date(t.entry_timestamp, vix_df) for t in trades}
 
     regime_attributions: list[RegimeAttribution] = []

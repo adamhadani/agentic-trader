@@ -2,6 +2,12 @@ import numpy as np
 import pandas as pd
 
 from agentic_trader.backtest.models import BacktestTrade
+from agentic_trader.constants import (
+    DEFAULT_RISK_FREE_RATE,
+    FLOAT_EPSILON,
+    INFINITE_RATIO_SENTINEL,
+    TRADING_DAYS_PER_YEAR,
+)
 
 
 def calculate_win_rate(trades: list[BacktestTrade]) -> float:
@@ -20,13 +26,13 @@ def calculate_profit_factor(trades: list[BacktestTrade]) -> float:
     gross_loss = abs(sum((t.pnl_dollars for t in trades if t.pnl_dollars is not None and t.pnl_dollars < 0.0), 0.0))
 
     if gross_loss == 0.0:
-        return 999.99 if gross_profit > 0.0 else 0.0
+        return INFINITE_RATIO_SENTINEL if gross_profit > 0.0 else 0.0
     return round(gross_profit / gross_loss, 2)
 
 
 def calculate_drawdown(equity_series: pd.Series) -> tuple[float, pd.Series]:
-    """
-    Calculate maximum drawdown percentage and running drawdown percentage series.
+    """Calculate maximum drawdown percentage and running drawdown percentage series.
+
     Returns:
         (max_drawdown_pct, drawdown_series)
     """
@@ -41,12 +47,10 @@ def calculate_drawdown(equity_series: pd.Series) -> tuple[float, pd.Series]:
 
 def calculate_sharpe_ratio(
     daily_returns: pd.Series,
-    risk_free_rate: float = 0.045,
-    periods_per_year: int = 252,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
-    """
-    Calculate annualized Sharpe ratio from a series of periodic returns.
-    """
+    """Calculate annualized Sharpe ratio from a series of periodic returns."""
     cleaned = daily_returns.dropna()
     if len(cleaned) < 2:
         return 0.0
@@ -55,7 +59,7 @@ def calculate_sharpe_ratio(
     excess_returns = cleaned - daily_rf
     std = float(cleaned.std())
 
-    if std < 1e-5 or np.isnan(std):
+    if std < FLOAT_EPSILON or np.isnan(std):
         return 0.0
 
     sharpe = float((excess_returns.mean() / std) * np.sqrt(periods_per_year))
@@ -64,18 +68,16 @@ def calculate_sharpe_ratio(
 
 def calculate_sortino_ratio(
     daily_returns: pd.Series,
-    risk_free_rate: float = 0.045,
-    periods_per_year: int = 252,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
-    """
-    Calculate annualized Sortino ratio considering downside volatility.
-    """
+    """Calculate annualized Sortino ratio considering downside volatility."""
     cleaned = daily_returns.dropna()
     if len(cleaned) < 2:
         return 0.0
 
     total_std = float(cleaned.std())
-    if total_std < 1e-5 or np.isnan(total_std):
+    if total_std < FLOAT_EPSILON or np.isnan(total_std):
         return 0.0
 
     daily_rf = risk_free_rate / periods_per_year
@@ -83,10 +85,10 @@ def calculate_sortino_ratio(
     downside_returns = excess_returns[excess_returns < 0.0]
 
     if downside_returns.empty:
-        return 999.99 if excess_returns.mean() > 0.0 else 0.0
+        return INFINITE_RATIO_SENTINEL if excess_returns.mean() > 0.0 else 0.0
 
     downside_std = float(np.sqrt(np.mean(downside_returns**2)))
-    if downside_std < 1e-5 or np.isnan(downside_std):
+    if downside_std < FLOAT_EPSILON or np.isnan(downside_std):
         return 0.0
 
     sortino = float((excess_returns.mean() / downside_std) * np.sqrt(periods_per_year))

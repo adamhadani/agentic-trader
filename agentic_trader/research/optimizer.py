@@ -13,7 +13,20 @@ from agentic_trader.backtest.metrics import (
 )
 from agentic_trader.backtest.models import BacktestTrade
 from agentic_trader.config import AppConfig, load_config
-from agentic_trader.constants import AssetClass, Direction, ExitReason, StrategyType
+from agentic_trader.constants import (
+    DEFAULT_OPTIMIZATION_LOOKBACK,
+    DEFAULT_PORTFOLIO_CASH,
+    DEFAULT_SQUEEZE_BARS_GRID,
+    DEFAULT_SQUEEZE_VOLUME_GRID,
+    DEFAULT_TRAIN_RATIO,
+    DEFAULT_TREND_PULLBACK_EMA_GRID,
+    DEFAULT_TREND_PULLBACK_RSI_GRID,
+    DEFAULT_WALK_FORWARD_SPLITS,
+    AssetClass,
+    Direction,
+    ExitReason,
+    StrategyType,
+)
 from agentic_trader.data.market_data import ContractMarketData, MarketDataFetcher
 from agentic_trader.research.models import (
     OptimizationResult,
@@ -47,12 +60,12 @@ class ParameterGridOptimizer:
         self,
         symbol: str,
         strategy: str = "trend_pullback",
-        lookback: str = "2y",
+        lookback: str = DEFAULT_OPTIMIZATION_LOOKBACK,
         market_data: ContractMarketData | None = None,
         force_fallback: bool = False,
         walk_forward: bool = False,
-        splits: int = 3,
-        train_ratio: float = 0.70,
+        splits: int = DEFAULT_WALK_FORWARD_SPLITS,
+        train_ratio: float = DEFAULT_TRAIN_RATIO,
     ) -> OptimizationResult:
         """Execute hyperparameter grid search for the given asset and strategy, with optional walk-forward cross-validation."""
         data = market_data or self._load_market_data(symbol, lookback)
@@ -346,8 +359,8 @@ class ParameterGridOptimizer:
         use_vbt: bool,
     ) -> list[ParameterCandidate]:
         """Sweep RSI pullback oversold limits and fast EMA periods for Trend Pullback strategy."""
-        rsi_grid = [35.0, 38.0, 40.0, 42.0, 45.0, 48.0, 50.0]
-        ema_grid = [15, 20, 25]
+        rsi_grid = DEFAULT_TREND_PULLBACK_RSI_GRID
+        ema_grid = DEFAULT_TREND_PULLBACK_EMA_GRID
         candidates: list[ParameterCandidate] = []
         if len(data.daily) < 15:
             return candidates
@@ -369,8 +382,8 @@ class ParameterGridOptimizer:
         use_vbt: bool,
     ) -> list[ParameterCandidate]:
         """Sweep volume surge factors and minimum squeeze duration for Squeeze Breakout strategy."""
-        volume_factor_grid = [1.1, 1.2, 1.3, 1.4, 1.5]
-        min_squeeze_grid = [3, 4, 5, 6, 8]
+        volume_factor_grid = DEFAULT_SQUEEZE_VOLUME_GRID
+        min_squeeze_grid = DEFAULT_SQUEEZE_BARS_GRID
         candidates: list[ParameterCandidate] = []
         if len(data.daily) < 15:
             return candidates
@@ -409,7 +422,7 @@ class ParameterGridOptimizer:
                     entries=clean_entries,
                     sl_stop=0.02,  # 2% stop approximation for fast tensor evaluation
                     tp_stop=0.04,  # 4% take profit (1:2 R:R)
-                    init_cash=100000.0,
+                    init_cash=DEFAULT_PORTFOLIO_CASH,
                     freq="1D",
                 )
 
@@ -437,7 +450,7 @@ class ParameterGridOptimizer:
 
         # Fallback pure NumPy/Pandas simulation
         trades: list[BacktestTrade] = []
-        equity = [100000.0]
+        equity = [DEFAULT_PORTFOLIO_CASH]
         in_trade = False
         entry_p = 0.0
         stop_p = 0.0
@@ -498,7 +511,7 @@ class ParameterGridOptimizer:
 
         eq_series = pd.Series(equity)
         daily_ret = eq_series.pct_change().dropna()
-        total_ret = round(((eq_series.iloc[-1] - 100000.0) / 100000.0) * 100.0, 2)
+        total_ret = round(((eq_series.iloc[-1] - DEFAULT_PORTFOLIO_CASH) / DEFAULT_PORTFOLIO_CASH) * 100.0, 2)
         wr = calculate_win_rate(trades)
         pf = calculate_profit_factor(trades)
         max_dd, _ = calculate_drawdown(eq_series)

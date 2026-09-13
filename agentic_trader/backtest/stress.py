@@ -6,12 +6,30 @@ from typing import TYPE_CHECKING, Any
 
 from agentic_trader.backtest.engine import BacktestEngine
 from agentic_trader.backtest.models import BacktestResult
+from agentic_trader.constants import (
+    DEFAULT_CRISIS_SHOCKS,
+    MICRO_CRUDE_LAUNCH_YEAR,
+    MICRO_FUTURES_LAUNCH_YEAR,
+    PROXY_MAPPINGS,
+    STRESS_PASS_MAX_DRAWDOWN_PCT,
+    STRESS_PASS_MIN_NET_PNL,
+    STRESS_WARNING_MAX_DRAWDOWN_PCT,
+)
 
 
 if TYPE_CHECKING:
     from agentic_trader.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "CRISIS_CATALOG",
+    "PROXY_MAPPINGS",
+    "CrisisReplayEngine",
+    "CrisisScenario",
+    "InstantaneousShockResult",
+    "ScenarioStressResult",
+]
 
 
 @dataclass
@@ -91,15 +109,6 @@ CRISIS_CATALOG: dict[str, CrisisScenario] = {
     ),
 }
 
-# Proxy mapping for historical simulation prior to micro-futures launch
-PROXY_MAPPINGS: dict[str, str] = {
-    "/MES": "SPY",
-    "/MNQ": "QQQ",
-    "/MGC": "GLD",
-    "/MCL": "USO",
-    "/M2K": "IWM",
-}
-
 
 class CrisisReplayEngine:
     """Stress tests strategies and portfolios across historical crisis regimes and synthetic shocks."""
@@ -113,7 +122,9 @@ class CrisisReplayEngine:
         resolved: list[str] = []
         for s in symbols:
             # Micro futures /MES and /MNQ launched May 2019; /MCL launched July 2021
-            if start_year < 2019 and s in PROXY_MAPPINGS or start_year < 2022 and s == "/MCL":
+            if (start_year < MICRO_FUTURES_LAUNCH_YEAR and s in PROXY_MAPPINGS) or (
+                start_year < MICRO_CRUDE_LAUNCH_YEAR and s == "/MCL"
+            ):
                 resolved.append(PROXY_MAPPINGS[s])
             else:
                 resolved.append(s)
@@ -167,9 +178,9 @@ class CrisisReplayEngine:
 
         # Classify survival status
         max_dd = res.max_drawdown_pct
-        if max_dd <= 15.0 and res.combined_total_pnl >= -500.0:
+        if max_dd <= STRESS_PASS_MAX_DRAWDOWN_PCT and res.combined_total_pnl >= STRESS_PASS_MIN_NET_PNL:
             status = "PASS"
-        elif max_dd <= 25.0:
+        elif max_dd <= STRESS_WARNING_MAX_DRAWDOWN_PCT:
             status = "WARNING"
         else:
             status = "FAIL"
@@ -225,20 +236,7 @@ class CrisisReplayEngine:
         shock_map: dict[str, float] | None = None,
     ) -> InstantaneousShockResult:
         """Simulate the immediate mark-to-market P&L impact of a macroeconomic factor shock."""
-        # Default standard multi-asset macro crash shock: equities -10%, gold +3%, oil -15%, crypto -20%
-        default_shocks = {
-            "SPY": -0.10,
-            "QQQ": -0.12,
-            "/MES": -0.10,
-            "/MNQ": -0.12,
-            "GLD": 0.03,
-            "/MGC": 0.03,
-            "/MCL": -0.15,
-            "TLT": 0.02,
-            "BTC/USD": -0.20,
-            "ETH/USD": -0.25,
-        }
-        shocks = shock_map or default_shocks
+        shocks = shock_map or DEFAULT_CRISIS_SHOCKS
 
         total_notional = 0.0
         total_pnl_impact = 0.0
@@ -263,7 +261,9 @@ class CrisisReplayEngine:
         post_shock_equity = max(0.0, cash + total_pnl_impact)
         peak_equity = max(cash, post_shock_equity)
         dd_pct = ((peak_equity - post_shock_equity) / peak_equity * 100.0) if peak_equity > 0 else 0.0
-        margin_call = (total_notional > 0 and (total_notional / max(1.0, post_shock_equity)) > 4.0) or (dd_pct >= 25.0)
+        margin_call = (total_notional > 0 and (total_notional / max(1.0, post_shock_equity)) > 4.0) or (
+            dd_pct >= STRESS_WARNING_MAX_DRAWDOWN_PCT
+        )
 
         return InstantaneousShockResult(
             current_open_positions=len(active_positions),
