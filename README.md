@@ -1,243 +1,178 @@
 # Cash-Plus Trading Copilot
+### Autonomous Multi-Asset Quantitative Trading System
 
-An automated personal trading copilot designed for a "Cash-Plus" portfolio ($100,000 baseline cash generating money-market yield). The system runs scheduled quantitative scans across liquid micro futures contracts (`/MES`, `/MNQ`, `/MGC`, `/MCL`), evaluates trade setups via an LLM agent with real-time macro awareness, and executes or tracks trades across multi-asset brokers (Paper simulation, Tradovate CME micro futures, and Alpaca Trading SDK for equities & crypto) with interactive Telegram alerts.
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/)
+[![Checked with mypy](https://img.shields.io/badge/mypy-checked-blue)](http://mypy-lang.org/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
+[![Documentation](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://adamhadani.github.io/agentic-trader/)
+
+The **Cash-Plus Trading Copilot** is an algorithmic trading system designed around a **"Cash-Plus" (portable alpha)** portfolio architecture ($100,000 baseline cash generating risk-free Treasury yield). The system continuously screens multi-asset markets, validates setups through an LLM agent with macro calendar awareness, and executes bracket orders across Tradovate (CME micro futures) and Alpaca (equities, ETFs, and crypto) with real-time Telegram oversight and Prometheus observability.
+
+---
+
+## 📚 Documentation & Reference Manuals
+
+- [**Production Operations Guide**](docs/production.md): **Single Source of Truth** for 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
+- [**CLI Command Reference**](docs/cli-reference.md): Exhaustive guide to all Click CLI subcommands, flags, and outputs.
+- [**Quantitative Strategies & Models**](docs/strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX, and Pairs Trading.
+- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 22) and future milestones.
 
 ---
 
 ## 1. Core Risk & Portfolio Constraints
-1. **Instrument Scope:** Exclusively Micro futures:
-   - `/MES` (Micro S&P 500) - Multiplier: $5.00/pt, Tick: 0.25 ($1.25)
-   - `/MNQ` (Micro Nasdaq-100) - Multiplier: $2.00/pt, Tick: 0.25 ($0.50)
-   - `/MGC` (Micro Gold) - Multiplier: $10.00/pt, Tick: 0.10 ($1.00)
-   - `/MCL` (Micro WTI Crude) - Multiplier: $100.00/pt, Tick: 0.01 ($1.00)
-2. **Fixed Sizing:** Exactly 1 micro contract per signal. Total active open notional exposure across all concurrent positions must not exceed $60,000 (0.6x effective leverage on $100k cash).
-3. **Reward-to-Risk (R:R):** Strictly $\ge 2.0$. Stop distance must be $\ge 1.5 \times \text{ATR}(14)$ to prevent premature stop-outs from noise.
-4. **Macro Event Lockout:** Zero entry alerts permitted within 60 minutes before or 30 minutes after scheduled Tier-1 economic releases (CPI, PPI, FOMC rate decisions/pressers, Non-Farm Payrolls).
-5. **Deduplication Rule:** Do not emit if a signal for the same contract + strategy exists within 12 hours.
+
+1. **Instrument Scope:** Micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`) and liquid ETF/equity proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`).
+2. **Fixed Sizing:** Exactly 1 micro contract per signal. Total active open notional exposure across all concurrent positions must not exceed **$60,000** (0.6x effective leverage on $100k cash).
+3. **Reward-to-Risk (R:R):** Strictly $\ge 2.0$. Stop distance must be $\ge 1.5 \times \text{ATR}(14)$ to prevent noise stop-outs.
+4. **Macro Event Lockout:** Zero entry alerts permitted within **$[-60\text{m}, +30\text{m}]$** of scheduled Tier-1 economic releases (CPI, PPI, FOMC, Non-Farm Payrolls).
+5. **Deduplication Rule:** Zero duplicate signals for the same contract + strategy within 12 hours.
 
 ---
 
-## 2. Quantitative Screening Strategies
-- **Strategy A: Trend-Pullback (Mean Reversion)**
-  - Daily Invariant: Long if Close > EMA(50) > EMA(200); Short if Close < EMA(50) < EMA(200).
-  - 4h Trigger: RSI(14) dip & recovery near the 20 EMA (within 0.5 * ATR(14)).
-- **Strategy B: Volatility Squeeze Breakout**
-  - Squeeze Condition: Bollinger Bands (20, 2.0) fully enclosed inside Keltner Channels (20, 1.5 ATR) for $\ge 5$ consecutive candles.
-  - Breakout Trigger: Candle close outside Bollinger Bands with Volume surge $> 1.3 \times \text{SMA}(\text{Volume}, 20)$.
+## 2. Production Steady-State: What Runs 24/7
+
+In production, **only one continuous background process runs**:
+
+```bash
+copilot daemon
+```
+
+### What `copilot daemon` Executes Under Its Unified Event Loop:
+1. **APScheduler Scan Job**: Scans multi-asset universe every 4 hours aligned with candle closes (`00:00`, `04:00`, `08:00`, `12:00`, `16:00`, `20:00` UTC).
+2. **Position Monitor & Reconciler**: Polls active broker positions every 15 minutes, tracking stop-loss and take-profit triggers against live quotes.
+3. **Sub-Second WebSocket Streams**:
+   - **Alpaca `TradingStream`**: Sub-second synchronization for bracket order fills, stops, targets, and cancellations.
+   - **Tradovate WebSocket**: Account, position, and CME order state synchronization.
+4. **Two-Way Telegram Interactive Bot**: Continuous async polling listener processing operator commands (`/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/scan`, `/close`) and inline action buttons (`[ 🚀 Execute ]` / `[ ❌ Dismiss ]`).
+5. **Native Prometheus Exporter**: Lightweight async HTTP server running on `0.0.0.0:9108` serving `GET /metrics` and container health probe at `GET /healthz`.
 
 ---
 
-## 3. System Prerequisites & Homebrew Dependencies
+## 3. Production Deployment Methods
 
-On macOS, install the required development tools and linters using [Homebrew](https://brew.sh/):
+### Option A: Docker Compose (Recommended)
+Docker Compose provisions the container with automatic restarts, persistent SQLite volumes, and Prometheus metrics port mapping (`:9108`):
 
 ```bash
-# Core package manager & Python runner
-brew install uv
+# 1. Run database migrations
+uv run copilot db upgrade head
 
-# Dockerfile linter (enforced in pre-commit)
-brew install hadolint
+# 2. Build and launch in detached mode
+docker compose up -d
 
-# SQLite CLI for database inspection
-brew install sqlite
+# 3. View live logs
+docker compose logs -f trading-copilot
 
-# Node / npx (required for running Promptfoo evals via `copilot eval`)
-brew install node
-
-# Optional: Shell environment manager for .envrc
-brew install direnv
-
-# Optional: Docker Desktop (for containerized runs)
-brew install --cask docker
+# 4. Check container health status
+docker compose ps
 ```
 
----
-
-## 4. Configuration & Environment (`.envrc`)
-
-Copy `.envrc.example` to `.envrc` and fill in your secrets:
-
+### Option B: macOS `launchd` (Local Mac Mini Desk)
+For dedicated local Mac machines, `launchd` keeps the daemon running across reboots:
 ```bash
-cp .envrc.example .envrc
-# Edit with your API keys:
-direnv allow  # or source .envrc
-```
-
-Key environment variables:
-```bash
-# Telegram Bot Configuration
-export TELEGRAM_BOT_TOKEN="your_bot_token"
-export TELEGRAM_CHAT_ID="your_chat_id"
-
-# LLM Provider Key & Model (LiteLLM format)
-export LLM_MODEL="openai/gpt-5.6" # or anthropic/claude-3-5-sonnet, gemini/gemini-2.5-flash
-export OPENAI_API_KEY="sk-..."
-
-# Optional: LangSmith LLM Tracing & Observability
-export LANGCHAIN_TRACING_V2="false"
-export LANGSMITH_API_KEY="" # or LANGCHAIN_API_KEY
-export LANGCHAIN_PROJECT="trading-copilot"
-
-# Optional Portfolio Overrides
-export PORTFOLIO_CASH="100000"
-export MAX_NOTIONAL_EXPOSURE="60000"
-
-# Broker Execution Mode ("paper" [default], "tradovate", "alpaca", or "manual")
-export EXECUTION_MODE="paper"
-
-# Tradovate Credentials (required if EXECUTION_MODE="tradovate")
-export TRADOVATE_ENVIRONMENT="demo"  # "demo" or "live"
-export TRADOVATE_API_KEY=""
-export TRADOVATE_API_SECRET=""
-export TRADOVATE_USERNAME=""
-export TRADOVATE_PASSWORD=""
-export TRADOVATE_ACCOUNT_ID=""
-
-# Alpaca Credentials (required if EXECUTION_MODE="alpaca")
-export APCA_API_KEY_ID=""
-export APCA_API_SECRET_KEY=""
-export ALPACA_PAPER="true"
-```
-
-*Note: If Telegram credentials are not set, the copilot prints formatted alert cards directly to the terminal for local review.*
-
----
-
-## 5. CLI Usage & Subcommands
-
-Run commands via `uv run copilot <command>` or `copilot <command>` (if the virtualenv is active):
-
-### Check Portfolio Status & Signals
-```bash
-uv run copilot status
-```
-Displays current cash base, active notional exposure, effective leverage, macro calendar context, and recent signals from SQLite.
-
-### View Active Positions
-```bash
-uv run copilot positions
-```
-Displays all currently tracked positions, live quotes, stop/target prices, and mark-to-market unrealized P&L.
-
-### Execute a Trade Signal
-```bash
-uv run copilot execute <signal_id>
-```
-Executes an approved signal via the configured broker (`PaperBroker` fills against live quotes; `TradovateBroker` sends native OCO bracket orders; `AlpacaBroker` sends bracket orders via the official `alpaca-py` SDK). Enforces portfolio risk invariants before submission.
-
-### Manually Close an Active Position
-```bash
-uv run copilot close <signal_id> [exit_price]
-```
-Closes an open position at the broker, records realized P&L in SQLite, releases notional exposure, and emits an exit alert card.
-
-### Run a Market Scan
-```bash
-# Live scan with LLM evaluation and alerting
-uv run copilot scan
-
-# Dry-run scan (evaluates setups without saving to DB or dispatching alerts)
-uv run copilot scan --dry-run
-
-# Run scan using deterministic structural rules (bypassing LLM calls)
-uv run copilot scan --no-llm
-```
-
-### Send a Test Alert
-```bash
-uv run copilot test-alert
-```
-Dispatches a synthetic `/MES` trade signal card to verify Telegram formatting, broker execution button, and terminal display.
-
-### Run Background Daemon
-```bash
-uv run copilot daemon
-```
-Starts APScheduler running scans every 4 hours aligned with candle closes, monitors active positions every 15 minutes for take-profit/stop-loss triggers, and starts the two-way Telegram Bot listener.
-
-### Telegram Two-Way Interaction
-When the daemon or listener is running, you can message the bot directly in Telegram:
-- `/start` or `/help` - Command menu and risk invariants
-- `/status` - Current active exposure, open notional, leverage, and last 5 signals
-- `/positions` - Tracked positions and real-time unrealized P&L
-- `/close <id> [price]` - Manually close a tracked trade
-- `/scan` - Trigger an immediate quantitative scan across micro futures
-- **Interactive Inline Buttons**:
-  - `[ 🚀 Execute (Paper) ]` / `[ 🚀 Execute (Tradovate) ]` / `[ 🚀 Execute (Alpaca) ]` -> Runs pre-execution risk checks, submits order to broker, stores broker order ID, and activates position tracking.
-  - `[ ❌ Dismiss Signal ]` -> Marks signal as `DISMISSED`.
-
-To test Telegram listening in isolation without running the scanner scheduler:
-```bash
-uv run copilot listen
-```
-
----
-
-## 6. LLM Prompt Evaluations (Promptfoo)
-
-We use [Promptfoo](https://www.promptfoo.dev/) for deterministic benchmark evaluations of our trade evaluation prompts against hard risk invariants.
-
-Run the test suite anytime:
-```bash
-uv run copilot eval
-# or directly:
-npx -y promptfoo eval -c evals/promptfooconfig.yaml --no-cache
-```
-
-`copilot eval` automatically maps your configured production `LLM_MODEL` (e.g. `openai/gpt-5.6`) to Promptfoo, testing 4 critical scenarios:
-1. Valid Bullish Trend-Pullback on `/MES` (verifies approval, $R:R \ge 2.0$, stop $\ge 1.5 \times \text{ATR}$).
-2. Macro Event Lockout during Tier-1 CPI (verifies rejection).
-3. Poor Risk-to-Reward / Overhead Resistance (verifies rejection).
-4. Portfolio Notional Exposure Ceiling Violation ($>\$60\text{k}$ total open exposure, verifies rejection).
-
----
-
-## 7. Background Deployment & Supervision
-
-### macOS `launchd` (Recommended for Local Mac)
-To keep the copilot running continuously during trading hours with automatic restarts:
-```bash
-./scripts/launchd.sh install   # Installs ~/Library/LaunchAgents/com.agentictrader.copilot.plist and starts daemon
-./scripts/launchd.sh status    # Check if launchd is running the service
+./scripts/launchd.sh install   # Installs ~/Library/LaunchAgents/com.agentictrader.copilot.plist
+./scripts/launchd.sh status    # Check daemon status
 ./scripts/launchd.sh logs      # Tail data/copilot.log in real time
 ./scripts/launchd.sh stop      # Temporarily pause service
 ./scripts/launchd.sh uninstall # Unload and remove plist
 ```
 
-### Docker & Docker Compose
-To run containerized with persistent SQLite storage:
+---
+
+## 4. Complete CLI Command Reference by Lifecycle
+
+The `copilot` CLI separates commands into distinct operational lifecycles:
+
+### A. Production Daemon & Services
 ```bash
-# Build and run in detached mode (container named 'trading-copilot')
-docker compose up -d
+uv run copilot daemon              # Run 24/7 continuous trading daemon (Scheduler, WS streams, Bot, Metrics)
+uv run copilot listen              # Run Telegram bot listener only in isolation (without scheduled scans)
+```
 
-# View container logs
-docker compose logs -f trading-copilot
-# or directly via docker:
-docker logs -f trading-copilot
+### B. Day-to-Day Desk Operations
+```bash
+uv run copilot status              # View cash base, active notional exposure, leverage, and macro events
+uv run copilot positions           # View active tracked positions, stops, targets, and unrealized P&L
+uv run copilot scan                # Trigger on-demand market scan (--dry-run, --no-llm, --asset-class)
+uv run copilot execute <id>        # Manually authorize and submit an approved signal to the broker
+uv run copilot close <id> [price]  # Liquidate an open position, record realized P&L, release exposure
+uv run copilot gex [symbol]        # View options dealer gamma exposure, call/put walls, and gamma flip
+uv run copilot pairs               # Screen cross-asset pairs for cointegration and rolling spread Z-scores
+uv run copilot metrics             # Dump Prometheus exposition text or run standalone server (--serve)
+uv run copilot test-alert          # Send synthetic signal card to verify Telegram formatting and buttons
+```
 
-# Stop container
-docker compose down
+### C. Quantitative Research, Backtesting & Calibration (Offline)
+```bash
+uv run copilot backtest            # Historical backtest with friction, Cash-Plus attribution, & Monte Carlo
+uv run copilot optimize            # Parameter grid search & rolling walk-forward validation (--walk-forward)
+uv run copilot retune              # Automated parameter recalibration with Walk-Forward Efficiency (WFE) filtering
+uv run copilot stress              # Crisis replay (2008 GFC, 2020 COVID, 2022 Inflation) & factor shocks
+uv run copilot eval                # Benchmark LLM decision prompts against risk invariants (Promptfoo)
+```
+
+### D. Database Migrations (`copilot db`)
+```bash
+uv run copilot db upgrade head     # Apply pending Alembic database schema migrations
+uv run copilot db current          # View current schema revision
+uv run copilot db history          # View migration history
+uv run copilot db downgrade -1     # Roll back last migration
 ```
 
 ---
 
-## 8. Development & Quality Assurance
+## 5. Interactive Telegram Commands
 
-This repository enforces strict code quality via `pre-commit`:
+When the daemon is running, operators can query and command the trading desk directly from Telegram:
+
+| Command | Description | Example |
+|---|---|---|
+| `/status` | View cash base, open notional exposure, leverage, and macro events | `/status` |
+| `/positions` | View active trades, live quotes, and mark-to-market unrealized P&L | `/positions` |
+| `/perf` | View cumulative closed trade performance, win rate, and profit factor | `/perf` |
+| `/regime` | View real-time VIX, 10Y Treasury yield, and Dollar Index macro regime | `/regime` |
+| `/gex [sym]` | View dealer gamma exposure (GEX), pinning walls, and gamma flip level | `/gex SPY` |
+| `/pairs` | View cross-asset cointegration, mean-reversion half-life, and Z-scores | `/pairs` |
+| `/backtest [sym] [lookback]` | Trigger on-demand offline backtest simulation from mobile | `/backtest SPY 1y` |
+| `/scan` | Trigger an immediate quantitative scan across the universe | `/scan` |
+| `/close <id> [price]` | Manually close an active trade and record fill | `/close 3 5850.25` |
+| `/help` | Display interactive command menu and enforced risk invariants | `/help` |
+
+---
+
+## 6. System Prerequisites & Setup
+
+On macOS:
+```bash
+# Core package manager & Python runner (Python >= 3.14)
+brew install uv hadolint sqlite node
+
+# Clone and sync dependencies
+uv sync
+
+# Copy environment template
+cp .envrc.example .envrc
+# Fill in your API keys (Telegram, LLM, Tradovate, Alpaca, Finnhub)
+direnv allow  # or source .envrc
+
+# Run database migrations
+uv run copilot db upgrade head
+
+# Install pre-commit git hooks
+uv run pre-commit install
+```
+
+---
+
+## 7. Quality Assurance & Testing
+
+The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`:
 
 ```bash
-# Install git hooks
-uv run pre-commit install
-
-# Run all checks manually
+# Run all pre-commit hooks (ruff, mypy, hadolint, uv-lock, pytest runner)
 uv run pre-commit run --all-files
 
-# Run pytest unit tests
+# Run pytest unit test suite (157 tests)
 uv run pytest
 ```
-Included pre-commit hooks:
-- **ruff**: Linter and formatter
-- **mypy**: Type checking across the codebase
-- **pytest**: Automated unit tests
-- **uv-lock**: Lockfile consistency checks
-- **pre-commit-hooks**: File sanitization, trailing whitespace, secrets detection

@@ -14,9 +14,11 @@ COPY pyproject.toml uv.lock ./
 # Install dependencies without installing project itself
 RUN uv sync --frozen --no-install-project --no-dev
 
-# Copy application code and configuration
+# Copy application code, migrations, and configuration
 COPY agentic_trader/ ./agentic_trader/
 COPY config/ ./config/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 COPY README.md ./
 
 # Sync project package
@@ -28,5 +30,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Ensure data directory exists for SQLite database
 RUN mkdir -p /app/data
 
-# Default to daemon mode (runs 4h scheduler + Telegram listener)
+# Expose Prometheus metrics and health check port
+EXPOSE 9108
+
+# Default to daemon mode (runs 4h scheduler + Telegram listener + Prometheus exporter)
 CMD ["copilot", "daemon"]

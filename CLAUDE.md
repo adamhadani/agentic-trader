@@ -5,91 +5,112 @@ Guidelines and reference commands for AI coding assistants working in the `agent
 ---
 
 ## 1. Project Overview
-The **Cash-Plus Trading Copilot** is an automated personal trading copilot for a $100k cash portfolio. It runs quantitative 4-hour candle scans across liquid micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`), evaluates candidates with an LLM agent with real-time macro calendar awareness, and executes or tracks trades across multi-asset brokers (Paper simulation, Tradovate CME micro futures, and Alpaca Trading SDK for equities & crypto) with interactive Telegram alert cards.
+The **Cash-Plus Trading Copilot** is an automated multi-asset trading system designed around a $100k cash portfolio (portable alpha). It runs quantitative scans across liquid micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`) and ETF proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`), validates candidates with an LLM agent with real-time macro calendar awareness, and executes or tracks trades across multi-asset brokers (Paper simulation, Tradovate CME micro futures, and Alpaca Trading SDK for equities & crypto) with interactive Telegram alert cards and Prometheus observability.
 
 ---
 
-## 2. Common Commands
+## 2. Common Commands & Operational Lifecycle
 
-### Virtual Environment & System Dependencies
-- Install Homebrew prerequisites: `brew install uv hadolint sqlite node`
-- Manage Python environment with `uv` (Python >=3.14).
+### Virtual Environment & Dependencies
+- Python >= 3.14 managed exclusively with `uv`.
 - Sync dependencies: `uv sync`
-- Install pre-commit hooks: `uv run pre-commit install`
+- Install pre-commit git hooks: `uv run pre-commit install`
+- Apply database migrations: `uv run copilot db upgrade head`
 
-### Running the Application (`copilot` CLI)
-- Status: `uv run copilot status`
-- Positions: `uv run copilot positions`
-- Execute: `uv run copilot execute <signal_id>`
-- Close position: `uv run copilot close <signal_id> [exit_price]`
-- Scan (live): `uv run copilot scan`
-- Scan (dry-run, no alerts/db updates): `uv run copilot scan --dry-run`
-- Scan (deterministic rule fallback, no LLM call): `uv run copilot scan --no-llm`
-- Test alert: `uv run copilot test-alert`
-- Daemon (scheduler + Telegram listener): `uv run copilot daemon`
-- Telegram listener only: `uv run copilot listen`
-- Prompt evaluation: `uv run copilot eval`
+### Command Taxonomy by Lifecycle Stage
 
-### Testing, Linting & Quality Control
+#### A. Production Steady-State (What runs 24/7)
+- `uv run copilot daemon`: Core continuous process running APScheduler (4-hour scans), 15-minute position monitor & reconciler, Alpaca/Tradovate WebSocket trade streams, Telegram bot poller, and Prometheus metrics server (`:9108`).
+- `docker compose up -d`: Runs `trading-copilot` container in background with healthchecks and persistent SQLite volume.
+- `uv run copilot listen`: Runs Telegram bot listener only in isolation.
+
+#### B. Day-to-Day Operator Desk Commands
+- `uv run copilot status`: Portfolio cash base, open notional exposure, leverage, and macro calendar.
+- `uv run copilot positions`: Tracked positions, live quotes, stop-loss / take-profit prices, and unrealized P&L.
+- `uv run copilot scan`: On-demand quantitative market scan (`--dry-run`, `--no-llm`, `--asset-class`, `--symbols`).
+- `uv run copilot execute <signal_id>`: Manually authorize and submit an approved signal to broker.
+- `uv run copilot close <signal_id> [exit_price]`: Liquidate open position, record realized P&L, release exposure.
+- `uv run copilot gex [symbol]`: Market maker dealer gamma exposure, pinning walls, and gamma flip.
+- `uv run copilot pairs`: Cross-asset cointegration, mean-reversion half-life, and rolling spread Z-scores.
+- `uv run copilot metrics`: Dump Prometheus exposition snapshot or launch standalone server (`--serve`).
+- `uv run copilot test-alert`: Send synthetic signal card to verify Telegram buttons and terminal display.
+
+#### C. Quantitative Research, Backtesting & Calibration (Offline)
+- `uv run copilot backtest`: Offline backtest with friction, Cash-Plus attribution, & Monte Carlo (`--symbols`, `--strategy`, `--lookback`).
+- `uv run copilot optimize`: Parameter grid search and rolling walk-forward validation (`--walk-forward`, `--splits`).
+- `uv run copilot retune`: Automated parameter recalibration with Walk-Forward Efficiency (WFE) filtering.
+- `uv run copilot stress`: Crisis replay (2008 GFC, 2020 COVID, 2022 Inflation) & factor shocks (`--scenario`).
+- `uv run copilot eval`: Benchmark LLM decision prompts against risk invariants (Promptfoo).
+
+#### D. Database Schema Migrations (`copilot db`)
+- `uv run copilot db upgrade head`: Apply pending migrations.
+- `uv run copilot db current`: View current revision.
+- `uv run copilot db history`: View migration history.
+- `uv run copilot db downgrade -1`: Rollback last migration.
+
+---
+
+## 3. Testing, Linting & Quality Control
+
+This repository enforces strict code quality and 100% pre-commit compliance before every commit:
+
 - **Pre-commit checks (mandatory before any commit)**:
   `uv run pre-commit run --all-files`
-- Run unit tests:
-  `uv run pytest`
-- Run linting:
-  `uv run ruff check --fix`
-- Run formatting:
-  `uv run ruff format`
-- Run type checking:
+- **Run test suite**:
+  `uv run pytest` (157 unit tests)
+- **Rust-accelerated impacted tests**:
+  `uv run pytest tests --impacted --impacted-module=agentic_trader --impacted-tests-dir=tests`
+- **Linter & Formatter**:
+  `uv run ruff check --fix && uv run ruff format`
+- **Type Checking**:
   `uv run mypy agentic_trader`
-- Run Promptfoo evals:
-  `npx -y promptfoo eval -c evals/promptfooconfig.yaml --no-cache`
+- **Promptfoo Evaluations**:
+  `uv run copilot eval` (or `npx -y promptfoo eval -c evals/promptfooconfig.yaml --no-cache`)
 
 ---
 
-## 3. Architecture & Key Directory Layout
+## 4. Architecture & Key Directory Layout
+
 - `agentic_trader/constants.py`: Centralized domain constants, symbols, multipliers, tick sizes, HTTP timeouts, URLs, and status strings.
-- `agentic_trader/broker/`:
-  - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`, `BrokerPosition`).
-  - `paper.py`: `PaperBroker` executing simulated fills against live CME micro quotes without risking capital.
-  - `tradovate.py`: `TradovateBroker` for headless cloud REST API execution with native server-side OCO brackets.
-  - `alpaca.py`: `AlpacaBroker` utilizing official `alpaca-py` TradingClient SDK for multi-asset execution with server-side bracket take-profit and stop-loss orders.
-- `agentic_trader/config.py` & `config/config.yaml`: Multipliers, tick sizes, risk ceilings, execution mode, and env var loader.
-- `agentic_trader/data/market_data.py`: Multi-timeframe bar data fetcher (Daily, 4h, 1h via `yfinance`).
-- `agentic_trader/screeners/`:
-  - `indicators.py`: Vectorized technical indicators (EMA, RSI-Wilder, ATR, Bollinger, Keltner, Squeeze).
-  - `strategies.py`: Quantitative screening algorithms (Strategy A: Trend-Pullback; Strategy B: Squeeze Breakout).
+- `agentic_trader/cli/`: Modular Click CLI package hierarchy (`main.py` and `commands/` for `scan`, `trade`, `backtest`, `research`, `stress`, `options`, `pairs`, `telemetry`, `service`, `db`).
 - `agentic_trader/agent/`:
-  - `calendar.py`: Economic calendar interface (`BaseEconomicCalendar`, `EconomicCalendarProtocol`) and default `ForexFactoryCalendar` with macro lockout detection.
-  - `evaluator.py`: LiteLLM trade evaluator, schema validation, and invariant enforcement.
-  - `prompts.py`: System prompt and structured few-shot evaluation prompts.
-- `agentic_trader/storage/`:
-  - `models.py`: SQLAlchemy 2.0 ORM models (`SignalModel`, `PositionModel`, `TradeAuditModel`) backing SQLite (`data/signals.db`).
-  - `db.py`: Database access layer wrapping SQLAlchemy session manager, deduplication, `broker_order_id`, and active notional exposure tracking.
-- `agentic_trader/notifier/telegram_bot.py`: Alert card formatting, Telegram inline callback dispatcher, and bot commands (`/status`, `/scan`, `/positions`, `/close`, `/help`).
-- `evals/`: Promptfoo configuration and evaluation benchmarks.
-- `scripts/`: macOS `launchd.sh` daemon supervision script.
+  - `copilot.py`: `FuturesCopilot` orchestration engine.
+  - `evaluator.py`: LiteLLM trade evaluator and risk invariant gating.
+  - `calendar.py`: Economic calendar with macro lockout detection (`ForexFactoryCalendar`).
+  - `regime.py`: Real-time market regime classifier (VIX, 10Y Treasury yield, Dollar Index).
+- `agentic_trader/broker/`:
+  - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`).
+  - `paper.py`: Simulated paper execution with dynamic contract multipliers.
+  - `tradovate.py`: Headless REST API execution with native server-side OCO brackets.
+  - `alpaca.py`: Official `alpaca-py` TradingClient SDK integration with bracket orders and WebSocket `TradingStream`.
+- `agentic_trader/pairs/`:
+  - `cointegration.py`: Engle-Granger two-step cointegration test, Ornstein-Uhlenbeck half-life modeling, and rolling spread Z-scores.
+  - `screener.py`: `PairsScreener` cross-asset scanner with futures proxy mapping.
+  - `reporting.py`: ASCII and Telegram HTML report formatters.
+- `agentic_trader/options/`:
+  - `gex.py`: Analytical Black-Scholes Greeks, dealer Gamma Exposure (GEX), and Gamma Flip detection.
+  - `fetcher.py`: Option chain fetcher with TTL caching and ETF proxy mapping.
+- `agentic_trader/telemetry/`:
+  - `collector.py`: Thread-safe Prometheus metrics registry (`MetricsCollector`).
+  - `server.py`: Lightweight async HTTP server serving `/metrics` and `/healthz`.
+- `agentic_trader/screeners/`: Technical indicators (EMA, Wilder RSI, ATR, Bollinger, Keltner, Squeeze) and strategy rules.
+- `agentic_trader/backtest/`: Backtest engine, transaction friction, Cash-Plus attribution, Monte Carlo simulation, and crisis replay.
+- `agentic_trader/research/`: VectorBT-based parameter grid optimizer and rolling walk-forward cross-validation engine.
+- `agentic_trader/storage/`: SQLAlchemy 2.0 ORM models (`SignalRecord`, `PositionModel`, `TradeAuditModel`) backing SQLite (`data/signals.db`).
+- `agentic_trader/notifier/telegram_bot.py`: Interactive Telegram bot with command handlers (`/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/backtest`, `/close`, `/scan`) and execution buttons.
+- `docs/`: GitHub Pages Jekyll documentation site (`_config.yml`, `index.md`, `production.md`, `cli-reference.md`, `strategies.md`, `roadmap.md`).
 
 ---
 
-## 4. Hard Domain Invariants & Business Rules
+## 5. Hard Domain Invariants & Business Rules
+
 When writing or modifying logic, NEVER violate these core constraints:
-1. **Quantitative Screener Scope**: Micro futures ONLY: `/MES`, `/MNQ`, `/MGC`, `/MCL`. No standard contracts. (Note: Broker execution layer supports multi-asset brackets across futures, equities, and crypto via `BaseBroker` implementations).
-2. **Fixed Sizing**: Exactly 1 micro contract per signal.
-3. **Notional Exposure Ceiling**: $\le \$60,000$ total active open notional exposure across all concurrent positions (0.6x effective leverage on $100k cash). Reject any candidate where `current_notional + candidate_notional > $60,000`.
+1. **Scope**: Micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`) and liquid ETF proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`).
+2. **Fixed Sizing**: 1 micro contract per signal.
+3. **Notional Exposure Ceiling**: $\le \$60,000$ total active open notional exposure across all concurrent positions (0.6x effective leverage on $100k cash).
 4. **Risk-to-Reward Ratio**: Strictly $R:R \ge 2.0$.
-5. **Structural Stop Distance**: Minimum stop distance $\ge 1.5 \times \text{ATR}(14)$. Anchor behind swing highs/lows with this floor.
+5. **Structural Stop Distance**: Minimum stop distance $\ge 1.5 \times \text{ATR}(14)$.
 6. **Macro Lockout**: NO entry alerts within $[-60\text{m}, +30\text{m}]$ of Tier-1 releases (CPI, PPI, FOMC, NFP).
 7. **Signal Deduplication**: No duplicate signal for the same contract + strategy within 12 hours.
-8. **Execution Safety**: Execution button callbacks must never directly mark signals `EXECUTED`. They must route through `broker.submit_entry_order()`. If rejected or failed, status becomes `FAILED` without locking notional capacity.
-9. **Container Name**: Docker deployment runs under container name `trading-copilot` (`docker compose up -d`).
-
----
-
-## 5. Coding Style & Guidelines
-- **Python Version**: Modern Python 3.12+ features (use `X | None` instead of `Optional[X]`, builtin generics `list[T]`, `dict[K, V]`).
-- **Imports**: Clean top-level imports sorted by Ruff / isort. Avoid inline imports inside async functions (`PLC0415`).
-- **Async Execution**: Use `asyncio.create_subprocess_exec` rather than blocking `subprocess.run` inside async code (`ASYNC221`).
-- **Type Safety**: Full type annotations on all function signatures and public class attributes. Strict Mypy adherence.
-- **Pydantic**: Use Pydantic v2 models for structured schemas and LLM payloads.
-- **Secrets & Git**: Never commit `.envrc` or credentials. Keep `.envrc` in `.gitignore` and maintain clean placeholders in `.envrc.example`.
-- **Pre-commit**: Always run `uv run pre-commit run --all-files` before finalizing changes. All hooks must pass.
+8. **Execution Safety**: Execution buttons must route through `broker.submit_entry_order()`. If rejected, status becomes `FAILED` without locking notional capacity.
+9. **Single Steady-State Daemon**: Production runs only `copilot daemon`.

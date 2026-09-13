@@ -1,0 +1,36 @@
+# Jekyll site configuration for GitHub Pages hosting
+title: Cash-Plus Trading Copilot
+description: Autonomous Multi-Asset Quantitative Trading System & Algorithmic Execution Infrastructure
+baseurl: "/agentic-trader"
+url: "https://adamhadani.github.io"
+
+# GitHub Pages native theme (zero external ruby gem dependencies required)
+theme: jekyll-theme-cayman
+
+# Navigation structure
+header_pages:
+  - index.md
+  - production.md
+  - cli-reference.md
+  - strategies.md
+  - roadmap.md
+
+# Markdown & Code Highlighting Engine
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false
+  syntax_highlighter: rouge
+  syntax_highlighter_opts:
+    default_lang: bash
+
+# Plugins natively supported by GitHub Pages
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+# Exclude scratch files and environment configs
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
