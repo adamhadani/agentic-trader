@@ -32,6 +32,11 @@ from agentic_trader.constants import (
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.execution import SlicedExecutionEngine
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
+from agentic_trader.options import (
+    OptionsDataFetcher,
+    format_gex_report,
+    format_gex_telegram,
+)
 from agentic_trader.research import (
     AutoRetuner,
     ParameterGridOptimizer,
@@ -75,6 +80,10 @@ class FuturesCopilot:
             data_fetcher=self.data_fetcher,
         )
         self.execution_engine = SlicedExecutionEngine(config=self.config)
+        self.options_fetcher = OptionsDataFetcher(
+            risk_free_rate=config.options.risk_free_rate,
+            cache_ttl_seconds=config.options.cache_ttl_seconds,
+        )
         self.notifier = TelegramNotifier(
             bot_token=config.telegram_bot_token,
             chat_id=config.telegram_chat_id,
@@ -89,6 +98,7 @@ class FuturesCopilot:
             perf_provider=self.get_performance_summary_html,
             regime_provider=self.get_regime_summary_html,
             backtest_runner=self.run_backtest_summary_html,
+            gex_provider=self.run_gex_summary_html,
         )
         self._shutdown_event = asyncio.Event()
 
@@ -891,6 +901,17 @@ class FuturesCopilot:
             f"{mc_line}"
         )
 
+    async def run_gex_summary_html(self, symbol: str = "SPY") -> str:
+        try:
+            profile = await asyncio.to_thread(
+                self.options_fetcher.fetch_and_calculate_gex,
+                symbol,
+                self.config.options.max_expirations,
+            )
+            return format_gex_telegram(profile)
+        except Exception as e:
+            return f"❌ Failed to calculate GEX for {symbol}: {e}"
+
     async def run_auto_retune(
         self,
         symbols: list[str] | None = None,
@@ -1171,10 +1192,35 @@ async def async_main():
         help="Starting cash amount in dollars (default: config.portfolio.cash)",
     )
 
+    gex_parser = subparsers.add_parser(
+        "gex",
+        help="Analyze market maker gamma exposure (GEX), pinning walls, and volatility surface",
+        description="Analyze market maker gamma exposure (GEX), pinning walls, and volatility surface",
+    )
+    gex_parser.add_argument(
+        "symbol",
+        type=str,
+        nargs="?",
+        default="SPY",
+        help="Underlying asset or ETF proxy (e.g. SPY, QQQ, IWM, /MES; default: 'SPY')",
+    )
+    gex_parser.add_argument(
+        "--expirations",
+        type=int,
+        default=3,
+        help="Number of near-term option expirations to aggregate (default: 3)",
+    )
+    gex_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output raw JSON data model instead of ASCII table",
+    )
+
     args = parser.parse_args()
     config = load_config()
     copilot = FuturesCopilot(config)
-    if args.command not in ("db", "backtest", "optimize", "retune", "stress"):
+    if args.command not in ("db", "backtest", "optimize", "retune", "stress", "gex"):
         await copilot.broker.connect()
 
     if args.command == "db":
@@ -1324,6 +1370,25 @@ async def async_main():
                 initial_cash=args.cash,
             )
             print(format_stress_test_report([single_stress_res]))
+    elif args.command == "gex":
+        fetcher = OptionsDataFetcher(
+            risk_free_rate=config.options.risk_free_rate,
+            cache_ttl_seconds=config.options.cache_ttl_seconds,
+        )
+        print(f"Fetching option chains and computing dealer gamma for {args.symbol.upper()}...")
+        try:
+            profile = await asyncio.to_thread(
+                fetcher.fetch_and_calculate_gex,
+                args.symbol,
+                args.expirations,
+            )
+            if args.json:
+                print(profile.model_dump_json(indent=2))
+            else:
+                print(format_gex_report(profile))
+        except Exception as e:
+            logger.error("Failed to calculate GEX: %s", e)
+            print(f"Error analyzing gamma exposure for {args.symbol}: {e}")
     elif args.command == "status":
         await copilot.show_status()
     elif args.command == "positions":

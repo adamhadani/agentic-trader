@@ -203,6 +203,7 @@ class TelegramNotifier:
         perf_provider: Callable[[], Awaitable[str]] | None = None,
         regime_provider: Callable[[], Awaitable[str]] | None = None,
         backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
+        gex_provider: Callable[[str], Awaitable[str]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
@@ -217,6 +218,7 @@ class TelegramNotifier:
         self.perf_provider = perf_provider
         self.regime_provider = regime_provider
         self.backtest_runner = backtest_runner
+        self.gex_provider = gex_provider
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
@@ -246,6 +248,7 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("perf", self.handle_perf_command))
             self.app.add_handler(CommandHandler("regime", self.handle_regime_command))
             self.app.add_handler(CommandHandler("backtest", self.handle_backtest_command))
+            self.app.add_handler(CommandHandler("gex", self.handle_gex_command))
 
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -257,6 +260,7 @@ class TelegramNotifier:
             "• /positions - View active tracked trades and unrealized P&amp;L\n"
             "• /perf - View cumulative closed trade performance and win rate\n"
             "• /regime - View real-time VIX, 10Y yield, and Dollar Index regime\n"
+            "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
             "• /close &lt;id&gt; [price] - Manually close a tracked trade and record fill\n"
             "• /scan - Trigger an on-demand quantitative scan across universe\n"
@@ -328,6 +332,25 @@ class TelegramNotifier:
                 await update.message.reply_text(f"❌ Backtest error: {e}")
         else:
             await update.message.reply_text("Backtest runner not attached.")
+
+    async def handle_gex_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        args = context.args or []
+        symbol = args[0].upper() if len(args) > 0 else "SPY"
+
+        await update.message.reply_text(
+            f"🧭 Analyzing options gamma exposure & dealer walls for <b>{html.escape(symbol)}</b>...",
+            parse_mode="HTML",
+        )
+        if self.gex_provider:
+            try:
+                resp = await self.gex_provider(symbol)
+                await update.message.reply_text(resp, parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ GEX error: {e}")
+        else:
+            await update.message.reply_text("GEX provider not attached.")
 
     async def handle_close_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:

@@ -27,6 +27,7 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **Completed** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |
 | **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **Completed** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
 | **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **Completed** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |
+| **Phase 20** | Options Implied Volatility Surface & GEX Tracking | **Completed** | Market maker gamma exposure (GEX), Call/Put walls, Gamma Flip, Put/Call ratios, and Telegram `/gex` |
 
 ---
 
@@ -486,15 +487,52 @@ Provide quantitative stress testing and tail-risk evaluation by replaying strate
 - **Stress Engine (`agentic_trader/backtest/stress.py`)**: Implemented `CrisisReplayEngine`, `CrisisScenario`, `ScenarioStressResult`, `InstantaneousShockResult`, and `CRISIS_CATALOG`.
 - **Backtest Boundaries (`agentic_trader/backtest/engine.py`)**: Added `start_date` and `end_date` support to data fetching and simulation execution.
 - **Reporting (`agentic_trader/backtest/reporting.py`)**: Added institutional crisis tables with colorized drawdown risk levels.
-- **CLI Subcommand (`agentic_trader/main.py`)**: Added `stress` subcommand to Typer CLI.
+- **CLI Subcommand (`agentic_trader/main.py`)**: Added `stress` subcommand to CLI.
 - **Test Suite (`tests/test_stress_testing.py`)**: 7 unit tests covering scenario lookups, proxy resolution, replay execution, instantaneous shocks, and CLI commands.
 
 ---
 
-## Next Horizon: Advanced Quantitative Infrastructure (Phases 20+)
+## Phase 20: Options Implied Volatility Surface & GEX Tracking
+
+### Objective
+Provide quantitative options market telemetry by analyzing real-time option chains to compute market maker Gamma Exposure (GEX), zero-crossing Gamma Flip levels, Call/Put pinning walls, and Put/Call positioning ratios across equity indexes and liquid ETFs (SPY, QQQ, IWM, and futures proxies `/MES`, `/MNQ`).
+
+### Key Deliverables
+1. **Black-Scholes Analytical Greeks Engine (`agentic_trader/options/gex.py`)**:
+   - `black_scholes_gamma()`: Exact analytical calculation of option gamma $\Gamma = \frac{N'(d_1)}{S \sigma \sqrt{T}}$ with numerical boundary safeguards for expiration singularities ($T \to 0$) and extreme volatility conditions.
+2. **Dealer Gamma Exposure (GEX) Model**:
+   - Computes aggregated market maker gamma exposure in $ Millions per 1% underlying price move:
+     $$\text{Call GEX}_K = \Gamma_K \times \text{OI}_K \times 100 \times S^2 \times 0.01 \times 10^{-6}$$
+     $$\text{Put GEX}_K = -\Gamma_K \times \text{OI}_K \times 100 \times S^2 \times 0.01 \times 10^{-6}$$
+   - Classifies structural gamma regime:
+     - `POSITIVE_GAMMA` (+GEX): Dealer inventory suppresses volatility; dip-buying and mean-reversion strategies thrive.
+     - `NEGATIVE_GAMMA` (-GEX): Dealer delta-hedging amplifies volatility; momentum breakouts accelerate.
+     - `NEUTRAL`: Balanced dealer inventory.
+3. **Key Structural Pinning Walls & Gamma Flip Level**:
+   - **Call Wall**: Strike with peak call open interest (major upside resistance / expiration pinning target).
+   - **Put Wall**: Strike with peak put open interest (major downside support / dealer hedging floor).
+   - **Gamma Flip Level**: Linear interpolation solving for the underlying index price where total net dealer gamma crosses zero.
+4. **Options Data Pipeline & Micro Futures Proxy Resolution (`agentic_trader/options/fetcher.py`)**:
+   - Resolves micro futures (`/MES`, `/MNQ`, `/M2K`, `/MGC`, `/MCL`) to high-liquidity ETF option proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`).
+   - Fetches option chains across near-term expirations with TTL-based response caching to protect against rate limits.
+5. **Institutional Reporting & Telegram Interactive Bot Integration**:
+   - `format_gex_report()`: Institutional ASCII table displaying net GEX, regime status, Call/Put walls, Gamma Flip, Put/Call ratios, and near-the-money gamma concentration by strike.
+   - `format_gex_telegram()`: HTML-formatted card for mobile Telegram delivery.
+   - `copilot gex [SYMBOL]` CLI subcommand supporting `--expirations` and `--json`.
+   - `/gex [SYMBOL]` Telegram interactive command.
+
+### Implementation Summary
+- **Options Package (`agentic_trader/options/`)**: Created `models.py`, `gex.py`, `fetcher.py`, `reporting.py`, and `__init__.py`.
+- **Configuration (`agentic_trader/config.py`, `config/config.yaml`)**: Added `OptionsConfig` model with configurable default symbols, expirations, and risk-free rate.
+- **Telegram Bot (`agentic_trader/notifier/telegram_bot.py`)**: Registered `/gex` command handler with `gex_provider` callback.
+- **CLI & Copilot Integration (`agentic_trader/main.py`)**: Attached `self.options_fetcher` to `FuturesCopilot` and wired `gex` subcommand.
+- **Test Suite (`tests/test_options_gex.py`)**: 8 comprehensive unit tests covering Black-Scholes gamma calculation, synthetic GEX aggregation, gamma flip detection, ETF proxy mapping, ASCII/Telegram formatters, and Telegram bot command dispatch.
+
+---
+
+## Next Horizon: Advanced Quantitative Infrastructure (Phases 21+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 20** | Options Implied Volatility Surface & GEX (Gamma Exposure) | **Planned** | Option chain analytics, zero-DTE skew, Put/Call volume ratio, market maker gamma positioning |
-| **Phase 21** | Real-Time Prometheus Metrics & Grafana Observability | **Planned** | Live operational telemetry, order execution latency, Sharpe/PnL Prometheus exporter |
+| **Phase 21** | Real-Time Prometheus Metrics & Observability | **Planned** | Live operational telemetry, order execution latency, Sharpe/PnL Prometheus exporter |
 | **Phase 22** | Cointegration & Statistical Pairs Trading Screener | **Planned** | Engle-Granger / Johansen cointegration tests for mean-reverting equity and futures spreads |

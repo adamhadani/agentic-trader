@@ -139,3 +139,10 @@ execution:
   twap_interval_seconds: 5.0
   price_collar_ticks: 2.0 # max allowable ticks from base entry price
   price_collar_pct: 0.001 # 0.10% price collar for equities
+
+options:
+  enabled: true
+  default_symbols: ["SPY", "QQQ", "IWM"]
+  max_expirations: 3
+  risk_free_rate: 0.045
+  cache_ttl_seconds: 60

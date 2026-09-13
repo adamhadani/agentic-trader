@@ -184,6 +184,14 @@ class ExecutionConfig(BaseModel):
     vwap_intraday_profile: list[float] = Field(default_factory=lambda: [0.25, 0.15, 0.10, 0.10, 0.15, 0.25])
 
 
+class OptionsConfig(BaseModel):
+    enabled: bool = True
+    default_symbols: list[str] = Field(default_factory=lambda: ["SPY", "QQQ", "IWM"])
+    max_expirations: int = 3
+    risk_free_rate: float = 0.045
+    cache_ttl_seconds: int = 60
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -195,6 +203,7 @@ class AppConfig(BaseModel):
     redundancy: RedundancyConfig = Field(default_factory=RedundancyConfig)
     sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    options: OptionsConfig = Field(default_factory=OptionsConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None
@@ -312,6 +321,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         redundancy=RedundancyConfig(**redundancy_cfg),
         sizing=PositionSizingConfig(**sizing_cfg),
         execution=ExecutionConfig(**exec_cfg),
+        options=OptionsConfig(**cfg_dict.get("options", {})),
         telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
         telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
         llm_model=llm_model,
