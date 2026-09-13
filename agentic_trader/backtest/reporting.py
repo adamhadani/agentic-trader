@@ -27,6 +27,23 @@ def format_backtest_report(result: BacktestResult, symbols: list[str], lookback:
                     f"via {t.strategy.value} ({t.duration_bars} bars)\n"
                 )
 
+    mc_section = ""
+    if result.monte_carlo:
+        mc = result.monte_carlo
+        mc_section = f"""{sub_border}
+MONTE CARLO RISK RESAMPLING ({mc.n_simulations:,d} Bootstrap Iterations)
+{sub_border}
+• Final Portfolio Equity (Median): ${mc.median_equity:12,.2f}
+• 90% Confidence Interval (Equity): [${mc.ci_5th_equity:,.2f} .. ${mc.ci_95th_equity:,.2f}]
+• Maximum Drawdown (Median):       {mc.median_drawdown_pct:12.2f}%
+• 95th Pctile Worst Drawdown:      {mc.ci_95th_drawdown_pct:12.2f}%
+• Sharpe Ratio (Median / 5th%):    {mc.median_sharpe:6.2f} / {mc.ci_5th_sharpe:6.2f}
+• Risk of Ruin (Drawdown >= 10%):  {mc.risk_of_ruin_10pct:12.2f}%
+• Risk of Ruin (Drawdown >= 20%):  {mc.risk_of_ruin_20pct:12.2f}%
+• 95% Value at Risk (VaR):         {mc.var_95_pct:12.2f}%
+• 95% Conditional VaR (CVaR):     {mc.cvar_95_pct:12.2f}%
+"""
+
     report = f"""
 {border}
 CASH-PLUS TRADING COPILOT: QUANTITATIVE BACKTEST REPORT
@@ -50,7 +67,7 @@ RISK-ADJUSTED METRICS & DRAWDOWN
 • Sortino Ratio:                {result.sortino_ratio:12.2f}
 • Maximum Drawdown:             {result.max_drawdown_pct:12.2f}%
 • Profit Factor:                {result.profit_factor:12.2f}
-{sub_border}
+{mc_section}{sub_border}
 TRADE STATISTICS
 {sub_border}
 • Total Executed Trades:        {result.total_trades:12d}

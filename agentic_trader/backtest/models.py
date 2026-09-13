@@ -37,6 +37,24 @@ class EquityPoint:
 
 
 @dataclass
+class MonteCarloResult:
+    """Statistical distribution of performance metrics across bootstrap resamplings."""
+
+    n_simulations: int
+    median_equity: float
+    ci_5th_equity: float
+    ci_95th_equity: float
+    median_drawdown_pct: float
+    ci_95th_drawdown_pct: float
+    median_sharpe: float
+    ci_5th_sharpe: float
+    risk_of_ruin_10pct: float
+    risk_of_ruin_20pct: float
+    var_95_pct: float
+    cvar_95_pct: float
+
+
+@dataclass
 class BacktestResult:
     """Aggregated performance results and trade log from a backtest run."""
 
@@ -59,3 +77,4 @@ class BacktestResult:
     avg_trade_duration_bars: float
     trades: list[BacktestTrade] = field(default_factory=list)
     equity_curve: list[EquityPoint] = field(default_factory=list)
+    monte_carlo: MonteCarloResult | None = None

@@ -16,9 +16,10 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 6** | VectorBT Research & Parameter Grid Optimization | **Completed** | High-throughput tensor parameter search (`copilot optimize`), NumPy fallback |
 | **Phase 7** | Dynamic Strategy Configuration & Parameter Export | **Completed** | Parameterize strategy screeners via config, export optimal params from CLI |
 | **Phase 8** | Telegram Interactive Commands (`/perf`, `/regime`, `/backtest`) | **Completed** | Mobile oversight, live portfolio performance attribution, real-time regime view |
-| **Phase 9** | Real-Time WebSocket Streaming for Alpaca (`TradingStream`) | **In Progress** | Sub-second event-driven fills, bracket execution, and liquidation push alerts |
-| **Phase 10** | Portfolio Risk Budgeting & Correlation Filtering | **Planned** | Sector/asset class allocation caps, cross-asset correlation guardrails |
-| **Phase 11** | Walk-Forward Out-of-Sample Validation in Research | **Planned** | Rolling train/test windows in research to guard against parameter overfitting |
+| **Phase 9** | Real-Time WebSocket Streaming for Alpaca (`TradingStream`) | **Completed** | Sub-second event-driven fills, bracket execution, and liquidation push alerts |
+| **Phase 10** | Portfolio Risk Budgeting & Correlation Filtering | **Completed** | Sector/asset class allocation caps, cross-asset correlation guardrails |
+| **Phase 11** | Walk-Forward Out-of-Sample Validation in Research | **Completed** | Rolling train/test windows in research to guard against parameter overfitting |
+| **Phase 12** | Monte Carlo Risk Simulation in Backtester | **Completed** | Resample trade returns and drawdown distributions with 95%/99% VaR and CVaR confidence bounds |
 
 ---
 
@@ -186,6 +187,12 @@ Transition from periodic polling reconciliation to sub-second event-driven order
 3. **Resilience**:
    - Auto-reconnect with exponential backoff and fallback to periodic polling reconciliation if the WebSocket disconnects.
 
+### Implementation Summary
+- **Broker Streaming (`agentic_trader/broker/alpaca.py`)**: Implemented `start_trade_stream` and `stop_trade_stream` using Alpaca's `TradingStream`, binding `_on_trade_update` handlers with deduplication checks.
+- **Position Reconciliation Deduplication (`agentic_trader/main.py`)**: Updated `process_reconciliation_event` and `on_stream_trade_update` with an in-memory lock set (`_reconciliation_lock`) to prevent concurrent race conditions between WebSocket events and periodic polling loops.
+- **Daemon Lifecycle Management (`agentic_trader/main.py`)**: Launched the trade stream as a persistent background asyncio task in `start_daemon()`, cleanly terminating during shutdown.
+- **Test Suite (`tests/test_alpaca_stream.py`)**: 4 unit and integration tests verifying WebSocket stream startup, callback event parsing, bracket fill detection, and reconciliation deduplication.
+
 ---
 
 ## Phase 10: Portfolio Risk Budgeting & Correlation Filtering
@@ -201,6 +208,14 @@ Prevent concentrated risk across correlated assets and enforce macro allocation 
 3. **Portfolio Heat Check**:
    - Reject new entries if aggregate total portfolio open dollar risk exceeds a configured threshold (e.g. 2.0% of total equity).
 
+### Implementation Summary
+- **Risk Budget Configuration (`agentic_trader/config.py`)**: Added `max_futures_exposure`, `max_equity_exposure`, `max_crypto_exposure`, and `max_correlated_positions` to `PortfolioConfig`.
+- **Correlation Groups & Dynamic Return Correlation (`agentic_trader/evaluator/risk.py`, `agentic_trader/data/market_data.py`)**:
+  - Predefined correlation clusters for US Tech (`QQQ`, `/MNQ`), US Broad Market (`SPY`, `/MES`), Precious Metals (`GLD`, `/MGC`), and Energy (`XLE`, `/MCL`).
+  - Added `calculate_correlation(ticker1, ticker2, lookback_days)` to `MarketDataFetcher` for dynamic 60-day Pearson log-return correlation.
+  - Added asset-class capacity filters and correlation limit enforcement (> 0.75 threshold) in `RiskEvaluator.evaluate_candidate`.
+- **Test Suite (`tests/test_risk_budgeting.py`)**: 6 comprehensive unit tests verifying futures/equity exposure caps, correlation cluster enforcement, statistical return correlation matrix, and entry rejection mechanics.
+
 ---
 
 ## Phase 11: Walk-Forward Out-of-Sample Validation in Research
@@ -210,8 +225,61 @@ Prevent hyperparameter overfitting and quantify strategy parameter stability ove
 
 ### Key Deliverables
 1. **Rolling Walk-Forward Engine**:
-   - Split historical data into in-sample optimization windows (e.g. 12 months) and out-of-sample test windows (e.g. 3 months).
+   - Split historical data into in-sample optimization windows and out-of-sample test windows (expanding/rolling anchor).
 2. **Robustness Scoring**:
-   - Calculate parameter efficiency ratio (out-of-sample Sharpe / in-sample Sharpe).
+   - Calculate parameter efficiency ratio (Walk-Forward Efficiency: out-of-sample return / in-sample return, and out-of-sample Sharpe).
 3. **CLI Command**:
-   - Add `--walk-forward` flag to `copilot optimize`.
+   - Add `--walk-forward` and `--splits` flags to `copilot optimize`.
+
+### Implementation Summary
+- **Data Models (`agentic_trader/research/models.py`, `agentic_trader/research/__init__.py`)**:
+  - `WalkForwardFold`: Dataclass encapsulating fold index, train/test date windows, winning in-sample parameters, out-of-sample return, out-of-sample Sharpe, and WFE ratio.
+  - `ParameterCandidate`: Extended with `is_return_pct`, `oos_return_pct`, `is_sharpe`, `oos_sharpe`, and `wfe_ratio`.
+  - `OptimizationResult`: Extended with `is_walk_forward`, `walk_forward_folds`, and `avg_wfe_ratio`.
+- **Walk-Forward Optimizer (`agentic_trader/research/optimizer.py`)**:
+  - Added `_evaluate_parameters()` for targeted single-candidate validation.
+  - Implemented expanding anchor cross-validation over `splits` rolling folds with WFE calculation.
+  - Full-grid candidate ranking prioritizing out-of-sample Sharpe and positive Walk-Forward Efficiency.
+- **Reporting (`agentic_trader/research/reporting.py`)**:
+  - Formatted ASCII walk-forward report with fold-by-fold chronological breakdown, train vs test return comparisons, and robustness rating (PASS if WFE >= 0.50).
+- **CLI Subcommand (`agentic_trader/main.py`)**:
+  - Added `--walk-forward` and `--splits` arguments to `copilot optimize`.
+- **Test Suite (`tests/test_walk_forward.py`, `tests/test_optimizer.py`)**:
+  - 4 unit tests verifying fold generation, candidate out-of-sample attributes, reporting tables, and fallback on short histories.
+
+---
+
+## Phase 12: Monte Carlo Risk Simulation & Confidence Intervals in Backtester
+
+### Objective
+Quantify tail risk, drawdown distributions, and risk of ruin beyond single historical execution paths using bootstrap resampling.
+
+### Key Deliverables
+1. **Bootstrap Resampling Engine (`agentic_trader/backtest/monte_carlo.py`)**:
+   - Resample historical trades with replacement across $N$ iterations (default 1,000).
+   - Compute full simulated equity and drawdown curves.
+2. **Quant Risk & Ruin Metrics**:
+   - 90% Confidence Interval on ending portfolio equity (5th vs 95th percentile).
+   - 95th Percentile Worst-Case Drawdown.
+   - Risk of Ruin (% simulations experiencing $\ge 10\%$ or $\ge 20\%$ drawdowns).
+   - 95% Value at Risk (VaR) and 95% Conditional Value at Risk (CVaR / Expected Shortfall).
+3. **CLI & Mobile Integration**:
+   - Added `--monte-carlo` and `--mc-sims` flags to `copilot backtest`.
+   - Integrated into Telegram `/backtest` response cards.
+
+### Implementation Summary
+- **Data Models (`agentic_trader/backtest/models.py`, `agentic_trader/backtest/__init__.py`)**: Added `MonteCarloResult` dataclass and `monte_carlo` attribute to `BacktestResult`.
+- **Simulation Engine (`agentic_trader/backtest/monte_carlo.py`)**: Implemented `run_monte_carlo_simulation()` with vectorized NumPy matrix operations and zero-division protections.
+- **Reporting (`agentic_trader/backtest/reporting.py`)**: Formatted dedicated Monte Carlo risk attribution section in institutional ASCII backtest report.
+- **CLI & Telegram (`agentic_trader/main.py`)**: Added `--monte-carlo` flag to `backtest` command and embedded worst-case drawdown / VaR into Telegram `/backtest` summaries.
+- **Test Suite (`tests/test_monte_carlo.py`, `tests/test_backtest.py`)**: 4 unit tests verifying sample sizing, metric calculations, random seed determinism, report formatting, and CLI arguments.
+
+---
+
+## Next Horizon: Upcoming Strategic Targets
+
+| Priority | Target Area | Status | Focus |
+|---|---|---|---|
+| **Phase 13** | Slippage & Realistic Fee/Commission Modeling | **Planned** | Exchange clearing fees, NFA fees, broker commissions, and volume-weighted bid-ask spread slippage |
+| **Phase 14** | Automated Scheduled Retuning Daemon | **Planned** | Background weekend calibration job updating strategy config thresholds based on rolling WFE |
+| **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **Planned** | Real-time WebSocket connection to Tradovate broker API with multi-broker fallback |

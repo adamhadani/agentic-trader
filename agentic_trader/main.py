@@ -12,7 +12,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector
-from agentic_trader.backtest import BacktestEngine, format_backtest_report
+from agentic_trader.backtest import (
+    BacktestEngine,
+    format_backtest_report,
+    run_monte_carlo_simulation,
+)
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
 from agentic_trader.constants import (
@@ -856,6 +860,12 @@ class FuturesCopilot:
             strategy_filter="all",
             lookback=lookback,
         )
+        mc_line = ""
+        if len(res.trades) >= 3:
+            mc = run_monte_carlo_simulation(res.trades, starting_cash=res.starting_cash, n_simulations=500)
+            if mc:
+                mc_line = f"\n• <b>95% Worst DD (Monte Carlo):</b> <code>{mc.ci_95th_drawdown_pct:.1f}%</code> (95% VaR: {mc.var_95_pct:.1f}%)"
+
         return (
             f"📈 <b>BACKTEST SIMULATION: {symbol.upper()} ({lookback})</b>\n\n"
             f"• <b>Total Net Return:</b> <code>{res.combined_return_pct:+.2f}%</code>\n"
@@ -865,6 +875,7 @@ class FuturesCopilot:
             f"• <b>Win Rate:</b> <code>{res.win_rate:.1f}%</code> ({res.total_trades} trades)\n"
             f"• <b>Profit Factor:</b> <code>{res.profit_factor:.2f}</code>\n"
             f"• <b>Cash-Plus Yield Accrued:</b> +${res.cash_yield_pnl:,.2f}"
+            f"{mc_line}"
         )
 
     async def send_test_alert(self):
@@ -989,6 +1000,18 @@ async def async_main():
         default=0.045,
         help="Annualized cash reserve risk-free yield (default: 0.045 / 4.5 percent)",
     )
+    backtest_parser.add_argument(
+        "--monte-carlo",
+        action="store_true",
+        default=False,
+        help="Run bootstrap Monte Carlo resampling across simulated trades",
+    )
+    backtest_parser.add_argument(
+        "--mc-sims",
+        type=int,
+        default=1000,
+        help="Number of Monte Carlo bootstrap iterations (default: 1000)",
+    )
 
     optimize_parser = subparsers.add_parser(
         "optimize",
@@ -1099,6 +1122,12 @@ async def async_main():
             strategy_filter=args.strategy,
             lookback=args.lookback,
         )
+        if args.monte_carlo and result.trades:
+            result.monte_carlo = run_monte_carlo_simulation(
+                result.trades,
+                starting_cash=args.cash,
+                n_simulations=args.mc_sims,
+            )
         report = format_backtest_report(result, sym_list, args.lookback, args.strategy)
         print(report)
     elif args.command == "optimize":

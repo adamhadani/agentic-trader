@@ -373,3 +373,5 @@ def test_cli_backtest_help():
     assert "--lookback" in proc.stdout
     assert "--cash" in proc.stdout
     assert "--risk-free-rate" in proc.stdout
+    assert "--monte-carlo" in proc.stdout
+    assert "--mc-sims" in proc.stdout
