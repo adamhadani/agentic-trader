@@ -382,12 +382,24 @@ class FuturesCopilot:
 
     async def start_trade_stream(self) -> None:
         """Continuously run broker real-time trade stream with exponential backoff auto-reconnect."""
+        if not getattr(self.broker, "supports_trade_stream", False):
+            logger.debug("Broker does not support real-time trade streaming; stream listener idle.")
+            await self._shutdown_event.wait()
+            return
+
         backoff = 2.0
         max_backoff = 60.0
         while not self._shutdown_event.is_set():
             try:
                 logger.info("Starting broker real-time trade stream listener...")
                 await self.broker.start_trade_stream(self.on_stream_trade_update)
+                if not self._shutdown_event.is_set():
+                    logger.info("Broker trade stream disconnected cleanly. Reconnecting in %.1fs...", backoff)
+                    try:
+                        await asyncio.wait_for(self._shutdown_event.wait(), timeout=backoff)
+                        break
+                    except TimeoutError:
+                        pass
                 backoff = 2.0
             except asyncio.CancelledError:
                 logger.info("Broker trade stream task cancelled.")
@@ -399,9 +411,10 @@ class FuturesCopilot:
                     backoff,
                 )
                 try:
-                    await asyncio.sleep(backoff)
-                except asyncio.CancelledError:
+                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=backoff)
                     break
+                except TimeoutError:
+                    pass
                 backoff = min(backoff * 2, max_backoff)
 
     async def monitor_positions(self) -> int:

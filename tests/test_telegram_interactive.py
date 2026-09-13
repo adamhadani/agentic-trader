@@ -277,9 +277,17 @@ def test_format_alert_card_with_sizing_tiers():
     assert "Position Sizing Tiers:" in card_html
     assert "Half (1x)" in card_html
     assert "Base (2x)" in card_html
+    assert "Risk: -$213.75" in card_html
+    assert "Reward: +$427.50" in card_html
+    assert "Risk: -$427.50" in card_html
+    assert "Reward: +$855.00" in card_html
     assert "Capped by $60,000 portfolio notional limit" in card_html
 
     card_term = format_terminal_card(test_eval, strategy="TREND_PULLBACK")
     assert "Position Sizing Tiers:" in card_term
     assert "Half (1x)" in card_term
     assert "Base (2x)" in card_term
+    assert "Risk: -$213.75" in card_term
+    assert "Reward: +$427.50" in card_term
+    assert "Risk: -$427.50" in card_term
+    assert "Reward: +$855.00" in card_term

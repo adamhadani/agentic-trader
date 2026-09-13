@@ -45,31 +45,55 @@ def format_alert_card(
     else:
         qty_str = f"{qty:g}x"
 
+    tiers = getattr(eval_res, "sizing_tiers", None)
+    has_tiers = bool(tiers and len(tiers) > 1)
+
     mode_lower = execution_mode.lower()
-    if mode_lower == ExecutionMode.PAPER:
-        exec_instr = (
-            f"1. Click <b>[ 🚀 Execute (Paper) ]</b> to simulate entry for {qty_str} <code>{html.escape(eval_res.contract)}</code> at <code>{eval_res.entry_price:,.2f}</code>.\n"
-            f"2. Fills against live market quote; synthetic bracket stop at <code>{eval_res.stop_loss:,.2f}</code>.\n"
-        )
-    elif mode_lower == ExecutionMode.TRADOVATE:
-        exec_instr = (
-            f"1. Click <b>[ 🚀 Approve & Execute ]</b> to submit {qty_str} <code>{html.escape(eval_res.contract)}</code> via Tradovate REST API.\n"
-            f"2. Server-side OCO brackets placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
-        )
-    elif mode_lower == ExecutionMode.ALPACA:
-        exec_instr = (
-            f"1. Click <b>[ 🚀 Execute (Alpaca) ]</b> to submit {qty_str} <code>{html.escape(eval_res.contract)}</code> via Alpaca Trading API.\n"
-            f"2. Server-side bracket order placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
-        )
+    if has_tiers:
+        if mode_lower == ExecutionMode.PAPER:
+            exec_instr = (
+                "1. Tap an execution tier button below to simulate entry with that size (or tap <b>[ ❌ Dismiss ]</b> to decline).\n"
+                f"2. Fills against live quote; synthetic bracket stop at <code>{eval_res.stop_loss:,.2f}</code>, target at <code>{eval_res.take_profit:,.2f}</code>.\n"
+            )
+        elif mode_lower == ExecutionMode.TRADOVATE:
+            exec_instr = (
+                "1. Tap an execution tier button below to submit order via Tradovate (or tap <b>[ ❌ Dismiss ]</b> to decline).\n"
+                f"2. Server-side OCO brackets placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
+            )
+        elif mode_lower == ExecutionMode.ALPACA:
+            exec_instr = (
+                "1. Tap an execution tier button below to submit order via Alpaca (or tap <b>[ ❌ Dismiss ]</b> to decline).\n"
+                f"2. Server-side bracket order placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
+            )
+        else:
+            exec_instr = (
+                "1. Tap an execution tier button below to authorize entry (or tap <b>[ ❌ Dismiss ]</b> to decline).\n"
+                f"2. Upon fill, resting stop placed at <code>{eval_res.stop_loss:,.2f}</code> (GTC).\n"
+            )
     else:
-        exec_instr = (
-            f"1. Buy/Sell {qty_str} <code>{html.escape(eval_res.contract)}</code> at Market/Limit <code>{eval_res.entry_price:,.2f}</code>.\n"
-            f"2. Upon fill, immediately submit a resting <b>Stop Order</b> at <code>{eval_res.stop_loss:,.2f}</code> (GTC).\n"
-        )
+        if mode_lower == ExecutionMode.PAPER:
+            exec_instr = (
+                f"1. Click <b>[ 🚀 Execute (Paper) ]</b> to simulate entry for {qty_str} <code>{html.escape(eval_res.contract)}</code> at <code>{eval_res.entry_price:,.2f}</code>.\n"
+                f"2. Fills against live market quote; synthetic bracket stop at <code>{eval_res.stop_loss:,.2f}</code>.\n"
+            )
+        elif mode_lower == ExecutionMode.TRADOVATE:
+            exec_instr = (
+                f"1. Click <b>[ 🚀 Approve & Execute ]</b> to submit {qty_str} <code>{html.escape(eval_res.contract)}</code> via Tradovate REST API.\n"
+                f"2. Server-side OCO brackets placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
+            )
+        elif mode_lower == ExecutionMode.ALPACA:
+            exec_instr = (
+                f"1. Click <b>[ 🚀 Execute (Alpaca) ]</b> to submit {qty_str} <code>{html.escape(eval_res.contract)}</code> via Alpaca Trading API.\n"
+                f"2. Server-side bracket order placed at Stop: <code>{eval_res.stop_loss:,.2f}</code> / Target: <code>{eval_res.take_profit:,.2f}</code>.\n"
+            )
+        else:
+            exec_instr = (
+                f"1. Buy/Sell {qty_str} <code>{html.escape(eval_res.contract)}</code> at Market/Limit <code>{eval_res.entry_price:,.2f}</code>.\n"
+                f"2. Upon fill, immediately submit a resting <b>Stop Order</b> at <code>{eval_res.stop_loss:,.2f}</code> (GTC).\n"
+            )
 
     sizing_section = ""
-    tiers = getattr(eval_res, "sizing_tiers", None)
-    if tiers and len(tiers) > 1:
+    if has_tiers and tiers:
         sizing_lines = ["\n📐 <b>Position Sizing Tiers:</b>"]
         for t in tiers:
             star = " ⭐" if t.get("is_default") else ""
@@ -79,8 +103,15 @@ def format_alert_card(
                 if (asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"))
                 else f"{t_qty:g}x"
             )
+            risk_val = t.get("risk_dollars", 0.0)
+            reward_val = t.get("reward_dollars", 0.0)
+            notional_val = t.get("notional_dollars", 0.0)
+            lev_val = t.get("effective_leverage", 0.0)
             sizing_lines.append(
-                f"• <b>{html.escape(str(t.get('label', '')))}:</b> {t_qty_str} | Risk: -${t.get('risk_dollars', 0.0):,.2f} | Notional: ${t.get('notional_dollars', 0.0):,.0f} ({t.get('effective_leverage', 0.0):.2f}x){star}"
+                f"• <b>{html.escape(str(t.get('label', '')))}:</b> {t_qty_str} | "
+                f"Risk: -${risk_val:,.2f} | "
+                f"Reward: +${reward_val:,.2f} | "
+                f"Notional: ${notional_val:,.0f} ({lev_val:.2f}x){star}"
             )
         gating = getattr(eval_res, "gating_reasons", None)
         if gating:
@@ -128,31 +159,55 @@ def format_terminal_card(
     else:
         qty_str = f"{qty:g}x"
 
+    tiers = getattr(eval_res, "sizing_tiers", None)
+    has_tiers = bool(tiers and len(tiers) > 1)
+
     mode_lower = execution_mode.lower()
-    if mode_lower == ExecutionMode.PAPER:
-        exec_instr = (
-            f"1. Run 'copilot execute <id>' or click [Execute (Paper)] in Telegram.\n"
-            f"2. Simulates fill against live quote; bracket stop at {eval_res.stop_loss:,.2f}."
-        )
-    elif mode_lower == ExecutionMode.TRADOVATE:
-        exec_instr = (
-            f"1. Run 'copilot execute <id>' or click [Approve & Execute] in Telegram.\n"
-            f"2. Sends API bracket order to Tradovate; OCO stop at {eval_res.stop_loss:,.2f}."
-        )
-    elif mode_lower == ExecutionMode.ALPACA:
-        exec_instr = (
-            f"1. Run 'copilot execute <id>' or click [Execute (Alpaca)] in Telegram.\n"
-            f"2. Sends bracket order to Alpaca API; stop at {eval_res.stop_loss:,.2f}."
-        )
+    if has_tiers:
+        if mode_lower == ExecutionMode.PAPER:
+            exec_instr = (
+                "1. Select execution tier in Telegram or pass '--quantity N' to 'copilot execute <id>'.\n"
+                f"2. Simulates fill against live quote; bracket stop at {eval_res.stop_loss:,.2f}, target at {eval_res.take_profit:,.2f}."
+            )
+        elif mode_lower == ExecutionMode.TRADOVATE:
+            exec_instr = (
+                "1. Select execution tier in Telegram or pass '--quantity N' to 'copilot execute <id>'.\n"
+                f"2. Sends API bracket order to Tradovate; OCO stop at {eval_res.stop_loss:,.2f}, target at {eval_res.take_profit:,.2f}."
+            )
+        elif mode_lower == ExecutionMode.ALPACA:
+            exec_instr = (
+                "1. Select execution tier in Telegram or pass '--quantity N' to 'copilot execute <id>'.\n"
+                f"2. Sends bracket order to Alpaca API; stop at {eval_res.stop_loss:,.2f}, target at {eval_res.take_profit:,.2f}."
+            )
+        else:
+            exec_instr = (
+                f"1. Authorize entry with selected tier at {eval_res.entry_price:,.2f}.\n"
+                f"2. Place resting Stop Order at {eval_res.stop_loss:,.2f} (GTC)."
+            )
     else:
-        exec_instr = (
-            f"1. Buy/Sell {qty_str} {eval_res.contract} at {eval_res.entry_price:,.2f}.\n"
-            f"2. Place resting Stop Order at {eval_res.stop_loss:,.2f} (GTC)."
-        )
+        if mode_lower == ExecutionMode.PAPER:
+            exec_instr = (
+                f"1. Run 'copilot execute <id>' or click [Execute (Paper)] in Telegram.\n"
+                f"2. Simulates fill against live quote; bracket stop at {eval_res.stop_loss:,.2f}."
+            )
+        elif mode_lower == ExecutionMode.TRADOVATE:
+            exec_instr = (
+                f"1. Run 'copilot execute <id>' or click [Approve & Execute] in Telegram.\n"
+                f"2. Sends API bracket order to Tradovate; OCO stop at {eval_res.stop_loss:,.2f}."
+            )
+        elif mode_lower == ExecutionMode.ALPACA:
+            exec_instr = (
+                f"1. Run 'copilot execute <id>' or click [Execute (Alpaca)] in Telegram.\n"
+                f"2. Sends bracket order to Alpaca API; stop at {eval_res.stop_loss:,.2f}."
+            )
+        else:
+            exec_instr = (
+                f"1. Buy/Sell {qty_str} {eval_res.contract} at {eval_res.entry_price:,.2f}.\n"
+                f"2. Place resting Stop Order at {eval_res.stop_loss:,.2f} (GTC)."
+            )
 
     sizing_section = ""
-    tiers = getattr(eval_res, "sizing_tiers", None)
-    if tiers and len(tiers) > 1:
+    if has_tiers and tiers:
         sizing_lines = ["\n📐 Position Sizing Tiers:"]
         for t in tiers:
             star = " *" if t.get("is_default") else ""
@@ -162,8 +217,12 @@ def format_terminal_card(
                 if (asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"))
                 else f"{t_qty:g}x"
             )
+            risk_val = t.get("risk_dollars", 0.0)
+            reward_val = t.get("reward_dollars", 0.0)
+            notional_val = t.get("notional_dollars", 0.0)
+            lev_val = t.get("effective_leverage", 0.0)
             sizing_lines.append(
-                f"• {t.get('label', '')}: {t_qty_str} | Risk: -${t.get('risk_dollars', 0.0):,.2f} | Notional: ${t.get('notional_dollars', 0.0):,.0f} ({t.get('effective_leverage', 0.0):.2f}x){star}"
+                f"• {t.get('label', '')}: {t_qty_str} | Risk: -${risk_val:,.2f} | Reward: +${reward_val:,.2f} | Notional: ${notional_val:,.0f} ({lev_val:.2f}x){star}"
             )
         gating = getattr(eval_res, "gating_reasons", None)
         if gating:
