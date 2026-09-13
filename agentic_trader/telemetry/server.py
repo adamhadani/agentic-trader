@@ -4,19 +4,21 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from agentic_trader.diagnostics.doctor import run_diagnostics
 from agentic_trader.telemetry.collector import MetricsCollector, global_metrics
 
 
 if TYPE_CHECKING:
     from asyncio import StreamReader, StreamWriter
 
+    from agentic_trader.config import AppConfig
+
 logger = logging.getLogger(__name__)
 
 
 class MetricsServer:
-    """Lightweight asynchronous HTTP server serving Prometheus metrics on /metrics
-
-    and health checks on /healthz.
+    """Lightweight asynchronous HTTP server serving Prometheus metrics on /metrics,
+    container probes on /healthz, and JSON diagnostics on /healthcheck.
     """
 
     def __init__(
@@ -24,10 +26,12 @@ class MetricsServer:
         host: str = "0.0.0.0",
         port: int = 9108,
         collector: MetricsCollector | None = None,
+        config: AppConfig | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.collector = collector or global_metrics
+        self.config = config
         self._server: asyncio.Server | None = None
         self._running = False
 
@@ -87,6 +91,20 @@ class MetricsServer:
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("utf-8") + body_bytes)
+                await writer.drain()
+
+            elif method == "GET" and path in ("/healthcheck", "/healthcheck/"):
+                report = await run_diagnostics(self.config)
+                report_json = report.model_dump_json(indent=2)
+                body_bytes = report_json.encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json; charset=utf-8\r\n"
                     f"Content-Length: {len(body_bytes)}\r\n"
                     "Connection: close\r\n"
                     "\r\n"

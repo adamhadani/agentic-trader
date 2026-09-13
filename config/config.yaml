@@ -130,6 +130,12 @@ sizing:
   min_shares: 1.0
   kelly_fraction: 0.5
   baseline_win_rate: 0.50
+  max_risk_pct_cap: 0.01 # 1.0% hard risk cap per trade / tier
+  max_trade_notional_cap: 30000.0 # 50% of portfolio $60k notional ceiling
+  drawdown_gating_enabled: true
+  drawdown_haircut_threshold_pct: 0.03 # scale down size above 3% drawdown
+  max_drawdown_stop_pct: 0.06 # halt sizing if drawdown >= 6%
+  suggest_tiers_enabled: true # suggest Half, Base, and Max tiers in Telegram
 
 execution:
   algorithm: "immediate" # "immediate", "twap", "vwap"

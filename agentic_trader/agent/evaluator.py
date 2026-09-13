@@ -8,7 +8,9 @@ import litellm
 from pydantic import BaseModel, Field
 
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
-from agentic_trader.agent.position_sizing import calculate_position_size
+from agentic_trader.agent.position_sizing import (
+    calculate_dynamic_sizing,
+)
 from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import DEFAULT_CORRELATION_GROUPS, AppConfig
@@ -23,6 +25,57 @@ from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
 logger = logging.getLogger(__name__)
+
+
+class DeterministicLevels(tuple):
+    stop_loss: float
+    take_profit: float
+    stop_distance: float
+    target_distance: float
+    risk_dollars: float
+    reward_dollars: float
+    notional_value: float
+    quantity: float
+    sizing_tiers: list[dict[str, Any]]
+    gating_reasons: list[str]
+
+    def __new__(
+        cls,
+        stop_loss: float,
+        take_profit: float,
+        stop_distance: float,
+        target_distance: float,
+        risk_dollars: float,
+        reward_dollars: float,
+        notional_value: float,
+        quantity: float,
+        sizing_tiers: list[dict[str, Any]] | None = None,
+        gating_reasons: list[str] | None = None,
+    ):
+        instance = super().__new__(
+            cls,
+            (
+                stop_loss,
+                take_profit,
+                stop_distance,
+                target_distance,
+                risk_dollars,
+                reward_dollars,
+                notional_value,
+                quantity,
+            ),
+        )
+        instance.stop_loss = stop_loss
+        instance.take_profit = take_profit
+        instance.stop_distance = stop_distance
+        instance.target_distance = target_distance
+        instance.risk_dollars = risk_dollars
+        instance.reward_dollars = reward_dollars
+        instance.notional_value = notional_value
+        instance.quantity = quantity
+        instance.sizing_tiers = sizing_tiers or []
+        instance.gating_reasons = gating_reasons or []
+        return instance
 
 
 class LLMTradeEvaluation(BaseModel):
@@ -44,6 +97,8 @@ class LLMTradeEvaluation(BaseModel):
     thesis_summary: str
     quantity: float = 1.0
     asset_class: AssetClass = AssetClass.FUTURES
+    sizing_tiers: list[dict[str, Any]] | None = None
+    gating_reasons: list[str] | None = None
 
 
 class RiskEvaluator:
@@ -72,12 +127,14 @@ class RiskEvaluator:
             )
 
     def calculate_levels_deterministic(
-        self, candidate: ScreenerCandidate
-    ) -> tuple[float, float, float, float, float, float, float, float]:
+        self,
+        candidate: ScreenerCandidate,
+        current_open_notional: float = 0.0,
+        current_drawdown_pct: float = 0.0,
+    ) -> DeterministicLevels:
         """
         Calculate structural stop loss, 2:1 profit target, and dynamic position sizing deterministically.
-        Returns:
-            (stop_loss, take_profit, stop_pts, target_pts, risk_dollars, reward_dollars, notional_value, quantity)
+        Returns DeterministicLevels (unpacks as 8 elements for backwards compatibility).
         """
         contract_info = self.config.contracts.get(candidate.contract)
         asset_class = (
@@ -119,25 +176,35 @@ class RiskEvaluator:
             target_distance = round(entry - take_profit, 2)
 
         # Position sizing: dynamic calculation supporting static, volatility-targeted, and fractional Kelly modes
-        quantity, risk_dollars, reward_dollars = calculate_position_size(
-            candidate=candidate,
+        sizing_result = calculate_dynamic_sizing(
+            entry=entry,
             stop_distance=stop_distance,
             target_distance=target_distance,
             multiplier=multiplier,
             asset_class=asset_class,
             config=self.config,
+            candidate=candidate,
+            current_open_notional=current_open_notional,
+            current_drawdown_pct=current_drawdown_pct,
         )
-        notional_value = round(entry * multiplier * quantity, 2)
+        quantity = sizing_result.default_tier.quantity
+        risk_dollars = sizing_result.default_tier.risk_dollars
+        reward_dollars = sizing_result.default_tier.reward_dollars
+        notional_value = sizing_result.default_tier.notional_dollars
+        sizing_tiers = [t.model_dump() for t in sizing_result.tiers]
+        gating_reasons = sizing_result.gating_reasons
 
-        return (
-            stop_loss,
-            take_profit,
-            stop_distance,
-            target_distance,
-            risk_dollars,
-            reward_dollars,
-            notional_value,
-            quantity,
+        return DeterministicLevels(
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            stop_distance=stop_distance,
+            target_distance=target_distance,
+            risk_dollars=risk_dollars,
+            reward_dollars=reward_dollars,
+            notional_value=notional_value,
+            quantity=quantity,
+            sizing_tiers=sizing_tiers,
+            gating_reasons=gating_reasons,
         )
 
     async def evaluate_candidate(
@@ -146,8 +213,14 @@ class RiskEvaluator:
         current_open_notional: float = 0.0,
         use_llm: bool = True,
         active_positions: list[dict[str, Any]] | None = None,
+        current_drawdown_pct: float = 0.0,
     ) -> LLMTradeEvaluation:
         # Compute deterministic baseline levels and position sizing first
+        levels = self.calculate_levels_deterministic(
+            candidate,
+            current_open_notional=current_open_notional,
+            current_drawdown_pct=current_drawdown_pct,
+        )
         (
             stop_loss,
             take_profit,
@@ -157,7 +230,9 @@ class RiskEvaluator:
             reward_dollars,
             notional_value,
             quantity,
-        ) = self.calculate_levels_deterministic(candidate)
+        ) = levels
+        sizing_tiers = levels.sizing_tiers
+        gating_reasons = levels.gating_reasons
 
         entry = candidate.current_price
         contract_info = self.config.contracts.get(candidate.contract)
@@ -490,6 +565,8 @@ class RiskEvaluator:
             data["risk_reward_ratio"] = max(min_required_rr, rr)
             data["risk_dollars"] = round(llm_stop_dist * multiplier * quantity, 2)
             data["reward_dollars"] = round(llm_target_dist * multiplier * quantity, 2)
+            data["sizing_tiers"] = sizing_tiers
+            data["gating_reasons"] = gating_reasons
 
             return LLMTradeEvaluation(**data)
 
@@ -518,4 +595,6 @@ class RiskEvaluator:
                 thesis_summary=f"Automated thesis: {candidate.trigger_detail} (LLM fallback used: {e})",
                 quantity=quantity,
                 asset_class=asset_class,
+                sizing_tiers=sizing_tiers,
+                gating_reasons=gating_reasons,
             )

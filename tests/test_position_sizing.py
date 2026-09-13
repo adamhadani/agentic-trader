@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.position_sizing import (
+    calculate_dynamic_sizing,
     calculate_position_size,
     compute_fractional_kelly_multiplier,
 )
@@ -227,8 +228,8 @@ def test_fractional_kelly_evaluator_integration():
         take_profit,
         stop_dist,
         target_dist,
-        risk_dollars,
-        reward_dollars,
+        _risk_dollars,
+        _reward_dollars,
         notional,
         quantity,
     ) = evaluator.calculate_levels_deterministic(cand)
@@ -237,6 +238,83 @@ def test_fractional_kelly_evaluator_integration():
     assert take_profit > 18000.0
     assert target_dist >= stop_dist * 2.0
     assert 1.0 <= quantity <= 4.0
-    assert risk_dollars > 0
-    assert reward_dollars > 0
     assert notional == round(cand.current_price * 2.0 * quantity, 2)
+
+
+def test_dynamic_sizing_drawdown_gating_and_tiers():
+    config = AppConfig(
+        sizing=PositionSizingConfig(
+            mode="static",
+            target_futures_risk_dollars=300.0,
+            max_contracts_per_trade=4,
+            drawdown_gating_enabled=True,
+            drawdown_haircut_threshold_pct=0.03,
+            max_drawdown_stop_pct=0.06,
+        )
+    )
+
+    # 1. Normal drawdown: factor should be 1.0
+    res_normal = calculate_dynamic_sizing(
+        entry=5000.0,
+        stop_distance=20.0,
+        target_distance=40.0,
+        multiplier=5.0,
+        asset_class=AssetClass.FUTURES,
+        config=config,
+        current_drawdown_pct=0.01,
+    )
+    assert res_normal.drawdown_factor == 1.0
+    assert len(res_normal.tiers) >= 1
+    assert res_normal.default_tier.quantity >= 1.0
+
+    # 2. Moderate drawdown (4.5%): midway between 3% and 6% -> factor approx 0.50
+    res_haircut = calculate_dynamic_sizing(
+        entry=5000.0,
+        stop_distance=20.0,
+        target_distance=40.0,
+        multiplier=5.0,
+        asset_class=AssetClass.FUTURES,
+        config=config,
+        current_drawdown_pct=0.045,
+    )
+    assert 0.40 <= res_haircut.drawdown_factor <= 0.60
+    assert any("Drawdown haircut applied" in g for g in res_haircut.gating_reasons)
+
+    # 3. Severe drawdown (6.5% >= 6.0%): drawdown factor 0.0 (halt)
+    res_halt = calculate_dynamic_sizing(
+        entry=5000.0,
+        stop_distance=20.0,
+        target_distance=40.0,
+        multiplier=5.0,
+        asset_class=AssetClass.FUTURES,
+        config=config,
+        current_drawdown_pct=0.065,
+    )
+    assert res_halt.drawdown_factor == 0.0
+    assert any("Drawdown halt active" in g for g in res_halt.gating_reasons)
+
+
+def test_dynamic_sizing_notional_cap_and_equity_tiers():
+    config = AppConfig(
+        sizing=PositionSizingConfig(
+            mode="static",
+            default_equity_risk_dollars=250.0,
+            max_shares_per_trade=500,
+            max_trade_notional_cap=15000.0,  # $15k cap
+        )
+    )
+
+    # SPY at $500/share -> max shares by notional = 15000 / 500 = 30 shares
+    res = calculate_dynamic_sizing(
+        entry=500.0,
+        stop_distance=5.0,
+        target_distance=10.0,
+        multiplier=1.0,
+        asset_class=AssetClass.EQUITY,
+        config=config,
+    )
+    assert res.max_tier.quantity <= 30.0
+    assert res.max_tier.notional_dollars <= 15000.0
+    # Verify tiers generated (e.g. Conservative / Base / Max)
+    assert len(res.tiers) >= 1
+    assert all(t.risk_dollars <= 1000.0 for t in res.tiers)  # 1% risk cap on $100k

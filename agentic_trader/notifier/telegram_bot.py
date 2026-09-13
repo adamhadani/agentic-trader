@@ -1,4 +1,5 @@
 import html
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -66,6 +67,26 @@ def format_alert_card(
             f"2. Upon fill, immediately submit a resting <b>Stop Order</b> at <code>{eval_res.stop_loss:,.2f}</code> (GTC).\n"
         )
 
+    sizing_section = ""
+    tiers = getattr(eval_res, "sizing_tiers", None)
+    if tiers and len(tiers) > 1:
+        sizing_lines = ["\n📐 <b>Position Sizing Tiers:</b>"]
+        for t in tiers:
+            star = " ⭐" if t.get("is_default") else ""
+            t_qty = t.get("quantity", 1.0)
+            t_qty_str = (
+                f"{t_qty:g} shares"
+                if (asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"))
+                else f"{t_qty:g}x"
+            )
+            sizing_lines.append(
+                f"• <b>{html.escape(str(t.get('label', '')))}:</b> {t_qty_str} | Risk: -${t.get('risk_dollars', 0.0):,.2f} | Notional: ${t.get('notional_dollars', 0.0):,.0f} ({t.get('effective_leverage', 0.0):.2f}x){star}"
+            )
+        gating = getattr(eval_res, "gating_reasons", None)
+        if gating:
+            sizing_lines.extend(f"  <i>🛡️ {html.escape(str(g))}</i>" for g in gating)
+        sizing_section = "\n".join(sizing_lines) + "\n"
+
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
         f"🚨 <b>TRADE SIGNAL: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
@@ -78,7 +99,8 @@ def format_alert_card(
         f"• <b>Capital Risk:</b> {risk_pct}% of ${portfolio_cash:,.0f}\n"
         f"• <b>Notional Exposure:</b> ~${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)\n"
         f"• <b>Macro Check:</b> {macro_status}\n"
-        f"{regime_line}\n"
+        f"{regime_line}"
+        f"{sizing_section}\n"
         f"📝 <b>Thesis:</b>\n"
         f"{html.escape(eval_res.thesis_summary)}\n\n"
         f"⚡ <b>Execution ({execution_mode.upper()}):</b>\n"
@@ -128,6 +150,26 @@ def format_terminal_card(
             f"2. Place resting Stop Order at {eval_res.stop_loss:,.2f} (GTC)."
         )
 
+    sizing_section = ""
+    tiers = getattr(eval_res, "sizing_tiers", None)
+    if tiers and len(tiers) > 1:
+        sizing_lines = ["\n📐 Position Sizing Tiers:"]
+        for t in tiers:
+            star = " *" if t.get("is_default") else ""
+            t_qty = t.get("quantity", 1.0)
+            t_qty_str = (
+                f"{t_qty:g} shares"
+                if (asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"))
+                else f"{t_qty:g}x"
+            )
+            sizing_lines.append(
+                f"• {t.get('label', '')}: {t_qty_str} | Risk: -${t.get('risk_dollars', 0.0):,.2f} | Notional: ${t.get('notional_dollars', 0.0):,.0f} ({t.get('effective_leverage', 0.0):.2f}x){star}"
+            )
+        gating = getattr(eval_res, "gating_reasons", None)
+        if gating:
+            sizing_lines.extend(f"  [Risk Gate] {g}" for g in gating)
+        sizing_section = "\n".join(sizing_lines) + "\n"
+
     border = "=" * 65
     return f"""
 {border}
@@ -144,7 +186,7 @@ Strategy: {strategy}
 • Capital Risk:     {risk_pct}% of ${portfolio_cash:,.0f}
 • Notional Value:   ${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)
 • Macro Check:      {macro_status}
-{regime_line}
+{regime_line}{sizing_section}
 📝 Thesis:
 {eval_res.thesis_summary}
 
@@ -199,7 +241,7 @@ class TelegramNotifier:
         scan_runner: Callable[[], Awaitable[str]] | None = None,
         positions_provider: Callable[[], Awaitable[str]] | None = None,
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
-        execute_handler: Callable[[int], Awaitable[tuple[bool, str]]] | None = None,
+        execute_handler: Callable[..., Awaitable[tuple[bool, str]]] | None = None,
         perf_provider: Callable[[], Awaitable[str]] | None = None,
         regime_provider: Callable[[], Awaitable[str]] | None = None,
         backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
@@ -433,6 +475,15 @@ class TelegramNotifier:
         data = query.data
         msg = query.message
 
+        async def _safe_clear_markup() -> None:
+            if hasattr(query, "edit_message_reply_markup"):
+                try:
+                    markup_res = query.edit_message_reply_markup(reply_markup=None)
+                    if inspect.isawaitable(markup_res):
+                        await markup_res
+                except Exception:
+                    pass
+
         if data == "cmd_scan":
             await query.answer("Running quantitative scan...")
             if self.scan_runner and msg and hasattr(msg, "reply_text"):
@@ -454,22 +505,32 @@ class TelegramNotifier:
                 res = await self.regime_provider()
                 await msg.reply_text(res, parse_mode="HTML")
         elif data.startswith("exec_"):
-            signal_id = int(data.split("_")[1])
+            parts = data.split("_")
+            signal_id = int(parts[1])
+            quantity = float(parts[2]) if len(parts) > 2 else None
             logger.info(
-                "Execution button clicked for signal #%d",
+                "Execute button clicked for signal #%d (quantity: %s)",
                 signal_id,
-                extra={"signal_id": signal_id, "action": "execute", "execution_mode": self.execution_mode},
+                quantity,
+                extra={
+                    "signal_id": signal_id,
+                    "quantity": quantity,
+                    "action": "execute",
+                    "execution_mode": self.execution_mode,
+                },
             )
+
             if self.execute_handler:
-                await query.answer("Submitting order to broker...")
-                await query.edit_message_reply_markup(reply_markup=None)
-                _success, reply_text = await self.execute_handler(signal_id)
+                qty_msg = f" for {quantity:g} units" if quantity is not None else ""
+                await query.answer(f"Submitting order{qty_msg} to broker...")
+                await _safe_clear_markup()
+                _success, reply_text = await self.execute_handler(signal_id, quantity=quantity)
                 if msg and hasattr(msg, "reply_text"):
                     await msg.reply_text(reply_text, parse_mode="HTML")
             else:
                 await query.answer()
                 await self.db.update_signal_status(signal_id, SignalStatus.EXECUTED)
-                await query.edit_message_reply_markup(reply_markup=None)
+                await _safe_clear_markup()
                 if msg and hasattr(msg, "reply_text"):
                     await msg.reply_text(
                         f"✅ Signal #{signal_id} acknowledged: status set to {SignalStatus.EXECUTED}. Position is now active in risk tracking."
@@ -484,7 +545,7 @@ class TelegramNotifier:
                 extra={"signal_id": signal_id, "action": "dismiss"},
             )
             await self.db.update_signal_status(signal_id, SignalStatus.DISMISSED)
-            await query.edit_message_reply_markup(reply_markup=None)
+            await _safe_clear_markup()
             if msg and hasattr(msg, "reply_text"):
                 await msg.reply_text(f"❌ Signal #{signal_id} {SignalStatus.DISMISSED}.")
 
@@ -531,12 +592,31 @@ class TelegramNotifier:
         else:
             exec_btn_text = "✅ Acknowledge & Tracking"
 
-        keyboard = [
-            [
-                InlineKeyboardButton(exec_btn_text, callback_data=f"exec_{signal_id}"),
-                InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}"),
+        tiers = getattr(eval_res, "sizing_tiers", None)
+        asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+        if tiers and len(tiers) > 1:
+            tier_buttons = []
+            for t in tiers:
+                t_qty = t.get("quantity", 1.0)
+                t_risk = t.get("risk_dollars", 0.0)
+                star = " ⭐" if t.get("is_default") else ""
+                icon = "🔹" if t.get("tier_id") == "half" else ("⚡" if t.get("tier_id") == "max" else "🚀")
+                if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
+                    btn_label = f"{icon} {t_qty:g} sh (${t_risk:,.0f}){star}"
+                else:
+                    btn_label = f"{icon} {t_qty:g}x (${t_risk:,.0f}){star}"
+                tier_buttons.append(InlineKeyboardButton(btn_label, callback_data=f"exec_{signal_id}_{t_qty:g}"))
+            keyboard = [
+                tier_buttons,
+                [InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}")],
             ]
-        ]
+        else:
+            keyboard = [
+                [
+                    InlineKeyboardButton(exec_btn_text, callback_data=f"exec_{signal_id}"),
+                    InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}"),
+                ]
+            ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
