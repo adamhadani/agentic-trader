@@ -1,7 +1,7 @@
 . .venv/bin/activate
 
 # ==============================================================================
-# Cash-Plus Futures Copilot - Environment Configuration
+# Cash-Plus Trading Copilot - Environment Configuration
 # ==============================================================================
 
 # --- Telegram Notifier Configuration ---
@@ -30,7 +30,7 @@ export MAX_NOTIONAL_EXPOSURE="60000"
 export LANGCHAIN_TRACING_V2="false"
 export LANGSMITH_API_KEY=""
 export LANGCHAIN_API_KEY=""
-export LANGCHAIN_PROJECT="futures-copilot"
+export LANGCHAIN_PROJECT="trading-copilot"
 
 # --- Broker Execution & Automated Trading ---
 # Mode: "paper" (simulated fills against live quotes, default), "tradovate" (API execution), "alpaca" (equities/crypto execution), or "manual"

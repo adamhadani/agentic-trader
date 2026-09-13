@@ -1,6 +1,6 @@
-# Cash-Plus Futures Copilot
+# Cash-Plus Trading Copilot
 
-An automated personal trading copilot designed for a "Cash-Plus" portfolio ($100,000 baseline cash generating money-market yield). The system runs scheduled quantitative scans across liquid micro futures contracts (`/MES`, `/MNQ`, `/MGC`, `/MCL`), evaluates setups via an LLM agent with real-time macro awareness, and delivers actionable swing-trade alert cards directly to a private Telegram chat (with interactive acknowledgment callbacks) for manual execution in Robinhood.
+An automated personal trading copilot designed for a "Cash-Plus" portfolio ($100,000 baseline cash generating money-market yield). The system runs scheduled quantitative scans across liquid micro futures contracts (`/MES`, `/MNQ`, `/MGC`, `/MCL`), evaluates trade setups via an LLM agent with real-time macro awareness, and executes or tracks trades across multi-asset brokers (Paper simulation, Tradovate CME micro futures, and Alpaca Trading SDK for equities & crypto) with interactive Telegram alerts.
 
 ---
 
@@ -76,13 +76,13 @@ export OPENAI_API_KEY="sk-..."
 # Optional: LangSmith LLM Tracing & Observability
 export LANGCHAIN_TRACING_V2="false"
 export LANGSMITH_API_KEY="" # or LANGCHAIN_API_KEY
-export LANGCHAIN_PROJECT="futures-copilot"
+export LANGCHAIN_PROJECT="trading-copilot"
 
 # Optional Portfolio Overrides
 export PORTFOLIO_CASH="100000"
 export MAX_NOTIONAL_EXPOSURE="60000"
 
-# Broker Execution Mode ("paper" [default], "tradovate", or "manual")
+# Broker Execution Mode ("paper" [default], "tradovate", "alpaca", or "manual")
 export EXECUTION_MODE="paper"
 
 # Tradovate Credentials (required if EXECUTION_MODE="tradovate")
@@ -92,6 +92,11 @@ export TRADOVATE_API_SECRET=""
 export TRADOVATE_USERNAME=""
 export TRADOVATE_PASSWORD=""
 export TRADOVATE_ACCOUNT_ID=""
+
+# Alpaca Credentials (required if EXECUTION_MODE="alpaca")
+export APCA_API_KEY_ID=""
+export APCA_API_SECRET_KEY=""
+export ALPACA_PAPER="true"
 ```
 
 *Note: If Telegram credentials are not set, the copilot prints formatted alert cards directly to the terminal for local review.*
@@ -118,7 +123,7 @@ Displays all currently tracked positions, live quotes, stop/target prices, and m
 ```bash
 uv run copilot execute <signal_id>
 ```
-Executes an approved signal via the configured broker (`PaperBroker` fills against live quotes; `TradovateBroker` sends native OCO bracket orders). Enforces portfolio risk invariants before submission.
+Executes an approved signal via the configured broker (`PaperBroker` fills against live quotes; `TradovateBroker` sends native OCO bracket orders; `AlpacaBroker` sends bracket orders via the official `alpaca-py` SDK). Enforces portfolio risk invariants before submission.
 
 ### Manually Close an Active Position
 ```bash
@@ -158,7 +163,7 @@ When the daemon or listener is running, you can message the bot directly in Tele
 - `/close <id> [price]` - Manually close a tracked trade
 - `/scan` - Trigger an immediate quantitative scan across micro futures
 - **Interactive Inline Buttons**:
-  - `[ 🚀 Execute (Paper) ]` / `[ 🚀 Approve & Execute ]` -> Runs pre-execution risk checks, submits order to broker, stores broker order ID, and activates position tracking.
+  - `[ 🚀 Execute (Paper) ]` / `[ 🚀 Execute (Tradovate) ]` / `[ 🚀 Execute (Alpaca) ]` -> Runs pre-execution risk checks, submits order to broker, stores broker order ID, and activates position tracking.
   - `[ ❌ Dismiss Signal ]` -> Marks signal as `DISMISSED`.
 
 To test Telegram listening in isolation without running the scanner scheduler:
@@ -202,11 +207,13 @@ To keep the copilot running continuously during trading hours with automatic res
 ### Docker & Docker Compose
 To run containerized with persistent SQLite storage:
 ```bash
-# Build and run in detached mode
+# Build and run in detached mode (container named 'trading-copilot')
 docker compose up -d
 
 # View container logs
-docker compose logs -f
+docker compose logs -f trading-copilot
+# or directly via docker:
+docker logs -f trading-copilot
 
 # Stop container
 docker compose down

@@ -5,7 +5,7 @@ Guidelines and reference commands for AI coding assistants working in the `agent
 ---
 
 ## 1. Project Overview
-The **Cash-Plus Futures Copilot** is an automated personal trading copilot for a $100k cash portfolio. It runs quantitative 4-hour candle scans across liquid micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`), evaluates candidates with an LLM agent with real-time macro calendar awareness, and dispatches actionable alert cards with interactive buttons to Telegram for manual execution in Robinhood.
+The **Cash-Plus Trading Copilot** is an automated personal trading copilot for a $100k cash portfolio. It runs quantitative 4-hour candle scans across liquid micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`), evaluates candidates with an LLM agent with real-time macro calendar awareness, and executes or tracks trades across multi-asset brokers (Paper simulation, Tradovate CME micro futures, and Alpaca Trading SDK for equities & crypto) with interactive Telegram alert cards.
 
 ---
 
@@ -47,10 +47,12 @@ The **Cash-Plus Futures Copilot** is an automated personal trading copilot for a
 ---
 
 ## 3. Architecture & Key Directory Layout
+- `agentic_trader/constants.py`: Centralized domain constants, symbols, multipliers, tick sizes, HTTP timeouts, URLs, and status strings.
 - `agentic_trader/broker/`:
   - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`, `BrokerPosition`).
   - `paper.py`: `PaperBroker` executing simulated fills against live CME micro quotes without risking capital.
   - `tradovate.py`: `TradovateBroker` for headless cloud REST API execution with native server-side OCO brackets.
+  - `alpaca.py`: `AlpacaBroker` utilizing official `alpaca-py` TradingClient SDK for multi-asset execution with server-side bracket take-profit and stop-loss orders.
 - `agentic_trader/config.py` & `config/config.yaml`: Multipliers, tick sizes, risk ceilings, execution mode, and env var loader.
 - `agentic_trader/data/market_data.py`: Multi-timeframe bar data fetcher (Daily, 4h, 1h via `yfinance`).
 - `agentic_trader/screeners/`:
@@ -60,7 +62,9 @@ The **Cash-Plus Futures Copilot** is an automated personal trading copilot for a
   - `calendar.py`: Economic calendar parser and macro lockout logic.
   - `evaluator.py`: LiteLLM trade evaluator, schema validation, and invariant enforcement.
   - `prompts.py`: System prompt and structured few-shot evaluation prompts.
-- `agentic_trader/storage/db.py`: SQLite persistence (`data/signals.db`), deduplication, `broker_order_id`, and active notional exposure tracking.
+- `agentic_trader/storage/`:
+  - `models.py`: SQLAlchemy 2.0 ORM models (`SignalModel`, `PositionModel`, `TradeAuditModel`) backing SQLite (`data/signals.db`).
+  - `db.py`: Database access layer wrapping SQLAlchemy session manager, deduplication, `broker_order_id`, and active notional exposure tracking.
 - `agentic_trader/notifier/telegram_bot.py`: Alert card formatting, Telegram inline callback dispatcher, and bot commands (`/status`, `/scan`, `/positions`, `/close`, `/help`).
 - `evals/`: Promptfoo configuration and evaluation benchmarks.
 - `scripts/`: macOS `launchd.sh` daemon supervision script.
@@ -69,7 +73,7 @@ The **Cash-Plus Futures Copilot** is an automated personal trading copilot for a
 
 ## 4. Hard Domain Invariants & Business Rules
 When writing or modifying logic, NEVER violate these core constraints:
-1. **Instrument Scope**: Micro futures ONLY: `/MES`, `/MNQ`, `/MGC`, `/MCL`. No standard contracts, no crypto, no equities.
+1. **Quantitative Screener Scope**: Micro futures ONLY: `/MES`, `/MNQ`, `/MGC`, `/MCL`. No standard contracts. (Note: Broker execution layer supports multi-asset brackets across futures, equities, and crypto via `BaseBroker` implementations).
 2. **Fixed Sizing**: Exactly 1 micro contract per signal.
 3. **Notional Exposure Ceiling**: $\le \$60,000$ total active open notional exposure across all concurrent positions (0.6x effective leverage on $100k cash). Reject any candidate where `current_notional + candidate_notional > $60,000`.
 4. **Risk-to-Reward Ratio**: Strictly $R:R \ge 2.0$.
@@ -77,6 +81,7 @@ When writing or modifying logic, NEVER violate these core constraints:
 6. **Macro Lockout**: NO entry alerts within $[-60\text{m}, +30\text{m}]$ of Tier-1 releases (CPI, PPI, FOMC, NFP).
 7. **Signal Deduplication**: No duplicate signal for the same contract + strategy within 12 hours.
 8. **Execution Safety**: Execution button callbacks must never directly mark signals `EXECUTED`. They must route through `broker.submit_entry_order()`. If rejected or failed, status becomes `FAILED` without locking notional capacity.
+9. **Container Name**: Docker deployment runs under container name `trading-copilot` (`docker compose up -d`).
 
 ---
 

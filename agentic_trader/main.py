@@ -282,7 +282,7 @@ class FuturesCopilot:
         """Display active positions in terminal."""
         positions = await self.db.get_active_positions()
         print("=" * 65)
-        print("CASH-PLUS FUTURES COPILOT: ACTIVE POSITIONS")
+        print("CASH-PLUS TRADING COPILOT: ACTIVE POSITIONS")
         print("=" * 65)
         if not positions:
             print("  (No active positions currently tracked)")
@@ -544,7 +544,7 @@ class FuturesCopilot:
         eff_leverage = current_exposure / self.config.portfolio.cash
 
         print("=" * 65)
-        print("CASH-PLUS FUTURES COPILOT: PORTFOLIO & RISK STATUS")
+        print("CASH-PLUS TRADING COPILOT: PORTFOLIO & RISK STATUS")
         print("=" * 65)
         print(f"Cash Base:            ${self.config.portfolio.cash:,.2f}")
         print(f"Max Notional Ceiling: ${self.config.portfolio.max_notional_exposure:,.2f} (0.6x max leverage)")
@@ -643,7 +643,7 @@ class FuturesCopilot:
 
 
 async def async_main():
-    parser = argparse.ArgumentParser(description="Cash-Plus Futures Copilot")
+    parser = argparse.ArgumentParser(description="Cash-Plus Trading Copilot")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     scan_parser = subparsers.add_parser("scan", help="Run an immediate quantitative scan")

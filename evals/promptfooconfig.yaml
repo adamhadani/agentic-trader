@@ -1,4 +1,4 @@
-description: "Cash-Plus Futures Copilot - Risk Evaluator Prompt Benchmark"
+description: "Cash-Plus Trading Copilot - Risk Evaluator Prompt Benchmark"
 
 prompts:
   - file://prompts/evaluator.json

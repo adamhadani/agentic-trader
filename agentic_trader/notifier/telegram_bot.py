@@ -221,7 +221,7 @@ class TelegramNotifier:
         if not self._is_authorized(update) or not update.message:
             return
         help_text = (
-            "🤖 <b>Cash-Plus Futures Copilot</b>\n\n"
+            "🤖 <b>Cash-Plus Trading Copilot</b>\n\n"
             "<b>Available Commands:</b>\n"
             "• /status - View portfolio exposure, cash base, and macro events\n"
             "• /positions - View active tracked trades and unrealized P&amp;L\n"
