@@ -283,6 +283,30 @@ class SignalDatabase:
             rowcount = getattr(res, "rowcount", 0)
             return bool(rowcount > 0)
 
+    async def update_position_stop(
+        self,
+        signal_id: int,
+        new_stop: float,
+        raw_response: str | None = None,
+    ) -> bool:
+        """Update stop loss price for an active position (e.g. breakeven or trailing stop)."""
+        async with self.session_factory() as session:
+            vals: dict[str, Any] = {"stop_loss": float(new_stop)}
+            if raw_response:
+                vals["raw_response"] = raw_response
+            stmt = (
+                update(SignalRecord)
+                .where(
+                    SignalRecord.id == signal_id,
+                    SignalRecord.status == SignalStatus.EXECUTED,
+                )
+                .values(**vals)
+            )
+            res = await session.execute(stmt)
+            await session.commit()
+            rowcount = getattr(res, "rowcount", 0)
+            return bool(rowcount > 0)
+
     async def get_closed_positions_stats(self) -> dict[str, Any]:
         """Aggregate closed trade statistics (P&L, win rate, profit factor, trade list)."""
         async with self.session_factory() as session:

@@ -765,6 +765,29 @@ class TelegramNotifier:
             )
             return None
 
+    async def send_trailing_stop_alert(
+        self,
+        signal_id: int,
+        contract: str,
+        direction: str,
+        old_stop: float,
+        new_stop: float,
+        current_price: float,
+        reason: str = "BREAKEVEN",
+    ) -> bool:
+        """Send formatted alert when position stop is moved to breakeven or trailed upward."""
+        icon = "🛡️" if reason == "BREAKEVEN" else "📈"
+        title = "STOP TO BREAKEVEN" if reason == "BREAKEVEN" else "TRAILING STOP RATCHETED"
+        text = (
+            f"{icon} <b>{title}</b>\n\n"
+            f"• <b>Position:</b> #{signal_id} <code>{contract}</code> ({direction.upper()})\n"
+            f"• <b>Market Price:</b> <code>{current_price:,.2f}</code>\n"
+            f"• <b>Old Stop:</b> <code>{old_stop:,.2f}</code>\n"
+            f"• <b>New Protective Stop:</b> <code>{new_stop:,.2f}</code>\n"
+            f"• <b>Action:</b> Capital preserved / unrealized gains locked in"
+        )
+        return await self.send_message(text)
+
     async def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
         if not self.is_configured() or not self.app:
             return False

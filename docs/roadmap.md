@@ -28,6 +28,13 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **Completed** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
 | **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **Completed** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |
 | **Phase 20** | Options Implied Volatility Surface & GEX Tracking | **Completed** | Market maker gamma exposure (GEX), Call/Put walls, Gamma Flip, Put/Call ratios, and Telegram `/gex` |
+| **Phase 21** | Prometheus Telemetry Exporter & Modular CLI Hierarchy | **Completed** | Production metrics endpoints, Grafana-ready telemetry, Click modular command hierarchy |
+| **Phase 22** | Cointegration & Statistical Pairs Trading Screener | **Completed** | Cross-asset pairs cointegration, Ornstein-Uhlenbeck half-life modeling, rolling Z-score arbitrage |
+| **Phase 23** | Regular Trading Hours (RTH) & Market Session Filtering | **Completed** | `MarketSessionProtocol`, Alpaca dynamic exchange clock, CME Globex schedule, Crypto 24/7 |
+| **Phase 24** | Dynamic Trailing Stops & Breakeven Position Management | **Completed** | Breakeven triggers (+1.0R), ATR trailing stop ratchets (+1.5R), SQLite tracking, Telegram alerts |
+| **Phase 25** | Production Deployment Packaging (launchd & Watchdog) | **Completed** | macOS launchd service supervision, automated 60s background watchdog probe, doctor health checks |
+| **Phase 26** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 27** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
 
 ---
 
@@ -615,9 +622,70 @@ Provide institutional-grade statistical arbitrage capabilities by scanning cross
 
 ---
 
-## Next Horizon: Advanced Quantitative Infrastructure (Phases 23+)
+---
+
+## Phase 23: Regular Trading Hours (RTH) & Market Session Filtering
+
+### Objective
+Ensure trading algorithms and LLM evaluations execute exclusively during valid market sessions. Filter out low-liquidity overnight gaps, respect exchange holidays, and enforce Regular Trading Hours (RTH) for cash equities and index futures.
+
+### Key Deliverables
+1. **`MarketSessionProtocol` & Session Taxonomy (`agentic_trader/market/session.py`)**:
+   - `MarketSessionType` enum: `RTH` (Regular Trading Hours), `ETH` (Extended Trading Hours / Globex), `CLOSED`, `DAILY_HALT` (17:00-18:00 ET maintenance), `WEEKEND_HALT`.
+   - `MarketSessionInfo` dataclass: `symbol`, `asset_class`, `is_open`, `is_rth`, `session_type`, `current_time`, `next_open`, `next_close`, `source`.
+2. **Dynamic Provider Backends**:
+   - `AlpacaMarketSessionProvider`: Authoritative exchange clock via Alpaca `get_clock()` and `get_calendar()`, with in-memory TTL caching and static NYSE fallback.
+   - `CMEFuturesSessionProvider`: Deterministic schedule for CME equity and commodity micro-futures (/MES, /MNQ, /MGC, /MCL).
+   - `CryptoSessionProvider`: Continuous 24/7/365 trading.
+   - `CompositeMarketSessionProvider`: Unified router delegating by asset class/symbol prefix.
+3. **Configuration & Evaluator Integration**:
+   - `SessionConfig` schema (`enforce_rth: true`, `allow_extended_hours: false`, `timezone: "America/New_York"`).
+   - Wired into `RiskEvaluator.evaluate_candidate()` to reject candidates outside approved sessions.
+
+---
+
+## Phase 24: Dynamic Trailing Stops & Breakeven Management
+
+### Objective
+Protect profits and eliminate open downside exposure as trades progress by dynamically advancing stop losses to breakeven and trailing favorable price excursions.
+
+### Key Deliverables
+1. **Configurable Trailing Parameters (`TrailingStopConfig`)**:
+   - `breakeven_trigger_r: 1.0`: Automatically advances stop to entry + buffer once trade gains +1.0R.
+   - `breakeven_buffer_dollars: 5.0`: Small buffer above entry to cover execution friction and clearing fees.
+   - `trail_trigger_r: 1.5`: Activates dynamic trailing once trade reaches +1.5R.
+   - `trail_atr_multiple: 1.5`: Trails price by $1.5 \times \text{ATR}$.
+   - `trail_step_ticks: 4`: Minimum step threshold before ratcheting stop price.
+2. **Reconciliation & Copilot Integration**:
+   - Embedded into `FuturesCopilot.monitor_positions()`: checks active open positions on every tick/reconciliation cycle.
+   - Updates `stop_loss` in SQLite via `SignalDatabase.update_position_stop()`.
+   - Dispatches rich Telegram notification (`send_trailing_stop_alert`) when a position is moved to breakeven or trailed upward.
+
+---
+
+## Phase 25: Production Deployment Packaging (macOS launchd & Watchdog)
+
+### Objective
+Provide institutional local production deployment for dedicated trading machines (e.g. Mac Mini desk), complete with automated watchdog supervision, heartbeat monitoring, and self-healing restart.
+
+### Key Deliverables
+1. **Unified Service Management Script (`scripts/launchd.sh`)**:
+   - Subcommands: `install`, `uninstall`, `start`, `stop`, `restart`, `status`, `health`, `watchdog`, `logs`, `watchdog-logs`.
+2. **Automated 60-Second Watchdog Supervision (`com.agentictrader.watchdog.plist`)**:
+   - Runs periodic probe every 60 seconds.
+   - Checks daemon registration and PID liveness.
+   - Restarts dead or hung processes automatically via `launchctl kickstart -k`.
+   - Logs timestamped events to `data/watchdog.log`.
+3. **Healthcheck Integration**:
+   - Seamless invocation of `copilot doctor` diagnostics.
+
+---
+
+## Next Horizon: Strategic Initiatives (Phases 26+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 23** | Real-Time FIX Protocol Broker Gateway | **Planned** | Direct institutional DMA connectivity via QuickFIX / Python FIX engine |
-| **Phase 24** | Multi-Horizon Cross-Asset Lead-Lag Engine | **Planned** | Information share and Granger causality for lead-lag futures arbitrage |
+| **Phase 26** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 27** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 28** | Real-Time FIX Protocol Broker Gateway | **Planned** | Direct institutional DMA connectivity via QuickFIX / Python FIX engine |
+| **Phase 29** | Multi-Horizon Cross-Asset Lead-Lag Engine | **Planned** | Information share and Granger causality for lead-lag futures arbitrage |

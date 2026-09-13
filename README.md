@@ -90,13 +90,16 @@ docker compose ps
 ```
 
 ### Option B: macOS `launchd` (Local Mac Mini Desk)
-For dedicated local Mac machines, `launchd` keeps the daemon running across reboots:
+For dedicated local Mac machines, `launchd` keeps the daemon running across reboots with automated 60s watchdog supervision:
 ```bash
-./scripts/launchd.sh install   # Installs ~/Library/LaunchAgents/com.agentictrader.copilot.plist
-./scripts/launchd.sh status    # Check daemon status
-./scripts/launchd.sh logs      # Tail data/copilot.log in real time
-./scripts/launchd.sh stop      # Temporarily pause service
-./scripts/launchd.sh uninstall # Unload and remove plist
+./scripts/launchd.sh install       # Installs copilot daemon and 60s background watchdog
+./scripts/launchd.sh status        # Check daemon and watchdog registration/PID status
+./scripts/launchd.sh health        # Run copilot doctor diagnostic health check
+./scripts/launchd.sh restart       # Gracefully restart copilot daemon
+./scripts/launchd.sh logs          # Tail data/copilot.log in real time
+./scripts/launchd.sh watchdog-logs # Tail data/watchdog.log in real time
+./scripts/launchd.sh stop          # Temporarily pause service
+./scripts/launchd.sh uninstall     # Unload and remove daemon and watchdog
 ```
 
 ---

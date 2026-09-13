@@ -256,6 +256,21 @@ class ResearchConfig(BaseModel):
     calibrations_filename: str = DEFAULT_CALIBRATIONS_FILENAME
 
 
+class SessionConfig(BaseModel):
+    enforce_rth: bool = True
+    allow_extended_hours: bool = False
+    timezone: str = "America/New_York"
+
+
+class TrailingStopConfig(BaseModel):
+    enabled: bool = True
+    breakeven_trigger_r: float = 1.0
+    breakeven_buffer_dollars: float = 5.0
+    trail_trigger_r: float = 1.5
+    trail_atr_multiple: float = 1.5
+    trail_step_ticks: int = 4
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -272,6 +287,8 @@ class AppConfig(BaseModel):
     pairs: PairsConfig = Field(default_factory=PairsConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
+    session: SessionConfig = Field(default_factory=SessionConfig)
+    trailing_stop: TrailingStopConfig = Field(default_factory=TrailingStopConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None

@@ -2,16 +2,20 @@
 set -euo pipefail
 
 PLIST_NAME="com.agentictrader.copilot"
+WATCHDOG_PLIST_NAME="com.agentictrader.watchdog"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 TARGET_PLIST="$LAUNCH_AGENTS_DIR/$PLIST_NAME.plist"
+TARGET_WATCHDOG_PLIST="$LAUNCH_AGENTS_DIR/$WATCHDOG_PLIST_NAME.plist"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_DIR="$REPO_DIR/data"
 mkdir -p "$DATA_DIR"
 
 UV_BIN="$(which uv || echo "$HOME/.local/bin/uv")"
+USER_ID="$(id -u)"
 
-generate_plist() {
+generate_copilot_plist() {
     mkdir -p "$LAUNCH_AGENTS_DIR"
     cat <<EOF > "$TARGET_PLIST"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -32,7 +36,12 @@ generate_plist() {
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
     <key>StandardOutPath</key>
     <string>$DATA_DIR/copilot.log</string>
     <key>StandardErrorPath</key>
@@ -43,17 +52,79 @@ EOF
     echo "Generated $TARGET_PLIST"
 }
 
+generate_watchdog_plist() {
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+    cat <<EOF > "$TARGET_WATCHDOG_PLIST"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$WATCHDOG_PLIST_NAME</string>
+    <key>WorkingDirectory</key>
+    <string>$REPO_DIR</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>"$SCRIPT_DIR/launchd.sh" watchdog</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>$DATA_DIR/watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>$DATA_DIR/watchdog.err.log</string>
+</dict>
+</plist>
+EOF
+    echo "Generated $TARGET_WATCHDOG_PLIST"
+}
+
+run_watchdog_probe() {
+    local now
+    now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+    # Check if copilot process is registered and active
+    local status_line
+    status_line="$(launchctl list | grep "$PLIST_NAME" || true)"
+
+    if [ -z "$status_line" ]; then
+        echo "[$now] [WATCHDOG WARNING] $PLIST_NAME not found in launchd list. Reloading service..." >> "$DATA_DIR/watchdog.log"
+        launchctl load "$TARGET_PLIST" 2>&1 >> "$DATA_DIR/watchdog.log" || true
+        return
+    fi
+
+    local pid
+    pid="$(echo "$status_line" | awk '{print $1}')"
+    local last_exit
+    last_exit="$(echo "$status_line" | awk '{print $2}')"
+
+    if [ "$pid" = "-" ]; then
+        echo "[$now] [WATCHDOG ALERT] $PLIST_NAME is registered but not running (last exit code: $last_exit). Restarting..." >> "$DATA_DIR/watchdog.log"
+        launchctl kickstart -k "gui/$USER_ID/$PLIST_NAME" 2>&1 >> "$DATA_DIR/watchdog.log" || launchctl start "$PLIST_NAME"
+    else
+        echo "[$now] [WATCHDOG OK] $PLIST_NAME is alive (PID: $pid)." >> "$DATA_DIR/watchdog.log"
+    fi
+}
+
 case "${1:-status}" in
     install)
-        generate_plist
+        generate_copilot_plist
+        generate_watchdog_plist
         launchctl unload "$TARGET_PLIST" 2>/dev/null || true
         launchctl load "$TARGET_PLIST"
-        echo "Service $PLIST_NAME installed and loaded."
+        launchctl unload "$TARGET_WATCHDOG_PLIST" 2>/dev/null || true
+        launchctl load "$TARGET_WATCHDOG_PLIST"
+        echo "Services $PLIST_NAME and $WATCHDOG_PLIST_NAME installed and loaded."
         ;;
     uninstall)
+        launchctl unload "$TARGET_WATCHDOG_PLIST" 2>/dev/null || true
+        rm -f "$TARGET_WATCHDOG_PLIST"
         launchctl unload "$TARGET_PLIST" 2>/dev/null || true
         rm -f "$TARGET_PLIST"
-        echo "Service $PLIST_NAME unloaded and removed."
+        echo "Services $PLIST_NAME and $WATCHDOG_PLIST_NAME unloaded and removed."
         ;;
     start)
         launchctl start "$PLIST_NAME"
@@ -63,15 +134,33 @@ case "${1:-status}" in
         launchctl stop "$PLIST_NAME"
         echo "Sent stop signal to $PLIST_NAME"
         ;;
+    restart)
+        echo "Restarting $PLIST_NAME..."
+        launchctl kickstart -k "gui/$USER_ID/$PLIST_NAME" 2>/dev/null || (launchctl stop "$PLIST_NAME" && sleep 1 && launchctl start "$PLIST_NAME")
+        echo "Restart signal sent to $PLIST_NAME"
+        ;;
     status)
-        echo "Checking launchctl status for $PLIST_NAME..."
-        launchctl list | grep "$PLIST_NAME" || echo "Service not currently registered or running in launchd."
+        echo "=== launchd Service Status ==="
+        echo "Daemon ($PLIST_NAME):"
+        launchctl list | grep "$PLIST_NAME" || echo "  Not currently registered in launchd."
+        echo "Watchdog ($WATCHDOG_PLIST_NAME):"
+        launchctl list | grep "$WATCHDOG_PLIST_NAME" || echo "  Not currently registered in launchd."
+        ;;
+    health)
+        echo "Running Copilot Healthcheck..."
+        cd "$REPO_DIR" && "$UV_BIN" run copilot doctor
+        ;;
+    watchdog)
+        run_watchdog_probe
         ;;
     logs)
         tail -n 50 -f "$DATA_DIR/copilot.log"
         ;;
+    watchdog-logs)
+        tail -n 50 -f "$DATA_DIR/watchdog.log"
+        ;;
     *)
-        echo "Usage: $0 {install|uninstall|start|stop|status|logs}"
+        echo "Usage: $0 {install|uninstall|start|stop|restart|status|health|watchdog|logs|watchdog-logs}"
         exit 1
         ;;
 esac
