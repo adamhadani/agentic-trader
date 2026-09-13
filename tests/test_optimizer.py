@@ -47,15 +47,18 @@ def make_synthetic_screener_data(
 
     rsi = np.full(n_bars, 55.0)
     for idx, i in enumerate(range(28, 35)):
-        rsi[i] = 38.0 + idx * 2.0  # dip into oversold and bounce
+        if i < n_bars:
+            rsi[i] = 38.0 + idx * 2.0  # dip into oversold and bounce
 
     volume = np.full(n_bars, 1000000.0)
     # Volume surge on bar 40
-    volume[40] = 2500000.0
+    if n_bars > 40:
+        volume[40] = 2500000.0
 
     squeeze_count = np.zeros(n_bars, dtype=int)
     for i in range(20, 28):
-        squeeze_count[i] = i - 19
+        if i < n_bars:
+            squeeze_count[i] = i - 19
 
     df_daily = pd.DataFrame(
         {
@@ -216,3 +219,5 @@ def test_cli_optimize_help():
     assert "--strategy" in proc.stdout
     assert "--lookback" in proc.stdout
     assert "--top-n" in proc.stdout
+    assert "--walk-forward" in proc.stdout
+    assert "--splits" in proc.stdout

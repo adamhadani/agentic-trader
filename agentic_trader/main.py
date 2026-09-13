@@ -1026,6 +1026,18 @@ async def async_main():
         default=None,
         help="Export top candidate parameters as YAML for config.yaml (specify optional destination file path)",
     )
+    optimize_parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        default=False,
+        help="Run walk-forward out-of-sample cross-validation across rolling/expanding windows",
+    )
+    optimize_parser.add_argument(
+        "--splits",
+        type=int,
+        default=3,
+        help="Number of walk-forward validation splits (default: 3)",
+    )
 
     args = parser.parse_args()
     config = load_config()
@@ -1102,6 +1114,8 @@ async def async_main():
             symbol=args.symbol,
             strategy=args.strategy,
             lookback=args.lookback,
+            walk_forward=args.walk_forward,
+            splits=args.splits,
         )
         opt_report = format_optimization_report(opt_res, top_n=args.top_n)
         print(opt_report)
