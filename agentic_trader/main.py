@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 from datetime import UTC, datetime
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -12,7 +13,7 @@ from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import BacktestEngine, format_backtest_report
-from agentic_trader.broker import BaseBroker, OrderRequest, create_broker
+from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
 from agentic_trader.constants import (
     AssetClass,
@@ -74,6 +75,7 @@ class FuturesCopilot:
             regime_provider=self.get_regime_summary_html,
             backtest_runner=self.run_backtest_summary_html,
         )
+        self._shutdown_event = asyncio.Event()
 
     async def run_scan(
         self,
@@ -224,9 +226,153 @@ class FuturesCopilot:
         # Monitor any active positions for stop loss or take profit crossings
         await self.monitor_positions()
 
-    async def monitor_positions(self) -> int:
+    async def process_reconciliation_event(
+        self, ev: ReconciliationEvent, active_positions: list[dict[str, Any]] | None = None
+    ) -> bool:
+        """Process a position exit reconciliation event, closing the position in DB and emitting alerts.
+
+        Returns True if the position was successfully closed, False if already closed or not found.
         """
-        Reconcile active positions against the configured broker.
+        if active_positions is None:
+            active_positions = await self.db.get_active_positions()
+
+        pos_dict = next((p for p in active_positions if p["id"] == ev.signal_id), None)
+        if not pos_dict:
+            # Position already closed or does not match
+            return False
+
+        contract = ev.contract or ev.symbol
+        status = SignalStatus.CLOSED_WIN if ev.exit_reason == ExitReason.TAKE_PROFIT else SignalStatus.CLOSED_LOSS
+        if ev.exit_reason == ExitReason.MANUAL_CLOSE:
+            status = SignalStatus.CLOSED_WIN if (ev.realized_pnl or 0.0) >= 0 else SignalStatus.CLOSED_LOSS
+
+        strategy = pos_dict.get("strategy", "UNKNOWN")
+        entry_price = float(pos_dict.get("entry_price", ev.exit_price))
+
+        logger.info(
+            "Position %s %s exited via %s @ %.2f (Realized PnL: $%.2f)",
+            contract,
+            ev.direction,
+            ev.exit_reason,
+            ev.exit_price,
+            ev.realized_pnl or 0.0,
+            extra={
+                "signal_id": ev.signal_id,
+                "contract": contract,
+                "direction": ev.direction,
+                "exit_reason": str(ev.exit_reason),
+                "exit_price": ev.exit_price,
+                "realized_pnl": ev.realized_pnl,
+                "broker_order_id": ev.broker_order_id,
+            },
+        )
+
+        await self.db.close_position(
+            signal_id=ev.signal_id,
+            exit_price=ev.exit_price,
+            exit_reason=str(ev.exit_reason),
+            realized_pnl=ev.realized_pnl or 0.0,
+            status=status,
+        )
+
+        await self.notifier.send_exit_alert(
+            contract=contract,
+            direction=ev.direction,
+            exit_reason=str(ev.exit_reason),
+            entry_price=entry_price,
+            exit_price=ev.exit_price,
+            realized_pnl=ev.realized_pnl or 0.0,
+            strategy=strategy,
+        )
+        return True
+
+    async def on_stream_trade_update(self, ev: ReconciliationEvent) -> None:
+        """Callback triggered by broker real-time WebSocket trade stream on order fills."""
+        active_positions = await self.db.get_active_positions()
+        if not active_positions:
+            return
+
+        # 1. Match by broker_order_id if present
+        matched_pos: dict[str, Any] | None = None
+        if ev.broker_order_id:
+            for pos in active_positions:
+                if str(pos.get("broker_order_id") or "") == ev.broker_order_id:
+                    matched_pos = pos
+                    break
+
+        # 2. Match by symbol/contract and opposite direction
+        if not matched_pos:
+            clean_ev_sym = (ev.contract or ev.symbol).strip("/").upper()
+            for pos in active_positions:
+                clean_pos_sym = (pos.get("contract") or pos.get("symbol", "")).strip("/").upper()
+                if clean_pos_sym == clean_ev_sym:
+                    matched_pos = pos
+                    break
+
+        if not matched_pos:
+            logger.debug(
+                "WebSocket trade update for %s (order %s) did not match any active position",
+                ev.symbol,
+                ev.broker_order_id,
+            )
+            return
+
+        ev.signal_id = matched_pos["id"]
+        ev.contract = matched_pos.get("contract") or ev.contract or ev.symbol
+        direction = str(matched_pos["direction"]).upper()
+        ev.direction = direction
+
+        entry_price = float(matched_pos["entry_price"])
+        qty = float(matched_pos.get("quantity") or 1.0)
+        contract_info = self.config.contracts.get(ev.contract)
+        multiplier = contract_info.multiplier if contract_info else 1.0
+
+        if direction in ("LONG", str(Direction.LONG)):
+            ev.realized_pnl = (ev.exit_price - entry_price) * multiplier * qty
+            if ev.exit_reason not in (ExitReason.STOP_LOSS, ExitReason.TAKE_PROFIT):
+                ev.exit_reason = (
+                    ExitReason.TAKE_PROFIT
+                    if ev.exit_price >= float(matched_pos["take_profit"])
+                    else ExitReason.STOP_LOSS
+                )
+        else:
+            ev.realized_pnl = (entry_price - ev.exit_price) * multiplier * qty
+            if ev.exit_reason not in (ExitReason.STOP_LOSS, ExitReason.TAKE_PROFIT):
+                ev.exit_reason = (
+                    ExitReason.TAKE_PROFIT
+                    if ev.exit_price <= float(matched_pos["take_profit"])
+                    else ExitReason.STOP_LOSS
+                )
+
+        await self.process_reconciliation_event(ev, active_positions=[matched_pos])
+
+    async def start_trade_stream(self) -> None:
+        """Continuously run broker real-time trade stream with exponential backoff auto-reconnect."""
+        backoff = 2.0
+        max_backoff = 60.0
+        while not self._shutdown_event.is_set():
+            try:
+                logger.info("Starting broker real-time trade stream listener...")
+                await self.broker.start_trade_stream(self.on_stream_trade_update)
+                backoff = 2.0
+            except asyncio.CancelledError:
+                logger.info("Broker trade stream task cancelled.")
+                break
+            except Exception as e:
+                logger.warning(
+                    "Broker trade stream error: %s. Reconnecting in %.1fs...",
+                    e,
+                    backoff,
+                )
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
+                    break
+                backoff = min(backoff * 2, max_backoff)
+
+    async def monitor_positions(self) -> int:
+        """Periodic position reconciliation loop.
+
         Detects server-side bracket order fills or simulated price threshold hits,
         records exits in database, and emits Telegram alerts.
         """
@@ -240,51 +386,8 @@ class FuturesCopilot:
 
         reconciliation_events = await self.broker.reconcile_positions(active_positions)
         for ev in reconciliation_events:
-            contract = ev.contract or ev.symbol
-            status = SignalStatus.CLOSED_WIN if ev.exit_reason == ExitReason.TAKE_PROFIT else SignalStatus.CLOSED_LOSS
-            if ev.exit_reason == ExitReason.MANUAL_CLOSE:
-                status = SignalStatus.CLOSED_WIN if (ev.realized_pnl or 0.0) >= 0 else SignalStatus.CLOSED_LOSS
-
-            pos_dict = next((p for p in active_positions if p["id"] == ev.signal_id), {})
-            strategy = pos_dict.get("strategy", "UNKNOWN")
-            entry_price = float(pos_dict.get("entry_price", ev.exit_price))
-
-            logger.info(
-                "Position %s %s exited via %s @ %.2f (Realized PnL: $%.2f)",
-                contract,
-                ev.direction,
-                ev.exit_reason,
-                ev.exit_price,
-                ev.realized_pnl or 0.0,
-                extra={
-                    "signal_id": ev.signal_id,
-                    "contract": contract,
-                    "direction": ev.direction,
-                    "exit_reason": str(ev.exit_reason),
-                    "exit_price": ev.exit_price,
-                    "realized_pnl": ev.realized_pnl,
-                    "broker_order_id": ev.broker_order_id,
-                },
-            )
-
-            await self.db.close_position(
-                signal_id=ev.signal_id,
-                exit_price=ev.exit_price,
-                exit_reason=str(ev.exit_reason),
-                realized_pnl=ev.realized_pnl or 0.0,
-                status=status,
-            )
-            closed_count += 1
-
-            await self.notifier.send_exit_alert(
-                contract=contract,
-                direction=ev.direction,
-                exit_reason=str(ev.exit_reason),
-                entry_price=entry_price,
-                exit_price=ev.exit_price,
-                realized_pnl=ev.realized_pnl or 0.0,
-                strategy=strategy,
-            )
+            if await self.process_reconciliation_event(ev, active_positions):
+                closed_count += 1
 
         return closed_count
 
@@ -1084,11 +1187,22 @@ async def async_main():
             await copilot.notifier.app.start()
             await copilot.notifier.app.updater.start_polling()
 
+        stream_task: asyncio.Task[None] | None = None
+        # Start real-time trade stream background task if broker is Alpaca or supports streaming
+        if hasattr(copilot.broker, "start_trade_stream"):
+            stream_task = asyncio.create_task(copilot.start_trade_stream())
+
         try:
             while True:
                 await asyncio.sleep(1)
         except KeyboardInterrupt, SystemExit:
             logger.info("Shutting down daemon...")
+            copilot._shutdown_event.set()
+            if stream_task and not stream_task.done():
+                stream_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stream_task
+            await copilot.broker.stop_trade_stream()
 
             scheduler.shutdown()
             if copilot.notifier.app and copilot.notifier.app.updater:

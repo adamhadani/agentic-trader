@@ -58,6 +58,7 @@ class AlpacaBroker(BaseBroker):
             self.is_paper = True
         self.client: TradingClient | None = client
         self._connected: bool = False
+        self._trade_stream: TradingStream | None = None
 
     def _validate_credentials(self) -> None:
         missing: list[str] = []
@@ -386,10 +387,11 @@ class AlpacaBroker(BaseBroker):
                     if isinstance(filled_at, datetime):
                         exit_time = filled_at
 
+                pos_qty = float(pos.get("quantity") or 1.0)
                 if direction in ("LONG", str(Direction.LONG)):
-                    realized_pnl = exit_price - entry_price
+                    realized_pnl = (exit_price - entry_price) * pos_qty
                 else:
-                    realized_pnl = entry_price - exit_price
+                    realized_pnl = (entry_price - exit_price) * pos_qty
 
                 event = ReconciliationEvent(
                     signal_id=signal_id,
@@ -423,28 +425,51 @@ class AlpacaBroker(BaseBroker):
             "secret_key": self.api_secret,
             "paper": self.is_paper,
         }
-        if self.base_url:
+        if self.base_url and (self.base_url.startswith("wss://") or self.base_url.startswith("ws://")):
             stream_kwargs["url_override"] = self.base_url
 
-        stream = TradingStream(**stream_kwargs)
+        self._trade_stream = TradingStream(**stream_kwargs)
 
         async def _trade_update_handler(data: Any) -> None:
             try:
                 event_type = getattr(data, "event", None) or (data.get("event") if isinstance(data, dict) else "")
-                if str(event_type).lower() in ("fill", "partial_fill"):
+                event_str = str(event_type).lower()
+                if event_str in ("fill", "partial_fill", "tradeevent.fill", "tradeevent.partial_fill"):
                     order = getattr(data, "order", None) or (data.get("order") if isinstance(data, dict) else {})
                     symbol = str(
                         getattr(order, "symbol", "") or (order.get("symbol", "") if isinstance(order, dict) else "")
                     )
-                    fill_price = float(getattr(data, "price", 0.0) or getattr(order, "filled_avg_price", 0.0) or 0.0)
+                    fill_price = float(
+                        getattr(data, "price", 0.0)
+                        or getattr(order, "filled_avg_price", 0.0)
+                        or (order.get("filled_avg_price", 0.0) if isinstance(order, dict) else 0.0)
+                        or 0.0
+                    )
                     order_id = str(getattr(order, "id", "") or (order.get("id", "") if isinstance(order, dict) else ""))
+                    order_side = str(
+                        getattr(order, "side", "") or (order.get("side", "") if isinstance(order, dict) else "")
+                    ).lower()
+                    order_type = str(
+                        getattr(order, "order_type", "")
+                        or getattr(order, "type", "")
+                        or (order.get("order_type", "") if isinstance(order, dict) else "")
+                        or ""
+                    ).lower()
+
+                    if "stop" in order_type:
+                        exit_reason = ExitReason.STOP_LOSS
+                    elif "limit" in order_type:
+                        exit_reason = ExitReason.TAKE_PROFIT
+                    else:
+                        exit_reason = ExitReason.MANUAL_CLOSE
 
                     event = ReconciliationEvent(
                         signal_id=0,
                         symbol=symbol,
                         contract=symbol,
+                        direction=Direction.LONG if "sell" in order_side else Direction.SHORT,
                         exit_price=fill_price,
-                        exit_reason=ExitReason.TAKE_PROFIT,
+                        exit_reason=exit_reason,
                         exit_timestamp=datetime.now(UTC),
                         broker_order_id=order_id,
                     )
@@ -452,9 +477,24 @@ class AlpacaBroker(BaseBroker):
             except Exception as ex:
                 logger.error("Error processing trade update: %s", ex, extra={"error": str(ex)})
 
-        stream.subscribe_trade_updates(_trade_update_handler)
+        self._trade_stream.subscribe_trade_updates(_trade_update_handler)
         logger.info("Alpaca TradingStream trade update listener registered")
         try:
-            await asyncio.to_thread(stream.run)
+            await self._trade_stream._run_forever()
+        except asyncio.CancelledError:
+            logger.info("Alpaca TradingStream cancelled")
+            raise
         except Exception as e:
             logger.warning("Alpaca TradingStream exited: %s", e, extra={"error": str(e)})
+            raise
+
+    async def stop_trade_stream(self) -> None:
+        """Stop listening to Alpaca TradingStream."""
+        if self._trade_stream:
+            try:
+                await self._trade_stream.stop_ws()
+                await self._trade_stream.close()
+            except Exception as e:
+                logger.debug("Error stopping Alpaca TradingStream: %s", e)
+            finally:
+                self._trade_stream = None

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -169,3 +170,11 @@ class BaseBroker(ABC):
         bracket orders or market prices to report exits.
         """
         return []
+
+    async def start_trade_stream(self, on_fill_callback: Callable[[ReconciliationEvent], Awaitable[None]]) -> None:
+        """Start listening to real-time fill events via broker WebSocket stream if supported."""
+        return
+
+    async def stop_trade_stream(self) -> None:
+        """Stop real-time fill events listener."""
+        return
