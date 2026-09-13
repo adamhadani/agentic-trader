@@ -1,13 +1,5 @@
 import pytest
 
-from agentic_trader.storage.db import SignalDatabase
-
-
-@pytest.fixture
-def temp_db(tmp_path):
-    db_file = tmp_path / "test_signals.db"
-    return SignalDatabase(str(db_file))
-
 
 @pytest.mark.asyncio
 async def test_signal_database_operations(temp_db):

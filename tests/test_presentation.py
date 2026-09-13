@@ -205,3 +205,55 @@ def test_telegram_html_formatter():
     assert "+12.50%" in bt_html
     assert "65.0%" in bt_html
     assert "2.10" in bt_html
+
+
+def test_presentation_error_and_edge_branches():
+    """Test failure and loss branches across presentation formatters."""
+    # Failed execution
+    exec_fail = ExecutionResultView(
+        success=False,
+        signal_id=11,
+        contract="SPY",
+        direction="LONG",
+        error_message="Insufficient buying power",
+    )
+    fail_html = TelegramHtmlFormatter.format_execution_html(exec_fail, "PAPER")
+    assert "Execution Failed (PAPER)" in fail_html
+    assert "Insufficient buying power" in fail_html
+
+    # Failed manual close
+    close_fail = ManualCloseResultView(
+        success=False,
+        signal_id=12,
+        contract="SPY",
+        direction="LONG",
+        error_message="Position not found in broker",
+    )
+    close_fail_html = TelegramHtmlFormatter.format_manual_close_html(close_fail)
+    assert "❌ Position not found in broker" in close_fail_html
+
+    # Negative realized PnL close
+    close_loss = ManualCloseResultView(
+        success=True,
+        signal_id=13,
+        contract="/MES",
+        direction="LONG",
+        exit_price=5750.0,
+        realized_pnl=-250.0,
+    )
+    close_loss_html = TelegramHtmlFormatter.format_manual_close_html(close_loss)
+    assert "-$250.00" in close_loss_html
+
+    # Performance report with no trades
+    empty_perf = PerformanceSummaryReport(
+        total_pnl=0.0,
+        win_rate=0.0,
+        wins=0,
+        losses=0,
+        profit_factor=0.0,
+        gross_profit=0.0,
+        gross_loss=0.0,
+        recent_closed_trades=[],
+    )
+    empty_perf_html = TelegramHtmlFormatter.format_performance_html(empty_perf)
+    assert "No closed trades recorded yet" in empty_perf_html
