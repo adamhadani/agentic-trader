@@ -112,8 +112,8 @@ class CrisisReplayEngine:
         """Resolve futures contract symbols to liquid ETF proxies if scenario predates micro futures."""
         resolved: list[str] = []
         for s in symbols:
-            # Micro futures /MES and /MNQ launched May 2019
-            if start_year < 2019 and s in PROXY_MAPPINGS:
+            # Micro futures /MES and /MNQ launched May 2019; /MCL launched July 2021
+            if start_year < 2019 and s in PROXY_MAPPINGS or start_year < 2022 and s == "/MCL":
                 resolved.append(PROXY_MAPPINGS[s])
             else:
                 resolved.append(s)

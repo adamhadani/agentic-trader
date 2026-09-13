@@ -56,13 +56,32 @@ class MarketDataFetcher:
         return resampled
 
     def compute_daily_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
+        if df.empty or len(df) < 5:
             return df
         res = df.copy()
+        res["EMA_20"] = calculate_ema(res["Close"], span=20)
         res["EMA_50"] = calculate_ema(res["Close"], span=50)
         res["EMA_200"] = calculate_ema(res["Close"], span=200)
         res["ATR_14"] = calculate_atr(res["High"], res["Low"], res["Close"], period=14)
         res["RSI_14"] = calculate_rsi(res["Close"], period=14)
+
+        bb_u, bb_m, bb_l = calculate_bollinger_bands(res["Close"], period=20, num_std=2.0)
+        res["BB_Upper"] = bb_u
+        res["BB_Middle"] = bb_m
+        res["BB_Lower"] = bb_l
+
+        kc_u, kc_m, kc_l = calculate_keltner_channels(
+            res["High"], res["Low"], res["Close"], period=20, atr_multiplier=1.5
+        )
+        res["KC_Upper"] = kc_u
+        res["KC_Middle"] = kc_m
+        res["KC_Lower"] = kc_l
+
+        res["Squeeze"] = detect_squeeze(bb_u, bb_l, kc_u, kc_l)
+        res["Squeeze_Count"] = consecutive_squeeze_count(res["Squeeze"])
+        if "Volume" in res:
+            res["Volume_SMA_20"] = res["Volume"].rolling(window=20).mean()
+
         return res
 
     def compute_intraday_indicators(self, df: pd.DataFrame) -> pd.DataFrame:

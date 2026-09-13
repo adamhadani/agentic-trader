@@ -183,7 +183,7 @@ class StrategyEngine:
             return None
 
         df = data.four_hour if timeframe == "4h" else data.hourly
-        if len(df) < 25:
+        if len(df) < 25 or "BB_Upper" not in df.columns or "BB_Lower" not in df.columns:
             return None
 
         latest = df.iloc[-1]
