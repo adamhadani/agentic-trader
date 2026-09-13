@@ -11,9 +11,11 @@ from agentic_trader.research.reporting import (
     format_candidate_as_yaml,
     format_optimization_report,
 )
+from agentic_trader.research.retuner import AutoRetuner
 
 
 __all__ = [
+    "AutoRetuner",
     "OptimizationResult",
     "ParameterCandidate",
     "ParameterGridOptimizer",

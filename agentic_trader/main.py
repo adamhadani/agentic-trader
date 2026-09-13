@@ -29,6 +29,7 @@ from agentic_trader.constants import (
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.research import (
+    AutoRetuner,
     ParameterGridOptimizer,
     export_candidate_to_config,
     format_candidate_as_yaml,
@@ -878,6 +879,23 @@ class FuturesCopilot:
             f"{mc_line}"
         )
 
+    async def run_auto_retune(
+        self,
+        symbols: list[str] | None = None,
+        strategies: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Execute automated parameter recalibration and broadcast Telegram summary."""
+        retuner = AutoRetuner(self.config)
+        logger.info("Executing scheduled parameter retuning...")
+        res = await asyncio.to_thread(
+            retuner.run_retune,
+            symbols=symbols,
+            strategies=strategies,
+        )
+        if self.notifier.is_configured():
+            await self.notifier.send_message(res["summary_html"])
+        return res
+
     async def send_test_alert(self):
         print("Sending synthetic test alert card...")
         test_eval = LLMTradeEvaluation(
@@ -1068,10 +1086,46 @@ async def async_main():
         help="Number of walk-forward validation splits (default: 3)",
     )
 
+    retune_parser = subparsers.add_parser(
+        "retune",
+        help="Run quantitative parameter auto-recalibration across watchlists",
+        description="Run quantitative parameter auto-recalibration across watchlists",
+    )
+    retune_parser.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="Comma-separated symbols to recalibrate (default: configured watchlists)",
+    )
+    retune_parser.add_argument(
+        "--strategy",
+        choices=["all", "trend_pullback", "squeeze_breakout"],
+        default="all",
+        help="Strategy to recalibrate (default: all)",
+    )
+    retune_parser.add_argument(
+        "--min-wfe",
+        type=float,
+        default=0.50,
+        help="Minimum Walk-Forward Efficiency ratio threshold (default: 0.50)",
+    )
+    retune_parser.add_argument(
+        "--min-sharpe",
+        type=float,
+        default=0.80,
+        help="Minimum Out-of-Sample Sharpe ratio threshold (default: 0.80)",
+    )
+    retune_parser.add_argument(
+        "--export-config",
+        type=str,
+        default=None,
+        help="Target config file to export all updated parameters (e.g. config/config.yaml)",
+    )
+
     args = parser.parse_args()
     config = load_config()
     copilot = FuturesCopilot(config)
-    if args.command not in ("db", "backtest", "optimize"):
+    if args.command not in ("db", "backtest", "optimize", "retune"):
         await copilot.broker.connect()
 
     if args.command == "db":
@@ -1167,6 +1221,31 @@ async def async_main():
             else:
                 export_candidate_to_config(best_cand, args.strategy, args.export_config)
                 print(f"\n[OK] Exported optimal {args.strategy} parameters to {args.export_config}")
+    elif args.command == "retune":
+        retuner = AutoRetuner(config=config)
+        syms = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
+        strats = [args.strategy] if args.strategy != "all" else ["trend_pullback", "squeeze_breakout"]
+        logger.info("Executing parameter retuning (strategy: %s)...", args.strategy)
+        retune_res = await asyncio.to_thread(
+            retuner.run_retune,
+            symbols=syms,
+            strategies=strats,
+            min_wfe=args.min_wfe,
+            min_sharpe=args.min_sharpe,
+        )
+        clean_summary = (
+            retune_res["summary_html"]
+            .replace("<b>", "")
+            .replace("</b>", "")
+            .replace("<code>", "")
+            .replace("</code>", "")
+            .replace("<i>", "")
+            .replace("</i>", "")
+        )
+        print(clean_summary)
+        if args.export_config:
+            count = retuner.export_all_to_config(args.export_config)
+            print(f"\n[OK] Exported {count} calibrated parameter sets to {args.export_config}")
     elif args.command == "status":
         await copilot.show_status()
     elif args.command == "positions":
@@ -1244,6 +1323,22 @@ async def async_main():
             id="position_monitor",
             next_run_time=datetime.now(UTC),
         )
+        # Schedule weekend automated parameter retuning
+        if config.scheduler.retune_enabled:
+            scheduler.add_job(
+                copilot.run_auto_retune,
+                "cron",
+                day_of_week=config.scheduler.retune_day_of_week,
+                hour=config.scheduler.retune_hour,
+                minute=config.scheduler.retune_minute,
+                id="auto_retune",
+            )
+            logger.info(
+                "Scheduled auto-retuning job for %s at %02d:%02d UTC.",
+                config.scheduler.retune_day_of_week,
+                config.scheduler.retune_hour,
+                config.scheduler.retune_minute,
+            )
         scheduler.start()
         logger.info(f"Scheduler started: scanning every {interval}h, reconciling positions every 1m.")
 

@@ -131,6 +131,10 @@ class StrategyConfig(BaseModel):
 
 class SchedulerConfig(BaseModel):
     cron_hour_interval: int = 4
+    retune_enabled: bool = True
+    retune_day_of_week: str = "sat"
+    retune_hour: int = 2
+    retune_minute: int = 0
 
 
 class RegimeConfig(BaseModel):

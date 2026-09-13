@@ -582,3 +582,22 @@ class TelegramNotifier:
                 extra={"contract": contract, "exit_reason": exit_reason, "error": str(e)},
             )
             return None
+
+    async def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
+        if not self.is_configured() or not self.app:
+            return False
+        try:
+            bot = self.app.bot
+            await bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode=parse_mode,
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                "Failed to dispatch Telegram message: %s",
+                e,
+                extra={"error": str(e)},
+            )
+            return False
