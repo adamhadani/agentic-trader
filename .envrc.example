@@ -21,6 +21,7 @@ export ANTHROPIC_API_KEY=""
 # Defaults to built-in free macro release calendar/ForexFactory scraper.
 # If using Finnhub or another API:
 export FINNHUB_API_KEY=""
+export IEX_CLOUD_API_TOKEN=""
 
 # --- Portfolio & Risk Overrides (Optional) ---
 export PORTFOLIO_CASH="100000"
@@ -46,7 +47,9 @@ export TRADOVATE_PASSWORD=""
 export TRADOVATE_ACCOUNT_ID=""
 
 # --- Alpaca Credentials (Required only if EXECUTION_MODE="alpaca") ---
-# APCA_API_KEY_ID and APCA_API_SECRET_KEY for paper or live trading
-export APCA_API_KEY_ID=""
-export APCA_API_SECRET_KEY=""
+# Supports either APCA_API_KEY_ID or ALPACA_KEY_ID
+export ALPACA_KEY_ID=""
+export ALPACA_SECRET_KEY=""
+export ALPACA_BASE_URL="https://paper-api.alpaca.markets"
+export ALPACA_DATA_FEED="iex"
 export ALPACA_PAPER="true"

@@ -38,15 +38,18 @@ class AlpacaBroker(BaseBroker):
         self.is_paper = getattr(config, "alpaca_paper", True)
         self.api_key = getattr(config, "alpaca_api_key", None)
         self.api_secret = getattr(config, "alpaca_api_secret", None)
+        self.base_url = getattr(config, "alpaca_base_url", None)
+        if self.base_url and "paper" in self.base_url.lower():
+            self.is_paper = True
         self.client: TradingClient | None = client
         self._connected: bool = False
 
     def _validate_credentials(self) -> None:
         missing: list[str] = []
         if not self.api_key:
-            missing.append("APCA_API_KEY_ID")
+            missing.append("APCA_API_KEY_ID / ALPACA_KEY_ID")
         if not self.api_secret:
-            missing.append("APCA_API_SECRET_KEY")
+            missing.append("APCA_API_SECRET_KEY / ALPACA_SECRET_KEY")
         if missing:
             raise ValueError(
                 f"Missing required Alpaca credentials: {', '.join(missing)}. "
@@ -61,6 +64,7 @@ class AlpacaBroker(BaseBroker):
                 api_key=self.api_key,
                 secret_key=self.api_secret,
                 paper=self.is_paper,
+                url_override=self.base_url,
             )
 
         env_name = "paper" if self.is_paper else "live"

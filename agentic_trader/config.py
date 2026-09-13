@@ -113,7 +113,12 @@ class AppConfig(BaseModel):
     # Alpaca Execution Configuration
     alpaca_api_key: str | None = None
     alpaca_api_secret: str | None = None
+    alpaca_base_url: str | None = None
+    alpaca_data_feed: str = "iex"
     alpaca_paper: bool = True
+
+    # Market Data & News Feeds
+    iex_cloud_api_token: str | None = None
 
 
 def load_config(config_path: str | None = None) -> AppConfig:
@@ -134,7 +139,8 @@ def load_config(config_path: str | None = None) -> AppConfig:
     openai_key = os.getenv("OPENAI_API_KEY")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY")
-    finnhub_key = os.getenv("FINNHUB_API_KEY")
+    finnhub_key = os.getenv("FINNHUB_API_KEY") or os.getenv("FINNHUB__API_KEY")
+    iex_token = os.getenv("IEX_CLOUD_API_TOKEN") or os.getenv("IEX_API_KEY") or os.getenv("IEX_TOKEN")
     db_path = os.getenv("DB_PATH", str(WORKSPACE_ROOT / "data" / "signals.db"))
     execution_mode = os.getenv("EXECUTION_MODE", "paper").lower()
     tradovate_api_key = os.getenv("TRADOVATE_API_KEY")
@@ -144,9 +150,25 @@ def load_config(config_path: str | None = None) -> AppConfig:
     tradovate_account_id = os.getenv("TRADOVATE_ACCOUNT_ID")
     tradovate_env = os.getenv("TRADOVATE_ENVIRONMENT", "demo").lower()
 
-    alpaca_api_key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY")
-    alpaca_api_secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET")
-    alpaca_paper = os.getenv("ALPACA_PAPER", "true").lower() in ("true", "1", "yes")
+    alpaca_api_key = (
+        os.getenv("APCA_API_KEY_ID")
+        or os.getenv("ALPACA_KEY_ID")
+        or os.getenv("ALPACA_API_KEY")
+        or os.getenv("ALPACA_API_KEY_ID")
+    )
+    alpaca_api_secret = (
+        os.getenv("APCA_API_SECRET_KEY")
+        or os.getenv("ALPACA_SECRET_KEY")
+        or os.getenv("ALPACA_API_SECRET")
+        or os.getenv("ALPACA_API_SECRET_KEY")
+    )
+    alpaca_base_url = os.getenv("APCA_API_BASE_URL") or os.getenv("ALPACA_BASE_URL")
+    alpaca_data_feed = os.getenv("ALPACA_DATA_FEED") or os.getenv("APCA_DATA_FEED") or "iex"
+
+    if alpaca_base_url:
+        alpaca_paper = "paper" in alpaca_base_url.lower()
+    else:
+        alpaca_paper = os.getenv("ALPACA_PAPER", "true").lower() in ("true", "1", "yes")
 
     if os.getenv("PORTFOLIO_CASH"):
         cfg_dict.setdefault("portfolio", {})["cash"] = float(os.environ["PORTFOLIO_CASH"])
@@ -169,6 +191,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         anthropic_api_key=anthropic_key,
         gemini_api_key=gemini_key,
         finnhub_api_key=finnhub_key,
+        iex_cloud_api_token=iex_token,
         db_path=db_path,
         execution_mode=execution_mode,
         tradovate_api_key=tradovate_api_key,
@@ -179,6 +202,8 @@ def load_config(config_path: str | None = None) -> AppConfig:
         tradovate_environment=tradovate_env,
         alpaca_api_key=alpaca_api_key,
         alpaca_api_secret=alpaca_api_secret,
+        alpaca_base_url=alpaca_base_url,
+        alpaca_data_feed=alpaca_data_feed,
         alpaca_paper=alpaca_paper,
     )
     return config
