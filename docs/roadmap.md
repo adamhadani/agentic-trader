@@ -20,6 +20,7 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 10** | Portfolio Risk Budgeting & Correlation Filtering | **Completed** | Sector/asset class allocation caps, cross-asset correlation guardrails |
 | **Phase 11** | Walk-Forward Out-of-Sample Validation in Research | **Completed** | Rolling train/test windows in research to guard against parameter overfitting |
 | **Phase 12** | Monte Carlo Risk Simulation in Backtester | **Completed** | Resample trade returns and drawdown distributions with 95%/99% VaR and CVaR confidence bounds |
+| **Phase 13** | Slippage & Realistic Fee/Commission Modeling | **Completed** | Exchange clearing fees, NFA fees, broker commissions, and volume-weighted bid-ask spread slippage |
 
 ---
 
@@ -276,10 +277,35 @@ Quantify tail risk, drawdown distributions, and risk of ruin beyond single histo
 
 ---
 
+## Phase 13: Slippage & Realistic Fee/Commission Modeling
+
+### Objective
+Incorporate real-world exchange clearing fees, regulatory costs, broker commissions, and market impact/slippage into historical simulation and backtesting.
+
+### Key Deliverables
+1. **Friction Configuration (`agentic_trader/config.py`)**:
+   - `FrictionConfig`: Futures clearing fees ($0.62/contract/side), equity commission ($0.005/share), micro futures tick slippage (0.25 pts), and equity spread slippage (2 bps).
+2. **Backtest Engine Execution Friction (`agentic_trader/backtest/engine.py`)**:
+   - Dynamic slippage penalty on trade entry (higher price for LONG, lower price for SHORT) and trade exit.
+   - Entry and exit commission deduction from net realized P&L and cash reserves.
+   - `BacktestTrade` and `BacktestResult` attributes for `commission`, `slippage_dollars`, `gross_strategy_pnl`, `total_commissions`, and `total_slippage`.
+3. **Institutional Reporting & CLI (`agentic_trader/backtest/reporting.py`, `agentic_trader/main.py`)**:
+   - Performance attribution breakdown: Gross Strategy Alpha, Execution Commissions, Bid-Ask Slippage Drag, Net Strategy Alpha.
+   - Added `--no-friction` flag to `copilot backtest` for baseline frictionless comparison.
+
+### Implementation Summary
+- **Configuration (`agentic_trader/config.py`)**: Added `FrictionConfig` to `AppConfig` and `load_config()`.
+- **Simulation Engine (`agentic_trader/backtest/engine.py`)**: Supported `apply_friction` in `BacktestEngine`, applying adverse price impact and commission tracking across both futures and equities.
+- **Reporting (`agentic_trader/backtest/reporting.py`)**: Formatted detailed friction deduction lines in ASCII performance attribution table.
+- **CLI Subcommand (`agentic_trader/main.py`)**: Added `--no-friction` argument to `backtest` command.
+- **Test Suite (`tests/test_friction.py`, `tests/test_backtest.py`)**: 4 unit tests verifying config defaults, futures friction deduction, frictionless pure alpha mode, and report formatting.
+
+---
+
 ## Next Horizon: Upcoming Strategic Targets
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 13** | Slippage & Realistic Fee/Commission Modeling | **Planned** | Exchange clearing fees, NFA fees, broker commissions, and volume-weighted bid-ask spread slippage |
 | **Phase 14** | Automated Scheduled Retuning Daemon | **Planned** | Background weekend calibration job updating strategy config thresholds based on rolling WFE |
 | **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **Planned** | Real-time WebSocket connection to Tradovate broker API with multi-broker fallback |
+| **Phase 16** | Cross-Asset Factor & Regime Attribution | **Planned** | Factor decomposition (Momentum, Volatility, Carry) and Sharpe attribution across market regimes |

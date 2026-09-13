@@ -288,6 +288,7 @@ def test_backtest_engine_bracket_exits(config):
         config=config,
         initial_cash=100000.0,
         risk_free_rate=0.0,
+        apply_friction=False,
     )
 
     # Manually execute trade exit logic across a known bar sequence
@@ -375,3 +376,4 @@ def test_cli_backtest_help():
     assert "--risk-free-rate" in proc.stdout
     assert "--monte-carlo" in proc.stdout
     assert "--mc-sims" in proc.stdout
+    assert "--no-friction" in proc.stdout

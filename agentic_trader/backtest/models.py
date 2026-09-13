@@ -24,6 +24,8 @@ class BacktestTrade:
     pnl_dollars: float | None = None
     pnl_pct: float | None = None
     duration_bars: int = 0
+    commission: float = 0.0
+    slippage_dollars: float = 0.0
 
 
 @dataclass
@@ -78,3 +80,6 @@ class BacktestResult:
     trades: list[BacktestTrade] = field(default_factory=list)
     equity_curve: list[EquityPoint] = field(default_factory=list)
     monte_carlo: MonteCarloResult | None = None
+    gross_strategy_pnl: float = 0.0
+    total_commissions: float = 0.0
+    total_slippage: float = 0.0

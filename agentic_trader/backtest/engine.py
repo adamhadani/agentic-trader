@@ -43,12 +43,15 @@ class BacktestEngine:
         risk_free_rate: float = 0.045,
         max_concurrent_positions: int = 4,
         max_notional_exposure: float = DEFAULT_MAX_NOTIONAL_EXPOSURE,
+        apply_friction: bool = True,
     ):
         self.config = config or load_config()
         self.initial_cash = initial_cash
         self.risk_free_rate = risk_free_rate
         self.max_concurrent_positions = max_concurrent_positions
         self.max_notional_exposure = max_notional_exposure
+        self.apply_friction = apply_friction
+        self.friction = self.config.friction
 
         self.strategy_engine = StrategyEngine(self.config)
         self.evaluator = RiskEvaluator(self.config)
@@ -194,18 +197,42 @@ class BacktestEngine:
                     trade.exit_timestamp = (
                         current_date.to_pydatetime() if hasattr(current_date, "to_pydatetime") else current_date
                     )
-                    trade.exit_price = exit_price
+                    actual_exit_price = exit_price
+                    exit_slip_dollars = 0.0
+                    exit_comm = 0.0
+
+                    if self.apply_friction and self.friction.enabled:
+                        if trade.asset_class == AssetClass.EQUITY:
+                            slip_pts = exit_price * self.friction.equity_slippage_pct
+                            exit_comm = round(self.friction.equity_commission_per_share * trade.quantity, 2)
+                        else:
+                            slip_pts = self.friction.futures_slippage_points
+                            exit_comm = round(self.friction.futures_commission_per_contract * trade.quantity, 2)
+
+                        if trade.direction == Direction.LONG:
+                            actual_exit_price = round(exit_price - slip_pts, 2)
+                        else:
+                            actual_exit_price = round(exit_price + slip_pts, 2)
+                        exit_slip_dollars = round(slip_pts * multiplier * trade.quantity, 2)
+
+                    trade.exit_price = actual_exit_price
                     trade.exit_reason = exit_reason
+                    trade.commission = round(trade.commission + exit_comm, 2)
+                    trade.slippage_dollars = round(trade.slippage_dollars + exit_slip_dollars, 2)
 
                     if trade.direction == Direction.LONG:
-                        pnl = (exit_price - trade.entry_price) * multiplier * trade.quantity
+                        net_pnl = (
+                            (actual_exit_price - trade.entry_price) * multiplier * trade.quantity
+                        ) - trade.commission
                     else:
-                        pnl = (trade.entry_price - exit_price) * multiplier * trade.quantity
+                        net_pnl = (
+                            (trade.entry_price - actual_exit_price) * multiplier * trade.quantity
+                        ) - trade.commission
 
-                    trade.pnl_dollars = round(pnl, 2)
-                    trade.pnl_pct = round((pnl / (trade.entry_price * multiplier * trade.quantity)) * 100.0, 2)
+                    trade.pnl_dollars = round(net_pnl, 2)
+                    trade.pnl_pct = round((net_pnl / (trade.entry_price * multiplier * trade.quantity)) * 100.0, 2)
 
-                    cash_reserve += pnl
+                    cash_reserve += net_pnl
                     closed_trades.append(trade)
                 else:
                     active_trades_remaining.append(trade)
@@ -290,6 +317,25 @@ class BacktestEngine:
                             quantity,
                         ) = self.evaluator.calculate_levels_deterministic(candidate)
 
+                        # Apply entry slippage and commission
+                        entry_price = candidate.current_price
+                        entry_slip_dollars = 0.0
+                        entry_comm = 0.0
+
+                        if self.apply_friction and self.friction.enabled:
+                            if asset_class == AssetClass.EQUITY:
+                                slip_pts = entry_price * self.friction.equity_slippage_pct
+                                entry_comm = round(self.friction.equity_commission_per_share * quantity, 2)
+                            else:
+                                slip_pts = self.friction.futures_slippage_points
+                                entry_comm = round(self.friction.futures_commission_per_contract * quantity, 2)
+
+                            if candidate.direction == Direction.LONG:
+                                entry_price = round(candidate.current_price + slip_pts, 2)
+                            else:
+                                entry_price = round(candidate.current_price - slip_pts, 2)
+                            entry_slip_dollars = round(slip_pts * multiplier * quantity, 2)
+
                         # Enforce maximum notional exposure
                         if current_open_notional + notional_value <= self.max_notional_exposure:
                             trade = BacktestTrade(
@@ -302,11 +348,13 @@ class BacktestEngine:
                                 entry_timestamp=current_date.to_pydatetime()
                                 if hasattr(current_date, "to_pydatetime")
                                 else current_date,
-                                entry_price=candidate.current_price,
+                                entry_price=entry_price,
                                 quantity=quantity,
                                 stop_loss=stop_loss,
                                 take_profit=take_profit,
                                 risk_dollars=risk_dollars,
+                                commission=entry_comm,
+                                slippage_dollars=entry_slip_dollars,
                             )
                             open_trades.append(trade)
                             current_open_notional += notional_value
@@ -375,6 +423,10 @@ class BacktestEngine:
         winners = sum(1 for t in closed_trades if (t.pnl_dollars or 0.0) > 0.0)
         losers = len(closed_trades) - winners
 
+        total_commissions = round(sum(t.commission for t in closed_trades), 2)
+        total_slippage = round(sum(t.slippage_dollars for t in closed_trades), 2)
+        gross_strategy_pnl = round(strategy_pnl + total_commissions + total_slippage, 2)
+
         return BacktestResult(
             starting_cash=self.initial_cash,
             ending_equity=ending_equity,
@@ -395,4 +447,7 @@ class BacktestEngine:
             avg_trade_duration_bars=avg_duration,
             trades=closed_trades,
             equity_curve=equity_points,
+            gross_strategy_pnl=gross_strategy_pnl,
+            total_commissions=total_commissions,
+            total_slippage=total_slippage,
         )

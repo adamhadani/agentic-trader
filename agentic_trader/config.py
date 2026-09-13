@@ -140,6 +140,14 @@ class RegimeConfig(BaseModel):
     cache_ttl_seconds: int = 900
 
 
+class FrictionConfig(BaseModel):
+    enabled: bool = True
+    futures_commission_per_contract: float = 0.62
+    equity_commission_per_share: float = 0.005
+    futures_slippage_points: float = 0.25
+    equity_slippage_pct: float = 0.0002
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -147,6 +155,7 @@ class AppConfig(BaseModel):
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     regime: RegimeConfig = Field(default_factory=RegimeConfig)
+    friction: FrictionConfig = Field(default_factory=FrictionConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None
@@ -242,6 +251,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         ),
         scheduler=SchedulerConfig(**cfg_dict.get("scheduler", {})),
         regime=RegimeConfig(**cfg_dict.get("regime", {})),
+        friction=FrictionConfig(**cfg_dict.get("friction", {})),
         telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
         telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
         llm_model=llm_model,

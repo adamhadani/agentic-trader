@@ -1012,6 +1012,12 @@ async def async_main():
         default=1000,
         help="Number of Monte Carlo bootstrap iterations (default: 1000)",
     )
+    backtest_parser.add_argument(
+        "--no-friction",
+        action="store_true",
+        default=False,
+        help="Disable commissions and bid-ask slippage (frictionless execution)",
+    )
 
     optimize_parser = subparsers.add_parser(
         "optimize",
@@ -1109,6 +1115,7 @@ async def async_main():
             config=config,
             initial_cash=args.cash,
             risk_free_rate=args.risk_free_rate,
+            apply_friction=not args.no_friction,
         )
         logger.info(
             "Running offline backtest across %s (lookback: %s, strategy: %s)...",

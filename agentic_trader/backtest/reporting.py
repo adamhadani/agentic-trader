@@ -44,6 +44,16 @@ MONTE CARLO RISK RESAMPLING ({mc.n_simulations:,d} Bootstrap Iterations)
 • 95% Conditional VaR (CVaR):     {mc.cvar_95_pct:12.2f}%
 """
 
+    friction_lines = ""
+    alpha_label = "• Pure Strategy Alpha P&L:      "
+    if result.total_commissions > 0.0 or result.total_slippage > 0.0:
+        alpha_label = "• Net Strategy Alpha P&L:       "
+        friction_lines = (
+            f"• Gross Strategy Alpha:         ${result.gross_strategy_pnl:+12,.2f}\n"
+            f"• Execution Commissions:        ${-result.total_commissions:+12,.2f}\n"
+            f"• Bid-Ask Slippage Drag:        ${-result.total_slippage:+12,.2f}\n"
+        )
+
     report = f"""
 {border}
 CASH-PLUS TRADING COPILOT: QUANTITATIVE BACKTEST REPORT
@@ -56,7 +66,7 @@ Ending Portfolio:    ${result.ending_equity:,.2f}
 {sub_border}
 PORTFOLIO & CASH-PLUS PERFORMANCE ATTRIBUTION
 {sub_border}
-• Pure Strategy Alpha P&L:      ${result.strategy_pnl:+12,.2f}  ({result.strategy_return_pct:+.2f}%)
+{friction_lines}{alpha_label}${result.strategy_pnl:+12,.2f}  ({result.strategy_return_pct:+.2f}%)
 • Treasury/Cash Reserve Yield:  ${result.cash_yield_pnl:+12,.2f}
 • Combined Total Net Return:    ${result.combined_total_pnl:+12,.2f}  ({result.combined_return_pct:+.2f}%)
 • Annualized Return (CAGR):     {result.annualized_return_pct:+.2f}%
