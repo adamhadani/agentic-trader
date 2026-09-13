@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
 from agentic_trader.broker import (
@@ -314,58 +313,52 @@ async def test_alpaca_broker_bracket_order_and_positions():
         alpaca_paper=True,
     )
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path == "/v2/account":
-            return httpx.Response(
-                200,
-                json={
-                    "id": "acct-test-1",
-                    "account_number": "PA12345",
-                    "status": "ACTIVE",
-                    "cash": "100000.0",
-                    "buying_power": "200000.0",
-                    "portfolio_value": "100000.0",
-                },
-            )
-        elif path == "/v2/orders" and request.method == "POST":
-            return httpx.Response(
-                201,
-                json={
-                    "id": "alp-order-101",
-                    "status": "new",
-                    "filled_avg_price": "150.50",
-                    "legs": [
-                        {"id": "alp-sl-101", "type": "stop"},
-                        {"id": "alp-tp-101", "type": "limit"},
-                    ],
-                },
-            )
-        elif path == "/v2/positions/AAPL" and request.method == "DELETE":
-            return httpx.Response(200, json={"id": "alp-close-101", "symbol": "AAPL"})
-        elif path == "/v2/positions" and request.method == "GET":
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "symbol": "AAPL",
-                        "asset_class": "us_equity",
-                        "side": "long",
-                        "qty": "10",
-                        "avg_entry_price": "150.50",
-                        "current_price": "155.00",
-                        "unrealized_pl": "45.00",
-                    }
-                ],
-            )
-        return httpx.Response(404)
+    mock_client = MagicMock()
 
-    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://paper-api.alpaca.markets")
+    # Mock account
+    mock_account = MagicMock()
+    mock_account.id = "acct-test-1"
+    mock_account.account_number = "PA12345"
+    mock_account.status = "ACTIVE"
+    mock_account.cash = 100000.0
+    mock_account.buying_power = 200000.0
+    mock_account.portfolio_value = 100000.0
+    mock_client.get_account.return_value = mock_account
+
+    # Mock order submission
+    mock_order = MagicMock()
+    mock_order.id = "alp-order-101"
+    mock_order.status = "new"
+    mock_order.filled_avg_price = 150.50
+    mock_leg_sl = MagicMock(id="alp-sl-101", order_type="stop")
+    mock_leg_tp = MagicMock(id="alp-tp-101", order_type="limit")
+    mock_order.legs = [mock_leg_sl, mock_leg_tp]
+    mock_order.model_dump.return_value = {"id": "alp-order-101"}
+    mock_client.submit_order.return_value = mock_order
+
+    # Mock positions
+    mock_pos = MagicMock()
+    mock_pos.symbol = "AAPL"
+    mock_pos.asset_class = "us_equity"
+    mock_pos.side = "long"
+    mock_pos.qty = 10.0
+    mock_pos.avg_entry_price = 150.50
+    mock_pos.current_price = 155.00
+    mock_pos.unrealized_pl = 45.00
+    mock_client.get_all_positions.return_value = [mock_pos]
+
+    # Mock close position
+    mock_close = MagicMock()
+    mock_close.id = "alp-close-101"
+    mock_close.model_dump.return_value = {"id": "alp-close-101"}
+    mock_client.close_position.return_value = mock_close
+
     broker = AlpacaBroker(config, client=mock_client)
 
     # Check connection
     connected = await broker.connect()
     assert connected is True
+    mock_client.get_account.assert_called_once()
 
     # Check account balance
     bal = await broker.get_account_balance()
@@ -388,6 +381,7 @@ async def test_alpaca_broker_bracket_order_and_positions():
     assert result.fill_price == 150.50
     assert result.bracket_orders.get("stop_loss_id") == "alp-sl-101"
     assert result.bracket_orders.get("take_profit_id") == "alp-tp-101"
+    mock_client.submit_order.assert_called_once()
 
     # Get positions
     positions = await broker.get_positions()
@@ -400,5 +394,6 @@ async def test_alpaca_broker_bracket_order_and_positions():
     close_res = await broker.close_position(symbol="AAPL", exit_reason="TAKE_PROFIT", exit_price=160.00)
     assert close_res.success is True
     assert close_res.order_id == "alp-close-101"
+    mock_client.close_position.assert_called_once()
 
     await broker.disconnect()
