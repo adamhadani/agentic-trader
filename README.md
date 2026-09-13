@@ -5,7 +5,7 @@
 [![Checked with mypy](https://img.shields.io/badge/mypy-checked-blue)](http://mypy-lang.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
-[![Documentation](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://adamhadani.github.io/agentic-trader/)
+[![Documentation](https://img.shields.io/badge/docs-local%20markdown-blue)](docs/)
 
 The **Cash-Plus Trading Copilot** is an algorithmic trading system designed around a **"Cash-Plus" (portable alpha)** portfolio architecture ($100,000 baseline cash generating risk-free Treasury yield). The system continuously screens multi-asset markets, validates setups through an LLM agent with macro calendar awareness, and executes bracket orders across Tradovate (CME micro futures) and Alpaca (equities, ETFs, and crypto) with real-time Telegram oversight and Prometheus observability.
 
@@ -17,6 +17,27 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 - [**CLI Command Reference**](docs/cli-reference.md): Exhaustive guide to all Click CLI subcommands, flags, and outputs.
 - [**Quantitative Strategies & Models**](docs/strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX, and Pairs Trading.
 - [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 22) and future milestones.
+
+### Compiling & Viewing Documentation Locally
+
+Since the GitHub repository is private, you can preview the complete formatted documentation site locally:
+
+**Method 1: Local Ruby / Bundler**
+```bash
+cd docs
+bundle install
+bundle exec jekyll serve
+# Open http://localhost:4000/agentic-trader/ in your browser
+```
+
+**Method 2: Docker (Zero Ruby Installation Required)**
+```bash
+docker run --rm -v "$PWD/docs:/srv/jekyll" -p 4000:4000 jekyll/jekyll:latest jekyll serve
+# Open http://localhost:4000/agentic-trader/ in your browser
+```
+
+**Method 3: Native Markdown**
+All documentation pages in [`docs/`](docs/) are formatted in standard GitHub Flavored Markdown and can be read directly in your IDE or the private GitHub web UI.
 
 ---
 
