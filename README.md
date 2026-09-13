@@ -113,15 +113,16 @@ uv run copilot listen              # Run Telegram bot listener only in isolation
 
 ### B. Day-to-Day Desk Operations
 ```bash
+uv run copilot doctor              # Run pre-flight diagnostic probes across DB, Telegram, Alpaca, Finnhub, LLM
 uv run copilot status              # View cash base, active notional exposure, leverage, and macro events
 uv run copilot positions           # View active tracked positions, stops, targets, and unrealized P&L
 uv run copilot scan                # Trigger on-demand market scan (--dry-run, --no-llm, --asset-class)
-uv run copilot execute <id>        # Manually authorize and submit an approved signal to the broker
+uv run copilot execute <id> [--qty <N>] # Authorize signal with optional custom tiered quantity override
 uv run copilot close <id> [price]  # Liquidate an open position, record realized P&L, release exposure
 uv run copilot gex [symbol]        # View options dealer gamma exposure, call/put walls, and gamma flip
 uv run copilot pairs               # Screen cross-asset pairs for cointegration and rolling spread Z-scores
-uv run copilot metrics             # Dump Prometheus exposition text or run standalone server (--serve)
-uv run copilot test-alert          # Send synthetic signal card to verify Telegram formatting and buttons
+uv run copilot metrics             # Prometheus exposition (:9108/metrics) & JSON healthcheck (:9108/healthcheck)
+uv run copilot test-alert          # Send synthetic signal card with sizing tiers to test Telegram buttons
 ```
 
 ### C. Quantitative Research, Backtesting & Calibration (Offline)

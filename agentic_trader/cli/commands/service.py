@@ -12,6 +12,7 @@ import click
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import coro, get_copilot_and_config
+from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 
 
 logger = logging.getLogger("copilot")
@@ -142,9 +143,18 @@ async def daemon(no_llm: bool) -> None:
             with contextlib.suppress(asyncio.CancelledError):
                 await stream_task
         await copilot.broker.stop_trade_stream()
-
         scheduler.shutdown()
+
         if copilot.notifier.app and copilot.notifier.app.updater:
             await copilot.notifier.app.updater.stop()
             await copilot.notifier.app.stop()
             await copilot.notifier.app.shutdown()
+
+
+@click.command("doctor", help="Run pre-flight system diagnostics and connectivity checks")
+@coro
+async def doctor() -> None:
+    """Run pre-flight system diagnostics and connectivity checks across all subsystems."""
+    _copilot, config = get_copilot_and_config()
+    report = await run_diagnostics(config)
+    click.echo(format_doctor_cli_output(report))

@@ -43,12 +43,18 @@ async def close(signal_id: int, price: float) -> None:
 
 @click.command("execute", help="Execute a staged signal manually by signal_id")
 @click.argument("signal_id", type=int)
+@click.option(
+    "--qty",
+    type=float,
+    default=None,
+    help="Override order quantity (contracts or shares) with custom sizing tier",
+)
 @coro
-async def execute(signal_id: int) -> None:
+async def execute(signal_id: int, qty: float | None = None) -> None:
     """Execute a staged signal manually by signal_id."""
     copilot, _config = get_copilot_and_config()
     await copilot.broker.connect()
-    _success, res = await copilot.execute_signal_by_id(signal_id)
+    _success, res = await copilot.execute_signal_by_id(signal_id, quantity=qty)
     clean_text = (
         res.replace("<b>", "")
         .replace("</b>", "")

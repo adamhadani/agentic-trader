@@ -2,10 +2,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import load_config
 from agentic_trader.constants import Direction, ExitReason, SignalStatus
 from agentic_trader.main import FuturesCopilot
-from agentic_trader.notifier.telegram_bot import TelegramNotifier
+from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_alert_card, format_terminal_card
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -190,6 +191,7 @@ async def test_telegram_commands_and_callbacks(temp_db):
     # Test inline button callbacks
     query_mock = MagicMock()
     query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
     query_mock.message = MagicMock()
     query_mock.message.reply_text = AsyncMock()
 
@@ -215,3 +217,69 @@ async def test_telegram_commands_and_callbacks(temp_db):
     await notifier.handle_button_callback(cb_update, mock_context)
     query_mock.answer.assert_called_with("Running quantitative scan...")
     query_mock.message.reply_text.assert_called_with("<b>Scan: 0 setups</b>", parse_mode="HTML")
+
+    # Button exec_42_2 (Execution with tiered quantity override)
+    mock_exec = AsyncMock(return_value=(True, "<b>Order Executed: 2x /MES</b>"))
+    notifier.execute_handler = mock_exec
+    query_mock.message.reply_text.reset_mock()
+    query_mock.data = "exec_42_2"
+    await notifier.handle_button_callback(cb_update, mock_context)
+    query_mock.answer.assert_called_with("Submitting order for 2 units to broker...")
+    mock_exec.assert_called_once_with(42, quantity=2.0)
+    query_mock.message.reply_text.assert_called_with("<b>Order Executed: 2x /MES</b>", parse_mode="HTML")
+
+
+def test_format_alert_card_with_sizing_tiers():
+    test_eval = LLMTradeEvaluation(
+        approved=True,
+        rejection_reason=None,
+        contract="/MES",
+        direction=Direction.LONG,
+        entry_price=5812.50,
+        stop_loss=5769.75,
+        take_profit=5898.00,
+        stop_distance_points=42.75,
+        target_distance_points=85.50,
+        risk_reward_ratio=2.0,
+        risk_dollars=213.75,
+        reward_dollars=427.50,
+        notional_value=29062.50,
+        effective_leverage=0.29,
+        macro_clearance=True,
+        thesis_summary="Bullish pullback",
+        quantity=1.0,
+        sizing_tiers=[
+            {
+                "tier_id": "half",
+                "label": "Half (1x)",
+                "quantity": 1.0,
+                "risk_dollars": 213.75,
+                "reward_dollars": 427.50,
+                "notional_dollars": 29062.50,
+                "effective_leverage": 0.29,
+                "is_default": True,
+            },
+            {
+                "tier_id": "base",
+                "label": "Base (2x)",
+                "quantity": 2.0,
+                "risk_dollars": 427.50,
+                "reward_dollars": 855.00,
+                "notional_dollars": 58125.00,
+                "effective_leverage": 0.58,
+                "is_default": False,
+            },
+        ],
+        gating_reasons=["Capped by $60,000 portfolio notional limit"],
+    )
+
+    card_html = format_alert_card(test_eval, strategy="TREND_PULLBACK")
+    assert "Position Sizing Tiers:" in card_html
+    assert "Half (1x)" in card_html
+    assert "Base (2x)" in card_html
+    assert "Capped by $60,000 portfolio notional limit" in card_html
+
+    card_term = format_terminal_card(test_eval, strategy="TREND_PULLBACK")
+    assert "Position Sizing Tiers:" in card_term
+    assert "Half (1x)" in card_term
+    assert "Base (2x)" in card_term

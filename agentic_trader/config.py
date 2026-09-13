@@ -171,6 +171,12 @@ class PositionSizingConfig(BaseModel):
     min_shares: float = 1.0
     kelly_fraction: float = 0.5
     baseline_win_rate: float = 0.50
+    max_risk_pct_cap: float = 0.01  # Hard ceiling: no single trade or tier can exceed 1.0% capital risk
+    max_trade_notional_cap: float = 30000.0  # Max notional for a single trade (50% of $60k portfolio cap)
+    drawdown_gating_enabled: bool = True  # Dynamically haircut sizes during portfolio drawdown
+    drawdown_haircut_threshold_pct: float = 0.03  # Begin haircut if drawdown > 3.0%
+    max_drawdown_stop_pct: float = 0.06  # Halt new sizing if drawdown >= 6.0%
+    suggest_tiers_enabled: bool = True  # Suggest Half, Base, and Max sizing tiers in Telegram
 
 
 class ExecutionConfig(BaseModel):

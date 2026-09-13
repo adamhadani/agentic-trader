@@ -183,8 +183,11 @@ class SignalDatabase:
         broker_order_id: str | None,
         fill_price: float | None = None,
         status: str = SignalStatus.EXECUTED,
+        quantity: float | None = None,
+        notional_value: float | None = None,
+        risk_dollars: float | None = None,
     ):
-        """Record broker order ID and execution status, optionally updating entry price to actual fill."""
+        """Record broker order ID and execution status, optionally updating fill price, quantity, and notional."""
         async with self.session_factory() as session:
             vals: dict[str, Any] = {
                 "status": str(status),
@@ -192,6 +195,12 @@ class SignalDatabase:
             }
             if fill_price is not None:
                 vals["entry_price"] = float(fill_price)
+            if quantity is not None:
+                vals["quantity"] = float(quantity)
+            if notional_value is not None:
+                vals["notional_value"] = float(notional_value)
+            if risk_dollars is not None:
+                vals["risk_dollars"] = float(risk_dollars)
             stmt = update(SignalRecord).where(SignalRecord.id == signal_id).values(**vals)
             await session.execute(stmt)
             await session.commit()

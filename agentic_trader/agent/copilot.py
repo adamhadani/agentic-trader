@@ -83,6 +83,7 @@ class FuturesCopilot:
                 host=config.telemetry.metrics_host,
                 port=config.telemetry.metrics_port,
                 collector=self.metrics,
+                config=config,
             )
             if config.telemetry.metrics_enabled
             else None
@@ -627,14 +628,16 @@ class FuturesCopilot:
             f"• Notional capacity released."
         )
 
-    async def execute_signal_by_id(self, signal_id: int) -> tuple[bool, str]:
-        """Execute an approved signal via the configured broker (Paper, Tradovate, or Alpaca).
-
-        Enforces risk invariants before submission and records the fill order ID in SQLite.
+    async def execute_signal_by_id(self, signal_id: int, quantity: float | None = None) -> tuple[bool, str]:
+        """
+        Execute an approved trade setup by signal ID.
+        Submits bracket orders to the active broker and registers the position in SQLite.
+        Optionally overrides the order quantity with operator-selected tier size.
         """
         sig = await self.db.get_signal_by_id(signal_id)
         if not sig:
-            return False, f"❌ Signal #{signal_id} not found."
+            return False, f"❌ Signal #{signal_id} not found in database."
+
         if sig["status"] != SignalStatus.PENDING:
             return False, (
                 f"❌ Signal #{signal_id} is in status <b>{sig['status']}</b> (only PENDING signals can be executed)."
@@ -653,7 +656,15 @@ class FuturesCopilot:
             if contract_info
             else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
         )
-        quantity = float(sig.get("quantity") or 1.0)
+
+        multiplier = contract_info.multiplier if contract_info else (1.0 if asset_class == AssetClass.EQUITY else 5.0)
+        target_qty = float(quantity) if quantity is not None and quantity > 0 else float(sig.get("quantity") or 1.0)
+        entry_price = float(sig["entry_price"])
+        stop_loss = float(sig["stop_loss"])
+        take_profit = float(sig["take_profit"])
+        stop_dist = abs(entry_price - stop_loss)
+        notional_value = round(entry_price * multiplier * target_qty, 2)
+        risk_dollars = round(stop_dist * multiplier * target_qty, 2)
 
         # Re-verify portfolio risk limits prior to live execution
         active_count = await self.db.get_active_position_count()
@@ -666,9 +677,9 @@ class FuturesCopilot:
             return False, (f"⚠️ <b>Execution Rejected:</b> Maximum concurrent positions ({max_positions}) reached.")
 
         current_exposure = await self.db.get_active_notional_exposure()
-        if current_exposure + sig["notional_value"] > self.config.portfolio.max_notional_exposure:
+        if current_exposure + notional_value > self.config.portfolio.max_notional_exposure:
             return False, (
-                f"⚠️ <b>Execution Rejected:</b> Order notional (${sig['notional_value']:,.2f}) would breach "
+                f"⚠️ <b>Execution Rejected:</b> Order notional (${notional_value:,.2f}) would breach "
                 f"${self.config.portfolio.max_notional_exposure:,.2f} maximum portfolio notional ceiling."
             )
 
@@ -682,10 +693,10 @@ class FuturesCopilot:
             ticker=ticker,
             asset_class=asset_class,
             direction=direction,
-            entry_price=float(sig["entry_price"]),
-            stop_loss=float(sig["stop_loss"]),
-            take_profit=float(sig["take_profit"]),
-            quantity=quantity,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            quantity=target_qty,
         )
 
         try:
@@ -700,29 +711,40 @@ class FuturesCopilot:
             return False, f"❌ <b>Broker Submission Error:</b> {e}"
 
         if order_result.success:
-            fill_price = order_result.fill_price or float(sig["entry_price"])
+            fill_price = order_result.fill_price or entry_price
             await self.db.update_signal_execution(
                 signal_id=signal_id,
                 broker_order_id=order_result.order_id,
                 fill_price=fill_price,
                 status=SignalStatus.EXECUTED,
+                quantity=target_qty,
+                notional_value=notional_value,
+                risk_dollars=risk_dollars,
             )
             logger.info(
-                "Signal #%d executed successfully via broker (%s)",
+                "Signal #%d executed successfully via broker (%s) with qty %g",
                 signal_id,
                 self.config.execution_mode,
+                target_qty,
                 extra={
                     "signal_id": signal_id,
                     "order_id": order_result.order_id,
                     "fill_price": fill_price,
+                    "quantity": target_qty,
                     "execution_mode": self.config.execution_mode,
                 },
             )
+            qty_label = (
+                f"{target_qty:g} shares"
+                if (asset_class == AssetClass.EQUITY or not contract.startswith("/"))
+                else f"{target_qty:g}x"
+            )
             msg = (
                 f"🚀 <b>ORDER EXECUTED ({self.config.execution_mode.upper()})</b>\n"
-                f"• <b>Contract:</b> 1x {contract} ({direction})\n"
+                f"• <b>Contract:</b> {qty_label} {contract} ({direction})\n"
                 f"• <b>Fill Price:</b> <code>{fill_price:,.2f}</code>\n"
                 f"• <b>Broker Order ID:</b> <code>{order_result.order_id}</code>\n"
+                f"• <b>Notional:</b> <code>${notional_value:,.2f}</code> | <b>Risk:</b> <code>${risk_dollars:,.2f}</code>\n"
                 f"• <b>Stop Loss:</b> <code>{sig['stop_loss']:,.2f}</code> | <b>Target:</b> <code>{sig['take_profit']:,.2f}</code>\n"
                 f"• <i>Position is now active in risk tracking.</i>"
             )
@@ -739,8 +761,8 @@ class FuturesCopilot:
             )
             msg = (
                 f"❌ <b>Execution Failed ({self.config.execution_mode.upper()}):</b>\n"
-                f"<code>{err}</code>\n"
-                f"Signal #{signal_id} marked as FAILED. No portfolio exposure was locked."
+                f"• <b>Contract:</b> {contract} ({direction})\n"
+                f"• <b>Error:</b> {err}"
             )
             return False, msg
 
@@ -983,6 +1005,30 @@ class FuturesCopilot:
             effective_leverage=0.29,
             macro_clearance=True,
             thesis_summary="Daily trend is bullish (Price > 50 > 200 EMA). 4h RSI dipped to 42 and bounced off 20 EMA.",
+            quantity=1.0,
+            sizing_tiers=[
+                {
+                    "tier_id": "half",
+                    "label": "Half (1x)",
+                    "quantity": 1.0,
+                    "risk_dollars": 213.75,
+                    "reward_dollars": 427.50,
+                    "notional_dollars": 29062.50,
+                    "effective_leverage": 0.29,
+                    "is_default": True,
+                },
+                {
+                    "tier_id": "base",
+                    "label": "Base (2x)",
+                    "quantity": 2.0,
+                    "risk_dollars": 427.50,
+                    "reward_dollars": 855.00,
+                    "notional_dollars": 58125.00,
+                    "effective_leverage": 0.58,
+                    "is_default": False,
+                },
+            ],
+            gating_reasons=["Max size capped by remaining $58,125 notional limit"],
         )
         sig_id = await self.db.record_signal(
             contract=test_eval.contract,
