@@ -23,6 +23,14 @@ from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.storage.migrations import (
+    downgrade_migrations,
+    get_alembic_config,
+    get_current_revision,
+    get_history,
+    run_migrations_head,
+)
+from alembic import command as alembic_command
 
 
 logging.basicConfig(
@@ -706,12 +714,56 @@ async def async_main():
     daemon_parser = subparsers.add_parser("daemon", help="Start continuous scheduler and Telegram listener")
     daemon_parser.add_argument("--no-llm", action="store_true", help="Disable LLM evaluation")
 
+    db_parser = subparsers.add_parser("db", help="Manage database schema migrations via Alembic")
+    db_subparsers = db_parser.add_subparsers(dest="db_command", help="Available db commands")
+
+    db_upgrade_parser = db_subparsers.add_parser(
+        "upgrade", help="Upgrade database schema to target revision (default: head)"
+    )
+    db_upgrade_parser.add_argument("--revision", default="head", help="Target revision (default: head)")
+
+    db_downgrade_parser = db_subparsers.add_parser(
+        "downgrade", help="Downgrade database schema to target revision (default: base)"
+    )
+    db_downgrade_parser.add_argument("--revision", default="base", help="Target revision (default: base)")
+
+    db_subparsers.add_parser("current", help="Display the current database migration revision")
+    db_subparsers.add_parser("history", help="Show the list of all migration revisions")
+
     args = parser.parse_args()
     config = load_config()
     copilot = FuturesCopilot(config)
-    await copilot.broker.connect()
+    if args.command != "db":
+        await copilot.broker.connect()
 
-    if args.command == "scan":
+    if args.command == "db":
+        db_url = copilot.db.db_url
+
+        if args.db_command == "upgrade":
+            target = getattr(args, "revision", "head")
+            if target == "head":
+                run_migrations_head(db_url)
+            else:
+                cfg = get_alembic_config(db_url)
+                alembic_command.upgrade(cfg, target)
+            curr = get_current_revision(db_url)
+            print(f"✅ Database upgraded successfully to revision: {curr}")
+        elif args.db_command == "downgrade":
+            target = getattr(args, "revision", "base")
+            downgrade_migrations(target, db_url)
+            curr = get_current_revision(db_url)
+            print(f"✅ Database downgraded to revision: {curr or '<base>'}")
+        elif args.db_command == "current":
+            curr = get_current_revision(db_url)
+            print(f"Current database revision: {curr or '<unversioned/empty>'}")
+        elif args.db_command == "history":
+            history = get_history(db_url)
+            print("Migration History:")
+            for h in history:
+                print(f"  • {h['revision']} (down: {h['down_revision']}) - {h['doc']}")
+        else:
+            db_parser.print_help()
+    elif args.command == "scan":
         sym_list = [s.strip() for s in args.symbols.split(",")] if args.symbols else None
         await copilot.run_scan(
             use_llm=not args.no_llm,

@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -7,7 +8,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from agentic_trader.constants import AssetClass, ExitReason, SignalStatus
+from agentic_trader.storage.migrations import run_migrations_head
 from agentic_trader.storage.models import Base, SignalRecord
+
+
+logger = logging.getLogger(__name__)
 
 
 class SignalDatabase:
@@ -31,16 +36,27 @@ class SignalDatabase:
         self.engine: AsyncEngine = create_async_engine(self.db_url, echo=False)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 
-        # Synchronously initialize tables and perform SQLite column migrations if needed
-        if self.db_path:
+        # Synchronously initialize tables and perform migrations
+        if self.db_path or self.db_url:
             self.init_sync()
 
     def init_sync(self):
-        """Synchronous migration check to ensure existing SQLite database has required columns."""
+        """Synchronous migration check ensuring schema has required tables, columns, and Alembic revisions."""
+        try:
+            run_migrations_head(self.db_url)
+        except Exception as e:
+            logger.warning(
+                f"Alembic auto-migration encountered error, falling back to direct schema check: {e}",
+                extra={"db_url": self.db_url},
+            )
+            if self.db_path:
+                self._fallback_sqlite_sync()
+
+    def _fallback_sqlite_sync(self):
+        """Fallback direct SQLite table creation and column alteration."""
         if not self.db_path:
             return
         with sqlite3.connect(self.db_path) as conn:
-            # Let sqlite create tables if schema is not yet present
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS signals (
@@ -86,8 +102,11 @@ class SignalDatabase:
 
     async def init_db(self):
         """Asynchronously initialize all ORM tables and indexes."""
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        try:
+            run_migrations_head(self.db_url)
+        except Exception:
+            async with self.engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
 
     async def is_duplicate_recent(self, contract: str, strategy: str, hours: int = 12) -> bool:
         """Check if an active or recent signal was emitted for this contract and strategy within `hours`."""
