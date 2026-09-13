@@ -99,7 +99,13 @@ strategies:
     trigger_ema_span: 20
     trigger_atr_distance_mult: 0.5
     rsi_period: 14
+    rsi_oversold: 40.0
+    rsi_oversold_dip: 45.0
+    rsi_overbought: 60.0
+    rsi_overbought_surge: 55.0
     atr_period: 14
+    atr_multiplier: 1.5
+
   squeeze_breakout:
     enabled: true
     bb_length: 20

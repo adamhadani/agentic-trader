@@ -1,4 +1,55 @@
-from agentic_trader.research.models import OptimizationResult
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from agentic_trader.research.models import OptimizationResult, ParameterCandidate
+
+
+def candidate_to_strategy_dict(candidate: ParameterCandidate, strategy: str) -> dict[str, Any]:
+    """Convert a ParameterCandidate's parameters into the strategy config schema."""
+    out: dict[str, Any] = {"enabled": True}
+    if strategy == "trend_pullback":
+        if "ema_span" in candidate.parameters:
+            out["trigger_ema_span"] = candidate.parameters["ema_span"]
+        if "rsi_threshold" in candidate.parameters:
+            thresh = float(candidate.parameters["rsi_threshold"])
+            out["rsi_oversold"] = thresh
+            out["rsi_oversold_dip"] = thresh + 5.0
+            out["rsi_overbought"] = 100.0 - thresh
+            out["rsi_overbought_surge"] = 100.0 - thresh - 5.0
+    elif strategy == "squeeze_breakout":
+        if "volume_factor" in candidate.parameters:
+            out["volume_factor"] = float(candidate.parameters["volume_factor"])
+        if "min_squeeze_bars" in candidate.parameters:
+            out["min_squeeze_bars"] = int(candidate.parameters["min_squeeze_bars"])
+    else:
+        out.update(candidate.parameters)
+    return out
+
+
+def format_candidate_as_yaml(candidate: ParameterCandidate, strategy: str) -> str:
+    """Format candidate parameters as a valid YAML snippet suitable for config/config.yaml."""
+    cfg_data = {"strategies": {strategy: candidate_to_strategy_dict(candidate, strategy)}}
+    return yaml.dump(cfg_data, sort_keys=False)
+
+
+def export_candidate_to_config(candidate: ParameterCandidate, strategy: str, config_path: str) -> bool:
+    """Export and update strategy config in an existing or new config.yaml file."""
+    path = Path(config_path)
+    existing: dict[str, Any] = {}
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            existing = yaml.safe_load(f) or {}
+
+    strategies = existing.setdefault("strategies", {})
+    strat_cfg = strategies.setdefault(strategy, {})
+    strat_cfg.update(candidate_to_strategy_dict(candidate, strategy))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(existing, f, sort_keys=False)
+    return True
 
 
 def format_optimization_report(result: OptimizationResult, top_n: int = 5) -> str:
@@ -28,11 +79,7 @@ RECOMMENDED CONFIGURATION TUNING (Top Sharpe Ratio: {best_candidate.sharpe_ratio
 Parameters: {param_desc}
 Performance: Total Return: {best_candidate.total_return_pct:+.2f}%, Win Rate: {best_candidate.win_rate:.2f}%, Max DD: {best_candidate.max_drawdown_pct:.2f}%
 To apply to config.yaml:
-  strategies:
-    {result.strategy}:
-"""
-        for k, v in best_candidate.parameters.items():
-            recommendation_text += f"      {k}: {v}\n"
+{format_candidate_as_yaml(best_candidate, result.strategy)}"""
 
     report = f"""
 {border}

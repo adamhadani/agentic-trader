@@ -23,7 +23,12 @@ from agentic_trader.constants import (
 )
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
-from agentic_trader.research import ParameterGridOptimizer, format_optimization_report
+from agentic_trader.research import (
+    ParameterGridOptimizer,
+    export_candidate_to_config,
+    format_candidate_as_yaml,
+    format_optimization_report,
+)
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.migrations import (
@@ -823,6 +828,13 @@ async def async_main():
         default=5,
         help="Number of top parameter combinations to display (default: 5)",
     )
+    optimize_parser.add_argument(
+        "--export-config",
+        nargs="?",
+        const="stdout",
+        default=None,
+        help="Export top candidate parameters as YAML for config.yaml (specify optional destination file path)",
+    )
 
     args = parser.parse_args()
     config = load_config()
@@ -902,6 +914,18 @@ async def async_main():
         )
         opt_report = format_optimization_report(opt_res, top_n=args.top_n)
         print(opt_report)
+
+        if args.export_config and opt_res.ranked_candidates:
+            best_cand = opt_res.ranked_candidates[0]
+            if args.export_config == "stdout":
+                yaml_str = format_candidate_as_yaml(best_cand, args.strategy)
+                print("\n" + "=" * 60)
+                print("EXPORTED CONFIGURATION SNIPPET (Ready to paste into config.yaml):")
+                print("=" * 60)
+                print(yaml_str)
+            else:
+                export_candidate_to_config(best_cand, args.strategy, args.export_config)
+                print(f"\n[OK] Exported optimal {args.strategy} parameters to {args.export_config}")
     elif args.command == "status":
         await copilot.show_status()
     elif args.command == "positions":

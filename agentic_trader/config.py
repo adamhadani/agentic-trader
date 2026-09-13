@@ -86,7 +86,12 @@ class TrendPullbackConfig(BaseModel):
     trigger_ema_span: int = 20
     trigger_atr_distance_mult: float = 0.5
     rsi_period: int = 14
+    rsi_oversold: float = 40.0
+    rsi_oversold_dip: float = 45.0
+    rsi_overbought: float = 60.0
+    rsi_overbought_surge: float = 55.0
     atr_period: int = 14
+    atr_multiplier: float = 1.5
 
 
 class SqueezeBreakoutConfig(BaseModel):

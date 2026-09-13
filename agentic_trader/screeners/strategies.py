@@ -2,9 +2,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agentic_trader.config import AppConfig
+from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import AssetClass, Direction, StrategyType
 from agentic_trader.data.market_data import ContractMarketData
+from agentic_trader.screeners.indicators import calculate_ema
 
 
 class ScreenerCandidate(BaseModel):
@@ -31,8 +32,8 @@ class ScreenerCandidate(BaseModel):
 
 
 class StrategyEngine:
-    def __init__(self, config: AppConfig):
-        self.config = config
+    def __init__(self, config: AppConfig | None = None):
+        self.config = config or load_config()
 
     def check_trend_pullback(
         self, data: ContractMarketData, asset_class: AssetClass = AssetClass.FUTURES
@@ -50,14 +51,25 @@ class StrategyEngine:
         if len(df_daily) < 10 or len(df_4h) < 10:
             return None
 
+        # Determine daily EMA fast and slow
+        fast_col = f"EMA_{cfg.daily_ema_fast}"
+        slow_col = f"EMA_{cfg.daily_ema_slow}"
+
+        daily_ema_fast_s = (
+            df_daily[fast_col] if fast_col in df_daily else calculate_ema(df_daily["Close"], span=cfg.daily_ema_fast)
+        )
+        daily_ema_slow_s = (
+            df_daily[slow_col] if slow_col in df_daily else calculate_ema(df_daily["Close"], span=cfg.daily_ema_slow)
+        )
+
         daily_latest = df_daily.iloc[-1]
         daily_close = float(daily_latest["Close"])
-        daily_ema50 = float(daily_latest["EMA_50"])
-        daily_ema200 = float(daily_latest["EMA_200"])
+        daily_fast = float(daily_ema_fast_s.iloc[-1])
+        daily_slow = float(daily_ema_slow_s.iloc[-1])
 
         # Determine Daily Trend Invariant
-        is_bullish_trend = daily_close > daily_ema50 > daily_ema200
-        is_bearish_trend = daily_close < daily_ema50 < daily_ema200
+        is_bullish_trend = daily_close > daily_fast > daily_slow
+        is_bearish_trend = daily_close < daily_fast < daily_slow
 
         if not (is_bullish_trend or is_bearish_trend):
             return None
@@ -68,17 +80,33 @@ class StrategyEngine:
         prev2_4h = df_4h.iloc[-3]
 
         close_4h = float(latest_4h["Close"])
-        ema20_4h = float(latest_4h["EMA_20"])
-        ema50_4h = float(latest_4h["EMA_50"])
-        ema200_4h = float(latest_4h["EMA_200"])
+        trigger_ema_col = f"EMA_{cfg.trigger_ema_span}"
+        trigger_ema_s = (
+            df_4h[trigger_ema_col]
+            if trigger_ema_col in df_4h
+            else calculate_ema(df_4h["Close"], span=cfg.trigger_ema_span)
+        )
+        trigger_ema_val = float(trigger_ema_s.iloc[-1])
+
+        ema20_4h = float(latest_4h["EMA_20"]) if "EMA_20" in latest_4h else trigger_ema_val
+        ema50_4h = (
+            float(latest_4h["EMA_50"])
+            if "EMA_50" in latest_4h
+            else float(calculate_ema(df_4h["Close"], span=50).iloc[-1])
+        )
+        ema200_4h = (
+            float(latest_4h["EMA_200"])
+            if "EMA_200" in latest_4h
+            else float(calculate_ema(df_4h["Close"], span=200).iloc[-1])
+        )
         rsi_current = float(latest_4h["RSI_14"])
         rsi_prev = float(prev_4h["RSI_14"])
         rsi_prev2 = float(prev2_4h["RSI_14"])
         atr_4h = float(latest_4h["ATR_14"])
 
-        # Distance to EMA20 must be within 0.5 * ATR(14)
-        dist_to_ema20 = abs(close_4h - ema20_4h)
-        within_tolerance = dist_to_ema20 <= (cfg.trigger_atr_distance_mult * atr_4h)
+        # Distance to trigger EMA must be within trigger_atr_distance_mult * ATR(14)
+        dist_to_trigger = abs(close_4h - trigger_ema_val)
+        within_tolerance = dist_to_trigger <= (cfg.trigger_atr_distance_mult * atr_4h)
 
         # Recent swing high and low over last 10 4h candles
         recent_window = df_4h.iloc[-10:]
@@ -88,9 +116,9 @@ class StrategyEngine:
         timestamp_str = latest_4h.name.isoformat() if hasattr(latest_4h.name, "isoformat") else str(latest_4h.name)
 
         if is_bullish_trend and within_tolerance:
-            # Long Trigger: RSI crossed below 45 and recovered above 40
+            # Long Trigger: RSI crossed below rsi_oversold_dip and recovered above rsi_oversold
             min_recent_rsi = min(rsi_prev, rsi_prev2)
-            if min_recent_rsi < 45.0 and rsi_current >= 40.0:
+            if min_recent_rsi < cfg.rsi_oversold_dip and rsi_current >= cfg.rsi_oversold:
                 return ScreenerCandidate(
                     contract=data.contract,
                     symbol=data.contract,
@@ -107,13 +135,16 @@ class StrategyEngine:
                     candle_timestamp=timestamp_str,
                     recent_swing_low=round(recent_swing_low, 2),
                     recent_swing_high=round(recent_swing_high, 2),
-                    trigger_detail=f"Daily Close > 50 > 200 EMA. 4h RSI dipped to {min_recent_rsi:.1f} and recovered to {rsi_current:.1f} near 20 EMA.",
+                    trigger_detail=(
+                        f"Daily Close > {cfg.daily_ema_fast} > {cfg.daily_ema_slow} EMA. "
+                        f"4h RSI dipped to {min_recent_rsi:.1f} and recovered to {rsi_current:.1f} near {cfg.trigger_ema_span} EMA."
+                    ),
                 )
 
         elif is_bearish_trend and within_tolerance:
-            # Short Trigger: RSI crossed above 55 and fell back below 60
+            # Short Trigger: RSI crossed above rsi_overbought_surge and fell back below rsi_overbought
             max_recent_rsi = max(rsi_prev, rsi_prev2)
-            if max_recent_rsi > 55.0 and rsi_current <= 60.0:
+            if max_recent_rsi > cfg.rsi_overbought_surge and rsi_current <= cfg.rsi_overbought:
                 return ScreenerCandidate(
                     contract=data.contract,
                     symbol=data.contract,
@@ -130,7 +161,10 @@ class StrategyEngine:
                     candle_timestamp=timestamp_str,
                     recent_swing_low=round(recent_swing_low, 2),
                     recent_swing_high=round(recent_swing_high, 2),
-                    trigger_detail=f"Daily Close < 50 < 200 EMA. 4h RSI surged to {max_recent_rsi:.1f} and fell to {rsi_current:.1f} near 20 EMA.",
+                    trigger_detail=(
+                        f"Daily Close < {cfg.daily_ema_fast} < {cfg.daily_ema_slow} EMA. "
+                        f"4h RSI surged to {max_recent_rsi:.1f} and fell to {rsi_current:.1f} near {cfg.trigger_ema_span} EMA."
+                    ),
                 )
 
         return None
