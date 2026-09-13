@@ -125,22 +125,34 @@ The container automatically runs an internal health check every 30 seconds query
 
 ### Method B: macOS `launchd` (Recommended for Dedicated Mac Mini Desks)
 
-For local trading machines, `launchd` keeps the daemon running across reboots with automated user-level process supervision.
+For local trading machines, `launchd` keeps the daemon running across reboots with automated process supervision and an independent 60-second watchdog monitor.
 
 ```bash
-# 1. Install LaunchAgent and launch daemon
+# 1. Install LaunchAgent daemon and background 60s watchdog
 ./scripts/launchd.sh install
 
-# 2. Check service status
+# 2. Check service and watchdog registration/PID status
 ./scripts/launchd.sh status
 
-# 3. Follow live log stream
+# 3. Run comprehensive diagnostic health check
+./scripts/launchd.sh health
+
+# 4. Trigger an immediate watchdog liveness probe
+./scripts/launchd.sh watchdog
+
+# 5. Restart daemon via kickstart
+./scripts/launchd.sh restart
+
+# 6. Follow live log stream
 ./scripts/launchd.sh logs
 
-# 4. Pause service
+# 7. Follow watchdog supervision log
+./scripts/launchd.sh watchdog-logs
+
+# 8. Pause service
 ./scripts/launchd.sh stop
 
-# 5. Uninstall service
+# 9. Uninstall both daemon and watchdog
 ./scripts/launchd.sh uninstall
 ```
 

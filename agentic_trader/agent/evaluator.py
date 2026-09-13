@@ -21,6 +21,7 @@ from agentic_trader.constants import (
     StrategyType,
 )
 from agentic_trader.data.market_data import MarketDataFetcher
+from agentic_trader.market.session import MarketSessionProtocol
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
@@ -99,6 +100,7 @@ class LLMTradeEvaluation(BaseModel):
     asset_class: AssetClass = AssetClass.FUTURES
     sizing_tiers: list[dict[str, Any]] | None = None
     gating_reasons: list[str] | None = None
+    session_type: str = "RTH"
 
 
 class RiskEvaluator:
@@ -108,11 +110,13 @@ class RiskEvaluator:
         calendar: BaseEconomicCalendar | None = None,
         regime_detector: RegimeDetector | None = None,
         data_fetcher: MarketDataFetcher | None = None,
+        session_provider: MarketSessionProtocol | None = None,
     ):
         self.config = config
         self.calendar: BaseEconomicCalendar = calendar or EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.regime_detector: RegimeDetector = regime_detector or RegimeDetector(config=config.regime)
         self.data_fetcher = data_fetcher
+        self.session_provider = session_provider
         litellm.drop_params = True
 
         # Wire up LangSmith tracing if credentials exist in environment
@@ -452,6 +456,56 @@ class RiskEvaluator:
                 asset_class=asset_class,
             )
 
+        # 4. Check Market Session & Regular Trading Hours (RTH)
+        current_session_type = "RTH"
+        if self.session_provider:
+            session_info = await self.session_provider.get_session_info(candidate.contract)
+            current_session_type = str(session_info.session_type.value)
+            if not session_info.is_open:
+                return LLMTradeEvaluation(
+                    approved=False,
+                    rejection_reason=f"Market Session Filter: Market is {session_info.session_type.value} ({session_info.details}).",
+                    contract=candidate.contract,
+                    direction=candidate.direction,
+                    entry_price=entry,
+                    stop_loss=entry,
+                    take_profit=entry,
+                    stop_distance_points=0.0,
+                    target_distance_points=0.0,
+                    risk_reward_ratio=2.0,
+                    risk_dollars=0.0,
+                    reward_dollars=0.0,
+                    notional_value=notional_value,
+                    effective_leverage=effective_leverage,
+                    macro_clearance=True,
+                    thesis_summary=f"Rejected: Market is currently {session_info.session_type.value}.",
+                    quantity=quantity,
+                    asset_class=asset_class,
+                    session_type=current_session_type,
+                )
+            if getattr(self.config.session, "enforce_rth", True) and not session_info.is_rth:
+                return LLMTradeEvaluation(
+                    approved=False,
+                    rejection_reason=f"RTH Session Filter: Session is {session_info.session_type.value} (Outside Regular Trading Hours).",
+                    contract=candidate.contract,
+                    direction=candidate.direction,
+                    entry_price=entry,
+                    stop_loss=entry,
+                    take_profit=entry,
+                    stop_distance_points=0.0,
+                    target_distance_points=0.0,
+                    risk_reward_ratio=2.0,
+                    risk_dollars=0.0,
+                    reward_dollars=0.0,
+                    notional_value=notional_value,
+                    effective_leverage=effective_leverage,
+                    macro_clearance=True,
+                    thesis_summary=f"Rejected: Trading restricted to RTH; currently {session_info.session_type.value}.",
+                    quantity=quantity,
+                    asset_class=asset_class,
+                    session_type=current_session_type,
+                )
+
         macro_summary = await self.calendar.get_macro_summary_for_prompt()
         regime_summary = self.regime_detector.get_prompt_context(regime)
 
@@ -567,6 +621,7 @@ class RiskEvaluator:
             data["reward_dollars"] = round(llm_target_dist * multiplier * quantity, 2)
             data["sizing_tiers"] = sizing_tiers
             data["gating_reasons"] = gating_reasons
+            data["session_type"] = current_session_type
 
             return LLMTradeEvaluation(**data)
 
@@ -597,4 +652,5 @@ class RiskEvaluator:
                 asset_class=asset_class,
                 sizing_tiers=sizing_tiers,
                 gating_reasons=gating_reasons,
+                session_type=current_session_type,
             )

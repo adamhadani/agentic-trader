@@ -192,3 +192,16 @@ research:
   min_wfe: 0.50
   min_oos_sharpe: 0.80
   calibrations_filename: "calibrated_parameters.json"
+
+session:
+  enforce_rth: true
+  allow_extended_hours: false
+  timezone: "America/New_York"
+
+trailing_stop:
+  enabled: true
+  breakeven_trigger_r: 1.0
+  breakeven_buffer_dollars: 5.0
+  trail_trigger_r: 1.5
+  trail_atr_multiple: 1.5
+  trail_step_ticks: 4

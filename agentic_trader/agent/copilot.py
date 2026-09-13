@@ -19,6 +19,7 @@ from agentic_trader.constants import (
 )
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.execution import SlicedExecutionEngine
+from agentic_trader.market.session import CompositeMarketSessionProvider
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
 from agentic_trader.pairs import PairEvaluation, PairsScreener, format_pairs_telegram
@@ -45,11 +46,16 @@ class FuturesCopilot:
         self.strategy_engine = StrategyEngine(config)
         self.calendar: BaseEconomicCalendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.regime_detector = RegimeDetector(config=config.regime)
+        self.session_provider = CompositeMarketSessionProvider(
+            config=config,
+            alpaca_client=getattr(self.broker, "client", None),
+        )
         self.evaluator = RiskEvaluator(
             config,
             calendar=self.calendar,
             regime_detector=self.regime_detector,
             data_fetcher=self.data_fetcher,
+            session_provider=self.session_provider,
         )
         self.execution_engine = SlicedExecutionEngine(config=self.config)
         self.options_fetcher = OptionsDataFetcher(
@@ -448,7 +454,172 @@ class FuturesCopilot:
             if await self.process_reconciliation_event(ev, active_positions):
                 closed_count += 1
 
+        # Check remaining open positions for breakeven and trailing stop updates
+        remaining_positions = await self.db.get_active_positions()
+        if remaining_positions:
+            await self.manage_trailing_stops(remaining_positions)
+
         return closed_count
+
+    async def manage_trailing_stops(self, active_positions: list[dict[str, Any]]) -> int:
+        """Evaluate active open positions for Breakeven and Dynamic Trailing Stop ratchets.
+
+        Configured via config.trailing_stop:
+        - breakeven_trigger_r: moves stop to entry + buffer once price advances by +1.0R
+        - trail_trigger_r: moves stop to trail behind price by trail_atr_multiple * ATR
+        """
+        ts_config = getattr(self.config, "trailing_stop", None)
+        if not ts_config or not ts_config.enabled:
+            return 0
+
+        updates_count = 0
+        for pos in active_positions:
+            try:
+                sig_id = pos["id"]
+                contract = pos["contract"]
+                direction = pos["direction"].upper()
+                entry = float(pos["entry_price"])
+                current_stop = float(pos["stop_loss"])
+
+                # Determine quote ticker
+                contract_info = self.config.contracts.get(contract)
+                ticker = (
+                    contract_info.ticker
+                    if contract_info
+                    else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
+                )
+
+                current_price = self.data_fetcher.fetch_latest_price(ticker)
+                if current_price is None or current_price <= 0:
+                    continue
+
+                mult = contract_info.multiplier if contract_info else (5.0 if contract.startswith("/") else 1.0)
+                qty = float(pos.get("quantity") or 1.0)
+                denom = mult * qty
+                risk_dollars = float(pos.get("risk_dollars") or 0.0)
+                initial_risk = risk_dollars / denom if risk_dollars > 0 and denom > 0 else abs(entry - current_stop)
+
+                if initial_risk <= 0:
+                    continue
+
+                # Buffer in price units
+                tick_size = contract_info.tick_size if contract_info else 0.25
+                min_step = tick_size * ts_config.trail_step_ticks
+                buffer_pts = (ts_config.breakeven_buffer_dollars / mult) if mult > 0 else 0.5
+
+                if direction == Direction.LONG:
+                    favorable_dist = current_price - entry
+                    r_multiple = favorable_dist / initial_risk
+
+                    # 1. Breakeven Trigger
+                    target_be_stop = entry + buffer_pts
+                    if r_multiple >= ts_config.breakeven_trigger_r and current_stop < target_be_stop:
+                        logger.info(
+                            "Position #%d (%s LONG) hit Breakeven (+%.2fR): Moving stop from %.2f to %.2f",
+                            sig_id,
+                            contract,
+                            r_multiple,
+                            current_stop,
+                            target_be_stop,
+                        )
+                        await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
+                        await self.notifier.send_trailing_stop_alert(
+                            signal_id=sig_id,
+                            contract=contract,
+                            direction=direction,
+                            old_stop=current_stop,
+                            new_stop=target_be_stop,
+                            current_price=current_price,
+                            reason="BREAKEVEN",
+                        )
+                        current_stop = target_be_stop
+                        updates_count += 1
+
+                    # 2. Dynamic Trailing Stop Trigger
+                    if r_multiple >= ts_config.trail_trigger_r:
+                        trail_dist = max(initial_risk, initial_risk * ts_config.trail_atr_multiple)
+                        proposed_trail_stop = current_price - trail_dist
+                        if proposed_trail_stop > current_stop + min_step:
+                            logger.info(
+                                "Position #%d (%s LONG) hit Trailing Stop trigger (+%.2fR): Ratcheting stop from %.2f to %.2f",
+                                sig_id,
+                                contract,
+                                r_multiple,
+                                current_stop,
+                                proposed_trail_stop,
+                            )
+                            await self.db.update_position_stop(
+                                sig_id, proposed_trail_stop, raw_response="TRAILING_STOP"
+                            )
+                            await self.notifier.send_trailing_stop_alert(
+                                signal_id=sig_id,
+                                contract=contract,
+                                direction=direction,
+                                old_stop=current_stop,
+                                new_stop=proposed_trail_stop,
+                                current_price=current_price,
+                                reason="TRAILING_STOP",
+                            )
+                            updates_count += 1
+
+                elif direction in (Direction.SHORT, "SELL"):
+                    favorable_dist = entry - current_price
+                    r_multiple = favorable_dist / initial_risk
+
+                    # 1. Breakeven Trigger
+                    target_be_stop = entry - buffer_pts
+                    if r_multiple >= ts_config.breakeven_trigger_r and current_stop > target_be_stop:
+                        logger.info(
+                            "Position #%d (%s SHORT) hit Breakeven (+%.2fR): Moving stop from %.2f to %.2f",
+                            sig_id,
+                            contract,
+                            r_multiple,
+                            current_stop,
+                            target_be_stop,
+                        )
+                        await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
+                        await self.notifier.send_trailing_stop_alert(
+                            signal_id=sig_id,
+                            contract=contract,
+                            direction=direction,
+                            old_stop=current_stop,
+                            new_stop=target_be_stop,
+                            current_price=current_price,
+                            reason="BREAKEVEN",
+                        )
+                        current_stop = target_be_stop
+                        updates_count += 1
+
+                    # 2. Dynamic Trailing Stop Trigger
+                    if r_multiple >= ts_config.trail_trigger_r:
+                        trail_dist = max(initial_risk, initial_risk * ts_config.trail_atr_multiple)
+                        proposed_trail_stop = current_price + trail_dist
+                        if proposed_trail_stop < current_stop - min_step:
+                            logger.info(
+                                "Position #%d (%s SHORT) hit Trailing Stop trigger (+%.2fR): Ratcheting stop from %.2f to %.2f",
+                                sig_id,
+                                contract,
+                                r_multiple,
+                                current_stop,
+                                proposed_trail_stop,
+                            )
+                            await self.db.update_position_stop(
+                                sig_id, proposed_trail_stop, raw_response="TRAILING_STOP"
+                            )
+                            await self.notifier.send_trailing_stop_alert(
+                                signal_id=sig_id,
+                                contract=contract,
+                                direction=direction,
+                                old_stop=current_stop,
+                                new_stop=proposed_trail_stop,
+                                current_price=current_price,
+                                reason="TRAILING_STOP",
+                            )
+                            updates_count += 1
+            except Exception as e:
+                logger.warning("Error evaluating trailing stop for position #%s: %s", pos.get("id"), e)
+
+        return updates_count
 
     async def show_positions(self):
         """Display active positions in terminal."""
