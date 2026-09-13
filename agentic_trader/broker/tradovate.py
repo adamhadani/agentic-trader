@@ -489,6 +489,16 @@ class TradovateBroker(BaseBroker):
 
         return events
 
+    @property
+    def supports_trade_stream(self) -> bool:
+        """True if Tradovate credentials are configured."""
+        return bool(
+            self.config.tradovate_api_key
+            and self.config.tradovate_api_secret
+            and self.config.tradovate_username
+            and self.config.tradovate_password
+        )
+
     async def start_trade_stream(self, on_fill_callback: Callable[[ReconciliationEvent], Awaitable[None]]) -> None:
         """Connect to Tradovate real-time WebSocket and stream execution fill events."""
         if not self._access_token:

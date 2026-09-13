@@ -171,6 +171,11 @@ class BaseBroker(ABC):
         """
         return []
 
+    @property
+    def supports_trade_stream(self) -> bool:
+        """Whether this broker supports real-time WebSocket trade/fill streaming."""
+        return False
+
     async def start_trade_stream(self, on_fill_callback: Callable[[ReconciliationEvent], Awaitable[None]]) -> None:
         """Start listening to real-time fill events via broker WebSocket stream if supported."""
         return

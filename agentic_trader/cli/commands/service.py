@@ -124,7 +124,7 @@ async def daemon(no_llm: bool) -> None:
         await copilot.notifier.app.updater.start_polling()
 
     stream_task: asyncio.Task[None] | None = None
-    if hasattr(copilot.broker, "start_trade_stream"):
+    if getattr(copilot.broker, "supports_trade_stream", False):
         stream_task = asyncio.create_task(copilot.start_trade_stream())
 
     if copilot.metrics_server:

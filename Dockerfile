@@ -33,5 +33,9 @@ RUN mkdir -p /app/data
 # Expose Prometheus metrics and health check port
 EXPOSE 9108
 
+# Container liveness probe against telemetry server port
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/healthz')"]
+
 # Default to daemon mode (runs 4h scheduler + Telegram listener + Prometheus exporter)
 CMD ["copilot", "daemon"]

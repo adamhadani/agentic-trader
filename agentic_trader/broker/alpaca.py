@@ -414,6 +414,11 @@ class AlpacaBroker(BaseBroker):
 
         return reconciliation_events
 
+    @property
+    def supports_trade_stream(self) -> bool:
+        """True if Alpaca API credentials are configured."""
+        return bool(self.api_key and self.api_secret)
+
     async def start_trade_stream(self, on_fill_callback: Callable[[ReconciliationEvent], Awaitable[None]]) -> None:
         """Start listening to real-time fill events via Alpaca TradingStream WebSocket."""
         if not self.api_key or not self.api_secret:

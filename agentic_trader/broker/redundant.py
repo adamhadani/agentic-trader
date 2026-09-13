@@ -260,6 +260,11 @@ class RedundantBroker(BaseBroker):
 
         return events
 
+    @property
+    def supports_trade_stream(self) -> bool:
+        """True if either primary or fallback broker supports streaming."""
+        return bool(self.primary.supports_trade_stream or self.fallback.supports_trade_stream)
+
     async def start_trade_stream(self, on_fill_callback: Callable[[ReconciliationEvent], Awaitable[None]]) -> None:
         """Start trade stream on primary; trip to fallback if primary stream fails."""
         self._check_cooldown()
