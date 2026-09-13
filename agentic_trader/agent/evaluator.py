@@ -8,11 +8,13 @@ from pydantic import BaseModel, Field
 
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
+from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import (
     CALLBACK_LANGSMITH,
     AssetClass,
     Direction,
+    StrategyType,
 )
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
@@ -42,9 +44,15 @@ class LLMTradeEvaluation(BaseModel):
 
 
 class RiskEvaluator:
-    def __init__(self, config: AppConfig, calendar: BaseEconomicCalendar | None = None):
+    def __init__(
+        self,
+        config: AppConfig,
+        calendar: BaseEconomicCalendar | None = None,
+        regime_detector: RegimeDetector | None = None,
+    ):
         self.config = config
         self.calendar: BaseEconomicCalendar = calendar or EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
+        self.regime_detector: RegimeDetector = regime_detector or RegimeDetector(config=config.regime)
 
         # Wire up LangSmith tracing if credentials exist in environment
         if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):
@@ -211,7 +219,37 @@ class RiskEvaluator:
                 asset_class=asset_class,
             )
 
+        # 3. Check Volatility Regime & Adaptive Strategy Suppression
+        regime = await self.regime_detector.get_regime()
+        if candidate.strategy == StrategyType.SQUEEZE_BREAKOUT and not regime.breakout_allowed:
+            return LLMTradeEvaluation(
+                approved=False,
+                rejection_reason=(
+                    f"Volatility Regime Filter: Squeeze breakouts suppressed during {regime.vix_regime.value} "
+                    f"regime (VIX: {regime.vix:.1f} > {self.config.regime.vix_extreme_threshold:.1f})."
+                ),
+                contract=candidate.contract,
+                direction=candidate.direction,
+                entry_price=entry,
+                stop_loss=entry,
+                take_profit=entry,
+                stop_distance_points=0.0,
+                target_distance_points=0.0,
+                risk_reward_ratio=2.0,
+                risk_dollars=0.0,
+                reward_dollars=0.0,
+                notional_value=notional_value,
+                effective_leverage=effective_leverage,
+                macro_clearance=True,
+                thesis_summary=(
+                    f"Rejected: breakout suppressed due to {regime.vix_regime.value} volatility regime (VIX {regime.vix:.1f})."
+                ),
+                quantity=quantity,
+                asset_class=asset_class,
+            )
+
         macro_summary = await self.calendar.get_macro_summary_for_prompt()
+        regime_summary = self.regime_detector.get_prompt_context(regime)
 
         # If LLM evaluation is disabled or no LLM keys provided, return deterministic evaluation
         has_api_key = bool(
@@ -240,7 +278,10 @@ class RiskEvaluator:
                 notional_value=notional_value,
                 effective_leverage=effective_leverage,
                 macro_clearance=True,
-                thesis_summary=f"Quantitative trigger verified: {candidate.trigger_detail} Macro cleared.",
+                thesis_summary=(
+                    f"Quantitative trigger verified: {candidate.trigger_detail} "
+                    f"Macro cleared (Regime: {regime.vix_regime.value}, VIX {regime.vix:.1f})."
+                ),
                 quantity=quantity,
                 asset_class=asset_class,
             )
@@ -265,6 +306,7 @@ class RiskEvaluator:
             current_open_notional=current_open_notional,
             contract_notional=notional_value,
             projected_notional=projected_notional,
+            regime_summary=regime_summary,
             macro_summary=macro_summary,
         )
 
@@ -302,11 +344,12 @@ class RiskEvaluator:
                 llm_stop = stop_loss
                 llm_stop_dist = stop_distance
 
-            # R:R guarantee >= 2.0
+            # R:R guarantee >= min_rr
+            min_required_rr = max(regime.min_rr_threshold, self.config.risk.min_risk_reward_ratio)
             llm_target = float(data.get("take_profit", take_profit))
             llm_target_dist = abs(llm_target - entry)
             rr = round(llm_target_dist / llm_stop_dist, 2) if llm_stop_dist > 0 else 2.0
-            if rr < self.config.risk.min_risk_reward_ratio:
+            if rr < min_required_rr:
                 llm_target = take_profit
                 llm_target_dist = target_distance
                 rr = round(target_distance / stop_distance, 2)
@@ -315,7 +358,7 @@ class RiskEvaluator:
             data["take_profit"] = llm_target
             data["stop_distance_points"] = round(llm_stop_dist, 2)
             data["target_distance_points"] = round(llm_target_dist, 2)
-            data["risk_reward_ratio"] = max(2.0, rr)
+            data["risk_reward_ratio"] = max(min_required_rr, rr)
             data["risk_dollars"] = round(llm_stop_dist * multiplier * quantity, 2)
             data["reward_dollars"] = round(llm_target_dist * multiplier * quantity, 2)
 

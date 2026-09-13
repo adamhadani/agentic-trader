@@ -1,11 +1,13 @@
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
 
 from agentic_trader.agent.calendar import EconomicCalendar, MacroEvent
 from agentic_trader.agent.evaluator import RiskEvaluator
+from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.config import load_config
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import AssetClass, StrategyType, VolatilityRegime
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
@@ -139,3 +141,84 @@ async def test_equity_dynamic_sizing(config):
     assert eval_res.risk_dollars > 200.0
     # Notional value: 62 * $150 = $9,300
     assert eval_res.notional_value == pytest.approx(9300.0, abs=50.0)
+
+
+@pytest.mark.asyncio
+async def test_squeeze_breakout_suppression_in_extreme_regime(config):
+    # Setup mock regime detector returning EXTREME regime (VIX = 35.0, breakout_allowed = False)
+    mock_regime = RegimeDetector()
+    extreme_snapshot = RegimeSnapshot(
+        vix=35.0,
+        vix_regime=VolatilityRegime.EXTREME,
+        tnx=4.8,
+        dxy=105.0,
+        breakout_allowed=False,
+        min_rr_threshold=2.5,
+        timestamp=datetime.now(UTC),
+        summary_text="VIX: 35.00 (EXTREME) | Breakouts: Suppressed",
+    )
+    mock_regime.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=extreme_snapshot)  # type: ignore
+
+    evaluator = RiskEvaluator(config, regime_detector=mock_regime)
+
+    candidate = ScreenerCandidate(
+        contract="/MES",
+        timeframe="4h",
+        strategy=StrategyType.SQUEEZE_BREAKOUT,
+        direction="LONG",
+        current_price=5800.0,
+        ema_20=5780.0,
+        ema_50=5750.0,
+        ema_200=5700.0,
+        rsi_14=55.0,
+        atr_14=20.0,
+        candle_timestamp="2026-09-12T16:00:00Z",
+        recent_swing_low=5770.0,
+        recent_swing_high=5830.0,
+        trigger_detail="Squeeze fired long",
+    )
+
+    eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
+
+    assert eval_res.approved is False
+    assert "Volatility Regime Filter" in (eval_res.rejection_reason or "")
+    assert "EXTREME" in (eval_res.rejection_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_squeeze_breakout_allowed_in_normal_regime(config):
+    mock_regime = RegimeDetector()
+    normal_snapshot = RegimeSnapshot(
+        vix=17.5,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=4.2,
+        dxy=102.0,
+        breakout_allowed=True,
+        min_rr_threshold=2.0,
+        timestamp=datetime.now(UTC),
+        summary_text="VIX: 17.50 (NORMAL) | Breakouts: Allowed",
+    )
+    mock_regime.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=normal_snapshot)  # type: ignore
+
+    evaluator = RiskEvaluator(config, regime_detector=mock_regime)
+
+    candidate = ScreenerCandidate(
+        contract="/MES",
+        timeframe="4h",
+        strategy=StrategyType.SQUEEZE_BREAKOUT,
+        direction="LONG",
+        current_price=5800.0,
+        ema_20=5780.0,
+        ema_50=5750.0,
+        ema_200=5700.0,
+        rsi_14=55.0,
+        atr_14=20.0,
+        candle_timestamp="2026-09-12T16:00:00Z",
+        recent_swing_low=5770.0,
+        recent_swing_high=5830.0,
+        trigger_detail="Squeeze fired long",
+    )
+
+    eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
+
+    assert eval_res.approved is True

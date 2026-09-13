@@ -30,10 +30,12 @@ def format_alert_card(
     strategy: str,
     portfolio_cash: float = DEFAULT_PORTFOLIO_CASH,
     execution_mode: str = ExecutionMode.PAPER,
+    regime_summary: str | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+    regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
 
     qty = getattr(eval_res, "quantity", 1.0)
     asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
@@ -75,7 +77,8 @@ def format_alert_card(
         f"🛡️ <b>Risk &amp; Portfolio Context</b>\n"
         f"• <b>Capital Risk:</b> {risk_pct}% of ${portfolio_cash:,.0f}\n"
         f"• <b>Notional Exposure:</b> ~${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)\n"
-        f"• <b>Macro Check:</b> {macro_status}\n\n"
+        f"• <b>Macro Check:</b> {macro_status}\n"
+        f"{regime_line}\n"
         f"📝 <b>Thesis:</b>\n"
         f"{html.escape(eval_res.thesis_summary)}\n\n"
         f"⚡ <b>Execution ({execution_mode.upper()}):</b>\n"
@@ -89,10 +92,12 @@ def format_terminal_card(
     strategy: str,
     portfolio_cash: float = DEFAULT_PORTFOLIO_CASH,
     execution_mode: str = ExecutionMode.PAPER,
+    regime_summary: str | None = None,
 ) -> str:
     """ASCII/plain text formatted card for terminal display."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+    regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
 
     qty = getattr(eval_res, "quantity", 1.0)
     asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
@@ -139,7 +144,7 @@ Strategy: {strategy}
 • Capital Risk:     {risk_pct}% of ${portfolio_cash:,.0f}
 • Notional Value:   ${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)
 • Macro Check:      {macro_status}
-
+{regime_line}
 📝 Thesis:
 {eval_res.thesis_summary}
 
@@ -351,18 +356,33 @@ class TelegramNotifier:
         eval_res: LLMTradeEvaluation,
         strategy: str,
         signal_id: int,
+        regime_summary: str | None = None,
     ) -> int | None:
         # Always output to terminal/logs
-        print(format_terminal_card(eval_res, strategy, self.portfolio_cash, execution_mode=self.execution_mode))
+        print(
+            format_terminal_card(
+                eval_res,
+                strategy,
+                self.portfolio_cash,
+                execution_mode=self.execution_mode,
+                regime_summary=regime_summary,
+            )
+        )
 
         if not self.is_configured() or not self.app:
             logger.info(
                 "Telegram not configured or token missing. Alert displayed on terminal.",
-                extra={"signal_id": signal_id, "contract": eval_res.contract, "strategy": strategy},
+                extra={"signal_id": signal_id, "contract": eval_res.contract},
             )
             return None
 
-        card_html = format_alert_card(eval_res, strategy, self.portfolio_cash, execution_mode=self.execution_mode)
+        card_html = format_alert_card(
+            eval_res,
+            strategy,
+            self.portfolio_cash,
+            execution_mode=self.execution_mode,
+            regime_summary=regime_summary,
+        )
 
         mode_lower = self.execution_mode.lower()
         if mode_lower == ExecutionMode.PAPER:

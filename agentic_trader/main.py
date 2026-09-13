@@ -10,6 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
+from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.broker import BaseBroker, OrderRequest, create_broker
 from agentic_trader.config import WORKSPACE_ROOT, AppConfig, load_config
 from agentic_trader.constants import (
@@ -49,7 +50,8 @@ class FuturesCopilot:
         self.broker: BaseBroker = create_broker(config=config, data_fetcher=self.data_fetcher)
         self.strategy_engine = StrategyEngine(config)
         self.calendar: BaseEconomicCalendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
-        self.evaluator = RiskEvaluator(config, calendar=self.calendar)
+        self.regime_detector = RegimeDetector(config=config.regime)
+        self.evaluator = RiskEvaluator(config, calendar=self.calendar, regime_detector=self.regime_detector)
         self.notifier = TelegramNotifier(
             bot_token=config.telegram_bot_token,
             chat_id=config.telegram_chat_id,
@@ -71,6 +73,8 @@ class FuturesCopilot:
         symbols: list[str] | None = None,
     ):
         logger.info("=== Starting Quantitative Scan ===")
+        regime = await self.regime_detector.get_regime()
+        logger.info("Current market volatility context: %s", regime.summary_text)
         current_exposure = await self.db.get_active_notional_exposure()
         active_count = await self.db.get_active_position_count()
         max_positions = getattr(
@@ -165,7 +169,14 @@ class FuturesCopilot:
 
                     if dry_run:
                         logger.info("[DRY RUN] Approved signal would be emitted:")
-                        print(format_terminal_card(eval_res, candidate.strategy, self.config.portfolio.cash))
+                        print(
+                            format_terminal_card(
+                                eval_res,
+                                candidate.strategy,
+                                self.config.portfolio.cash,
+                                regime_summary=regime.summary_text,
+                            )
+                        )
                         continue
 
                     # Record to database
@@ -190,6 +201,7 @@ class FuturesCopilot:
                         eval_res=eval_res,
                         strategy=candidate.strategy,
                         signal_id=sig_id,
+                        regime_summary=regime.summary_text,
                     )
                     total_alerts += 1
                     # Update exposure in memory for subsequent checks in this run
@@ -591,8 +603,15 @@ class FuturesCopilot:
         print("-" * 65)
 
         macro_summary = await self.calendar.get_macro_summary_for_prompt()
+        regime = await self.regime_detector.get_regime()
         print("Macro Calendar Context:")
         print(macro_summary)
+        print("-" * 65)
+        print("Market Volatility & Macro Regime Context:")
+        print(f"  • Volatility Regime: {regime.vix_regime.value} (VIX: {regime.vix:.2f})")
+        print(f"  • 10Y Yield (^TNX):  {f'{regime.tnx:.2f}%' if regime.tnx is not None else 'N/A'}")
+        print(f"  • Dollar Index (DXY):{f'{regime.dxy:.2f}' if regime.dxy is not None else 'N/A'}")
+        print(f"  • Breakouts Status:  {'Allowed' if regime.breakout_allowed else 'Suppressed (Extreme Volatility)'}")
         print("-" * 65)
 
         signals = await self.db.get_recent_signals(limit=10)
@@ -612,6 +631,7 @@ class FuturesCopilot:
         active_count = await self.db.get_active_contract_count()
         eff_leverage = current_exposure / self.config.portfolio.cash
         macro_summary = await self.calendar.get_macro_summary_for_prompt()
+        regime = await self.regime_detector.get_regime()
         signals = await self.db.get_recent_signals(limit=5)
 
         signals_text = ""
@@ -621,13 +641,19 @@ class FuturesCopilot:
             for s in signals:
                 signals_text += f"\n• #{s['id']} [{s['status']}] {s['contract']} {s['direction']} @ {s['entry_price']:,.2f} (Risk: ${s['risk_dollars']:.2f})"
 
+        tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "N/A"
+        dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "N/A"
+        breakout_str = "Allowed" if regime.breakout_allowed else "Suppressed (Extreme Volatility)"
+
         return (
             "📊 <b>CASH-PLUS COPILOT: STATUS</b>\n\n"
             f"• <b>Cash Base:</b> ${self.config.portfolio.cash:,.2f}\n"
             f"• <b>Active Exposure:</b> ${current_exposure:,.2f} ({eff_leverage:.2f}x leverage)\n"
             f"• <b>Notional Cap:</b> ${self.config.portfolio.max_notional_exposure:,.2f} (0.6x max)\n"
             f"• <b>Active Positions:</b> {active_count} contracts\n"
-            f"• <b>LLM Model:</b> <code>{self.config.llm_model}</code>\n\n"
+            f"• <b>LLM Model:</b> <code>{self.config.llm_model}</code>\n"
+            f"• <b>Volatility Regime:</b> {regime.vix_regime.value} (VIX: {regime.vix:.2f})\n"
+            f"• <b>Macro Indicators:</b> 10Y: {tnx_str} | DXY: {dxy_str} | Breakouts: {breakout_str}\n\n"
             f"🛡️ <b>Macro Context:</b>\n{macro_summary}\n\n"
             f"🕒 <b>Recent Signals:</b>{signals_text}"
         )

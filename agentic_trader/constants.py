@@ -117,3 +117,23 @@ DEFAULT_MIN_STOP_ATR_MULTIPLE = 1.5
 DEFAULT_DEDUPLICATION_HOURS = 12
 DEFAULT_LOCKOUT_PRE_EVENT_MINUTES = 60
 DEFAULT_LOCKOUT_POST_EVENT_MINUTES = 30
+
+
+class VolatilityRegime(StrEnum):
+    """Macro volatility market regimes based on VIX levels."""
+
+    COMPRESSED = "COMPRESSED"  # VIX < 15.0: Low volatility compression, favorable trend runs
+    NORMAL = "NORMAL"  # 15.0 <= VIX <= 22.0: Standard orderly market conditions
+    ELEVATED = "ELEVATED"  # 22.0 < VIX <= 30.0: Choppy, wider ATRs, heightened risk
+    EXTREME = "EXTREME"  # VIX > 30.0: Panic/turbulence, suppress breakout strategies
+
+
+# Macro Indicator Tickers
+VIX_TICKER = "^VIX"
+TNX_TICKER = "^TNX"
+DXY_TICKER = "DX-Y.NYB"
+
+# Default Volatility Thresholds
+DEFAULT_VIX_COMPRESSED_THRESHOLD = 15.0
+DEFAULT_VIX_ELEVATED_THRESHOLD = 22.0
+DEFAULT_VIX_EXTREME_THRESHOLD = 30.0

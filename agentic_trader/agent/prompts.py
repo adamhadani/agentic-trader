@@ -14,6 +14,7 @@ Rules for evaluating trade candidates:
    - /MGC: $10.00 per point
    - /MCL: $100.00 per point
 6. Portfolio Constraints: Total open notional exposure across all positions must not exceed $60,000. If Projected Total Exposure exceeds $60,000, you MUST reject the trade candidate.
+7. Volatility Regime: Review market volatility context. If VIX is in EXTREME regime (> 30.0), breakout strategies must be rejected due to high whipsaw risk, and trend setups require minimum 2.5:1 Reward-to-Risk ratio.
 
 You must output valid, schema-compliant JSON only. No markdown fences, no prose or meta-explanations.
 """
@@ -39,6 +40,8 @@ Current Portfolio & Macro Context:
 - Current Open Notional Exposure: ${current_open_notional:,.2f}
 - Candidate Notional Exposure: ${contract_notional:,.2f}
 - Projected Total Exposure if Approved: ${projected_notional:,.2f} (Max Limit: $60,000.00)
+- Market Volatility & Regime Context:
+{regime_summary}
 - Economic Calendar Status:
 {macro_summary}
 

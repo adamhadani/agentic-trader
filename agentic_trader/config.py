@@ -6,7 +6,12 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import (
+    DEFAULT_VIX_COMPRESSED_THRESHOLD,
+    DEFAULT_VIX_ELEVATED_THRESHOLD,
+    DEFAULT_VIX_EXTREME_THRESHOLD,
+    AssetClass,
+)
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -104,12 +109,20 @@ class SchedulerConfig(BaseModel):
     cron_hour_interval: int = 4
 
 
+class RegimeConfig(BaseModel):
+    vix_compressed_threshold: float = DEFAULT_VIX_COMPRESSED_THRESHOLD
+    vix_elevated_threshold: float = DEFAULT_VIX_ELEVATED_THRESHOLD
+    vix_extreme_threshold: float = DEFAULT_VIX_EXTREME_THRESHOLD
+    cache_ttl_seconds: int = 900
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    regime: RegimeConfig = Field(default_factory=RegimeConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None
@@ -204,6 +217,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
             squeeze_breakout=SqueezeBreakoutConfig(**cfg_dict.get("strategies", {}).get("squeeze_breakout", {})),
         ),
         scheduler=SchedulerConfig(**cfg_dict.get("scheduler", {})),
+        regime=RegimeConfig(**cfg_dict.get("regime", {})),
         telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
         telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
         llm_model=llm_model,
