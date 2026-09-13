@@ -24,6 +24,7 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 14** | Automated Scheduled Retuning Daemon | **Completed** | Background weekend calibration job updating strategy config thresholds based on rolling WFE |
 | **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **Completed** | Real-time WebSocket connection to Tradovate order socket with circuit-breaker failover |
 | **Phase 16** | Cross-Asset Factor & Regime Attribution | **Completed** | Factor decomposition (Momentum, Volatility, Carry) and Sharpe attribution across market regimes |
+| **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **Completed** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |
 
 ---
 
@@ -393,10 +394,38 @@ Quantify alpha sources and risk concentrations through multi-dimensional perform
 
 ---
 
+## Phase 17: Dynamic Volatility-Targeted & Fractional Kelly Position Sizing
+
+### Objective
+Scale trade allocation dynamically inversely with market volatility and statistical setup expectancy, replacing fixed 1-contract sizing with continuous ATR risk scaling and Fractional Kelly optimization while enforcing rigorous safety guardrails.
+
+### Key Deliverables
+1. **Configurable Position Sizing Engine (`PositionSizingConfig`)**:
+   - Modes supported: `static`, `volatility_targeted`, and `fractional_kelly`.
+   - Tunable parameters: `target_risk_pct` (default 0.5%), `target_futures_risk_dollars` ($300.0), `default_equity_risk_dollars` ($250.0), `max_contracts_per_trade` (4), `min_contracts` (1), `max_shares_per_trade` (500), `min_shares` (1.0), and `kelly_fraction` (0.50).
+2. **Dynamic Volatility Targeting**:
+   - Calculates contract and share size continuously based on stop distance $D_{\text{stop}}$ and point multiplier:
+     $$Q_{\text{raw}} = \frac{B_{\text{risk}}}{D_{\text{stop}} \times \text{multiplier}}$$
+   - Compressed volatility regimes scale position size up toward `max_contracts_per_trade` / `max_shares_per_trade`.
+   - Elevated volatility regimes scale position size down toward minimum contract/share bounds to defend against outsized stop-out drag.
+3. **Fractional Kelly Scaling**:
+   - Computes full Kelly fraction $f^* = p - \frac{1 - p}{b}$ from estimated win rate $p$ and setup payoff ratio $b = R:R$.
+   - Multiplies base risk budget by half-Kelly scaling factor $K_{\text{mult}} \in [0.5, 2.0]$.
+4. **Seamless System Integration & Full Backward Compatibility**:
+   - Integrated into `RiskEvaluator.calculate_levels_deterministic()` and utilized across both live risk evaluation and vectorized `BacktestEngine`.
+   - Defaults to `static` mode preserving exact historical sizing behaviors across legacy test suites.
+
+### Implementation Summary
+- **Position Sizing Module (`agentic_trader/agent/position_sizing.py`)**: Implemented `calculate_position_size` and `compute_fractional_kelly_multiplier`.
+- **Configuration (`agentic_trader/config.py`, `config/config.yaml`)**: Added `PositionSizingConfig` model, wired into `AppConfig`, `load_config()`, and `config.yaml`.
+- **Evaluator Integration (`agentic_trader/agent/evaluator.py`)**: Delegated deterministic level sizing to `calculate_position_size`.
+- **Test Suite (`tests/test_position_sizing.py`)**: 5 unit tests validating static backward compatibility, volatility-targeted futures scaling, equity scaling, and Fractional Kelly evaluation.
+
+---
+
 ## Next Horizon: Upcoming Strategic Targets
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **In Progress** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |
-| **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **Planned** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
+| **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **In Progress** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
 | **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **Planned** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |

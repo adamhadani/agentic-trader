@@ -160,6 +160,19 @@ class RedundancyConfig(BaseModel):
     auto_failback: bool = True
 
 
+class PositionSizingConfig(BaseModel):
+    mode: str = "static"  # "static", "volatility_targeted", "fractional_kelly"
+    target_risk_pct: float = 0.005  # 0.5% of cash
+    target_futures_risk_dollars: float = 300.0
+    default_equity_risk_dollars: float = 250.0
+    max_contracts_per_trade: int = 4
+    min_contracts: int = 1
+    max_shares_per_trade: int = 500
+    min_shares: float = 1.0
+    kelly_fraction: float = 0.5
+    baseline_win_rate: float = 0.50
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -169,6 +182,7 @@ class AppConfig(BaseModel):
     regime: RegimeConfig = Field(default_factory=RegimeConfig)
     friction: FrictionConfig = Field(default_factory=FrictionConfig)
     redundancy: RedundancyConfig = Field(default_factory=RedundancyConfig)
+    sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None
@@ -262,6 +276,12 @@ def load_config(config_path: str | None = None) -> AppConfig:
     if os.getenv("BROKER_FALLBACK_MODE"):
         redundancy_cfg["fallback_mode"] = os.getenv("BROKER_FALLBACK_MODE", "").lower()
 
+    sizing_cfg = cfg_dict.get("sizing", {})
+    if os.getenv("SIZING_MODE"):
+        sizing_cfg["mode"] = os.getenv("SIZING_MODE", "").lower()
+    if os.getenv("TARGET_RISK_PCT"):
+        sizing_cfg["target_risk_pct"] = float(os.environ["TARGET_RISK_PCT"])
+
     config = AppConfig(
         portfolio=PortfolioConfig(**cfg_dict.get("portfolio", {})),
         contracts={k: ContractConfig(**v) for k, v in cfg_dict.get("contracts", {}).items()},
@@ -274,6 +294,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         regime=RegimeConfig(**cfg_dict.get("regime", {})),
         friction=FrictionConfig(**cfg_dict.get("friction", {})),
         redundancy=RedundancyConfig(**redundancy_cfg),
+        sizing=PositionSizingConfig(**sizing_cfg),
         telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
         telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
         llm_model=llm_model,

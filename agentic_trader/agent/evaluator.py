@@ -8,6 +8,7 @@ import litellm
 from pydantic import BaseModel, Field
 
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
+from agentic_trader.agent.position_sizing import calculate_position_size
 from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import DEFAULT_CORRELATION_GROUPS, AppConfig
@@ -116,20 +117,15 @@ class RiskEvaluator:
             take_profit = round(round((entry - target_distance) / tick_size) * tick_size, 2)
             target_distance = round(entry - take_profit, 2)
 
-        # Dynamic position sizing: fixed dollar risk for equities, 1 contract for futures
-        if asset_class == AssetClass.EQUITY:
-            target_risk = (
-                contract_info.target_risk_dollars
-                if contract_info and contract_info.target_risk_dollars
-                else self.config.portfolio.default_equity_risk_dollars
-            )
-            per_share_risk = max(stop_distance * multiplier, 0.01)
-            quantity = max(1.0, float(int(target_risk / per_share_risk)))
-        else:
-            quantity = 1.0
-
-        risk_dollars = round(stop_distance * multiplier * quantity, 2)
-        reward_dollars = round(target_distance * multiplier * quantity, 2)
+        # Position sizing: dynamic calculation supporting static, volatility-targeted, and fractional Kelly modes
+        quantity, risk_dollars, reward_dollars = calculate_position_size(
+            candidate=candidate,
+            stop_distance=stop_distance,
+            target_distance=target_distance,
+            multiplier=multiplier,
+            asset_class=asset_class,
+            config=self.config,
+        )
         notional_value = round(entry * multiplier * quantity, 2)
 
         return (

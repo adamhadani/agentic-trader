@@ -118,3 +118,15 @@ strategies:
 
 scheduler:
   cron_hour_interval: 4 # Scan every 4 hours aligned with 4h candle closes
+
+sizing:
+  mode: "static" # "static", "volatility_targeted", "fractional_kelly"
+  target_risk_pct: 0.005 # 0.5% risk per trade
+  target_futures_risk_dollars: 300.0
+  default_equity_risk_dollars: 250.0
+  max_contracts_per_trade: 4
+  min_contracts: 1
+  max_shares_per_trade: 500
+  min_shares: 1.0
+  kelly_fraction: 0.5
+  baseline_win_rate: 0.50
