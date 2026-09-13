@@ -172,109 +172,65 @@ class FuturesCopilot:
 
     async def monitor_positions(self) -> int:
         """
-        Check real-time price against Stop Loss and Take Profit for all active (EXECUTED) positions.
-        Returns the number of positions closed during this check.
+        Reconcile active positions against the configured broker.
+        Detects server-side bracket order fills or simulated price threshold hits,
+        records exits in database, and emits Telegram alerts.
         """
         active_positions = await self.db.get_active_positions()
         if not active_positions:
             logger.debug("No active positions to monitor.")
             return 0
 
-        logger.info("Monitoring %d active position(s)...", len(active_positions))
+        logger.info("Monitoring/reconciling %d active position(s)...", len(active_positions))
         closed_count = 0
 
-        for pos in active_positions:
-            signal_id = pos["id"]
-            contract = pos["contract"]
-            direction = pos["direction"].upper()
-            entry_price = float(pos["entry_price"])
-            stop_loss = float(pos["stop_loss"])
-            take_profit = float(pos["take_profit"])
-            strategy = pos["strategy"]
+        reconciliation_events = await self.broker.reconcile_positions(active_positions)
+        for ev in reconciliation_events:
+            contract = ev.contract or ev.symbol
+            status = SignalStatus.CLOSED_WIN if ev.exit_reason == ExitReason.TAKE_PROFIT else SignalStatus.CLOSED_LOSS
+            if ev.exit_reason == ExitReason.MANUAL_CLOSE:
+                status = SignalStatus.CLOSED_WIN if (ev.realized_pnl or 0.0) >= 0 else SignalStatus.CLOSED_LOSS
 
-            contract_info = self.config.contracts.get(contract)
-            ticker = contract_info.ticker if contract_info else "MES=F"
-            multiplier = contract_info.multiplier if contract_info else 5.0
+            pos_dict = next((p for p in active_positions if p["id"] == ev.signal_id), {})
+            strategy = pos_dict.get("strategy", "UNKNOWN")
+            entry_price = float(pos_dict.get("entry_price", ev.exit_price))
 
-            current_price = self.data_fetcher.fetch_latest_price(ticker)
-            if current_price is None:
-                logger.warning("Could not fetch latest quote for %s (%s). Skipping check.", contract, ticker)
-                continue
+            logger.info(
+                "Position %s %s exited via %s @ %.2f (Realized PnL: $%.2f)",
+                contract,
+                ev.direction,
+                ev.exit_reason,
+                ev.exit_price,
+                ev.realized_pnl or 0.0,
+                extra={
+                    "signal_id": ev.signal_id,
+                    "contract": contract,
+                    "direction": ev.direction,
+                    "exit_reason": str(ev.exit_reason),
+                    "exit_price": ev.exit_price,
+                    "realized_pnl": ev.realized_pnl,
+                    "broker_order_id": ev.broker_order_id,
+                },
+            )
 
-            hit_tp = False
-            hit_sl = False
+            await self.db.close_position(
+                signal_id=ev.signal_id,
+                exit_price=ev.exit_price,
+                exit_reason=str(ev.exit_reason),
+                realized_pnl=ev.realized_pnl or 0.0,
+                status=status,
+            )
+            closed_count += 1
 
-            if direction == Direction.LONG:
-                if current_price >= take_profit:
-                    hit_tp = True
-                elif current_price <= stop_loss:
-                    hit_sl = True
-            elif direction == Direction.SHORT:
-                if current_price <= take_profit:
-                    hit_tp = True
-                elif current_price >= stop_loss:
-                    hit_sl = True
-
-            if hit_tp or hit_sl:
-                exit_reason = ExitReason.TAKE_PROFIT if hit_tp else ExitReason.STOP_LOSS
-                status = SignalStatus.CLOSED_WIN if hit_tp else SignalStatus.CLOSED_LOSS
-
-                realized_pnl = (
-                    (current_price - entry_price) * multiplier
-                    if direction == Direction.LONG
-                    else (entry_price - current_price) * multiplier
-                )
-
-                logger.info(
-                    "Position %s %s hit %s at %.2f (Realized PnL: $%.2f)",
-                    contract,
-                    direction,
-                    exit_reason,
-                    current_price,
-                    realized_pnl,
-                    extra={
-                        "signal_id": signal_id,
-                        "contract": contract,
-                        "direction": direction,
-                        "exit_reason": exit_reason,
-                        "exit_price": current_price,
-                        "realized_pnl": realized_pnl,
-                    },
-                )
-
-                # Close position at broker
-                try:
-                    await self.broker.close_position(
-                        contract=contract,
-                        exit_reason=exit_reason,
-                        exit_price=current_price,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Broker close_position exception for %s: %s",
-                        contract,
-                        e,
-                        extra={"contract": contract, "error": str(e)},
-                    )
-
-                await self.db.close_position(
-                    signal_id=signal_id,
-                    exit_price=current_price,
-                    exit_reason=exit_reason,
-                    realized_pnl=realized_pnl,
-                    status=status,
-                )
-                closed_count += 1
-
-                await self.notifier.send_exit_alert(
-                    contract=contract,
-                    direction=direction,
-                    exit_reason=exit_reason,
-                    entry_price=entry_price,
-                    exit_price=current_price,
-                    realized_pnl=realized_pnl,
-                    strategy=strategy,
-                )
+            await self.notifier.send_exit_alert(
+                contract=contract,
+                direction=ev.direction,
+                exit_reason=str(ev.exit_reason),
+                entry_price=entry_price,
+                exit_price=ev.exit_price,
+                realized_pnl=ev.realized_pnl or 0.0,
+                strategy=strategy,
+            )
 
         return closed_count
 
@@ -742,16 +698,16 @@ async def async_main():
             args=[not args.no_llm, False],
             next_run_time=datetime.now(UTC),
         )
-        # Schedule automated position monitoring every 15 minutes
+        # Schedule automated position monitoring & broker reconciliation every 1 minute
         scheduler.add_job(
             copilot.monitor_positions,
             "interval",
-            minutes=15,
+            minutes=1,
             id="position_monitor",
             next_run_time=datetime.now(UTC),
         )
         scheduler.start()
-        logger.info(f"Scheduler started: scanning every {interval}h, monitoring positions every 15m.")
+        logger.info(f"Scheduler started: scanning every {interval}h, reconciling positions every 1m.")
 
         if copilot.notifier.is_configured() and copilot.notifier.app and copilot.notifier.app.updater:
             logger.info("Starting Telegram Bot listener for interactive callbacks...")

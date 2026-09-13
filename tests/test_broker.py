@@ -7,14 +7,16 @@ from agentic_trader.broker import (
     OrderRequest,
     OrderResult,
     PaperBroker,
+    ReconciliationEvent,
     TradovateBroker,
     create_broker,
 )
-from agentic_trader.config import AppConfig
+from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import (
     AssetClass,
     Direction,
     ExecutionMode,
+    ExitReason,
     OrderSide,
     OrderType,
 )
@@ -397,3 +399,158 @@ async def test_alpaca_broker_bracket_order_and_positions():
     mock_client.close_position.assert_called_once()
 
     await broker.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_paper_broker_reconcile_positions():
+    config = load_config()
+    config.execution_mode = "paper"
+    mock_fetcher = MagicMock()
+    # Price triggers take profit on /MES Long (target is 5900, price is 5910)
+    mock_fetcher.fetch_latest_price.return_value = 5910.00
+
+    broker = PaperBroker(config=config, data_fetcher=mock_fetcher)
+
+    active_positions = [
+        {
+            "id": 1,
+            "contract": "/MES",
+            "direction": "LONG",
+            "entry_price": 5800.0,
+            "stop_loss": 5750.0,
+            "take_profit": 5900.0,
+            "strategy": "TREND_PULLBACK",
+        },
+        {
+            "id": 2,
+            "contract": "/MNQ",
+            "direction": "LONG",
+            "entry_price": 19000.0,
+            "stop_loss": 18800.0,
+            "take_profit": 19400.0,
+            "strategy": "SQUEEZE_BREAKOUT",
+        },
+    ]
+
+    # For /MNQ, set price between stop and target
+    def price_side_effect(ticker):
+        if "MES" in ticker:
+            return 5910.0  # triggers TP
+        return 19100.0  # within range, no exit
+
+    mock_fetcher.fetch_latest_price.side_effect = price_side_effect
+
+    events = await broker.reconcile_positions(active_positions)
+    assert len(events) == 1
+    assert events[0].signal_id == 1
+    assert events[0].contract == "/MES"
+    assert events[0].exit_reason == ExitReason.TAKE_PROFIT
+    assert events[0].exit_price == 5910.0
+    # Realized PnL: (5910 - 5800) * 5.0 = 550.0
+    assert events[0].realized_pnl == 550.0
+
+
+@pytest.mark.asyncio
+async def test_alpaca_broker_reconcile_positions():
+    config = AppConfig(
+        execution_mode=ExecutionMode.ALPACA,
+        alpaca_api_key="mock_key",
+        alpaca_api_secret="mock_secret",
+        alpaca_paper=True,
+    )
+    mock_client = MagicMock()
+
+    # Open positions at Alpaca: only MSFT is still open, AAPL is closed!
+    mock_pos_msft = MagicMock(symbol="MSFT")
+    mock_client.get_all_positions.return_value = [mock_pos_msft]
+
+    # Closed orders for AAPL: stop-loss order filled at 144.50
+    mock_closed_order = MagicMock()
+    mock_closed_order.id = "alp-sl-filled-99"
+    mock_closed_order.status = "filled"
+    mock_closed_order.order_type = "stop"
+    mock_closed_order.filled_avg_price = 144.50
+    mock_closed_order.filled_at = None
+    mock_client.get_orders.return_value = [mock_closed_order]
+
+    broker = AlpacaBroker(config, client=mock_client)
+
+    active_positions = [
+        {
+            "id": 10,
+            "contract": "AAPL",
+            "direction": "LONG",
+            "entry_price": 150.0,
+            "stop_loss": 145.0,
+            "take_profit": 160.0,
+            "strategy": "TREND_PULLBACK",
+        },
+        {
+            "id": 11,
+            "contract": "MSFT",
+            "direction": "LONG",
+            "entry_price": 400.0,
+            "stop_loss": 390.0,
+            "take_profit": 420.0,
+            "strategy": "SQUEEZE_BREAKOUT",
+        },
+    ]
+
+    events = await broker.reconcile_positions(active_positions)
+    # MSFT is still open, only AAPL should produce an exit event
+    assert len(events) == 1
+    assert events[0].signal_id == 10
+    assert events[0].symbol == "AAPL"
+    assert events[0].exit_reason == ExitReason.STOP_LOSS
+    assert events[0].exit_price == 144.50
+    assert events[0].broker_order_id == "alp-sl-filled-99"
+    # Realized PnL: 144.50 - 150.0 = -5.50
+    assert events[0].realized_pnl == pytest.approx(-5.50)
+
+
+@pytest.mark.asyncio
+async def test_copilot_monitor_positions_via_reconciliation(tmp_path):
+    db_path = str(tmp_path / "test_reconcile.db")
+    config = AppConfig(execution_mode="paper", db_path=db_path)
+    copilot = FuturesCopilot(config)
+    await copilot.db.init_db()
+
+    # Record active position
+    sig_id = await copilot.db.record_signal(
+        contract="/MES",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=5800.0,
+        stop_loss=5750.0,
+        take_profit=5900.0,
+        risk_dollars=250.0,
+        status="EXECUTED",
+    )
+
+    # Mock broker.reconcile_positions returning an exit event
+    mock_event = ReconciliationEvent(
+        signal_id=sig_id,
+        contract="/MES",
+        direction="LONG",
+        exit_price=5905.0,
+        exit_reason=ExitReason.TAKE_PROFIT,
+        realized_pnl=525.0,
+        broker_order_id="SIM-EXIT-123",
+    )
+    copilot.broker.reconcile_positions = MagicMock(return_value=[mock_event])  # type: ignore[method-assign]
+
+    # Make it awaitable
+    async def mock_reconcile(active):
+        return [mock_event]
+
+    copilot.broker.reconcile_positions = mock_reconcile  # type: ignore[method-assign]
+
+    closed_count = await copilot.monitor_positions()
+    assert closed_count == 1
+
+    # Verify signal status in database is now CLOSED_WIN
+    sig = await copilot.db.get_signal_by_id(sig_id)
+    assert sig is not None
+    assert sig["status"] == "CLOSED_WIN"
+    assert sig["exit_price"] == 5905.0
+    assert sig["realized_pnl"] == 525.0

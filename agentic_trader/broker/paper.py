@@ -1,9 +1,16 @@
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
-from agentic_trader.broker.base import BaseBroker, BrokerPosition, OrderRequest, OrderResult
+from agentic_trader.broker.base import (
+    BaseBroker,
+    BrokerPosition,
+    OrderRequest,
+    OrderResult,
+    ReconciliationEvent,
+)
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import Direction
+from agentic_trader.constants import Direction, ExitReason
 from agentic_trader.data.market_data import MarketDataFetcher
 
 
@@ -200,3 +207,63 @@ class PaperBroker(BaseBroker):
             "portfolio_value": current_cash,
             "realized_pnl": self._realized_pnl,
         }
+
+    async def reconcile_positions(self, active_positions: list[dict[str, Any]]) -> list[ReconciliationEvent]:
+        """Reconcile active SQLite positions against current market quotes.
+
+        Triggers TAKE_PROFIT or STOP_LOSS exit events when price reaches bracket levels.
+        """
+        reconciliation_events: list[ReconciliationEvent] = []
+        for pos in active_positions:
+            signal_id = pos["id"]
+            contract = pos["contract"]
+            direction = str(pos["direction"]).upper()
+            entry_price = float(pos["entry_price"])
+            stop_loss = float(pos["stop_loss"])
+            take_profit = float(pos["take_profit"])
+
+            contract_info = self.config.contracts.get(contract)
+            ticker = contract_info.ticker if contract_info else contract
+            multiplier = contract_info.multiplier if contract_info else 1.0
+
+            current_price = self.data_fetcher.fetch_latest_price(ticker)
+            if current_price is None:
+                continue
+
+            exit_reason: str | None = None
+            if direction in ("LONG", str(Direction.LONG)):
+                if current_price >= take_profit:
+                    exit_reason = ExitReason.TAKE_PROFIT
+                elif current_price <= stop_loss:
+                    exit_reason = ExitReason.STOP_LOSS
+            else:  # SHORT
+                if current_price <= take_profit:
+                    exit_reason = ExitReason.TAKE_PROFIT
+                elif current_price >= stop_loss:
+                    exit_reason = ExitReason.STOP_LOSS
+
+            if exit_reason:
+                close_res = await self.close_position(
+                    symbol=contract,
+                    exit_reason=exit_reason,
+                    exit_price=current_price,
+                )
+                if direction in ("LONG", str(Direction.LONG)):
+                    realized_pnl = (current_price - entry_price) * multiplier
+                else:
+                    realized_pnl = (entry_price - current_price) * multiplier
+
+                event = ReconciliationEvent(
+                    signal_id=signal_id,
+                    symbol=contract,
+                    contract=contract,
+                    direction=direction,
+                    exit_price=current_price,
+                    exit_reason=exit_reason,
+                    exit_timestamp=datetime.now(UTC),
+                    realized_pnl=realized_pnl,
+                    broker_order_id=close_res.order_id,
+                )
+                reconciliation_events.append(event)
+
+        return reconciliation_events

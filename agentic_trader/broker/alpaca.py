@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -8,19 +9,28 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     OrderClass as AlpacaOrderClass,
     OrderSide as AlpacaOrderSide,
+    QueryOrderStatus,
     TimeInForce as AlpacaTimeInForce,
 )
 from alpaca.trading.requests import (
     ClosePositionRequest,
+    GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
     StopLossRequest,
     TakeProfitRequest,
 )
+from alpaca.trading.stream import TradingStream
 
-from agentic_trader.broker.base import BaseBroker, BrokerPosition, OrderRequest, OrderResult
+from agentic_trader.broker.base import (
+    BaseBroker,
+    BrokerPosition,
+    OrderRequest,
+    OrderResult,
+    ReconciliationEvent,
+)
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import AssetClass, Direction
+from agentic_trader.constants import AssetClass, Direction, ExitReason
 
 
 logger = logging.getLogger(__name__)
@@ -305,3 +315,146 @@ class AlpacaBroker(BaseBroker):
         except Exception as e:
             logger.error("Failed to fetch Alpaca account balance: %s", e)
             return {}
+
+    async def reconcile_positions(self, active_positions: list[dict[str, Any]]) -> list[ReconciliationEvent]:
+        """Reconcile active SQLite positions against Alpaca open positions and closed orders.
+
+        Detects when bracket stop-loss or take-profit legs have filled at Alpaca.
+        """
+        if not self.client:
+            await self.connect()
+        if not self.client:
+            return []
+
+        reconciliation_events: list[ReconciliationEvent] = []
+        try:
+            open_positions = await asyncio.to_thread(self.client.get_all_positions)
+            open_symbols = {
+                str(getattr(p, "symbol", "") or (p.get("symbol", "") if isinstance(p, dict) else "")).upper()
+                for p in open_positions
+            }
+
+            for pos in active_positions:
+                signal_id = pos["id"]
+                raw_symbol = pos.get("contract") or pos.get("symbol", "")
+                symbol = raw_symbol.strip("/").upper()
+                direction = str(pos["direction"]).upper()
+                entry_price = float(pos["entry_price"])
+                take_profit = float(pos["take_profit"])
+
+                # If symbol is still open at Alpaca, it has not closed yet
+                if symbol in open_symbols:
+                    continue
+
+                # Position is closed at Alpaca; query closed orders to extract fill details
+                closed_orders_req = GetOrdersRequest(
+                    status=QueryOrderStatus.CLOSED,
+                    limit=20,
+                    symbols=[symbol],
+                )
+                closed_orders = await asyncio.to_thread(self.client.get_orders, closed_orders_req)
+
+                exit_price = entry_price
+                exit_reason = ExitReason.MANUAL_CLOSE
+                exit_time = datetime.now(UTC)
+                exit_order_id: str | None = None
+
+                filled_exit_order = None
+                for order in closed_orders:
+                    ord_status = str(getattr(order, "status", "")).lower()
+                    if "filled" in ord_status:
+                        filled_exit_order = order
+                        break
+
+                if filled_exit_order:
+                    exit_order_id = str(getattr(filled_exit_order, "id", None))
+                    avg_fill = getattr(filled_exit_order, "filled_avg_price", None)
+                    if avg_fill is not None:
+                        exit_price = float(avg_fill)
+                    order_type_str = str(getattr(filled_exit_order, "order_type", "")).lower()
+
+                    if "stop" in order_type_str:
+                        exit_reason = ExitReason.STOP_LOSS
+                    elif "limit" in order_type_str:
+                        exit_reason = ExitReason.TAKE_PROFIT
+                    elif direction in ("LONG", str(Direction.LONG)):
+                        exit_reason = ExitReason.TAKE_PROFIT if exit_price >= take_profit else ExitReason.STOP_LOSS
+                    else:
+                        exit_reason = ExitReason.TAKE_PROFIT if exit_price <= take_profit else ExitReason.STOP_LOSS
+
+                    filled_at = getattr(filled_exit_order, "filled_at", None)
+                    if isinstance(filled_at, datetime):
+                        exit_time = filled_at
+
+                if direction in ("LONG", str(Direction.LONG)):
+                    realized_pnl = exit_price - entry_price
+                else:
+                    realized_pnl = entry_price - exit_price
+
+                event = ReconciliationEvent(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    contract=raw_symbol,
+                    direction=direction,
+                    exit_price=exit_price,
+                    exit_reason=exit_reason,
+                    exit_timestamp=exit_time,
+                    realized_pnl=realized_pnl,
+                    broker_order_id=exit_order_id,
+                )
+                reconciliation_events.append(event)
+        except Exception as e:
+            logger.error(
+                "Error reconciling Alpaca positions: %s",
+                e,
+                extra={"broker": "AlpacaBroker", "error": str(e)},
+            )
+
+        return reconciliation_events
+
+    async def start_trade_stream(self, on_fill_callback: Callable[[ReconciliationEvent], Awaitable[None]]) -> None:
+        """Start listening to real-time fill events via Alpaca TradingStream WebSocket."""
+        if not self.api_key or not self.api_secret:
+            logger.warning("Cannot start TradingStream: missing Alpaca credentials")
+            return
+
+        stream_kwargs: dict[str, Any] = {
+            "api_key": self.api_key,
+            "secret_key": self.api_secret,
+            "paper": self.is_paper,
+        }
+        if self.base_url:
+            stream_kwargs["url_override"] = self.base_url
+
+        stream = TradingStream(**stream_kwargs)
+
+        async def _trade_update_handler(data: Any) -> None:
+            try:
+                event_type = getattr(data, "event", None) or (data.get("event") if isinstance(data, dict) else "")
+                if str(event_type).lower() in ("fill", "partial_fill"):
+                    order = getattr(data, "order", None) or (data.get("order") if isinstance(data, dict) else {})
+                    symbol = str(
+                        getattr(order, "symbol", "") or (order.get("symbol", "") if isinstance(order, dict) else "")
+                    )
+                    fill_price = float(getattr(data, "price", 0.0) or getattr(order, "filled_avg_price", 0.0) or 0.0)
+                    order_id = str(getattr(order, "id", "") or (order.get("id", "") if isinstance(order, dict) else ""))
+
+                    event = ReconciliationEvent(
+                        signal_id=0,
+                        symbol=symbol,
+                        contract=symbol,
+                        exit_price=fill_price,
+                        exit_reason=ExitReason.TAKE_PROFIT,
+                        exit_timestamp=datetime.now(UTC),
+                        broker_order_id=order_id,
+                    )
+                    await on_fill_callback(event)
+            except Exception as ex:
+                logger.error("Error processing trade update: %s", ex, extra={"error": str(ex)})
+
+        stream.subscribe_trade_updates(_trade_update_handler)
+        logger.info("Alpaca TradingStream trade update listener registered")
+        try:
+            await asyncio.to_thread(stream.run)
+        except Exception as e:
+            logger.warning("Alpaca TradingStream exited: %s", e, extra={"error": str(e)})

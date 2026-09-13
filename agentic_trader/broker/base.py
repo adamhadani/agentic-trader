@@ -1,10 +1,18 @@
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from agentic_trader.constants import AssetClass, Direction, OrderClass, OrderSide, OrderType, TimeInForce
+from agentic_trader.constants import (
+    AssetClass,
+    Direction,
+    ExitReason,
+    OrderClass,
+    OrderSide,
+    OrderType,
+    TimeInForce,
+)
 
 
 class OrderRequest(BaseModel):
@@ -91,6 +99,20 @@ class BrokerPosition(BaseModel):
         return data
 
 
+class ReconciliationEvent(BaseModel):
+    """Event generated when a broker detects that an active position was exited (e.g. TP/SL fill)."""
+
+    signal_id: int
+    symbol: str = Field(default="")
+    contract: str | None = Field(default=None)
+    direction: str = Field(default=Direction.LONG)
+    exit_price: float
+    exit_reason: str = Field(default=ExitReason.TAKE_PROFIT)
+    exit_timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    realized_pnl: float | None = None
+    broker_order_id: str | None = None
+
+
 class BaseBroker(ABC):
     """
     Abstract Base Class for multi-asset execution brokers.
@@ -139,3 +161,11 @@ class BaseBroker(ABC):
     async def get_account_balance(self) -> dict[str, float]:
         """Fetch current cash balance and portfolio value if supported by broker."""
         return {}
+
+    async def reconcile_positions(self, active_positions: list[dict[str, Any]]) -> list[ReconciliationEvent]:
+        """Reconcile active positions against broker order and position states.
+
+        Default implementation returns an empty list. Subclasses inspect open/closed
+        bracket orders or market prices to report exits.
+        """
+        return []

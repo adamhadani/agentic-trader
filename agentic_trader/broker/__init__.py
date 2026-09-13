@@ -1,7 +1,13 @@
 import logging
 
 from agentic_trader.broker.alpaca import AlpacaBroker
-from agentic_trader.broker.base import BaseBroker, BrokerPosition, OrderRequest, OrderResult
+from agentic_trader.broker.base import (
+    BaseBroker,
+    BrokerPosition,
+    OrderRequest,
+    OrderResult,
+    ReconciliationEvent,
+)
 from agentic_trader.broker.paper import PaperBroker
 from agentic_trader.broker.tradovate import TradovateBroker
 from agentic_trader.config import AppConfig
@@ -54,6 +60,7 @@ __all__ = [
     "OrderRequest",
     "OrderResult",
     "PaperBroker",
+    "ReconciliationEvent",
     "TradovateBroker",
     "create_broker",
 ]
