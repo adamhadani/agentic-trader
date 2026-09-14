@@ -264,12 +264,20 @@ class SessionConfig(BaseModel):
 
 class TrailingStopConfig(BaseModel):
     enabled: bool = True
-    mode: str = "chandelier_atr"  # "chandelier_atr", "breakeven_and_trail", "none"
-    breakeven_trigger_r: float | None = None  # Optional; None prevents expectancy degradation from entry-anchoring
-    breakeven_buffer_dollars: float = 5.0
-    trail_trigger_r: float = 1.5
-    trail_atr_multiple: float = 1.5
-    trail_step_ticks: int = 2
+    mode: str = "chandelier_atr"  # "chandelier_atr" (quant ATR high-water mark), "breakeven_atr", "disabled"
+    trail_trigger_r: float = 1.5  # Profit in R-multiples before trailing stop activates
+    trail_atr_multiple: float = 1.5  # Distance behind price/high-water mark in ATR multiples
+    breakeven_trigger_r: float | None = None  # Explicit jump to break-even (opt-in; None = disabled in quant mode)
+    breakeven_buffer_dollars: float = 10.0  # Buffer beyond entry price when moving to break-even
+    trail_step_ticks: int = 4  # Minimum ratchet step in ticks
+
+
+class MarketDataConfig(BaseModel):
+    primary_equities_provider: str = "alpaca"  # "alpaca", "yfinance"
+    fallback_providers: list[str] = Field(default_factory=lambda: ["yfinance"])
+    timeout_seconds: float = 10.0
+    max_retries: int = 2
+    retry_backoff_factor: float = 0.5
 
 
 class AppConfig(BaseModel):
@@ -290,6 +298,7 @@ class AppConfig(BaseModel):
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     trailing_stop: TrailingStopConfig = Field(default_factory=TrailingStopConfig)
+    market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None

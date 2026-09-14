@@ -17,6 +17,7 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    ReplaceOrderRequest,
     StopLossRequest,
     TakeProfitRequest,
 )
@@ -503,3 +504,85 @@ class AlpacaBroker(BaseBroker):
                 logger.debug("Error stopping Alpaca TradingStream: %s", e)
             finally:
                 self._trade_stream = None
+
+    @property
+    def supports_order_modification(self) -> bool:
+        return True
+
+    async def modify_order_stop(
+        self,
+        order_id: str | None = None,
+        symbol: str | None = None,
+        new_stop_price: float = 0.0,
+        client_order_id: str | None = None,
+    ) -> OrderResult:
+        """
+        Replace resting stop order at Alpaca with updated stop price.
+        Gracefully resolves stop leg order ID from parent order or open orders.
+        """
+        if not self._connected or not self.client:
+            connected = await self.connect()
+            if not connected or not self.client:
+                return OrderResult(success=False, error_message="Not connected to Alpaca API.")
+
+        clean_symbol = (symbol or "").strip("/").upper()
+        target_stop_id = order_id
+
+        # 1. Resolve stop order ID if target_stop_id is a parent bracket or missing
+        try:
+            if target_stop_id:
+                try:
+                    ord_obj = await asyncio.to_thread(self.client.get_order_by_id, target_stop_id)
+                    legs = getattr(ord_obj, "legs", None)
+                    if legs:
+                        for leg in legs:
+                            leg_type = str(getattr(leg, "order_type", getattr(leg, "type", "")))
+                            if "stop" in leg_type.lower():
+                                target_stop_id = str(getattr(leg, "id", ""))
+                                break
+                except Exception:
+                    pass  # target_stop_id is likely already the stop order ID
+
+            if not target_stop_id and clean_symbol:
+                open_orders = await asyncio.to_thread(
+                    self.client.get_orders,
+                    GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[clean_symbol]),
+                )
+                for o in open_orders:
+                    order_type = str(getattr(o, "order_type", getattr(o, "type", "")))
+                    if "stop" in order_type.lower():
+                        target_stop_id = str(getattr(o, "id", ""))
+                        break
+        except Exception as lookup_err:
+            logger.debug("Alpaca open stop order lookup failed for %s: %s", clean_symbol, lookup_err)
+
+        if not target_stop_id:
+            return OrderResult(
+                success=False,
+                error_message=f"No active stop-loss order found for {clean_symbol or order_id}",
+            )
+
+        replace_req = ReplaceOrderRequest(stop_price=round(new_stop_price, 2))
+        try:
+            logger.info(
+                "Alpaca: Replacing resting stop order %s for %s with new stop %.2f...",
+                target_stop_id,
+                clean_symbol,
+                new_stop_price,
+                extra={
+                    "event": "alpaca_replace_stop",
+                    "order_id": target_stop_id,
+                    "symbol": clean_symbol,
+                    "new_stop": new_stop_price,
+                },
+            )
+            res = await asyncio.to_thread(self.client.replace_order_by_id, target_stop_id, replace_req)
+            new_id = str(getattr(res, "id", target_stop_id))
+            raw_resp = res.model_dump() if hasattr(res, "model_dump") else {"id": new_id, "new_stop": new_stop_price}
+            return OrderResult(success=True, order_id=new_id, raw_response=raw_resp)
+        except APIError as e:
+            logger.warning("Alpaca APIError modifying stop order: %s", e)
+            return OrderResult(success=False, error_message=str(e))
+        except Exception as e:
+            logger.exception("Exception modifying Alpaca stop order")
+            return OrderResult(success=False, error_message=str(e))

@@ -774,16 +774,19 @@ class TelegramNotifier:
         new_stop: float,
         current_price: float,
         reason: str = "BREAKEVEN",
+        broker_synced: bool = False,
     ) -> bool:
         """Send formatted alert when position stop is moved to breakeven or trailed upward."""
         icon = "🛡️" if reason == "BREAKEVEN" else "📈"
         title = "STOP TO BREAKEVEN" if reason == "BREAKEVEN" else "TRAILING STOP RATCHETED"
+        broker_status = "Synced on Exchange ⚡" if broker_synced else "Local Copilot Tracking 🛡️"
         text = (
             f"{icon} <b>{title}</b>\n\n"
             f"• <b>Position:</b> #{signal_id} <code>{contract}</code> ({direction.upper()})\n"
             f"• <b>Market Price:</b> <code>{current_price:,.2f}</code>\n"
             f"• <b>Old Stop:</b> <code>{old_stop:,.2f}</code>\n"
             f"• <b>New Protective Stop:</b> <code>{new_stop:,.2f}</code>\n"
+            f"• <b>Broker Sync:</b> {broker_status}\n"
             f"• <b>Action:</b> Capital preserved / unrealized gains locked in"
         )
         return await self.send_message(text)

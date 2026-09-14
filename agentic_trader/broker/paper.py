@@ -267,3 +267,28 @@ class PaperBroker(BaseBroker):
                 reconciliation_events.append(event)
 
         return reconciliation_events
+
+    @property
+    def supports_order_modification(self) -> bool:
+        return True
+
+    async def modify_order_stop(
+        self,
+        order_id: str | None = None,
+        symbol: str | None = None,
+        new_stop_price: float = 0.0,
+        client_order_id: str | None = None,
+    ) -> OrderResult:
+        key = symbol or order_id or "default"
+        logger.info(
+            "PaperBroker: Modifying simulated resting stop for %s to %.2f (order: %s)",
+            key,
+            new_stop_price,
+            order_id,
+            extra={"event": "paper_stop_modified", "symbol": symbol, "new_stop": new_stop_price, "order_id": order_id},
+        )
+        return OrderResult(
+            success=True,
+            order_id=order_id or f"PAPER-STOP-{key}",
+            raw_response={"symbol": symbol, "new_stop_price": new_stop_price},
+        )
