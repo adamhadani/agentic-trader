@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -14,9 +15,18 @@ from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.storage.db import SignalDatabase
 
 
+@pytest.fixture(autouse=True, scope="session")
+def isolate_test_database(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Ensure all unit test executions use an isolated test database and NEVER touch production signals.db."""
+    test_db_dir = tmp_path_factory.mktemp("isolated_test_db")
+    test_db_file = test_db_dir / "test_signals.db"
+    os.environ["DB_NAME"] = "test_signals"
+    os.environ["DB_PATH"] = str(test_db_file)
+
+
 @pytest.fixture
 def app_config() -> AppConfig:
-    """Provide a standard AppConfig instance loaded from defaults."""
+    """Provide a standard AppConfig instance loaded from defaults (isolated to test DB)."""
     return load_config()
 
 

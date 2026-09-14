@@ -37,6 +37,12 @@ def get_url() -> str:
     elif os.getenv("DB_PATH"):
         db_path = Path(os.environ["DB_PATH"]).resolve()
         url = f"sqlite+aiosqlite:///{db_path}"
+    elif os.getenv("DB_NAME"):
+        db_name = os.environ["DB_NAME"]
+        db_filename = db_name if db_name.endswith(".db") else f"{db_name}.db"
+        db_path = Path(f"data/{db_filename}").resolve()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        url = f"sqlite+aiosqlite:///{db_path}"
     else:
         db_path = Path("data/signals.db").resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
