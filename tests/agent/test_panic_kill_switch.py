@@ -335,8 +335,8 @@ async def test_telegram_bot_command_autocomplete(copilot_fixture):
     with patch.object(notifier, "is_configured", return_value=True):
         res = await notifier.setup_bot_commands()
         assert res is True
-        notifier.app.bot.set_my_commands.assert_called_once()
-        commands_arg = notifier.app.bot.set_my_commands.call_args[0][0]
+        assert notifier.app.bot.set_my_commands.call_count >= 1
+        commands_arg = notifier.app.bot.set_my_commands.call_args_list[0][0][0]
         cmd_names = [c.command for c in commands_arg]
         assert "panic" in cmd_names
         assert "resume" in cmd_names

@@ -188,3 +188,56 @@ async def test_copilot_process_reconciliation_event_dedup(test_config):
 
     # Alert should only be sent once
     assert copilot.notifier.send_exit_alert.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config):
+    broker = AlpacaBroker(test_config)
+    broker.client = MagicMock()
+
+    # Case 1: Symbol not in open positions, but closed orders only contains the entry BUY order
+    broker.client.get_all_positions.return_value = []
+
+    entry_order = MagicMock(
+        id="ENTRY-ORDER-123",
+        side="buy",
+        status="filled",
+        filled_avg_price="761.50",
+        order_type="limit",
+        filled_at=datetime.now(UTC),
+    )
+    broker.client.get_orders.return_value = [entry_order]
+
+    active_positions = [
+        {
+            "id": 1,
+            "contract": "SPY",
+            "symbol": "SPY",
+            "direction": "LONG",
+            "entry_price": 761.50,
+            "take_profit": 772.0,
+            "quantity": 39.0,
+            "broker_order_id": "ENTRY-ORDER-123",
+        }
+    ]
+
+    # Reconcile should NOT treat the entry order as an exit and should return empty list
+    events = await broker.reconcile_positions(active_positions)
+    assert events == []
+
+    # Case 2: An actual exit SELL order has filled
+    exit_order = MagicMock(
+        id="EXIT-ORDER-456",
+        side="sell",
+        status="filled",
+        filled_avg_price="772.10",
+        order_type="limit",
+        filled_at=datetime.now(UTC),
+    )
+    broker.client.get_orders.return_value = [exit_order, entry_order]
+
+    events_exit = await broker.reconcile_positions(active_positions)
+    assert len(events_exit) == 1
+    assert events_exit[0].exit_reason == ExitReason.TAKE_PROFIT
+    assert events_exit[0].exit_price == 772.10
+    assert events_exit[0].broker_order_id == "EXIT-ORDER-456"
