@@ -400,9 +400,13 @@ class TradovateBroker(BaseBroker):
 
             pos_dir = str(pos.get("direction", Direction.LONG)).upper()
             exit_action = "Sell" if pos_dir in ("LONG", str(Direction.LONG)) else "Buy"
+            entry_order_id = str(pos.get("broker_order_id") or "")
 
             matched_fill = None
             for f in fills_cache:
+                f_order_id = str(f.get("orderId", ""))
+                if entry_order_id and f_order_id == entry_order_id:
+                    continue
                 f_contract = str(f.get("contract", "")).strip("/").upper()
                 f_action = str(f.get("action", "")).capitalize()
                 if (f_contract == clean_sym or clean_sym in f_contract) and f_action == exit_action:
@@ -411,13 +415,16 @@ class TradovateBroker(BaseBroker):
 
             matched_order = None
             if matched_fill:
-                f_order_id = matched_fill.get("orderId")
+                f_order_id = str(matched_fill.get("orderId", ""))
                 for o in orders_cache:
-                    if o.get("id") == f_order_id:
+                    if str(o.get("id", "")) == f_order_id:
                         matched_order = o
                         break
             else:
                 for o in orders_cache:
+                    o_id = str(o.get("id", ""))
+                    if entry_order_id and o_id == entry_order_id:
+                        continue
                     o_contract = str(o.get("symbol", o.get("contract", ""))).strip("/").upper()
                     o_action = str(o.get("action", "")).capitalize()
                     o_status = str(o.get("ordStatus", "")).capitalize()
@@ -484,6 +491,7 @@ class TradovateBroker(BaseBroker):
                     exit_timestamp=datetime.now(UTC),
                     realized_pnl=realized_pnl,
                     broker_order_id=order_id,
+                    order_side=exit_action.lower(),
                 )
             )
 
@@ -564,6 +572,7 @@ class TradovateBroker(BaseBroker):
                                         exit_reason=ExitReason.MANUAL_CLOSE,
                                         exit_timestamp=datetime.now(UTC),
                                         broker_order_id=order_id,
+                                        order_side=action.lower(),
                                     )
                                     await on_fill_callback(event)
 
@@ -590,6 +599,7 @@ class TradovateBroker(BaseBroker):
                                         exit_reason=reason,
                                         exit_timestamp=datetime.now(UTC),
                                         broker_order_id=order_id,
+                                        order_side=action.lower(),
                                     )
                                     await on_fill_callback(event)
             except asyncio.CancelledError:

@@ -263,6 +263,7 @@ class PaperBroker(BaseBroker):
                     exit_timestamp=datetime.now(UTC),
                     realized_pnl=realized_pnl,
                     broker_order_id=close_res.order_id,
+                    order_side="sell" if direction in ("LONG", str(Direction.LONG)) else "buy",
                 )
                 reconciliation_events.append(event)
 

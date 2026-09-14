@@ -385,6 +385,38 @@ class TradingCopilot:
             # Position already closed or does not match
             return False
 
+        # Invariant 1: Do not reconcile entry order fills as exit events
+        entry_order_id = str(pos_dict.get("broker_order_id") or "")
+        if ev.broker_order_id and entry_order_id and ev.broker_order_id == entry_order_id:
+            logger.info(
+                "Ignoring exit reconciliation for order %s on position #%d: matches entry order ID (entry confirmation, not exit)",
+                ev.broker_order_id,
+                ev.signal_id,
+            )
+            return False
+
+        # Invariant 2: Directional Opposing Side Rule
+        # An exit order MUST strictly oppose the position direction (Sell closes LONG, Buy closes SHORT)
+        pos_dir = str(pos_dict.get("direction", "")).upper()
+        if ev.order_side:
+            side_lower = ev.order_side.lower()
+            if "sell" in side_lower and pos_dir not in ("LONG", str(Direction.LONG)):
+                logger.warning(
+                    "Rejecting exit reconciliation: SELL order %s cannot close %s position #%d",
+                    ev.broker_order_id,
+                    pos_dir,
+                    ev.signal_id,
+                )
+                return False
+            if "buy" in side_lower and pos_dir not in ("SHORT", str(Direction.SHORT)):
+                logger.warning(
+                    "Rejecting exit reconciliation: BUY order %s cannot close %s position #%d",
+                    ev.broker_order_id,
+                    pos_dir,
+                    ev.signal_id,
+                )
+                return False
+
         contract = ev.contract or ev.symbol
         status = SignalStatus.CLOSED_WIN if ev.exit_reason == ExitReason.TAKE_PROFIT else SignalStatus.CLOSED_LOSS
         if ev.exit_reason == ExitReason.MANUAL_CLOSE:
@@ -453,28 +485,61 @@ class TradingCopilot:
         if not active_positions:
             return
 
-        # 1. Match by broker_order_id if present
-        matched_pos: dict[str, Any] | None = None
+        # Invariant 1: Check if this stream fill is an ENTRY order fill confirmation
         if ev.broker_order_id:
             for pos in active_positions:
-                if str(pos.get("broker_order_id") or "") == ev.broker_order_id:
-                    matched_pos = pos
-                    break
+                entry_ord_id = str(pos.get("broker_order_id") or "")
+                if entry_ord_id and entry_ord_id == ev.broker_order_id:
+                    logger.info(
+                        "WebSocket stream trade update confirms entry fill for order %s (signal #%d, %s) @ %.2f - position active",
+                        ev.broker_order_id,
+                        pos["id"],
+                        pos.get("contract") or pos.get("symbol"),
+                        ev.exit_price,
+                    )
+                    return
 
-        # 2. Match by symbol/contract and opposite direction
-        if not matched_pos:
-            clean_ev_sym = (ev.contract or ev.symbol).strip("/").upper()
-            for pos in active_positions:
-                clean_pos_sym = (pos.get("contract") or pos.get("symbol", "")).strip("/").upper()
-                if clean_pos_sym == clean_ev_sym:
-                    matched_pos = pos
-                    break
+        # Invariant 2: Match active position for an EXIT fill.
+        # Requirements:
+        #  - Symbol/contract must match
+        #  - Order must NOT be the entry order ID
+        #  - Order side must strictly oppose position direction (SELL closes LONG, BUY closes SHORT)
+        clean_ev_sym = (ev.contract or ev.symbol).strip("/").upper()
+        matched_pos: dict[str, Any] | None = None
+
+        for pos in active_positions:
+            clean_pos_sym = (pos.get("contract") or pos.get("symbol", "")).strip("/").upper()
+            if clean_pos_sym != clean_ev_sym:
+                continue
+
+            entry_ord_id = str(pos.get("broker_order_id") or "")
+            if ev.broker_order_id and entry_ord_id and ev.broker_order_id == entry_ord_id:
+                continue
+
+            pos_dir = str(pos.get("direction", "")).upper()
+            if ev.order_side:
+                side_lower = ev.order_side.lower()
+                # SELL orders can only close LONG positions
+                if "sell" in side_lower and pos_dir not in ("LONG", str(Direction.LONG)):
+                    continue
+                # BUY orders can only close SHORT positions
+                if "buy" in side_lower and pos_dir not in ("SHORT", str(Direction.SHORT)):
+                    continue
+            elif ev.direction:
+                # If order_side not provided, fallback to ev.direction
+                ev_dir = str(ev.direction).upper()
+                if pos_dir not in (ev_dir, f"DIRECTION.{ev_dir}"):
+                    continue
+
+            matched_pos = pos
+            break
 
         if not matched_pos:
             logger.debug(
-                "WebSocket trade update for %s (order %s) did not match any active position",
+                "WebSocket trade update for %s (order %s, side %s) did not match any eligible active position to exit",
                 ev.symbol,
                 ev.broker_order_id,
+                ev.order_side,
             )
             return
 

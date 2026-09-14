@@ -364,3 +364,94 @@ async def test_create_broker_with_redundancy_config():
     assert isinstance(broker.primary, TradovateBroker)
     assert isinstance(broker.fallback, PaperBroker)
     assert broker.config.max_consecutive_failures == 2
+
+
+@pytest.mark.asyncio
+async def test_tradovate_reconciliation_skips_entry_fill_and_attaches_side():
+    config = AppConfig(
+        execution_mode=ExecutionMode.TRADOVATE,
+        tradovate_username="trader1",
+        tradovate_password="pw",
+        tradovate_api_key="key",
+        tradovate_api_secret="sec",
+    )
+    mock_client = AsyncMock()
+
+    resp_pos = MagicMock(status_code=200)
+    resp_pos.json.return_value = []
+
+    resp_orders = MagicMock(status_code=200)
+    resp_orders.json.return_value = [
+        {
+            "id": "ENTRY-ORDER-777",
+            "action": "Buy",
+            "symbol": "MESM4",
+            "ordStatus": "Filled",
+            "orderType": "Limit",
+            "avgPx": 5800.0,
+        },
+        {
+            "id": "EXIT-ORDER-888",
+            "action": "Sell",
+            "symbol": "MESM4",
+            "ordStatus": "Filled",
+            "orderType": "Limit",
+            "avgPx": 5850.0,
+        },
+    ]
+
+    resp_fills = MagicMock(status_code=200)
+    resp_fills.json.return_value = [
+        {
+            "id": 101,
+            "orderId": "ENTRY-ORDER-777",
+            "contract": "MESM4",
+            "action": "Buy",
+            "price": 5800.0,
+        },
+        {
+            "id": 102,
+            "orderId": "EXIT-ORDER-888",
+            "contract": "MESM4",
+            "action": "Sell",
+            "price": 5850.0,
+        },
+    ]
+
+    def mock_get(url, *args, **kwargs):
+        if "position/list" in url:
+            return resp_pos
+        elif "order/list" in url:
+            return resp_orders
+        elif "fill/list" in url:
+            return resp_fills
+        raise ValueError(f"Unexpected GET {url}")
+
+    mock_client.get.side_effect = mock_get
+
+    broker = TradovateBroker(config, client=mock_client)
+    broker._access_token = "valid_token"
+
+    active_positions = [
+        {
+            "id": 10,
+            "contract": "/MES",
+            "direction": "LONG",
+            "entry_price": 5800.0,
+            "take_profit": 5850.0,
+            "stop_loss": 5750.0,
+            "quantity": 1.0,
+            "broker_order_id": "ENTRY-ORDER-777",
+        }
+    ]
+
+    events = await broker.reconcile_positions(active_positions)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.signal_id == 10
+    assert ev.contract == "/MES"
+    assert ev.broker_order_id == "EXIT-ORDER-888"
+    assert ev.order_side == "sell"
+    assert ev.exit_price == 5850.0
+    assert ev.exit_reason == ExitReason.TAKE_PROFIT
+    assert ev.realized_pnl == pytest.approx(250.0)

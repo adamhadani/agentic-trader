@@ -135,3 +135,8 @@ When writing or modifying logic, NEVER violate these core constraints:
 9. **Single Steady-State Daemon**: Production runs only `copilot daemon`.
 10. **Emergency Kill Switch & Halt Integrity**: When halted (`trading_halted=true` in `system_state`), all market scans and order submissions are strictly blocked across CLI, scheduled daemon jobs, and Telegram. Resumption requires explicit `/resume` or `copilot resume`.
 11. **Database Schema Governance**: All schema migrations must be defined exclusively via Alembic revisions (`run_migrations_head`). Never reintroduce hard-coded table creation or ALTER TABLE shims.
+12. **Reconciliation & Fill Invariants**: All broker backends (Alpaca, Tradovate, Paper, and future drivers like IBKR) and the copilot reconciliation engine must adhere to the 4 fill invariants:
+    - **Entry Order ID Exclusion**: Order fills matching `pos["broker_order_id"]` are entry confirmations; they must never close the position or emit exit alerts.
+    - **Directional Opposing Side Rule**: Exit fills MUST strictly oppose the position direction (Sell closes Long, Buy closes Short). Fills on the same side as entry are entries/accumulations and must be ignored for exit reconciliation.
+    - **Order ID Distinctness**: Bracket legs (TP/SL) and manual exits generate distinct order IDs from the entry order ID.
+    - **Defense-in-Depth**: Both `on_stream_trade_update` and `process_reconciliation_event` validate side opposition and entry ID exclusion before modifying database state.
