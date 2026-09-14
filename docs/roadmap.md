@@ -867,10 +867,79 @@ Deploy the algorithmic copilot onto the Alpaca market backend for seamless paper
 
 ---
 
-## Next Horizon: Strategic Initiatives (Phases 35+)
+## Phase 35: Database Administration & Safe Historical Signal Clearance
+
+### Objective
+Provide clean operational tooling to purge historical development/testing signals from SQLite, reset primary key autoincrement sequences without dropping tables, and prevent stale signals from affecting live desk operations.
+
+### Key Deliverables
+1. **SignalDatabase Clearance Method (`agentic_trader/storage/db.py`)**:
+   - Implemented `clear_all_signals()` executing `DELETE FROM signals` and resetting SQLite `sqlite_sequence` within a single atomic async transaction.
+2. **CLI Database Administration (`agentic_trader/cli/commands/db.py`)**:
+   - Added `copilot db clear [--yes]` Click subcommand with interactive confirmation safeguard and instant non-interactive override.
+3. **Unit Test Coverage**:
+   - Verified signal purge, autoincrement counter reset to 1, and database schema preservation across unit tests.
+
+---
+
+## Phase 36: Dedicated Database Configuration & Strict Pytest Session Isolation
+
+### Objective
+Eliminate cross-talk between test executions, local CLI invocations, and continuous production daemon operations by parameterizing database locations and enforcing strict session-scoped isolation in pytest.
+
+### Key Deliverables
+1. **Configurable Database Settings (`agentic_trader/config.py`)**:
+   - Added `database.name` in `config/config.yaml` with precedence cascade: CLI `--db-name` / `--db-path` -> Env var `DB_NAME` / `DB_PATH` -> YAML config -> default `signals`.
+2. **Pytest Session Isolation (`tests/conftest.py`)**:
+   - Configured an autouse session fixture `isolate_test_database` overriding `DB_NAME="test_signals"` and pointing `DB_PATH` to a fresh pytest `tmp_path`, guaranteeing that unit tests NEVER touch or pollute production `data/signals.db`.
+3. **Comprehensive Verification (`tests/config/test_db_isolation.py`)**:
+   - Added test suite confirming default path resolution, custom name overrides, explicit path resolution, and absolute test isolation.
+
+---
+
+## Phase 37: Telegram Slash Command Palette Registration & Menu Button Across All Scopes
+
+### Objective
+Ensure that operators across all mobile, desktop, and web Telegram clients receive native interactive slash command autocomplete and a dedicated command menu button.
+
+### Key Deliverables
+1. **Explicit Startup Command Registration (`agentic_trader/notifier/telegram_bot.py`)**:
+   - Discovered that `python-telegram-bot` v20+ only executes `Application.post_init` when initialized via `run_polling()`, bypassing command registration in custom daemon async lifecycles (`app.initialize()`).
+   - Added `TelegramNotifier.start_polling()` and `stop_polling()`, explicitly registering all 12 desk commands across `BotCommandScopeDefault`, `BotCommandScopeAllPrivateChats`, and `BotCommandScopeChat`.
+2. **Interactive Chat Menu Button Configuration**:
+   - Configured `set_chat_menu_button(menu_button=MenuButtonCommands())` globally and for the operator chat ID, rendering the dedicated `[Menu]` / `[/]` command button directly in the chat input interface.
+3. **Lifecycle Integration**:
+   - Wired `start_polling()` into `copilot daemon` and `copilot listen` service runners.
+
+---
+
+## Phase 38: Live Alpaca Paper Trade Execution, Reconciler Safety & Codebase Simplification
+
+### Objective
+Verify end-to-end autonomous live execution against the Alpaca Paper API, eliminate order reconciliation race conditions, dynamicize trade exit presentation, and prune legacy backward-compatibility shims to prevent schema drift.
+
+### Key Deliverables
+1. **Live Alpaca Execution Verification (Signal #1 - SPY LONG)**:
+   - Evaluated `SPY LONG` via `TREND_PULLBACK` at $761.77.
+   - LiteLLM validated trade sizing: 39 shares ($200.46 risk, $29,709 notional).
+   - Submitted bracket order to Alpaca: Entry BUY filled immediately at $761.7656 with exchange-held Take Profit (Limit $772.05) and Stop Loss (Stop $756.63) active.
+2. **Bracket Order Reconciler Safety Fix (`agentic_trader/broker/alpaca.py`)**:
+   - Identified that Alpaca's `closed_orders` list includes filled *entry* orders.
+   - Updated `reconcile_positions()` to explicitly filter out `ord_id == entry_order_id` and require an opposing exit side (`sell` for long, `buy` for short) before triggering closure, preventing false-positive exit alerts.
+3. **Dynamic Unit Sizing on Exit Cards (`agentic_trader/notifier/telegram_bot.py`)**:
+   - Updated `format_exit_card()` and `send_exit_alert()` to accept `quantity` and `asset_class`, displaying actual share counts (e.g. `39 shares SPY`) rather than hardcoding `1x`.
+4. **Codebase Simplification & Shim Pruning**:
+   - Deleted `_fallback_sqlite_sync()` raw SQL table creation routine and `sqlite3` import from `agentic_trader/storage/db.py`, establishing Alembic migrations (`run_migrations_head`) as the sole authoritative source of schema truth.
+   - Removed unused backward-compatibility alias file `agentic_trader/agent/session.py`.
+5. **Quality Assurance**:
+   - Test suite expanded to 273 passing unit tests with 100% pre-commit compliance.
+
+---
+
+## Next Horizon: Strategic Initiatives (Phases 39+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 35** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 36** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 37** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 39** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 40** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 41** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |

@@ -220,9 +220,9 @@ uv run copilot eval
 
 ---
 
-## 4. Database Schema Migrations (`copilot db`)
+## 4. Database Schema Migrations & Administration (`copilot db`)
 
-Manage SQLite schema versions via Alembic:
+Manage SQLite schema versions and database maintenance via Alembic and administration subcommands:
 ```bash
 # Apply all pending database migrations to latest revision
 uv run copilot db upgrade head
@@ -235,4 +235,13 @@ uv run copilot db history
 
 # Roll back one migration revision
 uv run copilot db downgrade -1
+
+# Purge historical test/dev signals and reset autoincrement ID (schema preserved)
+uv run copilot db clear
+uv run copilot db clear --yes  # bypass interactive confirmation
 ```
+
+### Global Database Override Options
+Commands interacting with storage accept options or environment variables to redirect to alternate database files:
+- `--db-name <name>`: Resolve database inside `data/<name>.db` (or `DB_NAME` env var).
+- `--db-path <path>`: Explicit filesystem path to database (or `DB_PATH` env var).
