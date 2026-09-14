@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import click
 
@@ -32,8 +33,22 @@ from agentic_trader.cli.commands.trade import (
     default=False,
     help="Enable verbose DEBUG logging",
 )
-def cli(verbose: bool) -> None:
+@click.option(
+    "--db-name",
+    default=None,
+    help="Target database name (e.g. 'signals', 'test_signals', 'staging')",
+)
+@click.option(
+    "--db-path",
+    default=None,
+    help="Explicit database SQLite file path or database connection URL",
+)
+def cli(verbose: bool, db_name: str | None = None, db_path: str | None = None) -> None:
     """Agentic Trader - Autonomous Multi-Asset Quantitative Trading System."""
+    if db_name:
+        os.environ["DB_NAME"] = db_name
+    if db_path:
+        os.environ["DB_PATH"] = db_path
     log_level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=log_level,

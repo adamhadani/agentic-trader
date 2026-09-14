@@ -310,6 +310,11 @@ class MarketDataConfig(BaseModel):
     retry_backoff_factor: float = DEFAULT_DATA_RETRY_BACKOFF_FACTOR
 
 
+class DatabaseConfig(BaseModel):
+    name: str = "signals"
+    path: str | None = None
+
+
 class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
@@ -329,6 +334,7 @@ class AppConfig(BaseModel):
     session: SessionConfig = Field(default_factory=SessionConfig)
     trailing_stop: TrailingStopConfig = Field(default_factory=TrailingStopConfig)
     market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
     # Environment variables
     telegram_bot_token: str | None = None
@@ -338,6 +344,7 @@ class AppConfig(BaseModel):
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
     finnhub_api_key: str | None = None
+    db_name: str = "signals"
     db_path: str = str(WORKSPACE_ROOT / "data" / "signals.db")
 
     # Broker Execution Configuration
@@ -381,7 +388,15 @@ def load_config(config_path: str | None = None) -> AppConfig:
     gemini_key = os.getenv("GEMINI_API_KEY")
     finnhub_key = os.getenv("FINNHUB_API_KEY") or os.getenv("FINNHUB__API_KEY")
     iex_token = os.getenv("IEX_CLOUD_API_TOKEN") or os.getenv("IEX_API_KEY") or os.getenv("IEX_TOKEN")
-    db_path = os.getenv("DB_PATH", str(WORKSPACE_ROOT / "data" / "signals.db"))
+    db_cfg = cfg_dict.get("database", {})
+    if not isinstance(db_cfg, dict):
+        db_cfg = {}
+
+    db_name = os.getenv("DB_NAME", db_cfg.get("name", "signals"))
+    db_filename = db_name if db_name.endswith(".db") else f"{db_name}.db"
+    default_db_path = str(WORKSPACE_ROOT / "data" / db_filename)
+    db_path = os.getenv("DB_PATH", db_cfg.get("path") or default_db_path)
+
     execution_mode = os.getenv("EXECUTION_MODE", "paper").lower()
     tradovate_api_key = os.getenv("TRADOVATE_API_KEY")
     tradovate_api_secret = os.getenv("TRADOVATE_API_SECRET")
@@ -467,6 +482,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         options=OptionsConfig(**cfg_dict.get("options", {})),
         telemetry=TelemetryConfig(**cfg_dict.get("telemetry", {})),
         pairs=PairsConfig(**cfg_dict.get("pairs", {})),
+        database=DatabaseConfig(name=db_name, path=db_path),
         telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
         telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
         llm_model=llm_model,
@@ -475,6 +491,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         gemini_api_key=gemini_key,
         finnhub_api_key=finnhub_key,
         iex_cloud_api_token=iex_token,
+        db_name=db_name,
         db_path=db_path,
         execution_mode=execution_mode,
         tradovate_api_key=tradovate_api_key,
