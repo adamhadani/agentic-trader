@@ -8,14 +8,24 @@ from pydantic import BaseModel, Field, field_validator
 
 from agentic_trader.constants import (
     DEFAULT_BACKTEST_LOOKBACK,
+    DEFAULT_BREAKEVEN_BUFFER_DOLLARS,
     DEFAULT_CALIBRATIONS_FILENAME,
+    DEFAULT_DATA_MAX_RETRIES,
+    DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
+    DEFAULT_DATA_TIMEOUT_SECONDS,
+    DEFAULT_FALLBACK_PROVIDERS,
     DEFAULT_MIN_OOS_SHARPE,
     DEFAULT_MIN_WARMUP_BARS,
     DEFAULT_MIN_WFE,
     DEFAULT_MONTE_CARLO_SIMULATIONS,
     DEFAULT_PORTFOLIO_CASH,
+    DEFAULT_PRIMARY_EQUITIES_PROVIDER,
     DEFAULT_RANDOM_SEED,
     DEFAULT_RISK_FREE_RATE,
+    DEFAULT_TRAIL_ATR_MULTIPLE,
+    DEFAULT_TRAIL_STEP_TICKS,
+    DEFAULT_TRAIL_TRIGGER_R,
+    DEFAULT_TRAILING_STOP_MODE,
     DEFAULT_TRAIN_RATIO,
     DEFAULT_VIX_COMPRESSED_THRESHOLD,
     DEFAULT_VIX_ELEVATED_THRESHOLD,
@@ -264,20 +274,22 @@ class SessionConfig(BaseModel):
 
 class TrailingStopConfig(BaseModel):
     enabled: bool = True
-    mode: str = "chandelier_atr"  # "chandelier_atr" (quant ATR high-water mark), "breakeven_atr", "disabled"
-    trail_trigger_r: float = 1.5  # Profit in R-multiples before trailing stop activates
-    trail_atr_multiple: float = 1.5  # Distance behind price/high-water mark in ATR multiples
+    mode: str = DEFAULT_TRAILING_STOP_MODE  # "chandelier_atr" (quant ATR high-water mark), "breakeven_atr", "disabled"
+    trail_trigger_r: float = DEFAULT_TRAIL_TRIGGER_R  # Profit in R-multiples before trailing stop activates
+    trail_atr_multiple: float = DEFAULT_TRAIL_ATR_MULTIPLE  # Distance behind price/high-water mark in ATR multiples
     breakeven_trigger_r: float | None = None  # Explicit jump to break-even (opt-in; None = disabled in quant mode)
-    breakeven_buffer_dollars: float = 10.0  # Buffer beyond entry price when moving to break-even
-    trail_step_ticks: int = 4  # Minimum ratchet step in ticks
+    breakeven_buffer_dollars: float = (
+        DEFAULT_BREAKEVEN_BUFFER_DOLLARS  # Buffer beyond entry price when moving to break-even
+    )
+    trail_step_ticks: int = DEFAULT_TRAIL_STEP_TICKS  # Minimum ratchet step in ticks
 
 
 class MarketDataConfig(BaseModel):
-    primary_equities_provider: str = "alpaca"  # "alpaca", "yfinance"
-    fallback_providers: list[str] = Field(default_factory=lambda: ["yfinance"])
-    timeout_seconds: float = 10.0
-    max_retries: int = 2
-    retry_backoff_factor: float = 0.5
+    primary_equities_provider: str = DEFAULT_PRIMARY_EQUITIES_PROVIDER  # "alpaca", "yfinance"
+    fallback_providers: list[str] = Field(default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS))
+    timeout_seconds: float = DEFAULT_DATA_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_DATA_MAX_RETRIES
+    retry_backoff_factor: float = DEFAULT_DATA_RETRY_BACKOFF_FACTOR
 
 
 class AppConfig(BaseModel):

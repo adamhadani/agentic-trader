@@ -57,7 +57,7 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
 - **Pre-commit checks (mandatory before any commit)**:
   `uv run pre-commit run --all-files`
 - **Run test suite**:
-  `uv run pytest` (217 unit tests)
+  `uv run pytest` (237 unit tests)
 - **Run test suite with code coverage**:
   `uv run pytest --cov=agentic_trader --cov-report=term-missing`
 - **Rust-accelerated impacted tests**:
@@ -84,11 +84,16 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
   - `formatters.py`: Decoupled presentation DTOs (`PositionView`, `PositionsReport`, `PortfolioStatusReport`, `ExecutionResultView`, `PerformanceSummaryReport`) and formatters (`TerminalFormatter`, `TelegramHtmlFormatter`).
 - `agentic_trader/market/`:
   - `session.py`: Market session & trading hours protocol (`MarketSessionProtocol`), CME Globex holiday calendar (`MarketHolidayCalendar`), timezone normalization (`ensure_et`), and composite routing (`CompositeMarketSessionProvider`).
+- `agentic_trader/resilience/`:
+  - `fallback.py`: Generic LangChain-inspired resilience engine (`RunnableWithFallbacks`, `RetryPolicy`, `AllFallbacksExhaustedError`) with timeout and exponential backoff retry.
+- `agentic_trader/data/`:
+  - `providers.py`: Provider protocol (`MarketDataProvider`), `AlpacaDataProvider` (stock/crypto), `YFinanceDataProvider` (futures/fallback), and `CompositeMarketDataProvider`.
+  - `market_data.py`: Technical indicator calculations and market data fetcher delegating to `CompositeMarketDataProvider`.
 - `agentic_trader/broker/`:
-  - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`).
-  - `paper.py`: Simulated paper execution with dynamic contract multipliers.
-  - `tradovate.py`: Headless REST API execution with native server-side OCO brackets.
-  - `alpaca.py`: Official `alpaca-py` TradingClient SDK integration with bracket orders and WebSocket `TradingStream`.
+  - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`, `supports_order_modification`, `modify_order_stop`).
+  - `paper.py`: Simulated paper execution with dynamic contract multipliers and resting bracket stop modification.
+  - `tradovate.py`: Headless REST API execution with native server-side OCO brackets and `/order/modifyorder` with graceful offline fallback.
+  - `alpaca.py`: Official `alpaca-py` TradingClient SDK integration with bracket orders, `TradingStream` WebSocket, and resting stop leg replacement (`replace_order_by_id`).
 - `agentic_trader/pairs/`:
   - `cointegration.py`: Engle-Granger two-step cointegration test, Ornstein-Uhlenbeck half-life modeling, and rolling spread Z-scores.
   - `screener.py`: `PairsScreener` cross-asset scanner with futures proxy mapping.

@@ -9,6 +9,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
+from agentic_trader.constants import (
+    DEFAULT_DATA_MAX_RETRIES,
+    DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
+    DEFAULT_DATA_TIMEOUT_SECONDS,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +38,9 @@ class AllFallbacksExhaustedError(FallbackError):
 class RetryPolicy:
     """Configurable retry and timeout policy."""
 
-    max_retries: int = 2
-    backoff_factor: float = 0.5
-    timeout_seconds: float = 10.0
+    max_retries: int = DEFAULT_DATA_MAX_RETRIES
+    backoff_factor: float = DEFAULT_DATA_RETRY_BACKOFF_FACTOR
+    timeout_seconds: float = DEFAULT_DATA_TIMEOUT_SECONDS
     exceptions_to_retry: tuple[type[Exception], ...] = field(default_factory=lambda: (Exception,))
 
 

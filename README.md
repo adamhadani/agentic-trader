@@ -16,7 +16,7 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 - [**Production Operations Guide**](docs/production.md): **Single Source of Truth** for 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
 - [**CLI Command Reference**](docs/cli-reference.md): Exhaustive guide to all Click CLI subcommands, flags, and outputs.
 - [**Quantitative Strategies & Models**](docs/strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX, and Pairs Trading.
-- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 22) and future milestones.
+- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 30) and future milestones.
 
 ### Compiling & Viewing Documentation Locally
 
@@ -67,6 +67,8 @@ copilot daemon
    - **Tradovate WebSocket**: Account, position, and CME order state synchronization.
 4. **Two-Way Telegram Interactive Bot**: Continuous async polling listener processing operator commands (`/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/scan`, `/close`) and inline action buttons (`[ 🚀 Execute ]` / `[ ❌ Dismiss ]`).
 5. **Native Prometheus Exporter**: Lightweight async HTTP server running on `0.0.0.0:9108` serving `GET /metrics` and container health probe at `GET /healthz`.
+6. **Dynamic Trailing Stop & Broker Sync**: Evaluates active positions for Chandelier ATR high-water mark trailing stops and amends resting bracket stop orders directly on exchange brokers (Alpaca and Tradovate) with graceful degradation.
+7. **Resilient Multi-Tier Market Data**: Dual-feed market data engine (`RunnableWithFallbacks`) querying Alpaca historical bars with automatic failover to Yahoo Finance.
 
 ---
 
@@ -195,7 +197,7 @@ uv run pre-commit install
 The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`:
 
 ```bash
-# Run pytest unit test suite (217 tests)
+# Run pytest unit test suite (237 tests)
 uv run pytest
 
 # Run pytest with code coverage report
