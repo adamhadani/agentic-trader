@@ -16,7 +16,7 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 - [**Production Operations Guide**](docs/production.md): **Single Source of Truth** for 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
 - [**CLI Command Reference**](docs/cli-reference.md): Exhaustive guide to all Click CLI subcommands, flags, and outputs.
 - [**Quantitative Strategies & Models**](docs/strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX, and Pairs Trading.
-- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 32) and future milestones.
+- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 38) and future milestones.
 
 ### Compiling & Viewing Documentation Locally
 
@@ -145,13 +145,16 @@ uv run copilot stress              # Crisis replay (2008 GFC, 2020 COVID, 2022 I
 uv run copilot eval                # Benchmark LLM decision prompts against risk invariants (Promptfoo)
 ```
 
-### D. Database Migrations (`copilot db`)
+### D. Database Migrations & Administration (`copilot db`)
 ```bash
 uv run copilot db upgrade head     # Apply pending Alembic database schema migrations
 uv run copilot db current          # View current schema revision
 uv run copilot db history          # View migration history
 uv run copilot db downgrade -1     # Roll back last migration
+uv run copilot db clear [--yes]    # Purge historical test signals and reset sequence (schema preserved)
 ```
+
+Global database flags (`--db-name <name>`, `--db-path <path>`) or the `DB_NAME` / `DB_PATH` environment variables can be passed to redirect execution to isolated database environments without modifying production data.
 
 ---
 
@@ -174,7 +177,7 @@ When the daemon is running, operators can query and command the trading desk dir
 | `/resume` | Clear emergency trading halt and resume autonomous scanning & execution | `/resume` |
 | `/help` | Display interactive command menu and enforced risk invariants | `/help` |
 
-> **Interactive Autocomplete**: The Telegram bot automatically registers commands via `set_my_commands` on startup. When typing `/` into the chat input, modern Telegram clients display a native interactive autocomplete popup with command descriptions.
+> **Interactive Autocomplete & Menu Button**: On startup, the Telegram bot registers slash commands via `set_my_commands` and configures the native chat menu button via `set_chat_menu_button(MenuButtonCommands())` across default, private, and chat-specific scopes. Modern Telegram mobile, desktop, and web clients display a dedicated `[Menu]` / `[/]` button with interactive autocomplete for instant command discovery.
 
 ---
 
@@ -204,10 +207,10 @@ uv run pre-commit install
 
 ## 7. Quality Assurance & Testing
 
-The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`:
+The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`. An automatic session-scoped fixture in `tests/conftest.py` guarantees that pytest runs against an ephemeral database in `tmp_path`, strictly isolating production `data/signals.db`:
 
 ```bash
-# Run pytest unit test suite (247 tests across modular package subdirectories)
+# Run pytest unit test suite (273 tests across 18 modular package subdirectories)
 uv run pytest
 
 # Run targeted component unit tests (e.g. agent, broker, market)

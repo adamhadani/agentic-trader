@@ -225,6 +225,7 @@ To eliminate confusion between production daemons, day-to-day operations, and re
 | **`copilot db upgrade`** | **Database Maintenance** | Post-Deploy / Migration | Applies pending Alembic migrations to SQLite schema (`upgrade head`) |
 | **`copilot db current`** | **Database Maintenance** | Ad-Hoc | Displays current database migration revision |
 | **`copilot db history`** | **Database Maintenance** | Ad-Hoc | Lists historical Alembic database migrations |
+| **`copilot db clear`** | **Database Maintenance** | Ad-Hoc / Maintenance | Purges historical signals and resets autoincrement ID without dropping schema (`--yes`) |
 | **`copilot backtest`** | **Research & Evaluation** | Ad-Hoc / Weekly | Historical backtest with friction, Cash-Plus attribution, and Monte Carlo |
 | **`copilot optimize`** | **Research & Evaluation** | Ad-Hoc / Monthly | Parameter grid search and rolling walk-forward cross-validation (`--walk-forward`) |
 | **`copilot retune`** | **Research & Evaluation** | Scheduled / Monthly | Automated parameter recalibration with Walk-Forward Efficiency (WFE) thresholding |
@@ -276,4 +277,4 @@ When `copilot daemon` is running, operators can execute these commands in Telegr
 | `/help` | Display command menu and enforced risk invariants | `/help` |
 
 > [!NOTE]
-> When typing `/` in Telegram, the bot command palette automatically autocompletes available commands with their descriptions via `setMyCommands`.
+> On startup, the Telegram bot registers slash commands via `set_my_commands` and configures the native chat menu button via `set_chat_menu_button(MenuButtonCommands())` across default, private, and chat-specific scopes. Modern Telegram mobile, desktop, and web clients display a dedicated `[Menu]` / `[/]` button with interactive autocomplete for instant command discovery.
