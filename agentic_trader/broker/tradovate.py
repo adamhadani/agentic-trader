@@ -671,3 +671,40 @@ class TradovateBroker(BaseBroker):
         except Exception as e:
             logger.warning("Exception modifying Tradovate stop order (degrading): %s", e)
             return OrderResult(success=False, error_message=str(e))
+
+    async def cancel_all_orders(self) -> int:
+        """Cancel all open orders on Tradovate exchange with graceful degradation."""
+        if not self._access_token or not self.client:
+            try:
+                connected = await self.connect()
+            except Exception as conn_err:
+                logger.warning("Not connected to Tradovate (%s); cancel_all_orders degraded.", conn_err)
+                return 0
+            if not connected or not self.client:
+                return 0
+
+        headers = {"Authorization": f"Bearer {self._access_token}"}
+        cancelled_count = 0
+        try:
+            resp = await self.client.get("/order/list", headers=headers)
+            if resp.status_code == 200:
+                orders = resp.json()
+                for o in orders:
+                    status = str(o.get("ordStatus", "")).lower()
+                    if status in ("working", "open", "suspended", "accepted"):
+                        oid = o.get("id")
+                        if oid:
+                            c_resp = await self.client.post(
+                                "/order/cancelorder", json={"orderId": oid}, headers=headers
+                            )
+                            if c_resp.status_code == 200:
+                                cancelled_count += 1
+            logger.info(
+                "Tradovate: Cancelled %d open orders",
+                cancelled_count,
+                extra={"event": "tradovate_cancel_all_orders", "count": cancelled_count, "broker": "TradovateBroker"},
+            )
+            return cancelled_count
+        except Exception as e:
+            logger.warning("Tradovate cancel_all_orders failed: %s", e, extra={"error": str(e)})
+            return 0

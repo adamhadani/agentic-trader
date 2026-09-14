@@ -586,3 +586,20 @@ class AlpacaBroker(BaseBroker):
         except Exception as e:
             logger.exception("Exception modifying Alpaca stop order")
             return OrderResult(success=False, error_message=str(e))
+
+    async def cancel_all_orders(self) -> int:
+        """Cancel all open orders at Alpaca via client.cancel_orders()."""
+        if not self.client:
+            return 0
+        try:
+            res = await asyncio.to_thread(self.client.cancel_orders)
+            cancelled_count = len(res) if isinstance(res, list) else 0
+            logger.info(
+                "Alpaca: Cancelled %d open orders",
+                cancelled_count,
+                extra={"event": "alpaca_cancel_all_orders", "count": cancelled_count, "broker": "AlpacaBroker"},
+            )
+            return cancelled_count
+        except Exception as e:
+            logger.warning("Alpaca cancel_all_orders failed: %s", e, extra={"error": str(e)})
+            return 0

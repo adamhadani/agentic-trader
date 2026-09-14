@@ -16,7 +16,9 @@ from agentic_trader.cli.commands.telemetry import metrics
 from agentic_trader.cli.commands.trade import (
     close,
     execute,
+    panic,
     positions,
+    resume,
     status,
     test_alert,
 )
@@ -46,6 +48,8 @@ cli.add_command(status)
 cli.add_command(positions)
 cli.add_command(close)
 cli.add_command(execute)
+cli.add_command(panic)
+cli.add_command(resume)
 cli.add_command(test_alert)
 cli.add_command(backtest)
 cli.add_command(optimize)

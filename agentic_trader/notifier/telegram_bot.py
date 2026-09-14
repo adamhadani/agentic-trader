@@ -2,8 +2,14 @@ import html
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -306,6 +312,8 @@ class TelegramNotifier:
         backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
         gex_provider: Callable[[str], Awaitable[str]] | None = None,
         pairs_provider: Callable[[], Awaitable[str]] | None = None,
+        panic_handler: Callable[[str], Awaitable[Any]] | None = None,
+        resume_handler: Callable[[], Awaitable[Any]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
@@ -322,11 +330,13 @@ class TelegramNotifier:
         self.backtest_runner = backtest_runner
         self.gex_provider = gex_provider
         self.pairs_provider = pairs_provider
+        self.panic_handler = panic_handler
+        self.resume_handler = resume_handler
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
             try:
-                self.app = ApplicationBuilder().token(self.bot_token).build()
+                self.app = ApplicationBuilder().token(self.bot_token).post_init(self._post_init).build()
                 self._register_handlers()
             except Exception as e:
                 logger.error(f"Failed to initialize Telegram application: {e}")
@@ -339,6 +349,36 @@ class TelegramNotifier:
         if not update.effective_chat:
             return False
         return str(update.effective_chat.id) == str(self.chat_id)
+
+    async def _post_init(self, application: Application) -> None:
+        """Invoked by python-telegram-bot upon application.initialize()."""
+        await self.setup_bot_commands()
+
+    async def setup_bot_commands(self) -> bool:
+        """Register slash commands with Telegram so client-side autocomplete works."""
+        if not self.is_configured() or not self.app:
+            return False
+        try:
+            commands = [
+                BotCommand("status", "Portfolio exposure, cash base, and macro events"),
+                BotCommand("positions", "Active tracked trades and unrealized P&L"),
+                BotCommand("perf", "Cumulative closed trade performance and win rate"),
+                BotCommand("regime", "Real-time VIX, 10Y yield, and Dollar Index regime"),
+                BotCommand("pairs", "Statistical arbitrage pairs, cointegration & Z-scores"),
+                BotCommand("gex", "Gamma exposure, dealer walls, and gamma flip"),
+                BotCommand("backtest", "Offline backtest simulation"),
+                BotCommand("scan", "Trigger on-demand quantitative universe scan"),
+                BotCommand("close", "Manually close a tracked trade"),
+                BotCommand("panic", "EMERGENCY: cancel all orders, liquidate positions & halt"),
+                BotCommand("resume", "Resume trading operations after panic halt"),
+                BotCommand("help", "Command overview and risk invariants"),
+            ]
+            await self.app.bot.set_my_commands(commands)
+            logger.info("Successfully registered Telegram slash command palette (set_my_commands)")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to register Telegram bot commands: {e}")
+            return False
 
     def _register_handlers(self):
         if self.app:
@@ -353,6 +393,8 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("backtest", self.handle_backtest_command))
             self.app.add_handler(CommandHandler("gex", self.handle_gex_command))
             self.app.add_handler(CommandHandler("pairs", self.handle_pairs_command))
+            self.app.add_handler(CommandHandler("panic", self.handle_panic_command))
+            self.app.add_handler(CommandHandler("resume", self.handle_resume_command))
 
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -369,6 +411,8 @@ class TelegramNotifier:
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
             "• /close &lt;id&gt; [price] - Manually close a tracked trade and record fill\n"
             "• /scan - Trigger an on-demand quantitative scan across universe\n"
+            "• /panic [confirm] - 🔴 Emergency kill switch: cancel orders, liquidate &amp; halt\n"
+            "• /resume - 🟢 Clear emergency halt and restore normal operations\n"
             "• /help - Display this command overview\n\n"
             "<b>Risk Invariants Enforced:</b>\n"
             "• Sizing: 1 micro contract (/MES, /MNQ, /MGC, /MCL) or fractional equity shares\n"
@@ -496,6 +540,73 @@ class TelegramNotifier:
         else:
             await update.message.reply_text("Close handler not attached.")
 
+    async def handle_panic_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        args = context.args or []
+        is_confirmed = bool(args and args[0].lower() in ("confirm", "force", "yes", "now"))
+
+        if is_confirmed:
+            await update.message.reply_text(
+                "🚨 <b>EMERGENCY KILL SWITCH ENGAGED... LIQUIDATING NOW</b>", parse_mode="HTML"
+            )
+            if self.panic_handler:
+                try:
+                    res = await self.panic_handler("Manual /panic confirm triggered via Telegram")
+                    if isinstance(res, str):
+                        await update.message.reply_text(res, parse_mode="HTML")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Error during emergency panic: {e}")
+            else:
+                await update.message.reply_text("❌ Panic handler not attached to copilot.")
+            return
+
+        # Two-step confirmation prompt with warning card and interactive inline button
+        active_count = await self.db.get_active_position_count()
+        open_notional = await self.db.get_active_notional_exposure()
+        warning_card = (
+            "⚠️ <b>EMERGENCY KILL SWITCH CONFIRMATION REQUIRED</b> ⚠️\n\n"
+            f"• <b>Active Open Positions:</b> <code>{active_count}</code>\n"
+            f"• <b>Total Open Notional:</b> <code>${open_notional:,.2f}</code>\n\n"
+            "<b>Institutional Kill Switch Waterfall:</b>\n"
+            "1. <b>Ingress Cancellation:</b> Immediate withdrawal of all working/resting broker orders.\n"
+            "2. <b>Egress Liquidation:</b> Market orders to flatten all active positions.\n"
+            "3. <b>Trading Halt:</b> Persistent circuit breaker blocks all scans &amp; executions.\n\n"
+            "Are you sure you want to trigger emergency liquidation?"
+        )
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🔴 CONFIRM EMERGENCY LIQUIDATE & HALT",
+                        callback_data="panic_confirm",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "❌ Cancel",
+                        callback_data="panic_cancel",
+                    )
+                ],
+            ]
+        )
+        await update.message.reply_text(warning_card, parse_mode="HTML", reply_markup=keyboard)
+
+    async def handle_resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        if self.resume_handler:
+            try:
+                res = await self.resume_handler()
+                if isinstance(res, str):
+                    await update.message.reply_text(res, parse_mode="HTML")
+                elif isinstance(res, dict) and not res.get("success", False):
+                    await update.message.reply_text(f"❌ Failed to resume: {res.get('message', 'Unknown error')}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error resuming trading: {e}")
+        else:
+            await update.message.reply_text("❌ Resume handler not attached to copilot.")
+
     async def handle_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
@@ -607,6 +718,28 @@ class TelegramNotifier:
             await _safe_clear_markup()
             if msg and hasattr(msg, "reply_text"):
                 await msg.reply_text(f"❌ Signal #{signal_id} {SignalStatus.DISMISSED}.")
+        elif data == "panic_confirm":
+            await query.answer("Executing emergency kill switch...")
+            await _safe_clear_markup()
+            if self.panic_handler:
+                try:
+                    res = await self.panic_handler("Manual panic confirmation button tapped in Telegram")
+                    if isinstance(res, str) and msg and hasattr(msg, "reply_text"):
+                        await msg.reply_text(res, parse_mode="HTML")
+                except Exception as e:
+                    if msg and hasattr(msg, "reply_text"):
+                        await msg.reply_text(f"❌ Error during emergency panic: {e}")
+            else:
+                if msg and hasattr(msg, "reply_text"):
+                    await msg.reply_text("❌ Panic handler not attached to copilot.")
+        elif data == "panic_cancel":
+            await query.answer("Panic cancelled")
+            await _safe_clear_markup()
+            if msg and hasattr(msg, "reply_text"):
+                await msg.reply_text(
+                    "🛡️ <b>Emergency Kill Switch Cancelled.</b> Active positions and trading operations remain untouched.",
+                    parse_mode="HTML",
+                )
 
     async def send_signal_alert(
         self,

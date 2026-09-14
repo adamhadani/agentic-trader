@@ -292,3 +292,11 @@ class PaperBroker(BaseBroker):
             order_id=order_id or f"PAPER-STOP-{key}",
             raw_response={"symbol": symbol, "new_stop_price": new_stop_price},
         )
+
+    async def cancel_all_orders(self) -> int:
+        """Simulate cancelling all resting orders."""
+        logger.info(
+            "PaperBroker: Cancelled all resting orders",
+            extra={"event": "paper_cancel_all_orders", "broker": "PaperBroker"},
+        )
+        return 0

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from agentic_trader.constants import AssetClass, ExitReason, SignalStatus
 from agentic_trader.storage.migrations import run_migrations_head
-from agentic_trader.storage.models import Base, SignalRecord
+from agentic_trader.storage.models import Base, SignalRecord, SystemStateRecord
 
 
 logger = logging.getLogger(__name__)
@@ -98,6 +98,15 @@ class SignalDatabase:
                 if col not in existing_cols:
                     conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {col_type}")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_recent_signals ON signals(contract, strategy, timestamp);")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
             conn.commit()
 
     async def init_db(self):
@@ -347,3 +356,24 @@ class SignalDatabase:
                 "profit_factor": profit_factor,
                 "trades": [r.to_dict() for r in closed],
             }
+
+    async def get_state(self, key: str) -> str | None:
+        """Retrieve system state value for given key."""
+        async with self.session_factory() as session:
+            stmt = select(SystemStateRecord.value).where(SystemStateRecord.key == key)
+            res = await session.execute(stmt)
+            return res.scalar_one_or_none()
+
+    async def set_state(self, key: str, value: str) -> None:
+        """Insert or update system state key-value pair."""
+        async with self.session_factory() as session:
+            stmt = select(SystemStateRecord).where(SystemStateRecord.key == key)
+            res = await session.execute(stmt)
+            existing = res.scalar_one_or_none()
+            if existing:
+                existing.value = value
+                existing.updated_at = datetime.now(UTC)
+            else:
+                new_rec = SystemStateRecord(key=key, value=value, updated_at=datetime.now(UTC))
+                session.add(new_rec)
+            await session.commit()

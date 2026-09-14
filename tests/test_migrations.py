@@ -40,13 +40,14 @@ def test_migrations_fresh_lifecycle(tmp_path: Path):
 
     # Upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "001_initial"
+    assert get_current_revision(db_url) == "002_system_state"
 
     # Verify SQLite schema inspection
     with sqlite3.connect(db_file) as conn:
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = {row[0] for row in cursor.fetchall()}
         assert "signals" in tables
+        assert "system_state" in tables
         assert "alembic_version" in tables
 
         cursor = conn.execute("PRAGMA table_info(signals)")
@@ -76,6 +77,10 @@ def test_migrations_fresh_lifecycle(tmp_path: Path):
         }
         assert expected_cols.issubset(cols)
 
+        cursor = conn.execute("PRAGMA table_info(system_state)")
+        sys_cols = {row[1] for row in cursor.fetchall()}
+        assert {"key", "value", "updated_at"}.issubset(sys_cols)
+
     # Downgrade to base
     downgrade_migrations("base", db_url)
     assert get_current_revision(db_url) is None
@@ -84,19 +89,21 @@ def test_migrations_fresh_lifecycle(tmp_path: Path):
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = {row[0] for row in cursor.fetchall()}
         assert "signals" not in tables
+        assert "system_state" not in tables
 
     # Re-upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "001_initial"
+    assert get_current_revision(db_url) == "002_system_state"
 
 
 def test_get_history(tmp_path: Path):
     db_file = tmp_path / "hist.db"
     db_url = f"sqlite+aiosqlite:///{db_file}"
     history = get_history(db_url)
-    assert len(history) >= 1
+    assert len(history) >= 2
     revisions = [h["revision"] for h in history]
     assert "001_initial" in revisions
+    assert "002_system_state" in revisions
 
 
 @pytest.mark.asyncio
@@ -105,7 +112,7 @@ async def test_signal_database_auto_migration(tmp_path: Path):
     db = SignalDatabase(db_path=str(db_file))
 
     # Verify migration stamped
-    assert get_current_revision(db.db_url) == "001_initial"
+    assert get_current_revision(db.db_url) == "002_system_state"
 
     # Verify write and read operations
     sig_id = await db.record_signal(

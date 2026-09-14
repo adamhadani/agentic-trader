@@ -61,7 +61,8 @@ copilot daemon
 
 4. **Two-Way Telegram Interactive Bot**:
    - Continuous async polling listener allowing operators to interactively query the trading desk from any mobile device or desktop.
-   - Supports `/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/scan`, `/backtest`, `/close`, and interactive callback buttons.
+   - Built-in Telegram slash command autocomplete (`set_my_commands`) automatically registered at startup.
+   - Supports `/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/scan`, `/backtest`, `/close`, `/panic` (emergency kill switch with 2-step confirmation), `/resume`, and interactive callback buttons.
 
 5. **Native Prometheus Observability Server**:
    - Runs a lightweight async HTTP server on `0.0.0.0:9108`.
@@ -215,6 +216,8 @@ To eliminate confusion between production daemons, day-to-day operations, and re
 | **`copilot scan`** | **Day-to-Day Operations** | Ad-Hoc | Triggers on-demand market scan (`--dry-run`, `--no-llm`, `--asset-class`, `--symbols`) |
 | **`copilot execute <id>`** | **Day-to-Day Operations** | Ad-Hoc | Manually authorizes and submits a pending trade signal to the broker |
 | **`copilot close <id>`** | **Day-to-Day Operations** | Ad-Hoc | Liquidates an open position, records realized P&L, releases notional exposure |
+| **`copilot panic`** | **Emergency Risk Control** | Emergency / Critical | Institutional kill switch: cancels all resting orders, liquidates positions, halts trading (`--confirm`) |
+| **`copilot resume`** | **Emergency Risk Control** | Post-Halt | Clears persistent emergency halt and restores automated universe scans and trade executions |
 | **`copilot gex [sym]`** | **Day-to-Day Operations** | Daily / Morning | Analyzes dealer gamma exposure, call/put pinning walls, and gamma flip level |
 | **`copilot pairs`** | **Day-to-Day Operations** | Daily / Morning | Evaluates cross-asset cointegration and rolling spread $Z$-score arbitrage signals |
 | **`copilot metrics`** | **Day-to-Day Operations** | Ad-Hoc / CI | Dumps Prometheus exposition text or runs standalone metrics server (`--serve`) |
@@ -268,4 +271,9 @@ When `copilot daemon` is running, operators can execute these commands in Telegr
 | `/backtest [sym] [lookback]` | Trigger an on-demand offline backtest simulation | `/backtest SPY 1y` |
 | `/scan` | Trigger an immediate quantitative scan across the universe | `/scan` |
 | `/close <id> [price]` | Manually close an active trade and record fill | `/close 3 5850.25` |
+| `/panic [confirm]` | 🔴 Institutional kill switch: cancel orders, liquidate open positions, and halt trading | `/panic` or `/panic confirm` |
+| `/resume` | 🟢 Clear emergency trading halt and resume automated operations | `/resume` |
 | `/help` | Display command menu and enforced risk invariants | `/help` |
+
+> [!NOTE]
+> When typing `/` in Telegram, the bot command palette automatically autocompletes available commands with their descriptions via `setMyCommands`.

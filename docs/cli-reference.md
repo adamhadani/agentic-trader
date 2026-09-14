@@ -80,6 +80,22 @@ Liquidates an active position, records realized P&L, releases notional exposure,
 uv run copilot close 4 5845.50
 ```
 
+### `copilot panic [--confirm] [--reason "TEXT"]`
+Institutional emergency kill switch: cancels all resting broker orders, liquidates all active positions at market, and engages a persistent trading halt.
+```bash
+# Prompt for interactive confirmation
+uv run copilot panic
+
+# Immediate execution (bypass confirmation prompt)
+uv run copilot panic --confirm --reason "Extreme volatility circuit breaker"
+```
+
+### `copilot resume`
+Clears persistent emergency trading halt and restores automated universe scans and signal executions.
+```bash
+uv run copilot resume
+```
+
 ### `copilot test-alert`
 Emits a synthetic trade card to test Telegram formatting, execution buttons, and terminal display.
 ```bash

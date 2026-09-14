@@ -204,3 +204,10 @@ class BaseBroker(ABC):
             success=False,
             error_message=f"{self.__class__.__name__} does not support broker-side stop modification",
         )
+
+    async def cancel_all_orders(self) -> int:
+        """Cancel all open or resting orders at the broker.
+
+        Returns the number of orders successfully cancelled.
+        """
+        return 0

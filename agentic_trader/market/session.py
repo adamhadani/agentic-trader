@@ -158,6 +158,12 @@ class MarketHolidayCalendar:
         if christmas_eve.weekday() < 5:  # Monday through Friday
             early_closes[christmas_eve] = "Christmas Eve"
 
+        # July 3rd early close (when July 4th falls on Thursday or Friday)
+        # SIFMA / NYSE rule: If July 4th is a Thursday or Friday, the preceding business day (July 3rd) closes early (13:00 ET)
+        july_4 = date(year, 7, 4)
+        if july_4.weekday() in (3, 4):  # Thursday=3, Friday=4
+            early_closes[date(year, 7, 3)] = "Day Before Independence Day"
+
         # CME-specific holiday halt classifications
         # Holidays where CME halts at 13:00 ET and re-opens at 18:00 ET
         cme_1300_halt_days: set[date] = {

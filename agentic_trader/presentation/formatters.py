@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -197,6 +198,24 @@ class PerformanceSummaryReport:
             self.active_notional_exposure = self.active_exposure
 
 
+@dataclass
+class PanicReportView:
+    """Presentation view model for emergency kill switch liquidation and trading halt."""
+
+    cancelled_orders_count: int
+    liquidated_positions_count: int
+    total_realized_pnl: float
+    is_halted: bool
+    halt_reason: str
+    closed_positions: list[dict[str, Any]] = None  # type: ignore
+    success: bool = True
+    error_message: str | None = None
+
+    def __post_init__(self):
+        if self.closed_positions is None:
+            self.closed_positions = []
+
+
 class TerminalFormatter:
     """Renders formatted plain text / ASCII tables for CLI stdout output."""
 
@@ -257,6 +276,37 @@ class TerminalFormatter:
                 f"via {s['strategy']} @ {s['entry_price']} (Risk: ${s['risk_dollars']:.2f})"
                 for s in report.recent_signals
             )
+        lines.append(sep)
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_panic_report(view: PanicReportView) -> str:
+        sep = "=" * 65
+        sub_sep = "-" * 65
+        pnl_sign = "+" if view.total_realized_pnl >= 0 else "-"
+        pnl_str = f"{pnl_sign}${abs(view.total_realized_pnl):,.2f}"
+        lines = [
+            sep,
+            "EMERGENCY KILL SWITCH: LIQUIDATION & TRADING HALT REPORT",
+            sep,
+            f"Status:               {'HALTED (Trading Disabled)' if view.is_halted else 'ACTIVE'}",
+            f"Reason:               {view.halt_reason}",
+            f"Orders Cancelled:     {view.cancelled_orders_count}",
+            f"Positions Liquidated: {view.liquidated_positions_count}",
+            f"Total Realized P&L:   {pnl_str}",
+            sub_sep,
+        ]
+        if view.closed_positions:
+            lines.append("Liquidated Positions:")
+            for p in view.closed_positions:
+                c = p.get("contract", "")
+                d = p.get("direction", "")
+                q = float(p.get("quantity") or 1.0)
+                pnl = float(p.get("realized_pnl") or 0.0)
+                sign = "+" if pnl >= 0 else "-"
+                lines.append(f"  • #{p.get('id')} {c} ({d} {q:g}x) -> {sign}${abs(pnl):,.2f}")
+            lines.append(sub_sep)
+        lines.append("Use 'copilot resume' or '/resume' to clear halt.")
         lines.append(sep)
         return "\n".join(lines)
 
@@ -436,3 +486,33 @@ class TelegramHtmlFormatter:
             f"{attr_line}"
             f"{mc_line}"
         )
+
+    @staticmethod
+    def format_panic_html(view: PanicReportView) -> str:
+        pnl_sign = "+" if view.total_realized_pnl >= 0 else "-"
+        pnl_str = f"{pnl_sign}${abs(view.total_realized_pnl):,.2f}"
+        pnl_color = "🟢" if view.total_realized_pnl >= 0 else "🔴"
+
+        lines = [
+            "🚨 <b>EMERGENCY KILL SWITCH ACTIVATED</b> 🚨",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "• <b>Status:</b> 🛑 <b>TRADING HALTED</b>",
+            f"• <b>Reason:</b> <i>{html.escape(view.halt_reason)}</i>",
+            f"• <b>Orders Cancelled:</b> <code>{view.cancelled_orders_count}</code>",
+            f"• <b>Positions Liquidated:</b> <code>{view.liquidated_positions_count}</code>",
+            f"• <b>Total Realized P&L:</b> {pnl_color} <code>{pnl_str}</code>",
+        ]
+        if view.closed_positions:
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("<b>Liquidated Positions:</b>")
+            for p in view.closed_positions:
+                c = html.escape(str(p.get("contract", "")))
+                d = html.escape(str(p.get("direction", "")))
+                q = float(p.get("quantity") or 1.0)
+                pnl = float(p.get("realized_pnl") or 0.0)
+                sign = "+" if pnl >= 0 else "-"
+                lines.append(f"  • #{p.get('id')} <code>{c}</code> ({d} {q:g}x) ➔ <code>{sign}${abs(pnl):,.2f}</code>")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("⚠️ <i>All automated scans and order executions are strictly HALTED.</i>")
+        lines.append("👉 Send <code>/resume</code> to clear the kill switch and restore normal operations.")
+        return "\n".join(lines)

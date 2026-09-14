@@ -38,10 +38,11 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 28** | CME Globex Holiday Calendar & Timezone Normalization | **Completed** | `MarketHolidayCalendar` accounting for holiday closures & early halts, robust ET timezone conversions |
 | **Phase 29** | Resilient Market Data Provider Cascade (`RunnableWithFallbacks`) | **Completed** | Generic LangChain-style fallback engine, Alpaca historical bars primary, Yahoo Finance fallback |
 | **Phase 30** | Broker-Side Trailing Stop Synchronization | **Completed** | Dynamic bracket stop modification on exchange brokers (Alpaca & Tradovate) with graceful degradation |
-| **Phase 31** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
-| **Phase 32** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 33** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 34** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 31** | Institutional Emergency Kill Switch & Telegram Autocomplete | **Completed** | 4-tier waterfall liquidation (`cancel_all_orders`, market flatten, persistent halt), `/panic` & `/resume`, `set_my_commands` |
+| **Phase 32** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 33** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 34** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 35** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
 
 ---
 
@@ -765,11 +766,32 @@ Ensure that when internal trailing stops ratchet higher, the resting bracket sto
 
 ---
 
-## Next Horizon: Strategic Initiatives (Phases 31+)
+## Phase 31: Institutional Emergency Kill Switch & Telegram Autocomplete
+
+### Objective
+Provide institutional quant-grade emergency risk controls (SEC Rule 15c3-5, CFTC 1.73, MiFID II RTS 6 compliant) to immediately withdraw resting orders, liquidate active risk exposure at market, engage a persistent trading halt, and offer native client-side slash command autocomplete in Telegram.
+
+### Key Deliverables
+1. **Four-Tier Kill Switch Waterfall**:
+   - **Ingress Cancellation**: `cancel_all_orders()` method on `BaseBroker`, implemented across `PaperBroker`, `AlpacaBroker` (via `cancel_orders()`), `TradovateBroker` (querying `/order/list` and cancelling working orders via `/order/cancelorder`), and `RedundantBroker`.
+   - **Egress Liquidation**: Rapid market closure of all open positions in SQLite via `broker.close_position(exit_reason=ExitReason.EMERGENCY_EXIT)` with realized P&L calculation.
+   - **Persistent Circuit Breaker**: State persistence in new `system_state` table (`Alembic revision 002_system_state`), gating automated scans and signal execution until explicitly resumed.
+   - **Telemetry & High-Visibility Alerting**: Dedicated Prometheus metrics (`copilot_kill_switch_triggered_total`, `copilot_trading_halted`), rich HTML notification cards, and ASCII terminal reports.
+2. **Interactive Safety in Telegram**:
+   - Two-step confirmation for `/panic` command (`[ 🔴 CONFIRM EMERGENCY LIQUIDATE & HALT ]` and `[ ❌ Cancel ]`) to prevent accidental taps, plus `/panic confirm` for immediate emergency action.
+   - `/resume` command and `copilot resume` CLI command to verify unhalt and restore trading operations.
+3. **Telegram Slash Command Autocomplete (`setMyCommands`)**:
+   - Automatic registration of command palette with descriptions via Telegram Bot API `set_my_commands` upon application initialization.
+4. **Calendar Refinements**:
+   - Added conditional July 3rd early closes (when July 4th falls on Thursday or Friday) for equities and equity index futures.
+
+---
+
+## Next Horizon: Strategic Initiatives (Phases 32+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 31** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
-| **Phase 32** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 33** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 34** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 32** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 33** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 34** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 35** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
