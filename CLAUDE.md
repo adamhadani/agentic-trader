@@ -27,7 +27,7 @@ The **Cash-Plus Trading Copilot** is an automated multi-asset trading system des
 #### B. Day-to-Day Operator Desk Commands
 - `uv run copilot status`: Portfolio cash base, open notional exposure, leverage, and macro calendar.
 - `uv run copilot positions`: Tracked positions, live quotes, stop-loss / take-profit prices, and unrealized P&L.
-- `uv run copilot scan`: On-demand quantitative market scan (`--dry-run`, `--no-llm`, `--asset-class`, `--symbols`).
+- `uv run copilot scan`: On-demand quantitative market scan (`--dry-run`, `--no-llm`, `--strategy`, `--strategy-mode`, `--asset-class`, `--symbols`).
 - `uv run copilot execute <signal_id>`: Manually authorize and submit an approved signal to broker.
 - `uv run copilot close <signal_id> [exit_price]`: Liquidate open position, record realized P&L, release exposure.
 - `uv run copilot panic [--confirm]`: Emergency kill switch: cancel resting orders, market liquidate active positions, halt trading.

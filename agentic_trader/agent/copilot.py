@@ -154,6 +154,8 @@ class TradingCopilot:
         asset_class: str = "all",
         symbols: list[str] | None = None,
         bypass_session_filter: bool = False,
+        strategy: str | None = None,
+        strategy_mode: str | None = None,
     ):
         await self.check_halt_state()
         if self.is_halted:
@@ -228,7 +230,12 @@ class TradingCopilot:
                     logger.warning(f"Insufficient data for {contract}, skipping.")
                     continue
 
-                candidates = self.strategy_engine.scan_contract(data, asset_class=inst_class)
+                candidates = self.strategy_engine.scan_contract(
+                    data,
+                    asset_class=inst_class,
+                    override_strategy=strategy,
+                    override_mode=strategy_mode,
+                )
                 for candidate in candidates:
                     total_candidates += 1
                     logger.info(

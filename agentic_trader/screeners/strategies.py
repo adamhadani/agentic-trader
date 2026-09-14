@@ -1,55 +1,58 @@
-from typing import Any
+from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import logging
+from typing import TYPE_CHECKING
 
 from agentic_trader.config import AppConfig, load_config
-from agentic_trader.constants import AssetClass, Direction, StrategyType
-from agentic_trader.data.market_data import ContractMarketData
+from agentic_trader.constants import AssetClass, ConflictResolutionMode, Direction, StrategyType
+from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
 from agentic_trader.screeners.indicators import calculate_ema
+from agentic_trader.screeners.registry import ConflictResolver, StrategyRegistry
 
 
-class ScreenerCandidate(BaseModel):
-    contract: str
-    symbol: str = Field(default="")
-    asset_class: AssetClass = Field(default=AssetClass.FUTURES)
-    timeframe: str
-    strategy: str
-    direction: str
-    current_price: float
-    ema_20: float
-    ema_50: float
-    ema_200: float
-    rsi_14: float
-    atr_14: float
-    candle_timestamp: str
-    recent_swing_low: float
-    recent_swing_high: float
-    trigger_detail: str
+if TYPE_CHECKING:
+    from agentic_trader.config import AppConfig
+    from agentic_trader.data.market_data import ContractMarketData
 
-    def model_post_init(self, context: Any, /) -> None:
-        if not self.symbol:
-            self.symbol = self.contract
+logger = logging.getLogger(__name__)
+
+# Re-export ScreenerCandidate for backward compatibility
+__all__ = [
+    "ScreenerCandidate",
+    "SqueezeBreakoutStrategy",
+    "StrategyEngine",
+    "TrendPullbackStrategy",
+]
 
 
-class StrategyEngine:
-    def __init__(self, config: AppConfig | None = None):
-        self.config = config or load_config()
+class TrendPullbackStrategy(BaseStrategy):
+    """Strategy A: Trend-Pullback momentum on Daily + 4-Hour data."""
 
-    def check_trend_pullback(
-        self, data: ContractMarketData, asset_class: AssetClass = AssetClass.FUTURES
-    ) -> ScreenerCandidate | None:
-        """
-        Evaluate Strategy A: Trend-Pullback on Daily + 4-Hour data.
-        """
-        cfg = self.config.strategies.trend_pullback
-        if not cfg.enabled:
-            return None
+    strategy_id: str = "trend_pullback"
+    display_name: str = "Trend-Pullback Momentum"
+    supported_asset_classes: tuple[AssetClass, ...] = (AssetClass.FUTURES, AssetClass.EQUITY)
+    default_timeframe: str = "4h"
 
+    def is_enabled(self, config: AppConfig | None = None) -> bool:
+        cfg = config or self.config
+        if not cfg:
+            return True
+        return bool(cfg.strategies.trend_pullback.enabled)
+
+    def evaluate(
+        self,
+        data: ContractMarketData,
+        asset_class: AssetClass = AssetClass.FUTURES,
+    ) -> list[ScreenerCandidate]:
+        if not self.is_enabled():
+            return []
+
+        cfg = (self.config or load_config()).strategies.trend_pullback
         df_daily = data.daily
         df_4h = data.four_hour
 
         if len(df_daily) < 10 or len(df_4h) < 10:
-            return None
+            return []
 
         # Determine daily EMA fast and slow
         fast_col = f"EMA_{cfg.daily_ema_fast}"
@@ -72,9 +75,9 @@ class StrategyEngine:
         is_bearish_trend = daily_close < daily_fast < daily_slow
 
         if not (is_bullish_trend or is_bearish_trend):
-            return None
+            return []
 
-        # Look at recent 4h candles (current and previous 3 candles)
+        # Look at recent 4h candles (current and previous 2 candles)
         latest_4h = df_4h.iloc[-1]
         prev_4h = df_4h.iloc[-2]
         prev2_4h = df_4h.iloc[-3]
@@ -119,69 +122,85 @@ class StrategyEngine:
             # Long Trigger: RSI crossed below rsi_oversold_dip and recovered above rsi_oversold
             min_recent_rsi = min(rsi_prev, rsi_prev2)
             if min_recent_rsi < cfg.rsi_oversold_dip and rsi_current >= cfg.rsi_oversold:
-                return ScreenerCandidate(
-                    contract=data.contract,
-                    symbol=data.contract,
-                    asset_class=asset_class,
-                    timeframe="4h",
-                    strategy=StrategyType.TREND_PULLBACK,
-                    direction=Direction.LONG,
-                    current_price=round(close_4h, 2),
-                    ema_20=round(ema20_4h, 2),
-                    ema_50=round(ema50_4h, 2),
-                    ema_200=round(ema200_4h, 2),
-                    rsi_14=round(rsi_current, 2),
-                    atr_14=round(atr_4h, 2),
-                    candle_timestamp=timestamp_str,
-                    recent_swing_low=round(recent_swing_low, 2),
-                    recent_swing_high=round(recent_swing_high, 2),
-                    trigger_detail=(
-                        f"Daily Close > {cfg.daily_ema_fast} > {cfg.daily_ema_slow} EMA. "
-                        f"4h RSI dipped to {min_recent_rsi:.1f} and recovered to {rsi_current:.1f} near {cfg.trigger_ema_span} EMA."
-                    ),
-                )
+                return [
+                    ScreenerCandidate(
+                        contract=data.contract,
+                        symbol=data.contract,
+                        asset_class=asset_class,
+                        timeframe="4h",
+                        strategy=StrategyType.TREND_PULLBACK,
+                        direction=Direction.LONG,
+                        current_price=round(close_4h, 2),
+                        ema_20=round(ema20_4h, 2),
+                        ema_50=round(ema50_4h, 2),
+                        ema_200=round(ema200_4h, 2),
+                        rsi_14=round(rsi_current, 2),
+                        atr_14=round(atr_4h, 2),
+                        candle_timestamp=timestamp_str,
+                        recent_swing_low=round(recent_swing_low, 2),
+                        recent_swing_high=round(recent_swing_high, 2),
+                        trigger_detail=(
+                            f"Daily Close > {cfg.daily_ema_fast} > {cfg.daily_ema_slow} EMA. "
+                            f"4h RSI dipped to {min_recent_rsi:.1f} and recovered to {rsi_current:.1f} near {cfg.trigger_ema_span} EMA."
+                        ),
+                    )
+                ]
 
         elif is_bearish_trend and within_tolerance:
             # Short Trigger: RSI crossed above rsi_overbought_surge and fell back below rsi_overbought
             max_recent_rsi = max(rsi_prev, rsi_prev2)
             if max_recent_rsi > cfg.rsi_overbought_surge and rsi_current <= cfg.rsi_overbought:
-                return ScreenerCandidate(
-                    contract=data.contract,
-                    symbol=data.contract,
-                    asset_class=asset_class,
-                    timeframe="4h",
-                    strategy=StrategyType.TREND_PULLBACK,
-                    direction=Direction.SHORT,
-                    current_price=round(close_4h, 2),
-                    ema_20=round(ema20_4h, 2),
-                    ema_50=round(ema50_4h, 2),
-                    ema_200=round(ema200_4h, 2),
-                    rsi_14=round(rsi_current, 2),
-                    atr_14=round(atr_4h, 2),
-                    candle_timestamp=timestamp_str,
-                    recent_swing_low=round(recent_swing_low, 2),
-                    recent_swing_high=round(recent_swing_high, 2),
-                    trigger_detail=(
-                        f"Daily Close < {cfg.daily_ema_fast} < {cfg.daily_ema_slow} EMA. "
-                        f"4h RSI surged to {max_recent_rsi:.1f} and fell to {rsi_current:.1f} near {cfg.trigger_ema_span} EMA."
-                    ),
-                )
+                return [
+                    ScreenerCandidate(
+                        contract=data.contract,
+                        symbol=data.contract,
+                        asset_class=asset_class,
+                        timeframe="4h",
+                        strategy=StrategyType.TREND_PULLBACK,
+                        direction=Direction.SHORT,
+                        current_price=round(close_4h, 2),
+                        ema_20=round(ema20_4h, 2),
+                        ema_50=round(ema50_4h, 2),
+                        ema_200=round(ema200_4h, 2),
+                        rsi_14=round(rsi_current, 2),
+                        atr_14=round(atr_4h, 2),
+                        candle_timestamp=timestamp_str,
+                        recent_swing_low=round(recent_swing_low, 2),
+                        recent_swing_high=round(recent_swing_high, 2),
+                        trigger_detail=(
+                            f"Daily Close < {cfg.daily_ema_fast} < {cfg.daily_ema_slow} EMA. "
+                            f"4h RSI surged to {max_recent_rsi:.1f} and fell to {rsi_current:.1f} near {cfg.trigger_ema_span} EMA."
+                        ),
+                    )
+                ]
 
-        return None
+        return []
 
-    def check_squeeze_breakout(
+
+class SqueezeBreakoutStrategy(BaseStrategy):
+    """Strategy B: Volatility Squeeze Breakout on 4-Hour and 1-Hour data."""
+
+    strategy_id: str = "squeeze_breakout"
+    display_name: str = "Volatility Squeeze Breakout"
+    supported_asset_classes: tuple[AssetClass, ...] = (AssetClass.FUTURES, AssetClass.EQUITY)
+    default_timeframe: str = "4h"
+
+    def is_enabled(self, config: AppConfig | None = None) -> bool:
+        cfg = config or self.config
+        if not cfg:
+            return True
+        return bool(cfg.strategies.squeeze_breakout.enabled)
+
+    def evaluate_timeframe(
         self,
         data: ContractMarketData,
         timeframe: str = "4h",
         asset_class: AssetClass = AssetClass.FUTURES,
     ) -> ScreenerCandidate | None:
-        """
-        Evaluate Strategy B: Volatility Squeeze Breakout on 4h or 1h data.
-        """
-        cfg = self.config.strategies.squeeze_breakout
-        if not cfg.enabled:
+        if not self.is_enabled():
             return None
 
+        cfg = (self.config or load_config()).strategies.squeeze_breakout
         df = data.four_hour if timeframe == "4h" else data.hourly
         if len(df) < 25 or "BB_Upper" not in df.columns or "BB_Lower" not in df.columns:
             return None
@@ -203,11 +222,11 @@ class StrategyEngine:
         ema200 = float(latest["EMA_200"])
         rsi = float(latest["RSI_14"])
 
-        # Prior squeeze requirement: Squeeze count prior to breakout >= 5
+        # Prior squeeze requirement: Squeeze count prior to breakout >= min_squeeze_bars
         prior_squeeze_count = int(prev["Squeeze_Count"]) if "Squeeze_Count" in prev else 0
         had_squeeze = prior_squeeze_count >= cfg.min_squeeze_bars
 
-        # Volume condition: Volume > 1.3 * SMA(Volume, 20)
+        # Volume condition: Volume > volume_factor * SMA(Volume, 20)
         volume_surge = (volume_sma > 0) and (volume > (cfg.volume_factor * volume_sma))
 
         if not (had_squeeze and volume_surge):
@@ -262,26 +281,102 @@ class StrategyEngine:
 
         return None
 
-    def scan_contract(
-        self, data: ContractMarketData, asset_class: AssetClass = AssetClass.FUTURES
+    def evaluate(
+        self,
+        data: ContractMarketData,
+        asset_class: AssetClass = AssetClass.FUTURES,
     ) -> list[ScreenerCandidate]:
         candidates: list[ScreenerCandidate] = []
-        pullback = self.check_trend_pullback(data, asset_class=asset_class)
-        if pullback:
-            candidates.append(pullback)
-
-        squeeze_4h = self.check_squeeze_breakout(data, timeframe="4h", asset_class=asset_class)
-        if squeeze_4h:
-            candidates.append(squeeze_4h)
-
-        squeeze_1h = self.check_squeeze_breakout(data, timeframe="1h", asset_class=asset_class)
-        if squeeze_1h:
-            candidates.append(squeeze_1h)
-
+        c_4h = self.evaluate_timeframe(data, timeframe="4h", asset_class=asset_class)
+        if c_4h:
+            candidates.append(c_4h)
+        c_1h = self.evaluate_timeframe(data, timeframe="1h", asset_class=asset_class)
+        if c_1h:
+            candidates.append(c_1h)
         return candidates
 
-    def scan_instrument(
+
+class StrategyEngine:
+    """Multi-strategy orchestrator managing strategy discovery, execution modes,
+
+    and signal conflict resolution.
+    """
+
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        registry: StrategyRegistry | None = None,
+        conflict_resolver: ConflictResolver | None = None,
+    ):
+        self.config = config or load_config()
+        self.registry = registry or StrategyRegistry()
+        self.conflict_resolver = conflict_resolver or ConflictResolver()
+
+        # Instantiate and register default strategies
+        self.trend_pullback_strat = TrendPullbackStrategy(self.config)
+        self.squeeze_breakout_strat = SqueezeBreakoutStrategy(self.config)
+
+        self.registry.register(self.trend_pullback_strat)
+        self.registry.register(self.squeeze_breakout_strat)
+
+    def check_trend_pullback(
         self, data: ContractMarketData, asset_class: AssetClass = AssetClass.FUTURES
+    ) -> ScreenerCandidate | None:
+        """Backward-compatible helper evaluating Strategy A: Trend-Pullback."""
+        candidates = self.trend_pullback_strat.evaluate(data, asset_class=asset_class)
+        return candidates[0] if candidates else None
+
+    def check_squeeze_breakout(
+        self,
+        data: ContractMarketData,
+        timeframe: str = "4h",
+        asset_class: AssetClass = AssetClass.FUTURES,
+    ) -> ScreenerCandidate | None:
+        """Backward-compatible helper evaluating Strategy B: Squeeze Breakout."""
+        return self.squeeze_breakout_strat.evaluate_timeframe(data, timeframe=timeframe, asset_class=asset_class)
+
+    def scan_contract(
+        self,
+        data: ContractMarketData,
+        asset_class: AssetClass = AssetClass.FUTURES,
+        override_strategy: str | None = None,
+        override_mode: str | None = None,
+    ) -> list[ScreenerCandidate]:
+        """Scan contract data across active strategies according to configured mode
+
+        (single vs parallel) and apply conflict resolution.
+        """
+        active_strategies = self.registry.get_active_strategies(
+            config=self.config,
+            override_strategy=override_strategy,
+            override_mode=override_mode,
+        )
+
+        raw_candidates: list[ScreenerCandidate] = []
+        for strat in active_strategies:
+            if not strat.can_handle(asset_class):
+                continue
+            candidates = strat.evaluate(data, asset_class=asset_class)
+            raw_candidates.extend(candidates)
+
+        conflict_mode = getattr(
+            self.config.strategies,
+            "conflict_resolution",
+            ConflictResolutionMode.NETTING,
+        )
+        return self.conflict_resolver.resolve(raw_candidates, mode=conflict_mode)
+
+    def scan_instrument(
+        self,
+        data: ContractMarketData,
+        asset_class: AssetClass = AssetClass.FUTURES,
+        override_strategy: str | None = None,
+        override_mode: str | None = None,
     ) -> list[ScreenerCandidate]:
         """Alias for scan_contract supporting generalized multi-asset instruments."""
-        return self.scan_contract(data, asset_class=asset_class)
+        return self.scan_contract(
+            data,
+            asset_class=asset_class,
+            override_strategy=override_strategy,
+            override_mode=override_mode,
+        )
