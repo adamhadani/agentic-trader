@@ -429,6 +429,11 @@ class TradingCopilot:
             status=status,
         )
 
+        pos_qty = float(pos_dict.get("quantity") or 1.0)
+        pos_asset_class = pos_dict.get("asset_class") or (
+            AssetClass.EQUITY if not contract.startswith("/") else AssetClass.FUTURES
+        )
+
         await self.notifier.send_exit_alert(
             contract=contract,
             direction=ev.direction,
@@ -437,6 +442,8 @@ class TradingCopilot:
             exit_price=ev.exit_price,
             realized_pnl=ev.realized_pnl or 0.0,
             strategy=strategy,
+            quantity=pos_qty,
+            asset_class=pos_asset_class,
         )
         return True
 
@@ -1022,6 +1029,9 @@ class TradingCopilot:
             status=status,
         )
 
+        pos_asset_class = pos.get("asset_class") or (
+            AssetClass.EQUITY if not contract.startswith("/") else AssetClass.FUTURES
+        )
         await self.notifier.send_exit_alert(
             contract=contract,
             direction=direction,
@@ -1030,6 +1040,8 @@ class TradingCopilot:
             exit_price=final_exit,
             realized_pnl=realized_pnl,
             strategy=pos["strategy"],
+            quantity=qty,
+            asset_class=pos_asset_class,
         )
 
         view = ManualCloseResultView(
