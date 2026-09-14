@@ -367,6 +367,9 @@ class AppConfig(BaseModel):
     # Market Data & News Feeds
     iex_cloud_api_token: str | None = None
 
+    # Conversational Copilot Configuration
+    copilot_chat_enabled: bool = True
+
 
 def load_config(config_path: str | None = None) -> AppConfig:
     load_envrc()

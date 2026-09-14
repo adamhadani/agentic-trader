@@ -940,10 +940,84 @@ Verify end-to-end autonomous live execution against the Alpaca Paper API, elimin
 
 ---
 
-## Next Horizon: Strategic Initiatives (Phases 39+)
+## Phase 39: Conversational Trading Copilot & Agentic Tool Calling via LangGraph, LiteLLM & LangSmith
+
+### Objective
+Upgrade the operator interaction layer from rigid slash commands to a stateful, conversational AI trading copilot in Telegram. Leverage **LangGraph** to model stateful multi-turn reasoning and tool calling, wrap multi-provider LLMs via **LiteLLM** (`langchain-litellm`), and stream comprehensive telemetry, execution graphs, and latency traces to **LangSmith** for full observability and debugging.
+
+### Key Deliverables
+1. **LangGraph State Machine & Conversational Checkpointing (`agentic_trader/agent/copilot_graph.py`)**:
+   - Construct a stateful ReAct agent using `langgraph` and `langchain-core` with short-term and conversational memory managed by `MemorySaver`.
+   - Maintain isolated conversation threads indexed by Telegram `chat_id` (`thread_id=f"tg_{chat_id}"`).
+   - Define type-safe state schema (`AgentState`) containing message sequences, active tool invocations, and operator session context.
+2. **LangChain / LiteLLM Interoperability**:
+   - Integrate `langchain-litellm` (`ChatLiteLLM`) to allow seamless model swapping (Claude 3.5 Sonnet, GPT-4o, Gemini 1.5 Pro) without modifying graph topology.
+   - Bind quantitative tools directly to the model with standard schema descriptions and structured argument parsing.
+3. **Comprehensive Desk Tooling Palette**:
+   - `get_open_positions`: Real-time inspection of active positions across Alpaca and Tradovate, unrealized PnL, current market quotes, and stop/target levels.
+   - `get_portfolio_status`: Cash balances, buying power, margin utilization, and risk budget headroom.
+   - `get_market_regime`: Macro filter state, VIX level, 10Y yield, and economic calendar event clearance.
+   - `trigger_market_scan`: On-demand execution of technical screeners (Momentum Squeeze, Trend Pullback) across equities and futures.
+   - `run_backtest`: Ad-hoc vectorized backtesting of specific symbols, strategies, and historical lookback windows.
+   - `get_gex_surface`: Real-time SPX/SPY gamma exposure, call/put walls, and zero-gamma flip points.
+   - `get_pairs_cointegration`: Real-time cointegration residuals and z-scores for asset pairs.
+   - `get_technical_summary`: Multi-timeframe indicator readings (RSI, EMA ribbons, ATR, Bollinger squeeze).
+4. **LangSmith Observability & MCP Integration**:
+   - Auto-instrument all graph executions, tool calls, token counts, and step latencies to LangSmith under the `"agentic-trader"` project using environment variables (`LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`).
+   - Enable inspection and debugging via `uvx langsmith-mcp-server` or the LangSmith CLI.
+5. **Telegram Conversational Gateway Integration (`agentic_trader/notifier/telegram_bot.py`)**:
+   - Add asynchronous message handler (`MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat_message)`) routing natural-language queries through the LangGraph copilot.
+   - Emit typing action states during reasoning and tool execution.
+   - Format responses cleanly with Telegram HTML/Markdown, handling tables, code blocks, and ticker cards.
+6. **Strict TDD & Test Suite Expansion**:
+   - Full mock unit testing of the LangGraph agent, tool invocation accuracy, error handling, and multi-turn state persistence.
+
+---
+
+## Phase 40: Multi-Asset Macro Intelligence, Yield Curve & Credit Regime Filter
+
+### Objective
+Expand macro regime detection beyond single-point VIX and 10Y yield metrics to include full US Treasury yield curve structure, inflation expectations, and credit risk spreads.
+
+### Key Deliverables
+1. **Yield Curve Shape & Term Structure Engine**:
+   - Ingest 3M, 2Y, 5Y, 10Y, and 30Y US Treasury yields.
+   - Compute key spread metrics: 10Y-2Y slope, 10Y-3M slope, and curvature (butterfly).
+   - Detect inversion, bull steepening, and bear flattening regimes to dynamically adjust equity and futures risk budgets.
+2. **Credit & Inflation Spread Monitoring**:
+   - Ingest ICE BofA US High Yield OAS (option-adjusted spread) and investment grade spreads as early warning indicators for systemic liquidity contraction.
+   - Track 5Y and 10Y Breakeven Inflation rates to calibrate commodity and interest rate sensitivity.
+3. **Cross-Asset Macro Dashboard**:
+   - Add automated daily/weekly macro regime briefing to Telegram (`/macro` and scheduled updates).
+   - Dynamically scale maximum allowable gross portfolio leverage based on compound macro stress index.
+
+---
+
+## Phase 41: Formulaic Alpha Mining, Expression DSL & VectorBT Research Harness
+
+### Objective
+Build a research-grade alpha generation and exploration engine inspired by quantitative institutional workflows (e.g. WorldQuant 101 Alphas), enabling programmatic discovery and validation of novel trading signals.
+
+### Key Deliverables
+1. **Domain-Specific Expression Language (DSL) for Alphas**:
+   - Implement composable time-series and cross-sectional operators:
+     - Time-series: `ts_rank(x, d)`, `ts_corr(x, y, d)`, `ts_std(x, d)`, `decay_linear(x, d)`, `ts_argmax(x, d)`, `delta(x, d)`.
+     - Cross-sectional: `rank(x)`, `zscore(x)`, `scale(x)`, `indneutralize(x, g)`.
+2. **Genetic Programming & Expression Tree Search**:
+   - Automated exploration of formulaic alpha expressions on multi-asset universe (equities, ETFs, futures).
+   - Tree mutation, crossover, and fitness evaluation against Out-of-Sample (OOS) data.
+3. **VectorBT Pro Integration & Overfitting Protection**:
+   - High-throughput vectorized backtesting across parameter grids using `vectorbt`.
+   - Deflated Sharpe Ratio (DSR), Family-Wise Error Rate (FWER) controls, and White's Reality Check to eliminate p-hacking and selection bias.
+4. **Auto-Promotion Pipeline**:
+   - Discovered alphas meeting Sharpe, turnover, and low correlation thresholds can be exported directly to YAML strategy configurations for live paper testing.
+
+---
+
+## Next Horizon: Extended Strategic Initiatives (Phases 42+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 39** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 40** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 41** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 42** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 43** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 44** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |

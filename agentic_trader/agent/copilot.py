@@ -8,6 +8,7 @@ from typing import Any
 from alpaca.trading.client import TradingClient
 
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
+from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
@@ -96,6 +97,13 @@ class TradingCopilot:
             data_fetcher=self.data_fetcher,
             config=self.config.pairs,
         )
+        self.copilot_graph = None
+        if getattr(config, "copilot_chat_enabled", True):
+            try:
+                self.copilot_graph = create_copilot_graph(self)
+            except Exception as e:
+                logger.warning(f"Could not pre-compile LangGraph conversational copilot: {e}")
+
         self.notifier = TelegramNotifier(
             bot_token=config.telegram_bot_token,
             chat_id=config.telegram_chat_id,
@@ -114,6 +122,7 @@ class TradingCopilot:
             pairs_provider=self.run_pairs_summary_html,
             panic_handler=self.emergency_panic_halt,
             resume_handler=self.resume_trading,
+            chat_handler=self.ask_copilot,
         )
         self.metrics = global_metrics
         self.metrics_server = (
@@ -129,6 +138,21 @@ class TradingCopilot:
         self.is_halted: bool = False
         self.halt_reason: str | None = None
         self._shutdown_event = asyncio.Event()
+
+    async def ask_copilot(self, query: str, chat_id: str | int = "default") -> str:
+        """Handle a natural language conversational turn through the LangGraph copilot."""
+        if not self.copilot_graph:
+            try:
+                self.copilot_graph = create_copilot_graph(self)
+            except Exception as e:
+                logger.error(f"Failed to create copilot graph on demand: {e}")
+                return f"❌ Conversational copilot unavailable: {e}"
+        return await ask_copilot(
+            self.copilot_graph,
+            query=query,
+            chat_id=chat_id,
+            execution_mode=self.config.execution_mode,
+        )
 
     async def check_halt_state(self) -> bool:
         """Check persistent database state for emergency trading halt."""
