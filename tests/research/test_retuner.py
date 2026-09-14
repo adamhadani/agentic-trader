@@ -7,7 +7,7 @@ import pytest
 
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.research.retuner import AutoRetuner
-from tests.test_optimizer import make_synthetic_screener_data
+from tests.research.test_optimizer import make_synthetic_screener_data
 
 
 @pytest.fixture

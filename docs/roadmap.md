@@ -39,10 +39,11 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 29** | Resilient Market Data Provider Cascade (`RunnableWithFallbacks`) | **Completed** | Generic LangChain-style fallback engine, Alpaca historical bars primary, Yahoo Finance fallback |
 | **Phase 30** | Broker-Side Trailing Stop Synchronization | **Completed** | Dynamic bracket stop modification on exchange brokers (Alpaca & Tradovate) with graceful degradation |
 | **Phase 31** | Institutional Emergency Kill Switch & Telegram Autocomplete | **Completed** | 4-tier waterfall liquidation (`cancel_all_orders`, market flatten, persistent halt), `/panic` & `/resume`, `set_my_commands` |
-| **Phase 32** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
-| **Phase 33** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 34** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 35** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 32** | Modular Test Suite Hierarchy & Submodule Mirroring | **Completed** | Reorganized 36 test files into 18 subdirectories mirroring `agentic_trader/` with `__init__.py` and root `conftest.py` |
+| **Phase 33** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 34** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 35** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 36** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
 
 ---
 
@@ -787,11 +788,28 @@ Provide institutional quant-grade emergency risk controls (SEC Rule 15c3-5, CFTC
 
 ---
 
-## Next Horizon: Strategic Initiatives (Phases 32+)
+## Phase 32: Modular Test Suite Hierarchy & Submodule Mirroring
+
+### Objective
+De-clutter the flat `tests/` root directory by reorganizing all 36 test modules into 18 dedicated subdirectories mirroring the `agentic_trader/` application package structure, establishing package `__init__.py` files, preserving root `conftest.py` shared fixtures, and facilitating targeted component testing.
+
+### Key Deliverables
+1. **Subdirectory Structure Mirroring**:
+   - Reorganized test suites into `tests/agent/`, `tests/backtest/`, `tests/broker/`, `tests/cli/`, `tests/config/`, `tests/data/`, `tests/diagnostics/`, `tests/execution/`, `tests/market/`, `tests/notifier/`, `tests/options/`, `tests/pairs/`, `tests/presentation/`, `tests/research/`, `tests/resilience/`, `tests/screeners/`, `tests/storage/`, and `tests/telemetry/`.
+2. **Package Initializers**:
+   - Created `__init__.py` in each test subdirectory for explicit package isolation.
+3. **Fixture Preservation**:
+   - Kept root `tests/conftest.py` with shared fixtures (`app_config`, `temp_db`, `sample_ohlcv_df`, `sample_contract_market_data`, `sample_signal_dict`, `mock_notifier`) inherited cleanly across all test suites.
+4. **Targeted Testing Capability**:
+   - Enabled granular, fast targeted execution by package (e.g. `uv run pytest tests/agent/`, `uv run pytest tests/broker/`).
+
+---
+
+## Next Horizon: Strategic Initiatives (Phases 33+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 32** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
-| **Phase 33** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 34** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 35** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 33** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 34** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 35** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 36** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |

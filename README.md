@@ -16,7 +16,7 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 - [**Production Operations Guide**](docs/production.md): **Single Source of Truth** for 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
 - [**CLI Command Reference**](docs/cli-reference.md): Exhaustive guide to all Click CLI subcommands, flags, and outputs.
 - [**Quantitative Strategies & Models**](docs/strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX, and Pairs Trading.
-- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 31) and future milestones.
+- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 32) and future milestones.
 
 ### Compiling & Viewing Documentation Locally
 
@@ -205,8 +205,11 @@ uv run pre-commit install
 The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`:
 
 ```bash
-# Run pytest unit test suite (247 tests)
+# Run pytest unit test suite (247 tests across modular package subdirectories)
 uv run pytest
+
+# Run targeted component unit tests (e.g. agent, broker, market)
+uv run pytest tests/agent/ tests/broker/ tests/market/
 
 # Run pytest with code coverage report
 uv run pytest --cov=agentic_trader --cov-report=term-missing
