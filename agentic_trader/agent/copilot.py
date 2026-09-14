@@ -5,6 +5,8 @@ import html
 import logging
 from typing import Any
 
+from alpaca.trading.client import TradingClient
+
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector
@@ -58,9 +60,25 @@ class TradingCopilot:
         self.strategy_engine = StrategyEngine(config)
         self.calendar: BaseEconomicCalendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.regime_detector = RegimeDetector(config=config.regime)
+        alpaca_client = getattr(self.broker, "client", None)
+        if (
+            alpaca_client is None
+            and config.alpaca_api_key
+            and config.alpaca_api_secret
+            and not config.alpaca_api_key.startswith("your_")
+        ):
+            try:
+                alpaca_client = TradingClient(
+                    api_key=config.alpaca_api_key,
+                    secret_key=config.alpaca_api_secret,
+                    paper=config.alpaca_paper,
+                )
+            except Exception as e:
+                logger.debug("Could not initialize read-only Alpaca client for calendar: %s", e)
+
         self.session_provider = CompositeMarketSessionProvider(
             config=config,
-            alpaca_client=getattr(self.broker, "client", None),
+            alpaca_client=alpaca_client,
         )
         self.evaluator = RiskEvaluator(
             config,

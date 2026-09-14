@@ -5,7 +5,7 @@ import concurrent.futures
 import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
@@ -54,13 +54,13 @@ class RunnableWithFallbacks[T, R]:
     def __init__(
         self,
         primary: Callable[..., R | Awaitable[R]],
-        fallbacks: list[Callable[..., R | Awaitable[R]]] | None = None,
+        fallbacks: Sequence[Callable[..., R | Awaitable[R]]] | None = None,
         retry_policy: RetryPolicy | None = None,
         primary_name: str = "primary",
         fallback_names: list[str] | None = None,
     ):
         self.primary = primary
-        self.fallbacks = fallbacks or []
+        self.fallbacks = list(fallbacks) if fallbacks else []
         self.retry_policy = retry_policy or RetryPolicy()
         self.primary_name = primary_name
 

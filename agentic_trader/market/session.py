@@ -8,7 +8,11 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 from zoneinfo import ZoneInfo
 
+import httpx
+from alpaca.trading.requests import GetCalendarRequest
+
 from agentic_trader.constants import AssetClass
+from agentic_trader.resilience.fallback import RetryPolicy, RunnableWithFallbacks
 
 
 if TYPE_CHECKING:
@@ -210,6 +214,369 @@ class MarketHolidayCalendar:
 
 
 @dataclass
+class MarketCalendarDay:
+    """Canonical representation of a single date's market calendar status."""
+
+    date: date
+    is_trading_day: bool
+    is_early_close: bool
+    open_time: time | None = None
+    close_time: time | None = None
+    holiday_name: str | None = None
+    source: str = "default"
+
+
+@runtime_checkable
+class MarketCalendarProtocol(Protocol):
+    """Protocol for exchange holiday and trading day calendar providers."""
+
+    async def get_trading_day(self, target_date: date) -> MarketCalendarDay:
+        """Return the market calendar status for a specific date."""
+        ...
+
+    async def get_calendar_range(self, start_date: date, end_date: date) -> list[MarketCalendarDay]:
+        """Return market calendar days across an inclusive date range."""
+        ...
+
+
+class DeterministicCalendarProvider:
+    """Deterministic offline calendar provider wrapping MarketHolidayCalendar."""
+
+    async def get_trading_day(self, target_date: date) -> MarketCalendarDay:
+        weekday = target_date.weekday()
+        if weekday in (5, 6):
+            return MarketCalendarDay(
+                date=target_date,
+                is_trading_day=False,
+                is_early_close=False,
+                open_time=None,
+                close_time=None,
+                holiday_name="Weekend",
+                source="deterministic",
+            )
+
+        is_holiday, holiday_name = MarketHolidayCalendar.is_equity_holiday(target_date)
+        if is_holiday:
+            return MarketCalendarDay(
+                date=target_date,
+                is_trading_day=False,
+                is_early_close=False,
+                open_time=None,
+                close_time=None,
+                holiday_name=holiday_name,
+                source="deterministic",
+            )
+
+        is_early, early_name = MarketHolidayCalendar.is_equity_early_close(target_date)
+        if is_early:
+            return MarketCalendarDay(
+                date=target_date,
+                is_trading_day=True,
+                is_early_close=True,
+                open_time=EQUITY_RTH_OPEN,
+                close_time=time(13, 0),
+                holiday_name=early_name,
+                source="deterministic",
+            )
+
+        return MarketCalendarDay(
+            date=target_date,
+            is_trading_day=True,
+            is_early_close=False,
+            open_time=EQUITY_RTH_OPEN,
+            close_time=EQUITY_RTH_CLOSE,
+            holiday_name=None,
+            source="deterministic",
+        )
+
+    async def get_calendar_range(self, start_date: date, end_date: date) -> list[MarketCalendarDay]:
+        days: list[MarketCalendarDay] = []
+        curr = start_date
+        while curr <= end_date:
+            days.append(await self.get_trading_day(curr))
+            curr += timedelta(days=1)
+        return days
+
+
+class AlpacaCalendarProvider:
+    """Exchange calendar provider delegating to Alpaca Trading API's GET /v2/calendar."""
+
+    def __init__(
+        self,
+        trading_client: TradingClient | None = None,
+        cache_ttl_seconds: int = 3600,
+    ):
+        self.client = trading_client
+        self.cache_ttl = cache_ttl_seconds
+        self._annual_cache: dict[int, dict[date, MarketCalendarDay]] = {}
+        self._cache_timestamp: dict[int, datetime] = {}
+
+    def _is_cache_valid(self, year: int) -> bool:
+        if year not in self._annual_cache or year not in self._cache_timestamp:
+            return False
+        return (datetime.now(UTC) - self._cache_timestamp[year]).total_seconds() < self.cache_ttl
+
+    async def _load_year(self, year: int) -> dict[date, MarketCalendarDay]:
+        if self._is_cache_valid(year):
+            return self._annual_cache[year]
+
+        if self.client is None:
+            raise RuntimeError("Alpaca TradingClient is not configured")
+
+        req = GetCalendarRequest(start=date(year, 1, 1), end=date(year, 12, 31))
+        items = await asyncio.to_thread(self.client.get_calendar, req)
+        if items is None:
+            raise RuntimeError(f"Alpaca get_calendar returned None for year {year}")
+
+        year_map: dict[date, MarketCalendarDay] = {}
+        for item in items:
+            if isinstance(item, str):
+                continue
+            item_date = getattr(item, "date", None)
+            if item_date is None:
+                continue
+            d = item_date if isinstance(item_date, date) else item_date.date()
+            item_open = getattr(item, "open", None)
+            item_close = getattr(item, "close", None)
+            if item_open is None or item_close is None:
+                continue
+            open_val = item_open.time() if isinstance(item_open, datetime) else item_open
+            close_val = item_close.time() if isinstance(item_close, datetime) else item_close
+            is_early = close_val < EQUITY_RTH_CLOSE
+            year_map[d] = MarketCalendarDay(
+                date=d,
+                is_trading_day=True,
+                is_early_close=is_early,
+                open_time=open_val,
+                close_time=close_val,
+                holiday_name="Early Close" if is_early else None,
+                source="alpaca_api",
+            )
+
+        self._annual_cache[year] = year_map
+        self._cache_timestamp[year] = datetime.now(UTC)
+        return year_map
+
+    async def get_trading_day(self, target_date: date) -> MarketCalendarDay:
+        weekday = target_date.weekday()
+        if weekday in (5, 6):
+            return MarketCalendarDay(
+                date=target_date,
+                is_trading_day=False,
+                is_early_close=False,
+                open_time=None,
+                close_time=None,
+                holiday_name="Weekend",
+                source="alpaca_api",
+            )
+
+        year_map = await self._load_year(target_date.year)
+        if target_date in year_map:
+            return year_map[target_date]
+
+        # Statutory holidays are omitted from the Alpaca trading days calendar
+        _, holiday_name = MarketHolidayCalendar.is_equity_holiday(target_date)
+        return MarketCalendarDay(
+            date=target_date,
+            is_trading_day=False,
+            is_early_close=False,
+            open_time=None,
+            close_time=None,
+            holiday_name=holiday_name or "Exchange Holiday",
+            source="alpaca_api",
+        )
+
+    async def get_calendar_range(self, start_date: date, end_date: date) -> list[MarketCalendarDay]:
+        days: list[MarketCalendarDay] = []
+        curr = start_date
+        while curr <= end_date:
+            days.append(await self.get_trading_day(curr))
+            curr += timedelta(days=1)
+        return days
+
+
+class FinnhubCalendarProvider:
+    """Exchange calendar provider delegating to Finnhub /stock/market-holiday API."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        cache_ttl_seconds: int = 3600,
+        timeout_seconds: float = 5.0,
+    ):
+        self.api_key = api_key
+        self.cache_ttl = cache_ttl_seconds
+        self.timeout = timeout_seconds
+        self._cache: dict[date, tuple[bool, bool, time | None, time | None, str]] | None = None
+        self._cache_timestamp: datetime | None = None
+
+    def _is_cache_valid(self) -> bool:
+        if self._cache is None or self._cache_timestamp is None:
+            return False
+        return (datetime.now(UTC) - self._cache_timestamp).total_seconds() < self.cache_ttl
+
+    async def _fetch_holidays(self) -> dict[date, tuple[bool, bool, time | None, time | None, str]]:
+        if self._is_cache_valid() and self._cache is not None:
+            return self._cache
+
+        if not self.api_key or self.api_key.startswith("your_"):
+            raise RuntimeError("Finnhub API key is not configured")
+
+        url = f"https://finnhub.io/api/v1/stock/market-holiday?exchange=US&token={self.api_key}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                raise RuntimeError(f"Finnhub holiday API returned HTTP {resp.status_code}")
+            data = resp.json()
+
+        holiday_items = data.get("data", [])
+        parsed_holidays: dict[date, tuple[bool, bool, time | None, time | None, str]] = {}
+        for item in holiday_items:
+            at_date_str = item.get("atDate")
+            if not at_date_str:
+                continue
+            try:
+                d = date.fromisoformat(at_date_str)
+            except ValueError:
+                continue
+
+            event_name = item.get("eventName", "Market Holiday")
+            th = (item.get("tradingHour") or "").strip()
+
+            if not th:
+                parsed_holidays[d] = (False, False, None, None, event_name)
+            else:
+                try:
+                    open_str, close_str = th.split("-")
+                    o_h, o_m = map(int, open_str.split(":"))
+                    c_h, c_m = map(int, close_str.split(":"))
+                    o_time = time(o_h, o_m)
+                    c_time = time(c_h, c_m)
+                    is_early = c_time < EQUITY_RTH_CLOSE
+                    parsed_holidays[d] = (True, is_early, o_time, c_time, event_name)
+                except Exception:
+                    parsed_holidays[d] = (False, False, None, None, event_name)
+
+        self._cache = parsed_holidays
+        self._cache_timestamp = datetime.now(UTC)
+        return parsed_holidays
+
+    async def get_trading_day(self, target_date: date) -> MarketCalendarDay:
+        weekday = target_date.weekday()
+        if weekday in (5, 6):
+            return MarketCalendarDay(
+                date=target_date,
+                is_trading_day=False,
+                is_early_close=False,
+                open_time=None,
+                close_time=None,
+                holiday_name="Weekend",
+                source="finnhub_api",
+            )
+
+        holiday_map = await self._fetch_holidays()
+        if target_date in holiday_map:
+            is_trading, is_early, open_t, close_t, event_name = holiday_map[target_date]
+            return MarketCalendarDay(
+                date=target_date,
+                is_trading_day=is_trading,
+                is_early_close=is_early,
+                open_time=open_t,
+                close_time=close_t,
+                holiday_name=event_name,
+                source="finnhub_api",
+            )
+
+        return MarketCalendarDay(
+            date=target_date,
+            is_trading_day=True,
+            is_early_close=False,
+            open_time=EQUITY_RTH_OPEN,
+            close_time=EQUITY_RTH_CLOSE,
+            holiday_name=None,
+            source="finnhub_api",
+        )
+
+    async def get_calendar_range(self, start_date: date, end_date: date) -> list[MarketCalendarDay]:
+        days: list[MarketCalendarDay] = []
+        curr = start_date
+        while curr <= end_date:
+            days.append(await self.get_trading_day(curr))
+            curr += timedelta(days=1)
+        return days
+
+
+class CompositeMarketCalendar:
+    """Master calendar coordinator using RunnableWithFallbacks across Alpaca, Finnhub, and Deterministic."""
+
+    def __init__(
+        self,
+        alpaca_client: TradingClient | None = None,
+        finnhub_api_key: str | None = None,
+        primary_provider: str = "alpaca",
+        fallback_providers: list[str] | tuple[str, ...] | None = None,
+        timeout_seconds: float = 3.0,
+        max_retries: int = 1,
+    ):
+        self.alpaca_provider = AlpacaCalendarProvider(trading_client=alpaca_client)
+        self.finnhub_provider = FinnhubCalendarProvider(api_key=finnhub_api_key)
+        self.deterministic_provider = DeterministicCalendarProvider()
+
+        self._provider_registry: dict[str, MarketCalendarProtocol] = {
+            "alpaca": self.alpaca_provider,
+            "finnhub": self.finnhub_provider,
+            "deterministic": self.deterministic_provider,
+        }
+
+        self.primary_name = primary_provider.lower().strip()
+        raw_fallbacks = [p.lower().strip() for p in (fallback_providers or ["finnhub", "deterministic"])]
+        if "deterministic" not in raw_fallbacks and self.primary_name != "deterministic":
+            raw_fallbacks.append("deterministic")
+
+        self.fallback_names = [f for f in raw_fallbacks if f != self.primary_name and f in self._provider_registry]
+
+        self.primary: MarketCalendarProtocol = self._provider_registry.get(
+            self.primary_name, self.deterministic_provider
+        )
+        self.fallbacks: list[MarketCalendarProtocol] = [self._provider_registry[name] for name in self.fallback_names]
+
+        self.timeout_seconds = timeout_seconds
+        self.max_retries = max_retries
+
+    async def get_trading_day(self, target_date: date) -> MarketCalendarDay:
+        runners = [self.primary.get_trading_day] + [fb.get_trading_day for fb in self.fallbacks]
+        names = [self.primary_name] + self.fallback_names
+        runner: RunnableWithFallbacks[Any, MarketCalendarDay] = RunnableWithFallbacks(
+            primary=runners[0],
+            fallbacks=runners[1:],
+            retry_policy=RetryPolicy(
+                max_retries=self.max_retries,
+                backoff_factor=0.1,
+                timeout_seconds=self.timeout_seconds,
+            ),
+            primary_name=names[0],
+            fallback_names=names[1:],
+        )
+        return await runner.ainvoke(target_date)
+
+    async def get_calendar_range(self, start_date: date, end_date: date) -> list[MarketCalendarDay]:
+        runners = [self.primary.get_calendar_range] + [fb.get_calendar_range for fb in self.fallbacks]
+        names = [self.primary_name] + self.fallback_names
+        runner: RunnableWithFallbacks[Any, list[MarketCalendarDay]] = RunnableWithFallbacks(
+            primary=runners[0],
+            fallbacks=runners[1:],
+            retry_policy=RetryPolicy(
+                max_retries=self.max_retries,
+                backoff_factor=0.1,
+                timeout_seconds=self.timeout_seconds,
+            ),
+            primary_name=names[0],
+            fallback_names=names[1:],
+        )
+        return await runner.ainvoke(start_date, end_date)
+
+
+@dataclass
 class MarketSessionInfo:
     """Detailed snapshot of the trading session state for an instrument."""
 
@@ -278,8 +645,13 @@ class CMEFuturesSessionProvider:
     - Weekend halt: Friday 17:00 ET to Sunday 18:00 ET.
     """
 
-    def __init__(self, tz_name: str = "America/New_York"):
+    def __init__(
+        self,
+        tz_name: str = "America/New_York",
+        calendar_provider: MarketCalendarProtocol | None = None,
+    ):
         self.tz = ZoneInfo(tz_name)
+        self.calendar_provider = calendar_provider or DeterministicCalendarProvider()
 
     def _to_et(self, timestamp: datetime | None) -> datetime:
         return ensure_et(timestamp, target_tz=self.tz)
@@ -298,11 +670,12 @@ class CMEFuturesSessionProvider:
         t = et_time.time()
         weekday = et_time.weekday()  # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
         cal = MarketHolidayCalendar.get_year_calendar(d.year)
+        trading_day = await self.calendar_provider.get_trading_day(d)
 
         # 1. Full Holiday Closure Check (e.g. Christmas Day or New Year's Day until 18:00 ET)
         if d in cal["cme_full_halt_days"] and t < CME_HALT_END:
             next_open = datetime.combine(d, CME_HALT_END, tzinfo=self.tz)
-            holiday_name = cal["statutory_holidays"].get(d, "Market Holiday")
+            holiday_name = trading_day.holiday_name or cal["statutory_holidays"].get(d, "Market Holiday")
             return MarketSessionInfo(
                 symbol=symbol,
                 asset_class=AssetClass.FUTURES,
@@ -311,7 +684,7 @@ class CMEFuturesSessionProvider:
                 session_type=MarketSessionType.HOLIDAY_HALT,
                 current_time=et_time,
                 next_open=next_open,
-                source="cme_holiday_schedule",
+                source=f"cme_holiday_schedule({trading_day.source})",
                 details=f"CME {holiday_name} full day closure (re-opens at 18:00 ET)",
             )
 
@@ -328,50 +701,17 @@ class CMEFuturesSessionProvider:
                 session_type=MarketSessionType.HOLIDAY_HALT,
                 current_time=et_time,
                 next_open=next_open,
-                source="cme_holiday_schedule",
+                source=f"cme_holiday_schedule({trading_day.source})",
                 details="CME Good Friday early halt (halts at 09:15 ET until Sunday 18:00 ET)",
             )
 
-        # 3. CME 13:00 ET Holiday Halts (MLK, Presidents', Memorial, Juneteenth, July 4, Labor Day, Thanksgiving)
-        if d in cal["cme_1300_halt_days"]:
-            if time(13, 0) <= t < CME_HALT_END:
-                next_open = datetime.combine(d, CME_HALT_END, tzinfo=self.tz)
-                holiday_name = cal["statutory_holidays"].get(d, "Market Holiday")
-                return MarketSessionInfo(
-                    symbol=symbol,
-                    asset_class=AssetClass.FUTURES,
-                    is_open=False,
-                    is_rth=False,
-                    session_type=MarketSessionType.HOLIDAY_HALT,
-                    current_time=et_time,
-                    next_open=next_open,
-                    source="cme_holiday_schedule",
-                    details=f"CME {holiday_name} holiday halt (13:00 - 18:00 ET)",
-                )
-            elif t < time(13, 0):
-                # Before 13:00 ET on a statutory holiday: Globex is open, but cash equity market is closed!
-                # Therefore this is strictly ETH (Extended Hours), NOT RTH.
-                next_halt = datetime.combine(d, time(13, 0), tzinfo=self.tz)
-                holiday_name = cal["statutory_holidays"].get(d, "Market Holiday")
-                return MarketSessionInfo(
-                    symbol=symbol,
-                    asset_class=AssetClass.FUTURES,
-                    is_open=True,
-                    is_rth=False,
-                    session_type=MarketSessionType.ETH,
-                    current_time=et_time,
-                    next_close=next_halt,
-                    source="cme_holiday_schedule",
-                    details=f"CME {holiday_name} morning session (ETH, halts at 13:00 ET)",
-                )
-
-        # 4. Early Closes (e.g. Black Friday or Christmas Eve: close at 13:15 ET)
-        if d in cal["early_closes"]:
+        # 3. Dynamic Early Close Synchronization (Cash Equities close at 13:00 ET; CME Equity Indices close at 13:15 ET)
+        if trading_day.is_early_close or d in cal["early_closes"]:
+            close_name = trading_day.holiday_name or cal["early_closes"].get(d, "Early Close")
             if t >= time(13, 15):
                 days_ahead = (6 - weekday) % 7 if weekday >= 4 else 1
                 next_open_d = (et_time + timedelta(days=days_ahead)).date()
                 next_open = datetime.combine(next_open_d, CME_HALT_END, tzinfo=self.tz)
-                close_name = cal["early_closes"].get(d, "Early Close")
                 return MarketSessionInfo(
                     symbol=symbol,
                     asset_class=AssetClass.FUTURES,
@@ -380,12 +720,11 @@ class CMEFuturesSessionProvider:
                     session_type=MarketSessionType.HOLIDAY_HALT,
                     current_time=et_time,
                     next_open=next_open,
-                    source="cme_holiday_schedule",
+                    source=f"cme_holiday_schedule({trading_day.source})",
                     details=f"CME {close_name} early close (closed after 13:15 ET)",
                 )
             elif EQUITY_RTH_OPEN <= t < time(13, 15):
                 next_close = datetime.combine(d, time(13, 15), tzinfo=self.tz)
-                close_name = cal["early_closes"].get(d, "Early Close")
                 return MarketSessionInfo(
                     symbol=symbol,
                     asset_class=AssetClass.FUTURES,
@@ -394,8 +733,40 @@ class CMEFuturesSessionProvider:
                     session_type=MarketSessionType.RTH,
                     current_time=et_time,
                     next_close=next_close,
-                    source="cme_holiday_schedule",
+                    source=f"cme_holiday_schedule({trading_day.source})",
                     details=f"CME {close_name} Regular Trading Hours (early close at 13:15 ET)",
+                )
+
+        # 4. CME 13:00 ET Holiday Halts (MLK, Presidents', Memorial, Juneteenth, July 4, Labor Day, Thanksgiving)
+        if not trading_day.is_trading_day and weekday < 5:
+            holiday_name = trading_day.holiday_name or cal["statutory_holidays"].get(d, "Market Holiday")
+            if time(13, 0) <= t < CME_HALT_END:
+                next_open = datetime.combine(d, CME_HALT_END, tzinfo=self.tz)
+                return MarketSessionInfo(
+                    symbol=symbol,
+                    asset_class=AssetClass.FUTURES,
+                    is_open=False,
+                    is_rth=False,
+                    session_type=MarketSessionType.HOLIDAY_HALT,
+                    current_time=et_time,
+                    next_open=next_open,
+                    source=f"cme_holiday_schedule({trading_day.source})",
+                    details=f"CME {holiday_name} holiday halt (13:00 - 18:00 ET)",
+                )
+            elif t < time(13, 0):
+                # Before 13:00 ET on a statutory holiday: Globex is open, but cash equity market is closed!
+                # Therefore this is strictly ETH (Extended Hours), NOT RTH.
+                next_halt = datetime.combine(d, time(13, 0), tzinfo=self.tz)
+                return MarketSessionInfo(
+                    symbol=symbol,
+                    asset_class=AssetClass.FUTURES,
+                    is_open=True,
+                    is_rth=False,
+                    session_type=MarketSessionType.ETH,
+                    current_time=et_time,
+                    next_close=next_halt,
+                    source=f"cme_holiday_schedule({trading_day.source})",
+                    details=f"CME {holiday_name} morning session (ETH, halts at 13:00 ET)",
                 )
 
         # 5. Weekend Check (Friday 17:00 ET to Sunday 18:00 ET)
@@ -481,10 +852,12 @@ class AlpacaMarketSessionProvider:
         trading_client: TradingClient | None = None,
         cache_ttl_seconds: int = 15,
         tz_name: str = "America/New_York",
+        calendar_provider: MarketCalendarProtocol | None = None,
     ):
         self.client = trading_client
         self.cache_ttl = cache_ttl_seconds
         self.tz = ZoneInfo(tz_name)
+        self.calendar_provider = calendar_provider or DeterministicCalendarProvider()
         self._cached_clock: Any = None
         self._cache_timestamp: datetime | None = None
         self._calendar_cache: dict[date, tuple[time, time]] = {}
@@ -519,9 +892,9 @@ class AlpacaMarketSessionProvider:
         return info.is_rth
 
     async def get_session_info(self, symbol: str, timestamp: datetime | None = None) -> MarketSessionInfo:
-        # If a historical timestamp is requested, evaluate statically against NYSE schedule
+        # If a historical timestamp is requested, evaluate statically against calendar schedule
         if timestamp is not None:
-            return self._evaluate_static_equities(symbol, timestamp)
+            return await self._evaluate_static_equities(symbol, timestamp)
 
         clock = await self._fetch_clock()
         now_et = datetime.now(self.tz)
@@ -558,19 +931,30 @@ class AlpacaMarketSessionProvider:
                 details=f"Alpaca official exchange clock: {'OPEN' if is_open else 'CLOSED'}",
             )
 
-        # Fallback to static NYSE schedule when Alpaca API client is unconfigured or offline
-        return self._evaluate_static_equities(symbol, now_et)
+        # Fallback to static calendar schedule when Alpaca API clock is unconfigured or offline
+        return await self._evaluate_static_equities(symbol, now_et)
 
-    def _evaluate_static_equities(self, symbol: str, timestamp: datetime) -> MarketSessionInfo:
+    async def _evaluate_static_equities(self, symbol: str, timestamp: datetime) -> MarketSessionInfo:
         et_time = ensure_et(timestamp, target_tz=self.tz)
         d = et_time.date()
         weekday = et_time.weekday()
         t = et_time.time()
-        cal = MarketHolidayCalendar.get_year_calendar(d.year)
+        trading_day = await self.calendar_provider.get_trading_day(d)
 
-        # 1. Statutory Market Holiday (NYSE / NASDAQ closed all day)
-        if d in cal["statutory_holidays"]:
-            holiday_name = cal["statutory_holidays"][d]
+        # 1. Statutory Market Holiday or Weekend
+        if not trading_day.is_trading_day:
+            if weekday in (5, 6) or trading_day.holiday_name == "Weekend":
+                return MarketSessionInfo(
+                    symbol=symbol,
+                    asset_class=AssetClass.EQUITY,
+                    is_open=False,
+                    is_rth=False,
+                    session_type=MarketSessionType.WEEKEND_HALT,
+                    current_time=et_time,
+                    source=f"calendar({trading_day.source})",
+                    details="NYSE weekend closure",
+                )
+            holiday_name = trading_day.holiday_name or "Exchange Holiday"
             return MarketSessionInfo(
                 symbol=symbol,
                 asset_class=AssetClass.EQUITY,
@@ -578,30 +962,18 @@ class AlpacaMarketSessionProvider:
                 is_rth=False,
                 session_type=MarketSessionType.HOLIDAY_HALT,
                 current_time=et_time,
-                source="static_nyse_schedule",
+                source=f"calendar({trading_day.source})",
                 details=f"NYSE full day holiday closure ({holiday_name})",
             )
 
-        # 2. Weekend Check
-        if weekday in (5, 6):
-            return MarketSessionInfo(
-                symbol=symbol,
-                asset_class=AssetClass.EQUITY,
-                is_open=False,
-                is_rth=False,
-                session_type=MarketSessionType.WEEKEND_HALT,
-                current_time=et_time,
-                source="static_nyse_schedule",
-                details="NYSE weekend closure",
-            )
+        # 2. Regular Trading Hours (accounting for early close days e.g. Black Friday or Christmas Eve)
+        is_early_close = trading_day.is_early_close
+        rth_open = trading_day.open_time or EQUITY_RTH_OPEN
+        rth_close = trading_day.close_time or (time(13, 0) if is_early_close else EQUITY_RTH_CLOSE)
 
-        # 3. Regular Trading Hours (accounting for early close days e.g. Black Friday or Christmas Eve)
-        is_early_close = d in cal["early_closes"]
-        rth_close = time(13, 0) if is_early_close else EQUITY_RTH_CLOSE
-
-        if EQUITY_RTH_OPEN <= t < rth_close:
+        if rth_open <= t < rth_close:
             next_close = datetime.combine(et_time.date(), rth_close, tzinfo=self.tz)
-            close_detail = f" ({cal['early_closes'][d]} early close)" if is_early_close else ""
+            close_detail = f" ({trading_day.holiday_name or 'Early Close'} early close)" if is_early_close else ""
             return MarketSessionInfo(
                 symbol=symbol,
                 asset_class=AssetClass.EQUITY,
@@ -610,15 +982,13 @@ class AlpacaMarketSessionProvider:
                 session_type=MarketSessionType.RTH,
                 current_time=et_time,
                 next_close=next_close,
-                source="static_nyse_schedule",
+                source=f"calendar({trading_day.source})",
                 details=f"NYSE Regular Trading Hours{close_detail}",
             )
 
-        # 4. Extended Hours (Pre-market 04:00 - 09:30 ET, Post-market rth_close - 20:00 ET)
-        if time(4, 0) <= t < EQUITY_RTH_OPEN or rth_close <= t < time(20, 0):
-            next_open = (
-                datetime.combine(et_time.date(), EQUITY_RTH_OPEN, tzinfo=self.tz) if t < EQUITY_RTH_OPEN else None
-            )
+        # 3. Extended Hours (Pre-market 04:00 - rth_open, Post-market rth_close - 20:00 ET)
+        if time(4, 0) <= t < rth_open or rth_close <= t < time(20, 0):
+            next_open = datetime.combine(et_time.date(), rth_open, tzinfo=self.tz) if t < rth_open else None
             return MarketSessionInfo(
                 symbol=symbol,
                 asset_class=AssetClass.EQUITY,
@@ -627,11 +997,11 @@ class AlpacaMarketSessionProvider:
                 session_type=MarketSessionType.ETH,
                 current_time=et_time,
                 next_open=next_open,
-                source="static_nyse_schedule",
+                source=f"calendar({trading_day.source})",
                 details="NYSE Extended Hours (Pre/Post Market)",
             )
 
-        # 5. Overnight Closed
+        # 4. Overnight Closed
         return MarketSessionInfo(
             symbol=symbol,
             asset_class=AssetClass.EQUITY,
@@ -639,7 +1009,7 @@ class AlpacaMarketSessionProvider:
             is_rth=False,
             session_type=MarketSessionType.CLOSED,
             current_time=et_time,
-            source="static_nyse_schedule",
+            source=f"calendar({trading_day.source})",
             details="NYSE closed (Overnight)",
         )
 
@@ -656,11 +1026,32 @@ class CompositeMarketSessionProvider:
         self,
         config: AppConfig | None = None,
         alpaca_client: TradingClient | None = None,
+        calendar_provider: MarketCalendarProtocol | None = None,
     ):
         self.config = config
+        if calendar_provider is not None:
+            self.calendar = calendar_provider
+        else:
+            primary_p = getattr(getattr(config, "session", None), "calendar_provider", "alpaca") if config else "alpaca"
+            fallback_p = (
+                getattr(getattr(config, "session", None), "fallback_providers", ["finnhub", "deterministic"])
+                if config
+                else ["finnhub", "deterministic"]
+            )
+            finnhub_key = getattr(config, "finnhub_api_key", None) if config else None
+            self.calendar = CompositeMarketCalendar(
+                alpaca_client=alpaca_client,
+                finnhub_api_key=finnhub_key,
+                primary_provider=primary_p,
+                fallback_providers=fallback_p,
+            )
+
         self.crypto_provider = CryptoSessionProvider()
-        self.futures_provider = CMEFuturesSessionProvider()
-        self.equity_provider = AlpacaMarketSessionProvider(trading_client=alpaca_client)
+        self.futures_provider = CMEFuturesSessionProvider(calendar_provider=self.calendar)
+        self.equity_provider = AlpacaMarketSessionProvider(
+            trading_client=alpaca_client,
+            calendar_provider=self.calendar,
+        )
 
     def _resolve_provider(self, symbol: str) -> tuple[MarketSessionProtocol, AssetClass]:
         clean_sym = symbol.strip().upper()

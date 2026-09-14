@@ -22,6 +22,9 @@ from agentic_trader.constants import (
     DEFAULT_PRIMARY_EQUITIES_PROVIDER,
     DEFAULT_RANDOM_SEED,
     DEFAULT_RISK_FREE_RATE,
+    DEFAULT_SESSION_CACHE_TTL_SECONDS,
+    DEFAULT_SESSION_CALENDAR_PROVIDER,
+    DEFAULT_SESSION_FALLBACK_PROVIDERS,
     DEFAULT_TRAIL_ATR_MULTIPLE,
     DEFAULT_TRAIL_STEP_TICKS,
     DEFAULT_TRAIL_TRIGGER_R,
@@ -270,6 +273,9 @@ class SessionConfig(BaseModel):
     enforce_rth: bool = True
     allow_extended_hours: bool = False
     timezone: str = "America/New_York"
+    calendar_provider: str = DEFAULT_SESSION_CALENDAR_PROVIDER
+    fallback_providers: list[str] = Field(default_factory=lambda: list(DEFAULT_SESSION_FALLBACK_PROVIDERS))
+    cache_ttl_seconds: int = DEFAULT_SESSION_CACHE_TTL_SECONDS
 
 
 class TrailingStopConfig(BaseModel):

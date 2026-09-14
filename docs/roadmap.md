@@ -805,11 +805,36 @@ De-clutter the flat `tests/` root directory by reorganizing all 36 test modules 
 
 ---
 
-## Next Horizon: Strategic Initiatives (Phases 33+)
+## Phase 33: Third-Party Market Calendar Delegation & Resilient Fallback Cascade
+
+### Objective
+Delegate market session calendar, holiday bookkeeping, and trading hours logic to authoritative third-party broker and exchange APIs (Alpaca `GET /v2/calendar` and Finnhub `/stock/market-holiday`), while applying the institutional `RunnableWithFallbacks` cascade to guarantee zero-dependency offline determinism via `MarketHolidayCalendar`. Synchronize CME Globex equity index futures halving (13:00 ET halt) and early closes (13:15 ET) with the cash equity calendar.
+
+### Key Deliverables
+1. **Canonical Day & Protocol Specification (`agentic_trader/market/session.py`)**:
+   - `MarketCalendarDay`: Normalized data transfer object (`date`, `is_trading_day`, `is_early_close`, `open_time`, `close_time`, `holiday_name`, `source`).
+   - `MarketCalendarProtocol`: Asynchronous interface contract (`get_trading_day(target_date)`, `get_calendar_range(start, end)`).
+2. **Multi-Tier Provider Implementations**:
+   - `DeterministicCalendarProvider`: Zero-dependency, offline deterministic calculator wrapping Butcher's Easter algorithm, federal holiday shifts, and conditional July 3rd/Black Friday early closes.
+   - `AlpacaCalendarProvider`: Authoritative exchange calendar querying Alpaca's `TradingClient.get_calendar()`, parsing early close hours (13:00 ET) and omitted statutory holidays, with annual memory caching.
+   - `FinnhubCalendarProvider`: Secondary REST fallback querying `/stock/market-holiday?exchange=US`, parsing partial trading hours and full closure dates.
+3. **Resilient Cascading Coordinator (`CompositeMarketCalendar`)**:
+   - Powered by `RunnableWithFallbacks`: Primary tier (Alpaca) -> Secondary tier (Finnhub) -> Tertiary tier (Deterministic).
+   - Configurable via `SessionConfig` (`calendar_provider: "alpaca"`, `fallback_providers: ["finnhub", "deterministic"]`, `cache_ttl_seconds: 3600`).
+4. **CME Globex Micro-Futures Synchronization**:
+   - `CMEFuturesSessionProvider` synchronizes dynamic early closes (closing at 13:15 ET) and statutory holiday halts (13:00 - 18:00 ET) directly from the active calendar provider.
+5. **System Pre-Flight Doctor & Diagnostic Health Probes**:
+   - Added `check_market_calendar()` probe in `agentic_trader/diagnostics/doctor.py` verifying real-time resolution and active provider status before trading operations begin.
+6. **Comprehensive Test Suite (`tests/market/test_calendar_delegation.py`)**:
+   - 8 unit tests validating deterministic baseline, Alpaca API mocking & annual caching, Finnhub API parsing, multi-tier failure cascade, CME dynamic early close sync, and composite session routing. Total test suite expanded to 255 passing tests.
+
+---
+
+## Next Horizon: Strategic Initiatives (Phases 34+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 33** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
-| **Phase 34** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 35** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 36** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 34** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 35** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 36** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 37** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
