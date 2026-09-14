@@ -8,7 +8,7 @@ from agentic_trader.research.models import (
 )
 from agentic_trader.research.optimizer import ParameterGridOptimizer
 from agentic_trader.research.reporting import format_optimization_report
-from tests.test_optimizer import make_synthetic_screener_data
+from tests.research.test_optimizer import make_synthetic_screener_data
 
 
 @pytest.fixture

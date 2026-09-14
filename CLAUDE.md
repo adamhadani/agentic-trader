@@ -59,7 +59,9 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
 - **Pre-commit checks (mandatory before any commit)**:
   `uv run pre-commit run --all-files`
 - **Run test suite**:
-  `uv run pytest` (247 unit tests)
+  `uv run pytest` (247 unit tests across modular subdirectories)
+- **Run targeted component tests**:
+  `uv run pytest tests/agent/ tests/broker/ tests/market/`
 - **Run test suite with code coverage**:
   `uv run pytest --cov=agentic_trader --cov-report=term-missing`
 - **Rust-accelerated impacted tests**:
@@ -111,6 +113,7 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
 - `agentic_trader/research/`: VectorBT-based parameter grid optimizer and rolling walk-forward cross-validation engine.
 - `agentic_trader/storage/`: SQLAlchemy 2.0 ORM models (`SignalRecord`, `PositionModel`, `TradeAuditModel`, `SystemStateRecord`) backing SQLite (`data/signals.db`).
 - `agentic_trader/notifier/telegram_bot.py`: Interactive Telegram bot with command handlers (`/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/backtest`, `/close`, `/scan`, `/panic`, `/resume`), client-side slash autocomplete (`set_my_commands`), and execution buttons.
+- `tests/`: Modular test hierarchy mirroring `agentic_trader/` packages (`tests/agent/`, `tests/broker/`, etc.) with root `tests/conftest.py` shared fixtures.
 - `docs/`: GitHub Pages Jekyll documentation site (`_config.yml`, `index.md`, `production.md`, `cli-reference.md`, `strategies.md`, `roadmap.md`).
 
 ---
