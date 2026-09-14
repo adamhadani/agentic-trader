@@ -1,8 +1,17 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import pandas as pd
-import yfinance as yf
 
+from agentic_trader.config import AppConfig, load_config
+from agentic_trader.data.providers import (
+    AlpacaDataProvider,
+    CompositeMarketDataProvider,
+    MarketDataProvider,
+    YFinanceDataProvider,
+)
+from agentic_trader.resilience.fallback import RetryPolicy
 from agentic_trader.screeners.indicators import (
     calculate_atr,
     calculate_bollinger_bands,
@@ -24,17 +33,42 @@ class ContractMarketData:
 
 
 class MarketDataFetcher:
-    def __init__(self, cache_ttl_seconds: int = 300):
+    def __init__(
+        self,
+        cache_ttl_seconds: int = 300,
+        config: AppConfig | None = None,
+        provider: MarketDataProvider | None = None,
+    ):
         self.cache_ttl_seconds = cache_ttl_seconds
         self._cache: dict[str, ContractMarketData] = {}
+
+        if provider:
+            self.provider = provider
+        else:
+            cfg = config or load_config()
+            alpaca_prov = AlpacaDataProvider(api_key=cfg.alpaca_api_key, api_secret=cfg.alpaca_api_secret)
+            yf_prov = YFinanceDataProvider()
+
+            md_cfg = getattr(cfg, "market_data", None)
+            if md_cfg and md_cfg.primary_equities_provider == "yfinance":
+                providers: list[MarketDataProvider] = [yf_prov, alpaca_prov]
+            else:
+                providers = [alpaca_prov, yf_prov]
+
+            retry_policy = RetryPolicy(
+                max_retries=md_cfg.max_retries if md_cfg else 2,
+                backoff_factor=md_cfg.retry_backoff_factor if md_cfg else 0.5,
+                timeout_seconds=md_cfg.timeout_seconds if md_cfg else 10.0,
+            )
+            self.provider = CompositeMarketDataProvider(providers, retry_policy=retry_policy)
 
     def _clean_yfinance_df(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return df
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-        return df
+        cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        return df[cols].dropna()
 
     def resample_to_4h(self, df_1h: pd.DataFrame) -> pd.DataFrame:
         """Resample 1-hour OHLCV candles to 4-hour candles."""
@@ -119,15 +153,13 @@ class MarketDataFetcher:
         daily_period: str = "1y",
         hourly_period: str = "60d",
     ) -> ContractMarketData:
-        """Fetch real market data from Yahoo Finance and compute all indicators."""
+        """Fetch market data via resilient providers and compute all indicators."""
         # 1. Daily
-        raw_daily = yf.download(ticker, period=daily_period, interval="1d", progress=False)
-        clean_daily = self._clean_yfinance_df(raw_daily)
+        clean_daily = self.provider.fetch_bars(ticker, "1d", period=daily_period)
         df_daily = self.compute_daily_indicators(clean_daily)
 
         # 2. Hourly
-        raw_1h = yf.download(ticker, period=hourly_period, interval="1h", progress=False)
-        clean_1h = self._clean_yfinance_df(raw_1h)
+        clean_1h = self.provider.fetch_bars(ticker, "1h", period=hourly_period)
         df_1h = self.compute_intraday_indicators(clean_1h)
 
         # 3. 4-Hour (Resampled from 1h)
@@ -144,24 +176,8 @@ class MarketDataFetcher:
         return market_data
 
     def fetch_latest_price(self, ticker: str) -> float | None:
-        """Fetch the current market quote for a ticker."""
-        try:
-            t = yf.Ticker(ticker)
-            price = t.fast_info.get("lastPrice")
-            if price is not None and not pd.isna(price):
-                return float(price)
-        except Exception:
-            pass
-
-        try:
-            df = yf.download(ticker, period="1d", interval="5m", progress=False)
-            clean = self._clean_yfinance_df(df)
-            if not clean.empty:
-                return float(clean["Close"].iloc[-1])
-        except Exception:
-            pass
-
-        return None
+        """Fetch the current market quote for a ticker via resilient providers."""
+        return self.provider.fetch_latest_price(ticker)
 
     def calculate_correlation(self, ticker_a: str, ticker_b: str, lookback_days: int = 60) -> float | None:
         """Compute Pearson return correlation between two tickers over lookback period."""

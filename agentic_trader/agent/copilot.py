@@ -48,9 +48,9 @@ class TradingCopilot:
     broker order execution, real-time trade monitoring, and metrics exposition.
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, db: SignalDatabase | None = None):
         self.config = config
-        self.db = SignalDatabase(config.db_path)
+        self.db = db or SignalDatabase(config.db_path)
         self.data_fetcher = MarketDataFetcher()
         self.broker: BaseBroker = create_broker(config=config, data_fetcher=self.data_fetcher)
         self.strategy_engine = StrategyEngine(config)
@@ -518,6 +518,67 @@ class TradingCopilot:
 
         return closed_count
 
+    async def _sync_broker_stop(
+        self,
+        signal_id: int,
+        contract: str,
+        new_stop: float,
+        broker_order_id: str | None,
+    ) -> bool:
+        """Attempt to amend resting stop order on the broker exchange with graceful degradation."""
+        if not getattr(self.broker, "supports_order_modification", False):
+            return False
+
+        try:
+            mod_res = await self.broker.modify_order_stop(
+                order_id=broker_order_id,
+                symbol=contract,
+                new_stop_price=new_stop,
+            )
+            if mod_res.success:
+                logger.info(
+                    "Broker resting stop modified for #%d (%s) -> %.2f (order: %s)",
+                    signal_id,
+                    contract,
+                    new_stop,
+                    mod_res.order_id,
+                    extra={
+                        "event": "broker_stop_synced",
+                        "signal_id": signal_id,
+                        "contract": contract,
+                        "new_stop": new_stop,
+                        "broker_order_id": mod_res.order_id,
+                    },
+                )
+                return True
+            else:
+                logger.warning(
+                    "Broker stop modification degraded for #%d (%s): %s",
+                    signal_id,
+                    contract,
+                    mod_res.error_message,
+                    extra={
+                        "event": "broker_stop_sync_degraded",
+                        "signal_id": signal_id,
+                        "contract": contract,
+                        "error": mod_res.error_message,
+                    },
+                )
+                return False
+        except Exception as broker_err:
+            logger.warning(
+                "Exception during broker stop sync for #%d (%s): %s",
+                signal_id,
+                contract,
+                broker_err,
+                extra={
+                    "event": "broker_stop_sync_exception",
+                    "signal_id": signal_id,
+                    "error": str(broker_err),
+                },
+            )
+            return False
+
     async def manage_trailing_stops(self, active_positions: list[dict[str, Any]]) -> int:
         """Evaluate active open positions for Breakeven and Dynamic Trailing Stop ratchets.
 
@@ -591,6 +652,9 @@ class TradingCopilot:
                                 },
                             )
                             await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
+                            synced = await self._sync_broker_stop(
+                                sig_id, contract, target_be_stop, pos.get("broker_order_id")
+                            )
                             await self.notifier.send_trailing_stop_alert(
                                 signal_id=sig_id,
                                 contract=contract,
@@ -599,6 +663,7 @@ class TradingCopilot:
                                 new_stop=target_be_stop,
                                 current_price=current_price,
                                 reason="BREAKEVEN",
+                                broker_synced=synced,
                             )
                             current_stop = target_be_stop
                             updates_count += 1
@@ -629,6 +694,9 @@ class TradingCopilot:
                             await self.db.update_position_stop(
                                 sig_id, proposed_trail_stop, raw_response="TRAILING_STOP"
                             )
+                            synced = await self._sync_broker_stop(
+                                sig_id, contract, proposed_trail_stop, pos.get("broker_order_id")
+                            )
                             await self.notifier.send_trailing_stop_alert(
                                 signal_id=sig_id,
                                 contract=contract,
@@ -637,6 +705,7 @@ class TradingCopilot:
                                 new_stop=proposed_trail_stop,
                                 current_price=current_price,
                                 reason="TRAILING_STOP",
+                                broker_synced=synced,
                             )
                             updates_count += 1
 
@@ -667,6 +736,9 @@ class TradingCopilot:
                                 },
                             )
                             await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
+                            synced = await self._sync_broker_stop(
+                                sig_id, contract, target_be_stop, pos.get("broker_order_id")
+                            )
                             await self.notifier.send_trailing_stop_alert(
                                 signal_id=sig_id,
                                 contract=contract,
@@ -675,6 +747,7 @@ class TradingCopilot:
                                 new_stop=target_be_stop,
                                 current_price=current_price,
                                 reason="BREAKEVEN",
+                                broker_synced=synced,
                             )
                             current_stop = target_be_stop
                             updates_count += 1
@@ -705,6 +778,9 @@ class TradingCopilot:
                             await self.db.update_position_stop(
                                 sig_id, proposed_trail_stop, raw_response="TRAILING_STOP"
                             )
+                            synced = await self._sync_broker_stop(
+                                sig_id, contract, proposed_trail_stop, pos.get("broker_order_id")
+                            )
                             await self.notifier.send_trailing_stop_alert(
                                 signal_id=sig_id,
                                 contract=contract,
@@ -713,6 +789,7 @@ class TradingCopilot:
                                 new_stop=proposed_trail_stop,
                                 current_price=current_price,
                                 reason="TRAILING_STOP",
+                                broker_synced=synced,
                             )
                             updates_count += 1
             except Exception as e:

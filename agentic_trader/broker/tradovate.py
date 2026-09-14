@@ -614,3 +614,60 @@ class TradovateBroker(BaseBroker):
                 await self._trade_stream_task
             self._trade_stream_task = None
         logger.info("Tradovate trade stream stopped.")
+
+    @property
+    def supports_order_modification(self) -> bool:
+        return True
+
+    async def modify_order_stop(
+        self,
+        order_id: str | None = None,
+        symbol: str | None = None,
+        new_stop_price: float = 0.0,
+        client_order_id: str | None = None,
+    ) -> OrderResult:
+        """Modify resting stop order on Tradovate exchange with graceful degradation."""
+        if not self._access_token or not self.client:
+            try:
+                connected = await self.connect()
+            except Exception as conn_err:
+                return OrderResult(
+                    success=False,
+                    error_message=f"Not connected to Tradovate ({conn_err}). Broker stop modification degraded.",
+                )
+            if not connected or not self.client:
+                return OrderResult(
+                    success=False,
+                    error_message="Not connected to Tradovate. Broker stop modification degraded.",
+                )
+
+        if not order_id:
+            return OrderResult(
+                success=False,
+                error_message="Tradovate order modification requires order_id",
+            )
+
+        headers = {"Authorization": f"Bearer {self._access_token}"}
+        payload = {
+            "orderId": int(order_id) if order_id.isdigit() else order_id,
+            "orderType": "Stop",
+            "stopPrice": new_stop_price,
+        }
+
+        try:
+            logger.info(
+                "Tradovate: Modifying resting stop order %s to %.2f...",
+                order_id,
+                new_stop_price,
+                extra={"event": "tradovate_modify_stop", "order_id": order_id, "new_stop": new_stop_price},
+            )
+            resp = await self.client.post("/order/modifyorder", json=payload, headers=headers)
+            data = resp.json()
+            if resp.status_code != 200 or data.get("error"):
+                err_msg = data.get("errorText", str(data))
+                return OrderResult(success=False, error_message=err_msg, raw_response=data)
+
+            return OrderResult(success=True, order_id=str(order_id), raw_response=data)
+        except Exception as e:
+            logger.warning("Exception modifying Tradovate stop order (degrading): %s", e)
+            return OrderResult(success=False, error_message=str(e))

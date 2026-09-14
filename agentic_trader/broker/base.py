@@ -183,3 +183,24 @@ class BaseBroker(ABC):
     async def stop_trade_stream(self) -> None:
         """Stop real-time fill events listener."""
         return
+
+    @property
+    def supports_order_modification(self) -> bool:
+        """Whether this broker supports amending resting bracket stop orders."""
+        return False
+
+    async def modify_order_stop(
+        self,
+        order_id: str | None = None,
+        symbol: str | None = None,
+        new_stop_price: float = 0.0,
+        client_order_id: str | None = None,
+    ) -> OrderResult:
+        """
+        Modify the price of a resting stop order on the broker exchange.
+        Default implementation returns an unsupported failure result for graceful degradation.
+        """
+        return OrderResult(
+            success=False,
+            error_message=f"{self.__class__.__name__} does not support broker-side stop modification",
+        )
