@@ -33,8 +33,15 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 23** | Regular Trading Hours (RTH) & Market Session Filtering | **Completed** | `MarketSessionProtocol`, Alpaca dynamic exchange clock, CME Globex schedule, Crypto 24/7 |
 | **Phase 24** | Dynamic Trailing Stops & Breakeven Position Management | **Completed** | Breakeven triggers (+1.0R), ATR trailing stop ratchets (+1.5R), SQLite tracking, Telegram alerts |
 | **Phase 25** | Production Deployment Packaging (launchd & Watchdog) | **Completed** | macOS launchd service supervision, automated 60s background watchdog probe, doctor health checks |
-| **Phase 26** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
-| **Phase 27** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 26** | Quant Chandelier ATR Trailing Stop Benchmarking | **Completed** | Empirical backtest benchmark of retail BE vs Chandelier ATR, eliminating negative expectancy anchoring |
+| **Phase 27** | Decoupled Presentation Layer & TradingCopilot Generalization | **Completed** | Domain DTOs (`presentation/formatters.py`), Terminal & Telegram cards, `TradingCopilot` generalization |
+| **Phase 28** | CME Globex Holiday Calendar & Timezone Normalization | **Completed** | `MarketHolidayCalendar` accounting for holiday closures & early halts, robust ET timezone conversions |
+| **Phase 29** | Resilient Market Data Provider Cascade (`RunnableWithFallbacks`) | **Completed** | Generic LangChain-style fallback engine, Alpaca historical bars primary, Yahoo Finance fallback |
+| **Phase 30** | Broker-Side Trailing Stop Synchronization | **Completed** | Dynamic bracket stop modification on exchange brokers (Alpaca & Tradovate) with graceful degradation |
+| **Phase 31** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 32** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 33** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 34** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
 
 ---
 
@@ -681,11 +688,88 @@ Provide institutional local production deployment for dedicated trading machines
 
 ---
 
-## Next Horizon: Strategic Initiatives (Phases 26+)
+## Phase 26: Quant Chandelier ATR Trailing Stop Benchmarking & Policy Formulation
+
+### Objective
+In retail trading, shifting stops to breakeven at 1.0R is taught as risk mitigation. In quantitative reality, moving stops to entry prices truncates right-tail momentum and degrades mathematical expectancy ($EV$). This phase empirically benchmarked trailing stop configurations across historical data to establish an institutional Chandelier ATR policy.
+
+### Key Deliverables
+1. **Empirical Historical Benchmark**:
+   - Tested 6 policies across `/MES`, `/MNQ`, `SPY`, `QQQ`, `IWM`.
+   - Confirmed retail 1.0R break-even prematurely choked winning runners (reducing take-profit hits from 10 to 6).
+   - Chandelier ATR (1.5R activation, 1.5x ATR trail from high-water mark, no break-even jump) increased Profit Factor from 0.51 to 0.67 (+31%) and preserved all 10 runner take profits.
+2. **Modular Configuration**:
+   - Set `chandelier_atr` as default mode with `breakeven_trigger_r: null` (opt-in).
+
+---
+
+## Phase 27: Decoupled Presentation Layer & TradingCopilot Generalization
+
+### Objective
+Decouple string interpolation, ASCII formatting, and HTML card generation from core business logic into domain DTOs and clean formatters, and generalize `FuturesCopilot` to multi-asset `TradingCopilot`.
+
+### Key Deliverables
+1. **Domain Presentation DTOs (`agentic_trader/presentation/formatters.py`)**:
+   - `PositionView`, `PositionsReport`, `PortfolioStatusReport`, `ExecutionResultView`, `PerformanceSummaryReport`.
+   - `TerminalFormatter` for aligned CLI tables and `TelegramHtmlFormatter` for mobile HTML cards.
+2. **Core Class Generalization**:
+   - Renamed orchestration class to `TradingCopilot` with `FuturesCopilot` backward-compatible alias.
+
+---
+
+## Phase 28: CME Globex Holiday Calendar & Timezone Normalization
+
+### Objective
+Account for CME exchange holidays, half-day early closures, and timezone conversions to prevent false trade signals during closed market hours.
+
+### Key Deliverables
+1. **`MarketHolidayCalendar`**:
+   - Supports Martin Luther King Jr. Day, Washington's Birthday, Good Friday, Memorial Day, Juneteenth, Independence Day, Labor Day, Thanksgiving (and Black Friday early close at 13:00 ET), and Christmas / New Year.
+2. **Timezone Normalization**:
+   - `ensure_et()` handles naive and timezone-aware datetimes with daylight saving transitions.
+
+---
+
+## Phase 29: Resilient Market Data Provider Cascade (`RunnableWithFallbacks`)
+
+### Objective
+Eliminate single points of failure in market data by pulling bars directly from the authenticated Alpaca Historical Bars API and cascading to Yahoo Finance with timeout and retry policies.
+
+### Key Deliverables
+1. **Generic Resilience Engine (`agentic_trader/resilience/fallback.py`)**:
+   - LangChain-inspired `RunnableWithFallbacks[T, R]` with synchronous (`invoke`) and asynchronous (`ainvoke`) execution.
+   - `RetryPolicy`: Configurable max retries, exponential backoff jitter, and per-attempt timeout execution.
+   - Structured logging with `extra={...}` on fallback events.
+2. **Provider Implementations (`agentic_trader/data/providers.py`)**:
+   - `MarketDataProvider` protocol.
+   - `AlpacaDataProvider`: Fast, rate-limit exempt bars for equities, ETFs, and crypto. Routes CME futures to upstream fallbacks.
+   - `YFinanceDataProvider`: Downloader for CME futures and fallback for equities.
+   - `CompositeMarketDataProvider`: Seamless fallback orchestration.
+
+---
+
+## Phase 30: Broker-Side Trailing Stop Synchronization
+
+### Objective
+Ensure that when internal trailing stops ratchet higher, the resting bracket stop-loss orders on the exchange brokers are amended in real time with graceful degradation for offline brokers.
+
+### Key Deliverables
+1. **Broker Interface Extension (`agentic_trader/broker/base.py`)**:
+   - `supports_order_modification: bool` property and `modify_order_stop()` hook.
+2. **Broker Implementations**:
+   - `AlpacaBroker`: Traverses order legs and invokes `replace_order_by_id` with new stop price.
+   - `TradovateBroker`: Amends resting stops via `POST /order/modifyorder` with graceful offline fallback.
+   - `PaperBroker`: Simulates resting stop replacement in memory.
+3. **TradingCopilot Integration**:
+   - Trailing stop evaluation ratchets broker stops simultaneously with SQLite records and alerts Telegram.
+
+---
+
+## Next Horizon: Strategic Initiatives (Phases 31+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 26** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
-| **Phase 27** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
-| **Phase 28** | Real-Time FIX Protocol Broker Gateway | **Planned** | Direct institutional DMA connectivity via QuickFIX / Python FIX engine |
-| **Phase 29** | Multi-Horizon Cross-Asset Lead-Lag Engine | **Planned** | Information share and Granger causality for lead-lag futures arbitrage |
+| **Phase 31** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
+| **Phase 32** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 33** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 34** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |

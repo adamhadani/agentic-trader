@@ -15,7 +15,7 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 - [**Production Operations Guide**](production.md): The single source of truth on 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
 - [**CLI Command Reference**](cli-reference.md): Comprehensive reference guide covering all Click CLI subcommands.
 - [**Quantitative Strategies & Models**](strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX surface, and Pairs Trading.
-- [**System Development Roadmap**](roadmap.md): Complete chronological record of completed phases (Phases 1 through 22) and future milestones.
+- [**System Development Roadmap**](roadmap.md): Complete chronological record of completed phases (Phases 1 through 30) and future milestones.
 
 ---
 

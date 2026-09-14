@@ -17,6 +17,10 @@ from alpaca.data.requests import (
 )
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
+from agentic_trader.constants import (
+    DEFAULT_DAILY_LOOKBACK_PERIOD,
+    DEFAULT_INTRADAY_LOOKBACK_PERIOD,
+)
 from agentic_trader.resilience.fallback import (
     AllFallbacksExhaustedError,
     RetryPolicy,
@@ -148,7 +152,10 @@ class AlpacaDataProvider:
                 raise UnsupportedSymbolError("Alpaca stock client not configured")
 
         if start is None:
-            delta = parse_period_to_timedelta(period or ("1y" if timeframe in ("1d", "daily") else "60d"))
+            delta = parse_period_to_timedelta(
+                period
+                or (DEFAULT_DAILY_LOOKBACK_PERIOD if timeframe in ("1d", "daily") else DEFAULT_INTRADAY_LOOKBACK_PERIOD)
+            )
             start = datetime.now(UTC) - delta
 
         tf = self._map_timeframe(timeframe)
@@ -263,7 +270,9 @@ class YFinanceDataProvider:
         if start is not None:
             raw = yf.download(clean_sym, start=start, end=end, interval=interval, progress=False)
         else:
-            default_period = period or ("1y" if interval == "1d" else "60d")
+            default_period = period or (
+                DEFAULT_DAILY_LOOKBACK_PERIOD if interval == "1d" else DEFAULT_INTRADAY_LOOKBACK_PERIOD
+            )
             raw = yf.download(clean_sym, period=default_period, interval=interval, progress=False)
 
         clean = self._clean_df(raw)

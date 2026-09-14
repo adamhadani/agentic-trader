@@ -25,8 +25,8 @@ The system is architected as an event-driven quantitative trading daemon running
          |                    |                       |                     |                    |
          v                    v                       v                     v                    v
   Market Data          Broker REST &           Sub-Second Bracket    Operator Approval    Prometheus /
-  (yfinance /          SQLite Sync             Fill & Cancellation   & Manual Command     Grafana & Docker
-  Finnhub Macro)       (signals.db)            Events                Dispatch             Healthchecks
+  (Composite Provider: SQLite Sync             Fill & Cancellation   & Manual Command     Grafana & Docker
+  Alpaca / YFinance)   (signals.db)            Events                Dispatch             Healthchecks
 ```
 
 ---
@@ -43,7 +43,7 @@ copilot daemon
 
 1. **Scheduled Quantitative Scanner (APScheduler)**:
    - Wakes every 4 hours aligned with CME/equity candle closes (`00:00`, `04:00`, `08:00`, `12:00`, `16:00`, `20:00` UTC).
-   - Fetches multi-timeframe candles (Daily, 4-Hour, 1-Hour) across `/MES`, `/MNQ`, `/MGC`, `/MCL`.
+   - Fetches multi-timeframe candles (Daily, 4-Hour, 1-Hour) via `CompositeMarketDataProvider` (Alpaca primary, Yahoo Finance fallback).
    - Runs Trend-Pullback and Squeeze Breakout screeners.
    - Evaluates macro lockout windows (blocks entries within $[-60\text{m}, +30\text{m}]$ of Tier-1 releases).
    - Queries the configured LLM agent for thesis evaluation and risk gating.
@@ -67,6 +67,10 @@ copilot daemon
    - Runs a lightweight async HTTP server on `0.0.0.0:9108`.
    - Exposes standard Prometheus 0.0.4 metrics at `GET /metrics`.
    - Exposes container liveness and readiness probe at `GET /healthz`.
+
+6. **Dynamic Trailing Stop & Broker Synchronization**:
+   - Continuously evaluates active positions for Chandelier ATR high-water mark trailing stops.
+   - Automatically synchronizes resting bracket stop orders directly on exchange brokers (Alpaca and Tradovate) with graceful degradation.
 
 ---
 

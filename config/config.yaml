@@ -91,6 +91,12 @@ risk:
   lockout_pre_event_minutes: 60
   lockout_post_event_minutes: 30
 
+regime:
+  vix_compressed_threshold: 15.0
+  vix_elevated_threshold: 22.0
+  vix_extreme_threshold: 30.0
+  cache_ttl_seconds: 900
+
 strategies:
   trend_pullback:
     enabled: true
@@ -145,6 +151,13 @@ execution:
   twap_interval_seconds: 5.0
   price_collar_ticks: 2.0 # max allowable ticks from base entry price
   price_collar_pct: 0.001 # 0.10% price collar for equities
+
+friction:
+  enabled: true
+  futures_commission_per_contract: 0.62
+  equity_commission_per_share: 0.005
+  futures_slippage_points: 0.25
+  equity_slippage_pct: 0.0002
 
 options:
   enabled: true
@@ -206,3 +219,11 @@ trailing_stop:
   trail_trigger_r: 1.5
   trail_atr_multiple: 1.5
   trail_step_ticks: 2
+
+market_data:
+  primary_equities_provider: "alpaca" # "alpaca" (StockHistoricalDataClient), "yfinance"
+  fallback_providers:
+    - "yfinance"
+  timeout_seconds: 10.0
+  max_retries: 2
+  retry_backoff_factor: 0.5
