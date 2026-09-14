@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import click
 
+from agentic_trader.cli.utils import coro
 from agentic_trader.config import load_config
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.migrations import (
@@ -63,3 +64,17 @@ def history() -> None:
     click.echo("Migration History:")
     for h in hist:
         click.echo(f"  • {h['revision']} (down: {h['down_revision']}) - {h['doc']}")
+
+
+@db_group.command("clear", help="Clear all historical signals and positions from database")
+@click.option("--yes", "-y", is_flag=True, default=False, help="Confirm clearing database without interactive prompt")
+@coro
+async def clear(yes: bool) -> None:
+    """Clear all historical signals and positions from database."""
+    if not yes and not click.confirm("Are you sure you want to clear all signal and position records?"):
+        click.echo("Aborted.")
+        return
+    config = load_config()
+    db = SignalDatabase(config.db_path)
+    count = await db.clear_all_signals()
+    click.echo(f"✅ Successfully cleared {count} signal/position record(s). Database is fresh.")

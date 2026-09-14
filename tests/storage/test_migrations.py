@@ -176,3 +176,14 @@ def test_cli_db_commands(tmp_path: Path):
     )
     assert res_up.returncode == 0
     assert "Database upgraded successfully" in res_up.stdout
+
+    # Test copilot db clear --yes
+    res_clear = subprocess.run(
+        [sys.executable, "-m", "agentic_trader.main", "db", "clear", "--yes"],
+        env=run_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_clear.returncode == 0
+    assert "Successfully cleared" in res_clear.stdout
