@@ -101,7 +101,22 @@ class BrokerPosition(BaseModel):
 
 
 class ReconciliationEvent(BaseModel):
-    """Event generated when a broker detects that an active position was exited (e.g. TP/SL fill)."""
+    """
+    Event generated when a broker detects that an order filled (exit TP/SL/market, or entry fill confirmation).
+
+    Fields:
+        signal_id: ID of the matching signal (0 if arriving from stream before matching).
+        symbol: Clean symbol (e.g. SPY, MES).
+        contract: Formatted contract identifier (e.g. /MES, SPY).
+        direction: Position direction (LONG or SHORT) that this event relates to.
+        exit_price: Fill price of the executed order.
+        exit_reason: Reason for exit if applicable (STOP_LOSS, TAKE_PROFIT, MANUAL_CLOSE).
+        exit_timestamp: Timestamp of the fill event.
+        realized_pnl: Realized PnL in USD (if computed).
+        broker_order_id: Broker order ID of the specific order that filled.
+        order_side: Explicit order side ("buy" or "sell"). Critical for verifying that exit
+                    orders strictly oppose the position direction (sell closes long, buy closes short).
+    """
 
     signal_id: int
     symbol: str = Field(default="")
@@ -112,6 +127,7 @@ class ReconciliationEvent(BaseModel):
     exit_timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     realized_pnl: float | None = None
     broker_order_id: str | None = None
+    order_side: str | None = None
 
 
 class BaseBroker(ABC):

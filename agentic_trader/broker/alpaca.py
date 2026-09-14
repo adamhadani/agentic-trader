@@ -420,6 +420,7 @@ class AlpacaBroker(BaseBroker):
                     exit_timestamp=exit_time,
                     realized_pnl=realized_pnl,
                     broker_order_id=exit_order_id,
+                    order_side=expected_exit_side,
                 )
                 reconciliation_events.append(event)
         except Exception as e:
@@ -494,6 +495,7 @@ class AlpacaBroker(BaseBroker):
                         exit_reason=exit_reason,
                         exit_timestamp=datetime.now(UTC),
                         broker_order_id=order_id,
+                        order_side=order_side,
                     )
                     await on_fill_callback(event)
             except Exception as ex:

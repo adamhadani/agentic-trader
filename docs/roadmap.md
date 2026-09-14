@@ -923,16 +923,20 @@ Verify end-to-end autonomous live execution against the Alpaca Paper API, elimin
    - Evaluated `SPY LONG` via `TREND_PULLBACK` at $761.77.
    - LiteLLM validated trade sizing: 39 shares ($200.46 risk, $29,709 notional).
    - Submitted bracket order to Alpaca: Entry BUY filled immediately at $761.7656 with exchange-held Take Profit (Limit $772.05) and Stop Loss (Stop $756.63) active.
-2. **Bracket Order Reconciler Safety Fix (`agentic_trader/broker/alpaca.py`)**:
-   - Identified that Alpaca's `closed_orders` list includes filled *entry* orders.
-   - Updated `reconcile_positions()` to explicitly filter out `ord_id == entry_order_id` and require an opposing exit side (`sell` for long, `buy` for short) before triggering closure, preventing false-positive exit alerts.
+2. **Generic Multi-Backend Reconciler Safety & Invariants (`copilot.py`, `broker/base.py`, `alpaca.py`, `tradovate.py`)**:
+   - Identified root cause of premature exit notifications: real-time WebSocket fill streams (`TradingStream`, Tradovate SockJS) emit fill events for entry orders, which were matching `broker_order_id` and inadvertently closing the position.
+   - Enforced 4 universal reconciliation invariants across all broker backends:
+     1. **Entry Order ID Exclusion**: Order fills matching `pos["broker_order_id"]` confirm entry order execution and log confirmation; they never close positions or send exit alerts.
+     2. **Directional Opposing Side Rule**: Added `order_side` ("buy" / "sell") to `ReconciliationEvent`. An exit fill MUST strictly oppose the position direction (Sell closes Long, Buy closes Short).
+     3. **Order ID Distinctness**: Bracket orders (Take Profit limit / Stop Loss stop) and manual exits use distinct child order IDs.
+     4. **Defense-in-Depth**: Both `copilot.on_stream_trade_update()` and `copilot.process_reconciliation_event()` enforce side opposition and entry ID exclusion before modifying database state.
 3. **Dynamic Unit Sizing on Exit Cards (`agentic_trader/notifier/telegram_bot.py`)**:
    - Updated `format_exit_card()` and `send_exit_alert()` to accept `quantity` and `asset_class`, displaying actual share counts (e.g. `39 shares SPY`) rather than hardcoding `1x`.
 4. **Codebase Simplification & Shim Pruning**:
    - Deleted `_fallback_sqlite_sync()` raw SQL table creation routine and `sqlite3` import from `agentic_trader/storage/db.py`, establishing Alembic migrations (`run_migrations_head`) as the sole authoritative source of schema truth.
    - Removed unused backward-compatibility alias file `agentic_trader/agent/session.py`.
 5. **Quality Assurance**:
-   - Test suite expanded to 273 passing unit tests with 100% pre-commit compliance.
+   - Test suite expanded to 275 passing unit tests across 18 subdirectories with 100% pre-commit compliance.
 
 ---
 

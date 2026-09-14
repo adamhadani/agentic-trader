@@ -110,7 +110,7 @@ async def test_copilot_on_stream_trade_update_matching(test_config):
     )
     await copilot.db.update_signal_execution(
         signal_id=sig_id,
-        broker_order_id="ALP-ORDER-999",
+        broker_order_id="ALP-ENTRY-999",
         fill_price=500.0,
         status=SignalStatus.EXECUTED,
     )
@@ -119,8 +119,45 @@ async def test_copilot_on_stream_trade_update_matching(test_config):
     active = await copilot.db.get_active_positions()
     assert len(active) == 1
 
-    # Emit stream trade update matching broker_order_id
-    ev = ReconciliationEvent(
+    # Invariant 1: Stream fill matching entry order ID confirms entry and MUST NOT close position
+    ev_entry = ReconciliationEvent(
+        signal_id=0,
+        symbol="SPY",
+        contract="SPY",
+        direction=Direction.LONG,
+        exit_price=500.0,
+        exit_reason=ExitReason.MANUAL_CLOSE,
+        exit_timestamp=datetime.now(UTC),
+        broker_order_id="ALP-ENTRY-999",
+        order_side="buy",
+    )
+    await copilot.on_stream_trade_update(ev_entry)
+
+    # Position MUST remain active!
+    active_after_entry_fill = await copilot.db.get_active_positions()
+    assert len(active_after_entry_fill) == 1
+    copilot.notifier.send_exit_alert.assert_not_called()
+
+    # Invariant 2: Stream fill with non-opposing side (BUY fill on a LONG position) MUST NOT close position
+    ev_wrong_side = ReconciliationEvent(
+        signal_id=0,
+        symbol="SPY",
+        contract="SPY",
+        direction=Direction.LONG,
+        exit_price=505.0,
+        exit_reason=ExitReason.MANUAL_CLOSE,
+        exit_timestamp=datetime.now(UTC),
+        broker_order_id="ALP-OTHER-BUY-1002",
+        order_side="buy",
+    )
+    await copilot.on_stream_trade_update(ev_wrong_side)
+
+    active_after_wrong_side = await copilot.db.get_active_positions()
+    assert len(active_after_wrong_side) == 1
+    copilot.notifier.send_exit_alert.assert_not_called()
+
+    # Invariant 3: Legitimate exit fill with opposing side (SELL on LONG position) and distinct exit order ID DOES close position
+    ev_exit = ReconciliationEvent(
         signal_id=0,
         symbol="SPY",
         contract="SPY",
@@ -128,10 +165,10 @@ async def test_copilot_on_stream_trade_update_matching(test_config):
         exit_price=510.0,
         exit_reason=ExitReason.TAKE_PROFIT,
         exit_timestamp=datetime.now(UTC),
-        broker_order_id="ALP-ORDER-999",
+        broker_order_id="ALP-EXIT-TP-1001",
+        order_side="sell",
     )
-
-    await copilot.on_stream_trade_update(ev)
+    await copilot.on_stream_trade_update(ev_exit)
 
     # Active positions should now be empty (position closed)
     remaining_active = await copilot.db.get_active_positions()
@@ -241,3 +278,80 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
     assert events_exit[0].exit_reason == ExitReason.TAKE_PROFIT
     assert events_exit[0].exit_price == 772.10
     assert events_exit[0].broker_order_id == "EXIT-ORDER-456"
+    assert events_exit[0].order_side == "sell"
+
+
+@pytest.mark.asyncio
+async def test_copilot_process_reconciliation_event_safeguards(test_config):
+    copilot = FuturesCopilot(test_config)
+    copilot.notifier.send_exit_alert = AsyncMock()
+
+    sig_id = await copilot.db.record_signal(
+        contract="SPY",
+        strategy="trend_pullback",
+        direction="LONG",
+        entry_price=500.0,
+        stop_loss=495.0,
+        take_profit=510.0,
+        risk_dollars=500.0,
+        reward_dollars=1000.0,
+        notional_value=50000.0,
+        status="PENDING",
+        asset_class="EQUITY",
+        quantity=10.0,
+    )
+    await copilot.db.update_signal_execution(
+        signal_id=sig_id,
+        broker_order_id="ENTRY-123",
+        fill_price=500.0,
+        status=SignalStatus.EXECUTED,
+    )
+
+    # Safeguard 1: Event matching entry order ID is rejected
+    ev_entry = ReconciliationEvent(
+        signal_id=sig_id,
+        symbol="SPY",
+        contract="SPY",
+        direction=Direction.LONG,
+        exit_price=500.0,
+        exit_reason=ExitReason.MANUAL_CLOSE,
+        exit_timestamp=datetime.now(UTC),
+        broker_order_id="ENTRY-123",
+        order_side="buy",
+    )
+    res_entry = await copilot.process_reconciliation_event(ev_entry)
+    assert res_entry is False
+    assert len(await copilot.db.get_active_positions()) == 1
+
+    # Safeguard 2: Event with non-opposing side (BUY for LONG) is rejected
+    ev_same_side = ReconciliationEvent(
+        signal_id=sig_id,
+        symbol="SPY",
+        contract="SPY",
+        direction=Direction.LONG,
+        exit_price=505.0,
+        exit_reason=ExitReason.MANUAL_CLOSE,
+        exit_timestamp=datetime.now(UTC),
+        broker_order_id="BUY-999",
+        order_side="buy",
+    )
+    res_same_side = await copilot.process_reconciliation_event(ev_same_side)
+    assert res_same_side is False
+    assert len(await copilot.db.get_active_positions()) == 1
+
+    # Safeguard 3: Legitimate opposing exit order (SELL for LONG) succeeds
+    ev_valid_exit = ReconciliationEvent(
+        signal_id=sig_id,
+        symbol="SPY",
+        contract="SPY",
+        direction=Direction.LONG,
+        exit_price=510.0,
+        exit_reason=ExitReason.TAKE_PROFIT,
+        exit_timestamp=datetime.now(UTC),
+        broker_order_id="EXIT-SELL-888",
+        order_side="sell",
+    )
+    res_valid = await copilot.process_reconciliation_event(ev_valid_exit)
+    assert res_valid is True
+    assert len(await copilot.db.get_active_positions()) == 0
+    copilot.notifier.send_exit_alert.assert_awaited_once()
