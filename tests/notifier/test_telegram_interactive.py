@@ -4,9 +4,14 @@ import pytest
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import load_config
-from agentic_trader.constants import Direction, ExitReason, SignalStatus
+from agentic_trader.constants import AssetClass, Direction, ExitReason, SignalStatus
 from agentic_trader.main import FuturesCopilot
-from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_alert_card, format_terminal_card
+from agentic_trader.notifier.telegram_bot import (
+    TelegramNotifier,
+    format_alert_card,
+    format_exit_card,
+    format_terminal_card,
+)
 
 
 @pytest.mark.asyncio
@@ -283,3 +288,35 @@ def test_format_alert_card_with_sizing_tiers():
     assert "Reward: +$427.50" in card_term
     assert "Risk: -$427.50" in card_term
     assert "Reward: +$855.00" in card_term
+
+
+def test_format_exit_card_equity_and_futures():
+    equity_exit = format_exit_card(
+        contract="SPY",
+        direction="LONG",
+        exit_reason="TAKE_PROFIT",
+        entry_price=761.77,
+        exit_price=772.05,
+        realized_pnl=400.92,
+        strategy="TREND_PULLBACK",
+        quantity=39.0,
+        asset_class=AssetClass.EQUITY,
+    )
+    assert "39 shares SPY" in equity_exit
+    assert "TARGET REACHED" in equity_exit or "TAKE PROFIT REACHED" in equity_exit
+    assert "+$400.92" in equity_exit
+
+    futures_exit = format_exit_card(
+        contract="/MES",
+        direction="SHORT",
+        exit_reason="STOP_LOSS",
+        entry_price=5800.0,
+        exit_price=5830.0,
+        realized_pnl=-150.0,
+        strategy="SQUEEZE_BREAKOUT",
+        quantity=2.0,
+        asset_class=AssetClass.FUTURES,
+    )
+    assert "2x /MES" in futures_exit
+    assert "STOP LOSS TRIGGERED" in futures_exit
+    assert "-$150.00" in futures_exit

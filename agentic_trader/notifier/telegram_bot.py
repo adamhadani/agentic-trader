@@ -274,6 +274,8 @@ def format_exit_card(
     exit_price: float,
     realized_pnl: float,
     strategy: str,
+    quantity: float = 1.0,
+    asset_class: AssetClass = AssetClass.FUTURES,
 ) -> str:
     """Format exit notification card for Take Profit, Stop Loss, or Manual Close."""
     if ExitReason.TAKE_PROFIT in exit_reason.upper():
@@ -286,8 +288,14 @@ def format_exit_card(
     pnl_sign = "+" if realized_pnl >= 0 else "-"
     pnl_str = f"{pnl_sign}${abs(realized_pnl):,.2f}"
 
+    qty_str = (
+        f"{quantity:g} shares"
+        if (asset_class == AssetClass.EQUITY or not contract.startswith("/"))
+        else f"{quantity:g}x"
+    )
+
     text = (
-        f"<b>{icon}: 1x {html.escape(contract)} ({html.escape(direction)})</b>\n"
+        f"<b>{icon}: {qty_str} {html.escape(contract)} ({html.escape(direction)})</b>\n"
         f"<b>Strategy:</b> {html.escape(strategy)}\n\n"
         f"📊 <b>Exit Execution Details</b>\n"
         f"• <b>Entry Price:</b> <code>{entry_price:,.2f}</code>\n"
@@ -890,6 +898,8 @@ class TelegramNotifier:
         exit_price: float,
         realized_pnl: float,
         strategy: str,
+        quantity: float = 1.0,
+        asset_class: AssetClass = AssetClass.FUTURES,
     ) -> int | None:
         """Send notification when a Take Profit, Stop Loss, or Manual Exit occurs."""
         card_html = format_exit_card(
@@ -900,6 +910,8 @@ class TelegramNotifier:
             exit_price=exit_price,
             realized_pnl=realized_pnl,
             strategy=strategy,
+            quantity=quantity,
+            asset_class=asset_class,
         )
         logger.info(
             "Exit event: %s %s via %s @ %s (Realized PnL: $%.2f)",
