@@ -12,6 +12,7 @@ from telegram import (
     BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    MenuButtonCommands,
     Update,
 )
 from telegram.ext import (
@@ -385,7 +386,16 @@ class TelegramNotifier:
                 with contextlib.suppress(Exception):
                     await self.app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=int(self.chat_id)))
 
-            logger.info("Successfully registered Telegram slash command palette (set_my_commands across all scopes)")
+            # Configure interactive menu button for instant palette / autocomplete access
+            with contextlib.suppress(Exception):
+                await self.app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+            if self.chat_id:
+                with contextlib.suppress(Exception):
+                    await self.app.bot.set_chat_menu_button(chat_id=int(self.chat_id), menu_button=MenuButtonCommands())
+
+            logger.info(
+                "Successfully registered Telegram slash command palette (set_my_commands and menu button across all scopes)"
+            )
             return True
         except Exception as e:
             logger.warning(f"Failed to register Telegram bot commands: {e}")

@@ -1,6 +1,5 @@
 import contextlib
 import logging
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -10,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from agentic_trader.constants import AssetClass, ExitReason, SignalStatus
 from agentic_trader.storage.migrations import run_migrations_head
-from agentic_trader.storage.models import Base, SignalRecord, SystemStateRecord
+from agentic_trader.storage.models import SignalRecord, SystemStateRecord
 
 
 logger = logging.getLogger(__name__)
@@ -43,80 +42,11 @@ class SignalDatabase:
 
     def init_sync(self):
         """Synchronous migration check ensuring schema has required tables, columns, and Alembic revisions."""
-        try:
-            run_migrations_head(self.db_url)
-        except Exception as e:
-            logger.warning(
-                f"Alembic auto-migration encountered error, falling back to direct schema check: {e}",
-                extra={"db_url": self.db_url},
-            )
-            if self.db_path:
-                self._fallback_sqlite_sync()
-
-    def _fallback_sqlite_sync(self):
-        """Fallback direct SQLite table creation and column alteration."""
-        if not self.db_path:
-            return
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    contract TEXT NOT NULL,
-                    strategy TEXT NOT NULL,
-                    direction TEXT NOT NULL,
-                    entry_price REAL NOT NULL,
-                    stop_loss REAL NOT NULL,
-                    take_profit REAL NOT NULL,
-                    risk_dollars REAL NOT NULL,
-                    reward_dollars REAL,
-                    notional_value REAL,
-                    status TEXT DEFAULT 'PENDING',
-                    telegram_message_id INTEGER,
-                    raw_response TEXT,
-                    exit_price REAL,
-                    exit_timestamp DATETIME,
-                    realized_pnl REAL,
-                    exit_reason TEXT,
-                    broker_order_id TEXT,
-                    asset_class TEXT DEFAULT 'FUTURES',
-                    quantity REAL DEFAULT 1.0
-                );
-                """
-            )
-            cursor = conn.execute("PRAGMA table_info(signals)")
-            existing_cols = {row[1] for row in cursor.fetchall()}
-            for col, col_type in [
-                ("exit_price", "REAL"),
-                ("exit_timestamp", "DATETIME"),
-                ("realized_pnl", "REAL"),
-                ("exit_reason", "TEXT"),
-                ("broker_order_id", "TEXT"),
-                ("asset_class", "TEXT"),
-                ("quantity", "REAL DEFAULT 1.0"),
-            ]:
-                if col not in existing_cols:
-                    conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {col_type}")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_recent_signals ON signals(contract, strategy, timestamp);")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS system_state (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                """
-            )
-            conn.commit()
+        run_migrations_head(self.db_url)
 
     async def init_db(self):
-        """Asynchronously initialize all ORM tables and indexes."""
-        try:
-            run_migrations_head(self.db_url)
-        except Exception:
-            async with self.engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+        """Initialize all ORM tables and indexes via Alembic migrations."""
+        run_migrations_head(self.db_url)
 
     async def is_duplicate_recent(self, contract: str, strategy: str, hours: int = 12) -> bool:
         """Check if an active or recent signal was emitted for this contract and strategy within `hours`."""

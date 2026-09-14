@@ -356,37 +356,53 @@ class AlpacaBroker(BaseBroker):
                 )
                 closed_orders = await asyncio.to_thread(self.client.get_orders, closed_orders_req)
 
-                exit_price = entry_price
-                exit_reason = ExitReason.MANUAL_CLOSE
-                exit_time = datetime.now(UTC)
-                exit_order_id: str | None = None
-
                 filled_exit_order = None
+                entry_order_id = str(pos.get("broker_order_id") or "")
+                expected_exit_side = "sell" if direction in ("LONG", str(Direction.LONG)) else "buy"
+
                 for order in closed_orders:
+                    ord_id = str(getattr(order, "id", ""))
+                    if ord_id and ord_id == entry_order_id:
+                        continue  # Skip entry order
+
+                    ord_side = str(getattr(order, "side", "")).lower()
+                    if ord_side and ("sell" in ord_side or "buy" in ord_side) and expected_exit_side not in ord_side:
+                        continue  # Exit order must oppose entry direction
+
                     ord_status = str(getattr(order, "status", "")).lower()
                     if "filled" in ord_status:
                         filled_exit_order = order
                         break
 
-                if filled_exit_order:
-                    exit_order_id = str(getattr(filled_exit_order, "id", None))
-                    avg_fill = getattr(filled_exit_order, "filled_avg_price", None)
-                    if avg_fill is not None:
-                        exit_price = float(avg_fill)
-                    order_type_str = str(getattr(filled_exit_order, "order_type", "")).lower()
+                if not filled_exit_order:
+                    # No filled exit order found at Alpaca; position is still active or awaiting fill
+                    logger.debug(
+                        "Position %s not in open positions, but no filled exit order found. Skipping reconciliation.",
+                        symbol,
+                    )
+                    continue
 
-                    if "stop" in order_type_str:
-                        exit_reason = ExitReason.STOP_LOSS
-                    elif "limit" in order_type_str:
-                        exit_reason = ExitReason.TAKE_PROFIT
-                    elif direction in ("LONG", str(Direction.LONG)):
-                        exit_reason = ExitReason.TAKE_PROFIT if exit_price >= take_profit else ExitReason.STOP_LOSS
-                    else:
-                        exit_reason = ExitReason.TAKE_PROFIT if exit_price <= take_profit else ExitReason.STOP_LOSS
+                exit_price = entry_price
+                exit_reason = ExitReason.MANUAL_CLOSE
+                exit_time = datetime.now(UTC)
+                exit_order_id = str(getattr(filled_exit_order, "id", None))
+                avg_fill = getattr(filled_exit_order, "filled_avg_price", None)
+                if avg_fill is not None:
+                    exit_price = float(avg_fill)
+                order_type_str = str(getattr(filled_exit_order, "order_type", "")).lower()
 
-                    filled_at = getattr(filled_exit_order, "filled_at", None)
-                    if isinstance(filled_at, datetime):
-                        exit_time = filled_at
+                if "stop" in order_type_str:
+                    exit_reason = ExitReason.STOP_LOSS
+                elif "limit" in order_type_str:
+                    exit_reason = ExitReason.TAKE_PROFIT
+                elif direction in ("LONG", str(Direction.LONG)):
+                    exit_reason = ExitReason.TAKE_PROFIT if exit_price >= take_profit else ExitReason.STOP_LOSS
+                else:
+                    exit_reason = ExitReason.TAKE_PROFIT if exit_price <= take_profit else ExitReason.STOP_LOSS
+
+                filled_at = getattr(filled_exit_order, "filled_at", None)
+                if isinstance(filled_at, datetime):
+                    exit_time = filled_at
 
                 pos_qty = float(pos.get("quantity") or 1.0)
                 if direction in ("LONG", str(Direction.LONG)):
