@@ -50,21 +50,17 @@ async def listen() -> None:
     """Listen for interactive Telegram bot commands."""
     copilot, _config = get_copilot_and_config()
     await copilot.broker.connect()
-    if not copilot.notifier.is_configured() or not copilot.notifier.app or not copilot.notifier.app.updater:
+    if not copilot.notifier.is_configured():
         logger.error("Telegram is not configured in .envrc")
         return
     logger.info("Starting Telegram Bot listener... (press Ctrl+C to stop)")
-    await copilot.notifier.app.initialize()
-    await copilot.notifier.app.start()
-    await copilot.notifier.app.updater.start_polling()
+    await copilot.notifier.start_polling()
     try:
         while True:
             await asyncio.sleep(1)
     except KeyboardInterrupt, SystemExit, asyncio.CancelledError:
         logger.info("Stopping listener...")
-        await copilot.notifier.app.updater.stop()
-        await copilot.notifier.app.stop()
-        await copilot.notifier.app.shutdown()
+        await copilot.notifier.stop_polling()
 
 
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")
@@ -117,11 +113,9 @@ async def daemon(no_llm: bool) -> None:
     scheduler.start()
     logger.info("Scheduler started: scanning every %dh, reconciling positions every 1m.", interval)
 
-    if copilot.notifier.is_configured() and copilot.notifier.app and copilot.notifier.app.updater:
+    if copilot.notifier.is_configured():
         logger.info("Starting Telegram Bot listener for interactive callbacks...")
-        await copilot.notifier.app.initialize()
-        await copilot.notifier.app.start()
-        await copilot.notifier.app.updater.start_polling()
+        await copilot.notifier.start_polling()
 
     stream_task: asyncio.Task[None] | None = None
     if getattr(copilot.broker, "supports_trade_stream", False):
@@ -145,10 +139,7 @@ async def daemon(no_llm: bool) -> None:
         await copilot.broker.stop_trade_stream()
         scheduler.shutdown()
 
-        if copilot.notifier.app and copilot.notifier.app.updater:
-            await copilot.notifier.app.updater.stop()
-            await copilot.notifier.app.stop()
-            await copilot.notifier.app.shutdown()
+        await copilot.notifier.stop_polling()
 
 
 @click.command("doctor", help="Run pre-flight system diagnostics and connectivity checks")

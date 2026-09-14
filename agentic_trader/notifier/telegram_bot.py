@@ -1,3 +1,4 @@
+import contextlib
 import html
 import inspect
 import logging
@@ -6,6 +7,9 @@ from typing import Any
 
 from telegram import (
     BotCommand,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
@@ -355,7 +359,7 @@ class TelegramNotifier:
         await self.setup_bot_commands()
 
     async def setup_bot_commands(self) -> bool:
-        """Register slash commands with Telegram so client-side autocomplete works."""
+        """Register slash commands with Telegram so client-side autocomplete works across all scopes."""
         if not self.is_configured() or not self.app:
             return False
         try:
@@ -373,12 +377,38 @@ class TelegramNotifier:
                 BotCommand("resume", "Resume trading operations after panic halt"),
                 BotCommand("help", "Command overview and risk invariants"),
             ]
-            await self.app.bot.set_my_commands(commands)
-            logger.info("Successfully registered Telegram slash command palette (set_my_commands)")
+            # Register across default, all private chats, and specific operator chat scopes
+            await self.app.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+            with contextlib.suppress(Exception):
+                await self.app.bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+            if self.chat_id:
+                with contextlib.suppress(Exception):
+                    await self.app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=int(self.chat_id)))
+
+            logger.info("Successfully registered Telegram slash command palette (set_my_commands across all scopes)")
             return True
         except Exception as e:
             logger.warning(f"Failed to register Telegram bot commands: {e}")
             return False
+
+    async def start_polling(self) -> None:
+        """Initialize, register slash commands, start application, and start updater polling."""
+        if not self.is_configured() or not self.app or not self.app.updater:
+            logger.warning("TelegramNotifier not configured or app unavailable; cannot start polling.")
+            return
+        await self.app.initialize()
+        await self.setup_bot_commands()
+        await self.app.start()
+        await self.app.updater.start_polling()
+
+    async def stop_polling(self) -> None:
+        """Cleanly stop updater polling and shutdown the Telegram application."""
+        if self.app:
+            if self.app.updater and self.app.updater.running:
+                await self.app.updater.stop()
+            if self.app.running:
+                await self.app.stop()
+            await self.app.shutdown()
 
     def _register_handlers(self):
         if self.app:
