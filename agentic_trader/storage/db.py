@@ -1,10 +1,11 @@
+import contextlib
 import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from agentic_trader.constants import AssetClass, ExitReason, SignalStatus
@@ -377,3 +378,16 @@ class SignalDatabase:
                 new_rec = SystemStateRecord(key=key, value=value, updated_at=datetime.now(UTC))
                 session.add(new_rec)
             await session.commit()
+
+    async def clear_all_signals(self) -> int:
+        """Clear all signal and position history from the database, resetting autoincrement sequence."""
+        async with self.session_factory() as session:
+            count_res = await session.execute(select(func.count()).select_from(SignalRecord))
+            total_records = count_res.scalar() or 0
+            await session.execute(delete(SignalRecord))
+            if self.db_path:
+                with contextlib.suppress(Exception):
+                    await session.execute(text("DELETE FROM sqlite_sequence WHERE name='signals'"))
+            await session.commit()
+            logger.info("Cleared %d signal records from database.", total_records)
+            return total_records

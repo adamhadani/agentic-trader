@@ -55,6 +55,7 @@ async def test_db_active_positions_and_close(temp_db):
 async def test_monitor_positions_take_profit_and_stop_loss(temp_db):
     config = load_config()
     config.db_path = temp_db.db_path
+    config.execution_mode = "paper"
     copilot = FuturesCopilot(config)
     copilot.notifier.send_exit_alert = AsyncMock()
 
@@ -124,6 +125,7 @@ async def test_monitor_positions_take_profit_and_stop_loss(temp_db):
 async def test_close_position_manual(temp_db):
     config = load_config()
     config.db_path = temp_db.db_path
+    config.execution_mode = "paper"
     copilot = FuturesCopilot(config)
     copilot.notifier.send_exit_alert = AsyncMock()
 
