@@ -98,6 +98,16 @@ regime:
   cache_ttl_seconds: 900
 
 strategies:
+  mode: "parallel" # "single" or "parallel"
+  active_strategy: "trend_pullback" # active when mode == "single"
+  active_strategies: # active when mode == "parallel"
+    - "trend_pullback"
+    - "squeeze_breakout"
+  conflict_resolution: "netting" # "netting", "highest_conviction", "first"
+  strategy_allocations:
+    trend_pullback: 0.60
+    squeeze_breakout: 0.40
+
   trend_pullback:
     enabled: true
     daily_ema_fast: 50

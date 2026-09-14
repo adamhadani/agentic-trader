@@ -72,6 +72,7 @@ copilot daemon
 8. **Institutional Emergency Kill Switch**: Persistent database halt state (`system_state`) with instant order cancellation and position liquidation across all active brokers via `/panic` or `copilot panic`.
 9. **Native Telegram Command Autocomplete**: On startup, synchronizes commands with Telegram servers via `set_my_commands` to render interactive autocomplete menus in operator chat clients.
 10. **Resilient Third-Party Market Calendar Delegation**: Multi-tier calendar engine (`RunnableWithFallbacks`) querying authoritative exchange calendars from Alpaca (`GET /v2/calendar`) and Finnhub (`/stock/market-holiday`) with fallback to deterministic exchange calculation, synchronizing cash equity and CME index futures sessions.
+11. **Alpaca Execution & Multi-Strategy Framework**: Seamless paper-to-live execution on Alpaca utilizing liquid ETF proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`) with exchange-held server-side bracket orders, plus an institutional Multi-Strategy framework supporting switchable `single` vs. `parallel` execution modes, dynamic risk budgeting, and signal conflict resolution (netting / conviction policies).
 
 ---
 
@@ -124,7 +125,7 @@ uv run copilot listen              # Run Telegram bot listener only in isolation
 uv run copilot doctor              # Run pre-flight diagnostic probes across DB, Telegram, Alpaca, Finnhub, LLM
 uv run copilot status              # View cash base, active notional exposure, leverage, and macro events
 uv run copilot positions           # View active tracked positions, stops, targets, and unrealized P&L
-uv run copilot scan                # Trigger on-demand market scan (--dry-run, --no-llm, --asset-class)
+uv run copilot scan                # Trigger on-demand market scan (--dry-run, --strategy, --strategy-mode, --asset-class)
 uv run copilot execute <id> [--qty <N>] # Authorize signal with optional custom tiered quantity override
 uv run copilot close <id> [price]  # Liquidate an open position, record realized P&L, release exposure
 uv run copilot panic [--confirm]    # Emergency kill switch: cancel all resting orders, liquidate positions, halt trading

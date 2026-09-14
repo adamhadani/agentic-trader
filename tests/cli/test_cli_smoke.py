@@ -90,6 +90,41 @@ def test_cli_scan_smoke(runner: CliRunner):
         )
 
 
+def test_cli_scan_multi_strategy_smoke(runner: CliRunner):
+    """Verify copilot scan forwards --strategy and --strategy-mode flags."""
+    with patch("agentic_trader.cli.commands.scan.get_copilot_and_config") as mock_get:
+        mock_copilot = MagicMock()
+        mock_copilot.broker = MagicMock()
+        mock_copilot.broker.connect = AsyncMock()
+        mock_copilot.run_scan = AsyncMock()
+        mock_get.return_value = (mock_copilot, MagicMock())
+
+        result = runner.invoke(
+            cli,
+            [
+                "scan",
+                "--dry-run",
+                "--no-llm",
+                "--strategy",
+                "trend_pullback",
+                "--strategy-mode",
+                "single",
+                "--symbols",
+                "QQQ",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_copilot.run_scan.assert_called_once_with(
+            use_llm=False,
+            dry_run=True,
+            asset_class="all",
+            symbols=["QQQ"],
+            bypass_session_filter=False,
+            strategy="trend_pullback",
+            strategy_mode="single",
+        )
+
+
 def test_cli_doctor_smoke(runner: CliRunner):
     """Verify copilot doctor runs cleanly with mocked healthy probes."""
     mock_report = DiagnosticReport(

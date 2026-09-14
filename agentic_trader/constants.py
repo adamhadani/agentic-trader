@@ -92,6 +92,23 @@ class StrategyType(StrEnum):
 
     TREND_PULLBACK = "TREND_PULLBACK"
     SQUEEZE_BREAKOUT = "SQUEEZE_BREAKOUT"
+    PAIRS_REVERSION = "PAIRS_REVERSION"
+    OPTIONS_VERTICAL = "OPTIONS_VERTICAL"
+
+
+class StrategyMode(StrEnum):
+    """Strategy execution orchestration mode."""
+
+    SINGLE = "single"
+    PARALLEL = "parallel"
+
+
+class ConflictResolutionMode(StrEnum):
+    """Signal conflict resolution strategy."""
+
+    NETTING = "netting"
+    HIGHEST_CONVICTION = "highest_conviction"
+    FIRST = "first"
 
 
 # External Provider & Broker Endpoints
@@ -265,3 +282,13 @@ DEFAULT_BREAKEVEN_BUFFER_DOLLARS = 10.0
 DEFAULT_SESSION_CALENDAR_PROVIDER = "alpaca"
 DEFAULT_SESSION_FALLBACK_PROVIDERS: tuple[str, ...] = ("finnhub", "deterministic")
 DEFAULT_SESSION_CACHE_TTL_SECONDS = 3600
+
+# Multi-Strategy Orchestration Defaults
+DEFAULT_STRATEGY_MODE = "parallel"
+DEFAULT_ACTIVE_STRATEGY = "trend_pullback"
+DEFAULT_ACTIVE_STRATEGIES: tuple[str, ...] = ("trend_pullback", "squeeze_breakout")
+DEFAULT_CONFLICT_RESOLUTION = "netting"
+DEFAULT_STRATEGY_ALLOCATIONS: dict[str, float] = {
+    "trend_pullback": 0.60,
+    "squeeze_breakout": 0.40,
+}

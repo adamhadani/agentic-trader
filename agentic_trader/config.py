@@ -7,9 +7,12 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 
 from agentic_trader.constants import (
+    DEFAULT_ACTIVE_STRATEGIES,
+    DEFAULT_ACTIVE_STRATEGY,
     DEFAULT_BACKTEST_LOOKBACK,
     DEFAULT_BREAKEVEN_BUFFER_DOLLARS,
     DEFAULT_CALIBRATIONS_FILENAME,
+    DEFAULT_CONFLICT_RESOLUTION,
     DEFAULT_DATA_MAX_RETRIES,
     DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
     DEFAULT_DATA_TIMEOUT_SECONDS,
@@ -25,6 +28,8 @@ from agentic_trader.constants import (
     DEFAULT_SESSION_CACHE_TTL_SECONDS,
     DEFAULT_SESSION_CALENDAR_PROVIDER,
     DEFAULT_SESSION_FALLBACK_PROVIDERS,
+    DEFAULT_STRATEGY_ALLOCATIONS,
+    DEFAULT_STRATEGY_MODE,
     DEFAULT_TRAIL_ATR_MULTIPLE,
     DEFAULT_TRAIL_STEP_TICKS,
     DEFAULT_TRAIL_TRIGGER_R,
@@ -149,6 +154,13 @@ class SqueezeBreakoutConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
+    mode: str = DEFAULT_STRATEGY_MODE  # "single", "parallel"
+    active_strategy: str = DEFAULT_ACTIVE_STRATEGY  # Used when mode == "single"
+    active_strategies: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_ACTIVE_STRATEGIES)
+    )  # Used when mode == "parallel"
+    conflict_resolution: str = DEFAULT_CONFLICT_RESOLUTION  # "netting", "highest_conviction", "first"
+    strategy_allocations: dict[str, float] = Field(default_factory=lambda: dict(DEFAULT_STRATEGY_ALLOCATIONS))
     trend_pullback: TrendPullbackConfig = Field(default_factory=TrendPullbackConfig)
     squeeze_breakout: SqueezeBreakoutConfig = Field(default_factory=SqueezeBreakoutConfig)
 
@@ -417,17 +429,35 @@ def load_config(config_path: str | None = None) -> AppConfig:
         sizing_cfg["target_risk_pct"] = float(os.environ["TARGET_RISK_PCT"])
 
     exec_cfg = cfg_dict.get("execution", {})
-    if os.getenv("EXECUTION_ALGORITHM"):
-        exec_cfg["algorithm"] = os.getenv("EXECUTION_ALGORITHM", "").lower()
+    strat_dict = cfg_dict.get("strategies", {})
+    if os.getenv("STRATEGY_MODE"):
+        strat_dict["mode"] = os.getenv("STRATEGY_MODE", "").lower()
+    if os.getenv("ACTIVE_STRATEGY"):
+        strat_dict["active_strategy"] = os.getenv("ACTIVE_STRATEGY", "").lower()
+    if os.getenv("ACTIVE_STRATEGIES"):
+        strat_dict["active_strategies"] = [
+            s.strip().lower() for s in os.getenv("ACTIVE_STRATEGIES", "").split(",") if s.strip()
+        ]
+    if os.getenv("CONFLICT_RESOLUTION"):
+        strat_dict["conflict_resolution"] = os.getenv("CONFLICT_RESOLUTION", "").lower()
+
+    trend_cfg = strat_dict.get("trend_pullback", {})
+    squeeze_cfg = strat_dict.get("squeeze_breakout", {})
+    strat_kwargs: dict[str, Any] = {
+        "trend_pullback": TrendPullbackConfig(**trend_cfg) if isinstance(trend_cfg, dict) else trend_cfg,
+        "squeeze_breakout": SqueezeBreakoutConfig(**squeeze_cfg) if isinstance(squeeze_cfg, dict) else squeeze_cfg,
+    }
+    for field in ("mode", "active_strategy", "active_strategies", "conflict_resolution", "strategy_allocations"):
+        if field in strat_dict:
+            strat_kwargs[field] = strat_dict[field]
+
+    strategies_config = StrategyConfig(**strat_kwargs)
 
     config = AppConfig(
         portfolio=PortfolioConfig(**cfg_dict.get("portfolio", {})),
         contracts={k: ContractConfig(**v) for k, v in cfg_dict.get("contracts", {}).items()},
         risk=RiskConfig(**cfg_dict.get("risk", {})),
-        strategies=StrategyConfig(
-            trend_pullback=TrendPullbackConfig(**cfg_dict.get("strategies", {}).get("trend_pullback", {})),
-            squeeze_breakout=SqueezeBreakoutConfig(**cfg_dict.get("strategies", {}).get("squeeze_breakout", {})),
-        ),
+        strategies=strategies_config,
         scheduler=SchedulerConfig(**cfg_dict.get("scheduler", {})),
         regime=RegimeConfig(**cfg_dict.get("regime", {})),
         friction=FrictionConfig(**cfg_dict.get("friction", {})),

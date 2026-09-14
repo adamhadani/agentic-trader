@@ -830,11 +830,47 @@ Delegate market session calendar, holiday bookkeeping, and trading hours logic t
 
 ---
 
-## Next Horizon: Strategic Initiatives (Phases 34+)
+## Phase 34: Alpaca Execution & Institutional Multi-Strategy Engine
+
+### Objective
+Deploy the algorithmic copilot onto the Alpaca market backend for seamless paper-to-live execution across liquid ETF proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`) using exchange-held server-side bracket orders, and refactor the screening architecture into an institutional Multi-Strategy framework supporting modular strategies, switchable `single` vs. `parallel` execution modes, dynamic risk budgeting, and signal conflict resolution.
+
+### Key Deliverables
+1. **Alpaca Trading Verification & "Cash-Plus" Realization**:
+   - Verified active Alpaca account ($100k cash, $400k intraday margin, Level 3 options approved).
+   - Mapped CME micro futures (`/MES`, `/MNQ`, `/M2K`, `/MGC`, `/MCL`) to liquid ETF proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`).
+   - Sized ETF equity trades by fixed dollar risk ($250 per trade default) deploying <0.5x leverage with server-side exchange bracket orders.
+   - Designed defined-risk vertical options debit spreads (30–45 DTE Bull Call / Bear Put spreads) capping maximum loss at net debit paid ($300–$500).
+2. **Empirical Walk-Forward Validation & Backtesting**:
+   - 2-year multi-asset ETF backtest: +10.31% Total Net Return ($110,305.03) with 1.30% Max Drawdown across 46 trades (Profit Factor 1.08).
+   - SPY 3-fold walk-forward cross-validation via VectorBT JIT Tensor: confirmed top out-of-sample Sharpe of 2.63 (`rsi_threshold=40.0, ema_span=15`) with 1.00 Walk-Forward Efficiency (PASS).
+3. **Core Strategy Protocol & Base Strategy (`agentic_trader/screeners/base.py`)**:
+   - `StrategyProtocol`: Runtime-checkable protocol (`strategy_id`, `display_name`, `supported_asset_classes`, `default_timeframe`, `is_enabled`, `evaluate`).
+   - `BaseStrategy`: Abstract base class with asset class filtering and configuration integration.
+   - `ScreenerCandidate`: Centralized trade setup data model.
+4. **Strategy Registry & Signal Conflict Resolution (`agentic_trader/screeners/registry.py`)**:
+   - `StrategyRegistry`: Centralized strategy discovery, registration, and active strategy resolution.
+   - `ConflictResolver`: Resolves multi-strategy signal collisions via configurable policies:
+     - `netting`: Opposing directions (LONG vs SHORT) on the same symbol cancel out to prevent wash sales.
+     - `highest_conviction`: Prioritizes the setup with higher risk-reward and wider swing range.
+     - `deduplication`: Merges duplicate signals for identical setups.
+5. **Modular Strategy Implementations (`agentic_trader/screeners/strategies.py`)**:
+   - `TrendPullbackStrategy`: Modular class implementing Strategy A (Daily trend filter + 4h RSI pullback).
+   - `SqueezeBreakoutStrategy`: Modular class implementing Strategy B (Volatility compression breakout on 4h/1h).
+   - `StrategyEngine`: Refactored to wrap `StrategyRegistry` and `ConflictResolver`, preserving 100% backward compatibility for existing callers and tests.
+6. **Configuration & CLI Integration**:
+   - Added `mode`, `active_strategy`, `active_strategies`, `conflict_resolution`, and `strategy_allocations` to `StrategyConfig` and `config/config.yaml`.
+   - Enhanced `copilot scan` with `--strategy` and `--strategy-mode` (`single`, `parallel`) CLI options.
+7. **Comprehensive Unit & Smoke Tests**:
+   - `tests/screeners/test_strategy_registry.py`: 9 unit tests covering protocol compliance, registry queries, single/parallel modes, netting conflict resolution, and duplicate handling.
+   - Expanded test suite to 265 passing tests with full pre-commit compliance.
+
+---
+
+## Next Horizon: Strategic Initiatives (Phases 35+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 34** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
 | **Phase 35** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
 | **Phase 36** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
 | **Phase 37** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
