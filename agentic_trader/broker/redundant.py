@@ -286,3 +286,38 @@ class RedundantBroker(BaseBroker):
             self.fallback.stop_trade_stream(),
             return_exceptions=True,
         )
+
+    @property
+    def supports_order_modification(self) -> bool:
+        return bool(self.primary.supports_order_modification or self.fallback.supports_order_modification)
+
+    async def modify_order_stop(
+        self,
+        order_id: str | None = None,
+        symbol: str | None = None,
+        new_stop_price: float = 0.0,
+        client_order_id: str | None = None,
+    ) -> OrderResult:
+        if self.state == CircuitState.OPEN:
+            return await self.fallback.modify_order_stop(order_id, symbol, new_stop_price, client_order_id)
+        try:
+            res = await self.primary.modify_order_stop(order_id, symbol, new_stop_price, client_order_id)
+            if res.success:
+                return res
+            return await self.fallback.modify_order_stop(order_id, symbol, new_stop_price, client_order_id)
+        except Exception:
+            return await self.fallback.modify_order_stop(order_id, symbol, new_stop_price, client_order_id)
+
+    async def cancel_all_orders(self) -> int:
+        """Cancel all open orders across primary and fallback brokers."""
+        primary_count = 0
+        fallback_count = 0
+        try:
+            primary_count = await self.primary.cancel_all_orders()
+        except Exception as e:
+            logger.warning("Primary cancel_all_orders error: %s", e)
+        try:
+            fallback_count = await self.fallback.cancel_all_orders()
+        except Exception as e:
+            logger.warning("Fallback cancel_all_orders error: %s", e)
+        return primary_count + fallback_count

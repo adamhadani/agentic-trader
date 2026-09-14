@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from agentic_trader.cli.main import cli
 from agentic_trader.diagnostics.doctor import ComponentHealth, DiagnosticReport
+from agentic_trader.presentation.formatters import PanicReportView
 
 
 @pytest.fixture
@@ -33,6 +34,8 @@ def test_cli_root_help(runner: CliRunner):
         "gex",
         "pairs",
         "metrics",
+        "panic",
+        "resume",
         "db",
     ]:
         assert expected_cmd in result.output
@@ -46,6 +49,8 @@ def test_cli_root_help(runner: CliRunner):
         ("scan", "--bypass-session-filter"),
         ("execute", "--qty"),
         ("close", "--price"),
+        ("panic", "--confirm"),
+        ("resume", "--help"),
         ("doctor", "pre-flight"),
         ("test-alert", "--help"),
         ("gex", "--expirations"),
@@ -157,3 +162,40 @@ def test_cli_db_current_smoke(runner: CliRunner):
     """Verify copilot db current executes without exception."""
     result = runner.invoke(cli, ["db", "current"])
     assert result.exit_code == 0
+
+
+def test_cli_panic_smoke(runner: CliRunner):
+    """Verify copilot panic --confirm invokes emergency_panic_halt."""
+    with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
+        mock_copilot = MagicMock()
+        mock_copilot.broker = MagicMock()
+        mock_copilot.broker.connect = AsyncMock()
+        view = PanicReportView(
+            cancelled_orders_count=1,
+            liquidated_positions_count=1,
+            total_realized_pnl=50.0,
+            is_halted=True,
+            halt_reason="CLI test",
+        )
+        mock_copilot.emergency_panic_halt = AsyncMock(return_value=view)
+        mock_get.return_value = (mock_copilot, MagicMock())
+
+        result = runner.invoke(cli, ["panic", "--confirm"])
+        assert result.exit_code == 0
+        mock_copilot.emergency_panic_halt.assert_called_once()
+        assert "EMERGENCY KILL SWITCH" in result.output
+
+
+def test_cli_resume_smoke(runner: CliRunner):
+    """Verify copilot resume invokes resume_trading."""
+    with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
+        mock_copilot = MagicMock()
+        mock_copilot.broker = MagicMock()
+        mock_copilot.broker.connect = AsyncMock()
+        mock_copilot.resume_trading = AsyncMock(return_value={"success": True, "message": "Resumed"})
+        mock_get.return_value = (mock_copilot, MagicMock())
+
+        result = runner.invoke(cli, ["resume"])
+        assert result.exit_code == 0
+        mock_copilot.resume_trading.assert_called_once()
+        assert "Trading operations resumed successfully" in result.output

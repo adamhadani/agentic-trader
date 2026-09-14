@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from typing import Any
 
@@ -26,6 +27,7 @@ from agentic_trader.pairs import PairEvaluation, PairsScreener, format_pairs_tel
 from agentic_trader.presentation.formatters import (
     ExecutionResultView,
     ManualCloseResultView,
+    PanicReportView,
     PerformanceSummaryReport,
     PortfolioStatusReport,
     PositionsReport,
@@ -92,6 +94,8 @@ class TradingCopilot:
             backtest_runner=self.run_backtest_summary_html,
             gex_provider=self.run_gex_summary_html,
             pairs_provider=self.run_pairs_summary_html,
+            panic_handler=self.emergency_panic_halt,
+            resume_handler=self.resume_trading,
         )
         self.metrics = global_metrics
         self.metrics_server = (
@@ -104,7 +108,26 @@ class TradingCopilot:
             if config.telemetry.metrics_enabled
             else None
         )
+        self.is_halted: bool = False
+        self.halt_reason: str | None = None
         self._shutdown_event = asyncio.Event()
+
+    async def check_halt_state(self) -> bool:
+        """Check persistent database state for emergency trading halt."""
+        state_val = await self.db.get_state("trading_halted")
+        if state_val and state_val.lower() in ("true", "1", "yes"):
+            self.is_halted = True
+            self.halt_reason = await self.db.get_state("trading_halt_reason") or "Emergency Kill Switch Engaged"
+        else:
+            self.is_halted = False
+            self.halt_reason = None
+        if self.metrics:
+            self.metrics.set_gauge(
+                "copilot_trading_halted",
+                1.0 if self.is_halted else 0.0,
+                help_text="1 if trading is halted by emergency kill switch, 0 otherwise",
+            )
+        return self.is_halted
 
     async def run_scan(
         self,
@@ -114,6 +137,15 @@ class TradingCopilot:
         symbols: list[str] | None = None,
         bypass_session_filter: bool = False,
     ):
+        await self.check_halt_state()
+        if self.is_halted:
+            logger.warning(
+                "Trading scan halted: Emergency kill switch active (%s). Skipping universe scan.",
+                self.halt_reason,
+                extra={"event": "trading_halted_scan_blocked", "reason": self.halt_reason},
+            )
+            return
+
         logger.info("=== Starting Quantitative Scan ===")
         regime = await self.regime_detector.get_regime()
         logger.info("Current market volatility context: %s", regime.summary_text)
@@ -992,6 +1024,18 @@ class TradingCopilot:
         Submits bracket orders to the active broker and registers the position in SQLite.
         Optionally overrides the order quantity with operator-selected tier size.
         """
+        await self.check_halt_state()
+        if self.is_halted:
+            logger.warning(
+                "Signal execution rejected: Emergency kill switch active (%s).",
+                self.halt_reason,
+                extra={"event": "trading_halted_execution_blocked", "signal_id": signal_id, "reason": self.halt_reason},
+            )
+            return False, (
+                f"🛑 <b>Execution Blocked:</b> Emergency trading halt active ({html.escape(str(self.halt_reason))}). "
+                "Use /resume to unhalt."
+            )
+
         sig = await self.db.get_signal_by_id(signal_id)
         if not sig:
             return False, f"❌ Signal #{signal_id} not found in database."
@@ -1139,6 +1183,157 @@ class TradingCopilot:
             )
             return False, TelegramHtmlFormatter.format_execution_html(view)
 
+    async def emergency_panic_halt(self, reason: str = "Manual emergency panic trigger") -> PanicReportView:
+        """Institutional emergency kill switch:
+
+        1. Ingress cancellation: cancel all working/resting orders at broker exchange.
+        2. Egress liquidation: flatten all active open positions at market.
+        3. Persistent circuit breaker: engage database and in-memory trading halt.
+        4. Dispatch high-visibility alert cards and record metrics.
+        """
+        logger.warning(
+            "EMERGENCY PANIC TRIGGERED: Cancelling all orders, liquidating positions, engaging halt. Reason: %s",
+            reason,
+            extra={"event": "emergency_panic_triggered", "reason": reason},
+        )
+        # 1. Ingress cancellation
+        cancelled_orders_count = 0
+        try:
+            cancelled_orders_count = await self.broker.cancel_all_orders()
+        except Exception:
+            logger.exception("Error cancelling orders during emergency panic")
+
+        # 2. Egress liquidation
+        active_positions = await self.db.get_active_positions()
+        liquidated_count = 0
+        total_realized_pnl = 0.0
+        closed_positions_details: list[dict[str, Any]] = []
+
+        for pos in active_positions:
+            sig_id = pos["id"]
+            contract = pos["contract"]
+            direction = pos["direction"].upper()
+            qty = float(pos.get("quantity") or 1.0)
+            entry = float(pos["entry_price"])
+
+            contract_info = self.config.contracts.get(contract)
+            ticker = (
+                contract_info.ticker
+                if contract_info
+                else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
+            )
+            multiplier = contract_info.multiplier if contract_info else (1.0 if not contract.startswith("/") else 5.0)
+
+            final_exit = entry
+            try:
+                q = self.data_fetcher.fetch_latest_price(ticker)
+                if q and q > 0:
+                    final_exit = q
+            except Exception:
+                final_exit = entry
+
+            pnl_pts = (final_exit - entry) if direction in ("LONG", "BUY") else (entry - final_exit)
+            realized_pnl = round(pnl_pts * multiplier * qty, 2)
+            total_realized_pnl += realized_pnl
+
+            try:
+                await self.broker.close_position(
+                    contract=contract,
+                    symbol=contract,
+                    exit_reason=ExitReason.EMERGENCY_EXIT,
+                    exit_price=final_exit,
+                    quantity=qty,
+                )
+            except Exception as broker_err:
+                logger.warning("Broker close_position exception during panic for %s: %s", contract, broker_err)
+
+            status = SignalStatus.CLOSED_WIN if realized_pnl >= 0 else SignalStatus.CLOSED_LOSS
+            await self.db.close_position(
+                signal_id=sig_id,
+                exit_price=final_exit,
+                exit_reason=ExitReason.EMERGENCY_EXIT,
+                realized_pnl=realized_pnl,
+                status=status,
+            )
+            liquidated_count += 1
+            closed_positions_details.append(
+                {
+                    "id": sig_id,
+                    "contract": contract,
+                    "direction": direction,
+                    "quantity": qty,
+                    "entry_price": entry,
+                    "exit_price": final_exit,
+                    "realized_pnl": realized_pnl,
+                }
+            )
+
+        # 3. Persistent circuit breaker
+        self.is_halted = True
+        self.halt_reason = reason
+        await self.db.set_state("trading_halted", "true")
+        await self.db.set_state("trading_halt_reason", reason)
+
+        # 4. Metrics & telemetry
+        if self.metrics:
+            self.metrics.inc_counter(
+                "copilot_kill_switch_triggered_total",
+                help_text="Total number of emergency panic kill switch activations",
+            )
+            self.metrics.set_gauge(
+                "copilot_trading_halted",
+                1.0,
+                help_text="1 if trading is halted by emergency kill switch, 0 otherwise",
+            )
+
+        view = PanicReportView(
+            cancelled_orders_count=cancelled_orders_count,
+            liquidated_positions_count=liquidated_count,
+            total_realized_pnl=round(total_realized_pnl, 2),
+            is_halted=True,
+            halt_reason=reason,
+            closed_positions=closed_positions_details,
+            success=True,
+        )
+
+        # 5. Telegram notification
+        try:
+            await self.notifier.send_message(TelegramHtmlFormatter.format_panic_html(view))
+        except Exception as notify_err:
+            logger.warning("Failed to send Telegram panic notification: %s", notify_err)
+
+        return view
+
+    async def resume_trading(self) -> dict[str, Any]:
+        """Clear emergency halt state and resume normal autonomous operations."""
+        logger.info("Resuming trading operations from emergency halt...")
+        self.is_halted = False
+        self.halt_reason = None
+        await self.db.set_state("trading_halted", "false")
+        await self.db.set_state("trading_halt_reason", "")
+        if self.metrics:
+            self.metrics.set_gauge(
+                "copilot_trading_halted",
+                0.0,
+                help_text="1 if trading is halted by emergency kill switch, 0 otherwise",
+            )
+        msg = (
+            "🟢 <b>TRADING HALT CLEARED / OPERATIONS RESUMED</b>\n\n"
+            "• <b>Status:</b> Active 🟢\n"
+            "• <b>Action:</b> Universe scanning and order execution unblocked.\n"
+            "• <b>Safety:</b> Standard portfolio risk limits, macro lockouts &amp; session filters remain in effect."
+        )
+        try:
+            await self.notifier.send_message(msg)
+        except Exception as notify_err:
+            logger.warning("Failed to send Telegram resume notification: %s", notify_err)
+
+        return {
+            "success": True,
+            "is_halted": False,
+            "message": "Trading operations successfully resumed. Market scans and signal executions are unblocked.",
+        }
+
     async def get_status_report(self) -> PortfolioStatusReport:
         """Construct a decoupled PortfolioStatusReport DTO."""
         current_exposure = await self.db.get_active_notional_exposure()
@@ -1177,6 +1372,12 @@ class TradingCopilot:
         return TelegramHtmlFormatter.format_status_html(report)
 
     async def run_scan_summary_html(self) -> str:
+        await self.check_halt_state()
+        if self.is_halted:
+            return (
+                f"🛑 <b>Scan Blocked:</b> Emergency trading halt active ({html.escape(str(self.halt_reason))}). "
+                "Use /resume to clear."
+            )
         count_before = len(await self.db.get_recent_signals(limit=100))
         await self.run_scan(use_llm=True, dry_run=False)
         count_after = len(await self.db.get_recent_signals(limit=100))

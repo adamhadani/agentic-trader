@@ -171,6 +171,15 @@ def test_market_holiday_calendar_calculations():
     assert date(2026, 11, 27) in cal["early_closes"]  # Black Friday
     assert date(2026, 12, 24) in cal["early_closes"]  # Christmas Eve (Thursday)
 
+    # July 3 early close verification (2024 July 4 was Thursday, 2025 July 4 was Friday)
+    cal_2024 = MarketHolidayCalendar.get_year_calendar(2024)
+    assert date(2024, 7, 3) in cal_2024["early_closes"]  # Wednesday before Thursday July 4
+    cal_2025 = MarketHolidayCalendar.get_year_calendar(2025)
+    assert date(2025, 7, 3) in cal_2025["early_closes"]  # Thursday before Friday July 4
+    # In 2026, July 4 is Saturday so July 3 is observed statutory holiday, not early close
+    assert date(2026, 7, 3) not in cal["early_closes"]
+    assert date(2026, 7, 3) in statutory
+
 
 @pytest.mark.asyncio
 async def test_cme_holiday_session_behavior():

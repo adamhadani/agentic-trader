@@ -75,3 +75,24 @@ class SignalRecord(Base):
             "asset_class": self.asset_class or AssetClass.FUTURES,
             "quantity": float(self.quantity) if self.quantity is not None else 1.0,
         }
+
+
+class SystemStateRecord(Base):
+    """ORM representation of system-level key-value configuration and operational flags."""
+
+    __tablename__ = "system_state"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "value": self.value,
+            "updated_at": (
+                self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else str(self.updated_at)
+            ),
+        }

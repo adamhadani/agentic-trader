@@ -30,6 +30,8 @@ The **Cash-Plus Trading Copilot** is an automated multi-asset trading system des
 - `uv run copilot scan`: On-demand quantitative market scan (`--dry-run`, `--no-llm`, `--asset-class`, `--symbols`).
 - `uv run copilot execute <signal_id>`: Manually authorize and submit an approved signal to broker.
 - `uv run copilot close <signal_id> [exit_price]`: Liquidate open position, record realized P&L, release exposure.
+- `uv run copilot panic [--confirm]`: Emergency kill switch: cancel resting orders, market liquidate active positions, halt trading.
+- `uv run copilot resume`: Clear emergency trading halt and resume autonomous scanning/execution.
 - `uv run copilot gex [symbol]`: Market maker dealer gamma exposure, pinning walls, and gamma flip.
 - `uv run copilot pairs`: Cross-asset cointegration, mean-reversion half-life, and rolling spread Z-scores.
 - `uv run copilot metrics`: Dump Prometheus exposition snapshot or launch standalone server (`--serve`).
@@ -57,7 +59,7 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
 - **Pre-commit checks (mandatory before any commit)**:
   `uv run pre-commit run --all-files`
 - **Run test suite**:
-  `uv run pytest` (237 unit tests)
+  `uv run pytest` (247 unit tests)
 - **Run test suite with code coverage**:
   `uv run pytest --cov=agentic_trader --cov-report=term-missing`
 - **Rust-accelerated impacted tests**:
@@ -81,7 +83,7 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
   - `calendar.py`: Economic calendar with macro lockout detection (`ForexFactoryCalendar`).
   - `regime.py`: Real-time market regime classifier (VIX, 10Y Treasury yield, Dollar Index).
 - `agentic_trader/presentation/`:
-  - `formatters.py`: Decoupled presentation DTOs (`PositionView`, `PositionsReport`, `PortfolioStatusReport`, `ExecutionResultView`, `PerformanceSummaryReport`) and formatters (`TerminalFormatter`, `TelegramHtmlFormatter`).
+  - `formatters.py`: Decoupled presentation DTOs (`PositionView`, `PositionsReport`, `PortfolioStatusReport`, `ExecutionResultView`, `PerformanceSummaryReport`, `PanicReportView`) and formatters (`TerminalFormatter`, `TelegramHtmlFormatter`).
 - `agentic_trader/market/`:
   - `session.py`: Market session & trading hours protocol (`MarketSessionProtocol`), CME Globex holiday calendar (`MarketHolidayCalendar`), timezone normalization (`ensure_et`), and composite routing (`CompositeMarketSessionProvider`).
 - `agentic_trader/resilience/`:
@@ -90,10 +92,10 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
   - `providers.py`: Provider protocol (`MarketDataProvider`), `AlpacaDataProvider` (stock/crypto), `YFinanceDataProvider` (futures/fallback), and `CompositeMarketDataProvider`.
   - `market_data.py`: Technical indicator calculations and market data fetcher delegating to `CompositeMarketDataProvider`.
 - `agentic_trader/broker/`:
-  - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`, `supports_order_modification`, `modify_order_stop`).
+  - `base.py`: Standardized broker interface (`BaseBroker`, `OrderRequest`, `OrderResult`, `supports_order_modification`, `modify_order_stop`, `cancel_all_orders`).
   - `paper.py`: Simulated paper execution with dynamic contract multipliers and resting bracket stop modification.
-  - `tradovate.py`: Headless REST API execution with native server-side OCO brackets and `/order/modifyorder` with graceful offline fallback.
-  - `alpaca.py`: Official `alpaca-py` TradingClient SDK integration with bracket orders, `TradingStream` WebSocket, and resting stop leg replacement (`replace_order_by_id`).
+  - `tradovate.py`: Headless REST API execution with native server-side OCO brackets, `/order/modifyorder`, and `/order/cancelorder`.
+  - `alpaca.py`: Official `alpaca-py` TradingClient SDK integration with bracket orders, `TradingStream` WebSocket, resting stop leg replacement, and mass cancellation (`cancel_orders`).
 - `agentic_trader/pairs/`:
   - `cointegration.py`: Engle-Granger two-step cointegration test, Ornstein-Uhlenbeck half-life modeling, and rolling spread Z-scores.
   - `screener.py`: `PairsScreener` cross-asset scanner with futures proxy mapping.
@@ -107,8 +109,8 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
 - `agentic_trader/screeners/`: Technical indicators (EMA, Wilder RSI, ATR, Bollinger, Keltner, Squeeze) and strategy rules.
 - `agentic_trader/backtest/`: Backtest engine, transaction friction, Cash-Plus attribution, Monte Carlo simulation, crisis replay, and dynamic Chandelier ATR trailing stop ratcheting.
 - `agentic_trader/research/`: VectorBT-based parameter grid optimizer and rolling walk-forward cross-validation engine.
-- `agentic_trader/storage/`: SQLAlchemy 2.0 ORM models (`SignalRecord`, `PositionModel`, `TradeAuditModel`) backing SQLite (`data/signals.db`).
-- `agentic_trader/notifier/telegram_bot.py`: Interactive Telegram bot with command handlers (`/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/backtest`, `/close`, `/scan`) and execution buttons.
+- `agentic_trader/storage/`: SQLAlchemy 2.0 ORM models (`SignalRecord`, `PositionModel`, `TradeAuditModel`, `SystemStateRecord`) backing SQLite (`data/signals.db`).
+- `agentic_trader/notifier/telegram_bot.py`: Interactive Telegram bot with command handlers (`/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/backtest`, `/close`, `/scan`, `/panic`, `/resume`), client-side slash autocomplete (`set_my_commands`), and execution buttons.
 - `docs/`: GitHub Pages Jekyll documentation site (`_config.yml`, `index.md`, `production.md`, `cli-reference.md`, `strategies.md`, `roadmap.md`).
 
 ---
@@ -125,3 +127,4 @@ When writing or modifying logic, NEVER violate these core constraints:
 7. **Signal Deduplication**: No duplicate signal for the same contract + strategy within 12 hours.
 8. **Execution Safety**: Execution buttons must route through `broker.submit_entry_order()`. If rejected, status becomes `FAILED` without locking notional capacity.
 9. **Single Steady-State Daemon**: Production runs only `copilot daemon`.
+10. **Emergency Kill Switch & Halt Integrity**: When halted (`trading_halted=true` in `system_state`), all market scans and order submissions are strictly blocked across CLI, scheduled daemon jobs, and Telegram. Resumption requires explicit `/resume` or `copilot resume`.

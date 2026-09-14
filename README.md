@@ -16,7 +16,7 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 - [**Production Operations Guide**](docs/production.md): **Single Source of Truth** for 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
 - [**CLI Command Reference**](docs/cli-reference.md): Exhaustive guide to all Click CLI subcommands, flags, and outputs.
 - [**Quantitative Strategies & Models**](docs/strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX, and Pairs Trading.
-- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 30) and future milestones.
+- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 31) and future milestones.
 
 ### Compiling & Viewing Documentation Locally
 
@@ -69,6 +69,8 @@ copilot daemon
 5. **Native Prometheus Exporter**: Lightweight async HTTP server running on `0.0.0.0:9108` serving `GET /metrics` and container health probe at `GET /healthz`.
 6. **Dynamic Trailing Stop & Broker Sync**: Evaluates active positions for Chandelier ATR high-water mark trailing stops and amends resting bracket stop orders directly on exchange brokers (Alpaca and Tradovate) with graceful degradation.
 7. **Resilient Multi-Tier Market Data**: Dual-feed market data engine (`RunnableWithFallbacks`) querying Alpaca historical bars with automatic failover to Yahoo Finance.
+8. **Institutional Emergency Kill Switch**: Persistent database halt state (`system_state`) with instant order cancellation and position liquidation across all active brokers via `/panic` or `copilot panic`.
+9. **Native Telegram Command Autocomplete**: On startup, synchronizes commands with Telegram servers via `set_my_commands` to render interactive autocomplete menus in operator chat clients.
 
 ---
 
@@ -124,6 +126,8 @@ uv run copilot positions           # View active tracked positions, stops, targe
 uv run copilot scan                # Trigger on-demand market scan (--dry-run, --no-llm, --asset-class)
 uv run copilot execute <id> [--qty <N>] # Authorize signal with optional custom tiered quantity override
 uv run copilot close <id> [price]  # Liquidate an open position, record realized P&L, release exposure
+uv run copilot panic [--confirm]    # Emergency kill switch: cancel all resting orders, liquidate positions, halt trading
+uv run copilot resume               # Clear emergency trading halt and resume autonomous trading operations
 uv run copilot gex [symbol]        # View options dealer gamma exposure, call/put walls, and gamma flip
 uv run copilot pairs               # Screen cross-asset pairs for cointegration and rolling spread Z-scores
 uv run copilot metrics             # Prometheus exposition (:9108/metrics) & JSON healthcheck (:9108/healthcheck)
@@ -164,7 +168,11 @@ When the daemon is running, operators can query and command the trading desk dir
 | `/backtest [sym] [lookback]` | Trigger on-demand offline backtest simulation from mobile | `/backtest SPY 1y` |
 | `/scan` | Trigger an immediate quantitative scan across the universe | `/scan` |
 | `/close <id> [price]` | Manually close an active trade and record fill | `/close 3 5850.25` |
+| `/panic [confirm]` | Emergency kill switch: cancel orders, market liquidate, halt trading | `/panic` |
+| `/resume` | Clear emergency trading halt and resume autonomous scanning & execution | `/resume` |
 | `/help` | Display interactive command menu and enforced risk invariants | `/help` |
+
+> **Interactive Autocomplete**: The Telegram bot automatically registers commands via `set_my_commands` on startup. When typing `/` into the chat input, modern Telegram clients display a native interactive autocomplete popup with command descriptions.
 
 ---
 
@@ -197,7 +205,7 @@ uv run pre-commit install
 The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`:
 
 ```bash
-# Run pytest unit test suite (237 tests)
+# Run pytest unit test suite (247 tests)
 uv run pytest
 
 # Run pytest with code coverage report
