@@ -23,6 +23,10 @@ dependencies = [
     "sqlalchemy>=2.0.38",
     "websockets>=13.0.0",
     "yfinance>=1.7.0",
+    "langgraph>=1.2.0",
+    "langchain-core>=1.6.0",
+    "langchain-litellm>=0.7.0",
+    "langsmith>=0.12.0",
 ]
 
 [project.optional-dependencies]

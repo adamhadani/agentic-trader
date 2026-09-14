@@ -15,12 +15,15 @@ from telegram import (
     MenuButtonCommands,
     Update,
 )
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
@@ -312,7 +315,7 @@ class TelegramNotifier:
         self,
         bot_token: str | None,
         chat_id: str | None,
-        db: SignalDatabase,
+        db: SignalDatabase | None = None,
         portfolio_cash: float = DEFAULT_PORTFOLIO_CASH,
         execution_mode: str = ExecutionMode.PAPER,
         status_provider: Callable[[], Awaitable[str]] | None = None,
@@ -327,6 +330,7 @@ class TelegramNotifier:
         pairs_provider: Callable[[], Awaitable[str]] | None = None,
         panic_handler: Callable[[str], Awaitable[Any]] | None = None,
         resume_handler: Callable[[], Awaitable[Any]] | None = None,
+        chat_handler: Callable[[str, str | int], Awaitable[str]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
@@ -345,6 +349,7 @@ class TelegramNotifier:
         self.pairs_provider = pairs_provider
         self.panic_handler = panic_handler
         self.resume_handler = resume_handler
+        self.chat_handler = chat_handler
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
@@ -443,6 +448,64 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("pairs", self.handle_pairs_command))
             self.app.add_handler(CommandHandler("panic", self.handle_panic_command))
             self.app.add_handler(CommandHandler("resume", self.handle_resume_command))
+            self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_chat_message))
+
+    async def handle_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle natural language conversational queries from the operator."""
+        if not update.effective_chat or not update.message or not update.message.text:
+            return
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized chat message received from {update.effective_chat.id}")
+            return
+
+        user_text = update.message.text.strip()
+        if not user_text:
+            return
+
+        with contextlib.suppress(Exception):
+            await update.effective_chat.send_action(ChatAction.TYPING)
+
+        if not self.chat_handler:
+            await update.message.reply_text(
+                "🤖 Conversational copilot is not enabled or configured.",
+                parse_mode="HTML",
+            )
+            return
+
+        chat_id = str(update.effective_chat.id)
+        try:
+            response = await self.chat_handler(user_text, chat_id)
+        except Exception as e:
+            logger.exception("Error invoking copilot chat handler")
+            response = f"❌ Error processing copilot request: {e}"
+
+        MAX_LEN = 4000
+        if len(response) <= MAX_LEN:
+            try:
+                await update.message.reply_text(response, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(response)
+        else:
+            chunks: list[str] = []
+            current_chunk: list[str] = []
+            current_len = 0
+            for line in response.splitlines(keepends=True):
+                if current_len + len(line) > MAX_LEN:
+                    if current_chunk:
+                        chunks.append("".join(current_chunk))
+                    current_chunk = [line]
+                    current_len = len(line)
+                else:
+                    current_chunk.append(line)
+                    current_len += len(line)
+            if current_chunk:
+                chunks.append("".join(current_chunk))
+
+            for chunk in chunks:
+                try:
+                    await update.message.reply_text(chunk, parse_mode="HTML")
+                except Exception:
+                    await update.message.reply_text(chunk)
 
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -610,8 +673,8 @@ class TelegramNotifier:
             return
 
         # Two-step confirmation prompt with warning card and interactive inline button
-        active_count = await self.db.get_active_position_count()
-        open_notional = await self.db.get_active_notional_exposure()
+        active_count = await self.db.get_active_position_count() if self.db else 0
+        open_notional = await self.db.get_active_notional_exposure() if self.db else 0.0
         warning_card = (
             "⚠️ <b>EMERGENCY KILL SWITCH CONFIRMATION REQUIRED</b> ⚠️\n\n"
             f"• <b>Active Open Positions:</b> <code>{active_count}</code>\n"
@@ -747,7 +810,8 @@ class TelegramNotifier:
                     await msg.reply_text(reply_text, parse_mode="HTML")
             else:
                 await query.answer()
-                await self.db.update_signal_status(signal_id, SignalStatus.EXECUTED)
+                if self.db:
+                    await self.db.update_signal_status(signal_id, SignalStatus.EXECUTED)
                 await _safe_clear_markup()
                 if msg and hasattr(msg, "reply_text"):
                     await msg.reply_text(
@@ -762,7 +826,8 @@ class TelegramNotifier:
                 signal_id,
                 extra={"signal_id": signal_id, "action": "dismiss"},
             )
-            await self.db.update_signal_status(signal_id, SignalStatus.DISMISSED)
+            if self.db:
+                await self.db.update_signal_status(signal_id, SignalStatus.DISMISSED)
             await _safe_clear_markup()
             if msg and hasattr(msg, "reply_text"):
                 await msg.reply_text(f"❌ Signal #{signal_id} {SignalStatus.DISMISSED}.")
@@ -867,7 +932,8 @@ class TelegramNotifier:
                 parse_mode="HTML",
                 reply_markup=reply_markup,
             )
-            await self.db.update_telegram_message_id(signal_id, msg.message_id)
+            if self.db:
+                await self.db.update_telegram_message_id(signal_id, msg.message_id)
             logger.info(
                 "Telegram signal alert dispatched for signal #%d",
                 signal_id,
