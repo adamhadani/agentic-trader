@@ -71,6 +71,7 @@ copilot daemon
 7. **Resilient Multi-Tier Market Data**: Dual-feed market data engine (`RunnableWithFallbacks`) querying Alpaca historical bars with automatic failover to Yahoo Finance.
 8. **Institutional Emergency Kill Switch**: Persistent database halt state (`system_state`) with instant order cancellation and position liquidation across all active brokers via `/panic` or `copilot panic`.
 9. **Native Telegram Command Autocomplete**: On startup, synchronizes commands with Telegram servers via `set_my_commands` to render interactive autocomplete menus in operator chat clients.
+10. **Resilient Third-Party Market Calendar Delegation**: Multi-tier calendar engine (`RunnableWithFallbacks`) querying authoritative exchange calendars from Alpaca (`GET /v2/calendar`) and Finnhub (`/stock/market-holiday`) with fallback to deterministic exchange calculation, synchronizing cash equity and CME index futures sessions.
 
 ---
 

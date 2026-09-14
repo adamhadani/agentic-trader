@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import litellm
+from alpaca.trading.client import TradingClient
 from pydantic import BaseModel, Field
 from telegram import Bot
 
@@ -13,6 +14,7 @@ from agentic_trader.agent.calendar import EconomicCalendar
 from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.tradovate import TradovateBroker
 from agentic_trader.config import AppConfig, load_config
+from agentic_trader.market.session import CompositeMarketCalendar
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -249,6 +251,52 @@ async def check_risk_limits(config: AppConfig) -> ComponentHealth:
         )
 
 
+async def check_market_calendar(config: AppConfig) -> ComponentHealth:
+    """Check exchange holiday and session calendar provider resolution."""
+    try:
+        alpaca_client = None
+        if config.alpaca_api_key and config.alpaca_api_secret and not config.alpaca_api_key.startswith("your_"):
+            try:
+                alpaca_client = TradingClient(
+                    api_key=config.alpaca_api_key,
+                    secret_key=config.alpaca_api_secret,
+                    paper=config.alpaca_paper,
+                )
+            except Exception:
+                alpaca_client = None
+
+        finnhub_key = None
+        if config.finnhub_api_key and not config.finnhub_api_key.startswith("your_"):
+            finnhub_key = config.finnhub_api_key
+
+        cal = CompositeMarketCalendar(
+            alpaca_client=alpaca_client,
+            finnhub_api_key=finnhub_key,
+            primary_provider=config.session.calendar_provider,
+            fallback_providers=config.session.fallback_providers,
+        )
+        today = datetime.now(UTC).date()
+        day_info = await cal.get_trading_day(today)
+        return ComponentHealth(
+            name="market_calendar",
+            status="OK",
+            message=f"Calendar resolved date {today} via {day_info.source} (is_trading_day={day_info.is_trading_day})",
+            details={
+                "provider": day_info.source,
+                "is_trading_day": day_info.is_trading_day,
+                "is_early_close": day_info.is_early_close,
+                "holiday_name": day_info.holiday_name,
+            },
+        )
+    except Exception as e:
+        return ComponentHealth(
+            name="market_calendar",
+            status="ERROR",
+            message=f"Market calendar resolution failed: {e}",
+            details={"error": str(e)},
+        )
+
+
 async def run_diagnostics(config: AppConfig | None = None) -> DiagnosticReport:
     """Run concurrent health checks across all trading copilot subsystems."""
     if config is None:
@@ -258,6 +306,7 @@ async def run_diagnostics(config: AppConfig | None = None) -> DiagnosticReport:
     results = await asyncio.gather(
         check_database(config),
         check_risk_limits(config),
+        check_market_calendar(config),
         check_telegram(config),
         check_alpaca(config),
         check_tradovate(config),
@@ -270,7 +319,7 @@ async def run_diagnostics(config: AppConfig | None = None) -> DiagnosticReport:
     has_error = False
     has_warning = False
 
-    names = ["database", "risk_limits", "telegram", "alpaca", "tradovate", "finnhub", "llm"]
+    names = ["database", "risk_limits", "market_calendar", "telegram", "alpaca", "tradovate", "finnhub", "llm"]
     for name, res in zip(names, results, strict=False):
         if isinstance(res, BaseException):
             comp = ComponentHealth(

@@ -1,10 +1,16 @@
 """Alias re-export for backward compatibility."""
 
 from agentic_trader.market.session import (
+    AlpacaCalendarProvider,
     AlpacaMarketSessionProvider,
     CMEFuturesSessionProvider,
+    CompositeMarketCalendar,
     CompositeMarketSessionProvider,
     CryptoSessionProvider,
+    DeterministicCalendarProvider,
+    FinnhubCalendarProvider,
+    MarketCalendarDay,
+    MarketCalendarProtocol,
     MarketHolidayCalendar,
     MarketSessionInfo,
     MarketSessionProtocol,
@@ -14,10 +20,16 @@ from agentic_trader.market.session import (
 
 
 __all__ = [
+    "AlpacaCalendarProvider",
     "AlpacaMarketSessionProvider",
     "CMEFuturesSessionProvider",
+    "CompositeMarketCalendar",
     "CompositeMarketSessionProvider",
     "CryptoSessionProvider",
+    "DeterministicCalendarProvider",
+    "FinnhubCalendarProvider",
+    "MarketCalendarDay",
+    "MarketCalendarProtocol",
     "MarketHolidayCalendar",
     "MarketSessionInfo",
     "MarketSessionProtocol",

@@ -39,6 +39,7 @@ async def test_doctor_diagnostics_healthy():
         assert report.is_healthy()
         assert "database" in report.components
         assert "risk_limits" in report.components
+        assert "market_calendar" in report.components
 
         output = format_doctor_cli_output(report)
         assert "PRE-FLIGHT SYSTEM DOCTOR" in output

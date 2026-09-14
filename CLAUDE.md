@@ -87,7 +87,7 @@ This repository enforces strict code quality and 100% pre-commit compliance befo
 - `agentic_trader/presentation/`:
   - `formatters.py`: Decoupled presentation DTOs (`PositionView`, `PositionsReport`, `PortfolioStatusReport`, `ExecutionResultView`, `PerformanceSummaryReport`, `PanicReportView`) and formatters (`TerminalFormatter`, `TelegramHtmlFormatter`).
 - `agentic_trader/market/`:
-  - `session.py`: Market session & trading hours protocol (`MarketSessionProtocol`), CME Globex holiday calendar (`MarketHolidayCalendar`), timezone normalization (`ensure_et`), and composite routing (`CompositeMarketSessionProvider`).
+  - `session.py`: Market session & trading hours protocol (`MarketSessionProtocol`), third-party exchange calendar delegation (`AlpacaCalendarProvider`, `FinnhubCalendarProvider`, `DeterministicCalendarProvider`, `CompositeMarketCalendar`) with `RunnableWithFallbacks`, CME Globex holiday calendar (`MarketHolidayCalendar`), timezone normalization (`ensure_et`), and composite routing (`CompositeMarketSessionProvider`).
 - `agentic_trader/resilience/`:
   - `fallback.py`: Generic LangChain-inspired resilience engine (`RunnableWithFallbacks`, `RetryPolicy`, `AllFallbacksExhaustedError`) with timeout and exponential backoff retry.
 - `agentic_trader/data/`:

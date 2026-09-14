@@ -80,7 +80,7 @@ copilot daemon
 Before launching the production daemon, verify the following steps:
 
 ### 1. Pre-Flight System Doctor (`copilot doctor`)
-Execute automated diagnostic probes across all 7 subsystems (database, risk limits, Telegram bot, Alpaca Paper API, Tradovate, Finnhub macro calendar, and LLM model):
+Execute automated diagnostic probes across all 8 subsystems (database, risk limits, exchange market calendar, Telegram bot, Alpaca Paper API, Tradovate, Finnhub macro calendar, and LLM model):
 ```bash
 uv run copilot doctor
 ```
