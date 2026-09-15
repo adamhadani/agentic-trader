@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agentic_trader.constants import ConflictResolutionMode, Direction, StrategyMode
+from agentic_trader.research.alpha.promotion import AlphaPromotionManager
 from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
+from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 
 
 if TYPE_CHECKING:
@@ -112,9 +114,6 @@ class StrategyRegistry:
     def load_promoted_alphas(self, config_path: Path | str | None = None) -> int:
         """Load all active promoted formulaic alphas from configuration."""
         try:
-            from agentic_trader.research.alpha.promotion import AlphaPromotionManager  # noqa: PLC0415
-            from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy  # noqa: PLC0415
-
             mgr = AlphaPromotionManager(config_path)
             active = mgr.list_active_alphas()
             active_ids = {rec.alpha_id.lower() for rec in active}

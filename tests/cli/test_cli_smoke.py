@@ -61,6 +61,7 @@ def test_cli_root_help(runner: CliRunner):
         ("retune", "--min-wfe"),
         ("stress", "--scenario"),
         ("db", "upgrade"),
+        ("explain-macro", "tutorial"),
     ],
 )
 def test_cli_subcommands_help(runner: CliRunner, command_name: str, expected_help_str: str):
@@ -234,3 +235,21 @@ def test_cli_resume_smoke(runner: CliRunner):
         assert result.exit_code == 0
         mock_copilot.resume_trading.assert_called_once()
         assert "Trading operations resumed successfully" in result.output
+
+
+def test_cli_explain_macro_smoke(runner: CliRunner):
+    """Verify copilot explain-macro invokes macro_engine.get_macro_report and formats explanation."""
+    with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
+        mock_copilot = MagicMock()
+        mock_report = MagicMock()
+        mock_copilot.regime_detector.macro_engine.get_macro_report = AsyncMock(return_value=mock_report)
+        mock_get.return_value = (mock_copilot, MagicMock())
+
+        with patch(
+            "agentic_trader.agent.macro_explainer.MacroExplainer.explain", new_callable=AsyncMock
+        ) as mock_explain:
+            mock_explain.return_value = "Tutorial: Yield curve is NORMAL_STEEP."
+            result = runner.invoke(cli, ["explain-macro"])
+            assert result.exit_code == 0
+            assert "Evaluating institutional macro indicators" in result.output
+            assert "Tutorial: Yield curve is NORMAL_STEEP." in result.output

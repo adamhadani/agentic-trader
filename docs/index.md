@@ -10,19 +10,27 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 
 ---
 
+## Current runtime baseline
+
+As of September 15, 2026: launchd, Alpaca paper, PostgreSQL, 4-hour/15-minute scans,
+1-minute reconciliation, brokerage-derived valuations, audit provenance, and
+isolated tests. Start with [development notes](development-notes.md) and the
+[incident report](incident-2026-09-15.md). Roadmap phases are historical milestones,
+not a guarantee that every research feature is integrated into live sizing.
+
 ## 🚀 Quick Navigation
 
 - [**Production Operations Guide**](production.md): The single source of truth on 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
-- [**CLI Command Reference**](cli-reference.md): Comprehensive reference guide covering all Click CLI subcommands.
-- [**Quantitative Strategies & Models**](strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX surface, and Pairs Trading.
-- [**System Development Roadmap**](roadmap.md): Complete chronological record of completed phases (Phases 1 through 38) and future milestones.
+- [**CLI Command Reference**](cli-reference.md): Comprehensive reference guide covering all Click CLI subcommands (scanning, execution, research, and alpha mining).
+- [**Quantitative Strategies & Models**](strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX surface, Pairs Trading, and Formulaic Alpha DSL.
+- [**System Development Roadmap**](roadmap.md): Complete chronological record of completed phases (Phases 1 through 45) and future milestones.
 
 ---
 
 ## 🛡️ Core Institutional Risk Invariants
 
 1. **Instrument Universe**: Micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`) and liquid ETFs (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`).
-2. **Fixed Margin Sizing**: 1 micro contract per signal. Total active open notional exposure across all concurrent positions must not exceed **$60,000** (0.6x effective leverage on $100k cash base).
+2. **Fixed Margin Sizing**: Static mode defaults to one micro contract; equities use dollar-risk sizing. Total active open notional exposure across all concurrent positions must not exceed **$60,000** (0.6x effective leverage on $100k cash base).
 3. **Reward-to-Risk (R:R)**: Strictly **$\ge 2.0$**. Stop distance must be **$\ge 1.5 \times \text{ATR}(14)$** to avoid noise stop-outs.
 4. **Macro Event Lockout**: Zero entry alerts permitted within **$[-60\text{m}, +30\text{m}]$** of Tier-1 economic releases (CPI, PPI, FOMC, NFP).
 5. **Deduplication Rule**: Zero duplicate signals for the same contract + strategy within 12 hours.
@@ -47,10 +55,11 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 |                 |  | (15-Min Loop)   |     | (Alpaca/Trad.)  |   | (Two-Way Comms) |  | (Port :9108)    |
 +-----------------+  +-----------------+     +-----------------+   +-----------------+  +-----------------+
          |                    |                       |                     |                    |
-         v                    v                       v                     v                    v
+          v                    v                       v                     v                    v
   Market Data          Broker REST &           Sub-Second Bracket    Operator Approval    Prometheus /
-  (yfinance /          SQLite Sync             Fill & Cancellation   & Manual Command     Grafana & Docker
-  Finnhub Macro)       (signals.db)            Events                Dispatch             Healthchecks
+  (Alpaca / YFinance / PostgreSQL 18.6 /       Fill & Cancellation   & Manual Command     Grafana & Docker
+  Finnhub Macro)       SQL + Audit             Events                Dispatch             Healthchecks
+                       (signals / state)
 ```
 
 ---
@@ -58,11 +67,11 @@ The **Cash-Plus Trading Copilot** is an algorithmic trading system designed arou
 ## 📦 Steady-State Production Launch
 
 ```bash
-# 1. Run database migrations
-uv run copilot db upgrade head
-
-# 2. Launch production daemon with Docker Compose
+# 1. Launch production services (PostgreSQL 18.6 + Copilot Daemon) with Docker Compose
 docker compose up -d
+
+# 2. Run database migrations inside container
+docker compose exec copilot copilot db upgrade head
 
 # 3. View live logs
 docker compose logs -f trading-copilot

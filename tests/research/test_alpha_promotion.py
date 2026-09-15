@@ -97,3 +97,31 @@ def test_promotion_manager_lifecycle(temp_promo_yaml: Path):
     all_recs = mgr.load_records()
     assert len(all_recs) == 1
     assert all_recs[0].status == AlphaStatus.DEMOTED
+
+
+def test_promotion_manager_eligible_symbols(temp_promo_yaml: Path):
+    """Verify that eligible_symbols is stored, serialized, and reloaded accurately."""
+    mgr = AlphaPromotionManager(config_path=temp_promo_yaml)
+
+    defn = AlphaDefinition(
+        alpha_id="alpha_wq_053",
+        name="WorldQuant #53",
+        expression="-1.0 * delta(((close - low) - (high - close)) / (close - low + 0.0001), 9)",
+        origin="worldquant_101",
+    )
+
+    rec = mgr.promote(
+        alpha=defn,
+        promoted_by="quant_ops",
+        allocation_weight=0.15,
+        eligible_symbols=["NVDA", "AMD"],
+        notes="High-beta semiconductor alpha",
+    )
+    assert rec.eligible_symbols == ["NVDA", "AMD"]
+    assert rec.definition.eligible_symbols == ["NVDA", "AMD"]
+
+    # Verify reloading from YAML disk
+    reloaded = mgr.load_records()
+    assert len(reloaded) == 1
+    assert reloaded[0].eligible_symbols == ["NVDA", "AMD"]
+    assert reloaded[0].definition.eligible_symbols == ["NVDA", "AMD"]

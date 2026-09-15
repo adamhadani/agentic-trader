@@ -1,7 +1,9 @@
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker import (
     AlpacaBroker,
     OrderRequest,
@@ -21,7 +23,6 @@ from agentic_trader.constants import (
     OrderType,
     SignalStatus,
 )
-from agentic_trader.main import FuturesCopilot
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -132,7 +133,7 @@ async def test_copilot_execute_signal(tmp_path):
         db_path=str(db_file),
         execution_mode="paper",
     )
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config, db=db)
     copilot.data_fetcher = MagicMock()
     copilot.data_fetcher.fetch_latest_price.return_value = 5812.50
 
@@ -180,7 +181,7 @@ async def test_copilot_execute_signal_exposure_limit(tmp_path):
     # Set maximum notional exposure lower than signal notional
     config.portfolio.max_notional_exposure = 20000.0
 
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config, db=db)
     sig_id = await db.record_signal(
         contract="/MES",
         strategy="TREND_PULLBACK",
@@ -471,7 +472,21 @@ async def test_alpaca_broker_reconcile_positions():
     mock_closed_order.status = "filled"
     mock_closed_order.order_type = "stop"
     mock_closed_order.filled_avg_price = 144.50
-    mock_closed_order.filled_at = None
+    mock_closed_order.filled_at = datetime.now(UTC)
+    mock_closed_order.filled_qty = "1"
+    mock_closed_order.symbol = "AAPL"
+    mock_closed_order.side = "sell"
+    entry = {
+        "id": "entry-aapl",
+        "symbol": "AAPL",
+        "side": "buy",
+        "status": "filled",
+        "filled_qty": "1",
+        "filled_avg_price": "150",
+        "filled_at": datetime(2026, 9, 14, tzinfo=UTC),
+        "legs": [mock_closed_order],
+    }
+    mock_client.get_order_by_id.return_value = entry
     mock_client.get_orders.return_value = [mock_closed_order]
 
     broker = AlpacaBroker(config, client=mock_client)
@@ -479,6 +494,8 @@ async def test_alpaca_broker_reconcile_positions():
     active_positions = [
         {
             "id": 10,
+            "broker_order_id": "entry-aapl",
+            "quantity": 1.0,
             "contract": "AAPL",
             "direction": "LONG",
             "entry_price": 150.0,
@@ -488,6 +505,8 @@ async def test_alpaca_broker_reconcile_positions():
         },
         {
             "id": 11,
+            "broker_order_id": "entry-msft",
+            "quantity": 1.0,
             "contract": "MSFT",
             "direction": "LONG",
             "entry_price": 400.0,
@@ -513,7 +532,7 @@ async def test_alpaca_broker_reconcile_positions():
 async def test_copilot_monitor_positions_via_reconciliation(tmp_path):
     db_path = str(tmp_path / "test_reconcile.db")
     config = AppConfig(execution_mode="paper", db_path=db_path)
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     await copilot.db.init_db()
 
     # Record active position
@@ -564,7 +583,7 @@ async def test_copilot_execute_equity_signal_with_shares(tmp_path):
     config.execution_mode = "paper"
     config.db_path = db_path
 
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     await copilot.db.init_db()
 
     # Record equity signal with 35 shares

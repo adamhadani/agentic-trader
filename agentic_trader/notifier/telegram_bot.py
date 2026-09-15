@@ -27,11 +27,14 @@ from telegram.ext import (
 )
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
+from agentic_trader.agent.macro import MacroIntelligenceEngine
+from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.constants import (
     DEFAULT_PORTFOLIO_CASH,
     AssetClass,
     ExecutionMode,
     ExitReason,
+    RuntimeEnvironment,
     SignalStatus,
 )
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
@@ -328,6 +331,7 @@ class TelegramNotifier:
         perf_provider: Callable[[], Awaitable[str]] | None = None,
         regime_provider: Callable[[], Awaitable[str]] | None = None,
         macro_provider: Callable[[], Awaitable[str]] | None = None,
+        explain_macro_provider: Callable[[], Awaitable[str]] | None = None,
         backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
         gex_provider: Callable[[str], Awaitable[str]] | None = None,
         pairs_provider: Callable[[], Awaitable[str]] | None = None,
@@ -335,7 +339,9 @@ class TelegramNotifier:
         resume_handler: Callable[[], Awaitable[Any]] | None = None,
         chat_handler: Callable[[str, str | int], Awaitable[str]] | None = None,
         alphas_provider: Callable[[], Awaitable[str]] | None = None,
+        environment: str = RuntimeEnvironment.DEVELOPMENT,
     ):
+        self.environment = environment
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.db = db
@@ -349,6 +355,7 @@ class TelegramNotifier:
         self.perf_provider = perf_provider
         self.regime_provider = regime_provider
         self.macro_provider = macro_provider
+        self.explain_macro_provider = explain_macro_provider
         self.backtest_runner = backtest_runner
         self.gex_provider = gex_provider
         self.pairs_provider = pairs_provider
@@ -365,6 +372,11 @@ class TelegramNotifier:
             except Exception as e:
                 logger.error(f"Failed to initialize Telegram application: {e}")
                 self.app = None
+
+    def _label(self, message: str) -> str:
+        return (
+            message if self.environment == RuntimeEnvironment.PRODUCTION else f"[{self.environment.upper()}] {message}"
+        )
 
     def is_configured(self) -> bool:
         return bool(self.bot_token and self.chat_id and "your_" not in self.bot_token and "your_" not in self.chat_id)
@@ -389,6 +401,7 @@ class TelegramNotifier:
                 BotCommand("perf", "Cumulative closed trade performance and win rate"),
                 BotCommand("regime", "Real-time VIX, 10Y yield, and Dollar Index regime"),
                 BotCommand("macro", "Yield curve, credit OAS, inflation & macro stress"),
+                BotCommand("explain_macro", "Tutorial & breakdown of live macro indicators"),
                 BotCommand("alphas", "Formulaic alpha intelligence & active strategies"),
                 BotCommand("pairs", "Statistical arbitrage pairs, cointegration & Z-scores"),
                 BotCommand("gex", "Gamma exposure, dealer walls, and gamma flip"),
@@ -452,6 +465,7 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("perf", self.handle_perf_command))
             self.app.add_handler(CommandHandler("regime", self.handle_regime_command))
             self.app.add_handler(CommandHandler("macro", self.handle_macro_command))
+            self.app.add_handler(CommandHandler("explain_macro", self.handle_explain_macro_command))
             self.app.add_handler(CommandHandler("alphas", self.handle_alphas_command))
             self.app.add_handler(CommandHandler("backtest", self.handle_backtest_command))
             self.app.add_handler(CommandHandler("gex", self.handle_gex_command))
@@ -459,6 +473,40 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("panic", self.handle_panic_command))
             self.app.add_handler(CommandHandler("resume", self.handle_resume_command))
             self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_chat_message))
+
+    async def safe_reply_text(
+        self,
+        message: Any,
+        text: str,
+        parse_mode: str = "HTML",
+        max_chunk_len: int = 4000,
+    ) -> list[Any]:
+        """Safely send or reply to a Telegram message with HTML sanitization,
+        chunking for messages exceeding Telegram's 4096-character limit,
+        and automatic plain-text fallback if Telegram's entity parser rejects HTML.
+        """
+        if not text or not message:
+            return []
+
+        sanitized = TelegramHtmlFormatter.sanitize_telegram_html(text) if parse_mode == "HTML" else text
+        chunks = TelegramHtmlFormatter.split_telegram_message(sanitized, max_chunk_len=max_chunk_len)
+
+        sent_messages: list[Any] = []
+        for chunk in chunks:
+            if parse_mode == "HTML":
+                try:
+                    sent = await message.reply_text(chunk, parse_mode="HTML")
+                    sent_messages.append(sent)
+                except Exception as e:
+                    logger.warning("Telegram HTML entity parsing failed (%s), falling back to plain text", e)
+                    plain = TelegramHtmlFormatter.strip_html(chunk)
+                    sent = await message.reply_text(plain, parse_mode=None)
+                    sent_messages.append(sent)
+            else:
+                sent = await message.reply_text(chunk, parse_mode=None)
+                sent_messages.append(sent)
+
+        return sent_messages
 
     async def handle_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle natural language conversational queries from the operator."""
@@ -489,33 +537,7 @@ class TelegramNotifier:
             logger.exception("Error invoking copilot chat handler")
             response = f"❌ Error processing copilot request: {e}"
 
-        MAX_LEN = 4000
-        if len(response) <= MAX_LEN:
-            try:
-                await update.message.reply_text(response, parse_mode="HTML")
-            except Exception:
-                await update.message.reply_text(response)
-        else:
-            chunks: list[str] = []
-            current_chunk: list[str] = []
-            current_len = 0
-            for line in response.splitlines(keepends=True):
-                if current_len + len(line) > MAX_LEN:
-                    if current_chunk:
-                        chunks.append("".join(current_chunk))
-                    current_chunk = [line]
-                    current_len = len(line)
-                else:
-                    current_chunk.append(line)
-                    current_len += len(line)
-            if current_chunk:
-                chunks.append("".join(current_chunk))
-
-            for chunk in chunks:
-                try:
-                    await update.message.reply_text(chunk, parse_mode="HTML")
-                except Exception:
-                    await update.message.reply_text(chunk)
+        await self.safe_reply_text(update.message, response, parse_mode="HTML")
 
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -528,6 +550,7 @@ class TelegramNotifier:
             "• /perf - View cumulative closed trade performance and win rate\n"
             "• /regime - View real-time VIX, 10Y yield, and Dollar Index macro filter\n"
             "• /macro - View yield curve spreads, credit OAS, and macro stress index\n"
+            "• /explain_macro - Tutorial &amp; educational indicator breakdown with LLM context\n"
             "• /alphas - View formulaic alpha intelligence, catalog, and active strategies\n"
             "• /pairs - View statistical arbitrage pairs, cointegration &amp; Z-scores\n"
             "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
@@ -596,6 +619,32 @@ class TelegramNotifier:
                 await update.message.reply_text(f"❌ Macro intelligence error: {e}")
         else:
             await update.message.reply_text("Macro intelligence provider not attached.")
+
+    async def handle_explain_macro_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        with contextlib.suppress(Exception):
+            await update.message.reply_chat_action(ChatAction.TYPING)
+        await update.message.reply_text(
+            "🧭 <i>Analyzing macroeconomic indicators and synthesizing briefing...</i>", parse_mode="HTML"
+        )
+        if self.explain_macro_provider:
+            try:
+                resp = await self.explain_macro_provider()
+                await self.safe_reply_text(update.message, resp, parse_mode="HTML")
+            except Exception as e:
+                logger.error("Failed explaining macro intelligence: %s", e)
+                await update.message.reply_text(f"❌ Error explaining macro: {e}")
+        else:
+            try:
+                engine = MacroIntelligenceEngine()
+                report = await engine.get_macro_report()
+                explainer = MacroExplainer()
+                resp = await explainer.explain(report, format_mode="html")
+                await self.safe_reply_text(update.message, resp, parse_mode="HTML")
+            except Exception as e:
+                logger.error("Failed explaining macro intelligence: %s", e)
+                await update.message.reply_text(f"❌ Error explaining macro: {e}")
 
     async def handle_alphas_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -795,6 +844,8 @@ class TelegramNotifier:
             await update.message.reply_text("Scan runner not attached.")
 
     async def handle_button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update):
+            return
         query = update.callback_query
         if not query or not query.data:
             return
@@ -854,14 +905,7 @@ class TelegramNotifier:
                 if msg and hasattr(msg, "reply_text"):
                     await msg.reply_text(reply_text, parse_mode="HTML")
             else:
-                await query.answer()
-                if self.db:
-                    await self.db.update_signal_status(signal_id, SignalStatus.EXECUTED)
-                await _safe_clear_markup()
-                if msg and hasattr(msg, "reply_text"):
-                    await msg.reply_text(
-                        f"✅ Signal #{signal_id} acknowledged: status set to {SignalStatus.EXECUTED}. Position is now active in risk tracking."
-                    )
+                await query.answer("Execution handler unavailable; no order submitted.", show_alert=True)
 
         elif data.startswith("dism_"):
             await query.answer()
@@ -973,7 +1017,7 @@ class TelegramNotifier:
             bot = self.app.bot
             msg = await bot.send_message(
                 chat_id=self.chat_id,
-                text=card_html,
+                text=self._label(card_html),
                 parse_mode="HTML",
                 reply_markup=reply_markup,
             )
@@ -1049,7 +1093,7 @@ class TelegramNotifier:
             bot = self.app.bot
             msg = await bot.send_message(
                 chat_id=self.chat_id,
-                text=card_html,
+                text=self._label(card_html),
                 parse_mode="HTML",
             )
             return msg.message_id
@@ -1094,7 +1138,7 @@ class TelegramNotifier:
             bot = self.app.bot
             await bot.send_message(
                 chat_id=self.chat_id,
-                text=text,
+                text=self._label(text),
                 parse_mode=parse_mode,
             )
             return True

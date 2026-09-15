@@ -20,6 +20,8 @@ dependencies = [
     "pyyaml>=6.0.3",
     "scipy>=1.18.1",
     "statsmodels>=0.14.0",
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.9",
     "sqlalchemy>=2.0.38",
     "websockets>=13.0.0",
     "yfinance>=1.7.0",
@@ -55,12 +57,15 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=6.0.0",
     "pytest-impacted[fast]>=0.30.0",
+    "pytest-socket>=0.8.1",
     "ruff>=0.16.7",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+addopts = "--disable-socket --allow-unix-socket"
+markers = ["postgres: opt-in tests requiring TEST_POSTGRES_URL pointing to a disposable test_ database"]
 
 [tool.mypy]
 namespace_packages = true

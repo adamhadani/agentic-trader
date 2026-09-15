@@ -40,7 +40,7 @@ def test_migrations_fresh_lifecycle(tmp_path: Path):
 
     # Upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "002_system_state"
+    assert get_current_revision(db_url) == "003_audit_provenance"
 
     # Verify SQLite schema inspection
     with sqlite3.connect(db_file) as conn:
@@ -93,7 +93,7 @@ def test_migrations_fresh_lifecycle(tmp_path: Path):
 
     # Re-upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "002_system_state"
+    assert get_current_revision(db_url) == "003_audit_provenance"
 
 
 def test_get_history(tmp_path: Path):
@@ -103,7 +103,7 @@ def test_get_history(tmp_path: Path):
     assert len(history) >= 2
     revisions = [h["revision"] for h in history]
     assert "001_initial" in revisions
-    assert "002_system_state" in revisions
+    assert "003_audit_provenance" in revisions
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_signal_database_auto_migration(tmp_path: Path):
     db = SignalDatabase(db_path=str(db_file))
 
     # Verify migration stamped
-    assert get_current_revision(db.db_url) == "002_system_state"
+    assert get_current_revision(db.db_url) == "003_audit_provenance"
 
     # Verify write and read operations
     sig_id = await db.record_signal(

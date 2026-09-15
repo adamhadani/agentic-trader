@@ -4,6 +4,31 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 
 ---
 
+## Current operational status — September 15, 2026
+
+The historical phases below describe development milestones and intended features.
+The [development notes](development-notes.md) describe verified runtime behavior
+and remaining integration limits. In particular: no automatic alpha reload, no
+`alpha optimize` CLI/live allocation integration, and no candle-aligned interval
+scheduler. Phase 36's original isolation was incomplete and is superseded by the
+incident remediation below.
+
+## Phase 45: Test isolation, broker fill authority and operational audit
+
+- Removed import-time secret loading and ambient DB overrides from config models.
+- Added isolated test fixtures, socket/native-driver guards, and opt-in disposable PG.
+- Added broker cost-basis sync, exact entry/exit ownership checks, partial-fill deferral,
+  duplicate-notification suppression and confirmed manual-close accounting.
+- Unified CLI/Telegram broker positions and explicit realized/unrealized report scopes.
+- Added audit/provenance/quarantine migration, source revision startup evidence and
+  an idempotent, snapshot-validated historical repair tool.
+- Isolated dry scans and test notifications; centralized runtime/audit/state vocabulary
+  and configurable stream retry policy; refreshed operating/development documentation.
+
+Priority next work: atomic execution reservations and approval-time risk rechecks;
+a complete fill ledger for partial/replaced/external orders; freshness-based readiness;
+confirmed trailing-stop parity; nonblocking data access and timeframe/risk integration.
+
 ## Strategic Initiatives Overview
 
 | Priority | Target Area | Status | Focus |
@@ -48,7 +73,9 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 38** | Live Alpaca Paper Trade Execution, Reconciler Safety & Codebase Simplification | **Completed** | Strict directional opposing side rules, dynamic unit sizing on exit cards, pruning unused shims |
 | **Phase 39** | Conversational Trading Copilot & Agentic Tool Calling via LangGraph, LiteLLM & LangSmith | **Completed** | Stateful ReAct copilot in Telegram with LangGraph, tool palette, LiteLLM provider support, and LangSmith tracing |
 | **Phase 40** | Multi-Asset Macro Intelligence, Yield Curve & Credit Regime Filter | **Completed** | US Treasury curve (3M-30Y), public FRED OAS/Breakevens, compound macro stress index, Telegram `/macro`, morning briefing |
-| **Phase 41** | Formulaic Alpha Mining, Expression DSL & VectorBT Research Harness | **Completed** | WorldQuant 101-style alpha DSL, genetic search engine, DSR overfitting protection, auto-promotion |
+| **Phase 42** | Signal Orthogonalization Pipeline & Convex Optimization Allocation | **Completed** | Gram-Schmidt signal orthogonalization, residual IC testing, SLSQP Sharpe maximization, universe matrix |
+| **Phase 43** | Consolidated Production Review, Macro Explainer & Operational Resilience | **Completed** | Paper reset, universe visibility, educational macro tutorial briefing, scheduled alpha miner, rollover safety |
+| **Phase 44** | Intraday Real-Time Signal Engine & High-Throughput PostgreSQL 18.6 Backend | **Completed** | 15m/1h intraday market data & scanning, PostgreSQL 18.6 (`postgres:18.6-alpine`) backend with asyncpg & Alembic migrations |
 
 ---
 
@@ -1052,10 +1079,82 @@ Build a research-grade alpha generation and exploration engine inspired by quant
 
 ---
 
-## Next Horizon: Extended Strategic Initiatives (Phases 42+)
+## Phase 42: Signal Orthogonalization Pipeline & Convex Optimization Allocation (**Completed**)
+
+### Objective
+Incorporate institutional quant shop methodology for signal decorrelation and portfolio weighting: orthogonalize candidate signals against active incumbents using modified Gram-Schmidt projection, filter redundant alphas based on residual predictive power (Residual IC), and optimize multi-alpha capital allocations via convex quadratic programming.
+
+### Key Deliverables & Implementation Summary
+1. **Gram-Schmidt Signal Orthogonalization Engine (`agentic_trader/research/alpha/orthogonalization.py`)**:
+   - Modified Gram-Schmidt projection removing shared linear variance from candidate signals against active incumbents.
+   - Residual information coefficient evaluation (`evaluate_residual_predictive_power`) ensuring novel incremental alpha ($IC_{residual} > 0.015$).
+   - Rejection gating for redundant signals ($R^2 > 0.65$ or $IC_{residual} \le 0$).
+2. **Convex Portfolio Optimization Engine (`agentic_trader/research/alpha/optimizer.py`)**:
+   - Quadratic programming / SLSQP portfolio optimizer maximizing portfolio Sharpe ratio while penalizing pairwise correlation and diversification entropy.
+   - Strict budget constraints: $\sum w_i = 1$, $0 \le w_i \le w_{max}$ (default 0.40).
+   - Automated weight normalization and fallback to inverse volatility or equal weighting under rank deficiency.
+3. **Multi-Asset Universe Qualification Matrix (`copilot alpha mine`)**:
+   - Evaluates alpha expressions across multi-symbol universes (e.g., `NVDA,AMD,AAPL,MSFT,QQQ,SPY`).
+   - Stored eligible target symbols per alpha in `PromotedAlphaRecord.eligible_symbols`.
+4. **Symbol-Constrained Production Execution (`FormulaicScreenerStrategy`)**:
+   - Strategy routing respects `eligible_symbols`, screening only verified assets for that alpha.
+5. **CLI & Interactive Optimization**:
+   - Planned CLI integration is not implemented: use the `ConvexAlphaPortfolioOptimizer` Python library. There is no `alpha optimize` command or automatic live weight application.
+
+---
+
+## Phase 43: Consolidated Production Review, Macro Explainer & Operational Resilience (**Completed**)
+
+### Objective
+Perform end-to-end operational consolidation of the entire production stack, establish a clean fresh paper trading state on Alpaca, provide operator-facing macro educational tutorials via LLM synthesis, decouple scheduled offline alpha discovery from the live trading daemon, and implement safeguards against orphan positions during strategy demotions.
+
+### Key Deliverables & Implementation Summary
+1. **Paper Account Reset & Order State Clearance**:
+   - Cancelled resting bracket orders and closed lingering positions (`SPY` 39 shares) on Alpaca paper account (`PA358NGOKTU5`).
+   - Reconciled database state, restoring the full $40,000 equity risk capacity with zero margin utilization.
+2. **System Health & Launchd Supervision Reload**:
+   - Verified 100% pre-flight subsystem health (`./scripts/launchd.sh health`).
+   - Restarted `com.agentictrader.copilot` with fresh code, expanded universes, and promoted alphas (`alpha_wq_006`, `alpha_wq_053`, `alpha_trend_expansion`).
+3. **Alpha Universe Visibility Across Operator Interfaces**:
+   - Displayed eligible symbols for each alpha in CLI (`copilot alpha list`) and Telegram (`/alphas`), distinguishing targeted sets (e.g. `NVDA, AMD`) from global alphas (`ALL`).
+4. **Macro Explainer & Educational Indicator Breakdown (`agentic_trader/agent/macro_explainer.py`)**:
+   - Educational tutorial explaining the live quantitative macroeconomic metrics (Yield curve slope in bps, HY OAS credit risk, VIX volatility context, 5Y/10Y TIPS Breakevens, and Copilot risk sizing).
+   - Powered by LLM synthesis (`litellm.acompletion`) with an exhaustive 5-section deterministic fallback.
+   - Available via CLI (`copilot explain-macro`) and Telegram (`/explain_macro`).
+5. **Decoupled Scheduled Offline Alpha Mining Daemon (`com.agentictrader.alphaminer`)**:
+   - Scheduled Saturday 02:00 AM weekly offline mining job via macOS `launchd`, running genetic mining across 10 core symbols without impacting live trading loop latency.
+   - Managed via `./scripts/launchd.sh install-miner`, `uninstall-miner`, `run-miner`, and `miner-logs`.
+6. **Zombie Position Rollover & Demotion Safeguard**:
+   - Enhanced `copilot alpha demote <alpha_id>` with orphan position detection.
+   - Added `--liquidate-positions` flag to immediately close attributed positions at market; otherwise tags positions under orphan status with active trailing stop management.
+
+---
+
+## Phase 44: Intraday Real-Time Signal Engine & High-Throughput PostgreSQL 18.6 Backend (**Completed**)
+
+### Objective
+Expand the quantitative trading engine beyond 4-hour swing scans to ingest, calculate indicators on, and trade 15-minute and 1-hour bar intervals during active regular trading hours (RTH). Migrate persistence infrastructure to high-throughput, concurrent PostgreSQL 18.6 with connection pooling, transactional Alembic migrations, and multi-container Docker Compose orchestration.
+
+### Key Deliverables & Implementation Summary
+1. **High-Throughput PostgreSQL 18.6 Persistent Backend**:
+   - Upgraded persistence from single-writer SQLite (`sqlite+aiosqlite`) to concurrent, row-locking PostgreSQL (`postgresql+asyncpg`), utilizing local Homebrew PostgreSQL 18.6 and adding `postgres:18.6-alpine` to `docker-compose.yml`.
+   - Added connection pooling (`pool_size=10, max_overflow=20`), timezone safety (`UTCDatetime`), and dialect-aware sequence restart logic.
+   - Verified transactional Alembic DDL migrations (`001_initial`, `002_system_state`) with full rollback/downgrade parity and dedicated integration tests.
+2. **Multi-Timeframe Intraday Market Data (15m & 1h)**:
+   - Added `fifteen_minute` OHLCV container to `ContractMarketData` with technical indicators (`EMA_20/50/200`, `ATR_14`, `RSI_14`, Bollinger Bands, Keltner Channels, Squeeze metrics, and `Volume_SMA_20`).
+   - Supported across Alpaca and Yahoo Finance data providers with automatic failover.
+3. **Strategy Routing & Timeframe-Aware Deduplication**:
+   - `FormulaicAlphaStrategy` dynamically routes evaluations to target timeframe bars (`15m`, `1h`, `4h`, `1d`).
+   - Sizing and deduplication adapt automatically (2h deduplication window for 15m intraday vs. 12h for 4h swing).
+4. **Intraday Scheduling & Session Gating**:
+   - Scheduled 15-minute intraday scan cadence in `copilot daemon`, gated by `MarketSessionProtocol` to run only during active regular trading hours.
+
+---
+
+## Next Horizon: Extended Strategic Initiatives (Phases 46+)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|
-| **Phase 42** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 43** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 44** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 45** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
+| **Phase 46** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
+| **Phase 47** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |

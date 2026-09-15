@@ -122,3 +122,80 @@ async def test_telegram_handle_macro_command_unauthorized():
 
     assert mock_macro_provider.call_count == 0
     assert mock_update.message.reply_text.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_telegram_handle_explain_macro_command_authorized():
+    mock_explain_provider = AsyncMock(return_value="<b>EXPLAIN MACRO TEST</b>")
+
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="12345",
+        explain_macro_provider=mock_explain_provider,
+    )
+
+    mock_update = MagicMock()
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_context = MagicMock()
+
+    await notifier.handle_explain_macro_command(mock_update, mock_context)
+
+    assert mock_explain_provider.call_count == 1
+    # Check that reply_text was called with the briefing
+    mock_update.message.reply_text.assert_any_call(
+        "<b>EXPLAIN MACRO TEST</b>",
+        parse_mode="HTML",
+    )
+
+
+@pytest.mark.asyncio
+async def test_telegram_handle_explain_macro_command_entity_error_fallback():
+    # Simulate Telegram BadRequest when HTML has unexpected end tag or bad entity
+    mock_explain_provider = AsyncMock(return_value="<b>MACRO BRIEFING</b>\nUnexpected </i> and </b>\nYield < 5%")
+
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="12345",
+        explain_macro_provider=mock_explain_provider,
+    )
+
+    mock_update = MagicMock()
+    mock_update.effective_chat.id = 12345
+    mock_message = AsyncMock()
+
+    # Make HTML parse fail with Telegram BadRequest exception on the briefing message
+    async def mock_reply_text(*args, **kwargs):
+        if kwargs.get("parse_mode") == "HTML" and args and "MACRO BRIEFING" in args[0]:
+            raise RuntimeError("Can't parse entities: unexpected end tag at byte offset 5321")
+        return MagicMock()
+
+    mock_message.reply_text = AsyncMock(side_effect=mock_reply_text)
+    mock_update.message = mock_message
+    mock_context = MagicMock()
+
+    await notifier.handle_explain_macro_command(mock_update, mock_context)
+
+    # Verify that the provider was called
+    assert mock_explain_provider.call_count == 1
+    # Verify that it fell back to plain text (parse_mode=None) instead of crashing!
+    plain_calls = [call for call in mock_message.reply_text.call_args_list if call.kwargs.get("parse_mode") is None]
+    assert len(plain_calls) >= 1
+    # Plain text should contain the content
+    fallback_text = plain_calls[0].args[0]
+    assert "MACRO BRIEFING" in fallback_text
+
+
+@pytest.mark.asyncio
+async def test_telegram_safe_reply_text_chunking():
+    notifier = TelegramNotifier(bot_token="test_token", chat_id="12345")
+    mock_message = AsyncMock()
+
+    # Message longer than max_chunk_len
+    p1 = "Section 1: " + ("A" * 150)
+    p2 = "Section 2: " + ("B" * 150)
+    long_msg = f"{p1}\n\n{p2}"
+
+    sent = await notifier.safe_reply_text(mock_message, long_msg, parse_mode="HTML", max_chunk_len=200)
+    assert len(sent) == 2
+    assert mock_message.reply_text.call_count == 2

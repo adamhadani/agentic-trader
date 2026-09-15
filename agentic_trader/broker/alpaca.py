@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -9,11 +10,13 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     OrderClass as AlpacaOrderClass,
     OrderSide as AlpacaOrderSide,
+    OrderStatus as AlpacaOrderStatus,
     QueryOrderStatus,
     TimeInForce as AlpacaTimeInForce,
 )
 from alpaca.trading.requests import (
     ClosePositionRequest,
+    GetOrderByIdRequest,
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
@@ -31,7 +34,7 @@ from agentic_trader.broker.base import (
     ReconciliationEvent,
 )
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import AssetClass, Direction, ExitReason
+from agentic_trader.constants import BROKER_QUANTITY_TOLERANCE, AssetClass, Direction, ExitReason
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,7 @@ class AlpacaBroker(BaseBroker):
         if self.base_url and "paper" in self.base_url.lower():
             self.is_paper = True
         self.client: TradingClient | None = client
+        self.reconciliation_evidence: list[dict[str, Any]] = []
         self._connected: bool = False
         self._trade_stream: TradingStream | None = None
 
@@ -192,7 +196,8 @@ class AlpacaBroker(BaseBroker):
             order = await asyncio.to_thread(self.client.submit_order, alpaca_order_req)
 
             order_id = str(getattr(order, "id", ""))
-            fill_price = float(getattr(order, "filled_avg_price", None) or request.entry_price or 0.0)
+            avg_price = getattr(order, "filled_avg_price", None)
+            fill_price = float(avg_price) if avg_price is not None else None
             bracket_orders: dict[str, str] = {}
             legs = getattr(order, "legs", None)
             if legs:
@@ -209,7 +214,7 @@ class AlpacaBroker(BaseBroker):
                 success=True,
                 order_id=order_id,
                 fill_price=fill_price,
-                fill_timestamp=datetime.now(UTC),
+                fill_timestamp=self._filled_at(order),
                 bracket_orders=bracket_orders,
                 raw_response=raw_resp,
                 status=str(getattr(order, "status", "")),
@@ -250,8 +255,10 @@ class AlpacaBroker(BaseBroker):
             return OrderResult(
                 success=True,
                 order_id=order_id,
-                fill_price=exit_price,
-                fill_timestamp=datetime.now(UTC),
+                fill_price=float(self._field(res, "filled_avg_price"))
+                if self._field(res, "filled_avg_price")
+                else None,
+                fill_timestamp=self._filled_at(res),
                 raw_response=raw_resp,
             )
         except APIError as e:
@@ -266,7 +273,7 @@ class AlpacaBroker(BaseBroker):
         if not self._connected or not self.client:
             connected = await self.connect()
             if not connected or not self.client:
-                return []
+                raise RuntimeError("Alpaca positions connection failed")
 
         try:
             positions_data = await asyncio.to_thread(self.client.get_all_positions)
@@ -294,7 +301,7 @@ class AlpacaBroker(BaseBroker):
             return positions
         except Exception as e:
             logger.error("Failed to fetch positions from Alpaca SDK: %s", e)
-            return []
+            raise
 
     async def get_account_balance(self) -> dict[str, float]:
         """Fetch account balance metrics via SDK."""
@@ -318,119 +325,152 @@ class AlpacaBroker(BaseBroker):
             logger.error("Failed to fetch Alpaca account balance: %s", e)
             return {}
 
-    async def reconcile_positions(self, active_positions: list[dict[str, Any]]) -> list[ReconciliationEvent]:
-        """Reconcile active SQLite positions against Alpaca open positions and closed orders.
+    @staticmethod
+    def _field(order: Any, name: str, default: Any = None) -> Any:
+        return order.get(name, default) if isinstance(order, dict) else getattr(order, name, default)
 
-        Detects when bracket stop-loss or take-profit legs have filled at Alpaca.
-        """
+    @classmethod
+    def _enum(cls, order: Any, name: str) -> str:
+        return str(cls._field(order, name, "")).lower().split(".")[-1]
+
+    @classmethod
+    def _filled_at(cls, order: Any) -> datetime | None:
+        value = cls._field(order, "filled_at")
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        return value.replace(tzinfo=UTC) if isinstance(value, datetime) and value.tzinfo is None else value
+
+    @property
+    def authoritative_positions(self) -> bool:
+        return True
+
+    async def _entry_order(self, position: dict[str, Any]) -> Any:
         if not self.client:
             await self.connect()
-        if not self.client:
-            return []
+        order_id = position.get("broker_order_id")
+        if not self.client or not order_id:
+            raise ValueError("Tracked position has no broker entry order")
+        order = await asyncio.to_thread(self.client.get_order_by_id, order_id, GetOrderByIdRequest(nested=True))
+        symbol = str(position.get("contract") or position.get("symbol", "")).strip("/").upper()
+        side = (
+            AlpacaOrderSide.BUY.value
+            if str(position["direction"]).upper() == Direction.LONG
+            else AlpacaOrderSide.SELL.value
+        )
+        if (
+            str(self._field(order, "id")) != str(order_id)
+            or self._field(order, "symbol") != symbol
+            or self._enum(order, "side") != side
+        ):
+            raise ValueError("Broker entry ID, symbol or side does not match tracked position")
+        return order
 
-        reconciliation_events: list[ReconciliationEvent] = []
-        try:
-            open_positions = await asyncio.to_thread(self.client.get_all_positions)
-            open_symbols = {
-                str(getattr(p, "symbol", "") or (p.get("symbol", "") if isinstance(p, dict) else "")).upper()
-                for p in open_positions
-            }
+    async def get_entry_execution(self, position: dict[str, Any]) -> OrderResult | None:
+        entry = await self._entry_order(position)
+        # Keep the requested size until the whole entry fills. Partial executions are
+        # not evidence that the remaining order quantity has been cancelled.
+        if self._enum(entry, "status") != AlpacaOrderStatus.FILLED.value:
+            return None
+        price = self._field(entry, "filled_avg_price")
+        qty = self._field(entry, "filled_qty")
+        filled_at = self._filled_at(entry)
+        if price is None or qty is None or not filled_at or float(qty) <= 0:
+            raise ValueError("Filled entry is missing price, quantity or timestamp")
+        return OrderResult(
+            success=True,
+            order_id=str(self._field(entry, "id")),
+            fill_price=float(price),
+            filled_quantity=float(qty),
+            fill_timestamp=filled_at,
+            status=AlpacaOrderStatus.FILLED.value,
+        )
 
-            for pos in active_positions:
-                signal_id = pos["id"]
-                raw_symbol = pos.get("contract") or pos.get("symbol", "")
-                symbol = raw_symbol.strip("/").upper()
-                direction = str(pos["direction"]).upper()
-                entry_price = float(pos["entry_price"])
-                take_profit = float(pos["take_profit"])
+    async def reconcile_positions(self, active_positions: list[dict[str, Any]]) -> list[ReconciliationEvent]:
+        """Only exact entry bracket legs or explicitly recorded manual exits can close a signal.
 
-                # If symbol is still open at Alpaca, it has not closed yet
-                if symbol in open_symbols:
-                    continue
-
-                # Position is closed at Alpaca; query closed orders to extract fill details
-                closed_orders_req = GetOrdersRequest(
-                    status=QueryOrderStatus.CLOSED,
-                    limit=20,
-                    symbols=[symbol],
+        Never infer ownership from symbol, side, price, or absence of a broker position.
+        Partial exits require further reconciliation and do not close an entire signal.
+        """
+        self.reconciliation_evidence = []
+        events: list[ReconciliationEvent] = []
+        for pos in active_positions:
+            try:
+                entry = await self._entry_order(pos)
+                fields = ("id", "symbol", "side", "status", "filled_qty", "filled_avg_price", "filled_at", "order_type")
+                self.reconciliation_evidence.append(
+                    {
+                        "signal_id": pos["id"],
+                        "entry": {k: self._field(entry, k) for k in fields},
+                        "legs": [
+                            {k: self._field(leg, k) for k in fields} for leg in self._field(entry, "legs", []) or []
+                        ],
+                    }
                 )
-                closed_orders = await asyncio.to_thread(self.client.get_orders, closed_orders_req)
-
-                filled_exit_order = None
-                entry_order_id = str(pos.get("broker_order_id") or "")
-                expected_exit_side = "sell" if direction in ("LONG", str(Direction.LONG)) else "buy"
-
-                for order in closed_orders:
-                    ord_id = str(getattr(order, "id", ""))
-                    if ord_id and ord_id == entry_order_id:
-                        continue  # Skip entry order
-
-                    ord_side = str(getattr(order, "side", "")).lower()
-                    if ord_side and ("sell" in ord_side or "buy" in ord_side) and expected_exit_side not in ord_side:
-                        continue  # Exit order must oppose entry direction
-
-                    ord_status = str(getattr(order, "status", "")).lower()
-                    if "filled" in ord_status:
-                        filled_exit_order = order
-                        break
-
-                if not filled_exit_order:
-                    # No filled exit order found at Alpaca; position is still active or awaiting fill
-                    logger.debug(
-                        "Position %s not in open positions, but no filled exit order found. Skipping reconciliation.",
-                        symbol,
+                if self._enum(entry, "status") != AlpacaOrderStatus.FILLED.value:
+                    continue
+                entry_time = self._filled_at(entry)
+                entry_price = self._field(entry, "filled_avg_price")
+                qty = float(self._field(entry, "filled_qty", 0) or 0)
+                if not entry_time or entry_price is None or qty <= 0:
+                    continue
+                candidates = list(self._field(entry, "legs", []) or [])
+                manual_id = pos.get("broker_exit_order_id")
+                if manual_id and self.client:
+                    candidates.append(await asyncio.to_thread(self.client.get_order_by_id, manual_id))
+                side = (
+                    AlpacaOrderSide.SELL.value
+                    if str(pos["direction"]).upper() == Direction.LONG
+                    else AlpacaOrderSide.BUY.value
+                )
+                for order in candidates:
+                    if self._enum(order, "status") != AlpacaOrderStatus.FILLED.value:
+                        continue
+                    exit_time = self._filled_at(order)
+                    exit_qty = float(self._field(order, "filled_qty", 0) or 0)
+                    exit_price = self._field(order, "filled_avg_price")
+                    if (
+                        self._field(order, "symbol") != self._field(entry, "symbol")
+                        or self._enum(order, "side") != side
+                        or not exit_time
+                        or exit_time < entry_time
+                        or not math.isclose(exit_qty, qty, abs_tol=BROKER_QUANTITY_TOLERANCE)
+                        or not math.isclose(qty, float(pos.get("quantity") or 0), abs_tol=BROKER_QUANTITY_TOLERANCE)
+                        or exit_price is None
+                    ):
+                        logger.warning(
+                            "Rejected exit evidence signal=%s entry_order=%s exit_order=%s",
+                            pos["id"],
+                            pos.get("broker_order_id"),
+                            self._field(order, "id"),
+                        )
+                        continue
+                    exit_price = float(exit_price)
+                    kind = self._enum(order, "order_type") or self._enum(order, "type")
+                    reason = (
+                        ExitReason.MANUAL_CLOSE
+                        if str(self._field(order, "id")) == str(manual_id)
+                        else (ExitReason.STOP_LOSS if "stop" in kind else ExitReason.TAKE_PROFIT)
                     )
-                    continue
-
-                exit_price = entry_price
-                exit_reason = ExitReason.MANUAL_CLOSE
-                exit_time = datetime.now(UTC)
-                exit_order_id = str(getattr(filled_exit_order, "id", None))
-                avg_fill = getattr(filled_exit_order, "filled_avg_price", None)
-                if avg_fill is not None:
-                    exit_price = float(avg_fill)
-                order_type_str = str(getattr(filled_exit_order, "order_type", "")).lower()
-
-                if "stop" in order_type_str:
-                    exit_reason = ExitReason.STOP_LOSS
-                elif "limit" in order_type_str:
-                    exit_reason = ExitReason.TAKE_PROFIT
-                elif direction in ("LONG", str(Direction.LONG)):
-                    exit_reason = ExitReason.TAKE_PROFIT if exit_price >= take_profit else ExitReason.STOP_LOSS
-                else:
-                    exit_reason = ExitReason.TAKE_PROFIT if exit_price <= take_profit else ExitReason.STOP_LOSS
-
-                filled_at = getattr(filled_exit_order, "filled_at", None)
-                if isinstance(filled_at, datetime):
-                    exit_time = filled_at
-
-                pos_qty = float(pos.get("quantity") or 1.0)
-                if direction in ("LONG", str(Direction.LONG)):
-                    realized_pnl = (exit_price - entry_price) * pos_qty
-                else:
-                    realized_pnl = (entry_price - exit_price) * pos_qty
-
-                event = ReconciliationEvent(
-                    signal_id=signal_id,
-                    symbol=symbol,
-                    contract=raw_symbol,
-                    direction=direction,
-                    exit_price=exit_price,
-                    exit_reason=exit_reason,
-                    exit_timestamp=exit_time,
-                    realized_pnl=realized_pnl,
-                    broker_order_id=exit_order_id,
-                    order_side=expected_exit_side,
-                )
-                reconciliation_events.append(event)
-        except Exception as e:
-            logger.error(
-                "Error reconciling Alpaca positions: %s",
-                e,
-                extra={"broker": "AlpacaBroker", "error": str(e)},
-            )
-
-        return reconciliation_events
+                    pnl = (exit_price - float(entry_price)) * qty * (1 if side == AlpacaOrderSide.SELL.value else -1)
+                    events.append(
+                        ReconciliationEvent(
+                            signal_id=pos["id"],
+                            symbol=self._field(entry, "symbol"),
+                            contract=pos.get("contract"),
+                            direction=pos["direction"],
+                            exit_price=exit_price,
+                            exit_reason=reason,
+                            exit_timestamp=exit_time,
+                            realized_pnl=pnl,
+                            broker_order_id=str(self._field(order, "id")),
+                            order_side=side,
+                        )
+                    )
+                    break
+            except Exception as exc:
+                self.reconciliation_evidence.append({"signal_id": pos["id"], "error_type": type(exc).__name__})
+                logger.exception("Cannot reconcile signal=%s entry_order=%s", pos["id"], pos.get("broker_order_id"))
+        return events
 
     @property
     def supports_trade_stream(self) -> bool:
@@ -490,7 +530,7 @@ class AlpacaBroker(BaseBroker):
                         signal_id=0,
                         symbol=symbol,
                         contract=symbol,
-                        direction=Direction.LONG if "sell" in order_side else Direction.SHORT,
+                        direction=Direction.LONG if AlpacaOrderSide.SELL.value in order_side else Direction.SHORT,
                         exit_price=fill_price,
                         exit_reason=exit_reason,
                         exit_timestamp=datetime.now(UTC),

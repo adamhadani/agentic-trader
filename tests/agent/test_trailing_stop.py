@@ -2,9 +2,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agentic_trader.agent.copilot import FuturesCopilot as CopilotFC, TradingCopilot as CopilotTC
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import load_config
-from agentic_trader.main import FuturesCopilot, FuturesCopilot as MainFC, TradingCopilot as MainTC
 
 
 @pytest.mark.asyncio
@@ -43,7 +42,7 @@ async def test_manage_trailing_stops_long_breakeven_and_trail(temp_db):
     config.trailing_stop.trail_atr_multiple = 1.5
     config.trailing_stop.trail_step_ticks = 2
 
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     copilot.notifier.send_trailing_stop_alert = AsyncMock()
 
     # Create active LONG trade on /MES (multiplier = 5.0)
@@ -99,7 +98,7 @@ async def test_manage_trailing_stops_short_breakeven(temp_db):
     config.trailing_stop.breakeven_trigger_r = 1.0
     config.trailing_stop.breakeven_buffer_dollars = 5.0
 
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     copilot.notifier.send_trailing_stop_alert = AsyncMock()
 
     # Create active SHORT trade on /MNQ (multiplier = 2.0)
@@ -146,7 +145,7 @@ async def test_manage_trailing_stops_chandelier_atr_no_breakeven(temp_db):
     config.trailing_stop.trail_atr_multiple = 1.5
     config.trailing_stop.trail_step_ticks = 2
 
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     copilot.notifier.send_trailing_stop_alert = AsyncMock()
 
     # Entry: 5800.0, Stop: 5760.0 (Risk = 40 pts = $200)
@@ -186,10 +185,3 @@ async def test_manage_trailing_stops_chandelier_atr_no_breakeven(temp_db):
         assert sig["raw_response"] == "TRAILING_STOP"
         copilot.notifier.send_trailing_stop_alert.assert_called_once()
         assert copilot.notifier.send_trailing_stop_alert.call_args[1]["reason"] == "TRAILING_STOP"
-
-
-def test_trading_copilot_alias_identity():
-    """Verify FuturesCopilot is an identical backward-compatible alias of TradingCopilot."""
-    assert CopilotFC is CopilotTC
-    assert MainFC is MainTC
-    assert MainFC is CopilotTC

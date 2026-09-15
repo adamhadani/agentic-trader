@@ -38,16 +38,20 @@ class DiagnosticReport(BaseModel):
 
 
 async def check_database(config: AppConfig) -> ComponentHealth:
-    """Check SQLite / SQLAlchemy persistence layer and table connectivity."""
+    """Check database persistence layer and table connectivity."""
     try:
-        db = SignalDatabase(db_path=config.db_path)
+        db = SignalDatabase(db_url=config.resolved_db_url)
         active_count = await db.get_active_position_count()
         exposure = await db.get_active_notional_exposure()
         return ComponentHealth(
             name="database",
             status="OK",
             message="Database connection verified; schema migrated to head",
-            details={"active_positions": active_count, "open_notional": exposure, "db_path": config.db_path},
+            details={
+                "active_positions": active_count,
+                "open_notional": exposure,
+                "db_url": config.resolved_db_url,
+            },
         )
     except Exception as e:
         return ComponentHealth(
@@ -200,6 +204,7 @@ async def check_llm(config: AppConfig) -> ComponentHealth:
         litellm.drop_params = True
         response = await asyncio.wait_for(
             litellm.acompletion(
+                api_key=config.llm_api_key,
                 model=model,
                 messages=[{"role": "user", "content": "Respond with 'OK'"}],
                 max_tokens=5,

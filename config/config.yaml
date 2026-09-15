@@ -83,6 +83,12 @@ contracts:
     multiplier: 1.0
     tick_size: 0.01
     asset_class: "equity"
+  "AMD":
+    ticker: "AMD"
+    name: "Advanced Micro Devices, Inc."
+    multiplier: 1.0
+    tick_size: 0.01
+    asset_class: "equity"
 
 risk:
   min_risk_reward_ratio: 2.0
@@ -244,5 +250,12 @@ market_data:
   retry_backoff_factor: 0.5
 
 database:
-  name: "signals"      # Default database name in data/<name>.db (overridden by DB_NAME)
-  # path: null         # Explicit path or connection URL (overridden by DB_PATH)
+  name: "signals"
+  url: "postgresql+asyncpg://adamhadani@localhost:5432/agentic_trader"
+  pool_size: 10
+  max_overflow: 20
+  pool_timeout: 30.0
+  pool_recycle: 1800
+  echo: false
+  max_retries: 5
+  retry_delay: 2.0

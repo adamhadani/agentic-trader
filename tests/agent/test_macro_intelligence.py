@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -19,6 +20,7 @@ from agentic_trader.agent.macro import (
     classify_inflation_expectations,
     compute_compound_macro_stress,
 )
+from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.config import RegimeConfig
 
 
@@ -281,3 +283,41 @@ async def test_macro_intelligence_engine_end_to_end():
         assert report.stress.squeeze_breakout_allowed is True
         assert "LOW" in report.summary_text
         assert "NORMAL_STEEP" in report.summary_text
+
+
+@pytest.mark.asyncio
+async def test_macro_explainer_deterministic():
+    yields = TreasuryYields(yield_3m=3.90, yield_2y=4.30, yield_5y=4.60, yield_10y=4.90, yield_30y=5.20)
+    spreads = calculate_yield_curve_spreads(yields)
+    credit = classify_credit_stress(2.65)
+    inflation = classify_inflation_expectations(2.37, 2.40)
+    stress = compute_compound_macro_stress(vix=17.5, yield_spreads=spreads, credit=credit, inflation=inflation)
+
+    report = MacroIntelligenceReport(
+        timestamp=datetime.now(UTC),
+        yields=yields,
+        spreads=spreads,
+        credit=credit,
+        inflation=inflation,
+        vix=17.5,
+        dxy=102.5,
+        stress=stress,
+        summary_text="Macro Report Test",
+    )
+
+    explainer = MacroExplainer(config=None)
+    # Text mode
+    text_briefing = await explainer.explain(report, format_mode="text")
+    assert "QUANTITATIVE MACRO INTELLIGENCE TUTORIAL & EXPLANATION" in text_briefing
+    assert "+60.0 bps" in text_briefing
+    assert "NORMAL_STEEP" in text_briefing
+    assert "265 bps" in text_briefing
+    assert "BENIGN" in text_briefing
+    assert "Position Risk Multiplier: 1.00x" in text_briefing
+
+    # HTML mode
+    html_briefing = await explainer.explain(report, format_mode="html")
+    assert "<b>MACRO INTELLIGENCE TUTORIAL &amp; EXPLANATION</b>" in html_briefing
+    assert "<code>+60.0 bps</code>" in html_briefing
+    assert "<code>BENIGN</code>" in html_briefing
+    assert "<code>100%</code>" in html_briefing

@@ -2,10 +2,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import load_config
 from agentic_trader.constants import AssetClass, Direction, ExitReason, SignalStatus
-from agentic_trader.main import FuturesCopilot
 from agentic_trader.notifier.telegram_bot import (
     TelegramNotifier,
     format_alert_card,
@@ -96,7 +96,7 @@ async def test_db_closed_positions_stats(temp_db):
 async def test_copilot_performance_and_regime_html(temp_db):
     config = load_config()
     config.db_path = temp_db.db_path
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     await copilot.db.init_db()
 
     # Insert a closed trade
@@ -194,6 +194,7 @@ async def test_telegram_commands_and_callbacks(temp_db):
 
     cb_update = MagicMock()
     cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
 
     # Button cmd_perf
     query_mock.data = "cmd_perf"

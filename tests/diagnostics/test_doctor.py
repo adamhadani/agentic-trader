@@ -16,8 +16,9 @@ from agentic_trader.telemetry.server import MetricsServer
 
 
 @pytest.mark.asyncio
-async def test_doctor_diagnostics_healthy():
+async def test_doctor_diagnostics_healthy(tmp_path):
     config = AppConfig(
+        db_path=str(tmp_path / "doctor.db"),
         sizing=PositionSizingConfig(mode="static", target_risk_pct=0.005),
     )
 
@@ -47,8 +48,10 @@ async def test_doctor_diagnostics_healthy():
 
 
 @pytest.mark.asyncio
-async def test_telemetry_healthcheck_endpoint():
-    config = AppConfig()
+@pytest.mark.enable_socket
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_telemetry_healthcheck_endpoint(tmp_path):
+    config = AppConfig(db_path=str(tmp_path / "health.db"))
     server = MetricsServer(host="127.0.0.1", port=0, config=config)
 
     with (

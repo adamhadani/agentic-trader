@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from langchain_core.tools import BaseTool, tool
 
+from agentic_trader.constants import ExecutionMode
 from agentic_trader.research.alpha.catalog import AlphaCatalog
 from agentic_trader.research.alpha.promotion import AlphaPromotionManager
 from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
@@ -67,7 +68,7 @@ def make_copilot_tools(copilot: TradingCopilot) -> list[BaseTool]:
         """Fetch portfolio capital, cash balances, open notional exposure, margin utilization, and execution mode."""
         try:
             cash = getattr(copilot.config.portfolio, "cash", 100_000.0)
-            mode = getattr(copilot.config, "execution_mode", "paper").upper()
+            mode = getattr(copilot.config, "execution_mode", ExecutionMode.PAPER).upper()
             positions = await copilot.db.get_active_positions()
             active_count = len(positions)
             notional = sum(p.get("entry_price", 0.0) * p.get("quantity", 0.0) for p in positions)
@@ -216,7 +217,7 @@ def make_copilot_tools(copilot: TradingCopilot) -> list[BaseTool]:
         try:
             status = "Halted" if copilot.is_halted else "Operational / Active"
             reason = f" (Reason: {copilot.halt_reason})" if copilot.is_halted and copilot.halt_reason else ""
-            mode = getattr(copilot.config, "execution_mode", "paper").upper()
+            mode = getattr(copilot.config, "execution_mode", ExecutionMode.PAPER).upper()
             return (
                 f"System Operational Health:\n"
                 f"- Status: {status}{reason}\n"

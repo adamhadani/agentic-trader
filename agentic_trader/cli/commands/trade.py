@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
+
 import click
 
+from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.cli.utils import coro, get_copilot_and_config
+from agentic_trader.config import load_config
+from agentic_trader.constants import RuntimeEnvironment
+from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TerminalFormatter
 
 
@@ -15,10 +21,10 @@ async def status() -> None:
     await copilot.show_status()
 
 
-@click.command("positions", help="List open positions in local SQLite database")
+@click.command("positions", help="List open positions in database")
 @coro
 async def positions() -> None:
-    """List open positions in local SQLite database."""
+    """List open positions in database."""
     copilot, _config = get_copilot_and_config()
     await copilot.broker.connect()
     await copilot.show_positions()
@@ -111,10 +117,33 @@ async def resume() -> None:
     click.echo(res.get("message", ""))
 
 
-@click.command("test-alert", help="Send a test notification alert via Telegram")
+@click.command("test-alert", help="Preview a diagnostic notification, or send to a dedicated test bot")
+@click.option("--send", is_flag=True, help="Send using TELEGRAM_TEST_BOT_TOKEN and TELEGRAM_TEST_CHAT_ID")
 @coro
-async def test_alert() -> None:
-    """Send a test notification alert via Telegram."""
-    copilot, _config = get_copilot_and_config()
-    await copilot.broker.connect()
-    await copilot.send_test_alert()
+async def test_alert(send: bool = False) -> None:
+
+    message = "[TEST] Synthetic notification check. No signal or order was created."
+    if not send:
+        click.echo(message)
+        return
+    config = load_config()
+    token, chat = os.environ.get("TELEGRAM_TEST_BOT_TOKEN"), os.environ.get("TELEGRAM_TEST_CHAT_ID")
+    if not token or not chat or token == config.telegram_bot_token or chat == config.telegram_chat_id:
+        raise click.ClickException(
+            "Configure a dedicated TELEGRAM_TEST_BOT_TOKEN and TELEGRAM_TEST_CHAT_ID, different from production."
+        )
+    notifier = TelegramNotifier(token, chat, environment=RuntimeEnvironment.TEST)
+    if not await notifier.send_message(message):
+        raise click.ClickException("Test notification delivery failed.")
+
+
+@click.command("explain-macro", help="Generate an educational macro tutorial and indicator breakdown")
+@coro
+async def explain_macro() -> None:
+    """Generate an educational macro tutorial and indicator breakdown."""
+    copilot, config = get_copilot_and_config()
+    click.echo("\n🔍 Evaluating institutional macro indicators and generating briefing...")
+    report = await copilot.regime_detector.macro_engine.get_macro_report()
+    explainer = MacroExplainer(config=config)
+    explanation = await explainer.explain(report, format_mode="text")
+    click.echo("\n" + explanation + "\n")

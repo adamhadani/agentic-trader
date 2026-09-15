@@ -3,11 +3,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.base import ReconciliationEvent
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import Direction, ExitReason, SignalStatus
-from agentic_trader.main import FuturesCopilot
 
 
 @pytest.fixture
@@ -90,8 +90,22 @@ async def test_alpaca_broker_trade_stream_stop(test_config):
 
 @pytest.mark.asyncio
 async def test_copilot_on_stream_trade_update_matching(test_config):
-    copilot = FuturesCopilot(test_config)
-    copilot.notifier.send_exit_alert = AsyncMock()
+    copilot = TradingCopilot(test_config)
+    copilot.notifier.send_exit_alert = AsyncMock(return_value=123)
+    copilot.manage_trailing_stops = AsyncMock()
+    client = MagicMock()
+    entry = {
+        "id": "ALP-ENTRY-999",
+        "symbol": "SPY",
+        "side": "buy",
+        "status": "filled",
+        "filled_qty": "10",
+        "filled_avg_price": "500",
+        "filled_at": datetime.now(UTC),
+        "legs": [],
+    }
+    client.get_order_by_id.return_value = entry
+    copilot.broker.client = client
 
     # Record a signal and mark as executed
     sig_id = await copilot.db.record_signal(
@@ -168,6 +182,19 @@ async def test_copilot_on_stream_trade_update_matching(test_config):
         broker_order_id="ALP-EXIT-TP-1001",
         order_side="sell",
     )
+    # Only the exact bracket leg, verified by REST, authorizes closure.
+    entry["legs"] = [
+        {
+            "id": "ALP-EXIT-TP-1001",
+            "symbol": "SPY",
+            "side": "sell",
+            "status": "filled",
+            "filled_qty": "10",
+            "filled_avg_price": "510",
+            "order_type": "limit",
+            "filled_at": datetime.now(UTC),
+        }
+    ]
     await copilot.on_stream_trade_update(ev_exit)
 
     # Active positions should now be empty (position closed)
@@ -186,7 +213,7 @@ async def test_copilot_on_stream_trade_update_matching(test_config):
 
 @pytest.mark.asyncio
 async def test_copilot_process_reconciliation_event_dedup(test_config):
-    copilot = FuturesCopilot(test_config)
+    copilot = TradingCopilot(test_config)
     copilot.notifier.send_exit_alert = AsyncMock()
 
     sig_id = await copilot.db.record_signal(
@@ -237,6 +264,9 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
 
     entry_order = MagicMock(
         id="ENTRY-ORDER-123",
+        symbol="SPY",
+        filled_qty="39",
+        legs=[],
         side="buy",
         status="filled",
         filled_avg_price="761.50",
@@ -244,6 +274,7 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
         filled_at=datetime.now(UTC),
     )
     broker.client.get_orders.return_value = [entry_order]
+    broker.client.get_order_by_id.return_value = entry_order
 
     active_positions = [
         {
@@ -265,6 +296,8 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
     # Case 2: An actual exit SELL order has filled
     exit_order = MagicMock(
         id="EXIT-ORDER-456",
+        symbol="SPY",
+        filled_qty="39",
         side="sell",
         status="filled",
         filled_avg_price="772.10",
@@ -272,6 +305,7 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
         filled_at=datetime.now(UTC),
     )
     broker.client.get_orders.return_value = [exit_order, entry_order]
+    entry_order.legs = [exit_order]
 
     events_exit = await broker.reconcile_positions(active_positions)
     assert len(events_exit) == 1
@@ -283,7 +317,7 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
 
 @pytest.mark.asyncio
 async def test_copilot_process_reconciliation_event_safeguards(test_config):
-    copilot = FuturesCopilot(test_config)
+    copilot = TradingCopilot(test_config)
     copilot.notifier.send_exit_alert = AsyncMock()
 
     sig_id = await copilot.db.record_signal(

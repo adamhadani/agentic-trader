@@ -209,7 +209,7 @@ class PaperBroker(BaseBroker):
         }
 
     async def reconcile_positions(self, active_positions: list[dict[str, Any]]) -> list[ReconciliationEvent]:
-        """Reconcile active SQLite positions against current market quotes.
+        """Reconcile active database positions against current market quotes.
 
         Triggers TAKE_PROFIT or STOP_LOSS exit events when price reaches bracket levels.
         """

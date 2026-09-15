@@ -2,8 +2,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import load_config
-from agentic_trader.main import FuturesCopilot
 
 
 @pytest.mark.asyncio
@@ -56,7 +56,7 @@ async def test_monitor_positions_take_profit_and_stop_loss(temp_db):
     config = load_config()
     config.db_path = temp_db.db_path
     config.execution_mode = "paper"
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     copilot.notifier.send_exit_alert = AsyncMock()
 
     # 1. Long position that hits Take Profit
@@ -126,7 +126,7 @@ async def test_close_position_manual(temp_db):
     config = load_config()
     config.db_path = temp_db.db_path
     config.execution_mode = "paper"
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     copilot.notifier.send_exit_alert = AsyncMock()
 
     sig_id = await temp_db.record_signal(

@@ -133,3 +133,55 @@ def test_registry_promoted_alphas_lifecycle():
     finally:
         if cfg_path.exists():
             cfg_path.unlink()
+
+
+def test_formulaic_strategy_eligible_symbols_filtering():
+    """Verify that eligible_symbols enforces strict multi-asset universe filtering."""
+    defn = AlphaDefinition(
+        alpha_id="alpha_chip_trend",
+        name="Semiconductor Trend Alpha",
+        expression="delta(close, 2)",
+        direction="long",
+        entry_threshold=0.1,
+        timeframe="4h",
+        eligible_symbols=["NVDA", "AMD"],
+    )
+
+    strat = FormulaicAlphaStrategy(definition=defn)
+
+    # 1. Matching symbol NVDA
+    md_nvda = ContractMarketData(
+        contract="NVDA",
+        ticker="NVDA",
+        daily=create_mock_market_data(n_candles=60, trend=2.0).daily,
+        four_hour=create_mock_market_data(n_candles=60, trend=2.0).four_hour,
+        hourly=create_mock_market_data(n_candles=60, trend=2.0).hourly,
+    )
+    res_nvda = strat.evaluate(md_nvda, asset_class=AssetClass.EQUITY)
+    assert len(res_nvda) == 1
+    assert res_nvda[0].contract == "NVDA"
+
+    # 2. Non-matching symbol SPY
+    md_spy = ContractMarketData(
+        contract="SPY",
+        ticker="SPY",
+        daily=create_mock_market_data(n_candles=60, trend=2.0).daily,
+        four_hour=create_mock_market_data(n_candles=60, trend=2.0).four_hour,
+        hourly=create_mock_market_data(n_candles=60, trend=2.0).hourly,
+    )
+    res_spy = strat.evaluate(md_spy, asset_class=AssetClass.EQUITY)
+    assert len(res_spy) == 0
+
+    # 3. Strategy with eligible_symbols=None allows all symbols
+    defn_all = AlphaDefinition(
+        alpha_id="alpha_broad_trend",
+        name="Broad Trend Alpha",
+        expression="delta(close, 2)",
+        direction="long",
+        entry_threshold=0.1,
+        timeframe="4h",
+        eligible_symbols=None,
+    )
+    strat_all = FormulaicAlphaStrategy(definition=defn_all)
+    res_all = strat_all.evaluate(md_spy, asset_class=AssetClass.EQUITY)
+    assert len(res_all) == 1

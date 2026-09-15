@@ -95,6 +95,7 @@ async def test_copilot_syncs_broker_stop_on_ratchet(config: AppConfig, temp_db):
 
     # Mock broker that supports order modification
     mock_broker = MagicMock()
+    mock_broker.authoritative_positions = False
     mock_broker.supports_order_modification = True
     mock_broker.modify_order_stop = AsyncMock(return_value=OrderResult(success=True, order_id="MOCK-STOP-1"))
     copilot.broker = mock_broker

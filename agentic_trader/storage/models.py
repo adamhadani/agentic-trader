@@ -1,10 +1,32 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, Index, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
-from agentic_trader.constants import AssetClass, SignalStatus
+from agentic_trader.constants import UNKNOWN_EXECUTION_MODE, AssetClass, RuntimeEnvironment, SignalStatus
+
+
+class UTCDatetime(TypeDecorator):
+    """Platform-independent UTC DateTime: stores timezone-naive UTC in Postgres/SQLite while exposing UTC datetime."""
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            if hasattr(value, "tzinfo") and value.tzinfo is not None:
+                return value.astimezone(UTC).replace(tzinfo=None)
+            return value
+        return None
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            if value.tzinfo is None:
+                return value.replace(tzinfo=UTC)
+            return value
+        return None
 
 
 class Base(DeclarativeBase):
@@ -17,7 +39,7 @@ class SignalRecord(Base):
     __tablename__ = "signals"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(UTCDatetime, default=lambda: datetime.now(UTC), nullable=False)
     contract: Mapped[str] = mapped_column(String, nullable=False)
     strategy: Mapped[str] = mapped_column(String, nullable=False)
     direction: Mapped[str] = mapped_column(String, nullable=False)
@@ -31,12 +53,18 @@ class SignalRecord(Base):
     telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     raw_response: Mapped[str | None] = mapped_column(String, nullable=True)
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    exit_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    exit_timestamp: Mapped[datetime | None] = mapped_column(UTCDatetime, nullable=True)
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     exit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     broker_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
     asset_class: Mapped[str | None] = mapped_column(String, default=AssetClass.FUTURES, nullable=True)
     quantity: Mapped[float] = mapped_column(Float, default=1.0, nullable=True)
+    environment: Mapped[str] = mapped_column(String, default=RuntimeEnvironment.PRODUCTION, nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String, default=UNKNOWN_EXECUTION_MODE, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(UTCDatetime, nullable=True)
+    broker_exit_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_quarantined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     __table_args__ = (Index("idx_recent_signals", "contract", "strategy", "timestamp"),)
 
@@ -74,7 +102,27 @@ class SignalRecord(Base):
             "broker_order_id": self.broker_order_id,
             "asset_class": self.asset_class or AssetClass.FUTURES,
             "quantity": float(self.quantity) if self.quantity is not None else 1.0,
+            "environment": self.environment,
+            "execution_mode": self.execution_mode,
+            "run_id": self.run_id,
+            "executed_at": self.executed_at.isoformat() if self.executed_at else None,
+            "broker_exit_order_id": self.broker_exit_order_id,
+            "is_quarantined": self.is_quarantined,
         }
+
+
+class AuditEventRecord(Base):
+    """Append-only operational evidence, without credentials or destination identifiers."""
+
+    __tablename__ = "audit_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(UTCDatetime, default=lambda: datetime.now(UTC), nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    signal_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    environment: Mapped[str] = mapped_column(String, nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String, nullable=False)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class SystemStateRecord(Base):
@@ -85,7 +133,7 @@ class SystemStateRecord(Base):
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str] = mapped_column(String, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False
+        UTCDatetime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False
     )
 
     def to_dict(self) -> dict[str, Any]:

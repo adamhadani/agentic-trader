@@ -1,10 +1,15 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 
 import pandas as pd
 
 from agentic_trader.config import AppConfig, load_config
+from agentic_trader.constants import (
+    DEFAULT_DATA_MAX_RETRIES,
+    DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
+    DEFAULT_DATA_TIMEOUT_SECONDS,
+    DEFAULT_MARKET_DATA_CACHE_TTL_SECONDS,
+)
 from agentic_trader.data.providers import (
     AlpacaDataProvider,
     CompositeMarketDataProvider,
@@ -23,19 +28,35 @@ from agentic_trader.screeners.indicators import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class ContractMarketData:
-    contract: str
-    ticker: str
-    daily: pd.DataFrame
-    four_hour: pd.DataFrame
-    hourly: pd.DataFrame
+    contract: str = ""
+    ticker: str = ""
+    daily: pd.DataFrame = field(default_factory=pd.DataFrame)
+    four_hour: pd.DataFrame = field(default_factory=pd.DataFrame)
+    hourly: pd.DataFrame = field(default_factory=pd.DataFrame)
+    fifteen_minute: pd.DataFrame = field(default_factory=pd.DataFrame)
+    symbol: str = ""
+    one_hour: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+    def __post_init__(self):
+        if not self.contract and self.symbol:
+            self.contract = self.symbol
+        if not self.ticker and self.contract:
+            self.ticker = self.contract
+        if self.hourly.empty and not self.one_hour.empty:
+            self.hourly = self.one_hour
+        elif not self.hourly.empty and self.one_hour.empty:
+            self.one_hour = self.hourly
 
 
 class MarketDataFetcher:
     def __init__(
         self,
-        cache_ttl_seconds: int = 300,
+        cache_ttl_seconds: int = DEFAULT_MARKET_DATA_CACHE_TTL_SECONDS,
         config: AppConfig | None = None,
         provider: MarketDataProvider | None = None,
     ):
@@ -56,9 +77,9 @@ class MarketDataFetcher:
                 providers = [alpaca_prov, yf_prov]
 
             retry_policy = RetryPolicy(
-                max_retries=md_cfg.max_retries if md_cfg else 2,
-                backoff_factor=md_cfg.retry_backoff_factor if md_cfg else 0.5,
-                timeout_seconds=md_cfg.timeout_seconds if md_cfg else 10.0,
+                max_retries=md_cfg.max_retries if md_cfg else DEFAULT_DATA_MAX_RETRIES,
+                backoff_factor=md_cfg.retry_backoff_factor if md_cfg else DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
+                timeout_seconds=md_cfg.timeout_seconds if md_cfg else DEFAULT_DATA_TIMEOUT_SECONDS,
             )
             self.provider = CompositeMarketDataProvider(providers, retry_policy=retry_policy)
 
@@ -152,6 +173,8 @@ class MarketDataFetcher:
         ticker: str,
         daily_period: str = "1y",
         hourly_period: str = "60d",
+        fifteen_min_period: str = "10d",
+        include_fifteen_min: bool = True,
     ) -> ContractMarketData:
         """Fetch market data via resilient providers and compute all indicators."""
         # 1. Daily
@@ -166,12 +189,22 @@ class MarketDataFetcher:
         clean_4h = self.resample_to_4h(clean_1h)
         df_4h = self.compute_intraday_indicators(clean_4h)
 
+        # 4. 15-Minute
+        df_15m = pd.DataFrame()
+        if include_fifteen_min:
+            try:
+                clean_15m = self.provider.fetch_bars(ticker, "15m", period=fifteen_min_period)
+                df_15m = self.compute_intraday_indicators(clean_15m)
+            except Exception as e:
+                logger.debug("Could not fetch 15m bars for %s: %s", ticker, e)
+
         market_data = ContractMarketData(
             contract=contract,
             ticker=ticker,
             daily=df_daily,
             four_hour=df_4h,
             hourly=df_1h,
+            fifteen_minute=df_15m,
         )
         return market_data
 

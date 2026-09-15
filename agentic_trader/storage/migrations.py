@@ -8,6 +8,7 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine
 
+from agentic_trader.runtime import validate_test_database
 from alembic import command
 
 
@@ -35,6 +36,7 @@ def get_alembic_config(db_url: str | None = None) -> Config:
     config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
 
     if db_url:
+        validate_test_database(db_url)
         config.set_main_option("sqlalchemy.url", db_url)
 
     return config

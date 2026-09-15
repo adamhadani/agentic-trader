@@ -71,6 +71,7 @@ class OrderResult(BaseModel):
     order_id: str | None = None
     fill_price: float | None = None
     fill_timestamp: datetime | None = None
+    filled_quantity: float | None = None
     error_message: str | None = None
     bracket_orders: dict[str, str] = Field(default_factory=dict)
     raw_response: dict[str, Any] = Field(default_factory=dict)
@@ -186,6 +187,15 @@ class BaseBroker(ABC):
         bracket orders or market prices to report exits.
         """
         return []
+
+    @property
+    def authoritative_positions(self) -> bool:
+        """Whether broker positions carry authoritative account cost basis and valuation."""
+        return False
+
+    async def get_entry_execution(self, position: dict[str, Any]) -> OrderResult | None:
+        """Return a confirmed execution of the exact tracked entry, when supported."""
+        return None
 
     @property
     def supports_trade_stream(self) -> bool:

@@ -23,7 +23,7 @@ from agentic_trader.constants import (
     StrategyType,
 )
 from agentic_trader.market.session import MarketSessionProtocol
-from agentic_trader.screeners.strategies import ScreenerCandidate
+from agentic_trader.screeners.base import ScreenerCandidate
 
 
 if TYPE_CHECKING:
@@ -523,14 +523,7 @@ class RiskEvaluator:
         regime_summary = self.regime_detector.get_prompt_context(regime)
 
         # If LLM evaluation is disabled or no LLM keys provided, return deterministic evaluation
-        has_api_key = bool(
-            self.config.openai_api_key
-            or self.config.anthropic_api_key
-            or self.config.gemini_api_key
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("ANTHROPIC_API_KEY")
-            or os.getenv("GEMINI_API_KEY")
-        )
+        has_api_key = bool(self.config.openai_api_key or self.config.anthropic_api_key or self.config.gemini_api_key)
 
         if not use_llm or not has_api_key:
             return LLMTradeEvaluation(
@@ -585,6 +578,7 @@ class RiskEvaluator:
             # Configure litellm call
             model_name = self.config.llm_model
             response = await litellm.acompletion(
+                api_key=self.config.llm_api_key,
                 model=model_name,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
