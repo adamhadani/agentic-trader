@@ -172,6 +172,7 @@ class StrategyConfig(BaseModel):
 
 
 class SchedulerConfig(BaseModel):
+    misfire_grace_seconds: int = Field(default=60, gt=0)
     cron_hour_interval: int = 4
     retune_enabled: bool = True
     retune_day_of_week: str = "sat"
