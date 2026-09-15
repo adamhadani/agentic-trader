@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from agentic_trader.research.alpha.metrics import (
+    calculate_cross_strategy_correlations,
+    calculate_deflated_sharpe_ratio,
+    calculate_rank_ic,
+    simulate_alpha_performance,
+)
+
+
+def test_rank_ic_perfect_and_inverse():
+    n = 100
+    dates = pd.date_range("2025-01-01", periods=n, freq="D")
+    alpha = pd.Series(np.linspace(1.0, 100.0, n), index=dates)
+    fwd_perf = pd.Series(np.linspace(0.01, 0.10, n), index=dates)
+
+    ic_mean, _, _ = calculate_rank_ic(alpha, fwd_perf, window=20)
+    assert ic_mean > 0.90, f"Expected high positive Rank IC, got {ic_mean}"
+
+    # Inverse correlation
+    fwd_inv = -fwd_perf
+    ic_mean_inv, _, _ = calculate_rank_ic(alpha, fwd_inv, window=20)
+    assert ic_mean_inv < -0.90, f"Expected high negative Rank IC, got {ic_mean_inv}"
+
+
+def test_deflated_sharpe_ratio_behavior():
+    # 1. Strong strategy discovered with minimal multiple testing
+    dsr_strong = calculate_deflated_sharpe_ratio(
+        sharpe=2.5,
+        num_trials=5,
+        variance_trials=0.10,
+        sample_length=500,
+    )
+    assert dsr_strong >= 0.95, f"Expected strong DSR >= 0.95, got {dsr_strong}"
+
+    # 2. Modest strategy (Sharpe 1.2) heavily mined over 5,000 trials with high variance
+    dsr_mined = calculate_deflated_sharpe_ratio(
+        sharpe=1.2,
+        num_trials=5000,
+        variance_trials=0.80,
+        sample_length=252,
+    )
+    assert dsr_mined < 0.50, f"Expected overfitted mined strategy DSR < 0.50, got {dsr_mined}"
+
+    # 3. Effect of negative skewness and fat-tailed kurtosis
+    dsr_normal = calculate_deflated_sharpe_ratio(
+        sharpe=0.85,
+        num_trials=10,
+        variance_trials=0.2,
+        sample_length=252,
+        skewness=0.0,
+        kurtosis=3.0,
+    )
+    dsr_fat_tails = calculate_deflated_sharpe_ratio(
+        sharpe=0.85,
+        num_trials=10,
+        variance_trials=0.2,
+        sample_length=252,
+        skewness=-1.5,
+        kurtosis=8.0,
+    )
+    assert dsr_fat_tails < dsr_normal, (
+        f"Negative skew & fat tails should deflate Sharpe confidence ({dsr_fat_tails} vs {dsr_normal})"
+    )
+
+
+def test_calculate_cross_strategy_correlations():
+    n = 100
+    dates = pd.date_range("2025-01-01", periods=n, freq="D")
+    alpha_rets = pd.Series(np.random.randn(n) * 0.01, index=dates)
+
+    existing_strats = {
+        "trend_pullback": alpha_rets * 0.8 + np.random.randn(n) * 0.002,
+        "squeeze_breakout": np.random.randn(n) * 0.01,
+    }
+
+    corrs = calculate_cross_strategy_correlations(alpha_rets, existing_strats)
+    assert "trend_pullback" in corrs
+    assert "squeeze_breakout" in corrs
+    assert corrs["trend_pullback"] > 0.60
+    assert abs(corrs["squeeze_breakout"]) < 0.50
+
+
+def test_simulate_alpha_performance():
+    n = 120
+    dates = pd.date_range("2025-01-01", periods=n, freq="D")
+    prices = pd.Series(100.0 + np.cumsum(np.random.randn(n)), index=dates)
+    alpha = pd.Series(np.random.randn(n), index=dates)
+
+    sim = simulate_alpha_performance(
+        alpha_scores=alpha,
+        prices=prices,
+        entry_threshold=1.0,
+        exit_threshold=0.0,
+    )
+    assert "sharpe" in sim
+    assert "total_return_pct" in sim
+    assert "max_drawdown_pct" in sim
+    assert "total_trades" in sim
+    assert "net_returns" in sim
+    assert len(sim["net_returns"]) == n

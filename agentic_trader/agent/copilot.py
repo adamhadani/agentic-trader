@@ -39,6 +39,7 @@ from agentic_trader.presentation.formatters import (
     TerminalFormatter,
 )
 from agentic_trader.research import AutoRetuner
+from agentic_trader.research.alpha import AlphaCatalog, AlphaPromotionManager
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.telemetry import MetricsServer, global_metrics
@@ -118,6 +119,7 @@ class TradingCopilot:
             perf_provider=self.get_performance_summary_html,
             regime_provider=self.get_regime_summary_html,
             macro_provider=self.get_macro_summary_html,
+            alphas_provider=self.get_alphas_summary_html,
             backtest_runner=self.run_backtest_summary_html,
             gex_provider=self.run_gex_summary_html,
             pairs_provider=self.run_pairs_summary_html,
@@ -1546,6 +1548,18 @@ class TradingCopilot:
         """Format HTML multi-asset macro intelligence & yield curve dashboard for Telegram /macro."""
         report = await self.regime_detector.macro_engine.get_macro_report()
         return TelegramHtmlFormatter.format_macro_dashboard_html(report)
+
+    async def get_alphas_summary_html(self) -> str:
+        """Format HTML formulaic alpha intelligence dashboard for Telegram /alphas."""
+        try:
+            mgr = AlphaPromotionManager()
+            catalog = AlphaCatalog()
+            promoted = mgr.list_active_alphas()
+            return TelegramHtmlFormatter.format_alphas_dashboard_html(
+                promoted, catalog_count=len(catalog.list_alphas())
+            )
+        except Exception as e:
+            return f"❌ Failed retrieving formulaic alpha status: {e}"
 
     async def broadcast_macro_briefing(self) -> None:
         """Broadcast morning macro intelligence card to Telegram."""

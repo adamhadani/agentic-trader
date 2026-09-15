@@ -1,0 +1,31 @@
+version: 1
+last_updated: '2026-09-15T08:00:00+00:00'
+promoted_alphas:
+- alpha_id: alpha_wq_006
+  definition:
+    alpha_id: alpha_wq_006
+    name: WQ-006 Open-Volume Absorption Divergence
+    expression: -1.0 * ts_corr(open, volume, 10)
+    description: Identifies institutional volume absorption when heavy volume fails to sustain opening momentum.
+    direction: bi_directional
+    entry_threshold: 0.6
+    exit_threshold: 0.0
+    timeframe: 4h
+    origin: worldquant_101
+  metrics:
+    rank_ic_mean: 0.045
+    rank_ic_std: 0.015
+    rank_ic_ir: 3.0
+    sharpe_is: 2.2
+    sharpe_oos: 1.95
+    dsr: 0.98
+    win_rate: 0.58
+    profit_factor: 2.1
+    max_drawdown_pct: 5.5
+    total_trades: 54
+    annualized_return_pct: 22.4
+  promoted_at: '2026-09-15T08:00:00+00:00'
+  promoted_by: system
+  allocation_weight: 0.15
+  status: promoted
+  notes: Baseline institutional benchmark alpha

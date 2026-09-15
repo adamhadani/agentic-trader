@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import litellm
 from pydantic import BaseModel, Field
@@ -20,9 +22,12 @@ from agentic_trader.constants import (
     Direction,
     StrategyType,
 )
-from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.market.session import MarketSessionProtocol
 from agentic_trader.screeners.strategies import ScreenerCandidate
+
+
+if TYPE_CHECKING:
+    from agentic_trader.data.market_data import MarketDataFetcher
 
 
 logger = logging.getLogger(__name__)

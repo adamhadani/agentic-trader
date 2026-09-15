@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import AssetClass, ConflictResolutionMode, Direction, StrategyType
 from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
+from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 from agentic_trader.screeners.indicators import calculate_ema
 from agentic_trader.screeners.registry import ConflictResolver, StrategyRegistry
 
@@ -16,8 +17,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 # Re-export ScreenerCandidate for backward compatibility
 __all__ = [
+    "FormulaicAlphaStrategy",
     "ScreenerCandidate",
     "SqueezeBreakoutStrategy",
     "StrategyEngine",
@@ -309,7 +312,7 @@ class StrategyEngine:
         conflict_resolver: ConflictResolver | None = None,
     ):
         self.config = config or load_config()
-        self.registry = registry or StrategyRegistry()
+        self.registry = registry or StrategyRegistry(auto_load_promoted=True)
         self.conflict_resolver = conflict_resolver or ConflictResolver()
 
         # Instantiate and register default strategies

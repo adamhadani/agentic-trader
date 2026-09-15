@@ -167,3 +167,44 @@ async def test_tool_get_system_health(mock_copilot):
     res = await tools["get_system_health"].ainvoke({})
     assert "Operational" in res or "Normal" in res
     assert "Halted: False" in res or "Active" in res
+
+
+@pytest.mark.asyncio
+async def test_tool_get_alpha_catalog(mock_copilot):
+    tools = {t.name: t for t in make_copilot_tools(mock_copilot)}
+    res = await tools["get_alpha_catalog"].ainvoke({})
+    assert "Institutional Formulas" in res
+    assert "alpha_wq_006" in res
+
+
+@pytest.mark.asyncio
+async def test_tool_promote_and_demote_alpha(mock_copilot, monkeypatch, tmp_path):
+    from agentic_trader.research.alpha.promotion import AlphaPromotionManager  # noqa: PLC0415
+
+    temp_yaml = tmp_path / "promoted_alphas.yaml"
+    monkeypatch.setattr(
+        "agentic_trader.agent.copilot_tools.AlphaPromotionManager",
+        lambda *args, **kwargs: AlphaPromotionManager(config_path=temp_yaml),
+    )
+    tools = {t.name: t for t in make_copilot_tools(mock_copilot)}
+
+    # Promote
+    res_prom = await tools["promote_alpha"].ainvoke(
+        {
+            "alpha_id": "alpha_wq_006",
+            "allocation_weight": 0.15,
+            "notes": "Testing tool promotion",
+        }
+    )
+    assert "Successfully promoted" in res_prom
+    assert "alpha_wq_006" in res_prom
+
+    # Demote
+    res_dem = await tools["demote_alpha"].ainvoke(
+        {
+            "alpha_id": "alpha_wq_006",
+            "notes": "Testing tool demotion",
+        }
+    )
+    assert "Successfully demoted" in res_dem
+    assert "alpha_wq_006" in res_dem
