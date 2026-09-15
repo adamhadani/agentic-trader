@@ -14,7 +14,7 @@ from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.position_sizing import (
     calculate_dynamic_sizing,
 )
-from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
+from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import DEFAULT_CORRELATION_GROUPS, AppConfig
 from agentic_trader.constants import (
@@ -262,7 +262,7 @@ class RiskEvaluator:
         effective_leverage = round(notional_value / self.config.portfolio.cash, 2)
         projected_notional = current_open_notional + notional_value
 
-        # 1. Check Portfolio Exposure Limit ($60,000 max)
+        # 1. Check the configured portfolio exposure limit
         if projected_notional > self.config.portfolio.max_notional_exposure:
             return LLMTradeEvaluation(
                 approved=False,
@@ -553,6 +553,10 @@ class RiskEvaluator:
 
         # 3. Call LLM for final reasoning & thesis synthesis
         prompt = USER_EVALUATION_TEMPLATE.format(
+            timeframe=candidate.timeframe,
+            min_stop_atr_multiple=self.config.risk.min_stop_atr_multiple,
+            max_notional_exposure=self.config.portfolio.max_notional_exposure,
+            min_risk_reward_ratio=max(regime.min_rr_threshold, self.config.risk.min_risk_reward_ratio),
             contract=candidate.contract,
             multiplier=multiplier,
             tick_size=tick_size,
@@ -582,7 +586,7 @@ class RiskEvaluator:
                 api_key=self.config.llm_api_key,
                 model=model_name,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": build_system_prompt(self.config)},
                     {"role": "user", "content": prompt},
                 ],
                 response_format={"type": "json_object"},

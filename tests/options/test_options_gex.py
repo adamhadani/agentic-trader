@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pandas as pd
 import pytest
 import yfinance as yf
+from click.testing import CliRunner
 
+from agentic_trader.cli.main import cli
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.options.fetcher import OptionsDataFetcher
 from agentic_trader.options.gex import GEXCalculator, black_scholes_gamma
@@ -248,3 +250,46 @@ def test_options_data_fetcher_mocked(monkeypatch):
     assert profile.call_wall_strike == 510.0
     assert profile.put_wall_strike == 500.0
     assert profile.pcr_open_interest > 0.0
+
+
+@pytest.mark.parametrize("column", ["openInterest", "volume"])
+@pytest.mark.parametrize("value", [None, float("nan"), pd.NA, float("inf"), -1, "missing"])
+def test_missing_provider_counts_are_normalized_and_reported(column, value):
+    row = {"strike": 500.0, "openInterest": 100, "volume": 50, "impliedVolatility": 0.2, "dte_years": 0.1}
+    row[column] = value
+    chain = pd.DataFrame([row])
+    profile = GEXCalculator().calculate_gex("SPY", 500, chain, chain)
+    strike = profile.strikes[0]
+    assert (strike.call_oi, strike.put_oi) == ((0, 0) if column == "openInterest" else (100, 100))
+    assert (strike.call_volume, strike.put_volume) == ((0, 0) if column == "volume" else (50, 50))
+    assert profile.data_quality_notes
+    assert "Incomplete chain" in format_gex_telegram(profile)
+    assert "NaN" not in profile.model_dump_json()
+
+
+@pytest.mark.parametrize("price", [float("nan"), float("inf"), -1])
+def test_gex_rejects_invalid_spot(price):
+    with pytest.raises(ValueError, match="Underlying price"):
+        GEXCalculator().calculate_gex("SPY", price, pd.DataFrame(), pd.DataFrame())
+
+
+def test_options_fetcher_never_invents_spot_price():
+    ticker = MagicMock()
+    ticker.fast_info.last_price = float("nan")
+    ticker.history.return_value = pd.DataFrame()
+    with pytest.raises(ValueError, match="No valid underlying market price"):
+        OptionsDataFetcher()._get_underlying_price(ticker, "SPY")
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_gex_cli_json_and_failure_exit(monkeypatch, fails):
+    profile = GEXCalculator().calculate_gex("SPY", 500, pd.DataFrame(), pd.DataFrame())
+    mock = MagicMock(side_effect=ValueError("No usable chain") if fails else None, return_value=profile)
+    monkeypatch.setattr(OptionsDataFetcher, "fetch_and_calculate_gex", mock)
+    result = CliRunner().invoke(cli, ["gex", "SPY", "--json"])
+    if fails:
+        assert result.exit_code != 0
+        assert "No usable chain" in result.stderr
+    else:
+        assert result.exit_code == 0
+        assert GammaExposureProfile.model_validate_json(result.stdout).symbol == "SPY"

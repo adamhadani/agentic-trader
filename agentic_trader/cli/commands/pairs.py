@@ -122,5 +122,5 @@ async def pairs(
             click.echo(format_pairs_report(results))
 
     except Exception as e:
-        logger.error("Failed to run pairs screener: %s", e)
-        click.echo(f"Error evaluating pairs: {e}")
+        logger.exception("Failed to run pairs screener")
+        raise click.ClickException(f"Pairs analysis unavailable: {e}") from e

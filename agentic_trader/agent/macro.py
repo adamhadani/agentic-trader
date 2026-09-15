@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
 import logging
+import math
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -17,10 +18,10 @@ from agentic_trader.constants import (
     FRED_HY_OAS_SERIES,
     FRED_T5YIE_SERIES,
     FRED_T10YIE_SERIES,
+    FRED_TWO_YEAR_SERIES,
     FVX_TICKER,
     IRX_TICKER,
     TNX_TICKER,
-    TWO_YEAR_TICKER,
     TYX_TICKER,
     VIX_TICKER,
 )
@@ -127,6 +128,7 @@ class MacroIntelligenceReport:
     stress: MacroStressAssessment
     timestamp: datetime
     summary_text: str
+    observation_dates: dict[str, str] = field(default_factory=dict)
 
 
 def calculate_yield_curve_spreads(yields: TreasuryYields) -> YieldCurveSpreads:
@@ -207,22 +209,24 @@ def compute_compound_macro_stress(
     yield_spreads: YieldCurveSpreads,
     credit: CreditSpreads,
     inflation: InflationExpectations,
+    config: RegimeConfig | None = None,
 ) -> MacroStressAssessment:
     """
     Synthesize VIX, yield curve inversion, and credit spreads into a compound macro stress index.
     Determines risk multiplier (1.0x to 0.25x), breakout suppression, and required R:R.
     """
+    cfg = config or RegimeConfig()
     drivers: list[str] = []
     score = 0
 
     # 1. Volatility scoring
-    if vix > 30.0:
+    if vix > cfg.vix_extreme_threshold:
         score += 3
         drivers.append(f"VIX Extreme ({vix:.1f})")
-    elif vix > 22.0:
+    elif vix > cfg.vix_elevated_threshold:
         score += 2
         drivers.append(f"VIX Elevated ({vix:.1f})")
-    elif vix > 18.0:
+    elif vix > cfg.vix_watch_threshold:
         score += 1
 
     # 2. Yield curve structure scoring
@@ -243,16 +247,16 @@ def compute_compound_macro_stress(
 
     # 4. Determine Level and Invariants
     # Fast escalation override for extreme panic
-    if vix > 30.0 or credit.regime == CreditStressRegime.CRITICAL or score >= 7:
+    if vix > cfg.vix_extreme_threshold or credit.regime == CreditStressRegime.CRITICAL or score >= 7:
         level = MacroStressLevel.EXTREME
         multiplier = 0.25
         breakout_allowed = False
-        min_rr = 2.5
+        min_rr = cfg.extreme_min_rr
     elif yield_spreads.regime == YieldCurveRegime.INVERTED or score >= 4:
         level = MacroStressLevel.HIGH
         multiplier = 0.50
         breakout_allowed = False
-        min_rr = 2.2
+        min_rr = cfg.elevated_min_rr
     elif score >= 2:
         level = MacroStressLevel.MODERATE
         multiplier = 0.80
@@ -292,13 +296,14 @@ def _fetch_ticker_sync(ticker: str) -> float | None:
 class FredDataClient:
     """
     Lightweight, zero-auth HTTP client fetching economic time series from FRED.
-    Uses public fredgraph.csv endpoints with robust fallback and in-memory TTL caching.
+    Uses public fredgraph.csv endpoints with in-memory TTL caching; missing/expired observations remain unavailable.
     """
 
     def __init__(self, cache_ttl_seconds: int = 900, timeout_seconds: float = 5.0):
         self.cache_ttl_seconds = cache_ttl_seconds
         self.timeout_seconds = timeout_seconds
         self._cache: dict[str, tuple[float, datetime]] = {}
+        self.observation_dates: dict[str, str] = {}
 
     async def _fetch_csv_text(self, series_id: str) -> str:
         """Fetch raw CSV text from FRED."""
@@ -311,7 +316,6 @@ class FredDataClient:
     async def fetch_latest_value(
         self,
         series_id: str,
-        fallback_default: float | None = None,
         force_refresh: bool = False,
     ) -> float | None:
         """Fetch the most recent valid observation for a given FRED series."""
@@ -330,19 +334,21 @@ class FredDataClient:
                 parts = line.split(",")
                 if len(parts) == 2 and parts[1] != "." and parts[0] != "DATE":
                     with contextlib.suppress(ValueError):
-                        latest_val = float(parts[1])
-                        break
+                        value = float(parts[1])
+                        observation_date = date.fromisoformat(parts[0])
+                        if math.isfinite(value):
+                            latest_val = value
+                            self.observation_dates[series_id] = observation_date.isoformat()
+                            break
 
             if latest_val is not None:
                 self._cache[series_id] = (latest_val, now)
                 return latest_val
 
         except Exception as e:
-            logger.warning("Failed to fetch FRED series %s: %s. Using fallback.", series_id, e)
+            logger.warning("FRED series %s unavailable: %s", series_id, e)
 
-        if fallback_default is not None:
-            return fallback_default
-        return self._cache.get(series_id, (None, None))[0]
+        return None
 
 
 class MacroIntelligenceEngine:
@@ -376,7 +382,6 @@ class MacroIntelligenceEngine:
         # 1. Concurrently fetch tickers via threadpool
         ticker_tasks = {
             "3m": asyncio.to_thread(_fetch_ticker_sync, IRX_TICKER),
-            "2y": asyncio.to_thread(_fetch_ticker_sync, TWO_YEAR_TICKER),
             "5y": asyncio.to_thread(_fetch_ticker_sync, FVX_TICKER),
             "10y": asyncio.to_thread(_fetch_ticker_sync, TNX_TICKER),
             "30y": asyncio.to_thread(_fetch_ticker_sync, TYX_TICKER),
@@ -386,9 +391,10 @@ class MacroIntelligenceEngine:
 
         # 2. Concurrently fetch FRED series
         fred_tasks = {
-            "hy_oas": self.fred_client.fetch_latest_value(FRED_HY_OAS_SERIES, fallback_default=3.20),
-            "t10yie": self.fred_client.fetch_latest_value(FRED_T10YIE_SERIES, fallback_default=2.35),
-            "t5yie": self.fred_client.fetch_latest_value(FRED_T5YIE_SERIES, fallback_default=2.40),
+            "2y": self.fred_client.fetch_latest_value(FRED_TWO_YEAR_SERIES, force_refresh=force_refresh),
+            "hy_oas": self.fred_client.fetch_latest_value(FRED_HY_OAS_SERIES, force_refresh=force_refresh),
+            "t10yie": self.fred_client.fetch_latest_value(FRED_T10YIE_SERIES, force_refresh=force_refresh),
+            "t5yie": self.fred_client.fetch_latest_value(FRED_T5YIE_SERIES, force_refresh=force_refresh),
         }
 
         all_keys = list(ticker_tasks.keys()) + list(fred_tasks.keys())
@@ -397,47 +403,44 @@ class MacroIntelligenceEngine:
         raw_results = await asyncio.gather(*all_coroutines, return_exceptions=True)
         res_map: dict[str, Any] = {}
         for key, res in zip(all_keys, raw_results, strict=False):
-            if isinstance(res, BaseException) or res is None:
+            if isinstance(res, BaseException) or res is None or not math.isfinite(float(res)):
                 res_map[key] = None
             else:
                 res_map[key] = float(res)
 
-        # 3. Robust Yield Curve Resolution with sensible baselines
-        y_10y = res_map["10y"] or 4.50
-        y_2y = res_map["2y"] or (y_10y - 0.40)
-        y_5y = res_map["5y"] or ((y_2y + y_10y) / 2.0)
-        y_30y = res_map["30y"] or (y_10y + 0.35)
-        y_3m = res_map["3m"] or 4.00
+        missing = [key for key, value in res_map.items() if value is None]
+        if missing:
+            raise ValueError(f"Macro data unavailable: {', '.join(missing)}; no baseline values substituted")
 
         yields = TreasuryYields(
-            yield_3m=y_3m,
-            yield_2y=y_2y,
-            yield_5y=y_5y,
-            yield_10y=y_10y,
-            yield_30y=y_30y,
+            yield_3m=res_map["3m"],
+            yield_2y=res_map["2y"],
+            yield_5y=res_map["5y"],
+            yield_10y=res_map["10y"],
+            yield_30y=res_map["30y"],
         )
 
         spreads = calculate_yield_curve_spreads(yields)
 
         # 4. Credit OAS Resolution
-        hy_oas = res_map["hy_oas"] or 3.20
+        hy_oas = res_map["hy_oas"]
         credit = classify_credit_stress(
             hy_oas,
-            elevated_threshold=getattr(self.config, "hy_oas_elevated_threshold", 3.50),
-            critical_threshold=getattr(self.config, "hy_oas_critical_threshold", 5.00),
+            elevated_threshold=self.config.hy_oas_elevated_threshold,
+            critical_threshold=self.config.hy_oas_critical_threshold,
         )
 
         # 5. Inflation Breakeven Resolution
-        t10yie = res_map["t10yie"] or 2.35
-        t5yie = res_map["t5yie"] or 2.40
+        t10yie = res_map["t10yie"]
+        t5yie = res_map["t5yie"]
         inflation = classify_inflation_expectations(t10yie, t5yie)
 
         # 6. Volatility & Dollar
-        vix = res_map["vix"] or 18.0
-        dxy = res_map["dxy"] or 103.5
+        vix = res_map["vix"]
+        dxy = res_map["dxy"]
 
         # 7. Compound Macro Stress Assessment
-        stress = compute_compound_macro_stress(vix, spreads, credit, inflation)
+        stress = compute_compound_macro_stress(vix, spreads, credit, inflation, self.config)
 
         # 8. Summary Text
         summary = (
@@ -457,6 +460,7 @@ class MacroIntelligenceEngine:
             stress=stress,
             timestamp=now,
             summary_text=summary,
+            observation_dates=dict(self.fred_client.observation_dates),
         )
 
         self._cached_report = report

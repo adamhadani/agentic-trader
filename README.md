@@ -1,4 +1,4 @@
-# Cash-Plus Trading Copilot
+# Agentic Trader
 ### Autonomous Multi-Asset Quantitative Trading System
 
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/)
@@ -7,7 +7,7 @@
 [![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
 [![Documentation](https://img.shields.io/badge/docs-local%20markdown-blue)](docs/)
 
-The **Cash-Plus Trading Copilot** is an algorithmic trading system designed around a **"Cash-Plus" (portable alpha)** portfolio architecture ($100,000 baseline cash generating risk-free Treasury yield). The system continuously screens multi-asset markets, validates setups through an LLM agent with macro calendar awareness, and executes bracket orders across Tradovate (CME micro futures) and Alpaca (equities, ETFs, and crypto) with real-time Telegram oversight and Prometheus observability.
+The **Agentic Trader** is an algorithmic trading system designed around a **"Cash-Plus" (portable alpha)** portfolio architecture ($100,000 baseline cash generating risk-free Treasury yield). The system continuously screens multi-asset markets, validates setups through an LLM agent with macro calendar awareness, and executes bracket orders across Tradovate (CME micro futures) and Alpaca (equities, ETFs, and crypto) with real-time Telegram oversight and Prometheus observability.
 
 ---
 
@@ -89,7 +89,7 @@ copilot daemon
 3. **Sub-Second WebSocket Streams**:
    - **Alpaca `TradingStream`**: Sub-second synchronization for bracket order fills, stops, targets, and cancellations.
    - **Tradovate WebSocket**: Account, position, and CME order state synchronization.
-4. **Two-Way Telegram Interactive Bot**: Continuous async polling listener processing operator commands (`/status`, `/positions`, `/perf`, `/regime`, `/gex`, `/pairs`, `/scan`, `/close`) and inline action buttons (`[ 🚀 Execute ]` / `[ ❌ Dismiss ]`).
+4. **Two-Way Telegram Interactive Bot**: Continuous async polling listener processing operator commands (`/status`, `/positions`, `/perf`, `/macro`, `/gex`, `/pairs`, `/scan`, `/close`) and inline action buttons (`[ 🚀 Execute ]` / `[ ❌ Dismiss ]`).
 5. **Native Prometheus Exporter**: Lightweight async HTTP server running on `0.0.0.0:9108` serving `GET /metrics` and container health probe at `GET /healthz`.
 6. **Dynamic Trailing Stop & Broker Sync**: Evaluates active positions for Chandelier ATR high-water mark trailing stops and amends resting bracket stop orders directly on exchange brokers (Alpaca and Tradovate) with graceful degradation.
 7. **Resilient Multi-Tier Market Data**: Dual-feed market data engine (`RunnableWithFallbacks`) querying Alpaca historical bars with automatic failover to Yahoo Finance.
@@ -202,20 +202,26 @@ When the daemon is running, operators can query and command the trading desk dir
 | Command | Description | Example |
 |---|---|---|
 | `/status` | View cash base, open notional exposure, leverage, and macro events | `/status` |
-| `/positions` | View active trades, live quotes, and mark-to-market unrealized P&L | `/positions` |
-| `/perf` | View cumulative closed trade performance, win rate, and profit factor | `/perf` |
-| `/regime` | View real-time VIX, 10Y Treasury yield, and Dollar Index macro regime | `/regime` |
-| `/macro` | View US Treasury yield curve, credit OAS, TIPS breakevens, and stress index | `/macro` |
+| `/positions` | Broker positions, actual cost basis and broker unrealized P&L | `/positions` |
+| `/perf` | Confirmed closed-fill P&L and current broker unrealized P&L | `/perf` |
+| `/macro` | VIX regime, Treasury curve, credit, inflation and combined trading filters | `/macro` |
 | `/explain_macro` | View educational tutorial & breakdown of live macro indicators with LLM context | `/explain_macro` |
 | `/alphas` | View production promoted formulaic alphas, weights, and tearsheets | `/alphas` |
-| `/gex [sym]` | View dealer gamma exposure (GEX), pinning walls, and gamma flip level | `/gex SPY` |
+| `/gex [sym]` | Yahoo option-chain gamma estimates, quality notes, walls and gamma flip | `/gex SPY` |
 | `/pairs` | View cross-asset cointegration, mean-reversion half-life, and Z-scores | `/pairs` |
 | `/backtest [sym] [lookback]` | Trigger on-demand offline backtest simulation from mobile | `/backtest SPY 1y` |
 | `/scan` | Trigger an immediate quantitative scan across the universe | `/scan` |
-| `/close <id> [price]` | Manually close an active trade and record fill | `/close 3 5850.25` |
+| `/close <id> [price]` | Request broker closure; accounting waits for the confirmed fill | `/close 3` |
 | `/panic [confirm]` | Emergency kill switch: cancel orders, market liquidate, halt trading | `/panic` |
-| `/resume` | Clear emergency trading halt and resume autonomous scanning & execution | `/resume` |
-| `/help` | Display interactive command menu and enforced risk invariants | `/help` |
+| `/resume` | Clear emergency trading halt and resume scanning and operator-approved execution | `/resume` |
+| `/help` | Display commands and the configured trading workflow | `/help` |
+
+`/macro` replaces `/regime`: it includes the same volatility filter plus the richer
+macro indicators, combined breakout policy, risk multiplier and configured minimum
+R:R. `/explain_macro` remains an educational explanation. Macro feeds are latest
+published observations, not synchronized live ticks; FRED dates are shown. Missing
+values are never replaced with invented yields or a normal VIX baseline. Telegram
+backtests default to `backtest.lookback`; the research symbol default is `SPY`.
 
 > **Interactive Autocomplete & Menu Button**: On startup, the Telegram bot registers slash commands via `set_my_commands` and configures the native chat menu button via `set_chat_menu_button(MenuButtonCommands())` across default, private, and chat-specific scopes. Modern Telegram mobile, desktop, and web clients display a dedicated `[Menu]` / `[/]` button with interactive autocomplete for instant command discovery.
 

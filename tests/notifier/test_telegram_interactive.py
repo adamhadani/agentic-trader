@@ -1,11 +1,13 @@
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
+from agentic_trader.agent.regime import RegimeSnapshot
 from agentic_trader.config import load_config
-from agentic_trader.constants import AssetClass, Direction, ExitReason, SignalStatus
+from agentic_trader.constants import AssetClass, Direction, ExitReason, SignalStatus, VolatilityRegime
 from agentic_trader.notifier.telegram_bot import (
     TelegramNotifier,
     format_alert_card,
@@ -120,14 +122,26 @@ async def test_copilot_performance_and_regime_html(temp_db):
 
     # Test get_performance_summary_html
     perf_html = await copilot.get_performance_summary_html()
-    assert "CASH-PLUS COPILOT: PERFORMANCE ATTRIBUTION" in perf_html
+    assert "AGENTIC TRADER: PERFORMANCE ATTRIBUTION" in perf_html
     assert "+$300.00" in perf_html
     assert "100.0%" in perf_html
     assert "/MES" in perf_html
 
-    # Test get_regime_summary_html
-    regime_html = await copilot.get_regime_summary_html()
-    assert "MARKET VOLATILITY & MACRO REGIME" in regime_html
+    copilot.regime_detector.get_regime = AsyncMock(
+        return_value=RegimeSnapshot(
+            vix=17.0,
+            vix_regime=VolatilityRegime.NORMAL,
+            tnx=4.2,
+            dxy=103,
+            breakout_allowed=True,
+            min_rr_threshold=2,
+            timestamp=datetime.now(UTC),
+            summary_text="Normal",
+        )
+    )
+    # Test get_macro_summary_html
+    regime_html = await copilot.get_macro_summary_html()
+    assert "MACRO &amp; TRADING FILTERS" in regime_html
     assert "VIX Level" in regime_html
     assert "Squeeze Breakouts" in regime_html
 
@@ -145,7 +159,7 @@ async def test_telegram_commands_and_callbacks(temp_db):
         chat_id="123456",
         db=temp_db,
         perf_provider=mock_perf,
-        regime_provider=mock_regime,
+        macro_provider=mock_regime,
         backtest_runner=mock_backtest,
         scan_runner=mock_scan,
         positions_provider=mock_positions,
@@ -164,7 +178,7 @@ async def test_telegram_commands_and_callbacks(temp_db):
     mock_update.message.reply_text.assert_called()
     help_call_args = mock_update.message.reply_text.call_args[0][0]
     assert "/perf" in help_call_args
-    assert "/regime" in help_call_args
+    assert "/macro" in help_call_args
     assert "/backtest" in help_call_args
 
     # Test /perf command
@@ -173,9 +187,9 @@ async def test_telegram_commands_and_callbacks(temp_db):
     mock_perf.assert_called_once()
     mock_update.message.reply_text.assert_called_with("<b>Performance: +$500.00</b>", parse_mode="HTML")
 
-    # Test /regime command
+    # Test /macro command
     mock_update.message.reply_text.reset_mock()
-    await notifier.handle_regime_command(mock_update, mock_context)
+    await notifier.handle_macro_command(mock_update, mock_context)
     mock_regime.assert_called_once()
     mock_update.message.reply_text.assert_called_with("<b>Regime: Normal</b>", parse_mode="HTML")
 
@@ -202,9 +216,9 @@ async def test_telegram_commands_and_callbacks(temp_db):
     query_mock.answer.assert_called()
     query_mock.message.reply_text.assert_called_with("<b>Performance: +$500.00</b>", parse_mode="HTML")
 
-    # Button cmd_regime
+    # Button cmd_macro
     query_mock.message.reply_text.reset_mock()
-    query_mock.data = "cmd_regime"
+    query_mock.data = "cmd_macro"
     await notifier.handle_button_callback(cb_update, mock_context)
     query_mock.answer.assert_called()
     query_mock.message.reply_text.assert_called_with("<b>Regime: Normal</b>", parse_mode="HTML")

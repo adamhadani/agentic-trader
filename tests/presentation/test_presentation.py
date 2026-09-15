@@ -148,7 +148,7 @@ def test_telegram_html_formatter():
         timestamp=datetime.now(UTC),
         summary_text="Market conditions normal.",
     )
-    regime_html = TelegramHtmlFormatter.format_regime_html(regime)
+    regime_html = TelegramHtmlFormatter.format_macro_dashboard_html(regime)
     assert "NORMAL" in regime_html
     assert "Allowed" in regime_html
 
@@ -345,3 +345,12 @@ def test_telegram_split_message():
     # Verify each chunk has balanced tags
     for c in chunks:
         assert c.count("<b>") == c.count("</b>")
+
+
+def test_accepted_order_does_not_invent_a_fill_price():
+    view = ExecutionResultView(signal_id=1, contract="SPY", direction="LONG", fill_price=None)
+    rendered = TelegramHtmlFormatter.format_execution_html(view)
+    assert "ORDER ACCEPTED" in rendered
+    assert "Awaiting broker fill" in rendered
+    assert "ORDER EXECUTED" not in rendered
+    assert "<b>Fill Price:</b> <code>0.00</code>" not in rendered

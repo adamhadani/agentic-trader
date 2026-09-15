@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Production Operations — Cash-Plus Trading Copilot
+title: Production Operations — Agentic Trader
 ---
 
 # Production operations
@@ -161,3 +161,16 @@ The generic event-loop monitor exports lag and records `event_loop_stall` above
 `telemetry.event_loop_sample_seconds` (default 1s). Consult those records alongside
 poll/command audits when a command appears delayed. Market-data, simulation quote,
 correlation and research computation boundaries now offload blocking work.
+
+## Operator report checks after deployment
+
+After restart, verify the registered menu contains `/macro` and no `/regime`.
+`/macro` includes combined volatility/macro filters and published-data dates;
+`/explain_macro` is educational. `/gex` discloses missing-chain fields and requires
+a real spot quote. `/positions`, `/perf` and conversational position queries share
+broker-backed valuation. Backtest defaults come from loaded configuration.
+
+`scripts/verify_runtime.py` checks the clean source revision against the running
+startup audit, Alpaca paper access and exact position parity, Telegram identity,
+menu and actual daemon poll freshness. It sends no messages or orders. `/healthz`
+is liveness; successful read checks do not exercise order submission.

@@ -228,8 +228,8 @@ async def test_fred_data_client_fallback_on_error():
     with patch.object(client, "_fetch_csv_text", new_callable=AsyncMock) as mock_fetch:
         mock_fetch.side_effect = Exception("Connection timeout")
 
-        val = await client.fetch_latest_value("BAMLH0A0HYM2", fallback_default=3.20)
-        assert val == 3.20
+        val = await client.fetch_latest_value("BAMLH0A0HYM2", force_refresh=True)
+        assert val is None
 
 
 @pytest.mark.asyncio
@@ -240,7 +240,6 @@ async def test_macro_intelligence_engine_end_to_end():
     # Mock yfinance ticker fetch
     mock_yields = {
         "^IRX": 3.95,
-        "2YY=F": 4.35,
         "^FVX": 4.65,
         "^TNX": 4.95,
         "^TYX": 5.25,
@@ -253,13 +252,14 @@ async def test_macro_intelligence_engine_end_to_end():
 
     # Mock FRED client
     mock_fred_data = {
+        "DGS2": 4.35,
         "BAMLH0A0HYM2": 2.65,
         "T10YIE": 2.37,
         "T5YIE": 2.40,
     }
 
-    async def mock_fetch_fred(series_id, fallback_default=None):
-        return mock_fred_data.get(series_id, fallback_default)
+    async def mock_fetch_fred(series_id, force_refresh=False):
+        return mock_fred_data.get(series_id)
 
     with (
         patch("agentic_trader.agent.macro._fetch_ticker_sync", side_effect=mock_fetch_ticker),
@@ -321,3 +321,28 @@ async def test_macro_explainer_deterministic():
     assert "<code>+60.0 bps</code>" in html_briefing
     assert "<code>BENIGN</code>" in html_briefing
     assert "<code>100%</code>" in html_briefing
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", [None, float("nan"), float("inf")])
+async def test_macro_missing_data_does_not_invent_baselines(bad_value):
+    engine = MacroIntelligenceEngine()
+    with (
+        patch("agentic_trader.agent.macro._fetch_ticker_sync", return_value=bad_value),
+        patch.object(engine.fred_client, "fetch_latest_value", new=AsyncMock(return_value=2.5)),
+        pytest.raises(ValueError, match="Macro data unavailable"),
+    ):
+        await engine.get_macro_report()
+    assert engine._cached_report is None
+
+
+@pytest.mark.asyncio
+async def test_fred_observation_date_and_failed_forced_refresh():
+    client = FredDataClient()
+    with patch.object(
+        client, "_fetch_csv_text", new=AsyncMock(return_value="DATE,VALUE\n2026-09-11,4.63\n2026-09-14,.")
+    ):
+        assert await client.fetch_latest_value("DGS2") == 4.63
+        assert client.observation_dates["DGS2"] == "2026-09-11"
+    with patch.object(client, "_fetch_csv_text", new=AsyncMock(side_effect=TimeoutError)):
+        assert await client.fetch_latest_value("DGS2", force_refresh=True) is None

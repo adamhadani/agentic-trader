@@ -161,19 +161,21 @@ incident snapshots, DB files, `.envrc`, and derived calibration files out of Git
 4. Update local trailing stops only after confirmed broker modification. Audit
    stop discrepancies and preserve the original thesis instead of overwriting it.
 5. Keep heavy research off the trading executor as workload grows; verify timeframe filtering
-   before cross-strategy netting. Review missing-data macro fallbacks and drawdown
+   before cross-strategy netting. Define missing/stale macro admission policy and review drawdown
    plumbing before increasing automation or enabling live money.
 6. Keep sliced execution disabled until partial plans and protective brackets are
    implemented. Integrate alpha allocation into risk sizing only after validation.
 
 ## Validation baseline
 
-September 15 verification before deployment: **410 tests passed**, including four
-PostgreSQL integration tests on an explicitly provisioned disposable `test_` database.
-Mypy passed for 100 application modules. Two additional command-correlation cases
-passed in the focused transport suite afterward. Expected socket-block warnings in older
-fallback tests and a third-party WebSocket deprecation remain. Deployment identity
-and later smoke checks are recorded separately in startup/valuation audit events.
+September 15 verification: **468 tests passed**, including four PostgreSQL
+integration tests on an explicitly provisioned disposable `test_` database. A
+subsequent 88-case command/broker/presentation run passed, including the new
+accepted-order-without-fill regression. Mypy passed for 100 application modules.
+Pre-commit validates the final staged tree. Intentional socket-isolation warnings
+and a third-party WebSocket deprecation remain. Deployment revision and live smoke
+checks are recorded separately in startup/valuation audit events and private
+incident evidence; test success alone is not deployment verification.
 
 ## Telegram transport and event-loop diagnostics
 
@@ -194,3 +196,32 @@ particular command completed; correlate its command/request audits.
 `uv run python scripts/verify_runtime.py` verifies committed daemon identity,
 Alpaca snapshot/report agreement, bot identity/commands, and actual daemon poll
 freshness without sending messages or placing orders. It records a valuation audit.
+
+## Unified macro reporting and response defaults
+
+`/macro` is the single market-context command. `/regime`, its callback and its
+conversational tool were removed. The dashboard takes the same `RegimeSnapshot`
+used by evaluation and combines VIX classification, macro indicators, breakout
+permission, risk multiplier and `max(regime minimum R:R, risk.min_risk_reward_ratio)`.
+`/explain_macro` explains the macro model; it is not a replacement for the combined
+entry checks. The menu, help and inline buttons use `/macro`.
+
+Macro enrichment reuses one VIX/yield/dollar snapshot. The two-year Treasury yield
+comes from [FRED DGS2](https://fred.stlouisfed.org/series/DGS2); FRED observation
+dates and the snapshot fetch time are displayed. These daily/closing observations
+can have different dates. Missing/invalid macro data is reported as unavailable,
+not replaced by fixed yields, credit spreads, inflation or VIX. If enrichment
+fails, the dashboard explicitly labels the remaining volatility-only policy;
+if VIX itself is missing, regime evaluation fails. Stale-data admission policy
+and per-feed freshness alerts remain follow-up work.
+
+VIX display colors use the classified enum, and stress scoring shares configured
+VIX thresholds (`regime.vix_watch_threshold`, `vix_elevated_threshold`,
+`vix_extreme_threshold`). Elevated/extreme minimum R:R uses
+`regime.elevated_min_rr` / `extreme_min_rr`. Telegram backtests receive
+`backtest.lookback` from the loaded app config; research symbol and message chunk
+size use shared constants. Typed evaluation fields have no presentation fallback.
+Conversational positions/status use the same report providers as slash commands,
+removing invented default prices/P&L and duplicate notional calculations.
+`macro_report` audit events retain fetched time, published dates, VIX and the
+combined filter decision, including missing-enrichment details.

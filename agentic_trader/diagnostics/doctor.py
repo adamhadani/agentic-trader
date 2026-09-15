@@ -14,6 +14,7 @@ from agentic_trader.agent.calendar import EconomicCalendar
 from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.tradovate import TradovateBroker
 from agentic_trader.config import AppConfig, load_config
+from agentic_trader.constants import APP_DISPLAY_NAME
 from agentic_trader.market.session import CompositeMarketCalendar
 from agentic_trader.storage.db import SignalDatabase
 
@@ -370,7 +371,7 @@ def format_doctor_cli_output(report: DiagnosticReport) -> str:
 
     lines = [
         "=" * 70,
-        "🏥 CASH-PLUS TRADING COPILOT: PRE-FLIGHT SYSTEM DOCTOR",
+        f"🏥 {APP_DISPLAY_NAME.upper()}: PRE-FLIGHT SYSTEM DOCTOR",
         "=" * 70,
         f"Timestamp:      {report.timestamp}",
         f"Overall Status: {report.overall_status}",

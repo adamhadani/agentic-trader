@@ -16,6 +16,8 @@ from agentic_trader.agent.macro import (
     YieldCurveRegime,
     YieldCurveSpreads,
 )
+from agentic_trader.agent.regime import RegimeSnapshot
+from agentic_trader.constants import VolatilityRegime
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
 
@@ -59,11 +61,25 @@ def test_format_macro_dashboard_html():
         summary_text="Macro Stress: LOW (1.00x) | Curve: NORMAL_STEEP (+58 bps) | Credit OAS: 265 bps",
     )
 
-    formatted = TelegramHtmlFormatter.format_macro_dashboard_html(report)
+    regime = RegimeSnapshot(
+        vix=report.vix,
+        vix_regime=VolatilityRegime.ELEVATED,
+        tnx=report.yields.yield_10y,
+        dxy=report.dxy,
+        breakout_allowed=False,
+        min_rr_threshold=2.7,
+        risk_multiplier=0.5,
+        timestamp=report.timestamp,
+        summary_text="Combined policy",
+        macro_report=report,
+    )
+    formatted = TelegramHtmlFormatter.format_macro_dashboard_html(regime, min_risk_reward_ratio=3.0)
+    assert "3.0:1" in formatted
+    assert "0.50x" in formatted
 
     assert "MACRO INTELLIGENCE &amp; YIELD CURVE" in formatted or "MACRO INTELLIGENCE & YIELD CURVE" in formatted
     assert "LOW STRESS" in formatted
-    assert "1.00x" in formatted
+    assert "1.00x" not in formatted
     assert "NORMAL_STEEP" in formatted
     assert "3.93%" in formatted
     assert "4.38%" in formatted
@@ -75,7 +91,8 @@ def test_format_macro_dashboard_html():
     assert "2.37%" in formatted
     assert "17.20" in formatted
     assert "103.40" in formatted
-    assert "Allowed ✅" in formatted
+    assert "Suppressed ⚠️" in formatted
+    assert "Allowed ✅" not in formatted
 
 
 @pytest.mark.asyncio

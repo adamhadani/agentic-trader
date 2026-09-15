@@ -9,6 +9,9 @@ def format_gex_report(profile: GammaExposureProfile) -> str:
     """Renders institutional ASCII table of Gamma Exposure, Pinning Walls, and Regime."""
     lines: list[str] = []
     lines.append("=" * 80)
+    lines.append(f"  Estimate source: {profile.source} | As of: {profile.timestamp.isoformat()}")
+    if profile.data_quality_notes:
+        lines.append("  Data quality: " + "; ".join(profile.data_quality_notes))
     lines.append(f"  OPTIONS GAMMA EXPOSURE (GEX) & VOLATILITY SURFACE: {profile.symbol.upper()}")
     lines.append("=" * 80)
 
@@ -103,5 +106,8 @@ def format_gex_telegram(profile: GammaExposureProfile) -> str:
         f"• <b>Put Wall:</b> <code>${profile.put_wall_strike:,.2f}</code> (OI: {profile.put_wall_oi:,})\n"
         f"• <b>Put/Call OI:</b> <code>{profile.pcr_open_interest:.2f}</code> | <b>Vol:</b> <code>{profile.pcr_volume:.2f}</code>\n\n"
         f"{regime_tip}\n"
+        f"<i>Estimate: {html.escape(profile.source)}. {profile.timestamp:%Y-%m-%d %H:%M UTC}</i>\n"
     )
+    if profile.data_quality_notes:
+        text += "⚠️ <b>Incomplete chain:</b> " + html.escape("; ".join(profile.data_quality_notes))
     return text

@@ -188,6 +188,9 @@ class RegimeConfig(BaseModel):
     vix_compressed_threshold: float = DEFAULT_VIX_COMPRESSED_THRESHOLD
     vix_elevated_threshold: float = DEFAULT_VIX_ELEVATED_THRESHOLD
     vix_extreme_threshold: float = DEFAULT_VIX_EXTREME_THRESHOLD
+    vix_watch_threshold: float = 18.0
+    elevated_min_rr: float = Field(default=2.2, ge=2)
+    extreme_min_rr: float = Field(default=2.5, ge=2)
     cache_ttl_seconds: int = 900
     yield_curve_enabled: bool = True
     credit_oas_enabled: bool = True
@@ -245,8 +248,8 @@ class ExecutionConfig(BaseModel):
 class OptionsConfig(BaseModel):
     enabled: bool = True
     default_symbols: list[str] = Field(default_factory=lambda: ["SPY", "QQQ", "IWM"])
-    max_expirations: int = 3
-    risk_free_rate: float = 0.045
+    max_expirations: int = Field(default=3, ge=1)
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE
     cache_ttl_seconds: int = 60
 
 

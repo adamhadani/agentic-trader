@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
 from typing import Any
+
+import click
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import AppConfig, load_config
@@ -18,7 +21,13 @@ def coro[F: Callable[..., Any]](f: F) -> F:
 
     @wraps(f)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        return asyncio.run(f(*args, **kwargs))
+        try:
+            return asyncio.run(f(*args, **kwargs))
+        except click.ClickException:
+            raise
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Command %s failed", f.__name__)
+            raise click.ClickException(str(exc)) from exc
 
     return wrapper  # type: ignore[return-value]
 

@@ -21,6 +21,7 @@ from agentic_trader.config import AppConfig
 from agentic_trader.constants import (
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
+    DEFAULT_RESEARCH_SYMBOL,
     STREAM_RECONNECT_MULTIPLIER,
     AssetClass,
     AuditEventType,
@@ -143,11 +144,11 @@ class TradingCopilot:
                 close_handler=self.close_position_manual,
                 execute_handler=self.execute_signal_by_id,
                 perf_provider=self.get_performance_summary_html,
-                regime_provider=self.get_regime_summary_html,
                 macro_provider=self.get_macro_summary_html,
                 explain_macro_provider=self.get_explain_macro_html,
                 alphas_provider=self.get_alphas_summary_html,
                 backtest_runner=self.run_backtest_summary_html,
+                backtest_lookback=self.config.backtest.lookback,
                 gex_provider=self.run_gex_summary_html,
                 pairs_provider=self.run_pairs_summary_html,
                 panic_handler=self.emergency_panic_halt,
@@ -1343,7 +1344,7 @@ class TradingCopilot:
             return False, f"❌ <b>Broker Submission Error:</b> {e}"
 
         if order_result.success:
-            fill_price = order_result.fill_price or entry_price
+            fill_price = order_result.fill_price
             await self.db.update_signal_execution(
                 signal_id=signal_id,
                 broker_order_id=order_result.order_id,
@@ -1675,36 +1676,36 @@ class TradingCopilot:
         )
         return TelegramHtmlFormatter.format_performance_html(report)
 
-    async def get_regime_summary_html(self) -> str:
-        """Format HTML volatility and macro regime for Telegram /regime."""
-        regime = await self.regime_detector.get_regime()
-        return TelegramHtmlFormatter.format_regime_html(regime)
-
     async def get_macro_summary_html(self) -> str:
-        """Format HTML multi-asset macro intelligence & yield curve dashboard for Telegram /macro."""
-        report = await self.regime_detector.macro_engine.get_macro_report()
-        return TelegramHtmlFormatter.format_macro_dashboard_html(report)
+        """One macro dashboard using the same combined snapshot as trade evaluation."""
+        regime = await self.regime_detector.get_regime()
+        await self.db.record_audit(
+            AuditEventType.MACRO_REPORT,
+            payload={
+                "fetched_at": regime.timestamp.isoformat(),
+                "vix": regime.vix,
+                "volatility_regime": regime.vix_regime.value,
+                "breakout_allowed": regime.breakout_allowed,
+                "minimum_rr": max(regime.min_rr_threshold, self.config.risk.min_risk_reward_ratio),
+                "risk_multiplier": regime.risk_multiplier,
+                "macro_unavailable_reason": regime.macro_unavailable_reason,
+                "observation_dates": regime.macro_report.observation_dates if regime.macro_report else {},
+            },
+        )
+        return TelegramHtmlFormatter.format_macro_dashboard_html(regime, self.config.risk.min_risk_reward_ratio)
 
     async def get_explain_macro_html(self) -> str:
         """Format educational macro tutorial and indicator breakdown for Telegram /explain_macro."""
-        try:
-            report = await self.regime_detector.macro_engine.get_macro_report()
-            explainer = MacroExplainer(config=self.config)
-            return await explainer.explain(report, format_mode="html")
-        except Exception as e:
-            return f"❌ Failed explaining macroeconomic intelligence: {e}"
+        report = await self.regime_detector.macro_engine.get_macro_report()
+        explainer = MacroExplainer(config=self.config)
+        return await explainer.explain(report, format_mode="html")
 
     async def get_alphas_summary_html(self) -> str:
         """Format HTML formulaic alpha intelligence dashboard for Telegram /alphas."""
-        try:
-            mgr = AlphaPromotionManager()
-            catalog = AlphaCatalog()
-            promoted = mgr.list_active_alphas()
-            return TelegramHtmlFormatter.format_alphas_dashboard_html(
-                promoted, catalog_count=len(catalog.list_alphas())
-            )
-        except Exception as e:
-            return f"❌ Failed retrieving formulaic alpha status: {e}"
+        mgr = AlphaPromotionManager()
+        catalog = AlphaCatalog()
+        promoted = mgr.list_active_alphas()
+        return TelegramHtmlFormatter.format_alphas_dashboard_html(promoted, catalog_count=len(catalog.list_alphas()))
 
     async def broadcast_macro_briefing(self) -> None:
         """Broadcast morning macro intelligence card to Telegram."""
@@ -1716,8 +1717,11 @@ class TradingCopilot:
             except Exception as e:
                 logger.warning("Failed to broadcast morning macro briefing: %s", e)
 
-    async def run_backtest_summary_html(self, symbol: str = "SPY", lookback: str = "1y") -> str:
+    async def run_backtest_summary_html(
+        self, symbol: str = DEFAULT_RESEARCH_SYMBOL, lookback: str | None = None
+    ) -> str:
         """Run on-demand backtest and format result as Telegram HTML."""
+        lookback = lookback or self.config.backtest.lookback
         engine = BacktestEngine(config=self.config)
         res = await asyncio.to_thread(
             engine.run,
@@ -1734,16 +1738,13 @@ class TradingCopilot:
             )
         return TelegramHtmlFormatter.format_backtest_html(res, symbols=[symbol], lookback=lookback, strategy="all")
 
-    async def run_gex_summary_html(self, symbol: str = "SPY") -> str:
-        try:
-            profile = await asyncio.to_thread(
-                self.options_fetcher.fetch_and_calculate_gex,
-                symbol,
-                self.config.options.max_expirations,
-            )
-            return format_gex_telegram(profile)
-        except Exception as e:
-            return f"❌ Failed to calculate GEX for {symbol}: {e}"
+    async def run_gex_summary_html(self, symbol: str = DEFAULT_RESEARCH_SYMBOL) -> str:
+        profile = await asyncio.to_thread(
+            self.options_fetcher.fetch_and_calculate_gex,
+            symbol,
+            self.config.options.max_expirations,
+        )
+        return format_gex_telegram(profile)
 
     async def scan_pairs(
         self,
@@ -1759,11 +1760,8 @@ class TradingCopilot:
 
     async def run_pairs_summary_html(self) -> str:
         """Run statistical pairs screener and format as Telegram HTML."""
-        try:
-            results = await self.scan_pairs()
-            return format_pairs_telegram(results)
-        except Exception as e:
-            return f"❌ Failed to evaluate pairs: {e}"
+        results = await self.scan_pairs()
+        return format_pairs_telegram(results)
 
     async def run_auto_retune(
         self,

@@ -39,7 +39,7 @@ def mock_copilot():
     copilot.db.get_account_balance = AsyncMock(return_value=100_000.0)
     copilot.get_status_text_html = AsyncMock(return_value="<b>Status:</b> All systems nominal")
     copilot.get_positions_summary_html = AsyncMock(return_value="<b>Open:</b> SPY 39x")
-    copilot.get_regime_summary_html = AsyncMock(return_value="<b>Regime:</b> VIX 14.5")
+    copilot.get_macro_summary_html = AsyncMock(return_value="<b>Regime:</b> VIX 14.5")
     copilot.run_scan_summary_html = AsyncMock(return_value="<b>Scan:</b> Clean")
     copilot.run_backtest_summary_html = AsyncMock(return_value="<b>Backtest:</b> Sharpe 1.5")
     copilot.run_gex_summary_html = AsyncMock(return_value="<b>GEX:</b> Neutral")

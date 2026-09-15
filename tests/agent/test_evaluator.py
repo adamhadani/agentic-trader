@@ -12,6 +12,31 @@ from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
+@pytest.fixture
+def evaluator_factory(config):
+    """Deterministic risk tests explicitly supply calendar and market context."""
+
+    def build(**overrides):
+        detector = RegimeDetector(config.regime)
+        detector.get_regime = AsyncMock(
+            return_value=RegimeSnapshot(
+                vix=18.0,
+                vix_regime=VolatilityRegime.NORMAL,
+                tnx=4.2,
+                dxy=103.0,
+                breakout_allowed=True,
+                min_rr_threshold=2.0,
+                timestamp=datetime.now(UTC),
+                summary_text="Test context",
+            )
+        )
+        calendar = AsyncMock(spec=EconomicCalendar)
+        calendar.is_in_lockout_window.return_value = (False, None)
+        return RiskEvaluator(config, **{"regime_detector": detector, "calendar": calendar, **overrides})
+
+    return build
+
+
 def create_candidate(contract="/MES", direction="LONG", price=5800.0, atr=20.0, swing_low=5770.0, swing_high=5830.0):
     return ScreenerCandidate(
         contract=contract,
@@ -32,8 +57,8 @@ def create_candidate(contract="/MES", direction="LONG", price=5800.0, atr=20.0, 
 
 
 @pytest.mark.asyncio
-async def test_deterministic_long_evaluation(config):
-    evaluator = RiskEvaluator(config)
+async def test_deterministic_long_evaluation(evaluator_factory):
+    evaluator = evaluator_factory()
     candidate = create_candidate(direction="LONG", price=5800.0, atr=20.0, swing_low=5760.0)
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
@@ -54,8 +79,8 @@ async def test_deterministic_long_evaluation(config):
 
 
 @pytest.mark.asyncio
-async def test_deterministic_short_evaluation(config):
-    evaluator = RiskEvaluator(config)
+async def test_deterministic_short_evaluation(evaluator_factory):
+    evaluator = evaluator_factory()
     candidate = create_candidate(direction="SHORT", price=5800.0, atr=20.0, swing_high=5840.0)
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
@@ -68,8 +93,8 @@ async def test_deterministic_short_evaluation(config):
 
 
 @pytest.mark.asyncio
-async def test_notional_limit_rejection(config):
-    evaluator = RiskEvaluator(config)
+async def test_notional_limit_rejection(evaluator_factory):
+    evaluator = evaluator_factory()
     candidate = create_candidate(price=5800.0)  # /MES notional = 5800 * 5 = $29,000
     # If existing notional is $35,000, adding $29,000 = $64,000 > $60,000 limit
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=35000.0, use_llm=False)
@@ -79,7 +104,7 @@ async def test_notional_limit_rejection(config):
 
 
 @pytest.mark.asyncio
-async def test_macro_lockout_rejection(config):
+async def test_macro_lockout_rejection(evaluator_factory):
     class MockCalendar(EconomicCalendar):
         async def is_in_lockout_window(self, pre_minutes=60, post_minutes=30, now=None):
             return True, MacroEvent(
@@ -89,7 +114,7 @@ async def test_macro_lockout_rejection(config):
                 timestamp=datetime.now(UTC),
             )
 
-    evaluator = RiskEvaluator(config, calendar=MockCalendar())
+    evaluator = evaluator_factory(calendar=MockCalendar())
     candidate = create_candidate(price=5800.0)
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
@@ -99,8 +124,8 @@ async def test_macro_lockout_rejection(config):
 
 
 @pytest.mark.asyncio
-async def test_equity_dynamic_sizing(config):
-    evaluator = RiskEvaluator(config)
+async def test_equity_dynamic_sizing(evaluator_factory):
+    evaluator = evaluator_factory()
     # Equity AAPL at 150.00 with ATR=2.0 and swing low=146.00
     candidate = ScreenerCandidate(
         contract="AAPL",
@@ -140,7 +165,7 @@ async def test_equity_dynamic_sizing(config):
 
 
 @pytest.mark.asyncio
-async def test_squeeze_breakout_suppression_in_extreme_regime(config):
+async def test_squeeze_breakout_suppression_in_extreme_regime(evaluator_factory):
     # Setup mock regime detector returning EXTREME regime (VIX = 35.0, breakout_allowed = False)
     mock_regime = RegimeDetector()
     extreme_snapshot = RegimeSnapshot(
@@ -155,7 +180,7 @@ async def test_squeeze_breakout_suppression_in_extreme_regime(config):
     )
     mock_regime.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=extreme_snapshot)  # type: ignore
 
-    evaluator = RiskEvaluator(config, regime_detector=mock_regime)
+    evaluator = evaluator_factory(regime_detector=mock_regime)
 
     candidate = ScreenerCandidate(
         contract="/MES",
@@ -182,7 +207,7 @@ async def test_squeeze_breakout_suppression_in_extreme_regime(config):
 
 
 @pytest.mark.asyncio
-async def test_squeeze_breakout_allowed_in_normal_regime(config):
+async def test_squeeze_breakout_allowed_in_normal_regime(evaluator_factory):
     mock_regime = RegimeDetector()
     normal_snapshot = RegimeSnapshot(
         vix=17.5,
@@ -196,7 +221,7 @@ async def test_squeeze_breakout_allowed_in_normal_regime(config):
     )
     mock_regime.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=normal_snapshot)  # type: ignore
 
-    evaluator = RiskEvaluator(config, regime_detector=mock_regime)
+    evaluator = evaluator_factory(regime_detector=mock_regime)
 
     candidate = ScreenerCandidate(
         contract="/MES",
@@ -221,9 +246,9 @@ async def test_squeeze_breakout_allowed_in_normal_regime(config):
 
 
 @pytest.mark.asyncio
-async def test_evaluator_correlation_group_limit(config):
+async def test_evaluator_correlation_group_limit(evaluator_factory):
     """Test that a new candidate is rejected if its correlation group is at capacity."""
-    evaluator = RiskEvaluator(config)
+    evaluator = evaluator_factory()
     candidate = create_candidate(direction="LONG")
     # Active position already in US Equities group (e.g. SPY LONG)
     active_positions = [{"contract": "SPY", "direction": "LONG", "notional_value": 25000.0}]
@@ -241,7 +266,7 @@ async def test_evaluator_correlation_group_limit(config):
 
 
 @pytest.mark.asyncio
-async def test_evaluator_market_session_rejection(config):
+async def test_evaluator_market_session_rejection(evaluator_factory):
     mock_session_provider = AsyncMock()
     mock_session_provider.get_session_info = AsyncMock(
         return_value=MarketSessionInfo(
@@ -255,7 +280,7 @@ async def test_evaluator_market_session_rejection(config):
         )
     )
 
-    evaluator = RiskEvaluator(config, session_provider=mock_session_provider)
+    evaluator = evaluator_factory(session_provider=mock_session_provider)
     candidate = create_candidate(direction="LONG")
 
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
@@ -265,7 +290,7 @@ async def test_evaluator_market_session_rejection(config):
 
 
 @pytest.mark.asyncio
-async def test_macro_stress_risk_budget_scaling(config):
+async def test_macro_stress_risk_budget_scaling(evaluator_factory):
     # Setup mock regime with HIGH macro stress (risk multiplier 0.50)
     mock_regime_high = RegimeDetector()
     high_snapshot = RegimeSnapshot(
@@ -281,7 +306,7 @@ async def test_macro_stress_risk_budget_scaling(config):
     )
     mock_regime_high.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=high_snapshot)  # type: ignore
 
-    evaluator_high = RiskEvaluator(config, regime_detector=mock_regime_high)
+    evaluator_high = evaluator_factory(regime_detector=mock_regime_high)
 
     # Setup normal regime (risk multiplier 1.0)
     mock_regime_norm = RegimeDetector()
@@ -298,7 +323,7 @@ async def test_macro_stress_risk_budget_scaling(config):
     )
     mock_regime_norm.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=norm_snapshot)  # type: ignore
 
-    evaluator_norm = RiskEvaluator(config, regime_detector=mock_regime_norm)
+    evaluator_norm = evaluator_factory(regime_detector=mock_regime_norm)
 
     candidate = create_candidate(
         contract="SPY",

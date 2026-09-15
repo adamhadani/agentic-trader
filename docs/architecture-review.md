@@ -45,7 +45,7 @@ backend, not a production failover mechanism.
 | P1 | Watchdog and `/healthz` prove process liveness, not data, broker-stream or Telegram freshness. | Add readiness with last successful scan, quote age, broker sync, Telegram poll and reconciliation backlog; alert on staleness. Bind active diagnostic endpoints to a trusted interface or protect them. |
 | P2 | Notification happens after the close transaction. A process crash or Telegram failure can lose delivery despite a correct closed trade. | Transactional outbox with idempotent delivery, retries, message ID and visible terminal failure state. Current audit records attempts/results but is not a retry worker. |
 | P2 | `TradingCopilot` still constructs calendar, regime, strategy, graph and research services and returns transport-specific strings. | Move construction to a composition module; extract execution/reconciliation/report services with small protocols and typed results. Keep Telegram/CLI rendering at the transport boundary. |
-| P2 | Missing data may produce permissive fallback macro state. Worker threads keep the event loop responsive but share executor capacity; heavy research can still contend with trading work. | Propagate data age/quality, define stale-data policy, and move heavy research into a bounded job worker when workload grows. |
+| P2 | Missing macro enrichment is explicit but still allows volatility-only evaluation; daily observations lack a maximum-age admission policy. Worker threads keep the event loop responsive but share executor capacity; heavy research can still contend with trading work. | Propagate data age/quality, define stale-data policy, and move heavy research into a bounded job worker when workload grows. |
 | P2 | Timeframe filtering follows strategy conflict resolution; timeframe is absent from persisted signals. Research annualization and live bar routing differ. | Filter before netting, persist timeframe/data timestamp, and validate per-timeframe research/live parity. |
 | P2 | Promotion weights/convex optimizer are not used in live sizing. External YAML edits do not refresh the daemon registry. | Make allocation integration and reload explicit; report the loaded registry version, not only current file contents. |
 | P3 | Model aliases remain for symbol/contract and duplicated report fields; multiple legacy helper exports persist. | Consolidate one model vocabulary when extracting services, update all callers, and remove alias-only tests rather than adding adapters. |
@@ -67,11 +67,11 @@ material, not statements of current operational guarantees.
 
 ## Telegram and asyncio follow-up
 
-The deployed incident logs showed repeated `httpx.ReadError` in Telegram polling.
-The SDK retries polling automatically; those logs alone cannot establish why an
-individual historical command lacked a reply. Previously there were no command
-receipt/completion audits or polling recovery timestamps to distinguish transport
-failure, a queued command, and an event-loop stall.
+The deployed incident traces showed `httpx.ReadError` while sending `/status`
+and `/positions` replies. Those commands reached their handlers but response
+delivery failed. The SDK retries polling automatically, but outbound delivery
+needed its own transport policy. Previously there were no durable command
+receipt/completion audits or poll freshness timestamps.
 
 - Shared `RetryingTelegramRequest` retries transient network errors, HTTP 5xx and
   bounded rate limits for every Telegram API caller. Permanent 4xx responses retain
@@ -98,3 +98,56 @@ handling. Synchronous constructor migrations and small configuration/catalog fil
 reads remain; separate schema setup from construction in the next persistence
 refactor. Threads do not forcibly cancel synchronous SDK calls; enforce provider
 timeouts and avoid sharing mutable provider configuration during a request.
+
+## GEX and command-surface review
+
+The real SPY option chain reproduced `cannot convert float NaN to integer`.
+Both calls and puts now share numeric normalization before aggregation: invalid
+strikes are excluded; missing counts become zero; modeled IV/time defaults and
+missing fields are disclosed in quality notes. Spot prices must come from actual
+provider data; hard-coded ETF estimates were removed. Expiration count participates
+in cache identity, and unavailable/empty chains are reported explicitly.
+
+GEX is labeled a Yahoo option-chain/model estimate. Its sign convention, approximate
+time-to-expiry and strike-based gamma-flip calculation are research heuristics,
+not measured dealer inventory or an Alpaca account valuation. Validate/refine this
+model before using it as an execution gate.
+
+Report titles now use the shared Agentic Trader name. Telegram help describes
+operator approval and broker-confirmed accounting; fixed risk numbers were removed
+from help, and the evaluation prompt renders actual configuration/timeframe limits.
+CLI async errors use one logged nonzero-exit boundary; GEX JSON output contains
+only JSON on stdout. Parametrized tests cover command help and read-command routing.
+
+## Unified macro reporting and response defaults
+
+`/macro` is the single market-context command. `/regime`, its callback and its
+conversational tool were removed. The dashboard takes the same `RegimeSnapshot`
+used by evaluation and combines VIX classification, macro indicators, breakout
+permission, risk multiplier and `max(regime minimum R:R, risk.min_risk_reward_ratio)`.
+`/explain_macro` explains the macro model; it is not a replacement for the combined
+entry checks. The menu, help and inline buttons use `/macro`.
+
+Macro enrichment reuses one VIX/yield/dollar snapshot. The two-year Treasury yield
+comes from [FRED DGS2](https://fred.stlouisfed.org/series/DGS2); FRED observation
+dates and the snapshot fetch time are displayed. These daily/closing observations
+can have different dates. Missing/invalid macro data is reported as unavailable,
+not replaced by fixed yields, credit spreads, inflation or VIX. If enrichment
+fails, the dashboard explicitly labels the remaining volatility-only policy;
+if VIX itself is missing, regime evaluation fails. Stale-data admission policy
+and per-feed freshness alerts remain follow-up work.
+
+VIX display colors use the classified enum, and stress scoring shares configured
+VIX thresholds (`regime.vix_watch_threshold`, `vix_elevated_threshold`,
+`vix_extreme_threshold`). Elevated/extreme minimum R:R uses
+`regime.elevated_min_rr` / `extreme_min_rr`. Telegram backtests receive
+`backtest.lookback` from the loaded app config; research symbol and message chunk
+size use shared constants. Typed evaluation fields have no presentation fallback.
+Conversational positions/status use the same report providers as slash commands,
+removing invented default prices/P&L and duplicate notional calculations.
+`macro_report` audit events retain fetched time, published dates, VIX and the
+combined filter decision, including missing-enrichment details.
+
+Accepted orders without a broker fill price now say “ORDER ACCEPTED / Awaiting
+broker fill”; they do not label the proposed entry or zero as a fill. Research
+provider errors reach the shared command error/audit boundary.

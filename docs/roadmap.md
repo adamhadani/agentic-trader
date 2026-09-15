@@ -1,6 +1,6 @@
-# Cash-Plus Trading Copilot: Architectural Roadmap & High-Value Targets
+# Agentic Trader: Architectural Roadmap & High-Value Targets
 
-This document tracks the prioritized strategic initiatives for the **Cash-Plus Trading Copilot**, establishing architectural milestones, component breakdowns, and implementation status.
+This document tracks the prioritized strategic initiatives for the **Agentic Trader**, establishing architectural milestones, component breakdowns, and implementation status.
 
 ---
 
@@ -40,7 +40,7 @@ confirmed trailing-stop parity; nonblocking data access and timeframe/risk integ
 | **Phase 5** | Offline Vectorized Backtester & Performance Analytics | **Completed** | Historical strategy backtesting, equity curve simulation, Sharpe/drawdown metrics |
 | **Phase 6** | VectorBT Research & Parameter Grid Optimization | **Completed** | High-throughput tensor parameter search (`copilot optimize`), NumPy fallback |
 | **Phase 7** | Dynamic Strategy Configuration & Parameter Export | **Completed** | Parameterize strategy screeners via config, export optimal params from CLI |
-| **Phase 8** | Telegram Interactive Commands (`/perf`, `/regime`, `/backtest`) | **Completed** | Mobile oversight, live portfolio performance attribution, real-time regime view |
+| **Phase 8** | Telegram Interactive Commands (`/perf`, `/macro`, `/backtest`) | **Completed** | Mobile oversight, live portfolio performance attribution, real-time regime view |
 | **Phase 9** | Real-Time WebSocket Streaming for Alpaca (`TradingStream`) | **Completed** | Sub-second event-driven fills, bracket execution, and liquidation push alerts |
 | **Phase 10** | Portfolio Risk Budgeting & Correlation Filtering | **Completed** | Sector/asset class allocation caps, cross-asset correlation guardrails |
 | **Phase 11** | Walk-Forward Out-of-Sample Validation in Research | **Completed** | Rolling train/test windows in research to guard against parameter overfitting |
@@ -138,7 +138,7 @@ Provide macro and volatility regime awareness to the LLM evaluator to adaptively
 
 ### Key Deliverables
 1. **`RegimeDetector` Component**:
-   - Monitors `^VIX` (volatility regime: compressed < 15, elevated 15–25, extreme > 25).
+   - Monitors `^VIX` using the thresholds in `RegimeConfig`; displays the resulting classification.
    - Monitors 10-year Treasury yield (`^TNX`) and US Dollar Index (`DX-Y.NYB`).
 2. **LLM Prompt Context Integration**:
    - Inject quantitative regime indicators into the prompt alongside the economic calendar.
@@ -165,7 +165,7 @@ Validate strategy expectancy and quantify risk/return metrics across multi-year 
 - **Metric Analytics (`agentic_trader/backtest/metrics.py`)**: Pure vector calculation of win rate, profit factor, running and maximum drawdown %, annualized Sharpe ratio, and Sortino ratio with zero-variance safeguards.
 - **Simulation Engine (`agentic_trader/backtest/engine.py`)**: `BacktestEngine` with historical data ingestion via `yfinance`, bar-by-bar chronological stepping, deterministic bracket TP/SL exits, dynamic position sizing, portfolio exposure constraints, and daily cash reserve interest accrual (4.5% risk-free rate).
 - **Institutional ASCII Reporting (`agentic_trader/backtest/reporting.py`)**: `format_backtest_report` presenting pure strategy alpha, cash reserve yield, risk-adjusted performance, trade statistics, and top winners/losers.
-- **CLI Subcommand (`agentic_trader/main.py`)**: Added `backtest` command with `--symbols`, `--strategy`, `--lookback`, `--cash`, and `--risk-free-rate`.
+- **CLI Subcommand (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Added `backtest` command with `--symbols`, `--strategy`, `--lookback`, `--cash`, and `--risk-free-rate`.
 - **Test Suite (`tests/test_backtest.py`)**: 9 test cases verifying metric calculation edge cases, synthetic market data simulation, bracket exits, and CLI invocation.
 
 ---
@@ -180,7 +180,7 @@ High-throughput parameter sensitivity analysis and hyperparameter optimization l
 - **Data Models (`agentic_trader/research/models.py`)**: `ParameterCandidate` and `OptimizationResult` storing hyperparameter sets, win rates, Sharpe ratios, drawdowns, and profit factors.
 - **`ParameterGridOptimizer` (`agentic_trader/research/optimizer.py`)**: Dual-mode engine supporting VectorBT Numba JIT tensor simulation and pure vectorized NumPy fallback simulation.
 - **Reporting (`agentic_trader/research/reporting.py`)**: ASCII table reporting with top parameter candidate rankings.
-- **CLI Subcommand (`agentic_trader/main.py`)**: Added `copilot optimize` with `--symbol`, `--strategy`, `--lookback`, `--top-n`, and `--no-vbt`.
+- **CLI Subcommand (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Added `copilot optimize` with `--symbol`, `--strategy`, `--lookback`, `--top-n`, and `--no-vbt`.
 - **Test Suite (`tests/test_optimizer.py`)**: 5 unit and integration tests verifying parameter evaluation, report formatting, NumPy fallback, and CLI parser.
 
 ---
@@ -205,26 +205,26 @@ Bridge the gap between research optimization and live execution by making strate
 
 ---
 
-## Phase 8: Telegram Interactive Commands (`/perf`, `/regime`, `/backtest`)
+## Phase 8: Telegram Interactive Commands (`/perf`, `/macro`, `/backtest`)
 
 ### Objective
 Empower mobile oversight, real-time risk checks, and quick analytics directly from Telegram.
 
 ### Key Deliverables
 1. **`/perf` Command**:
-   - Query SQLite for cumulative closed trades (`CLOSED_WIN`, `CLOSED_LOSS`), total realized P&L, win rate %, and current open positions with unrealized risk.
-2. **`/regime` Command**:
-   - Query current real-time VIX level, 10-Year Treasury yield (`^TNX`), and Dollar Index (`DX-Y.NYB`) with qualitative status (e.g. "Low Volatility Compression", "Normal", "Extreme Volatility").
+   - Query the configured database for confirmed cumulative closed trades (`CLOSED_WIN`, `CLOSED_LOSS`), total realized P&L, win rate %, and current open positions with unrealized risk.
+2. **`/macro` Command**:
+   - Consolidates VIX classification, Treasury curve, credit, inflation, data dates and the combined configured trading filters. The old `/regime` command was removed in September 2026.
 3. **`/backtest` Command**:
    - On-demand backtesting from Telegram (e.g. `/backtest SPY 1y`) returning Total Net Return, CAGR, Sharpe, Drawdown, and Cash-Plus Yield.
 4. **Interactive Buttons**:
-   - Inline action buttons to trigger `/scan`, check `/positions`, view `/perf`, or inspect `/regime` without typing.
+   - Inline action buttons to trigger `/scan`, check `/positions`, view `/perf`, or inspect `/macro` without typing.
 
 ### Implementation Summary
 - **Database Analytics (`agentic_trader/storage/db.py`)**: Added `get_closed_positions_stats()` aggregating total trades, wins/losses, win rate %, gross profit/loss, and profit factor.
-- **Bot Handlers (`agentic_trader/notifier/telegram_bot.py`)**: Implemented `/perf`, `/regime`, and `/backtest` command handlers, alongside inline buttons (`cmd_scan`, `cmd_positions`, `cmd_perf`, `cmd_regime`).
-- **Copilot Integration (`agentic_trader/main.py`)**: Added `get_performance_summary_html`, `get_regime_summary_html`, and `run_backtest_summary_html` to `FuturesCopilot` and wired them to `TelegramNotifier`.
-- **Test Suite (`tests/test_telegram_interactive.py`)**: 3 test cases validating closed positions stats math, HTML formatting, command dispatch, and interactive button callbacks.
+- **Bot Handlers (`agentic_trader/notifier/telegram_bot.py`)**: Implemented `/perf`, `/macro`, and `/backtest` command handlers, alongside inline buttons (`cmd_scan`, `cmd_positions`, `cmd_perf`, `cmd_macro`).
+- **Copilot Integration (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Added `get_performance_summary_html`, `get_macro_summary_html`, and `run_backtest_summary_html` to `TradingCopilot` and wired them to `TelegramNotifier`.
+- **Test Suite (`tests/notifier/test_telegram_interactive.py`)**: 3 test cases validating closed positions stats math, HTML formatting, command dispatch, and interactive button callbacks.
 
 
 ---
@@ -245,8 +245,8 @@ Transition from periodic polling reconciliation to sub-second event-driven order
 
 ### Implementation Summary
 - **Broker Streaming (`agentic_trader/broker/alpaca.py`)**: Implemented `start_trade_stream` and `stop_trade_stream` using Alpaca's `TradingStream`, binding `_on_trade_update` handlers with deduplication checks.
-- **Position Reconciliation Deduplication (`agentic_trader/main.py`)**: Updated `process_reconciliation_event` and `on_stream_trade_update` with an in-memory lock set (`_reconciliation_lock`) to prevent concurrent race conditions between WebSocket events and periodic polling loops.
-- **Daemon Lifecycle Management (`agentic_trader/main.py`)**: Launched the trade stream as a persistent background asyncio task in `start_daemon()`, cleanly terminating during shutdown.
+- **Position Reconciliation Deduplication (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Updated `process_reconciliation_event` and `on_stream_trade_update` with an in-memory lock set (`_reconciliation_lock`) to prevent concurrent race conditions between WebSocket events and periodic polling loops.
+- **Daemon Lifecycle Management (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Launched the trade stream as a persistent background asyncio task in `start_daemon()`, cleanly terminating during shutdown.
 - **Test Suite (`tests/test_alpaca_stream.py`)**: 4 unit and integration tests verifying WebSocket stream startup, callback event parsing, bracket fill detection, and reconciliation deduplication.
 
 ---
@@ -298,7 +298,7 @@ Prevent hyperparameter overfitting and quantify strategy parameter stability ove
   - Full-grid candidate ranking prioritizing out-of-sample Sharpe and positive Walk-Forward Efficiency.
 - **Reporting (`agentic_trader/research/reporting.py`)**:
   - Formatted ASCII walk-forward report with fold-by-fold chronological breakdown, train vs test return comparisons, and robustness rating (PASS if WFE >= 0.50).
-- **CLI Subcommand (`agentic_trader/main.py`)**:
+- **CLI Subcommand (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**:
   - Added `--walk-forward` and `--splits` arguments to `copilot optimize`.
 - **Test Suite (`tests/test_walk_forward.py`, `tests/test_optimizer.py`)**:
   - 4 unit tests verifying fold generation, candidate out-of-sample attributes, reporting tables, and fallback on short histories.
@@ -327,7 +327,7 @@ Quantify tail risk, drawdown distributions, and risk of ruin beyond single histo
 - **Data Models (`agentic_trader/backtest/models.py`, `agentic_trader/backtest/__init__.py`)**: Added `MonteCarloResult` dataclass and `monte_carlo` attribute to `BacktestResult`.
 - **Simulation Engine (`agentic_trader/backtest/monte_carlo.py`)**: Implemented `run_monte_carlo_simulation()` with vectorized NumPy matrix operations and zero-division protections.
 - **Reporting (`agentic_trader/backtest/reporting.py`)**: Formatted dedicated Monte Carlo risk attribution section in institutional ASCII backtest report.
-- **CLI & Telegram (`agentic_trader/main.py`)**: Added `--monte-carlo` flag to `backtest` command and embedded worst-case drawdown / VaR into Telegram `/backtest` summaries.
+- **CLI & Telegram (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Added `--monte-carlo` flag to `backtest` command and embedded worst-case drawdown / VaR into Telegram `/backtest` summaries.
 - **Test Suite (`tests/test_monte_carlo.py`, `tests/test_backtest.py`)**: 4 unit tests verifying sample sizing, metric calculations, random seed determinism, report formatting, and CLI arguments.
 
 ---
@@ -344,7 +344,7 @@ Incorporate real-world exchange clearing fees, regulatory costs, broker commissi
    - Dynamic slippage penalty on trade entry (higher price for LONG, lower price for SHORT) and trade exit.
    - Entry and exit commission deduction from net realized P&L and cash reserves.
    - `BacktestTrade` and `BacktestResult` attributes for `commission`, `slippage_dollars`, `gross_strategy_pnl`, `total_commissions`, and `total_slippage`.
-3. **Institutional Reporting & CLI (`agentic_trader/backtest/reporting.py`, `agentic_trader/main.py`)**:
+3. **Institutional Reporting & CLI (`agentic_trader/backtest/reporting.py`, `agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**:
    - Performance attribution breakdown: Gross Strategy Alpha, Execution Commissions, Bid-Ask Slippage Drag, Net Strategy Alpha.
    - Added `--no-friction` flag to `copilot backtest` for baseline frictionless comparison.
 
@@ -352,7 +352,7 @@ Incorporate real-world exchange clearing fees, regulatory costs, broker commissi
 - **Configuration (`agentic_trader/config.py`)**: Added `FrictionConfig` to `AppConfig` and `load_config()`.
 - **Simulation Engine (`agentic_trader/backtest/engine.py`)**: Supported `apply_friction` in `BacktestEngine`, applying adverse price impact and commission tracking across both futures and equities.
 - **Reporting (`agentic_trader/backtest/reporting.py`)**: Formatted detailed friction deduction lines in ASCII performance attribution table.
-- **CLI Subcommand (`agentic_trader/main.py`)**: Added `--no-friction` argument to `backtest` command.
+- **CLI Subcommand (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Added `--no-friction` argument to `backtest` command.
 - **Test Suite (`tests/test_friction.py`, `tests/test_backtest.py`)**: 4 unit tests verifying config defaults, futures friction deduction, frictionless pure alpha mode, and report formatting.
 
 ---
@@ -369,17 +369,17 @@ Maintain optimal, non-stale algorithmic strategy parameters by scheduling automa
    - Persists robust parameters into timestamped JSON/YAML calibration records.
    - Generates HTML executive summaries formatted for Telegram mobile broadcast.
    - Directly exports calibrated parameters to active `config.yaml` with backup preservation.
-2. **Scheduled Daemon Execution (`agentic_trader/main.py`)**:
+2. **Scheduled Daemon Execution (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**:
    - Integrated cron job into APScheduler (`copilot daemon`) running during weekend closures (e.g. Sunday 18:00 UTC).
    - Async execution via `asyncio.to_thread()` ensuring zero blocking of active risk management loops.
    - Mobile notification delivery via `TelegramNotifier.send_message()`.
-3. **CLI Subcommand (`agentic_trader/main.py`)**:
+3. **CLI Subcommand (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**:
    - Dedicated `copilot retune` command with `--symbols`, `--strategy`, `--min-wfe`, `--min-sharpe`, and `--export-config` flags.
 
 ### Implementation Summary
 - **Daemon Engine (`agentic_trader/research/retuner.py`, `agentic_trader/research/__init__.py`)**: Implemented `AutoRetuner` class with calibration persistence, config updates, and HTML reporting.
 - **Config & Schedule (`agentic_trader/config.py`)**: Added `retune_enabled`, `retune_day_of_week`, `retune_hour`, and `retune_minute` to `SchedulerConfig`.
-- **CLI & Dispatch (`agentic_trader/main.py`)**: Added `retune` parser subcommand and integrated `run_auto_retune()` into daemon scheduler.
+- **CLI & Dispatch (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Added `retune` parser subcommand and integrated `run_auto_retune()` into daemon scheduler.
 - **Telegram Dispatch (`agentic_trader/notifier/telegram_bot.py`)**: Added generic `send_message()` helper for formatted audit broadcasts.
 - **Test Suite (`tests/test_retuner.py`)**: 5 unit tests verifying initialization, successful retune filtering, strict threshold rejection, persistence save/load, and config export.
 
@@ -440,7 +440,7 @@ Quantify alpha sources and risk concentrations through multi-dimensional perform
 - **Attribution Engine (`agentic_trader/backtest/attribution.py`)**: Implemented `calculate_performance_attribution()` supporting VIX alignment, factor isolation, and sector mapping.
 - **Data Models (`agentic_trader/backtest/models.py`, `agentic_trader/backtest/__init__.py`)**: Added `FactorAttribution`, `RegimeAttribution`, `AssetClassAttribution`, and `PerformanceAttributionResult`.
 - **Simulation Engine (`agentic_trader/backtest/engine.py`)**: Attached automated attribution calculation to `BacktestEngine.run()` output.
-- **Reporting & Mobile (`agentic_trader/backtest/reporting.py`, `agentic_trader/main.py`)**: Enhanced ASCII report with factor/regime tables and Telegram summary cards.
+- **Reporting & Mobile (`agentic_trader/backtest/reporting.py`, `agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Enhanced ASCII report with factor/macro tables and Telegram summary cards.
 - **Test Suite (`tests/test_attribution.py`)**: 3 unit tests verifying factor decomposition, VIX regime segmentation, asset class attribution, and report formatting.
 
 ---
@@ -493,12 +493,12 @@ Minimize market impact, spread crossing penalty, and adverse selection for large
    - Aggregates child fills, computes true volume-weighted average fill price, and returns an unified `OrderResult`.
 4. **Configuration & Live Dispatch Wiring**:
    - `ExecutionConfig` added to `config.py` (`algorithm`, `twap_slices`, `twap_interval_seconds`, `price_collar_ticks`, `price_collar_pct`, `vwap_intraday_profile`).
-   - `FuturesCopilot.execute_signal()` routed through `self.execution_engine.execute_order()`, preserving 100% backward compatibility when `algorithm == "immediate"`.
+   - `TradingCopilot.execute_signal_by_id()` routed through `self.execution_engine.execute_order()`, using immediate execution by default; sliced execution remains disabled until partial-fill accounting is complete.
 
 ### Implementation Summary
 - **Execution Package (`agentic_trader/execution/`)**: Built `models.py`, `slicer.py`, and `engine.py`.
 - **Configuration (`agentic_trader/config.py`, `config/config.yaml`)**: Added `ExecutionConfig`, wired into `AppConfig` and `load_config()`.
-- **Copilot Integration (`agentic_trader/main.py`)**: Attached `self.execution_engine` to `FuturesCopilot` and routed signal executions.
+- **Copilot Integration (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Attached `self.execution_engine` to `TradingCopilot` and routed signal executions.
 - **Test Suite (`tests/test_execution_microstructure.py`)**: 6 unit tests validating price collar calculations, discrete futures slicing, equity VWAP profiles, size threshold filtering, TWAP execution simulation, and price collar breach protection.
 
 ---
@@ -535,7 +535,7 @@ Provide quantitative stress testing and tail-risk evaluation by replaying strate
 - **Stress Engine (`agentic_trader/backtest/stress.py`)**: Implemented `CrisisReplayEngine`, `CrisisScenario`, `ScenarioStressResult`, `InstantaneousShockResult`, and `CRISIS_CATALOG`.
 - **Backtest Boundaries (`agentic_trader/backtest/engine.py`)**: Added `start_date` and `end_date` support to data fetching and simulation execution.
 - **Reporting (`agentic_trader/backtest/reporting.py`)**: Added institutional crisis tables with colorized drawdown risk levels.
-- **CLI Subcommand (`agentic_trader/main.py`)**: Added `stress` subcommand to CLI.
+- **CLI Subcommand (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Added `stress` subcommand to CLI.
 - **Test Suite (`tests/test_stress_testing.py`)**: 7 unit tests covering scenario lookups, proxy resolution, replay execution, instantaneous shocks, and CLI commands.
 
 ---
@@ -573,7 +573,7 @@ Provide quantitative options market telemetry by analyzing real-time option chai
 - **Options Package (`agentic_trader/options/`)**: Created `models.py`, `gex.py`, `fetcher.py`, `reporting.py`, and `__init__.py`.
 - **Configuration (`agentic_trader/config.py`, `config/config.yaml`)**: Added `OptionsConfig` model with configurable default symbols, expirations, and risk-free rate.
 - **Telegram Bot (`agentic_trader/notifier/telegram_bot.py`)**: Registered `/gex` command handler with `gex_provider` callback.
-- **CLI & Copilot Integration (`agentic_trader/main.py`)**: Attached `self.options_fetcher` to `FuturesCopilot` and wired `gex` subcommand.
+- **CLI & Copilot Integration (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Attached `self.options_fetcher` to `TradingCopilot` and wired `gex` subcommand.
 - **Test Suite (`tests/test_options_gex.py`)**: 8 comprehensive unit tests covering Black-Scholes gamma calculation, synthetic GEX aggregation, gamma flip detection, ETF proxy mapping, ASCII/Telegram formatters, and Telegram bot command dispatch.
 
 ---
@@ -606,7 +606,7 @@ Provide enterprise-grade operational telemetry and observability via native Prom
      - `telemetry.py`: Live metrics snapshot and exporter server (`copilot metrics`).
      - `service.py`: Daemon scheduling, streaming, and bot polling (`daemon`, `listen`, `eval`).
      - `db.py`: Alembic database migration management (`copilot db upgrade`, `downgrade`, `current`, `history`).
-   - 100% backward-compatible: `from agentic_trader.main import FuturesCopilot` and all subprocess CLI test invocations preserved.
+   - Canonical imports now use `from agentic_trader.agent.copilot import TradingCopilot`; main-module compatibility exports were removed in September 2026.
 4. **Rust-Accelerated Impacted Test Runner (`pytest-impacted[fast]`)**:
    - Added `pytest-impacted[fast]` (powered by Ruff's Rust parser + Rayon parallel AST discovery) to development dependencies.
    - Configured `.pre-commit-config.yaml` to run `pytest --impacted --impacted-module=agentic_trader --impacted-tests-dir=tests`, reducing pre-commit overhead while guaranteeing test coverage.
@@ -658,7 +658,7 @@ Provide institutional-grade statistical arbitrage capabilities by scanning cross
 - **Configuration (`agentic_trader/config.py`, `config/config.yaml`)**: Added `PairsConfig` model (`p_value_threshold`, `min_half_life_bars`, `max_half_life_bars`, `lookback_days`, `z_score_lookback`, `z_entry_threshold`, `z_exit_threshold`, `default_pairs`).
 - **CLI Subcommand (`agentic_trader/cli/commands/pairs.py`, `agentic_trader/cli/main.py`)**: Registered `copilot pairs` Click command.
 - **Telegram Bot (`agentic_trader/notifier/telegram_bot.py`)**: Registered `/pairs` command handler and help documentation.
-- **Copilot Integration (`agentic_trader/agent/copilot.py`)**: Attached `self.pairs_screener` to `FuturesCopilot`.
+- **Copilot Integration (`agentic_trader/agent/copilot.py`)**: Attached `self.pairs_screener` to `TradingCopilot`.
 - **Test Suite (`tests/test_pairs.py`)**: 9 comprehensive unit tests covering synthetic cointegrated series detection, independent random walk rejection, Ornstein-Uhlenbeck half-life math, rolling Z-score calculation, screener scanning, ASCII/Telegram formatters, Click CLI execution, and Telegram bot dispatch. Total unit test suite: 157 passed tests.
 
 ---
@@ -698,7 +698,7 @@ Protect profits and eliminate open downside exposure as trades progress by dynam
    - `trail_atr_multiple: 1.5`: Trails price by $1.5 \times \text{ATR}$.
    - `trail_step_ticks: 4`: Minimum step threshold before ratcheting stop price.
 2. **Reconciliation & Copilot Integration**:
-   - Embedded into `FuturesCopilot.monitor_positions()`: checks active open positions on every tick/reconciliation cycle.
+   - Embedded into `TradingCopilot.monitor_positions()`: checks active open positions on every tick/reconciliation cycle.
    - Updates `stop_loss` in SQLite via `SignalDatabase.update_position_stop()`.
    - Dispatches rich Telegram notification (`send_trailing_stop_alert`) when a position is moved to breakeven or trailed upward.
 
@@ -740,14 +740,14 @@ In retail trading, shifting stops to breakeven at 1.0R is taught as risk mitigat
 ## Phase 27: Decoupled Presentation Layer & TradingCopilot Generalization
 
 ### Objective
-Decouple string interpolation, ASCII formatting, and HTML card generation from core business logic into domain DTOs and clean formatters, and generalize `FuturesCopilot` to multi-asset `TradingCopilot`.
+Decouple string interpolation, ASCII formatting, and HTML card generation from core business logic into domain DTOs and clean formatters, and generalize `TradingCopilot` to multi-asset `TradingCopilot`.
 
 ### Key Deliverables
 1. **Domain Presentation DTOs (`agentic_trader/presentation/formatters.py`)**:
    - `PositionView`, `PositionsReport`, `PortfolioStatusReport`, `ExecutionResultView`, `PerformanceSummaryReport`.
    - `TerminalFormatter` for aligned CLI tables and `TelegramHtmlFormatter` for mobile HTML cards.
 2. **Core Class Generalization**:
-   - Renamed orchestration class to `TradingCopilot` with `FuturesCopilot` backward-compatible alias.
+   - Renamed orchestration class to `TradingCopilot`; the old alias was removed in September 2026.
 
 ---
 
@@ -988,7 +988,7 @@ Upgrade the operator interaction layer from rigid slash commands to a stateful, 
 3. **Comprehensive Desk Tooling Palette**:
    - `get_open_positions`: Real-time inspection of active positions across Alpaca and Tradovate, unrealized PnL, current market quotes, and stop/target levels.
    - `get_portfolio_status`: Cash balances, buying power, margin utilization, and risk budget headroom.
-   - `get_market_regime`: Macro filter state, VIX level, 10Y yield, and economic calendar event clearance.
+   - `get_macro_intelligence`: Unified VIX, yield curve, credit, inflation and combined macro/volatility filters; the separate regime tool has been removed.
    - `trigger_market_scan`: On-demand execution of technical screeners (Momentum Squeeze, Trend Pullback) across equities and futures.
    - `run_backtest`: Ad-hoc vectorized backtesting of specific symbols, strategies, and historical lookback windows.
    - `get_gex_surface`: Real-time SPX/SPY gamma exposure, call/put walls, and zero-gamma flip points.

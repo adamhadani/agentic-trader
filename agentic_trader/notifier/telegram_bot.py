@@ -30,11 +30,13 @@ from telegram.ext import (
 )
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
-from agentic_trader.agent.macro import MacroIntelligenceEngine
-from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.config import TelegramConfig
 from agentic_trader.constants import (
+    APP_DISPLAY_NAME,
+    DEFAULT_BACKTEST_LOOKBACK,
     DEFAULT_PORTFOLIO_CASH,
+    DEFAULT_RESEARCH_SYMBOL,
+    TELEGRAM_MESSAGE_CHUNK_LENGTH,
     AssetClass,
     AuditEventType,
     ExecutionMode,
@@ -44,7 +46,6 @@ from agentic_trader.constants import (
 )
 from agentic_trader.notifier.transport import ObservedPollingRequest, RetryingTelegramRequest, telegram_update_id
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
-from agentic_trader.research.alpha import AlphaCatalog, AlphaPromotionManager
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.telemetry.collector import MetricsCollector, global_metrics
 
@@ -64,14 +65,14 @@ def format_alert_card(
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
 
-    qty = getattr(eval_res, "quantity", 1.0)
-    asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+    qty = eval_res.quantity
+    asset_class = eval_res.asset_class
     if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
         qty_str = f"{qty:g} shares"
     else:
         qty_str = f"{qty:g}x"
 
-    tiers = getattr(eval_res, "sizing_tiers", None)
+    tiers = eval_res.sizing_tiers
     has_tiers = bool(tiers and len(tiers) > 1)
 
     mode_lower = execution_mode.lower()
@@ -139,7 +140,7 @@ def format_alert_card(
                 f"Reward: +${reward_val:,.2f} | "
                 f"Notional: ${notional_val:,.0f} ({lev_val:.2f}x){star}"
             )
-        gating = getattr(eval_res, "gating_reasons", None)
+        gating = eval_res.gating_reasons
         if gating:
             sizing_lines.extend(f"  <i>🛡️ {html.escape(str(g))}</i>" for g in gating)
         sizing_section = "\n".join(sizing_lines) + "\n"
@@ -178,14 +179,14 @@ def format_terminal_card(
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
 
-    qty = getattr(eval_res, "quantity", 1.0)
-    asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+    qty = eval_res.quantity
+    asset_class = eval_res.asset_class
     if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
         qty_str = f"{qty:g} shares"
     else:
         qty_str = f"{qty:g}x"
 
-    tiers = getattr(eval_res, "sizing_tiers", None)
+    tiers = eval_res.sizing_tiers
     has_tiers = bool(tiers and len(tiers) > 1)
 
     mode_lower = execution_mode.lower()
@@ -250,7 +251,7 @@ def format_terminal_card(
             sizing_lines.append(
                 f"• {t.get('label', '')}: {t_qty_str} | Risk: -${risk_val:,.2f} | Reward: +${reward_val:,.2f} | Notional: ${notional_val:,.0f} ({lev_val:.2f}x){star}"
             )
-        gating = getattr(eval_res, "gating_reasons", None)
+        gating = eval_res.gating_reasons
         if gating:
             sizing_lines.extend(f"  [Risk Gate] {g}" for g in gating)
         sizing_section = "\n".join(sizing_lines) + "\n"
@@ -336,7 +337,6 @@ class TelegramNotifier:
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
         execute_handler: Callable[..., Awaitable[tuple[bool, str]]] | None = None,
         perf_provider: Callable[[], Awaitable[str]] | None = None,
-        regime_provider: Callable[[], Awaitable[str]] | None = None,
         macro_provider: Callable[[], Awaitable[str]] | None = None,
         explain_macro_provider: Callable[[], Awaitable[str]] | None = None,
         backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
@@ -350,7 +350,9 @@ class TelegramNotifier:
         settings: TelegramConfig | None = None,
         metrics: MetricsCollector | None = None,
         application: Application | None = None,
+        backtest_lookback: str = DEFAULT_BACKTEST_LOOKBACK,
     ):
+        self.backtest_lookback = backtest_lookback
         self.settings = settings if settings is not None else TelegramConfig()
         self.metrics = metrics if metrics is not None else global_metrics
         self._poll_healthy = False
@@ -367,7 +369,6 @@ class TelegramNotifier:
         self.close_handler = close_handler
         self.execute_handler = execute_handler
         self.perf_provider = perf_provider
-        self.regime_provider = regime_provider
         self.macro_provider = macro_provider
         self.explain_macro_provider = explain_macro_provider
         self.backtest_runner = backtest_runner
@@ -493,14 +494,13 @@ class TelegramNotifier:
         try:
             commands = [
                 BotCommand("status", "Portfolio exposure, cash base, and macro events"),
-                BotCommand("positions", "Active tracked trades and unrealized P&L"),
-                BotCommand("perf", "Cumulative closed trade performance and win rate"),
-                BotCommand("regime", "Real-time VIX, 10Y yield, and Dollar Index regime"),
-                BotCommand("macro", "Yield curve, credit OAS, inflation & macro stress"),
+                BotCommand("positions", "Broker positions, cost basis and unrealized P&L"),
+                BotCommand("perf", "Confirmed closed P&L and broker unrealized P&L"),
+                BotCommand("macro", "VIX, yield curve, credit, inflation & trading filters"),
                 BotCommand("explain_macro", "Tutorial & breakdown of live macro indicators"),
                 BotCommand("alphas", "Formulaic alpha intelligence & active strategies"),
                 BotCommand("pairs", "Statistical arbitrage pairs, cointegration & Z-scores"),
-                BotCommand("gex", "Gamma exposure, dealer walls, and gamma flip"),
+                BotCommand("gex", "Option-chain gamma estimates and concentration levels"),
                 BotCommand("backtest", "Offline backtest simulation"),
                 BotCommand("scan", "Trigger on-demand quantitative universe scan"),
                 BotCommand("close", "Manually close a tracked trade"),
@@ -561,7 +561,6 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("positions", self._observe_handler(self.handle_positions_command)))
             self.app.add_handler(CommandHandler("close", self._observe_handler(self.handle_close_command)))
             self.app.add_handler(CommandHandler("perf", self._observe_handler(self.handle_perf_command)))
-            self.app.add_handler(CommandHandler("regime", self._observe_handler(self.handle_regime_command)))
             self.app.add_handler(CommandHandler("macro", self._observe_handler(self.handle_macro_command)))
             self.app.add_handler(
                 CommandHandler("explain_macro", self._observe_handler(self.handle_explain_macro_command))
@@ -581,7 +580,7 @@ class TelegramNotifier:
         message: Any,
         text: str,
         parse_mode: str = "HTML",
-        max_chunk_len: int = 4000,
+        max_chunk_len: int = TELEGRAM_MESSAGE_CHUNK_LENGTH,
     ) -> list[Any]:
         """Safely send or reply to a Telegram message with HTML sanitization,
         chunking for messages exceeding Telegram's 4096-character limit,
@@ -640,29 +639,26 @@ class TelegramNotifier:
         if not self._is_authorized(update) or not update.message:
             return
         help_text = (
-            "🤖 <b>Cash-Plus Trading Copilot</b>\n\n"
+            f"🤖 <b>{APP_DISPLAY_NAME}</b>\n\n"
             "<b>Available Commands:</b>\n"
             "• /status - View portfolio exposure, cash base, and macro events\n"
-            "• /positions - View active tracked trades and unrealized P&amp;L\n"
-            "• /perf - View cumulative closed trade performance and win rate\n"
-            "• /regime - View real-time VIX, 10Y yield, and Dollar Index macro filter\n"
-            "• /macro - View yield curve spreads, credit OAS, and macro stress index\n"
+            "• /positions - Broker positions, cost basis and unrealized P&amp;L\n"
+            "• /perf - Confirmed closed-trade P&amp;L and broker unrealized P&amp;L\n"
+            "• /macro - VIX, yields, credit, inflation and combined trading filters\n"
             "• /explain_macro - Tutorial &amp; educational indicator breakdown with LLM context\n"
             "• /alphas - View formulaic alpha intelligence, catalog, and active strategies\n"
             "• /pairs - View statistical arbitrage pairs, cointegration &amp; Z-scores\n"
             "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
-            "• /close &lt;id&gt; [price] - Manually close a tracked trade and record fill\n"
+            "• /close &lt;id&gt; - Request broker closure; accounting waits for fills\n"
             "• /scan - Trigger an on-demand quantitative scan across universe\n"
             "• /panic [confirm] - 🔴 Emergency kill switch: cancel orders, liquidate &amp; halt\n"
             "• /resume - 🟢 Clear emergency halt and restore normal operations\n"
             "• /help - Display this command overview\n\n"
-            "<b>Risk Invariants Enforced:</b>\n"
-            "• Sizing: 1 micro contract (/MES, /MNQ, /MGC, /MCL) or fractional equity shares\n"
-            "• Exposure Cap: $60,000 max total open notional\n"
-            "• Stop Distance: ≥ 1.5x ATR\n"
-            "• Reward-to-Risk: ≥ 2.0:1\n"
-            "• Macro Lockout: 60m before / 30m after Tier-1 events"
+            "<b>Trading workflow:</b>\n"
+            "Scans stage suggestions for operator approval. Risk and sizing use the loaded configuration.\n"
+            "Use /status for configured capital, exposure and macro context.\n"
+            "Broker fills determine trade accounting. GEX, pairs and backtests are research estimates."
         )
         keyboard = InlineKeyboardMarkup(
             [
@@ -672,7 +668,7 @@ class TelegramNotifier:
                 ],
                 [
                     InlineKeyboardButton("📊 Performance", callback_data="cmd_perf"),
-                    InlineKeyboardButton("🌐 Macro Regime", callback_data="cmd_regime"),
+                    InlineKeyboardButton("🌐 Macro & Filters", callback_data="cmd_macro"),
                 ],
             ]
         )
@@ -696,91 +692,47 @@ class TelegramNotifier:
         else:
             await update.message.reply_text("Performance provider not attached.")
 
-    async def handle_regime_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._is_authorized(update) or not update.message:
-            return
-        if self.regime_provider:
-            resp = await self.regime_provider()
-            await self.safe_reply_text(update.message, resp)
-        else:
-            await update.message.reply_text("Regime provider not attached.")
-
     async def handle_macro_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
         if self.macro_provider:
-            try:
-                resp = await self.macro_provider()
-                await self.safe_reply_text(update.message, resp)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Macro intelligence error: {e}")
+            resp = await self.macro_provider()
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Macro intelligence provider not attached.")
 
     async def handle_explain_macro_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
-        with contextlib.suppress(Exception):
-            await update.message.reply_chat_action(ChatAction.TYPING)
-        await update.message.reply_text(
-            "🧭 <i>Analyzing macroeconomic indicators and synthesizing briefing...</i>", parse_mode="HTML"
-        )
         if self.explain_macro_provider:
-            try:
-                resp = await self.explain_macro_provider()
-                await self.safe_reply_text(update.message, resp, parse_mode="HTML")
-            except Exception as e:
-                logger.error("Failed explaining macro intelligence: %s", e)
-                await update.message.reply_text(f"❌ Error explaining macro: {e}")
+            resp = await self.explain_macro_provider()
+            await self.safe_reply_text(update.message, resp)
         else:
-            try:
-                engine = MacroIntelligenceEngine()
-                report = await engine.get_macro_report()
-                explainer = MacroExplainer()
-                resp = await explainer.explain(report, format_mode="html")
-                await self.safe_reply_text(update.message, resp, parse_mode="HTML")
-            except Exception as e:
-                logger.error("Failed explaining macro intelligence: %s", e)
-                await update.message.reply_text(f"❌ Error explaining macro: {e}")
+            await update.message.reply_text("Macro explanation provider not attached.")
 
     async def handle_alphas_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
         if self.alphas_provider:
-            try:
-                resp = await self.alphas_provider()
-                await self.safe_reply_text(update.message, resp)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Formulaic alphas error: {e}")
+            resp = await self.alphas_provider()
+            await self.safe_reply_text(update.message, resp)
         else:
-            try:
-                mgr = AlphaPromotionManager()
-                catalog = AlphaCatalog()
-                promoted = mgr.list_active_alphas()
-                resp = TelegramHtmlFormatter.format_alphas_dashboard_html(
-                    promoted, catalog_count=len(catalog.list_alphas())
-                )
-                await self.safe_reply_text(update.message, resp)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Error displaying alphas: {e}")
+            await update.message.reply_text("Alpha provider not attached.")
 
     async def handle_backtest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
         args = context.args or []
-        symbol = args[0].upper() if len(args) > 0 else "SPY"
-        lookback = args[1] if len(args) > 1 else "1y"
+        symbol = args[0].upper() if len(args) > 0 else DEFAULT_RESEARCH_SYMBOL
+        lookback = args[1] if len(args) > 1 else self.backtest_lookback
 
         await update.message.reply_text(
             f"⏳ Running backtest simulation for <b>{html.escape(symbol)}</b> ({html.escape(lookback)})...",
             parse_mode="HTML",
         )
         if self.backtest_runner:
-            try:
-                resp = await self.backtest_runner(symbol, lookback)
-                await self.safe_reply_text(update.message, resp)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Backtest error: {e}")
+            resp = await self.backtest_runner(symbol, lookback)
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Backtest runner not attached.")
 
@@ -788,18 +740,15 @@ class TelegramNotifier:
         if not self._is_authorized(update) or not update.message:
             return
         args = context.args or []
-        symbol = args[0].upper() if len(args) > 0 else "SPY"
+        symbol = args[0].upper() if len(args) > 0 else DEFAULT_RESEARCH_SYMBOL
 
         await update.message.reply_text(
             f"🧭 Analyzing options gamma exposure & dealer walls for <b>{html.escape(symbol)}</b>...",
             parse_mode="HTML",
         )
         if self.gex_provider:
-            try:
-                resp = await self.gex_provider(symbol)
-                await self.safe_reply_text(update.message, resp)
-            except Exception as e:
-                await update.message.reply_text(f"❌ GEX error: {e}")
+            resp = await self.gex_provider(symbol)
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("GEX provider not attached.")
 
@@ -811,11 +760,8 @@ class TelegramNotifier:
             parse_mode="HTML",
         )
         if self.pairs_provider:
-            try:
-                resp = await self.pairs_provider()
-                await self.safe_reply_text(update.message, resp)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Pairs screening error: {e}")
+            resp = await self.pairs_provider()
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Pairs provider not attached.")
 
@@ -825,7 +771,7 @@ class TelegramNotifier:
         args = context.args or []
         if not args:
             await update.message.reply_text(
-                "Usage: <code>/close &lt;signal_id&gt; [exit_price]</code>\nExample: <code>/close 2 5845.00</code>",
+                "Usage: <code>/close &lt;signal_id&gt; [exit_price]</code>\nAlpaca waits for the broker fill; exit_price is for simulation/manual adapters.",
                 parse_mode="HTML",
             )
             return
@@ -920,7 +866,7 @@ class TelegramNotifier:
                 ],
                 [
                     InlineKeyboardButton("📊 Performance", callback_data="cmd_perf"),
-                    InlineKeyboardButton("🌐 Macro Regime", callback_data="cmd_regime"),
+                    InlineKeyboardButton("🌐 Macro & Filters", callback_data="cmd_macro"),
                 ],
             ]
         )
@@ -973,10 +919,10 @@ class TelegramNotifier:
             if self.perf_provider and msg and hasattr(msg, "reply_text"):
                 res = await self.perf_provider()
                 await msg.reply_text(res, parse_mode="HTML")
-        elif data == "cmd_regime":
+        elif data == "cmd_macro":
             await query.answer()
-            if self.regime_provider and msg and hasattr(msg, "reply_text"):
-                res = await self.regime_provider()
+            if self.macro_provider and msg and hasattr(msg, "reply_text"):
+                res = await self.macro_provider()
                 await msg.reply_text(res, parse_mode="HTML")
         elif data.startswith("exec_"):
             parts = data.split("_")
@@ -1083,8 +1029,8 @@ class TelegramNotifier:
         else:
             exec_btn_text = "✅ Acknowledge & Tracking"
 
-        tiers = getattr(eval_res, "sizing_tiers", None)
-        asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+        tiers = eval_res.sizing_tiers
+        asset_class = eval_res.asset_class
         if tiers and len(tiers) > 1:
             tier_buttons = []
             for t in tiers:

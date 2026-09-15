@@ -5,6 +5,16 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from agentic_trader.agent.macro import CreditStressRegime, MacroStressLevel, YieldCurveRegime
+from agentic_trader.constants import (
+    APP_DISPLAY_NAME,
+    DEFAULT_BACKTEST_LOOKBACK,
+    DEFAULT_MIN_RISK_REWARD_RATIO,
+    DEFAULT_RESEARCH_SYMBOL,
+    ExecutionMode,
+    VolatilityRegime,
+)
+
 
 if TYPE_CHECKING:
     from agentic_trader.agent.macro import MacroIntelligenceReport
@@ -94,7 +104,7 @@ class PortfolioStatusReport:
     vix: float = 0.0
     tnx: float | None = None
     dxy: float | None = None
-    execution_mode: str = "PAPER"
+    execution_mode: str = ExecutionMode.PAPER
 
     def __post_init__(self):
         if self.recent_signals is None:
@@ -150,7 +160,7 @@ class ExecutionResultView:
     risk_dollars: float = 0.0
     stop_loss: float = 0.0
     take_profit: float = 0.0
-    execution_mode: str = "PAPER"
+    execution_mode: str = ExecutionMode.PAPER
     success: bool = True
     error_message: str | None = None
 
@@ -241,7 +251,7 @@ class TerminalFormatter:
         sub_sep = "-" * 65
         lines = [
             sep,
-            "CASH-PLUS TRADING COPILOT: ACTIVE POSITIONS",
+            f"{APP_DISPLAY_NAME.upper()}: ACTIVE POSITIONS",
             sep,
         ]
         lines.extend(filter(None, [report.source, report.as_of, report.notes]))
@@ -265,12 +275,12 @@ class TerminalFormatter:
         sub_sep = "-" * 65
         lines = [
             sep,
-            "CASH-PLUS TRADING COPILOT: PORTFOLIO & RISK STATUS",
+            f"{APP_DISPLAY_NAME.upper()}: PORTFOLIO & RISK STATUS",
             sep,
             f"Cash Base:            ${report.cash_base:,.2f}",
             f"Max Notional Ceiling: ${report.max_notional:,.2f} (0.6x max leverage)",
             f"Active Exposure:      ${report.current_exposure:,.2f} ({report.effective_leverage:.2f}x effective leverage)",
-            f"Active Position Count:{report.active_contract_count} contracts",
+            f"Active Position Count:{report.active_contract_count} positions",
             f"Telegram Configured:  {report.telegram_configured}",
             f"LLM Model Configured: {report.llm_model}",
             sub_sep,
@@ -353,14 +363,14 @@ class TelegramHtmlFormatter:
     @staticmethod
     def format_status_html(report: PortfolioStatusReport) -> str:
         lines = [
-            "🛡️ <b>CASH-PLUS COPILOT STATUS</b>\n",
+            f"🛡️ <b>{APP_DISPLAY_NAME.upper()} STATUS</b>\n",
             f"• <b>Cash Base:</b> <code>${report.cash_base:,.2f}</code>",
             f"• <b>Max Notional:</b> <code>${report.max_notional:,.2f}</code>",
             (
                 f"• <b>Active Exposure:</b> <code>${report.current_exposure:,.2f}</code> "
                 f"({report.effective_leverage:.2f}x leverage)"
             ),
-            f"• <b>Active Positions:</b> {report.active_contract_count} contracts\n",
+            f"• <b>Active Positions:</b> {report.active_contract_count} positions\n",
             "<b>Market Context:</b>",
             f"• Volatility: <b>{report.vix_regime}</b> (VIX: {report.vix_value:.2f})",
         ]
@@ -383,17 +393,18 @@ class TelegramHtmlFormatter:
 
     @staticmethod
     def format_execution_html(view: ExecutionResultView, execution_mode: str | None = None) -> str:
-        mode_val = execution_mode or getattr(view, "execution_mode", "PAPER") or "PAPER"
+        mode_val = execution_mode or view.execution_mode
         mode_upper = str(mode_val).upper()
         if view.success:
-            fill_p = view.fill_price or 0.0
+            fill_text = format_price(view.fill_price) if view.fill_price is not None else "Awaiting broker fill"
+            order_state = "ORDER EXECUTED" if view.fill_price is not None else "ORDER ACCEPTED"
             qty_label = f"{view.quantity:g} shares" if not view.contract.startswith("/") else f"{view.quantity:g}x"
             return (
-                f"🚀 <b>ORDER EXECUTED ({mode_upper})</b>\n"
+                f"🚀 <b>{order_state} ({mode_upper})</b>\n"
                 f"• <b>Contract:</b> {qty_label} {view.contract} ({view.direction})\n"
-                f"• <b>Fill Price:</b> <code>{fill_p:,.2f}</code>\n"
+                f"• <b>Fill Price:</b> <code>{fill_text}</code>\n"
                 f"• <b>Broker Order ID:</b> <code>{view.order_id or 'N/A'}</code>\n"
-                f"• <b>Notional:</b> <code>${view.notional_value:,.2f}</code> | "
+                f"• <b>Planned Notional:</b> <code>${view.notional_value:,.2f}</code> | "
                 f"<b>Risk:</b> <code>${view.risk_dollars:,.2f}</code>\n"
                 f"• <b>Stop Loss:</b> <code>{view.stop_loss:,.2f}</code> | "
                 f"<b>Target:</b> <code>{view.take_profit:,.2f}</code>\n"
@@ -420,24 +431,41 @@ class TelegramHtmlFormatter:
         )
 
     @staticmethod
-    def format_regime_html(regime: RegimeSnapshot) -> str:
-        vix_color = "🟢" if regime.vix < 15.0 else ("🟡" if regime.vix < 22.0 else "🔴")
-        tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "N/A"
-        dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "N/A"
-        breakout_str = "Allowed ✅" if regime.breakout_allowed else "Suppressed ⚠️ (Extreme Volatility)"
-
+    def format_macro_dashboard_html(
+        regime: RegimeSnapshot, min_risk_reward_ratio: float = DEFAULT_MIN_RISK_REWARD_RATIO
+    ) -> str:
+        vix_color = {
+            VolatilityRegime.COMPRESSED: "🟢",
+            VolatilityRegime.NORMAL: "🟢",
+            VolatilityRegime.ELEVATED: "🟠",
+            VolatilityRegime.EXTREME: "🔴",
+        }[regime.vix_regime]
+        tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "Unavailable"
+        dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "Unavailable"
+        breakout_str = "Allowed ✅" if regime.breakout_allowed else "Suppressed ⚠️"
+        minimum_rr = max(regime.min_rr_threshold, min_risk_reward_ratio)
+        text = (
+            "🌐 <b>MACRO &amp; TRADING FILTERS</b>\n"
+            f"<i>Snapshot fetched: {regime.timestamp.isoformat()}</i>\n\n"
+            f"• <b>VIX Level:</b> {vix_color} <code>{regime.vix:.2f}</code> ({regime.vix_regime.value})\n"
+            f"• <b>10-Year Treasury Yield:</b> <code>{tnx_str}</code>\n"
+            f"• <b>US Dollar Index:</b> <code>{dxy_str}</code>\n\n"
+            "🛡️ <b>Combined Volatility / Macro Policy:</b>\n"
+            f"• <b>Squeeze Breakouts:</b> {breakout_str}\n"
+            f"• <b>Minimum Required R:R:</b> <code>{minimum_rr:.1f}:1</code>\n"
+            f"• <b>Risk Multiplier:</b> <code>{regime.risk_multiplier:.2f}x</code>\n"
+            "<i>Other entry checks (session, calendar, exposure and approval) still apply.</i>\n\n"
+        )
+        if regime.macro_report is not None:
+            return text + TelegramHtmlFormatter._format_macro_indicators_html(regime.macro_report)
+        reason = regime.macro_unavailable_reason or "No macro observations available"
         return (
-            "🌐 <b>MARKET VOLATILITY & MACRO REGIME</b>\n\n"
-            f"• <b>VIX Level:</b> {vix_color} <code>{regime.vix:.2f}</code> ({regime.vix_regime.value.upper()})\n"
-            f"• <b>10-Year Treasury Yield (^TNX):</b> <code>{tnx_str}</code>\n"
-            f"• <b>US Dollar Index (DX-Y):</b> <code>{dxy_str}</code>\n"
-            f"• <b>Squeeze Breakouts:</b> <b>{breakout_str}</b>\n\n"
-            f"📝 <b>Quantitative Assessment:</b>\n"
-            f"<i>{regime.summary_text}</i>"
+            text
+            + f"⚠️ <b>Macro enrichment unavailable:</b> {html.escape(reason)}\n<i>Policy above uses volatility only.</i>"
         )
 
     @staticmethod
-    def format_macro_dashboard_html(report: MacroIntelligenceReport) -> str:
+    def _format_macro_indicators_html(report: MacroIntelligenceReport) -> str:
         s = report.stress
         y = report.yields
         sp = report.spreads
@@ -445,21 +473,32 @@ class TelegramHtmlFormatter:
         inf = report.inflation
 
         stress_badge = {
-            "LOW": "🟢 LOW STRESS",
-            "MODERATE": "🟡 MODERATE STRESS",
-            "HIGH": "🟠 HIGH STRESS",
-            "EXTREME": "🔴 EXTREME STRESS",
-        }.get(s.level.value, s.level.value)
+            MacroStressLevel.LOW: "🟢 LOW STRESS",
+            MacroStressLevel.MODERATE: "🟡 MODERATE STRESS",
+            MacroStressLevel.HIGH: "🟠 HIGH STRESS",
+            MacroStressLevel.EXTREME: "🔴 EXTREME STRESS",
+        }[s.level]
 
-        curve_color = "🟢" if sp.regime == "NORMAL_STEEP" else ("🟡" if sp.regime in ("FLAT", "STEEP") else "🔴")
-        credit_color = "🟢" if c.regime == "BENIGN" else ("🟡" if c.regime == "ELEVATED" else "🔴")
-        breakout_str = "Allowed ✅" if s.squeeze_breakout_allowed else "Suppressed ⚠️"
+        curve_color = (
+            "🟢"
+            if sp.regime == YieldCurveRegime.NORMAL_STEEP
+            else ("🟡" if sp.regime in (YieldCurveRegime.FLAT, YieldCurveRegime.STEEP) else "🔴")
+        )
+        credit_color = (
+            "🟢"
+            if c.regime == CreditStressRegime.BENIGN
+            else ("🟡" if c.regime == CreditStressRegime.ELEVATED else "🔴")
+        )
+        dates = ", ".join(f"{key}: {value}" for key, value in sorted(report.observation_dates.items()))
+        source_note = "Yahoo Finance latest closes; FRED latest published daily observations"
+        if dates:
+            source_note += f" ({dates})"
 
         drivers_text = ", ".join(s.key_drivers) if s.key_drivers else "Benign conditions"
 
         return (
             "🏛️ <b>MACRO INTELLIGENCE & YIELD CURVE</b>\n\n"
-            f"<b>Status:</b> {stress_badge} (Risk Multiplier: <code>{s.risk_multiplier:.2f}x</code>)\n\n"
+            f"<b>Macro Stress:</b> {stress_badge}\n<i>{html.escape(source_note)}</i>\n\n"
             f"📈 <b>US Treasury Term Structure:</b> {curve_color} <code>{sp.regime.value}</code>\n"
             f"• <b>3M:</b> <code>{y.yield_3m:.2f}%</code> | <b>2Y:</b> <code>{y.yield_2y:.2f}%</code> | <b>5Y:</b> <code>{y.yield_5y:.2f}%</code>\n"
             f"• <b>10Y:</b> <code>{y.yield_10y:.2f}%</code> | <b>30Y:</b> <code>{y.yield_30y:.2f}%</code>\n"
@@ -470,11 +509,6 @@ class TelegramHtmlFormatter:
             f"• <b>High Yield OAS:</b> {credit_color} <code>{c.high_yield_oas_bps:.0f} bps</code> ({c.high_yield_oas_pct:.2f}%) | <b>{c.regime.value}</b>\n"
             f"• <b>10Y Breakeven Inflation:</b> <code>{inf.breakeven_10y:.2f}%</code> ({inf.regime.value})\n"
             f"• <b>5Y Breakeven Inflation:</b> <code>{inf.breakeven_5y:.2f}%</code>\n\n"
-            f"🌪️ <b>Volatility & Dollar:</b>\n"
-            f"• <b>CBOE VIX:</b> <code>{report.vix:.2f}</code> | <b>DXY:</b> <code>{report.dxy:.2f}</code>\n\n"
-            f"🛡️ <b>Strategy Policy & Risk Budget:</b>\n"
-            f"• <b>Squeeze Breakouts:</b> <b>{breakout_str}</b>\n"
-            f"• <b>Minimum Required R:R:</b> <code>{s.min_rr_threshold:.1f}:1</code>\n"
             f"• <b>Key Drivers:</b> <i>{html.escape(drivers_text)}</i>"
         )
 
@@ -498,7 +532,7 @@ class TelegramHtmlFormatter:
                 )
 
         return (
-            "📊 <b>CASH-PLUS COPILOT: PERFORMANCE ATTRIBUTION</b>\n\n"
+            f"📊 <b>{APP_DISPLAY_NAME.upper()}: PERFORMANCE ATTRIBUTION</b>\n\n"
             f"<i>{html.escape(report.source_note)}</i>\n"
             f"{report.unrealized_pnl_text}\n"
             f"• <b>Realized P&amp;L:</b> {color_pnl} <code>{pnl_sign}${abs_pnl:,.2f}</code>\n"
@@ -513,8 +547,8 @@ class TelegramHtmlFormatter:
     @staticmethod
     def format_backtest_html(
         res: BacktestResult,
-        symbol: str = "SPY",
-        lookback: str = "1y",
+        symbol: str = DEFAULT_RESEARCH_SYMBOL,
+        lookback: str = DEFAULT_BACKTEST_LOOKBACK,
         symbols: list[str] | None = None,
         strategy: str = "all",
         mc_line: str = "",
@@ -540,7 +574,7 @@ class TelegramHtmlFormatter:
             f"• <b>Max Drawdown:</b> <code>{res.max_drawdown_pct:.2f}%</code>\n"
             f"• <b>Win Rate:</b> <code>{res.win_rate:.1f}%</code> ({res.total_trades} trades)\n"
             f"• <b>Profit Factor:</b> <code>{pf_str}</code>\n"
-            f"• <b>Cash-Plus Yield Accrued:</b> +${res.cash_yield_pnl:,.2f}"
+            f"• <b>Cash Reserve Yield Accrued:</b> +${res.cash_yield_pnl:,.2f}"
             f"{attr_line}"
             f"{mc_line}"
         )

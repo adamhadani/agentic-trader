@@ -47,7 +47,7 @@ from agentic_trader.runtime import RuntimeLogFormatter
     help="Explicit database SQLite file path or database connection URL",
 )
 def cli(verbose: bool, db_name: str | None = None, db_path: str | None = None) -> None:
-    """Agentic Trader - Autonomous Multi-Asset Quantitative Trading System."""
+    """Agentic Trader - Multi-asset research, risk review, and operator-approved trading."""
     if db_name:
         os.environ["DB_NAME"] = db_name
         os.environ["DATABASE_URL"] = ""

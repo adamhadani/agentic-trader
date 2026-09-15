@@ -174,7 +174,7 @@ def test_backtest_models_and_report():
     )
 
     report = format_backtest_report(result, symbols=["SPY", "QQQ"], lookback="1y", strategy="all")
-    assert "CASH-PLUS TRADING COPILOT: QUANTITATIVE BACKTEST REPORT" in report
+    assert "AGENTIC TRADER: QUANTITATIVE BACKTEST REPORT" in report
     assert "Universe:            SPY, QQQ" in report
     assert "Pure Strategy Alpha P&L:      $     +230.00" in report
     assert "Treasury/Cash Reserve Yield:  $      +45.00" in report

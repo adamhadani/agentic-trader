@@ -14,7 +14,7 @@ Guidelines and reference commands for AI coding assistants working in the `agent
 
 ## 1. Project Overview
 
-The **Cash-Plus Trading Copilot** is a multi-asset trading system designed around a $100k cash portfolio (portable alpha). It scans configured micro futures, ETFs, and equities, evaluates candidates using deterministic risk rules and optional LLM reasoning, and stages `PENDING` signals with Telegram alert cards. Operators execute signals through CLI or Telegram; scheduled scans do not automatically place entry orders. Broker adapters cover local Paper simulation, Tradovate CME micro futures, and Alpaca equities/crypto. `config/config.yaml` defines the current universe; broker capability and scan eligibility are separate concerns.
+The **Agentic Trader** is a multi-asset trading system designed around a $100k cash portfolio (portable alpha). It scans configured micro futures, ETFs, and equities, evaluates candidates using deterministic risk rules and optional LLM reasoning, and stages `PENDING` signals with Telegram alert cards. Operators execute signals through CLI or Telegram; scheduled scans do not automatically place entry orders. Broker adapters cover local Paper simulation, Tradovate CME micro futures, and Alpaca equities/crypto. `config/config.yaml` defines the current universe; broker capability and scan eligibility are separate concerns.
 
 ---
 
@@ -157,3 +157,11 @@ Preserve these intended safeguards when changing logic. They are design requirem
 14. **Audit and provenance**: Head revision is `003_audit_provenance`; every signal has environment/account mode and run identity. Quarantine preserves original values and excludes confirmed test rows from risk, deduplication, positions and performance.
 
 15. **Async boundaries**: Use `asyncio.to_thread` for blocking SDK/provider calls and CPU-heavy research from async handlers. Keep related scans serialized; review shared state before adding concurrency. Telegram retries belong in `notifier/transport.py`, never around a trade handler. Preserve request/update audit IDs, poll freshness metrics, and `telemetry/event_loop.py` stall monitoring.
+
+16. **Operator language and data quality**: Use `APP_DISPLAY_NAME` for product titles. Describe scans as suggestions requiring approval and Alpaca closes as fill-confirmed. Render risk policy from config. GEX normalizes provider nulls, surfaces quality notes, and must never invent a spot quote; it remains a research estimate.
+
+17. **One macro command**: `/macro` includes volatility classification and combined
+    configured filters; `/regime` and its chat tool are removed. Do not add an alias.
+    `/explain_macro` is educational. Render feed dates, expose missing enrichment,
+    and never invent baseline observations. Conversational positions/status must
+    delegate to the shared broker-backed report providers.

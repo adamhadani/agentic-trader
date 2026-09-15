@@ -151,7 +151,7 @@ VIX_TICKER = "^VIX"
 TNX_TICKER = "^TNX"
 DXY_TICKER = "DX-Y.NYB"
 IRX_TICKER = "^IRX"
-TWO_YEAR_TICKER = "2YY=F"
+FRED_TWO_YEAR_SERIES = "DGS2"
 FVX_TICKER = "^FVX"
 TYX_TICKER = "^TYX"
 
@@ -341,6 +341,7 @@ class AuditEventType(StrEnum):
     POSITIONS_VALUATION = "positions_valuation"
     VALUATION_FAILED = "valuation_failed"
     PERFORMANCE_REPORT = "performance_report"
+    MACRO_REPORT = "macro_report"
     EXECUTION_CLAIMED = "execution_claimed"
     RUNTIME_STARTED = "runtime_started"
     HISTORICAL_TRADE_RESTORED = "historical_trade_restored"
@@ -371,3 +372,8 @@ def normalize_asset_class(value: str) -> str:
         "stocks": AssetClass.EQUITY.value.lower(),
     }
     return aliases.get(value.lower(), value.lower())
+
+
+APP_DISPLAY_NAME = "Agentic Trader"
+DEFAULT_RESEARCH_SYMBOL = "SPY"
+TELEGRAM_MESSAGE_CHUNK_LENGTH = 4000

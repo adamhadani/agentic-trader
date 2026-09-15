@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Quantitative Strategies & Models - Cash-Plus Trading Copilot
+title: Quantitative Strategies & Models - Agentic Trader
 ---
 
 > Runtime note (2026-09-15): research backtests and formulaic return streams do not
@@ -10,7 +10,7 @@ title: Quantitative Strategies & Models - Cash-Plus Trading Copilot
 
 # 📊 Quantitative Strategies & Econometric Models
 
-This document details the mathematical and statistical formulations governing the quantitative screening engines and econometric analytics in the **Cash-Plus Trading Copilot**.
+This document details the mathematical and statistical formulations governing the quantitative screening engines and econometric analytics in the **Agentic Trader**.
 
 ---
 

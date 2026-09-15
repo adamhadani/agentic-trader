@@ -1,12 +1,12 @@
 ---
 layout: default
-title: Home - Cash-Plus Trading Copilot
+title: Home - Agentic Trader
 ---
 
-# 🤖 Cash-Plus Trading Copilot
+# 🤖 Agentic Trader
 ### Autonomous Multi-Asset Quantitative Trading System
 
-The **Cash-Plus Trading Copilot** is an algorithmic trading system designed around a **"Cash-Plus" (portable alpha)** portfolio architecture ($100,000 baseline cash generating risk-free Treasury yield). The system continuously screens multi-asset markets, validates setups through an LLM agent with macro calendar awareness, and executes bracket orders across Tradovate (CME micro futures) and Alpaca (equities, ETFs, and crypto) with real-time Telegram oversight.
+The **Agentic Trader** is an algorithmic trading system designed around a **"Cash-Plus" (portable alpha)** portfolio architecture ($100,000 baseline cash generating risk-free Treasury yield). The system continuously screens multi-asset markets, validates setups through an LLM agent with macro calendar awareness, and executes bracket orders across Tradovate (CME micro futures) and Alpaca (equities, ETFs, and crypto) with real-time Telegram oversight.
 
 ---
 

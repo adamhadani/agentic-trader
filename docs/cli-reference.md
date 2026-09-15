@@ -1,6 +1,6 @@
 ---
 layout: default
-title: CLI Command Reference - Cash-Plus Trading Copilot
+title: CLI Command Reference - Agentic Trader
 ---
 
 # 💻 CLI Command Reference Manual
@@ -342,3 +342,20 @@ Telegram, and skips monitoring. `/perf` reports broker open-position unrealized
 P&L and tracked confirmed closed-trade P&L before fees; these are distinct from a
 broker account-day return. `/healthz` is liveness; `doctor`/`/healthcheck` include
 active database and LLM probes. Do not launch `listen` alongside the running daemon.
+
+
+### Options data quality
+
+`gex --json` emits only JSON on stdout; progress goes to stderr and failures return
+nonzero. Missing option-chain counts and modeled numeric defaults appear in
+`data_quality_notes`; invalid underlying prices fail instead of using fixed ETF
+prices. GEX is a Yahoo option-chain estimate, not brokerage P&L or observed dealer
+inventory. `--expirations` defaults to the configured options policy.
+
+### Telegram macro command consolidation
+
+Use `/macro` for VIX classification, Treasury curve, credit, inflation, published
+data dates and combined trading filters. `/regime` has been removed.
+`/explain_macro` explains the macro indicators; `copilot explain-macro` is its CLI
+counterpart. Telegram `/backtest` uses configured `backtest.lookback` when omitted.
+Conversational positions use the same broker report as `/positions` and the CLI.

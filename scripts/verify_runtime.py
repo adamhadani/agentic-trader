@@ -98,7 +98,7 @@ async def main() -> None:
             me = await bot.get_me()
             await bot.get_chat(config.telegram_chat_id)
             commands = {cmd.command for cmd in await bot.get_my_commands()}
-            if not {"positions", "perf"}.issubset(commands) or not me.is_bot:
+            if not {"positions", "perf", "macro", "gex"}.issubset(commands) or "regime" in commands or not me.is_bot:
                 raise RuntimeError("Telegram identity or commands invalid")
         stats = await db.get_closed_positions_stats()
         print(

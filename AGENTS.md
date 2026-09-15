@@ -25,3 +25,7 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
 - Keep blocking I/O/CPU work off the asyncio loop. Use shared transport retry and
   observation mechanisms; never retry a trade handler to recover a Telegram reply.
   Validate event-loop responsiveness and shared-state races when adding threads.
+
+- `/macro` owns the unified market-context report; `/regime` has been removed.
+  Use the evaluator's combined snapshot and configured thresholds. Never fabricate
+  quote, P&L or macro observations to make a response look complete.
