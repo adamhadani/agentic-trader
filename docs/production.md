@@ -174,3 +174,14 @@ broker-backed valuation. Backtest defaults come from loaded configuration.
 startup audit, Alpaca paper access and exact position parity, Telegram identity,
 menu and actual daemon poll freshness. It sends no messages or orders. `/healthz`
 is liveness; successful read checks do not exercise order submission.
+
+### Scheduler startup timing
+
+Telegram/metrics initialize before immediate jobs receive their first deadline.
+`scheduler.misfire_grace_seconds` defaults to 60; jobs coalesce delayed executions
+and allow one concurrent instance per job. This prevents initialization latency
+from silently skipping the first scan/monitor run. The deployment log review
+reproduced a 1.5-second delay exceeding APScheduler's former one-second default.
+
+Old Telegram messages can retain removed callback names. Use `/help` or the current
+command menu for `/macro`; historical `/regime` buttons are no longer active.

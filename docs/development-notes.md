@@ -225,3 +225,14 @@ Conversational positions/status use the same report providers as slash commands,
 removing invented default prices/P&L and duplicate notional calculations.
 `macro_report` audit events retain fetched time, published dates, VIX and the
 combined filter decision, including missing-enrichment details.
+
+### Scheduler startup timing
+
+Telegram/metrics initialize before immediate jobs receive their first deadline.
+`scheduler.misfire_grace_seconds` defaults to 60; jobs coalesce delayed executions
+and allow one concurrent instance per job. This prevents initialization latency
+from silently skipping the first scan/monitor run. The deployment log review
+reproduced a 1.5-second delay exceeding APScheduler's former one-second default.
+
+Old Telegram messages can retain removed callback names. Use `/help` or the current
+command menu for `/macro`; historical `/regime` buttons are no longer active.

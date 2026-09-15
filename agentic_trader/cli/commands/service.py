@@ -83,7 +83,26 @@ async def daemon(no_llm: bool) -> None:
     await copilot.db.record_audit(AuditEventType.RUNTIME_STARTED, identity)
     logger.info("Runtime started: %s", identity)
 
-    scheduler = AsyncIOScheduler()
+    if copilot.notifier.is_configured():
+        logger.info("Starting Telegram Bot listener for interactive callbacks...")
+        await copilot.notifier.start_polling()
+
+    stream_task: asyncio.Task[None] | None = None
+    if getattr(copilot.broker, "supports_trade_stream", False):
+        stream_task = asyncio.create_task(copilot.start_trade_stream())
+
+    if copilot.metrics_server:
+        await copilot.metrics_server.start()
+
+    lag_task = asyncio.create_task(monitor_event_loop(config.telemetry, copilot.metrics, copilot.db.record_audit))
+
+    scheduler = AsyncIOScheduler(
+        job_defaults={
+            "misfire_grace_time": config.scheduler.misfire_grace_seconds,
+            "coalesce": True,
+            "max_instances": 1,
+        }
+    )
     interval = config.scheduler.cron_hour_interval
     # Schedule regular swing scans
     scheduler.add_job(
@@ -95,8 +114,8 @@ async def daemon(no_llm: bool) -> None:
         next_run_time=datetime.now(UTC),
     )
     # Schedule intraday 15-minute scans during active market sessions
-    if getattr(config.scheduler, "intraday_scan_enabled", True):
-        intraday_interval = getattr(config.scheduler, "intraday_interval_minutes", 15)
+    if config.scheduler.intraday_scan_enabled:
+        intraday_interval = config.scheduler.intraday_interval_minutes
 
         async def run_intraday_scan() -> None:
             session_active, reason = await copilot.session_provider.is_session_active(instrument_type="all")
@@ -146,7 +165,7 @@ async def daemon(no_llm: bool) -> None:
             config.scheduler.retune_minute,
         )
     # Schedule daily morning macro briefing (Monday - Friday)
-    if getattr(config.scheduler, "macro_briefing_enabled", True):
+    if config.scheduler.macro_briefing_enabled:
         scheduler.add_job(
             copilot.broadcast_macro_briefing,
             "cron",
@@ -160,18 +179,6 @@ async def daemon(no_llm: bool) -> None:
             config.scheduler.macro_briefing_hour,
             config.scheduler.macro_briefing_minute,
         )
-    if copilot.notifier.is_configured():
-        logger.info("Starting Telegram Bot listener for interactive callbacks...")
-        await copilot.notifier.start_polling()
-
-    stream_task: asyncio.Task[None] | None = None
-    if getattr(copilot.broker, "supports_trade_stream", False):
-        stream_task = asyncio.create_task(copilot.start_trade_stream())
-
-    if copilot.metrics_server:
-        await copilot.metrics_server.start()
-
-    lag_task = asyncio.create_task(monitor_event_loop(config.telemetry, copilot.metrics, copilot.db.record_audit))
     scheduler.start()
     logger.info("Scheduler started: scanning every %dh, reconciling positions every 1m.", interval)
 

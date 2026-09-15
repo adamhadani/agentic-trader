@@ -165,3 +165,7 @@ Preserve these intended safeguards when changing logic. They are design requirem
     `/explain_macro` is educational. Render feed dates, expose missing enrichment,
     and never invent baseline observations. Conversational positions/status must
     delegate to the shared broker-backed report providers.
+
+18. **Scheduler readiness**: initialize async dependencies before registering
+    immediate jobs. Use the configured misfire grace, coalescing and one instance
+    per job; verify initial scan/reconciliation completion in deployment logs.
