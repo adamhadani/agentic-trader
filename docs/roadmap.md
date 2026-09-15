@@ -40,10 +40,15 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 30** | Broker-Side Trailing Stop Synchronization | **Completed** | Dynamic bracket stop modification on exchange brokers (Alpaca & Tradovate) with graceful degradation |
 | **Phase 31** | Institutional Emergency Kill Switch & Telegram Autocomplete | **Completed** | 4-tier waterfall liquidation (`cancel_all_orders`, market flatten, persistent halt), `/panic` & `/resume`, `set_my_commands` |
 | **Phase 32** | Modular Test Suite Hierarchy & Submodule Mirroring | **Completed** | Reorganized 36 test files into 18 subdirectories mirroring `agentic_trader/` with `__init__.py` and root `conftest.py` |
-| **Phase 33** | Multi-Signal Portfolio Diffing & Transition Engine | **Planned** | Transition between optimal position allocations across long sessions without over-allocation |
-| **Phase 34** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
-| **Phase 35** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
-| **Phase 36** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+| **Phase 33** | Third-Party Market Calendar Delegation & Resilient Fallback Cascade | **Completed** | Calendar abstraction delegating to `exchange_calendars` with fallback to hardcoded CME Globex dates |
+| **Phase 34** | Alpaca Execution & Institutional Multi-Strategy Engine | **Completed** | End-to-end paper trading verification, multi-strategy scanning, and order lifecycle management |
+| **Phase 35** | Database Administration & Safe Historical Signal Clearance | **Completed** | Dedicated `clean` CLI command with safety confirmations and comprehensive signal lifecycle management |
+| **Phase 36** | Dedicated Database Configuration & Strict Pytest Session Isolation | **Completed** | Independent `database.sqlite_path` config, zero test mutation of live/paper production state |
+| **Phase 37** | Telegram Slash Command Palette Registration & Menu Button Across All Scopes | **Completed** | Comprehensive `/set_my_commands` registration, instant mobile discovery, structured help cards |
+| **Phase 38** | Live Alpaca Paper Trade Execution, Reconciler Safety & Codebase Simplification | **Completed** | Strict directional opposing side rules, dynamic unit sizing on exit cards, pruning unused shims |
+| **Phase 39** | Conversational Trading Copilot & Agentic Tool Calling via LangGraph, LiteLLM & LangSmith | **Completed** | Stateful ReAct copilot in Telegram with LangGraph, tool palette, LiteLLM provider support, and LangSmith tracing |
+| **Phase 40** | Multi-Asset Macro Intelligence, Yield Curve & Credit Regime Filter | **Completed** | US Treasury curve (3M-30Y), public FRED OAS/Breakevens, compound macro stress index, Telegram `/macro`, morning briefing |
+| **Phase 41** | Formulaic Alpha Mining, Expression DSL & VectorBT Research Harness | **Planned** | WorldQuant 101-style alpha DSL, genetic expression search, VectorBT backtesting, auto-promotion |
 
 ---
 
@@ -990,6 +995,29 @@ Expand macro regime detection beyond single-point VIX and 10Y yield metrics to i
 3. **Cross-Asset Macro Dashboard**:
    - Add automated daily/weekly macro regime briefing to Telegram (`/macro` and scheduled updates).
    - Dynamically scale maximum allowable gross portfolio leverage based on compound macro stress index.
+
+### Implementation Summary
+1. **US Treasury Yield Curve Engine (`agentic_trader/agent/macro.py`)**:
+   - Ingests 3M (`^IRX`), 2Y (`2YY=F`), 5Y (`^FVX`), 10Y (`^TNX`), and 30Y (`^TYX`) yields via `yfinance`.
+   - Computes key term spreads: 10Y-2Y slope, 10Y-3M slope, and butterfly curvature (`2 * 5Y - (2Y + 10Y)`).
+   - Classifies yield curve regimes: `NORMAL_STEEP`, `FLAT`, `INVERTED`, `STEEP`.
+2. **Public Keyless FRED CSV Client (`FredDataClient`)**:
+   - Ingests ICE BofA US High Yield Index Option-Adjusted Spread (`BAMLH0A0HYM2`) and 5Y/10Y TIPS Breakeven Inflation Rates (`T5YIE`, `T10YIE`) without requiring any API keys.
+   - Built with resilient HTTP caching, fallback defaults, and graceful error handling.
+   - Classifies credit stress (`NORMAL`, `ELEVATED`, `CRITICAL`) and inflation expectations (`ANCHORED`, `ELEVATED`, `UNANCHORED`).
+3. **Compound Macro Stress Index & Dynamic Risk Modulation**:
+   - Synthesizes curve inversion, credit OAS blowouts, TIPS breakeven dislocation, VIX turbulence, and DXY trend into a 4-tier Macro Stress Index: `LOW`, `MODERATE`, `HIGH`, `EXTREME`.
+   - Modulates risk budget with multipliers: 1.0x (LOW), 0.8x (MODERATE), 0.5x (HIGH), 0.25x (EXTREME).
+   - Injects macro risk multiplier into trade sizing in deterministic evaluator and rejects Squeeze Breakouts under `HIGH` or `EXTREME` stress.
+4. **Telegram Presentation & Morning Macro Briefing**:
+   - Telegram `/macro` interactive command formatting an HTML card with Treasury yields, term spreads, credit OAS, inflation breakevens, and stress assessment.
+   - Registered `/macro` in Telegram command palette via `setup_bot_commands` and `/help`.
+   - Scheduled daily morning macro briefing at 12:30 UTC (08:30 ET) Mon-Fri in `service.py`.
+5. **LangGraph Copilot Tool (`agentic_trader/agent/copilot_tools.py`)**:
+   - Added `get_macro_intelligence` tool to the Copilot tool palette for natural language macro queries.
+6. **Quality Assurance**:
+   - 10 comprehensive unit tests in `test_macro_intelligence.py`, 3 tests in `test_telegram_macro.py`, and updated evaluator/copilot test suites.
+   - Total test suite: 311 tests passing with 100% pre-commit compliance.
 
 ---
 
