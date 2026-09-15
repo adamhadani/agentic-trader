@@ -150,6 +150,16 @@ class VolatilityRegime(StrEnum):
 VIX_TICKER = "^VIX"
 TNX_TICKER = "^TNX"
 DXY_TICKER = "DX-Y.NYB"
+IRX_TICKER = "^IRX"
+TWO_YEAR_TICKER = "2YY=F"
+FVX_TICKER = "^FVX"
+TYX_TICKER = "^TYX"
+
+# FRED Series Identifiers
+FRED_HY_OAS_SERIES = "BAMLH0A0HYM2"
+FRED_T10YIE_SERIES = "T10YIE"
+FRED_T5YIE_SERIES = "T5YIE"
+FRED_CSV_BASE_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
 # Default Volatility Thresholds
 DEFAULT_VIX_COMPRESSED_THRESHOLD = 15.0

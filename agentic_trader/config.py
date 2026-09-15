@@ -171,6 +171,9 @@ class SchedulerConfig(BaseModel):
     retune_day_of_week: str = "sat"
     retune_hour: int = 2
     retune_minute: int = 0
+    macro_briefing_enabled: bool = True
+    macro_briefing_hour: int = 12
+    macro_briefing_minute: int = 30
 
 
 class RegimeConfig(BaseModel):
@@ -178,6 +181,11 @@ class RegimeConfig(BaseModel):
     vix_elevated_threshold: float = DEFAULT_VIX_ELEVATED_THRESHOLD
     vix_extreme_threshold: float = DEFAULT_VIX_EXTREME_THRESHOLD
     cache_ttl_seconds: int = 900
+    yield_curve_enabled: bool = True
+    credit_oas_enabled: bool = True
+    inflation_breakeven_enabled: bool = True
+    hy_oas_elevated_threshold: float = 3.50  # 350 bps
+    hy_oas_critical_threshold: float = 5.00  # 500 bps
 
 
 class FrictionConfig(BaseModel):

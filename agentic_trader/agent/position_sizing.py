@@ -78,14 +78,20 @@ def calculate_dynamic_sizing(
     candidate: ScreenerCandidate | None = None,
     current_open_notional: float = 0.0,
     current_drawdown_pct: float = 0.0,
+    macro_risk_multiplier: float = 1.0,
 ) -> PositionSizingResult:
-    """Calculate dynamic position sizing with Drawdown, VaR, and Notional gating,
+    """Calculate dynamic position sizing with Drawdown, VaR, Macro, and Notional gating,
     producing tiered sizing choices (Half, Base, Max).
     """
     sizing_cfg = config.sizing
     portfolio_cash = max(config.portfolio.cash, 1000.0)
     max_portfolio_notional = config.portfolio.max_notional_exposure
     gating_reasons: list[str] = []
+
+    # 0. Macro Stress Risk Scaling
+    macro_factor = max(0.10, min(1.0, float(macro_risk_multiplier)))
+    if macro_factor < 1.0:
+        gating_reasons.append(f"Macro stress risk scaling applied: {macro_factor * 100:.0f}% risk budget")
 
     # 1. Drawdown Haircut Gating
     drawdown_factor = 1.0
@@ -102,6 +108,8 @@ def calculate_dynamic_sizing(
             gating_reasons.append(
                 f"Drawdown haircut applied: {drawdown_factor * 100:.0f}% sizing (DD: {current_drawdown_pct * 100:.1f}%)"
             )
+
+    effective_adjustment = drawdown_factor * macro_factor
 
     # 2. Portfolio Notional Ceiling & Budget
     remaining_notional = max(0.0, max_portfolio_notional - current_open_notional)
@@ -146,7 +154,7 @@ def calculate_dynamic_sizing(
                 base_risk_budget = sizing_cfg.default_equity_risk_dollars
             else:
                 base_risk_budget = 500.0
-            raw_base_qty = (base_risk_budget * drawdown_factor) / per_unit_risk
+            raw_base_qty = (base_risk_budget * effective_adjustment) / per_unit_risk
             base_qty = max(
                 sizing_cfg.min_shares,
                 min(max_qty, float(int(raw_base_qty))),
@@ -184,9 +192,9 @@ def calculate_dynamic_sizing(
                 fraction=sizing_cfg.kelly_fraction,
                 baseline_win_rate=sizing_cfg.baseline_win_rate,
             )
-            effective_base_budget = base_risk_budget * kelly_mult * drawdown_factor
+            effective_base_budget = base_risk_budget * kelly_mult * effective_adjustment
         else:
-            effective_base_budget = base_risk_budget * drawdown_factor
+            effective_base_budget = base_risk_budget * effective_adjustment
 
         raw_base_qty = effective_base_budget / per_unit_risk
 

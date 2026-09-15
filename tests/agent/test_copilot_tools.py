@@ -39,6 +39,9 @@ def mock_copilot():
     copilot.get_status_text_html = AsyncMock(return_value="<b>System Status:</b> Operational")
     copilot.get_positions_summary_html = AsyncMock(return_value="<b>Positions:</b> SPY 39x")
     copilot.get_regime_summary_html = AsyncMock(return_value="<b>Regime:</b> VIX 14.5, 10Y 4.15%, NORMAL")
+    copilot.get_macro_summary_html = AsyncMock(
+        return_value="<b>Macro Intelligence:</b> Stress LOW, Curve NORMAL_STEEP, OAS 265 bps"
+    )
     copilot.run_scan_summary_html = AsyncMock(return_value="<b>Scan Results:</b> 1 setup found")
     copilot.run_backtest_summary_html = AsyncMock(return_value="<b>Backtest:</b> Sharpe 1.85, Return +12.4%")
     copilot.run_gex_summary_html = AsyncMock(return_value="<b>GEX Surface:</b> Net GEX +$1.2B, Flip $502")
@@ -106,6 +109,15 @@ async def test_tool_get_market_regime(mock_copilot):
     res = await tools["get_market_regime"].ainvoke({})
     assert "VIX" in res
     mock_copilot.get_regime_summary_html.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_tool_get_macro_intelligence(mock_copilot):
+    tools = {t.name: t for t in make_copilot_tools(mock_copilot)}
+    res = await tools["get_macro_intelligence"].ainvoke({})
+    assert "Macro Intelligence" in res
+    assert "NORMAL_STEEP" in res
+    mock_copilot.get_macro_summary_html.assert_called_once()
 
 
 @pytest.mark.asyncio

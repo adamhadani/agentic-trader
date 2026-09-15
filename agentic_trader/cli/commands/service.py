@@ -110,6 +110,21 @@ async def daemon(no_llm: bool) -> None:
             config.scheduler.retune_hour,
             config.scheduler.retune_minute,
         )
+    # Schedule daily morning macro briefing (Monday - Friday)
+    if getattr(config.scheduler, "macro_briefing_enabled", True):
+        scheduler.add_job(
+            copilot.broadcast_macro_briefing,
+            "cron",
+            day_of_week="mon-fri",
+            hour=config.scheduler.macro_briefing_hour,
+            minute=config.scheduler.macro_briefing_minute,
+            id="macro_briefing",
+        )
+        logger.info(
+            "Scheduled morning macro briefing for mon-fri at %02d:%02d UTC.",
+            config.scheduler.macro_briefing_hour,
+            config.scheduler.macro_briefing_minute,
+        )
     scheduler.start()
     logger.info("Scheduler started: scanning every %dh, reconciling positions every 1m.", interval)
 

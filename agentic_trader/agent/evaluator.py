@@ -135,6 +135,7 @@ class RiskEvaluator:
         candidate: ScreenerCandidate,
         current_open_notional: float = 0.0,
         current_drawdown_pct: float = 0.0,
+        macro_risk_multiplier: float = 1.0,
     ) -> DeterministicLevels:
         """
         Calculate structural stop loss, 2:1 profit target, and dynamic position sizing deterministically.
@@ -190,6 +191,7 @@ class RiskEvaluator:
             candidate=candidate,
             current_open_notional=current_open_notional,
             current_drawdown_pct=current_drawdown_pct,
+            macro_risk_multiplier=macro_risk_multiplier,
         )
         quantity = sizing_result.default_tier.quantity
         risk_dollars = sizing_result.default_tier.risk_dollars
@@ -219,11 +221,15 @@ class RiskEvaluator:
         active_positions: list[dict[str, Any]] | None = None,
         current_drawdown_pct: float = 0.0,
     ) -> LLMTradeEvaluation:
-        # Compute deterministic baseline levels and position sizing first
+        # Fetch current volatility and macro regime
+        regime = await self.regime_detector.get_regime()
+
+        # Compute deterministic baseline levels and position sizing incorporating macro stress scaling
         levels = self.calculate_levels_deterministic(
             candidate,
             current_open_notional=current_open_notional,
             current_drawdown_pct=current_drawdown_pct,
+            macro_risk_multiplier=regime.risk_multiplier,
         )
         (
             stop_loss,
@@ -428,13 +434,15 @@ class RiskEvaluator:
             )
 
         # 3. Check Volatility Regime & Adaptive Strategy Suppression
-        regime = await self.regime_detector.get_regime()
         if candidate.strategy == StrategyType.SQUEEZE_BREAKOUT and not regime.breakout_allowed:
+            macro_detail = ""
+            if regime.macro_report and not regime.macro_report.stress.squeeze_breakout_allowed:
+                macro_detail = f" & Macro Stress ({regime.macro_report.stress.level.value})"
             return LLMTradeEvaluation(
                 approved=False,
                 rejection_reason=(
                     f"Volatility Regime Filter: Squeeze breakouts suppressed during {regime.vix_regime.value} "
-                    f"regime (VIX: {regime.vix:.1f} > {self.config.regime.vix_extreme_threshold:.1f})."
+                    f"regime (VIX: {regime.vix:.1f}{macro_detail})."
                 ),
                 contract=candidate.contract,
                 direction=candidate.direction,
@@ -450,7 +458,7 @@ class RiskEvaluator:
                 effective_leverage=effective_leverage,
                 macro_clearance=True,
                 thesis_summary=(
-                    f"Rejected: breakout suppressed due to {regime.vix_regime.value} volatility regime (VIX {regime.vix:.1f})."
+                    f"Rejected: breakout suppressed due to {regime.vix_regime.value} volatility regime (VIX {regime.vix:.1f}{macro_detail})."
                 ),
                 quantity=quantity,
                 asset_class=asset_class,

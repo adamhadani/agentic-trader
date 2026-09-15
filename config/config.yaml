@@ -96,6 +96,11 @@ regime:
   vix_elevated_threshold: 22.0
   vix_extreme_threshold: 30.0
   cache_ttl_seconds: 900
+  yield_curve_enabled: true
+  credit_oas_enabled: true
+  inflation_breakeven_enabled: true
+  hy_oas_elevated_threshold: 3.50 # 350 bps
+  hy_oas_critical_threshold: 5.00 # 500 bps
 
 strategies:
   mode: "parallel" # "single" or "parallel"
