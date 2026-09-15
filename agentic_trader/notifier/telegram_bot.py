@@ -2,7 +2,9 @@ import contextlib
 import html
 import inspect
 import logging
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import Awaitable, Callable, Coroutine
+from functools import wraps
 from typing import Any
 
 from telegram import (
@@ -16,6 +18,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -27,16 +30,24 @@ from telegram.ext import (
 )
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
+from agentic_trader.config import TelegramConfig
 from agentic_trader.constants import (
+    APP_DISPLAY_NAME,
+    DEFAULT_BACKTEST_LOOKBACK,
     DEFAULT_PORTFOLIO_CASH,
+    DEFAULT_RESEARCH_SYMBOL,
+    TELEGRAM_MESSAGE_CHUNK_LENGTH,
     AssetClass,
+    AuditEventType,
     ExecutionMode,
     ExitReason,
+    RuntimeEnvironment,
     SignalStatus,
 )
+from agentic_trader.notifier.transport import ObservedPollingRequest, RetryingTelegramRequest, telegram_update_id
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
-from agentic_trader.research.alpha import AlphaCatalog, AlphaPromotionManager
 from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.telemetry.collector import MetricsCollector, global_metrics
 
 
 logger = logging.getLogger(__name__)
@@ -54,14 +65,14 @@ def format_alert_card(
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
 
-    qty = getattr(eval_res, "quantity", 1.0)
-    asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+    qty = eval_res.quantity
+    asset_class = eval_res.asset_class
     if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
         qty_str = f"{qty:g} shares"
     else:
         qty_str = f"{qty:g}x"
 
-    tiers = getattr(eval_res, "sizing_tiers", None)
+    tiers = eval_res.sizing_tiers
     has_tiers = bool(tiers and len(tiers) > 1)
 
     mode_lower = execution_mode.lower()
@@ -129,7 +140,7 @@ def format_alert_card(
                 f"Reward: +${reward_val:,.2f} | "
                 f"Notional: ${notional_val:,.0f} ({lev_val:.2f}x){star}"
             )
-        gating = getattr(eval_res, "gating_reasons", None)
+        gating = eval_res.gating_reasons
         if gating:
             sizing_lines.extend(f"  <i>🛡️ {html.escape(str(g))}</i>" for g in gating)
         sizing_section = "\n".join(sizing_lines) + "\n"
@@ -168,14 +179,14 @@ def format_terminal_card(
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
 
-    qty = getattr(eval_res, "quantity", 1.0)
-    asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+    qty = eval_res.quantity
+    asset_class = eval_res.asset_class
     if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
         qty_str = f"{qty:g} shares"
     else:
         qty_str = f"{qty:g}x"
 
-    tiers = getattr(eval_res, "sizing_tiers", None)
+    tiers = eval_res.sizing_tiers
     has_tiers = bool(tiers and len(tiers) > 1)
 
     mode_lower = execution_mode.lower()
@@ -240,7 +251,7 @@ def format_terminal_card(
             sizing_lines.append(
                 f"• {t.get('label', '')}: {t_qty_str} | Risk: -${risk_val:,.2f} | Reward: +${reward_val:,.2f} | Notional: ${notional_val:,.0f} ({lev_val:.2f}x){star}"
             )
-        gating = getattr(eval_res, "gating_reasons", None)
+        gating = eval_res.gating_reasons
         if gating:
             sizing_lines.extend(f"  [Risk Gate] {g}" for g in gating)
         sizing_section = "\n".join(sizing_lines) + "\n"
@@ -326,8 +337,8 @@ class TelegramNotifier:
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
         execute_handler: Callable[..., Awaitable[tuple[bool, str]]] | None = None,
         perf_provider: Callable[[], Awaitable[str]] | None = None,
-        regime_provider: Callable[[], Awaitable[str]] | None = None,
         macro_provider: Callable[[], Awaitable[str]] | None = None,
+        explain_macro_provider: Callable[[], Awaitable[str]] | None = None,
         backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
         gex_provider: Callable[[str], Awaitable[str]] | None = None,
         pairs_provider: Callable[[], Awaitable[str]] | None = None,
@@ -335,7 +346,18 @@ class TelegramNotifier:
         resume_handler: Callable[[], Awaitable[Any]] | None = None,
         chat_handler: Callable[[str, str | int], Awaitable[str]] | None = None,
         alphas_provider: Callable[[], Awaitable[str]] | None = None,
+        environment: str = RuntimeEnvironment.DEVELOPMENT,
+        settings: TelegramConfig | None = None,
+        metrics: MetricsCollector | None = None,
+        application: Application | None = None,
+        backtest_lookback: str = DEFAULT_BACKTEST_LOOKBACK,
     ):
+        self.backtest_lookback = backtest_lookback
+        self.settings = settings if settings is not None else TelegramConfig()
+        self.metrics = metrics if metrics is not None else global_metrics
+        self._poll_healthy = False
+        self._last_poll_audit = 0.0
+        self.environment = environment
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.db = db
@@ -347,8 +369,8 @@ class TelegramNotifier:
         self.close_handler = close_handler
         self.execute_handler = execute_handler
         self.perf_provider = perf_provider
-        self.regime_provider = regime_provider
         self.macro_provider = macro_provider
+        self.explain_macro_provider = explain_macro_provider
         self.backtest_runner = backtest_runner
         self.gex_provider = gex_provider
         self.pairs_provider = pairs_provider
@@ -356,15 +378,32 @@ class TelegramNotifier:
         self.resume_handler = resume_handler
         self.chat_handler = chat_handler
         self.alphas_provider = alphas_provider
-        self.app: Application | None = None
+        self.app: Application | None = application
 
-        if self.is_configured() and self.bot_token:
+        if self.app is not None:
+            self._register_handlers()
+        elif self.is_configured() and self.bot_token:
             try:
-                self.app = ApplicationBuilder().token(self.bot_token).post_init(self._post_init).build()
+                request_options = {
+                    "read_timeout": self.settings.read_timeout_seconds,
+                    "connect_timeout": self.settings.connect_timeout_seconds,
+                }
+                self.app = (
+                    ApplicationBuilder()
+                    .token(self.bot_token)
+                    .request(RetryingTelegramRequest(self.settings, self._audit, self.metrics))
+                    .get_updates_request(ObservedPollingRequest(self._observe_poll, **request_options))
+                    .build()
+                )
                 self._register_handlers()
             except Exception as e:
                 logger.error(f"Failed to initialize Telegram application: {e}")
                 self.app = None
+
+    def _label(self, message: str) -> str:
+        return (
+            message if self.environment == RuntimeEnvironment.PRODUCTION else f"[{self.environment.upper()}] {message}"
+        )
 
     def is_configured(self) -> bool:
         return bool(self.bot_token and self.chat_id and "your_" not in self.bot_token and "your_" not in self.chat_id)
@@ -374,9 +413,79 @@ class TelegramNotifier:
             return False
         return str(update.effective_chat.id) == str(self.chat_id)
 
-    async def _post_init(self, application: Application) -> None:
-        """Invoked by python-telegram-bot upon application.initialize()."""
-        await self.setup_bot_commands()
+    async def _audit(self, event: AuditEventType, payload: dict[str, Any]) -> None:
+        if self.db is not None:
+            try:
+                if (update_id := telegram_update_id.get()) is not None:
+                    payload = {**payload, "update_id": update_id}
+                await self.db.record_audit(event, payload)
+            except Exception:
+                logger.exception("Failed to persist Telegram telemetry: %s", event)
+
+    async def _observe_poll(self, success: bool, error_type: str | None) -> None:
+        now = time.time()
+        previous = self._poll_healthy
+        self._poll_healthy = success
+        self.metrics.set_gauge("trader_telegram_poll_healthy", float(success))
+        if success:
+            self.metrics.set_gauge("trader_telegram_last_poll_success_timestamp_seconds", now)
+        else:
+            self.metrics.inc_counter("trader_telegram_poll_errors_total", labels={"error": error_type or "unknown"})
+        if not success or not previous or now - self._last_poll_audit >= self.settings.poll_audit_interval_seconds:
+            await self._audit(AuditEventType.TELEGRAM_POLL, {"success": success, "error_type": error_type})
+            self._last_poll_audit = now
+        if success and not previous:
+            logger.info("Telegram polling healthy; successful getUpdates response received")
+
+    def _observe_handler(self, callback: Callable[..., Awaitable[Any]]) -> Callable[..., Coroutine[Any, Any, Any]]:
+        @wraps(callback)
+        async def observed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Any:
+            if not self._is_authorized(update):
+                return None
+            started = time.monotonic()
+            context_token = telegram_update_id.set(update.update_id)
+            payload = {"handler": callback.__name__, "update_id": update.update_id}
+            await self._audit(AuditEventType.TELEGRAM_COMMAND, {**payload, "phase": "started"})
+            try:
+                result = await callback(update, context)
+            except Exception:
+                await self._audit(AuditEventType.TELEGRAM_COMMAND, {**payload, "phase": "failed"})
+                raise
+            else:
+                await self._audit(AuditEventType.TELEGRAM_COMMAND, {**payload, "phase": "completed"})
+                return result
+            finally:
+                telegram_update_id.reset(context_token)
+                self.metrics.observe_histogram(
+                    "trader_telegram_command_duration_seconds",
+                    time.monotonic() - started,
+                    labels={"handler": callback.__name__},
+                )
+
+        return observed
+
+    async def _handle_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        error = context.error
+        payload = {
+            "error_type": type(error).__name__,
+            "update_id": update.update_id if isinstance(update, Update) else None,
+        }
+        self.metrics.inc_counter("trader_telegram_errors_total", labels={"error": type(error).__name__})
+        await self._audit(AuditEventType.TELEGRAM_ERROR, payload)
+        if update is None and isinstance(error, NetworkError):
+            logger.warning("Telegram polling interrupted (%s); SDK will retry", type(error).__name__)
+            return
+        logger.error("Telegram handler failed: %s", payload, exc_info=error)
+        if isinstance(update, Update) and self._is_authorized(update) and update.effective_message:
+            # Report failure, but never replay a command or a trade action.
+            try:
+                await self.safe_reply_text(
+                    update.effective_message,
+                    "⚠️ I could not complete the response. Check /positions before repeating any trade action.",
+                    parse_mode="",
+                )
+            except Exception:
+                logger.exception("Could not deliver Telegram command failure notice")
 
     async def setup_bot_commands(self) -> bool:
         """Register slash commands with Telegram so client-side autocomplete works across all scopes."""
@@ -385,13 +494,13 @@ class TelegramNotifier:
         try:
             commands = [
                 BotCommand("status", "Portfolio exposure, cash base, and macro events"),
-                BotCommand("positions", "Active tracked trades and unrealized P&L"),
-                BotCommand("perf", "Cumulative closed trade performance and win rate"),
-                BotCommand("regime", "Real-time VIX, 10Y yield, and Dollar Index regime"),
-                BotCommand("macro", "Yield curve, credit OAS, inflation & macro stress"),
+                BotCommand("positions", "Broker positions, cost basis and unrealized P&L"),
+                BotCommand("perf", "Confirmed closed P&L and broker unrealized P&L"),
+                BotCommand("macro", "VIX, yield curve, credit, inflation & trading filters"),
+                BotCommand("explain_macro", "Tutorial & breakdown of live macro indicators"),
                 BotCommand("alphas", "Formulaic alpha intelligence & active strategies"),
                 BotCommand("pairs", "Statistical arbitrage pairs, cointegration & Z-scores"),
-                BotCommand("gex", "Gamma exposure, dealer walls, and gamma flip"),
+                BotCommand("gex", "Option-chain gamma estimates and concentration levels"),
                 BotCommand("backtest", "Offline backtest simulation"),
                 BotCommand("scan", "Trigger on-demand quantitative universe scan"),
                 BotCommand("close", "Manually close a tracked trade"),
@@ -430,7 +539,7 @@ class TelegramNotifier:
         await self.app.initialize()
         await self.setup_bot_commands()
         await self.app.start()
-        await self.app.updater.start_polling()
+        await self.app.updater.start_polling(timeout=self.settings.poll_timeout_seconds, drop_pending_updates=False)
 
     async def stop_polling(self) -> None:
         """Cleanly stop updater polling and shutdown the Telegram application."""
@@ -440,25 +549,60 @@ class TelegramNotifier:
             if self.app.running:
                 await self.app.stop()
             await self.app.shutdown()
+            self.metrics.set_gauge("trader_telegram_poll_healthy", 0)
 
     def _register_handlers(self):
         if self.app:
-            self.app.add_handler(CallbackQueryHandler(self.handle_button_callback))
-            self.app.add_handler(CommandHandler(["start", "help"], self.handle_help_command))
-            self.app.add_handler(CommandHandler("status", self.handle_status_command))
-            self.app.add_handler(CommandHandler("scan", self.handle_scan_command))
-            self.app.add_handler(CommandHandler("positions", self.handle_positions_command))
-            self.app.add_handler(CommandHandler("close", self.handle_close_command))
-            self.app.add_handler(CommandHandler("perf", self.handle_perf_command))
-            self.app.add_handler(CommandHandler("regime", self.handle_regime_command))
-            self.app.add_handler(CommandHandler("macro", self.handle_macro_command))
-            self.app.add_handler(CommandHandler("alphas", self.handle_alphas_command))
-            self.app.add_handler(CommandHandler("backtest", self.handle_backtest_command))
-            self.app.add_handler(CommandHandler("gex", self.handle_gex_command))
-            self.app.add_handler(CommandHandler("pairs", self.handle_pairs_command))
-            self.app.add_handler(CommandHandler("panic", self.handle_panic_command))
-            self.app.add_handler(CommandHandler("resume", self.handle_resume_command))
-            self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_chat_message))
+            self.app.add_error_handler(self._handle_error)
+            self.app.add_handler(CallbackQueryHandler(self._observe_handler(self.handle_button_callback)))
+            self.app.add_handler(CommandHandler(["start", "help"], self._observe_handler(self.handle_help_command)))
+            self.app.add_handler(CommandHandler("status", self._observe_handler(self.handle_status_command)))
+            self.app.add_handler(CommandHandler("scan", self._observe_handler(self.handle_scan_command)))
+            self.app.add_handler(CommandHandler("positions", self._observe_handler(self.handle_positions_command)))
+            self.app.add_handler(CommandHandler("close", self._observe_handler(self.handle_close_command)))
+            self.app.add_handler(CommandHandler("perf", self._observe_handler(self.handle_perf_command)))
+            self.app.add_handler(CommandHandler("macro", self._observe_handler(self.handle_macro_command)))
+            self.app.add_handler(
+                CommandHandler("explain_macro", self._observe_handler(self.handle_explain_macro_command))
+            )
+            self.app.add_handler(CommandHandler("alphas", self._observe_handler(self.handle_alphas_command)))
+            self.app.add_handler(CommandHandler("backtest", self._observe_handler(self.handle_backtest_command)))
+            self.app.add_handler(CommandHandler("gex", self._observe_handler(self.handle_gex_command)))
+            self.app.add_handler(CommandHandler("pairs", self._observe_handler(self.handle_pairs_command)))
+            self.app.add_handler(CommandHandler("panic", self._observe_handler(self.handle_panic_command)))
+            self.app.add_handler(CommandHandler("resume", self._observe_handler(self.handle_resume_command)))
+            self.app.add_handler(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, self._observe_handler(self.handle_chat_message))
+            )
+
+    async def safe_reply_text(
+        self,
+        message: Any,
+        text: str,
+        parse_mode: str = "HTML",
+        max_chunk_len: int = TELEGRAM_MESSAGE_CHUNK_LENGTH,
+    ) -> list[Any]:
+        """Safely send or reply to a Telegram message with HTML sanitization,
+        chunking for messages exceeding Telegram's 4096-character limit,
+        and automatic plain-text fallback if Telegram's entity parser rejects HTML.
+        """
+        if not text or not message:
+            return []
+
+        sanitized = TelegramHtmlFormatter.sanitize_telegram_html(text) if parse_mode == "HTML" else text
+        chunks = TelegramHtmlFormatter.split_telegram_message(sanitized, max_chunk_len=max_chunk_len)
+
+        sent_messages: list[Any] = []
+        for chunk in chunks:
+            try:
+                sent = await message.reply_text(chunk, parse_mode=parse_mode or None)
+            except BadRequest as exc:
+                if parse_mode != "HTML" or "parse entities" not in str(exc).lower():
+                    raise
+                logger.warning("Telegram rejected HTML entities; retrying this reply as plain text")
+                sent = await message.reply_text(TelegramHtmlFormatter.strip_html(chunk), parse_mode=None)
+            sent_messages.append(sent)
+        return sent_messages
 
     async def handle_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle natural language conversational queries from the operator."""
@@ -489,60 +633,32 @@ class TelegramNotifier:
             logger.exception("Error invoking copilot chat handler")
             response = f"❌ Error processing copilot request: {e}"
 
-        MAX_LEN = 4000
-        if len(response) <= MAX_LEN:
-            try:
-                await update.message.reply_text(response, parse_mode="HTML")
-            except Exception:
-                await update.message.reply_text(response)
-        else:
-            chunks: list[str] = []
-            current_chunk: list[str] = []
-            current_len = 0
-            for line in response.splitlines(keepends=True):
-                if current_len + len(line) > MAX_LEN:
-                    if current_chunk:
-                        chunks.append("".join(current_chunk))
-                    current_chunk = [line]
-                    current_len = len(line)
-                else:
-                    current_chunk.append(line)
-                    current_len += len(line)
-            if current_chunk:
-                chunks.append("".join(current_chunk))
-
-            for chunk in chunks:
-                try:
-                    await update.message.reply_text(chunk, parse_mode="HTML")
-                except Exception:
-                    await update.message.reply_text(chunk)
+        await self.safe_reply_text(update.message, response, parse_mode="HTML")
 
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
         help_text = (
-            "🤖 <b>Cash-Plus Trading Copilot</b>\n\n"
+            f"🤖 <b>{APP_DISPLAY_NAME}</b>\n\n"
             "<b>Available Commands:</b>\n"
             "• /status - View portfolio exposure, cash base, and macro events\n"
-            "• /positions - View active tracked trades and unrealized P&amp;L\n"
-            "• /perf - View cumulative closed trade performance and win rate\n"
-            "• /regime - View real-time VIX, 10Y yield, and Dollar Index macro filter\n"
-            "• /macro - View yield curve spreads, credit OAS, and macro stress index\n"
+            "• /positions - Broker positions, cost basis and unrealized P&amp;L\n"
+            "• /perf - Confirmed closed-trade P&amp;L and broker unrealized P&amp;L\n"
+            "• /macro - VIX, yields, credit, inflation and combined trading filters\n"
+            "• /explain_macro - Tutorial &amp; educational indicator breakdown with LLM context\n"
             "• /alphas - View formulaic alpha intelligence, catalog, and active strategies\n"
             "• /pairs - View statistical arbitrage pairs, cointegration &amp; Z-scores\n"
             "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
-            "• /close &lt;id&gt; [price] - Manually close a tracked trade and record fill\n"
+            "• /close &lt;id&gt; - Request broker closure; accounting waits for fills\n"
             "• /scan - Trigger an on-demand quantitative scan across universe\n"
             "• /panic [confirm] - 🔴 Emergency kill switch: cancel orders, liquidate &amp; halt\n"
             "• /resume - 🟢 Clear emergency halt and restore normal operations\n"
             "• /help - Display this command overview\n\n"
-            "<b>Risk Invariants Enforced:</b>\n"
-            "• Sizing: 1 micro contract (/MES, /MNQ, /MGC, /MCL) or fractional equity shares\n"
-            "• Exposure Cap: $60,000 max total open notional\n"
-            "• Stop Distance: ≥ 1.5x ATR\n"
-            "• Reward-to-Risk: ≥ 2.0:1\n"
-            "• Macro Lockout: 60m before / 30m after Tier-1 events"
+            "<b>Trading workflow:</b>\n"
+            "Scans stage suggestions for operator approval. Risk and sizing use the loaded configuration.\n"
+            "Use /status for configured capital, exposure and macro context.\n"
+            "Broker fills determine trade accounting. GEX, pairs and backtests are research estimates."
         )
         keyboard = InlineKeyboardMarkup(
             [
@@ -552,7 +668,7 @@ class TelegramNotifier:
                 ],
                 [
                     InlineKeyboardButton("📊 Performance", callback_data="cmd_perf"),
-                    InlineKeyboardButton("🌐 Macro Regime", callback_data="cmd_regime"),
+                    InlineKeyboardButton("🌐 Macro & Filters", callback_data="cmd_macro"),
                 ],
             ]
         )
@@ -563,7 +679,7 @@ class TelegramNotifier:
             return
         if self.positions_provider:
             resp = await self.positions_provider()
-            await update.message.reply_text(resp, parse_mode="HTML")
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Positions provider not attached.")
 
@@ -572,69 +688,51 @@ class TelegramNotifier:
             return
         if self.perf_provider:
             resp = await self.perf_provider()
-            await update.message.reply_text(resp, parse_mode="HTML")
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Performance provider not attached.")
-
-    async def handle_regime_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._is_authorized(update) or not update.message:
-            return
-        if self.regime_provider:
-            resp = await self.regime_provider()
-            await update.message.reply_text(resp, parse_mode="HTML")
-        else:
-            await update.message.reply_text("Regime provider not attached.")
 
     async def handle_macro_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
         if self.macro_provider:
-            try:
-                resp = await self.macro_provider()
-                await update.message.reply_text(resp, parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Macro intelligence error: {e}")
+            resp = await self.macro_provider()
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Macro intelligence provider not attached.")
+
+    async def handle_explain_macro_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        if self.explain_macro_provider:
+            resp = await self.explain_macro_provider()
+            await self.safe_reply_text(update.message, resp)
+        else:
+            await update.message.reply_text("Macro explanation provider not attached.")
 
     async def handle_alphas_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
         if self.alphas_provider:
-            try:
-                resp = await self.alphas_provider()
-                await update.message.reply_text(resp, parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Formulaic alphas error: {e}")
+            resp = await self.alphas_provider()
+            await self.safe_reply_text(update.message, resp)
         else:
-            try:
-                mgr = AlphaPromotionManager()
-                catalog = AlphaCatalog()
-                promoted = mgr.list_active_alphas()
-                resp = TelegramHtmlFormatter.format_alphas_dashboard_html(
-                    promoted, catalog_count=len(catalog.list_alphas())
-                )
-                await update.message.reply_text(resp, parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Error displaying alphas: {e}")
+            await update.message.reply_text("Alpha provider not attached.")
 
     async def handle_backtest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
             return
         args = context.args or []
-        symbol = args[0].upper() if len(args) > 0 else "SPY"
-        lookback = args[1] if len(args) > 1 else "1y"
+        symbol = args[0].upper() if len(args) > 0 else DEFAULT_RESEARCH_SYMBOL
+        lookback = args[1] if len(args) > 1 else self.backtest_lookback
 
         await update.message.reply_text(
             f"⏳ Running backtest simulation for <b>{html.escape(symbol)}</b> ({html.escape(lookback)})...",
             parse_mode="HTML",
         )
         if self.backtest_runner:
-            try:
-                resp = await self.backtest_runner(symbol, lookback)
-                await update.message.reply_text(resp, parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Backtest error: {e}")
+            resp = await self.backtest_runner(symbol, lookback)
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Backtest runner not attached.")
 
@@ -642,18 +740,15 @@ class TelegramNotifier:
         if not self._is_authorized(update) or not update.message:
             return
         args = context.args or []
-        symbol = args[0].upper() if len(args) > 0 else "SPY"
+        symbol = args[0].upper() if len(args) > 0 else DEFAULT_RESEARCH_SYMBOL
 
         await update.message.reply_text(
             f"🧭 Analyzing options gamma exposure & dealer walls for <b>{html.escape(symbol)}</b>...",
             parse_mode="HTML",
         )
         if self.gex_provider:
-            try:
-                resp = await self.gex_provider(symbol)
-                await update.message.reply_text(resp, parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ GEX error: {e}")
+            resp = await self.gex_provider(symbol)
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("GEX provider not attached.")
 
@@ -665,11 +760,8 @@ class TelegramNotifier:
             parse_mode="HTML",
         )
         if self.pairs_provider:
-            try:
-                resp = await self.pairs_provider()
-                await update.message.reply_text(resp, parse_mode="HTML")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Pairs screening error: {e}")
+            resp = await self.pairs_provider()
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Pairs provider not attached.")
 
@@ -679,7 +771,7 @@ class TelegramNotifier:
         args = context.args or []
         if not args:
             await update.message.reply_text(
-                "Usage: <code>/close &lt;signal_id&gt; [exit_price]</code>\nExample: <code>/close 2 5845.00</code>",
+                "Usage: <code>/close &lt;signal_id&gt; [exit_price]</code>\nAlpaca waits for the broker fill; exit_price is for simulation/manual adapters.",
                 parse_mode="HTML",
             )
             return
@@ -692,7 +784,7 @@ class TelegramNotifier:
 
         if self.close_handler:
             resp = await self.close_handler(signal_id, exit_price)
-            await update.message.reply_text(resp, parse_mode="HTML")
+            await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Close handler not attached.")
 
@@ -774,7 +866,7 @@ class TelegramNotifier:
                 ],
                 [
                     InlineKeyboardButton("📊 Performance", callback_data="cmd_perf"),
-                    InlineKeyboardButton("🌐 Macro Regime", callback_data="cmd_regime"),
+                    InlineKeyboardButton("🌐 Macro & Filters", callback_data="cmd_macro"),
                 ],
             ]
         )
@@ -795,6 +887,8 @@ class TelegramNotifier:
             await update.message.reply_text("Scan runner not attached.")
 
     async def handle_button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update):
+            return
         query = update.callback_query
         if not query or not query.data:
             return
@@ -825,10 +919,10 @@ class TelegramNotifier:
             if self.perf_provider and msg and hasattr(msg, "reply_text"):
                 res = await self.perf_provider()
                 await msg.reply_text(res, parse_mode="HTML")
-        elif data == "cmd_regime":
+        elif data == "cmd_macro":
             await query.answer()
-            if self.regime_provider and msg and hasattr(msg, "reply_text"):
-                res = await self.regime_provider()
+            if self.macro_provider and msg and hasattr(msg, "reply_text"):
+                res = await self.macro_provider()
                 await msg.reply_text(res, parse_mode="HTML")
         elif data.startswith("exec_"):
             parts = data.split("_")
@@ -854,14 +948,7 @@ class TelegramNotifier:
                 if msg and hasattr(msg, "reply_text"):
                     await msg.reply_text(reply_text, parse_mode="HTML")
             else:
-                await query.answer()
-                if self.db:
-                    await self.db.update_signal_status(signal_id, SignalStatus.EXECUTED)
-                await _safe_clear_markup()
-                if msg and hasattr(msg, "reply_text"):
-                    await msg.reply_text(
-                        f"✅ Signal #{signal_id} acknowledged: status set to {SignalStatus.EXECUTED}. Position is now active in risk tracking."
-                    )
+                await query.answer("Execution handler unavailable; no order submitted.", show_alert=True)
 
         elif data.startswith("dism_"):
             await query.answer()
@@ -942,8 +1029,8 @@ class TelegramNotifier:
         else:
             exec_btn_text = "✅ Acknowledge & Tracking"
 
-        tiers = getattr(eval_res, "sizing_tiers", None)
-        asset_class = getattr(eval_res, "asset_class", AssetClass.FUTURES)
+        tiers = eval_res.sizing_tiers
+        asset_class = eval_res.asset_class
         if tiers and len(tiers) > 1:
             tier_buttons = []
             for t in tiers:
@@ -973,7 +1060,7 @@ class TelegramNotifier:
             bot = self.app.bot
             msg = await bot.send_message(
                 chat_id=self.chat_id,
-                text=card_html,
+                text=self._label(card_html),
                 parse_mode="HTML",
                 reply_markup=reply_markup,
             )
@@ -1049,7 +1136,7 @@ class TelegramNotifier:
             bot = self.app.bot
             msg = await bot.send_message(
                 chat_id=self.chat_id,
-                text=card_html,
+                text=self._label(card_html),
                 parse_mode="HTML",
             )
             return msg.message_id
@@ -1094,7 +1181,7 @@ class TelegramNotifier:
             bot = self.app.bot
             await bot.send_message(
                 chat_id=self.chat_id,
-                text=text,
+                text=self._label(text),
                 parse_mode=parse_mode,
             )
             return True

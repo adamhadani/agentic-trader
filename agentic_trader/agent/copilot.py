@@ -3,23 +3,33 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import math
+from datetime import UTC, datetime
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from alpaca.trading.client import TradingClient
 
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
-from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
+from agentic_trader.agent.evaluator import RiskEvaluator
+from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import (
+    BROKER_PRICE_TOLERANCE,
+    BROKER_QUANTITY_TOLERANCE,
+    DEFAULT_RESEARCH_SYMBOL,
+    STREAM_RECONNECT_MULTIPLIER,
     AssetClass,
+    AuditEventType,
     Direction,
     ExitReason,
     SignalStatus,
-    StrategyType,
+    SystemStateKey,
+    normalize_asset_class,
 )
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.execution import SlicedExecutionEngine
@@ -38,8 +48,8 @@ from agentic_trader.presentation.formatters import (
     TelegramHtmlFormatter,
     TerminalFormatter,
 )
-from agentic_trader.research import AutoRetuner
 from agentic_trader.research.alpha import AlphaCatalog, AlphaPromotionManager
+from agentic_trader.research.retuner import AutoRetuner
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.telemetry import MetricsServer, global_metrics
@@ -54,11 +64,23 @@ class TradingCopilot:
     broker order execution, real-time trade monitoring, and metrics exposition.
     """
 
-    def __init__(self, config: AppConfig, db: SignalDatabase | None = None):
+    def __init__(
+        self,
+        config: AppConfig,
+        db: SignalDatabase | None = None,
+        *,
+        broker: BaseBroker | None = None,
+        data_fetcher: MarketDataFetcher | None = None,
+        notifier: TelegramNotifier | None = None,
+    ):
+        self._dry_run_directory: TemporaryDirectory[str] | None = None
+        self._reconciliation_lock = asyncio.Lock()
         self.config = config
-        self.db = db or SignalDatabase(config.db_path)
-        self.data_fetcher = MarketDataFetcher()
-        self.broker: BaseBroker = create_broker(config=config, data_fetcher=self.data_fetcher)
+        self.db = db if db is not None else SignalDatabase(db_url=config.resolved_db_url, config=config)
+        self.data_fetcher = data_fetcher if data_fetcher is not None else MarketDataFetcher(config=config)
+        self.broker: BaseBroker = (
+            broker if broker is not None else create_broker(config=config, data_fetcher=self.data_fetcher)
+        )
         self.strategy_engine = StrategyEngine(config)
         self.calendar: BaseEconomicCalendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.regime_detector = RegimeDetector(config=config.regime)
@@ -105,27 +127,34 @@ class TradingCopilot:
             except Exception as e:
                 logger.warning(f"Could not pre-compile LangGraph conversational copilot: {e}")
 
-        self.notifier = TelegramNotifier(
-            bot_token=config.telegram_bot_token,
-            chat_id=config.telegram_chat_id,
-            db=self.db,
-            portfolio_cash=config.portfolio.cash,
-            execution_mode=config.execution_mode,
-            status_provider=self.get_status_text_html,
-            scan_runner=self.run_scan_summary_html,
-            positions_provider=self.get_positions_summary_html,
-            close_handler=self.close_position_manual,
-            execute_handler=self.execute_signal_by_id,
-            perf_provider=self.get_performance_summary_html,
-            regime_provider=self.get_regime_summary_html,
-            macro_provider=self.get_macro_summary_html,
-            alphas_provider=self.get_alphas_summary_html,
-            backtest_runner=self.run_backtest_summary_html,
-            gex_provider=self.run_gex_summary_html,
-            pairs_provider=self.run_pairs_summary_html,
-            panic_handler=self.emergency_panic_halt,
-            resume_handler=self.resume_trading,
-            chat_handler=self.ask_copilot,
+        self.notifier = (
+            notifier
+            if notifier is not None
+            else TelegramNotifier(
+                settings=config.telegram,
+                environment=config.environment,
+                bot_token=config.telegram_bot_token,
+                chat_id=config.telegram_chat_id,
+                db=self.db,
+                portfolio_cash=config.portfolio.cash,
+                execution_mode=config.execution_mode,
+                status_provider=self.get_status_text_html,
+                scan_runner=self.run_scan_summary_html,
+                positions_provider=self.get_positions_summary_html,
+                close_handler=self.close_position_manual,
+                execute_handler=self.execute_signal_by_id,
+                perf_provider=self.get_performance_summary_html,
+                macro_provider=self.get_macro_summary_html,
+                explain_macro_provider=self.get_explain_macro_html,
+                alphas_provider=self.get_alphas_summary_html,
+                backtest_runner=self.run_backtest_summary_html,
+                backtest_lookback=self.config.backtest.lookback,
+                gex_provider=self.run_gex_summary_html,
+                pairs_provider=self.run_pairs_summary_html,
+                panic_handler=self.emergency_panic_halt,
+                resume_handler=self.resume_trading,
+                chat_handler=self.ask_copilot,
+            )
         )
         self.metrics = global_metrics
         self.metrics_server = (
@@ -141,6 +170,7 @@ class TradingCopilot:
         self.is_halted: bool = False
         self.halt_reason: str | None = None
         self._shutdown_event = asyncio.Event()
+        self._scan_lock = asyncio.Lock()
 
     async def ask_copilot(self, query: str, chat_id: str | int = "default") -> str:
         """Handle a natural language conversational turn through the LangGraph copilot."""
@@ -159,10 +189,12 @@ class TradingCopilot:
 
     async def check_halt_state(self) -> bool:
         """Check persistent database state for emergency trading halt."""
-        state_val = await self.db.get_state("trading_halted")
+        state_val = await self.db.get_state(SystemStateKey.TRADING_HALTED)
         if state_val and state_val.lower() in ("true", "1", "yes"):
             self.is_halted = True
-            self.halt_reason = await self.db.get_state("trading_halt_reason") or "Emergency Kill Switch Engaged"
+            self.halt_reason = (
+                await self.db.get_state(SystemStateKey.TRADING_HALT_REASON) or "Emergency Kill Switch Engaged"
+            )
         else:
             self.is_halted = False
             self.halt_reason = None
@@ -183,219 +215,238 @@ class TradingCopilot:
         bypass_session_filter: bool = False,
         strategy: str | None = None,
         strategy_mode: str | None = None,
+        timeframe: str | None = None,
     ):
-        await self.check_halt_state()
-        if self.is_halted:
-            logger.warning(
-                "Trading scan halted: Emergency kill switch active (%s). Skipping universe scan.",
-                self.halt_reason,
-                extra={"event": "trading_halted_scan_blocked", "reason": self.halt_reason},
-            )
-            return
+        async with self._scan_lock:
+            await self.check_halt_state()
+            if self.is_halted:
+                logger.warning(
+                    "Trading scan halted: Emergency kill switch active (%s). Skipping universe scan.",
+                    self.halt_reason,
+                    extra={"event": "trading_halted_scan_blocked", "reason": self.halt_reason},
+                )
+                return
 
-        logger.info("=== Starting Quantitative Scan ===")
-        regime = await self.regime_detector.get_regime()
-        logger.info("Current market volatility context: %s", regime.summary_text)
-        current_exposure = await self.db.get_active_notional_exposure()
-        active_count = await self.db.get_active_position_count()
-        active_positions = await self.db.get_active_positions()
-        max_positions = getattr(
-            self.config.portfolio,
-            "max_concurrent_positions",
-            self.config.portfolio.max_concurrent_contracts,
-        )
-        logger.info(
-            f"Portfolio Status: {active_count}/{max_positions} active positions | "
-            f"Open Notional: ${current_exposure:,.2f} / ${self.config.portfolio.max_notional_exposure:,.2f} max"
-        )
-        session_allowed, session_reason = await self.session_provider.is_session_active(
-            instrument_type=asset_class or "all"
-        )
-        if not session_allowed and not bypass_session_filter:
+            logger.info("=== Starting Quantitative Scan ===")
+            regime = await self.regime_detector.get_regime()
+            logger.info("Current market volatility context: %s", regime.summary_text)
+            current_exposure = await self.db.get_active_notional_exposure()
+            active_count = await self.db.get_active_position_count()
+            active_positions = await self.db.get_active_positions()
+            max_positions = getattr(
+                self.config.portfolio,
+                "max_concurrent_positions",
+                self.config.portfolio.max_concurrent_contracts,
+            )
             logger.info(
-                "Market session filter inactive (%s): %s. Skipping universe scan.",
-                asset_class,
-                session_reason,
-                extra={"event": "session_blocked", "asset_class": asset_class, "reason": session_reason},
+                f"Portfolio Status: {active_count}/{max_positions} active positions | "
+                f"Open Notional: ${current_exposure:,.2f} / ${self.config.portfolio.max_notional_exposure:,.2f} max"
             )
-            return
-
-        in_lockout, lock_event = await self.calendar.is_in_lockout_window(
-            pre_minutes=self.config.risk.lockout_pre_event_minutes,
-            post_minutes=self.config.risk.lockout_post_event_minutes,
-        )
-        if in_lockout and lock_event:
-            logger.warning(
-                f"Macro Lockout Active: '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}. "
-                "No entry alerts will be emitted during this window.",
-                extra={
-                    "event": "macro_lockout_active",
-                    "lock_event": lock_event.title,
-                    "event_time": str(lock_event.timestamp),
-                },
+            session_allowed, session_reason = await self.session_provider.is_session_active(
+                instrument_type=asset_class or "all"
             )
-            return
+            if not session_allowed and not bypass_session_filter:
+                logger.info(
+                    "Market session filter inactive (%s): %s. Skipping universe scan.",
+                    asset_class,
+                    session_reason,
+                    extra={"event": "session_blocked", "asset_class": asset_class, "reason": session_reason},
+                )
+                return
 
-        total_candidates = 0
-        total_alerts = 0
+            in_lockout, lock_event = await self.calendar.is_in_lockout_window(
+                pre_minutes=self.config.risk.lockout_pre_event_minutes,
+                post_minutes=self.config.risk.lockout_post_event_minutes,
+            )
+            if in_lockout and lock_event:
+                logger.warning(
+                    f"Macro Lockout Active: '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}. "
+                    "No entry alerts will be emitted during this window.",
+                    extra={
+                        "event": "macro_lockout_active",
+                        "lock_event": lock_event.title,
+                        "event_time": str(lock_event.timestamp),
+                    },
+                )
+                return
 
-        target_syms = [s.strip().upper() for s in symbols] if symbols else None
+            total_candidates = 0
+            total_alerts = 0
 
-        for contract, info in self.config.contracts.items():
-            clean_contract = contract.strip("/").upper()
-            if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
-                continue
+            target_syms = [s.strip().upper() for s in symbols] if symbols else None
 
-            inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
-            if asset_class and asset_class.lower() != "all" and str(inst_class).lower() != asset_class.lower():
-                continue
-
-            logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
-            try:
-                data = self.data_fetcher.fetch_data(contract, info.ticker)
-                if data.daily.empty or data.four_hour.empty:
-                    logger.warning(f"Insufficient data for {contract}, skipping.")
+            for contract, info in self.config.contracts.items():
+                clean_contract = contract.strip("/").upper()
+                if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
                     continue
 
-                candidates = self.strategy_engine.scan_contract(
-                    data,
-                    asset_class=inst_class,
-                    override_strategy=strategy,
-                    override_mode=strategy_mode,
-                )
-                for candidate in candidates:
-                    total_candidates += 1
-                    logger.info(
-                        "Found setup: %s %s via %s at %.2f",
-                        candidate.contract,
-                        candidate.direction,
-                        candidate.strategy,
-                        candidate.current_price,
-                        extra={
-                            "event": "candidate_found",
-                            "contract": candidate.contract,
-                            "direction": candidate.direction,
-                            "strategy": candidate.strategy,
-                            "price": candidate.current_price,
-                        },
-                    )
+                inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
+                inst_class_norm = normalize_asset_class(str(inst_class))
+                req_class_norm = normalize_asset_class(asset_class)
+                if asset_class and asset_class.lower() != "all" and inst_class_norm != req_class_norm:
+                    continue
 
-                    # Deduplication check
-                    is_dup = await self.db.is_duplicate_recent(
-                        candidate.contract,
-                        candidate.strategy,
-                        hours=self.config.risk.deduplication_hours,
+                logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
+                try:
+                    data = await asyncio.to_thread(self.data_fetcher.fetch_data, contract, info.ticker)
+                    if data.daily.empty or data.four_hour.empty:
+                        logger.warning(f"Insufficient data for {contract}, skipping.")
+                        continue
+
+                    candidates = await asyncio.to_thread(
+                        self.strategy_engine.scan_contract,
+                        data,
+                        asset_class=inst_class,
+                        override_strategy=strategy,
+                        override_mode=strategy_mode,
                     )
-                    if is_dup:
+                    if timeframe:
+                        tf_norm = timeframe.strip().lower()
+                        candidates = [c for c in candidates if getattr(c, "timeframe", "").lower() == tf_norm]
+
+                    for candidate in candidates:
+                        total_candidates += 1
                         logger.info(
-                            "Skipping duplicate signal: %s %s already alerted within %d hours.",
+                            "Found setup: %s %s via %s at %.2f",
+                            candidate.contract,
+                            candidate.direction,
+                            candidate.strategy,
+                            candidate.current_price,
+                            extra={
+                                "event": "candidate_found",
+                                "contract": candidate.contract,
+                                "direction": candidate.direction,
+                                "strategy": candidate.strategy,
+                                "price": candidate.current_price,
+                            },
+                        )
+
+                        # Deduplication check
+                        dedup_hours = self.config.risk.deduplication_hours
+                        candidate_tf = getattr(candidate, "timeframe", "4h").lower()
+                        if candidate_tf in ("15m", "15min", "fifteen_minute"):
+                            dedup_hours = min(dedup_hours, 2)
+                        elif candidate_tf in ("1h", "hourly"):
+                            dedup_hours = min(dedup_hours, 4)
+
+                        is_dup = await self.db.is_duplicate_recent(
                             candidate.contract,
                             candidate.strategy,
-                            self.config.risk.deduplication_hours,
-                            extra={
-                                "event": "duplicate_signal_skipped",
-                                "contract": candidate.contract,
-                                "strategy": candidate.strategy,
-                            },
+                            hours=dedup_hours,
                         )
-                        continue
-
-                    # Risk evaluation
-                    eval_res = await self.evaluator.evaluate_candidate(
-                        candidate,
-                        current_open_notional=current_exposure,
-                        use_llm=use_llm,
-                        active_positions=active_positions,
-                    )
-
-                    if not eval_res.approved:
-                        logger.info(
-                            "Candidate rejected by risk engine: %s",
-                            eval_res.rejection_reason,
-                            extra={
-                                "event": "candidate_rejected",
-                                "contract": candidate.contract,
-                                "rejection_reason": eval_res.rejection_reason,
-                            },
-                        )
-                        continue
-
-                    if dry_run:
-                        logger.info("[DRY RUN] Approved signal would be emitted:")
-                        print(
-                            format_terminal_card(
-                                eval_res,
+                        if is_dup:
+                            logger.info(
+                                "Skipping duplicate signal: %s %s already alerted within %d hours.",
+                                candidate.contract,
                                 candidate.strategy,
-                                self.config.portfolio.cash,
-                                regime_summary=regime.summary_text,
+                                dedup_hours,
+                                extra={
+                                    "event": "duplicate_signal_skipped",
+                                    "contract": candidate.contract,
+                                    "strategy": candidate.strategy,
+                                },
                             )
+                            continue
+
+                        # Risk evaluation
+                        eval_res = await self.evaluator.evaluate_candidate(
+                            candidate,
+                            current_open_notional=current_exposure,
+                            use_llm=use_llm,
+                            active_positions=active_positions,
                         )
-                        continue
 
-                    # Record to database
-                    sig_id = await self.db.record_signal(
-                        contract=eval_res.contract,
-                        strategy=candidate.strategy,
-                        direction=eval_res.direction,
-                        entry_price=eval_res.entry_price,
-                        stop_loss=eval_res.stop_loss,
-                        take_profit=eval_res.take_profit,
-                        risk_dollars=eval_res.risk_dollars,
-                        reward_dollars=eval_res.reward_dollars,
-                        notional_value=eval_res.notional_value,
-                        status=SignalStatus.PENDING,
-                        raw_response=eval_res.model_dump_json(),
-                        asset_class=str(eval_res.asset_class),
-                        quantity=eval_res.quantity,
-                    )
+                        if not eval_res.approved:
+                            logger.info(
+                                "Candidate rejected by risk engine: %s",
+                                eval_res.rejection_reason,
+                                extra={
+                                    "event": "candidate_rejected",
+                                    "contract": candidate.contract,
+                                    "rejection_reason": eval_res.rejection_reason,
+                                },
+                            )
+                            continue
 
-                    logger.info(
-                        "Signal #%d approved and recorded: %s %s via %s (risk: $%.2f, notional: $%.2f)",
-                        sig_id,
-                        eval_res.contract,
-                        eval_res.direction,
-                        candidate.strategy,
-                        eval_res.risk_dollars,
-                        eval_res.notional_value,
-                        extra={
-                            "event": "signal_approved",
-                            "signal_id": sig_id,
-                            "contract": eval_res.contract,
-                            "direction": eval_res.direction,
-                            "strategy": candidate.strategy,
-                            "risk_dollars": eval_res.risk_dollars,
-                            "notional_value": eval_res.notional_value,
-                            "quantity": eval_res.quantity,
-                            "entry_price": eval_res.entry_price,
-                        },
-                    )
+                        if dry_run:
+                            logger.info("[DRY RUN] Approved signal would be emitted:")
+                            print(
+                                format_terminal_card(
+                                    eval_res,
+                                    candidate.strategy,
+                                    self.config.portfolio.cash,
+                                    regime_summary=regime.summary_text,
+                                )
+                            )
+                            continue
 
-                    # Dispatch alert
-                    await self.notifier.send_signal_alert(
-                        eval_res=eval_res,
-                        strategy=candidate.strategy,
-                        signal_id=sig_id,
-                        regime_summary=regime.summary_text,
-                    )
-                    total_alerts += 1
-                    # Update exposure in memory for subsequent checks in this run
-                    current_exposure += eval_res.notional_value
-                    active_positions.append(
-                        {
-                            "contract": eval_res.contract,
-                            "symbol": eval_res.contract,
-                            "direction": eval_res.direction,
-                            "asset_class": str(eval_res.asset_class),
-                            "notional_value": eval_res.notional_value,
-                        }
-                    )
+                        # Record to database
+                        sig_id = await self.db.record_signal(
+                            contract=eval_res.contract,
+                            strategy=candidate.strategy,
+                            direction=eval_res.direction,
+                            entry_price=eval_res.entry_price,
+                            stop_loss=eval_res.stop_loss,
+                            take_profit=eval_res.take_profit,
+                            risk_dollars=eval_res.risk_dollars,
+                            reward_dollars=eval_res.reward_dollars,
+                            notional_value=eval_res.notional_value,
+                            status=SignalStatus.PENDING,
+                            raw_response=eval_res.model_dump_json(),
+                            asset_class=str(eval_res.asset_class),
+                            quantity=eval_res.quantity,
+                        )
 
-            except Exception:
-                logger.exception(f"Error scanning {contract}")
+                        logger.info(
+                            "Signal #%d approved and recorded: %s %s via %s (risk: $%.2f, notional: $%.2f)",
+                            sig_id,
+                            eval_res.contract,
+                            eval_res.direction,
+                            candidate.strategy,
+                            eval_res.risk_dollars,
+                            eval_res.notional_value,
+                            extra={
+                                "event": "signal_approved",
+                                "signal_id": sig_id,
+                                "contract": eval_res.contract,
+                                "direction": eval_res.direction,
+                                "strategy": candidate.strategy,
+                                "risk_dollars": eval_res.risk_dollars,
+                                "notional_value": eval_res.notional_value,
+                                "quantity": eval_res.quantity,
+                                "entry_price": eval_res.entry_price,
+                            },
+                        )
 
-        logger.info(f"=== Scan Complete: {total_candidates} candidates evaluated, {total_alerts} alerts emitted ===")
-        # Monitor any active positions for stop loss or take profit crossings
-        await self.monitor_positions()
+                        # Dispatch alert
+                        await self.notifier.send_signal_alert(
+                            eval_res=eval_res,
+                            strategy=candidate.strategy,
+                            signal_id=sig_id,
+                            regime_summary=regime.summary_text,
+                        )
+                        total_alerts += 1
+                        # Update exposure in memory for subsequent checks in this run
+                        current_exposure += eval_res.notional_value
+                        active_positions.append(
+                            {
+                                "contract": eval_res.contract,
+                                "symbol": eval_res.contract,
+                                "direction": eval_res.direction,
+                                "asset_class": str(eval_res.asset_class),
+                                "notional_value": eval_res.notional_value,
+                            }
+                        )
+
+                except Exception:
+                    logger.exception(f"Error scanning {contract}")
+
+            logger.info(
+                f"=== Scan Complete: {total_candidates} candidates evaluated, {total_alerts} alerts emitted ==="
+            )
+            # Monitor any active positions for stop loss or take profit crossings
+            if not dry_run:
+                await self.monitor_positions()
 
     async def process_reconciliation_event(
         self, ev: ReconciliationEvent, active_positions: list[dict[str, Any]] | None = None
@@ -427,7 +478,7 @@ class TradingCopilot:
         pos_dir = str(pos_dict.get("direction", "")).upper()
         if ev.order_side:
             side_lower = ev.order_side.lower()
-            if "sell" in side_lower and pos_dir not in ("LONG", str(Direction.LONG)):
+            if "sell" in side_lower and pos_dir not in (Direction.LONG, str(Direction.LONG)):
                 logger.warning(
                     "Rejecting exit reconciliation: SELL order %s cannot close %s position #%d",
                     ev.broker_order_id,
@@ -435,7 +486,7 @@ class TradingCopilot:
                     ev.signal_id,
                 )
                 return False
-            if "buy" in side_lower and pos_dir not in ("SHORT", str(Direction.SHORT)):
+            if "buy" in side_lower and pos_dir not in (Direction.SHORT, str(Direction.SHORT)):
                 logger.warning(
                     "Rejecting exit reconciliation: BUY order %s cannot close %s position #%d",
                     ev.broker_order_id,
@@ -445,9 +496,7 @@ class TradingCopilot:
                 return False
 
         contract = ev.contract or ev.symbol
-        status = SignalStatus.CLOSED_WIN if ev.exit_reason == ExitReason.TAKE_PROFIT else SignalStatus.CLOSED_LOSS
-        if ev.exit_reason == ExitReason.MANUAL_CLOSE:
-            status = SignalStatus.CLOSED_WIN if (ev.realized_pnl or 0.0) >= 0 else SignalStatus.CLOSED_LOSS
+        status = SignalStatus.CLOSED_WIN if (ev.realized_pnl or 0.0) >= 0 else SignalStatus.CLOSED_LOSS
 
         strategy = pos_dict.get("strategy", "UNKNOWN")
         entry_price = float(pos_dict.get("entry_price", ev.exit_price))
@@ -470,22 +519,21 @@ class TradingCopilot:
             },
         )
 
-        self.metrics.inc_counter(
-            "trader_orders_filled_total",
-            labels={
-                "contract": contract,
-                "direction": str(ev.direction),
-                "exit_reason": str(ev.exit_reason),
-            },
-            help_text="Total filled orders count",
-        )
-
-        await self.db.close_position(
+        closed = await self.db.close_position(
             signal_id=ev.signal_id,
             exit_price=ev.exit_price,
             exit_reason=str(ev.exit_reason),
             realized_pnl=ev.realized_pnl or 0.0,
             status=status,
+            broker_exit_order_id=ev.broker_order_id,
+            exit_timestamp=ev.exit_timestamp,
+        )
+        if not closed:
+            return False
+        self.metrics.inc_counter(
+            "trader_orders_filled_total",
+            labels={"contract": contract, "direction": str(ev.direction), "exit_reason": str(ev.exit_reason)},
+            help_text="Total filled orders count",
         )
 
         pos_qty = float(pos_dict.get("quantity") or 1.0)
@@ -493,7 +541,7 @@ class TradingCopilot:
             AssetClass.EQUITY if not contract.startswith("/") else AssetClass.FUTURES
         )
 
-        await self.notifier.send_exit_alert(
+        message_id = await self.notifier.send_exit_alert(
             contract=contract,
             direction=ev.direction,
             exit_reason=str(ev.exit_reason),
@@ -504,100 +552,54 @@ class TradingCopilot:
             quantity=pos_qty,
             asset_class=pos_asset_class,
         )
+        await self.db.record_audit(
+            AuditEventType.EXIT_NOTIFICATION,
+            {"message_id": message_id, "delivered": message_id is not None, "broker_exit_order_id": ev.broker_order_id},
+            signal_id=ev.signal_id,
+        )
         return True
 
     async def on_stream_trade_update(self, ev: ReconciliationEvent) -> None:
-        """Callback triggered by broker real-time WebSocket trade stream on order fills."""
-        active_positions = await self.db.get_active_positions()
-        if not active_positions:
-            return
+        """Record stream evidence and refresh exact entry/exit orders, including partial fills."""
+        await self.db.record_audit(AuditEventType.BROKER_STREAM_UPDATE, ev.model_dump(mode="json"))
+        await self.monitor_positions()
 
-        # Invariant 1: Check if this stream fill is an ENTRY order fill confirmation
-        if ev.broker_order_id:
-            for pos in active_positions:
-                entry_ord_id = str(pos.get("broker_order_id") or "")
-                if entry_ord_id and entry_ord_id == ev.broker_order_id:
-                    logger.info(
-                        "WebSocket stream trade update confirms entry fill for order %s (signal #%d, %s) @ %.2f - position active",
-                        ev.broker_order_id,
-                        pos["id"],
-                        pos.get("contract") or pos.get("symbol"),
-                        ev.exit_price,
-                    )
-                    return
-
-        # Invariant 2: Match active position for an EXIT fill.
-        # Requirements:
-        #  - Symbol/contract must match
-        #  - Order must NOT be the entry order ID
-        #  - Order side must strictly oppose position direction (SELL closes LONG, BUY closes SHORT)
-        clean_ev_sym = (ev.contract or ev.symbol).strip("/").upper()
-        matched_pos: dict[str, Any] | None = None
-
-        for pos in active_positions:
-            clean_pos_sym = (pos.get("contract") or pos.get("symbol", "")).strip("/").upper()
-            if clean_pos_sym != clean_ev_sym:
-                continue
-
-            entry_ord_id = str(pos.get("broker_order_id") or "")
-            if ev.broker_order_id and entry_ord_id and ev.broker_order_id == entry_ord_id:
-                continue
-
-            pos_dir = str(pos.get("direction", "")).upper()
-            if ev.order_side:
-                side_lower = ev.order_side.lower()
-                # SELL orders can only close LONG positions
-                if "sell" in side_lower and pos_dir not in ("LONG", str(Direction.LONG)):
+    async def sync_entry_executions(self, positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self.broker.authoritative_positions:
+            return positions
+        for pos in positions:
+            try:
+                result = await self.broker.get_entry_execution(pos)
+                if result is None or result.fill_price is None or result.filled_quantity is None:
                     continue
-                # BUY orders can only close SHORT positions
-                if "buy" in side_lower and pos_dir not in ("SHORT", str(Direction.SHORT)):
+                if (
+                    math.isclose(float(pos["entry_price"]), result.fill_price, abs_tol=BROKER_PRICE_TOLERANCE)
+                    and math.isclose(float(pos["quantity"]), result.filled_quantity, abs_tol=BROKER_PRICE_TOLERANCE)
+                    and pos.get("executed_at")
+                ):
                     continue
-            elif ev.direction:
-                # If order_side not provided, fallback to ev.direction
-                ev_dir = str(ev.direction).upper()
-                if pos_dir not in (ev_dir, f"DIRECTION.{ev_dir}"):
-                    continue
-
-            matched_pos = pos
-            break
-
-        if not matched_pos:
-            logger.debug(
-                "WebSocket trade update for %s (order %s, side %s) did not match any eligible active position to exit",
-                ev.symbol,
-                ev.broker_order_id,
-                ev.order_side,
-            )
-            return
-
-        ev.signal_id = matched_pos["id"]
-        ev.contract = matched_pos.get("contract") or ev.contract or ev.symbol
-        direction = str(matched_pos["direction"]).upper()
-        ev.direction = direction
-
-        entry_price = float(matched_pos["entry_price"])
-        qty = float(matched_pos.get("quantity") or 1.0)
-        contract_info = self.config.contracts.get(ev.contract)
-        multiplier = contract_info.multiplier if contract_info else 1.0
-
-        if direction in ("LONG", str(Direction.LONG)):
-            ev.realized_pnl = (ev.exit_price - entry_price) * multiplier * qty
-            if ev.exit_reason not in (ExitReason.STOP_LOSS, ExitReason.TAKE_PROFIT):
-                ev.exit_reason = (
-                    ExitReason.TAKE_PROFIT
-                    if ev.exit_price >= float(matched_pos["take_profit"])
-                    else ExitReason.STOP_LOSS
+                instrument = self.config.contracts.get(pos["contract"])
+                multiplier = instrument.multiplier if instrument else 1.0
+                await self.db.update_signal_execution(
+                    pos["id"],
+                    result.order_id,
+                    fill_price=result.fill_price,
+                    quantity=result.filled_quantity,
+                    executed_at=result.fill_timestamp,
+                    notional_value=result.fill_price * result.filled_quantity * multiplier,
+                    risk_dollars=abs(result.fill_price - float(pos["stop_loss"])) * result.filled_quantity * multiplier,
                 )
-        else:
-            ev.realized_pnl = (entry_price - ev.exit_price) * multiplier * qty
-            if ev.exit_reason not in (ExitReason.STOP_LOSS, ExitReason.TAKE_PROFIT):
-                ev.exit_reason = (
-                    ExitReason.TAKE_PROFIT
-                    if ev.exit_price <= float(matched_pos["take_profit"])
-                    else ExitReason.STOP_LOSS
+                self.metrics.inc_counter("trader_entry_fill_sync_total", help_text="Confirmed entry fill corrections")
+            except Exception as exc:
+                logger.warning(
+                    "Entry reconciliation failed signal=%s order=%s: %s", pos["id"], pos.get("broker_order_id"), exc
                 )
-
-        await self.process_reconciliation_event(ev, active_positions=[matched_pos])
+                await self.db.record_audit(
+                    AuditEventType.ENTRY_SYNC_FAILED,
+                    {"broker_order_id": pos.get("broker_order_id"), "error_type": type(exc).__name__},
+                    signal_id=pos["id"],
+                )
+        return await self.db.get_active_positions()
 
     async def start_trade_stream(self) -> None:
         """Continuously run broker real-time trade stream with exponential backoff auto-reconnect."""
@@ -606,8 +608,8 @@ class TradingCopilot:
             await self._shutdown_event.wait()
             return
 
-        backoff = 2.0
-        max_backoff = 60.0
+        backoff = self.config.broker_stream.reconnect_initial_seconds
+        max_backoff = self.config.broker_stream.reconnect_max_seconds
         while not self._shutdown_event.is_set():
             try:
                 logger.info("Starting broker real-time trade stream listener...")
@@ -619,7 +621,7 @@ class TradingCopilot:
                         break
                     except TimeoutError:
                         pass
-                backoff = 2.0
+                backoff = self.config.broker_stream.reconnect_initial_seconds
             except asyncio.CancelledError:
                 logger.info("Broker trade stream task cancelled.")
                 break
@@ -634,15 +636,19 @@ class TradingCopilot:
                     break
                 except TimeoutError:
                     pass
-                backoff = min(backoff * 2, max_backoff)
+                backoff = min(backoff * STREAM_RECONNECT_MULTIPLIER, max_backoff)
 
     async def monitor_positions(self) -> int:
+        async with self._reconciliation_lock:
+            return await self._monitor_positions()
+
+    async def _monitor_positions(self) -> int:
         """Periodic position reconciliation loop.
 
         Detects server-side bracket order fills or simulated price threshold hits,
         records exits in database, and emits Telegram alerts.
         """
-        active_positions = await self.db.get_active_positions()
+        active_positions = await self.sync_entry_executions(await self.db.get_active_positions())
         # Update telemetry metrics
         self.metrics.set_gauge(
             "trader_account_cash_dollars",
@@ -663,6 +669,14 @@ class TradingCopilot:
         closed_count = 0
 
         reconciliation_events = await self.broker.reconcile_positions(active_positions)
+        await self.db.record_audit(
+            AuditEventType.RECONCILIATION,
+            {
+                "active_signal_ids": [p["id"] for p in active_positions],
+                "broker_evidence": getattr(self.broker, "reconciliation_evidence", []),
+                "exits": [e.model_dump(mode="json") for e in reconciliation_events],
+            },
+        )
         for ev in reconciliation_events:
             if await self.process_reconciliation_event(ev, active_positions):
                 closed_count += 1
@@ -748,6 +762,8 @@ class TradingCopilot:
 
         updates_count = 0
         for pos in active_positions:
+            if self.broker.authoritative_positions and not pos.get("executed_at"):
+                continue
             try:
                 sig_id = pos["id"]
                 contract = pos["contract"]
@@ -763,7 +779,7 @@ class TradingCopilot:
                     else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
                 )
 
-                current_price = self.data_fetcher.fetch_latest_price(ticker)
+                current_price = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
                 if current_price is None or current_price <= 0:
                     continue
 
@@ -959,59 +975,113 @@ class TradingCopilot:
         return updates_count
 
     async def get_positions_report(self) -> PositionsReport:
-        """Construct a decoupled PositionsReport DTO containing all active tracked positions."""
-        positions = await self.db.get_active_positions()
-        pos_views: list[PositionView] = []
-        total_unrealized_pnl = 0.0
-
-        for pos in positions:
-            contract = pos["contract"]
-            direction = pos["direction"].upper()
-            entry = float(pos["entry_price"])
-            sl = float(pos["stop_loss"])
-            tp = float(pos["take_profit"])
-            qty = float(pos.get("quantity") or 1.0)
-            contract_info = self.config.contracts.get(contract)
-            ticker = (
-                contract_info.ticker
-                if contract_info
-                else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
-            )
-            multiplier = contract_info.multiplier if contract_info else (5.0 if contract.startswith("/") else 1.0)
-
-            current_price = self.data_fetcher.fetch_latest_price(ticker) or entry
-            pnl = (
-                (current_price - entry) * multiplier * qty
-                if direction == Direction.LONG
-                else (entry - current_price) * multiplier * qty
-            )
-            total_unrealized_pnl += pnl
-
-            pos_views.append(
-                PositionView(
-                    id=int(pos["id"]),
-                    contract=contract,
-                    direction=direction,
-                    quantity=qty,
-                    entry_price=entry,
-                    current_price=current_price,
-                    stop_loss=sl,
-                    take_profit=tp,
-                    unrealized_pnl=pnl,
-                    multiplier=multiplier,
-                    strategy=pos.get("strategy", ""),
-                    executed_at=pos.get("executed_at"),
+        """Value the account using a single broker snapshot, preserving source and differences."""
+        tracked = await self.db.get_active_positions()
+        views: list[PositionView] = []
+        notes: list[str] = []
+        differences: list[dict[str, Any]] = []
+        source = "Estimated from latest market trades"
+        if self.broker.authoritative_positions:
+            source = f"{type(self.broker).__name__} account valuation"
+            try:
+                broker_positions = await self.broker.get_positions()
+            except Exception as exc:
+                await self.db.record_audit(
+                    AuditEventType.VALUATION_FAILED, {"source": source, "error_type": type(exc).__name__}
                 )
+                raise RuntimeError("Broker positions unavailable; retry /positions shortly.") from exc
+            for bp in broker_positions:
+                matches = [
+                    p for p in tracked if p["contract"].strip("/") == bp.symbol and p["direction"] == str(bp.direction)
+                ]
+                pos = matches[0] if len(matches) == 1 else None
+                if not pos:
+                    notes.append(
+                        f"{bp.symbol}: broker position has {len(matches)} matching tracked signals; shown once at account level."
+                    )
+                elif not math.isclose(float(pos["quantity"]), bp.quantity, abs_tol=BROKER_QUANTITY_TOLERANCE):
+                    notes.append(f"{bp.symbol}: tracked quantity {pos['quantity']:g}; broker quantity {bp.quantity:g}.")
+                differences.append(
+                    {
+                        "symbol": bp.symbol,
+                        "signal_ids": [p["id"] for p in matches],
+                        "tracked_entries": [p["entry_price"] for p in matches],
+                        "broker": bp.model_dump(mode="json"),
+                    }
+                )
+                views.append(
+                    PositionView(
+                        id=pos["id"] if pos else 0,
+                        contract=bp.symbol,
+                        direction=str(bp.direction),
+                        quantity=bp.quantity,
+                        entry_price=bp.entry_price,
+                        current_price=bp.current_price,
+                        unrealized_pnl=bp.unrealized_pnl,
+                        stop_loss=float(pos["stop_loss"]) if pos else None,
+                        take_profit=float(pos["take_profit"]) if pos else None,
+                        strategy=pos["strategy"] if pos else "Broker account",
+                        executed_at=pos.get("executed_at") if pos else None,
+                    )
+                )
+            broker_symbols = {bp.symbol for bp in broker_positions}
+            notes.extend(
+                f"Signal #{pos['id']} {pos['contract']}: tracked order has no open broker position (awaiting fill or reconciliation)."
+                for pos in tracked
+                if pos["contract"].strip("/") not in broker_symbols
             )
-
-        perf_stats = await self.db.get_closed_positions_stats()
-        realized_pnl = float(perf_stats.get("total_pnl", 0.0))
-
+        else:
+            for pos in tracked:
+                contract = pos["contract"]
+                instrument = self.config.contracts.get(contract)
+                multiplier = instrument.multiplier if instrument else 1.0
+                entry, qty = float(pos["entry_price"]), float(pos.get("quantity") or 1.0)
+                price = await asyncio.to_thread(
+                    self.data_fetcher.fetch_latest_price, instrument.ticker if instrument else contract
+                )
+                pnl = (
+                    None
+                    if price is None
+                    else (price - entry) * multiplier * qty * (1 if pos["direction"] == Direction.LONG else -1)
+                )
+                views.append(
+                    PositionView(
+                        id=pos["id"],
+                        contract=contract,
+                        direction=pos["direction"],
+                        quantity=qty,
+                        entry_price=entry,
+                        current_price=price,
+                        stop_loss=float(pos["stop_loss"]),
+                        take_profit=float(pos["take_profit"]),
+                        unrealized_pnl=pnl,
+                        multiplier=multiplier,
+                        strategy=pos.get("strategy", ""),
+                        executed_at=pos.get("executed_at"),
+                    )
+                )
+        as_of = datetime.now(UTC).isoformat(timespec="seconds")
+        total = sum(v.unrealized_pnl for v in views if v.unrealized_pnl is not None)
+        total_pnl = round(total, 2) if all(v.unrealized_pnl is not None for v in views) else None
+        stats = await self.db.get_closed_positions_stats()
+        await self.db.record_audit(
+            AuditEventType.POSITIONS_VALUATION,
+            {
+                "source": source,
+                "as_of": as_of,
+                "positions": differences,
+                "notes": notes,
+                "total_unrealized_pnl": total_pnl,
+            },
+        )
         return PositionsReport(
-            positions=pos_views,
-            total_unrealized_pnl=round(total_unrealized_pnl, 2),
-            total_realized_pnl=round(realized_pnl, 2),
-            active_count=len(pos_views),
+            positions=views,
+            total_unrealized_pnl=total_pnl,
+            total_realized_pnl=float(stats.get("total_pnl", 0)),
+            active_count=len(views),
+            source=source,
+            as_of=as_of,
+            notes=" ".join(notes),
         )
 
     async def show_positions(self) -> None:
@@ -1052,6 +1122,38 @@ class TradingCopilot:
                 )
             )
 
+        if self.broker.authoritative_positions:
+            if not pos.get("broker_exit_order_id"):
+                try:
+                    result = await self.broker.close_position(symbol=pos["contract"], quantity=float(pos["quantity"]))
+                except Exception as exc:
+                    await self.db.record_audit(
+                        AuditEventType.EXIT_SUBMISSION_FAILED, {"error_type": type(exc).__name__}, signal_id
+                    )
+                    return f"❌ Close failed for signal #{signal_id}; position remains tracked."
+                if not result.success or not result.order_id:
+                    await self.db.record_audit(
+                        AuditEventType.EXIT_SUBMISSION_FAILED, {"error": result.error_message}, signal_id
+                    )
+                    return f"❌ Close rejected for signal #{signal_id}; position remains tracked."
+                await self.db.record_exit_request(signal_id, result.order_id)
+            positions = await self.sync_entry_executions(await self.db.get_active_positions())
+            for event in await self.broker.reconcile_positions(positions):
+                await self.process_reconciliation_event(event, positions)
+            updated = await self.db.get_signal_by_id(signal_id)
+            if updated and updated["status"] != SignalStatus.EXECUTED:
+                return TelegramHtmlFormatter.format_manual_close_html(
+                    ManualCloseResultView(
+                        signal_id=signal_id,
+                        contract=updated["contract"],
+                        direction=updated["direction"],
+                        exit_price=updated["exit_price"],
+                        realized_pnl=updated["realized_pnl"],
+                        success=True,
+                    )
+                )
+            return f"⏳ Close order submitted for signal #{signal_id}; awaiting a confirmed broker fill."
+
         contract = pos["contract"]
         direction = pos["direction"].upper()
         entry = float(pos["entry_price"])
@@ -1067,7 +1169,7 @@ class TradingCopilot:
         if exit_price is not None:
             final_exit = exit_price
         else:
-            live = self.data_fetcher.fetch_latest_price(ticker)
+            live = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
             final_exit = live if live is not None else entry
 
         if direction == Direction.LONG:
@@ -1150,7 +1252,7 @@ class TradingCopilot:
     async def execute_signal_by_id(self, signal_id: int, quantity: float | None = None) -> tuple[bool, str]:
         """
         Execute an approved trade setup by signal ID.
-        Submits bracket orders to the active broker and registers the position in SQLite.
+        Submits bracket orders to the active broker and registers the position in the database.
         Optionally overrides the order quantity with operator-selected tier size.
         """
         await self.check_halt_state()
@@ -1214,8 +1316,8 @@ class TradingCopilot:
                 f"${self.config.portfolio.max_notional_exposure:,.2f} maximum portfolio notional ceiling."
             )
 
-        # Transition status to SUBMITTING to prevent duplicate / concurrent trigger
-        await self.db.update_signal_status(signal_id, SignalStatus.SUBMITTING)
+        if not await self.db.claim_signal(signal_id):
+            return False, f"❌ Signal #{signal_id} was already claimed or is no longer pending."
 
         req = OrderRequest(
             signal_id=signal_id,
@@ -1242,7 +1344,7 @@ class TradingCopilot:
             return False, f"❌ <b>Broker Submission Error:</b> {e}"
 
         if order_result.success:
-            fill_price = order_result.fill_price or entry_price
+            fill_price = order_result.fill_price
             await self.db.update_signal_execution(
                 signal_id=signal_id,
                 broker_order_id=order_result.order_id,
@@ -1325,6 +1427,10 @@ class TradingCopilot:
             reason,
             extra={"event": "emergency_panic_triggered", "reason": reason},
         )
+        self.is_halted = True
+        self.halt_reason = reason
+        await self.db.set_state(SystemStateKey.TRADING_HALTED, "true")
+        await self.db.set_state(SystemStateKey.TRADING_HALT_REASON, reason)
         # 1. Ingress cancellation
         cancelled_orders_count = 0
         try:
@@ -1339,6 +1445,14 @@ class TradingCopilot:
         closed_positions_details: list[dict[str, Any]] = []
 
         for pos in active_positions:
+            if self.broker.authoritative_positions:
+                await self.close_position_manual(pos["id"])
+                confirmed = await self.db.get_signal_by_id(pos["id"])
+                if confirmed and confirmed["status"] in (SignalStatus.CLOSED_WIN, SignalStatus.CLOSED_LOSS):
+                    liquidated_count += 1
+                    total_realized_pnl += float(confirmed["realized_pnl"] or 0)
+                    closed_positions_details.append(confirmed)
+                continue
             sig_id = pos["id"]
             contract = pos["contract"]
             direction = pos["direction"].upper()
@@ -1355,13 +1469,13 @@ class TradingCopilot:
 
             final_exit = entry
             try:
-                q = self.data_fetcher.fetch_latest_price(ticker)
+                q = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
                 if q and q > 0:
                     final_exit = q
             except Exception:
                 final_exit = entry
 
-            pnl_pts = (final_exit - entry) if direction in ("LONG", "BUY") else (entry - final_exit)
+            pnl_pts = (final_exit - entry) if direction in (Direction.LONG, "BUY") else (entry - final_exit)
             realized_pnl = round(pnl_pts * multiplier * qty, 2)
             total_realized_pnl += realized_pnl
 
@@ -1400,8 +1514,8 @@ class TradingCopilot:
         # 3. Persistent circuit breaker
         self.is_halted = True
         self.halt_reason = reason
-        await self.db.set_state("trading_halted", "true")
-        await self.db.set_state("trading_halt_reason", reason)
+        await self.db.set_state(SystemStateKey.TRADING_HALTED, "true")
+        await self.db.set_state(SystemStateKey.TRADING_HALT_REASON, reason)
 
         # 4. Metrics & telemetry
         if self.metrics:
@@ -1438,8 +1552,8 @@ class TradingCopilot:
         logger.info("Resuming trading operations from emergency halt...")
         self.is_halted = False
         self.halt_reason = None
-        await self.db.set_state("trading_halted", "false")
-        await self.db.set_state("trading_halt_reason", "")
+        await self.db.set_state(SystemStateKey.TRADING_HALTED, "false")
+        await self.db.set_state(SystemStateKey.TRADING_HALT_REASON, "")
         if self.metrics:
             self.metrics.set_gauge(
                 "copilot_trading_halted",
@@ -1525,7 +1639,30 @@ class TradingCopilot:
         stats = await self.db.get_closed_positions_stats()
         active_exposure = await self.db.get_active_notional_exposure()
         active_count = await self.db.get_active_position_count()
+        source_note = "Simulated closed trades; before fees; all recorded history."
+        unrealized_text = ""
+        if self.broker.authoritative_positions:
+            positions = await self.get_positions_report()
+            active_count = positions.active_count
+            active_exposure = sum(p.entry_price * p.quantity * p.multiplier for p in positions.positions)
+            source_note = "Broker-confirmed closed fills; before fees; all recorded history."
+            if stats.get("unverified_closed_count"):
+                source_note += f" {stats['unverified_closed_count']} unverified closes excluded."
+            if positions.notes:
+                source_note += " " + positions.notes
+            unrealized_text = f"• <b>Broker open-position P&amp;L:</b> {positions.total_pnl_str} ({positions.as_of})"
+        await self.db.record_audit(
+            AuditEventType.PERFORMANCE_REPORT,
+            {
+                "source": source_note,
+                "closed_signal_ids": [t["id"] for t in stats.get("trades", [])],
+                "realized_pnl": stats.get("total_pnl"),
+                "unrealized": unrealized_text,
+            },
+        )
         report = PerformanceSummaryReport(
+            source_note=source_note,
+            unrealized_pnl_text=unrealized_text,
             total_pnl=float(stats.get("total_pnl", 0.0)),
             win_rate=float(stats.get("win_rate", 0.0)),
             wins=int(stats.get("wins", 0)),
@@ -1539,27 +1676,36 @@ class TradingCopilot:
         )
         return TelegramHtmlFormatter.format_performance_html(report)
 
-    async def get_regime_summary_html(self) -> str:
-        """Format HTML volatility and macro regime for Telegram /regime."""
-        regime = await self.regime_detector.get_regime()
-        return TelegramHtmlFormatter.format_regime_html(regime)
-
     async def get_macro_summary_html(self) -> str:
-        """Format HTML multi-asset macro intelligence & yield curve dashboard for Telegram /macro."""
+        """One macro dashboard using the same combined snapshot as trade evaluation."""
+        regime = await self.regime_detector.get_regime()
+        await self.db.record_audit(
+            AuditEventType.MACRO_REPORT,
+            payload={
+                "fetched_at": regime.timestamp.isoformat(),
+                "vix": regime.vix,
+                "volatility_regime": regime.vix_regime.value,
+                "breakout_allowed": regime.breakout_allowed,
+                "minimum_rr": max(regime.min_rr_threshold, self.config.risk.min_risk_reward_ratio),
+                "risk_multiplier": regime.risk_multiplier,
+                "macro_unavailable_reason": regime.macro_unavailable_reason,
+                "observation_dates": regime.macro_report.observation_dates if regime.macro_report else {},
+            },
+        )
+        return TelegramHtmlFormatter.format_macro_dashboard_html(regime, self.config.risk.min_risk_reward_ratio)
+
+    async def get_explain_macro_html(self) -> str:
+        """Format educational macro tutorial and indicator breakdown for Telegram /explain_macro."""
         report = await self.regime_detector.macro_engine.get_macro_report()
-        return TelegramHtmlFormatter.format_macro_dashboard_html(report)
+        explainer = MacroExplainer(config=self.config)
+        return await explainer.explain(report, format_mode="html")
 
     async def get_alphas_summary_html(self) -> str:
         """Format HTML formulaic alpha intelligence dashboard for Telegram /alphas."""
-        try:
-            mgr = AlphaPromotionManager()
-            catalog = AlphaCatalog()
-            promoted = mgr.list_active_alphas()
-            return TelegramHtmlFormatter.format_alphas_dashboard_html(
-                promoted, catalog_count=len(catalog.list_alphas())
-            )
-        except Exception as e:
-            return f"❌ Failed retrieving formulaic alpha status: {e}"
+        mgr = AlphaPromotionManager()
+        catalog = AlphaCatalog()
+        promoted = mgr.list_active_alphas()
+        return TelegramHtmlFormatter.format_alphas_dashboard_html(promoted, catalog_count=len(catalog.list_alphas()))
 
     async def broadcast_macro_briefing(self) -> None:
         """Broadcast morning macro intelligence card to Telegram."""
@@ -1571,8 +1717,11 @@ class TradingCopilot:
             except Exception as e:
                 logger.warning("Failed to broadcast morning macro briefing: %s", e)
 
-    async def run_backtest_summary_html(self, symbol: str = "SPY", lookback: str = "1y") -> str:
+    async def run_backtest_summary_html(
+        self, symbol: str = DEFAULT_RESEARCH_SYMBOL, lookback: str | None = None
+    ) -> str:
         """Run on-demand backtest and format result as Telegram HTML."""
+        lookback = lookback or self.config.backtest.lookback
         engine = BacktestEngine(config=self.config)
         res = await asyncio.to_thread(
             engine.run,
@@ -1581,19 +1730,21 @@ class TradingCopilot:
             lookback=lookback,
         )
         if len(res.trades) >= 3:
-            res.monte_carlo = run_monte_carlo_simulation(res.trades, starting_cash=res.starting_cash, n_simulations=500)
+            res.monte_carlo = await asyncio.to_thread(
+                run_monte_carlo_simulation,
+                res.trades,
+                starting_cash=res.starting_cash,
+                n_simulations=self.config.backtest.monte_carlo_simulations,
+            )
         return TelegramHtmlFormatter.format_backtest_html(res, symbols=[symbol], lookback=lookback, strategy="all")
 
-    async def run_gex_summary_html(self, symbol: str = "SPY") -> str:
-        try:
-            profile = await asyncio.to_thread(
-                self.options_fetcher.fetch_and_calculate_gex,
-                symbol,
-                self.config.options.max_expirations,
-            )
-            return format_gex_telegram(profile)
-        except Exception as e:
-            return f"❌ Failed to calculate GEX for {symbol}: {e}"
+    async def run_gex_summary_html(self, symbol: str = DEFAULT_RESEARCH_SYMBOL) -> str:
+        profile = await asyncio.to_thread(
+            self.options_fetcher.fetch_and_calculate_gex,
+            symbol,
+            self.config.options.max_expirations,
+        )
+        return format_gex_telegram(profile)
 
     async def scan_pairs(
         self,
@@ -1609,11 +1760,8 @@ class TradingCopilot:
 
     async def run_pairs_summary_html(self) -> str:
         """Run statistical pairs screener and format as Telegram HTML."""
-        try:
-            results = await self.scan_pairs()
-            return format_pairs_telegram(results)
-        except Exception as e:
-            return f"❌ Failed to evaluate pairs: {e}"
+        results = await self.scan_pairs()
+        return format_pairs_telegram(results)
 
     async def run_auto_retune(
         self,
@@ -1633,65 +1781,5 @@ class TradingCopilot:
         return res
 
     async def send_test_alert(self):
-        print("Sending synthetic test alert card...")
-        test_eval = LLMTradeEvaluation(
-            approved=True,
-            rejection_reason=None,
-            contract="/MES",
-            direction=Direction.LONG,
-            entry_price=5812.50,
-            stop_loss=5769.75,
-            take_profit=5898.00,
-            stop_distance_points=42.75,
-            target_distance_points=85.50,
-            risk_reward_ratio=2.0,
-            risk_dollars=213.75,
-            reward_dollars=427.50,
-            notional_value=29062.50,
-            effective_leverage=0.29,
-            macro_clearance=True,
-            thesis_summary="Daily trend is bullish (Price > 50 > 200 EMA). 4h RSI dipped to 42 and bounced off 20 EMA.",
-            quantity=1.0,
-            sizing_tiers=[
-                {
-                    "tier_id": "half",
-                    "label": "Half (1x)",
-                    "quantity": 1.0,
-                    "risk_dollars": 213.75,
-                    "reward_dollars": 427.50,
-                    "notional_dollars": 29062.50,
-                    "effective_leverage": 0.29,
-                    "is_default": True,
-                },
-                {
-                    "tier_id": "base",
-                    "label": "Base (2x)",
-                    "quantity": 2.0,
-                    "risk_dollars": 427.50,
-                    "reward_dollars": 855.00,
-                    "notional_dollars": 58125.00,
-                    "effective_leverage": 0.58,
-                    "is_default": False,
-                },
-            ],
-            gating_reasons=["Max size capped by remaining $58,125 notional limit"],
-        )
-        sig_id = await self.db.record_signal(
-            contract=test_eval.contract,
-            strategy="TREND_PULLBACK_TEST",
-            direction=test_eval.direction,
-            entry_price=test_eval.entry_price,
-            stop_loss=test_eval.stop_loss,
-            take_profit=test_eval.take_profit,
-            risk_dollars=test_eval.risk_dollars,
-            reward_dollars=test_eval.reward_dollars,
-            notional_value=test_eval.notional_value,
-            status=SignalStatus.PENDING,
-        )
-        await self.notifier.send_signal_alert(test_eval, StrategyType.TREND_PULLBACK, sig_id)
-
-
-# Backward-compatibility alias
-FuturesCopilot = TradingCopilot
-
-__all__ = ["FuturesCopilot", "TradingCopilot"]
+        """Synthetic diagnostics never create actionable signal records."""
+        await self.notifier.send_message("[TEST] Synthetic notification check. No signal or order was created.")

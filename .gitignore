@@ -43,7 +43,7 @@ htmlcov/
 .ruff_cache/
 
 # Local databases and runtime artifacts
-data/*.db
+data/**/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
@@ -63,3 +63,10 @@ data/*.db-shm
 *.swp
 *.swo
 *~
+
+# Derived local runtime and diagnostic output
+data/calibrated_parameters.json
+data/debug_*
+data/**/signals.db*
+
+data/incidents/

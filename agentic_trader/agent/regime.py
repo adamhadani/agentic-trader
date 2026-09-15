@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -36,6 +37,7 @@ class RegimeSnapshot:
     summary_text: str
     macro_report: MacroIntelligenceReport | None = None
     risk_multiplier: float = 1.0
+    macro_unavailable_reason: str | None = None
 
 
 def classify_vix_level(vix: float, config: RegimeConfig | None = None) -> VolatilityRegime:
@@ -92,29 +94,33 @@ class RegimeDetector:
         ):
             return self._cached_snapshot
 
-        # Fetch macro tickers concurrently in worker threads
-        vix_task = asyncio.to_thread(_fetch_ticker_sync, VIX_TICKER)
-        tnx_task = asyncio.to_thread(_fetch_ticker_sync, TNX_TICKER)
-        dxy_task = asyncio.to_thread(_fetch_ticker_sync, DXY_TICKER)
-
-        results = await asyncio.gather(vix_task, tnx_task, dxy_task, return_exceptions=True)
-
-        vix_res = results[0] if not isinstance(results[0], Exception) else None
-        tnx_res = results[1] if not isinstance(results[1], Exception) else None
-        dxy_res = results[2] if not isinstance(results[2], Exception) else None
-
-        # Fallback to standard baseline if VIX query fails
-        if vix_res is None or not isinstance(vix_res, float | int) or vix_res <= 0:
-            logger.warning(
-                "Could not retrieve live VIX data from yfinance. Falling back to default baseline (18.0 NORMAL).",
-                extra={"vix_ticker": VIX_TICKER},
-            )
-            vix = 18.0
+        macro_report: MacroIntelligenceReport | None = None
+        macro_unavailable_reason = None
+        if self.config.yield_curve_enabled:
+            try:
+                macro_report = await self.macro_engine.get_macro_report(force_refresh=force_refresh)
+            except Exception as exc:
+                macro_unavailable_reason = str(exc)
+                logger.warning("Macro enrichment unavailable: %s", exc)
         else:
-            vix = float(vix_res)
+            macro_unavailable_reason = "Yield-curve enrichment is disabled in configuration"
 
-        tnx = float(tnx_res) if isinstance(tnx_res, float | int) else None
-        dxy = float(dxy_res) if isinstance(dxy_res, float | int) else None
+        tnx: float | None
+        dxy: float | None
+        if macro_report is not None:
+            vix, tnx, dxy = macro_report.vix, macro_report.yields.yield_10y, macro_report.dxy
+        else:
+            values = await asyncio.gather(
+                *(asyncio.to_thread(_fetch_ticker_sync, ticker) for ticker in (VIX_TICKER, TNX_TICKER, DXY_TICKER)),
+                return_exceptions=True,
+            )
+            valid = [
+                float(value) if isinstance(value, float | int) and math.isfinite(value) else None for value in values
+            ]
+            vix_value, tnx, dxy = valid
+            if vix_value is None or vix_value <= 0:
+                raise ValueError("VIX data unavailable; market regime cannot be evaluated")
+            vix = vix_value
 
         regime = classify_vix_level(vix, self.config)
 
@@ -123,25 +129,17 @@ class RegimeDetector:
 
         # Modulate minimum required reward-to-risk ratio
         if regime == VolatilityRegime.EXTREME:
-            min_rr = 2.5
+            min_rr = self.config.extreme_min_rr
         elif regime == VolatilityRegime.ELEVATED:
-            min_rr = 2.2
+            min_rr = self.config.elevated_min_rr
         else:
             min_rr = DEFAULT_MIN_RISK_REWARD_RATIO
 
         risk_multiplier = 1.0
-        macro_report: MacroIntelligenceReport | None = None
-
-        # Integrate enriched macro intelligence if enabled
-        if getattr(self.config, "yield_curve_enabled", True):
-            try:
-                macro_report = await self.macro_engine.get_macro_report(force_refresh=force_refresh)
-                risk_multiplier = macro_report.stress.risk_multiplier
-                if not macro_report.stress.squeeze_breakout_allowed:
-                    breakout_allowed = False
-                min_rr = max(min_rr, macro_report.stress.min_rr_threshold)
-            except Exception as e:
-                logger.debug("Failed to incorporate macro intelligence report: %s", e)
+        if macro_report is not None:
+            risk_multiplier = macro_report.stress.risk_multiplier
+            breakout_allowed = breakout_allowed and macro_report.stress.squeeze_breakout_allowed
+            min_rr = max(min_rr, macro_report.stress.min_rr_threshold)
 
         tnx_str = f"{tnx:.2f}%" if tnx is not None else "N/A"
         dxy_str = f"{dxy:.2f}" if dxy is not None else "N/A"
@@ -159,6 +157,7 @@ class RegimeDetector:
             summary_text=summary,
             macro_report=macro_report,
             risk_multiplier=risk_multiplier,
+            macro_unavailable_reason=macro_unavailable_reason,
         )
 
         self._cached_snapshot = snapshot
@@ -184,7 +183,7 @@ class RegimeDetector:
         """Format regime snapshot for LLM trade evaluation prompts."""
         reg = regime or self._cached_snapshot
         if reg is None:
-            return "Market Volatility & Macro Regime: NORMAL (Orderly market conditions, VIX ~ 18.0 baseline)."
+            return "Market Volatility & Macro Regime: unavailable; no observation has been loaded."
 
         status = (
             "ALLOWED" if reg.breakout_allowed else "SUPPRESSED (Extreme Volatility Chop / High False Breakout Risk)"

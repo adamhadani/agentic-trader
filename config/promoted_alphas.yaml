@@ -1,17 +1,19 @@
 version: 1
-last_updated: '2026-09-15T08:00:00+00:00'
+last_updated: '2026-09-15T13:48:58.876855+00:00'
 promoted_alphas:
 - alpha_id: alpha_wq_006
   definition:
     alpha_id: alpha_wq_006
     name: WQ-006 Open-Volume Absorption Divergence
     expression: -1.0 * ts_corr(open, volume, 10)
-    description: Identifies institutional volume absorption when heavy volume fails to sustain opening momentum.
+    description: Identifies institutional volume absorption when heavy volume fails
+      to sustain opening momentum.
     direction: bi_directional
     entry_threshold: 0.6
     exit_threshold: 0.0
     timeframe: 4h
     origin: worldquant_101
+    eligible_symbols: null
   metrics:
     rank_ic_mean: 0.045
     rank_ic_std: 0.015
@@ -29,3 +31,82 @@ promoted_alphas:
   allocation_weight: 0.15
   status: promoted
   notes: Baseline institutional benchmark alpha
+  eligible_symbols: null
+- alpha_id: alpha_wq_053
+  definition:
+    alpha_id: alpha_wq_053
+    name: WQ-053 Volume Exhaustion Counter-Trend
+    expression: -1.0 * delta(ts_rank(volume, 10), 5)
+    description: Detects exhaustion in volume rank acceleration as an early warning
+      of trend exhaustion.
+    direction: bi_directional
+    entry_threshold: 0.7
+    exit_threshold: 0.0
+    timeframe: 4h
+    origin: worldquant_101
+    eligible_symbols:
+    - NVDA
+    - AMD
+  metrics: null
+  promoted_at: '2026-09-15T08:47:35.738788+00:00'
+  promoted_by: cli_operator
+  allocation_weight: 0.15
+  status: promoted
+  notes: Semiconductor momentum factor
+  eligible_symbols:
+  - NVDA
+  - AMD
+- alpha_id: alpha_trend_expansion
+  definition:
+    alpha_id: alpha_trend_expansion
+    name: Quant-TE Trend-Volume Range Expansion
+    expression: ts_rank(close - sma(close, 20), 10) * ts_rank(volume, 10)
+    description: Quantifies joint price expansion away from moving average confirmed
+      by volume surge.
+    direction: long
+    entry_threshold: 0.6
+    exit_threshold: 0.1
+    timeframe: 4h
+    origin: factor_library
+    eligible_symbols:
+    - QQQ
+    - SPY
+  metrics: null
+  promoted_at: '2026-09-15T08:48:44.849965+00:00'
+  promoted_by: cli_operator
+  allocation_weight: 0.1
+  status: promoted
+  notes: Index trend expansion factor
+  eligible_symbols:
+  - QQQ
+  - SPY
+- alpha_id: alpha_wq_012
+  definition:
+    alpha_id: alpha_wq_012
+    name: WQ-012 Volume Flow Delta Reversal
+    expression: sign(delta(volume, 1)) * (-1.0 * delta(close, 1))
+    description: Fades short-term price spikes that occur on surging volume, capturing
+      mean-reversion liquidity.
+    direction: bi_directional
+    entry_threshold: 1.0
+    exit_threshold: 0.0
+    timeframe: 15m
+    origin: worldquant_101
+    eligible_symbols:
+    - SPY
+    - QQQ
+    - IWM
+    - AAPL
+    - NVDA
+  metrics: null
+  promoted_at: '2026-09-15T13:48:58.874661+00:00'
+  promoted_by: cli_operator
+  allocation_weight: 0.15
+  status: promoted
+  notes: Intraday 15m volume flow delta reversal
+  eligible_symbols:
+  - SPY
+  - QQQ
+  - IWM
+  - AAPL
+  - NVDA

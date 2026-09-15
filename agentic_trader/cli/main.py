@@ -18,12 +18,14 @@ from agentic_trader.cli.commands.telemetry import metrics
 from agentic_trader.cli.commands.trade import (
     close,
     execute,
+    explain_macro,
     panic,
     positions,
     resume,
     status,
     test_alert,
 )
+from agentic_trader.runtime import RuntimeLogFormatter
 
 
 @click.group()
@@ -45,9 +47,11 @@ from agentic_trader.cli.commands.trade import (
     help="Explicit database SQLite file path or database connection URL",
 )
 def cli(verbose: bool, db_name: str | None = None, db_path: str | None = None) -> None:
-    """Agentic Trader - Autonomous Multi-Asset Quantitative Trading System."""
+    """Agentic Trader - Multi-asset research, risk review, and operator-approved trading."""
     if db_name:
         os.environ["DB_NAME"] = db_name
+        os.environ["DATABASE_URL"] = ""
+        os.environ["DB_PATH"] = ""
     if db_path:
         os.environ["DB_PATH"] = db_path
     log_level = logging.DEBUG if verbose else logging.INFO
@@ -56,6 +60,11 @@ def cli(verbose: bool, db_name: str | None = None, db_path: str | None = None) -
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(RuntimeLogFormatter())
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 # Register subcommands
@@ -67,6 +76,7 @@ cli.add_command(execute)
 cli.add_command(panic)
 cli.add_command(resume)
 cli.add_command(test_alert)
+cli.add_command(explain_macro)
 cli.add_command(backtest)
 cli.add_command(optimize)
 cli.add_command(retune)

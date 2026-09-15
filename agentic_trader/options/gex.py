@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -15,6 +16,36 @@ from agentic_trader.constants import (
     OPTIONS_CONTRACT_MULTIPLIER,
 )
 from agentic_trader.options.models import GammaExposureProfile, GammaRegime, StrikeGEX
+
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_option_chain(frame: pd.DataFrame, side: str) -> tuple[pd.DataFrame, list[str]]:
+    """Normalize provider nulls once, before either side enters the calculator."""
+    if frame.empty:
+        return frame, []
+    result = frame.copy()
+    notes: list[str] = []
+    defaults = {
+        "strike": 0.0,
+        "openInterest": 0.0,
+        "volume": 0.0,
+        "impliedVolatility": DEFAULT_IMPLIED_VOLATILITY,
+        "dte_years": DEFAULT_TIME_TO_EXPIRY_DAYS / CALENDAR_DAYS_PER_YEAR,
+    }
+    if "dte_years" not in result and "time_to_expiry" in result:
+        result["dte_years"] = result["time_to_expiry"]
+    for column, default in defaults.items():
+        raw = result[column] if column in result else pd.Series(float("nan"), index=result.index)
+        numeric = pd.to_numeric(raw, errors="coerce").replace([float("inf"), -float("inf")], float("nan"))
+        invalid = numeric.isna() | (numeric < 0)
+        if column in ("strike", "impliedVolatility", "dte_years"):
+            invalid |= numeric == 0
+        if invalid.any():
+            notes.append(f"{side}: {int(invalid.sum())} missing/invalid {column} values")
+        result[column] = numeric.mask(invalid, default)
+    return result[result["strike"] > 0], notes
 
 
 def black_scholes_gamma(
@@ -71,74 +102,51 @@ class GEXCalculator:
         - 'impliedVolatility': float (optional, default 0.20)
         - 'dte_years' or 'time_to_expiry': float (optional, default 14/365)
         """
-        if underlying_price <= 0:
+        if not math.isfinite(underlying_price) or underlying_price <= 0:
             raise ValueError(f"Underlying price must be positive, got {underlying_price}")
 
+        calls_df, call_notes = normalize_option_chain(calls_df, "calls")
+        puts_df, put_notes = normalize_option_chain(puts_df, "puts")
+        quality_notes = call_notes + put_notes
+        if quality_notes:
+            logger.warning("Incomplete option chain for %s: %s", symbol, "; ".join(quality_notes))
         strike_data: dict[float, dict[str, Any]] = {}
 
-        # 1. Process Calls (Dealer is assumed short customer calls -> Long Gamma for market stability)
-        if not calls_df.empty:
-            for _, row in calls_df.iterrows():
-                k = float(row.get("strike", 0.0))
-                if k <= 0:
-                    continue
-
-                oi = int(row.get("openInterest", 0) or 0)
-                vol = int(row.get("volume", 0) or 0)
-                iv = float(row.get("impliedVolatility", DEFAULT_IMPLIED_VOLATILITY) or DEFAULT_IMPLIED_VOLATILITY)
-                default_dte = DEFAULT_TIME_TO_EXPIRY_DAYS / CALENDAR_DAYS_PER_YEAR
-                dte = float(row.get("dte_years", row.get("time_to_expiry", default_dte)) or default_dte)
-
-                gamma = black_scholes_gamma(underlying_price, k, dte, self.risk_free_rate, iv)
-                # Call GEX: Gamma * OI * 100 shares * spot^2 * 0.01 / 1,000,000 ($ Millions / 1% move)
-                call_gex = (
-                    gamma * oi * OPTIONS_CONTRACT_MULTIPLIER * (underlying_price**2) * 0.01 / GEX_MILLION_CONVERSION
+        # Apply the same numeric handling to both sides; the model assigns puts a negative sign.
+        for side, chain, sign in (("call", calls_df, 1), ("put", puts_df, -1)):
+            for _, row in chain.iterrows():
+                strike = float(row["strike"])
+                oi, volume = int(row["openInterest"]), int(row["volume"])
+                gamma = black_scholes_gamma(
+                    underlying_price,
+                    strike,
+                    float(row["dte_years"]),
+                    self.risk_free_rate,
+                    float(row["impliedVolatility"]),
                 )
-
-                if k not in strike_data:
-                    strike_data[k] = {
+                exposure = (
+                    sign
+                    * gamma
+                    * oi
+                    * OPTIONS_CONTRACT_MULTIPLIER
+                    * underlying_price**2
+                    * 0.01
+                    / GEX_MILLION_CONVERSION
+                )
+                item = strike_data.setdefault(
+                    strike,
+                    {
                         "call_gex": 0.0,
                         "put_gex": 0.0,
                         "call_oi": 0,
                         "put_oi": 0,
                         "call_volume": 0,
                         "put_volume": 0,
-                    }
-                strike_data[k]["call_gex"] += call_gex
-                strike_data[k]["call_oi"] += oi
-                strike_data[k]["call_volume"] += vol
-
-        # 2. Process Puts (Dealer is assumed short customer puts -> Short Gamma / Volatility Accelerator)
-        if not puts_df.empty:
-            for _, row in puts_df.iterrows():
-                k = float(row.get("strike", 0.0))
-                if k <= 0:
-                    continue
-
-                oi = int(row.get("openInterest", 0) or 0)
-                vol = int(row.get("volume", 0) or 0)
-                iv = float(row.get("impliedVolatility", DEFAULT_IMPLIED_VOLATILITY) or DEFAULT_IMPLIED_VOLATILITY)
-                default_dte = DEFAULT_TIME_TO_EXPIRY_DAYS / CALENDAR_DAYS_PER_YEAR
-                dte = float(row.get("dte_years", row.get("time_to_expiry", default_dte)) or default_dte)
-
-                gamma = black_scholes_gamma(underlying_price, k, dte, self.risk_free_rate, iv)
-                # Put GEX is negative dealer gamma
-                put_gex = -(
-                    gamma * oi * OPTIONS_CONTRACT_MULTIPLIER * (underlying_price**2) * 0.01 / GEX_MILLION_CONVERSION
+                    },
                 )
-
-                if k not in strike_data:
-                    strike_data[k] = {
-                        "call_gex": 0.0,
-                        "put_gex": 0.0,
-                        "call_oi": 0,
-                        "put_oi": 0,
-                        "call_volume": 0,
-                        "put_volume": 0,
-                    }
-                strike_data[k]["put_gex"] += put_gex
-                strike_data[k]["put_oi"] += oi
-                strike_data[k]["put_volume"] += vol
+                item[f"{side}_gex"] += exposure
+                item[f"{side}_oi"] += oi
+                item[f"{side}_volume"] += volume
 
         # Build sorted list of StrikeGEX
         sorted_strikes = sorted(strike_data.keys())
@@ -213,6 +221,7 @@ class GEXCalculator:
         pcr_vol = round(total_put_vol / total_call_vol, 3) if total_call_vol > 0 else 0.0
 
         return GammaExposureProfile(
+            data_quality_notes=quality_notes,
             symbol=symbol,
             underlying_price=round(underlying_price, 2),
             total_net_gex=total_net_gex,

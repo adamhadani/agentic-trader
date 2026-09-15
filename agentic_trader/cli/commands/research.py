@@ -8,12 +8,12 @@ import click
 from agentic_trader.cli.utils import coro
 from agentic_trader.config import load_config
 from agentic_trader.research import (
-    AutoRetuner,
-    ParameterGridOptimizer,
     export_candidate_to_config,
     format_candidate_as_yaml,
     format_optimization_report,
 )
+from agentic_trader.research.optimizer import ParameterGridOptimizer
+from agentic_trader.research.retuner import AutoRetuner
 
 
 logger = logging.getLogger("copilot")

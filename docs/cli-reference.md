@@ -1,6 +1,6 @@
 ---
 layout: default
-title: CLI Command Reference - Cash-Plus Trading Copilot
+title: CLI Command Reference - Agentic Trader
 ---
 
 # 💻 CLI Command Reference Manual
@@ -17,8 +17,8 @@ Runs the continuous steady-state trading service.
 uv run copilot daemon
 ```
 - **Components Executed**:
-  - APScheduler 4-hour scan aligned with candle closes (`00:00`, `04:00`, `08:00`, `12:00`, `16:00`, `20:00` UTC).
-  - 15-minute position monitoring and bracket take-profit / stop-loss reconciler.
+  - APScheduler 4-hour swing scans and session-gated 15-minute intraday scans, relative to startup.
+  - 1-minute position reconciliation and bracket take-profit / stop-loss reconciler.
   - Sub-second Alpaca WebSocket `TradingStream` and Tradovate user-sync stream.
   - Interactive two-way Telegram bot listener.
   - Embedded Prometheus metrics and health check HTTP server on `0.0.0.0:9108`.
@@ -40,7 +40,7 @@ uv run copilot status
 ```
 
 ### `copilot positions`
-Displays all currently tracked positions, live quotes, stop-loss / take-profit prices, and mark-to-market unrealized P&L.
+Displays the broker account snapshot: actual average entry, quantity, current price and unrealized P&L, plus tracked stops/targets. CLI and Telegram share the same builder. Source/time and tracking mismatches are shown; failures are not reported as empty positions.
 ```bash
 uv run copilot positions
 ```
@@ -59,7 +59,7 @@ uv run copilot scan --no-llm
 
 # Filter by asset class
 uv run copilot scan --asset-class futures
-uv run copilot scan --asset-class equity
+uv run copilot scan --asset-class equities
 
 # Specific symbol override
 uv run copilot scan --symbols /MES,/MNQ,SPY
@@ -75,7 +75,7 @@ uv run copilot execute 4
 ```
 
 ### `copilot close <signal_id> [exit_price]`
-Liquidates an active position, records realized P&L, releases notional exposure, and emits an exit alert card.
+Submits a close request. Alpaca positions remain tracked until an exact full fill is confirmed; realized P&L uses broker fills. The optional exit price only applies to simulation.
 ```bash
 uv run copilot close 4 5845.50
 ```
@@ -97,7 +97,7 @@ uv run copilot resume
 ```
 
 ### `copilot test-alert`
-Emits a synthetic trade card to test Telegram formatting, execution buttons, and terminal display.
+Previews a non-actionable `[TEST]` message locally. Add `--send` with dedicated `TELEGRAM_TEST_BOT_TOKEN` and `TELEGRAM_TEST_CHAT_ID` to test a separate bot/chat; no signal or broker call is created.
 ```bash
 uv run copilot test-alert
 ```
@@ -142,6 +142,12 @@ uv run copilot metrics
 
 # Launch standalone metrics server on custom port
 uv run copilot metrics --serve --port 9108
+```
+
+### `copilot explain-macro`
+Generates an educational, executive tutorial briefing synthesizing live quantitative macroeconomic telemetry (10Y-2Y yield curve slope in bps, High Yield OAS credit spreads, VIX volatility context, 5Y/10Y TIPS inflation breakevens, and Copilot risk sizing). Powered by LLM synthesis with an exhaustive deterministic rule-based fallback.
+```bash
+uv run copilot explain-macro
 ```
 
 ---
@@ -220,7 +226,78 @@ uv run copilot eval
 
 ---
 
-## 4. Database Schema Migrations & Administration (`copilot db`)
+## 4. Formulaic Alpha Mining & Expression DSL (`copilot alpha`)
+
+Institutional-grade formulaic alpha generation, genetic expression search, overfitting protection (DSR, Rank IC), and strategy lifecycle promotion.
+
+### `copilot alpha catalog`
+Displays the pre-cataloged library of institutional alpha formulas (WorldQuant 101, factor models).
+```bash
+uv run copilot alpha catalog
+```
+
+### `copilot alpha list`
+Displays all currently promoted production alphas, active allocations, out-of-sample Sharpe ratios, DSR scores, eligible asset universe (`ELIGIBLE SYMBOLS`), and promotion audit metadata.
+```bash
+uv run copilot alpha list
+```
+
+### `copilot alpha mine`
+Executes genetic formula generation across historical market bars, applying In-Sample / Out-of-Sample cross-validation, Deflated Sharpe Ratio (DSR) multi-testing penalties, cross-asset qualification matrices, and Gram-Schmidt signal orthogonalization against active production alphas.
+```bash
+# Mine alphas across SPY using daily bars (2y lookback, 20 iterations)
+uv run copilot alpha mine --symbol SPY --lookback 2y --interval 1d --iterations 20
+
+# Multi-asset mining matrix & signal orthogonalization check against active desk
+uv run copilot alpha mine --symbols NVDA,AMD,AAPL,MSFT,QQQ,SPY --iterations 15
+
+# Mine across high-beta tech with strict statistical gating
+uv run copilot alpha mine --symbol QQQ --min-sharpe 1.2 --min-dsr 0.90
+
+# Mine and automatically promote winning alpha to production desk
+uv run copilot alpha mine --symbol NVDA --auto-promote
+```
+
+### `copilot alpha inspect <alpha_id>`
+Computes and renders an institutional quantitative tearsheet for any catalog or promoted alpha across historical data.
+```bash
+# Evaluate WorldQuant Alpha 006 on SPY
+uv run copilot alpha inspect alpha_wq_006 --symbol SPY --interval 1d
+
+# Evaluate trend expansion alpha on QQQ
+uv run copilot alpha inspect alpha_trend_expansion --symbol QQQ --interval 1d
+```
+
+### `copilot alpha promote <alpha_id>`
+Promotes an alpha from the catalog or mining candidates into the production paper trading portfolio, persisting configuration in `config/promoted_alphas.yaml` and registering the alpha in `StrategyRegistry`. Optionally routes execution to a designated subset of symbols via `--symbols`.
+```bash
+# Promote alpha across all supported symbols
+uv run copilot alpha promote alpha_wq_006 --allocation 0.15 --notes "Baseline institutional alpha"
+
+# Promote alpha restricted to high-beta semiconductor universe
+uv run copilot alpha promote alpha_wq_053 --allocation 0.15 --symbols NVDA,AMD --notes "Semiconductor momentum factor"
+```
+
+### `copilot alpha demote <alpha_id>`
+Demotes and retires an active alpha from the production trading desk with zombie position safeguards.
+```bash
+# Standard demotion: leaves attributed positions open under orphan status (managed by trailing stops)
+uv run copilot alpha demote alpha_wq_006 --reason "Performance decay"
+
+# Demote and immediately close/liquidate any open positions attributed to this alpha
+uv run copilot alpha demote alpha_wq_006 --reason "Risk override" --liquidate-positions
+```
+
+### `copilot alpha test <expression>`
+Tests an ad-hoc formulaic DSL expression directly against market data and generates an instant quantitative tearsheet.
+```bash
+# Note: Use '--' before expressions starting with negative numbers to avoid Click option parsing collisions
+uv run copilot alpha test --symbol NVDA --interval 1d -- "-1.0 * delta(ts_rank(volume, 10), 5)"
+```
+
+---
+
+## 5. Database Schema Migrations & Administration (`copilot db`)
 
 Manage SQLite schema versions and database maintenance via Alembic and administration subcommands:
 ```bash
@@ -245,3 +322,40 @@ uv run copilot db clear --yes  # bypass interactive confirmation
 Commands interacting with storage accept options or environment variables to redirect to alternate database files:
 - `--db-name <name>`: Resolve database inside `data/<name>.db` (or `DB_NAME` env var).
 - `--db-path <path>`: Explicit filesystem path to database (or `DB_PATH` env var).
+
+## Configuration, test isolation and audit
+
+`--db-path` accepts an explicit SQLite path or database URL. `--db-name` explicitly
+selects a named SQLite sandbox and overrides inherited DB selection. Production
+uses `.envrc` and the runtime YAML; tests use separate settings without dotenv.
+See [development notes](development-notes.md#configuration-and-isolated-development).
+
+```bash
+uv run copilot db audit --signal-id 5 --limit 50
+uv run copilot test-alert                 # local preview
+# Explicit opt-in, separate test destination only:
+uv run copilot test-alert --send
+```
+
+`scan --dry-run` uses an empty temporary portfolio and a simulated broker, disables
+Telegram, and skips monitoring. `/perf` reports broker open-position unrealized
+P&L and tracked confirmed closed-trade P&L before fees; these are distinct from a
+broker account-day return. `/healthz` is liveness; `doctor`/`/healthcheck` include
+active database and LLM probes. Do not launch `listen` alongside the running daemon.
+
+
+### Options data quality
+
+`gex --json` emits only JSON on stdout; progress goes to stderr and failures return
+nonzero. Missing option-chain counts and modeled numeric defaults appear in
+`data_quality_notes`; invalid underlying prices fail instead of using fixed ETF
+prices. GEX is a Yahoo option-chain estimate, not brokerage P&L or observed dealer
+inventory. `--expirations` defaults to the configured options policy.
+
+### Telegram macro command consolidation
+
+Use `/macro` for VIX classification, Treasury curve, credit, inflation, published
+data dates and combined trading filters. `/regime` has been removed.
+`/explain_macro` explains the macro indicators; `copilot explain-macro` is its CLI
+counterpart. Telegram `/backtest` uses configured `backtest.lookback` when omitted.
+Conversational positions use the same broker report as `/positions` and the CLI.

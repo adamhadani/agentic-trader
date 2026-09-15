@@ -3,6 +3,7 @@ from typing import Any
 
 import yaml
 
+from agentic_trader.constants import APP_DISPLAY_NAME
 from agentic_trader.research.models import OptimizationResult, ParameterCandidate
 
 
@@ -144,7 +145,7 @@ To apply to config.yaml:
     )
     report = f"""
 {border}
-CASH-PLUS TRADING COPILOT: {title}
+{APP_DISPLAY_NAME.upper()}: {title}
 {border}
 Asset Symbol:        {result.symbol}
 Strategy:            {result.strategy}

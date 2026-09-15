@@ -1,6 +1,7 @@
 import logging
 from collections.abc import Sequence
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from alembic.config import Config
@@ -8,12 +9,14 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine
 
+from agentic_trader.runtime import validate_test_database
 from alembic import command
 
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_migration_lock = RLock()  # Alembic installs module-global context proxies during commands.
 
 
 def to_sync_url(url: str) -> str:
@@ -35,6 +38,7 @@ def get_alembic_config(db_url: str | None = None) -> Config:
     config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
 
     if db_url:
+        validate_test_database(db_url)
         config.set_main_option("sqlalchemy.url", db_url)
 
     return config
@@ -45,14 +49,16 @@ def run_migrations_head(db_url: str | None = None) -> None:
     config = get_alembic_config(db_url)
     target_url = config.get_main_option("sqlalchemy.url")
     logger.info("Applying Alembic migrations to head", extra={"db_url": target_url})
-    command.upgrade(config, "head")
+    with _migration_lock:
+        command.upgrade(config, "head")
 
 
 def downgrade_migrations(target: str = "base", db_url: str | None = None) -> None:
     """Downgrade database schema to target (e.g. 'base' or a specific revision hash)."""
     config = get_alembic_config(db_url)
     logger.info("Downgrading Alembic migrations", extra={"target": target})
-    command.downgrade(config, target)
+    with _migration_lock:
+        command.downgrade(config, target)
 
 
 def get_current_revision(db_url: str | None = None) -> str | None:

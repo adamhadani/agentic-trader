@@ -16,6 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
 from agentic_trader.agent.copilot_tools import make_copilot_tools
+from agentic_trader.constants import ExecutionMode
 
 
 if TYPE_CHECKING:
@@ -61,7 +62,7 @@ def create_copilot_graph(
         model_with_tools = chat_model.bind_tools(tools)
     else:
         resolved_model: str = str(model_name or getattr(copilot.config, "llm_model", "gpt-4o-mini"))
-        llm = ChatLiteLLM(model=resolved_model)
+        llm = ChatLiteLLM(model=resolved_model, api_key=copilot.config.llm_api_key)
         model_with_tools = llm.bind_tools(tools)
 
     async def call_model(state: CopilotState) -> dict[str, list[AnyMessage]]:
@@ -87,7 +88,7 @@ async def ask_copilot(
     graph: CompiledStateGraph,
     query: str,
     chat_id: str | int = "default",
-    execution_mode: str = "paper",
+    execution_mode: str = ExecutionMode.PAPER,
 ) -> str:
     """Execute a conversational turn through the compiled LangGraph copilot."""
     thread_id = f"tg_{chat_id}"

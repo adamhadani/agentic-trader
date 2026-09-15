@@ -12,7 +12,10 @@ import click
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import coro, get_copilot_and_config
+from agentic_trader.constants import AuditEventType
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
+from agentic_trader.runtime import runtime_identity
+from agentic_trader.telemetry.event_loop import monitor_event_loop
 
 
 logger = logging.getLogger("copilot")
@@ -74,18 +77,50 @@ async def listen() -> None:
 async def daemon(no_llm: bool) -> None:
     """Run continuous daemon scanner and trade manager."""
     copilot, config = get_copilot_and_config()
-    await copilot.broker.connect()
+    if not await copilot.broker.connect():
+        raise click.ClickException("Broker connection failed; daemon startup aborted.")
+    identity = {**runtime_identity(), "broker": type(copilot.broker).__name__, "alpaca_paper": config.alpaca_paper}
+    await copilot.db.record_audit(AuditEventType.RUNTIME_STARTED, identity)
+    logger.info("Runtime started: %s", identity)
 
     scheduler = AsyncIOScheduler()
     interval = config.scheduler.cron_hour_interval
-    # Schedule regular scans
+    # Schedule regular swing scans
     scheduler.add_job(
         copilot.run_scan,
         "interval",
         hours=interval,
         args=[not no_llm, False],
+        id="swing_scan",
         next_run_time=datetime.now(UTC),
     )
+    # Schedule intraday 15-minute scans during active market sessions
+    if getattr(config.scheduler, "intraday_scan_enabled", True):
+        intraday_interval = getattr(config.scheduler, "intraday_interval_minutes", 15)
+
+        async def run_intraday_scan() -> None:
+            session_active, reason = await copilot.session_provider.is_session_active(instrument_type="all")
+            if session_active:
+                await copilot.run_scan(
+                    use_llm=not no_llm,
+                    dry_run=False,
+                    asset_class="all",
+                    timeframe="15m",
+                )
+            else:
+                logger.debug("Intraday scan skipped outside market session: %s", reason)
+
+        scheduler.add_job(
+            run_intraday_scan,
+            "interval",
+            minutes=intraday_interval,
+            id="intraday_scan",
+            next_run_time=datetime.now(UTC),
+        )
+        logger.info(
+            "Scheduled intraday scanner every %d minutes (session-gated).",
+            intraday_interval,
+        )
     # Schedule automated position monitoring & broker reconciliation every 1 minute
     scheduler.add_job(
         copilot.monitor_positions,
@@ -125,9 +160,6 @@ async def daemon(no_llm: bool) -> None:
             config.scheduler.macro_briefing_hour,
             config.scheduler.macro_briefing_minute,
         )
-    scheduler.start()
-    logger.info("Scheduler started: scanning every %dh, reconciling positions every 1m.", interval)
-
     if copilot.notifier.is_configured():
         logger.info("Starting Telegram Bot listener for interactive callbacks...")
         await copilot.notifier.start_polling()
@@ -139,12 +171,19 @@ async def daemon(no_llm: bool) -> None:
     if copilot.metrics_server:
         await copilot.metrics_server.start()
 
+    lag_task = asyncio.create_task(monitor_event_loop(config.telemetry, copilot.metrics, copilot.db.record_audit))
+    scheduler.start()
+    logger.info("Scheduler started: scanning every %dh, reconciling positions every 1m.", interval)
+
     try:
         while True:
             await asyncio.sleep(1)
     except KeyboardInterrupt, SystemExit, asyncio.CancelledError:
         logger.info("Shutting down daemon...")
         copilot._shutdown_event.set()
+        lag_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await lag_task
         if copilot.metrics_server:
             await copilot.metrics_server.stop()
         if stream_task and not stream_task.done():

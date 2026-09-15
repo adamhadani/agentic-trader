@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -56,7 +57,7 @@ class PaperBroker(BaseBroker):
 
         # Fetch live price for realistic simulated fill
         ticker = request.ticker or request.symbol
-        live_price = self.data_fetcher.fetch_latest_price(ticker)
+        live_price = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
         fill_price = live_price if live_price is not None else (request.entry_price or 100.0)
 
         order_id = f"SIM-{timestamp_sec}-{symbol_clean}"
@@ -133,7 +134,7 @@ class PaperBroker(BaseBroker):
         if exit_price is None:
             contract_info = self.config.contracts.get(target_symbol)
             ticker = contract_info.ticker if contract_info else target_symbol
-            live_price = self.data_fetcher.fetch_latest_price(ticker)
+            live_price = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
             final_price = live_price if live_price is not None else (pos.entry_price if pos else 0.0)
         else:
             final_price = exit_price
@@ -187,7 +188,7 @@ class PaperBroker(BaseBroker):
             multiplier = contract_info.multiplier if contract_info else 1.0
             ticker = contract_info.ticker if contract_info else symbol
 
-            current_price = self.data_fetcher.fetch_latest_price(ticker)
+            current_price = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
             if current_price is not None:
                 pos.current_price = current_price
                 if str(pos.direction).upper() in ("LONG", str(Direction.LONG)):
@@ -209,7 +210,7 @@ class PaperBroker(BaseBroker):
         }
 
     async def reconcile_positions(self, active_positions: list[dict[str, Any]]) -> list[ReconciliationEvent]:
-        """Reconcile active SQLite positions against current market quotes.
+        """Reconcile active database positions against current market quotes.
 
         Triggers TAKE_PROFIT or STOP_LOSS exit events when price reaches bracket levels.
         """
@@ -226,7 +227,7 @@ class PaperBroker(BaseBroker):
             ticker = contract_info.ticker if contract_info else contract
             multiplier = contract_info.multiplier if contract_info else 1.0
 
-            current_price = self.data_fetcher.fetch_latest_price(ticker)
+            current_price = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
             if current_price is None:
                 continue
 

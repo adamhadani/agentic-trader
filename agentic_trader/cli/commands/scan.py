@@ -50,6 +50,12 @@ from agentic_trader.cli.utils import coro, get_copilot_and_config
     default=None,
     help="Strategy execution mode override ('single' or 'parallel')",
 )
+@click.option(
+    "--timeframe",
+    type=click.Choice(["15m", "1h", "4h", "1d"], case_sensitive=False),
+    default=None,
+    help="Target candle timeframe for scan (e.g. '15m', '1h', '4h', '1d')",
+)
 @coro
 async def scan(
     no_llm: bool,
@@ -59,10 +65,14 @@ async def scan(
     bypass_session_filter: bool = False,
     strategy: str | None = None,
     strategy_mode: str | None = None,
+    timeframe: str | None = None,
 ) -> None:
     """Scan watchlists and run LLM risk evaluation."""
-    copilot, _config = get_copilot_and_config()
-    await copilot.broker.connect()
+    copilot, _config = get_copilot_and_config(dry_run=True) if dry_run else get_copilot_and_config()
+    if not dry_run:
+        await copilot.broker.connect()
+    else:
+        click.echo("[DRY RUN] Isolated simulation with an empty portfolio; no Telegram or broker execution.")
 
     sym_list = [s.strip() for s in symbols.split(",")] if symbols else None
     scan_kwargs: dict[str, Any] = {
@@ -76,5 +86,7 @@ async def scan(
         scan_kwargs["strategy"] = strategy
     if strategy_mode is not None:
         scan_kwargs["strategy_mode"] = strategy_mode
+    if timeframe is not None:
+        scan_kwargs["timeframe"] = timeframe
 
     await copilot.run_scan(**scan_kwargs)

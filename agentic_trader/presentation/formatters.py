@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 import html
+import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from agentic_trader.agent.macro import CreditStressRegime, MacroStressLevel, YieldCurveRegime
+from agentic_trader.constants import (
+    APP_DISPLAY_NAME,
+    DEFAULT_BACKTEST_LOOKBACK,
+    DEFAULT_MIN_RISK_REWARD_RATIO,
+    DEFAULT_RESEARCH_SYMBOL,
+    ExecutionMode,
+    VolatilityRegime,
+)
 
 
 if TYPE_CHECKING:
@@ -10,6 +21,10 @@ if TYPE_CHECKING:
     from agentic_trader.agent.regime import RegimeSnapshot
     from agentic_trader.backtest.models import BacktestResult
     from agentic_trader.research.alpha.models import AlphaCandidate, PromotedAlphaRecord
+
+
+def format_price(value: float | None) -> str:
+    return f"{value:,.2f}" if value is not None else "N/A"
 
 
 @dataclass
@@ -21,10 +36,10 @@ class PositionView:
     direction: str
     quantity: float
     entry_price: float
-    current_price: float
-    stop_loss: float
-    take_profit: float
-    unrealized_pnl: float
+    current_price: float | None
+    stop_loss: float | None
+    take_profit: float | None
+    unrealized_pnl: float | None
     pnl_str: str = ""
     qty_label: str = ""
     multiplier: float = 1.0
@@ -32,7 +47,9 @@ class PositionView:
     executed_at: str | None = None
 
     def __post_init__(self):
-        if not self.pnl_str:
+        if self.unrealized_pnl is None:
+            self.pnl_str = "Unavailable"
+        if not self.pnl_str and self.unrealized_pnl is not None:
             sign = "+" if self.unrealized_pnl >= 0 else "-"
             self.pnl_str = f"{sign}${abs(self.unrealized_pnl):,.2f}"
         if not self.qty_label:
@@ -44,13 +61,18 @@ class PositionsReport:
     """Aggregated presentation report of all active tracked positions."""
 
     positions: list[PositionView]
-    total_unrealized_pnl: float
+    total_unrealized_pnl: float | None
     active_count: int
     total_realized_pnl: float = 0.0
     total_pnl_str: str = ""
+    source: str = ""
+    as_of: str = ""
+    notes: str = ""
 
     def __post_init__(self):
-        if not self.total_pnl_str:
+        if self.total_unrealized_pnl is None:
+            self.total_pnl_str = "Unavailable (incomplete valuation)"
+        if not self.total_pnl_str and self.total_unrealized_pnl is not None:
             pnl_sign = "+" if self.total_unrealized_pnl >= 0 else "-"
             self.total_pnl_str = f"{pnl_sign}${abs(self.total_unrealized_pnl):,.2f}"
 
@@ -82,7 +104,7 @@ class PortfolioStatusReport:
     vix: float = 0.0
     tnx: float | None = None
     dxy: float | None = None
-    execution_mode: str = "PAPER"
+    execution_mode: str = ExecutionMode.PAPER
 
     def __post_init__(self):
         if self.recent_signals is None:
@@ -138,7 +160,7 @@ class ExecutionResultView:
     risk_dollars: float = 0.0
     stop_loss: float = 0.0
     take_profit: float = 0.0
-    execution_mode: str = "PAPER"
+    execution_mode: str = ExecutionMode.PAPER
     success: bool = True
     error_message: str | None = None
 
@@ -174,6 +196,8 @@ class PerformanceSummaryReport:
     profit_factor: float
     gross_profit: float
     gross_loss: float
+    source_note: str = "Tracked closed trades; before fees; all recorded history."
+    unrealized_pnl_text: str = ""
     active_count: int = 0
     active_exposure: float = 0.0
     recent_closed_trades: list[dict[str, Any]] = None  # type: ignore
@@ -227,16 +251,17 @@ class TerminalFormatter:
         sub_sep = "-" * 65
         lines = [
             sep,
-            "CASH-PLUS TRADING COPILOT: ACTIVE POSITIONS",
+            f"{APP_DISPLAY_NAME.upper()}: ACTIVE POSITIONS",
             sep,
         ]
+        lines.extend(filter(None, [report.source, report.as_of, report.notes]))
         if not report.positions:
             lines.append("  (No active positions currently tracked)")
         else:
             lines.extend(
                 f"  #{p.id} {p.qty_label} {p.contract} {p.direction} | "
-                f"Entry: {p.entry_price:,.2f} | Current: {p.current_price:,.2f} | "
-                f"Stop: {p.stop_loss:,.2f} | Target: {p.take_profit:,.2f} | PnL: {p.pnl_str}"
+                f"Entry: {p.entry_price:,.2f} | Current: {format_price(p.current_price)} | "
+                f"Stop: {format_price(p.stop_loss)} | Target: {format_price(p.take_profit)} | PnL: {p.pnl_str}"
                 for p in report.positions
             )
             lines.append(sub_sep)
@@ -250,12 +275,12 @@ class TerminalFormatter:
         sub_sep = "-" * 65
         lines = [
             sep,
-            "CASH-PLUS TRADING COPILOT: PORTFOLIO & RISK STATUS",
+            f"{APP_DISPLAY_NAME.upper()}: PORTFOLIO & RISK STATUS",
             sep,
             f"Cash Base:            ${report.cash_base:,.2f}",
             f"Max Notional Ceiling: ${report.max_notional:,.2f} (0.6x max leverage)",
             f"Active Exposure:      ${report.current_exposure:,.2f} ({report.effective_leverage:.2f}x effective leverage)",
-            f"Active Position Count:{report.active_contract_count} contracts",
+            f"Active Position Count:{report.active_contract_count} positions",
             f"Telegram Configured:  {report.telegram_configured}",
             f"LLM Model Configured: {report.llm_model}",
             sub_sep,
@@ -318,18 +343,15 @@ class TelegramHtmlFormatter:
 
     @staticmethod
     def format_positions_html(report: PositionsReport) -> str:
+        context = html.escape(" | ".join(filter(None, [report.source, report.as_of, report.notes])))
         if not report.positions:
-            return (
-                "📋 <b>ACTIVE POSITIONS (0)</b>\n\n"
-                "<i>No active positions currently tracked.</i>\n"
-                "When trade signals are acknowledged in Telegram, they appear here."
-            )
+            return f"📋 <b>ACTIVE POSITIONS (0)</b>\n\n<i>No active positions currently tracked.</i>\n{context}"
 
-        lines = [f"📋 <b>ACTIVE POSITIONS ({report.active_count})</b>\n"]
+        lines = [f"📋 <b>ACTIVE POSITIONS ({report.active_count})</b>\n", context]
         lines.extend(
             f"• <b>#{p.id} {p.qty_label} {p.contract} ({p.direction})</b>\n"
-            f"  Entry: <code>{p.entry_price:,.2f}</code> | Current: <code>{p.current_price:,.2f}</code>\n"
-            f"  Stop: <code>{p.stop_loss:,.2f}</code> | Target: <code>{p.take_profit:,.2f}</code>\n"
+            f"  Entry: <code>{p.entry_price:,.2f}</code> | Current: <code>{format_price(p.current_price)}</code>\n"
+            f"  Stop: <code>{format_price(p.stop_loss)}</code> | Target: <code>{format_price(p.take_profit)}</code>\n"
             f"  Unrealized P&amp;L: <b>{p.pnl_str}</b>\n"
             for p in report.positions
         )
@@ -341,14 +363,14 @@ class TelegramHtmlFormatter:
     @staticmethod
     def format_status_html(report: PortfolioStatusReport) -> str:
         lines = [
-            "🛡️ <b>CASH-PLUS COPILOT STATUS</b>\n",
+            f"🛡️ <b>{APP_DISPLAY_NAME.upper()} STATUS</b>\n",
             f"• <b>Cash Base:</b> <code>${report.cash_base:,.2f}</code>",
             f"• <b>Max Notional:</b> <code>${report.max_notional:,.2f}</code>",
             (
                 f"• <b>Active Exposure:</b> <code>${report.current_exposure:,.2f}</code> "
                 f"({report.effective_leverage:.2f}x leverage)"
             ),
-            f"• <b>Active Positions:</b> {report.active_contract_count} contracts\n",
+            f"• <b>Active Positions:</b> {report.active_contract_count} positions\n",
             "<b>Market Context:</b>",
             f"• Volatility: <b>{report.vix_regime}</b> (VIX: {report.vix_value:.2f})",
         ]
@@ -371,17 +393,18 @@ class TelegramHtmlFormatter:
 
     @staticmethod
     def format_execution_html(view: ExecutionResultView, execution_mode: str | None = None) -> str:
-        mode_val = execution_mode or getattr(view, "execution_mode", "PAPER") or "PAPER"
+        mode_val = execution_mode or view.execution_mode
         mode_upper = str(mode_val).upper()
         if view.success:
-            fill_p = view.fill_price or 0.0
+            fill_text = format_price(view.fill_price) if view.fill_price is not None else "Awaiting broker fill"
+            order_state = "ORDER EXECUTED" if view.fill_price is not None else "ORDER ACCEPTED"
             qty_label = f"{view.quantity:g} shares" if not view.contract.startswith("/") else f"{view.quantity:g}x"
             return (
-                f"🚀 <b>ORDER EXECUTED ({mode_upper})</b>\n"
+                f"🚀 <b>{order_state} ({mode_upper})</b>\n"
                 f"• <b>Contract:</b> {qty_label} {view.contract} ({view.direction})\n"
-                f"• <b>Fill Price:</b> <code>{fill_p:,.2f}</code>\n"
+                f"• <b>Fill Price:</b> <code>{fill_text}</code>\n"
                 f"• <b>Broker Order ID:</b> <code>{view.order_id or 'N/A'}</code>\n"
-                f"• <b>Notional:</b> <code>${view.notional_value:,.2f}</code> | "
+                f"• <b>Planned Notional:</b> <code>${view.notional_value:,.2f}</code> | "
                 f"<b>Risk:</b> <code>${view.risk_dollars:,.2f}</code>\n"
                 f"• <b>Stop Loss:</b> <code>{view.stop_loss:,.2f}</code> | "
                 f"<b>Target:</b> <code>{view.take_profit:,.2f}</code>\n"
@@ -408,24 +431,41 @@ class TelegramHtmlFormatter:
         )
 
     @staticmethod
-    def format_regime_html(regime: RegimeSnapshot) -> str:
-        vix_color = "🟢" if regime.vix < 15.0 else ("🟡" if regime.vix < 22.0 else "🔴")
-        tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "N/A"
-        dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "N/A"
-        breakout_str = "Allowed ✅" if regime.breakout_allowed else "Suppressed ⚠️ (Extreme Volatility)"
-
+    def format_macro_dashboard_html(
+        regime: RegimeSnapshot, min_risk_reward_ratio: float = DEFAULT_MIN_RISK_REWARD_RATIO
+    ) -> str:
+        vix_color = {
+            VolatilityRegime.COMPRESSED: "🟢",
+            VolatilityRegime.NORMAL: "🟢",
+            VolatilityRegime.ELEVATED: "🟠",
+            VolatilityRegime.EXTREME: "🔴",
+        }[regime.vix_regime]
+        tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "Unavailable"
+        dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "Unavailable"
+        breakout_str = "Allowed ✅" if regime.breakout_allowed else "Suppressed ⚠️"
+        minimum_rr = max(regime.min_rr_threshold, min_risk_reward_ratio)
+        text = (
+            "🌐 <b>MACRO &amp; TRADING FILTERS</b>\n"
+            f"<i>Snapshot fetched: {regime.timestamp.isoformat()}</i>\n\n"
+            f"• <b>VIX Level:</b> {vix_color} <code>{regime.vix:.2f}</code> ({regime.vix_regime.value})\n"
+            f"• <b>10-Year Treasury Yield:</b> <code>{tnx_str}</code>\n"
+            f"• <b>US Dollar Index:</b> <code>{dxy_str}</code>\n\n"
+            "🛡️ <b>Combined Volatility / Macro Policy:</b>\n"
+            f"• <b>Squeeze Breakouts:</b> {breakout_str}\n"
+            f"• <b>Minimum Required R:R:</b> <code>{minimum_rr:.1f}:1</code>\n"
+            f"• <b>Risk Multiplier:</b> <code>{regime.risk_multiplier:.2f}x</code>\n"
+            "<i>Other entry checks (session, calendar, exposure and approval) still apply.</i>\n\n"
+        )
+        if regime.macro_report is not None:
+            return text + TelegramHtmlFormatter._format_macro_indicators_html(regime.macro_report)
+        reason = regime.macro_unavailable_reason or "No macro observations available"
         return (
-            "🌐 <b>MARKET VOLATILITY & MACRO REGIME</b>\n\n"
-            f"• <b>VIX Level:</b> {vix_color} <code>{regime.vix:.2f}</code> ({regime.vix_regime.value.upper()})\n"
-            f"• <b>10-Year Treasury Yield (^TNX):</b> <code>{tnx_str}</code>\n"
-            f"• <b>US Dollar Index (DX-Y):</b> <code>{dxy_str}</code>\n"
-            f"• <b>Squeeze Breakouts:</b> <b>{breakout_str}</b>\n\n"
-            f"📝 <b>Quantitative Assessment:</b>\n"
-            f"<i>{regime.summary_text}</i>"
+            text
+            + f"⚠️ <b>Macro enrichment unavailable:</b> {html.escape(reason)}\n<i>Policy above uses volatility only.</i>"
         )
 
     @staticmethod
-    def format_macro_dashboard_html(report: MacroIntelligenceReport) -> str:
+    def _format_macro_indicators_html(report: MacroIntelligenceReport) -> str:
         s = report.stress
         y = report.yields
         sp = report.spreads
@@ -433,21 +473,32 @@ class TelegramHtmlFormatter:
         inf = report.inflation
 
         stress_badge = {
-            "LOW": "🟢 LOW STRESS",
-            "MODERATE": "🟡 MODERATE STRESS",
-            "HIGH": "🟠 HIGH STRESS",
-            "EXTREME": "🔴 EXTREME STRESS",
-        }.get(s.level.value, s.level.value)
+            MacroStressLevel.LOW: "🟢 LOW STRESS",
+            MacroStressLevel.MODERATE: "🟡 MODERATE STRESS",
+            MacroStressLevel.HIGH: "🟠 HIGH STRESS",
+            MacroStressLevel.EXTREME: "🔴 EXTREME STRESS",
+        }[s.level]
 
-        curve_color = "🟢" if sp.regime == "NORMAL_STEEP" else ("🟡" if sp.regime in ("FLAT", "STEEP") else "🔴")
-        credit_color = "🟢" if c.regime == "BENIGN" else ("🟡" if c.regime == "ELEVATED" else "🔴")
-        breakout_str = "Allowed ✅" if s.squeeze_breakout_allowed else "Suppressed ⚠️"
+        curve_color = (
+            "🟢"
+            if sp.regime == YieldCurveRegime.NORMAL_STEEP
+            else ("🟡" if sp.regime in (YieldCurveRegime.FLAT, YieldCurveRegime.STEEP) else "🔴")
+        )
+        credit_color = (
+            "🟢"
+            if c.regime == CreditStressRegime.BENIGN
+            else ("🟡" if c.regime == CreditStressRegime.ELEVATED else "🔴")
+        )
+        dates = ", ".join(f"{key}: {value}" for key, value in sorted(report.observation_dates.items()))
+        source_note = "Yahoo Finance latest closes; FRED latest published daily observations"
+        if dates:
+            source_note += f" ({dates})"
 
         drivers_text = ", ".join(s.key_drivers) if s.key_drivers else "Benign conditions"
 
         return (
             "🏛️ <b>MACRO INTELLIGENCE & YIELD CURVE</b>\n\n"
-            f"<b>Status:</b> {stress_badge} (Risk Multiplier: <code>{s.risk_multiplier:.2f}x</code>)\n\n"
+            f"<b>Macro Stress:</b> {stress_badge}\n<i>{html.escape(source_note)}</i>\n\n"
             f"📈 <b>US Treasury Term Structure:</b> {curve_color} <code>{sp.regime.value}</code>\n"
             f"• <b>3M:</b> <code>{y.yield_3m:.2f}%</code> | <b>2Y:</b> <code>{y.yield_2y:.2f}%</code> | <b>5Y:</b> <code>{y.yield_5y:.2f}%</code>\n"
             f"• <b>10Y:</b> <code>{y.yield_10y:.2f}%</code> | <b>30Y:</b> <code>{y.yield_30y:.2f}%</code>\n"
@@ -458,11 +509,6 @@ class TelegramHtmlFormatter:
             f"• <b>High Yield OAS:</b> {credit_color} <code>{c.high_yield_oas_bps:.0f} bps</code> ({c.high_yield_oas_pct:.2f}%) | <b>{c.regime.value}</b>\n"
             f"• <b>10Y Breakeven Inflation:</b> <code>{inf.breakeven_10y:.2f}%</code> ({inf.regime.value})\n"
             f"• <b>5Y Breakeven Inflation:</b> <code>{inf.breakeven_5y:.2f}%</code>\n\n"
-            f"🌪️ <b>Volatility & Dollar:</b>\n"
-            f"• <b>CBOE VIX:</b> <code>{report.vix:.2f}</code> | <b>DXY:</b> <code>{report.dxy:.2f}</code>\n\n"
-            f"🛡️ <b>Strategy Policy & Risk Budget:</b>\n"
-            f"• <b>Squeeze Breakouts:</b> <b>{breakout_str}</b>\n"
-            f"• <b>Minimum Required R:R:</b> <code>{s.min_rr_threshold:.1f}:1</code>\n"
             f"• <b>Key Drivers:</b> <i>{html.escape(drivers_text)}</i>"
         )
 
@@ -486,8 +532,10 @@ class TelegramHtmlFormatter:
                 )
 
         return (
-            "📊 <b>CASH-PLUS COPILOT: PERFORMANCE ATTRIBUTION</b>\n\n"
-            f"• <b>Realized Net Alpha:</b> {color_pnl} <code>{pnl_sign}${abs_pnl:,.2f}</code>\n"
+            f"📊 <b>{APP_DISPLAY_NAME.upper()}: PERFORMANCE ATTRIBUTION</b>\n\n"
+            f"<i>{html.escape(report.source_note)}</i>\n"
+            f"{report.unrealized_pnl_text}\n"
+            f"• <b>Realized P&amp;L:</b> {color_pnl} <code>{pnl_sign}${abs_pnl:,.2f}</code>\n"
             f"• <b>Win Rate:</b> <b>{report.win_rate:.1f}%</b> ({report.wins} wins / {report.losses} losses)\n"
             f"• <b>Profit Factor:</b> <code>{pf_str}</code>\n"
             f"• <b>Gross Profits:</b> +${report.gross_profit:,.2f}\n"
@@ -499,8 +547,8 @@ class TelegramHtmlFormatter:
     @staticmethod
     def format_backtest_html(
         res: BacktestResult,
-        symbol: str = "SPY",
-        lookback: str = "1y",
+        symbol: str = DEFAULT_RESEARCH_SYMBOL,
+        lookback: str = DEFAULT_BACKTEST_LOOKBACK,
         symbols: list[str] | None = None,
         strategy: str = "all",
         mc_line: str = "",
@@ -526,7 +574,7 @@ class TelegramHtmlFormatter:
             f"• <b>Max Drawdown:</b> <code>{res.max_drawdown_pct:.2f}%</code>\n"
             f"• <b>Win Rate:</b> <code>{res.win_rate:.1f}%</code> ({res.total_trades} trades)\n"
             f"• <b>Profit Factor:</b> <code>{pf_str}</code>\n"
-            f"• <b>Cash-Plus Yield Accrued:</b> +${res.cash_yield_pnl:,.2f}"
+            f"• <b>Cash Reserve Yield Accrued:</b> +${res.cash_yield_pnl:,.2f}"
             f"{attr_line}"
             f"{mc_line}"
         )
@@ -592,7 +640,12 @@ class TelegramHtmlFormatter:
                 dsr_str = f"{m.dsr:.2f}" if m else "N/A"
                 ic_str = f"{m.rank_ic_mean:+.3f}" if m else "N/A"
 
-                lines.append(f"• <b><code>{aid}</code></b> ({name}) [Alloc: <code>{weight_pct:.0f}%</code>]")
+                universe_str = ", ".join(a.eligible_symbols) if a.eligible_symbols else "ALL (Global)"
+                tf_str = getattr(defn, "timeframe", "4h").upper()
+                lines.append(
+                    f"• <b><code>{aid}</code></b> ({name}) [Alloc: <code>{weight_pct:.0f}%</code> | TF: <code>{tf_str}</code>]"
+                )
+                lines.append(f"  <i>Universe:</i> <code>{universe_str}</code>")
                 lines.append(f"  <i>Expr:</i> <code>{expr}</code>")
                 lines.append(
                     f"  <i>OOS Sharpe:</i> <code>{sharpe_str}</code> | <i>DSR:</i> <code>{dsr_str}</code> | <i>IC:</i> <code>{ic_str}</code>"
@@ -602,6 +655,163 @@ class TelegramHtmlFormatter:
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("💡 <i>Use /alphas for status or 'copilot alpha' in CLI.</i>")
         return "\n".join(lines)
+
+    VALID_TELEGRAM_TAGS: ClassVar[set[str]] = {
+        "b",
+        "strong",
+        "i",
+        "em",
+        "u",
+        "ins",
+        "s",
+        "strike",
+        "del",
+        "span",
+        "tg-spoiler",
+        "a",
+        "code",
+        "pre",
+        "blockquote",
+        "tg-emoji",
+    }
+
+    @classmethod
+    def sanitize_telegram_html(cls, raw: str) -> str:
+        """Sanitize raw LLM or formatted text into strictly valid Telegram HTML.
+        - Converts markdown formatting (headings, bold, italic, code).
+        - Strips unsupported tags like <p>, <br>, <div> into appropriate newlines.
+        - Escapes unescaped '&', '<', and '>'.
+        - Drops unexpected closing tags (eliminating Telegram entity parse errors).
+        - Closes any unclosed tags at the end of the text.
+        """
+        if not raw:
+            return ""
+
+        # 1. Normalize line breaks and unsupported structural tags
+        text = re.sub(r"<(?:br|BR)\s*/?>", "\n", raw)
+        text = re.sub(r"</?(?:p|P|div|DIV)\b[^>]*>", "\n", text)
+
+        # 2. Markdown conversions (headers, bold, italic, code)
+        text = re.sub(r"```(?:[a-zA-Z0-9_-]+)?\n(.*?)```", r"<pre>\1</pre>", text, flags=re.DOTALL)
+        text = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", text)
+        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+        text = re.sub(r"###+\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+        text = re.sub(r"##\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+        text = re.sub(r"#\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+
+        # 3. Tokenize tags vs text
+        tag_regex = re.compile(r"<(/?)([a-zA-Z0-9_-]+)([^>]*)>")
+        tokens: list[str] = []
+        last_idx = 0
+        open_stack: list[str] = []
+
+        for match in tag_regex.finditer(text):
+            start, end = match.span()
+            if start > last_idx:
+                chunk = text[last_idx:start]
+                # Escape & if not part of a valid HTML entity
+                chunk = re.sub(r"&(?!(amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)", "&amp;", chunk)
+                chunk = chunk.replace("<", "&lt;").replace(">", "&gt;")
+                tokens.append(chunk)
+            last_idx = end
+
+            is_close = bool(match.group(1))
+            tag_name = match.group(2).lower()
+            attrs = match.group(3)
+
+            if tag_name in cls.VALID_TELEGRAM_TAGS:
+                if not is_close:
+                    open_stack.append(tag_name)
+                    if tag_name == "a" and "href=" in attrs:
+                        tokens.append(f"<a{attrs}>")
+                    else:
+                        tokens.append(f"<{tag_name}>")
+                else:
+                    if tag_name in open_stack:
+                        # Close any nested tags above it
+                        while open_stack and open_stack[-1] != tag_name:
+                            unclosed = open_stack.pop()
+                            tokens.append(f"</{unclosed}>")
+                        if open_stack:
+                            open_stack.pop()
+                            tokens.append(f"</{tag_name}>")
+                    else:
+                        # Unexpected end tag - DROP IT!
+                        pass
+            else:
+                # Not a valid telegram tag -> escape it safely
+                tokens.append(html.escape(match.group(0)))
+
+        if last_idx < len(text):
+            chunk = text[last_idx:]
+            chunk = re.sub(r"&(?!(amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)", "&amp;", chunk)
+            chunk = chunk.replace("<", "&lt;").replace(">", "&gt;")
+            tokens.append(chunk)
+
+        # Close any unclosed tags
+        while open_stack:
+            unclosed = open_stack.pop()
+            tokens.append(f"</{unclosed}>")
+
+        return "".join(tokens)
+
+    @staticmethod
+    def strip_html(raw: str) -> str:
+        """Strip all HTML tags and decode HTML entities into clean plain text."""
+        if not raw:
+            return ""
+        text = re.sub(r"<(?:br|BR)\s*/?>", "\n", raw)
+        text = re.sub(r"</?(?:p|P|div|DIV)\b[^>]*>", "\n", text)
+        text = re.sub(r"<[^>]+>", "", text)
+        return html.unescape(text).strip()
+
+    @classmethod
+    def split_telegram_message(cls, text: str, max_chunk_len: int = 4000) -> list[str]:
+        """Split a long formatted message into Telegram-compliant chunks (<= max_chunk_len).
+        Splits along paragraph / section boundaries and ensures tags are balanced per chunk.
+        """
+        if not text or len(text) <= max_chunk_len:
+            return [text] if text else []
+
+        chunks: list[str] = []
+        current_chunk: list[str] = []
+        current_len = 0
+
+        paragraphs = text.split("\n\n")
+        for p in paragraphs:
+            p_len = len(p) + 2
+            if current_len + p_len > max_chunk_len:
+                if current_chunk:
+                    chunks.append("\n\n".join(current_chunk))
+                    current_chunk = []
+                    current_len = 0
+
+                # Single paragraph longer than limit: split by lines
+                if len(p) > max_chunk_len:
+                    lines = p.split("\n")
+                    line_chunk: list[str] = []
+                    line_len = 0
+                    for line in lines:
+                        if line_len + len(line) + 1 > max_chunk_len and line_chunk:
+                            chunks.append("\n".join(line_chunk))
+                            line_chunk = []
+                            line_len = 0
+                        line_chunk.append(line)
+                        line_len += len(line) + 1
+                    if line_chunk:
+                        current_chunk.append("\n".join(line_chunk))
+                        current_len += line_len
+                else:
+                    current_chunk.append(p)
+                    current_len += p_len
+            else:
+                current_chunk.append(p)
+                current_len += p_len
+
+        if current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+
+        return [cls.sanitize_telegram_html(c) for c in chunks if c.strip()]
 
 
 def format_mined_alphas_table(candidates: list[AlphaCandidate]) -> str:

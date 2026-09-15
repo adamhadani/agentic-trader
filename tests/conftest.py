@@ -1,27 +1,140 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pandas as pd
+import psycopg2
 import pytest
+from curl_cffi import AsyncCurl, Curl
+from psycopg2.extensions import make_dsn, parse_dsn
+from pytest_socket import SocketBlockedError
+from sqlalchemy import event
+from sqlalchemy.engine import Engine, make_url
 
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import AssetClass, Direction, SignalStatus, StrategyType
 from agentic_trader.data.market_data import ContractMarketData
+from agentic_trader.runtime import validate_test_database
 from agentic_trader.storage.db import SignalDatabase
 
 
-@pytest.fixture(autouse=True, scope="session")
-def isolate_test_database(tmp_path_factory: pytest.TempPathFactory) -> None:
-    """Ensure all unit test executions use an isolated test database and NEVER touch production signals.db."""
-    test_db_dir = tmp_path_factory.mktemp("isolated_test_db")
-    test_db_file = test_db_dir / "test_signals.db"
-    os.environ["DB_NAME"] = "test_signals"
-    os.environ["DB_PATH"] = str(test_db_file)
+# No application imports read dotenv. Remove inherited credentials before collection,
+# including for subprocess tests; each test gets independent database/config state.
+for _key in list(os.environ):
+    if any(part in _key for part in ("API_KEY", "API_SECRET", "TOKEN", "PASSWORD")) or _key.startswith(
+        ("ALPACA_", "APCA_", "TRADOVATE_", "LANGCHAIN_", "LANGSMITH_")
+    ):
+        os.environ.pop(_key, None)
+os.environ.update(COPILOT_ENV="test", COPILOT_ENV_FILE="", EXECUTION_MODE="paper")
+os.environ.pop("DATABASE_URL", None)
+os.environ.pop("DB_PATH", None)
+os.environ.pop("TELEGRAM_CHAT_ID", None)
+TEST_CONFIG = Path(__file__).parent / "fixtures" / "config.yaml"
+os.environ["COPILOT_CONFIG"] = str(TEST_CONFIG)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-postgres",
+        action="store_true",
+        default=False,
+        help="Run integration tests on TEST_POSTGRES_URL (disposable test_ database only).",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--run-postgres"):
+        for item in items:
+            if "postgres" in item.keywords:
+                item.add_marker(pytest.mark.skip(reason="PostgreSQL integration tests require --run-postgres."))
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[None]:
+    root = tmp_path_factory.getbasetemp()
+    monkeypatch.setenv("COPILOT_ENV", "test")
+    monkeypatch.setenv("COPILOT_TEST_ROOT", str(root))
+    monkeypatch.setenv("COPILOT_CONFIG", str(TEST_CONFIG))
+    monkeypatch.setenv("COPILOT_ENV_FILE", "")
+    monkeypatch.setenv("DB_NAME", "test_signals")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "signals.db"))
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("EXECUTION_MODE", "paper")
+    monkeypatch.setenv("PROMOTED_ALPHAS_PATH", str(tmp_path / "promoted_alphas.yaml"))
+
+    # SQLAlchemy's native drivers (notably libpq) can bypass Python socket guards.
+    # Protect even explicit URLs and code that clears os.environ mid-test.
+    def guard_connect(dialect, conn_rec, cargs, cparams):
+        if dialect.name == "sqlite":
+            validate_test_database(f"sqlite:///{cargs[0]}", root=root)
+        elif dialect.name == "postgresql":
+            if cargs:
+                dsn = parse_dsn(cargs[0])
+                url = make_url("postgresql://").set(
+                    username=dsn.get("user"),
+                    password=dsn.get("password"),
+                    host=dsn.get("host"),
+                    port=int(dsn["port"]) if dsn.get("port") else None,
+                    database=dsn.get("dbname"),
+                )
+            else:
+                url = make_url("postgresql://").set(
+                    username=cparams.get("user"),
+                    password=cparams.get("password"),
+                    host=cparams.get("host"),
+                    port=cparams.get("port"),
+                    database=cparams.get("database") or cparams.get("dbname"),
+                )
+            validate_test_database(url.render_as_string(hide_password=False), root=root)
+        else:
+            raise AssertionError("Unit tests cannot use external database drivers.")
+
+    # yfinance uses libcurl, which bypasses Python sockets. Block its native I/O too.
+    def block_native_network(*args, **kwargs):
+        raise SocketBlockedError("Native libcurl network access is disabled in unit tests.")
+
+    monkeypatch.setattr(Curl, "perform", block_native_network)
+    monkeypatch.setattr(AsyncCurl, "add_handle", block_native_network)
+
+    original_pg_connect = psycopg2.connect
+
+    def guarded_pg_connect(dsn=None, *args, **kwargs):
+        values = parse_dsn(
+            make_dsn(
+                dsn or "", **{k: v for k, v in kwargs.items() if k not in ("connection_factory", "cursor_factory")}
+            )
+        )
+        url = make_url("postgresql://").set(
+            username=values.get("user"),
+            password=values.get("password"),
+            host=values.get("host"),
+            port=int(values["port"]) if values.get("port") else None,
+            database=values.get("dbname"),
+        )
+        validate_test_database(url.render_as_string(hide_password=False), root=root)
+        return original_pg_connect(dsn, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg2, "connect", guarded_pg_connect)
+    original_sqlite_connect = sqlite3.connect
+
+    def guarded_sqlite_connect(database, *args, **kwargs):
+        validate_test_database(f"sqlite:///{database}", root=root)
+        return original_sqlite_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", guarded_sqlite_connect)
+    monkeypatch.setattr(sqlite3.dbapi2, "connect", guarded_sqlite_connect)
+    event.listen(Engine, "do_connect", guard_connect)
+    yield
+    event.remove(Engine, "do_connect", guard_connect)
 
 
 @pytest.fixture

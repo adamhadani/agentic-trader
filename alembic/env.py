@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import logging
 import os
 from logging.config import fileConfig
 from pathlib import Path
@@ -8,6 +9,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from agentic_trader.runtime import validate_test_database
 from agentic_trader.storage.models import Base
 from alembic import context
 
@@ -17,7 +19,7 @@ from alembic import context
 config = context.config
 
 # Interpret the config file for Python logging.
-if config.config_file_name is not None:
+if config.config_file_name is not None and not logging.getLogger().handlers:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Model metadata for autogenerate support
@@ -51,9 +53,12 @@ def get_url() -> str:
     # For async engine, ensure appropriate async dialect driver
     if url.startswith("sqlite:///") and not url.startswith("sqlite+aiosqlite:///"):
         url = url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
+    elif url.startswith("postgresql+psycopg2://"):
+        url = url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
     elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
+    validate_test_database(url)
     return url
 
 

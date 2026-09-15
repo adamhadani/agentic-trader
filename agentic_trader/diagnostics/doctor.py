@@ -14,6 +14,7 @@ from agentic_trader.agent.calendar import EconomicCalendar
 from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.tradovate import TradovateBroker
 from agentic_trader.config import AppConfig, load_config
+from agentic_trader.constants import APP_DISPLAY_NAME
 from agentic_trader.market.session import CompositeMarketCalendar
 from agentic_trader.storage.db import SignalDatabase
 
@@ -38,16 +39,23 @@ class DiagnosticReport(BaseModel):
 
 
 async def check_database(config: AppConfig) -> ComponentHealth:
-    """Check SQLite / SQLAlchemy persistence layer and table connectivity."""
+    """Check database persistence layer and table connectivity."""
     try:
-        db = SignalDatabase(db_path=config.db_path)
-        active_count = await db.get_active_position_count()
-        exposure = await db.get_active_notional_exposure()
+        db = await asyncio.to_thread(SignalDatabase, config=config)
+        try:
+            active_count = await db.get_active_position_count()
+            exposure = await db.get_active_notional_exposure()
+        finally:
+            await db.engine.dispose()
         return ComponentHealth(
             name="database",
             status="OK",
             message="Database connection verified; schema migrated to head",
-            details={"active_positions": active_count, "open_notional": exposure, "db_path": config.db_path},
+            details={
+                "active_positions": active_count,
+                "open_notional": exposure,
+                "db_url": config.resolved_db_url,
+            },
         )
     except Exception as e:
         return ComponentHealth(
@@ -200,6 +208,7 @@ async def check_llm(config: AppConfig) -> ComponentHealth:
         litellm.drop_params = True
         response = await asyncio.wait_for(
             litellm.acompletion(
+                api_key=config.llm_api_key,
                 model=model,
                 messages=[{"role": "user", "content": "Respond with 'OK'"}],
                 max_tokens=5,
@@ -362,7 +371,7 @@ def format_doctor_cli_output(report: DiagnosticReport) -> str:
 
     lines = [
         "=" * 70,
-        "🏥 CASH-PLUS TRADING COPILOT: PRE-FLIGHT SYSTEM DOCTOR",
+        f"🏥 {APP_DISPLAY_NAME.upper()}: PRE-FLIGHT SYSTEM DOCTOR",
         "=" * 70,
         f"Timestamp:      {report.timestamp}",
         f"Overall Status: {report.overall_status}",

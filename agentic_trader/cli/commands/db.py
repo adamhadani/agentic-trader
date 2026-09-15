@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import click
 
 from agentic_trader.cli.utils import coro
@@ -25,7 +27,7 @@ def db_group() -> None:
 def upgrade(revision: str) -> None:
     """Upgrade database schema to specified revision (default: 'head')."""
     config = load_config()
-    db_url = SignalDatabase(config.db_path).db_url
+    db_url = config.resolved_db_url
     if revision == "head":
         run_migrations_head(db_url)
     else:
@@ -40,7 +42,7 @@ def upgrade(revision: str) -> None:
 def downgrade(revision: str) -> None:
     """Downgrade database schema to specified revision (default: 'base')."""
     config = load_config()
-    db_url = SignalDatabase(config.db_path).db_url
+    db_url = config.resolved_db_url
     downgrade_migrations(revision, db_url)
     curr = get_current_revision(db_url)
     click.echo(f"✅ Database downgraded to revision: {curr or '<base>'}")
@@ -50,7 +52,7 @@ def downgrade(revision: str) -> None:
 def current() -> None:
     """Show current database migration revision."""
     config = load_config()
-    db_url = SignalDatabase(config.db_path).db_url
+    db_url = config.resolved_db_url
     curr = get_current_revision(db_url)
     click.echo(f"Current database revision: {curr or '<unversioned/empty>'}")
 
@@ -59,7 +61,7 @@ def current() -> None:
 def history() -> None:
     """Show database migration history."""
     config = load_config()
-    db_url = SignalDatabase(config.db_path).db_url
+    db_url = config.resolved_db_url
     hist = get_history(db_url)
     click.echo("Migration History:")
     for h in hist:
@@ -75,6 +77,19 @@ async def clear(yes: bool) -> None:
         click.echo("Aborted.")
         return
     config = load_config()
-    db = SignalDatabase(config.db_path)
+    db = SignalDatabase(db_url=config.resolved_db_url)
     count = await db.clear_all_signals()
     click.echo(f"✅ Successfully cleared {count} signal/position record(s). Database is fresh.")
+
+
+@db_group.command("audit", help="Read recent operational evidence as JSON")
+@click.option("--signal-id", type=int, default=None)
+@click.option("--limit", type=click.IntRange(1, 1000), default=100)
+@coro
+async def audit(signal_id: int | None, limit: int) -> None:
+    config = load_config()
+    db = SignalDatabase(config=config)
+    try:
+        click.echo(json.dumps(await db.get_audit_events(signal_id, limit), indent=2))
+    finally:
+        await db.engine.dispose()

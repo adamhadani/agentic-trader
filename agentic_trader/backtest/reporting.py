@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agentic_trader.backtest.models import BacktestResult
+from agentic_trader.constants import APP_DISPLAY_NAME
 
 
 def format_backtest_report(result: BacktestResult, symbols: list[str], lookback: str, strategy: str = "all") -> str:
@@ -95,7 +96,7 @@ Asset Class Exposure:
 
     report = f"""
 {border}
-CASH-PLUS TRADING COPILOT: QUANTITATIVE BACKTEST REPORT
+{APP_DISPLAY_NAME.upper()}: QUANTITATIVE BACKTEST REPORT
 {border}
 Universe:            {", ".join(symbols)}
 Lookback Period:     {lookback}

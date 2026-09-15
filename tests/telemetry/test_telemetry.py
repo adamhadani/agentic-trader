@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from click.testing import CliRunner
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.cli.commands.telemetry import metrics
 from agentic_trader.config import load_config
-from agentic_trader.main import FuturesCopilot
 from agentic_trader.telemetry import (
     MetricsCollector,
     MetricsServer,
@@ -93,6 +93,8 @@ def test_metrics_collector_reset() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.enable_socket
+@pytest.mark.allow_hosts(["127.0.0.1"])
 async def test_metrics_server_endpoints() -> None:
     collector = MetricsCollector()
     collector.set_gauge("test_server_metric", 42.0)
@@ -159,7 +161,7 @@ def test_cli_metrics_output() -> None:
 @pytest.mark.asyncio
 async def test_copilot_telemetry_gauges() -> None:
     config = load_config()
-    copilot = FuturesCopilot(config)
+    copilot = TradingCopilot(config)
     assert copilot.metrics is not None
 
     with patch.object(copilot.db, "get_active_positions", AsyncMock(return_value=[])):
@@ -169,3 +171,15 @@ async def test_copilot_telemetry_gauges() -> None:
     exposition = copilot.metrics.format_prometheus()
     assert "trader_account_cash_dollars" in exposition
     assert "trader_active_positions_count 0" in exposition
+
+
+def test_metrics_preserve_timestamp_precision() -> None:
+    collector = MetricsCollector()
+    timestamp = 1789500000.125
+    collector.set_gauge("last_success_seconds", timestamp)
+    line = next(
+        line
+        for line in collector.format_prometheus_exposition().splitlines()
+        if line.startswith("last_success_seconds ")
+    )
+    assert float(line.split()[1]) == timestamp

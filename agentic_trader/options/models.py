@@ -42,6 +42,8 @@ class StrikeGEX(BaseModel):
 
 
 class GammaExposureProfile(BaseModel):
+    source: str = "Option-chain gamma model"
+    data_quality_notes: list[str] = Field(default_factory=list)
     symbol: str
     underlying_price: float
     total_net_gex: float  # $ Millions per 1% move

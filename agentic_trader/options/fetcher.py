@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
 import yfinance as yf
 
+from agentic_trader.constants import DEFAULT_RISK_FREE_RATE
 from agentic_trader.options.gex import GEXCalculator
 from agentic_trader.options.models import GammaExposureProfile
 
@@ -33,10 +35,10 @@ FUTURES_TO_ETF_PROXY: dict[str, str] = {
 class OptionsDataFetcher:
     """Fetches option chains via yfinance and analyzes market maker gamma exposure."""
 
-    def __init__(self, risk_free_rate: float = 0.045, cache_ttl_seconds: int = 60):
+    def __init__(self, risk_free_rate: float = DEFAULT_RISK_FREE_RATE, cache_ttl_seconds: int = 60):
         self.calculator = GEXCalculator(risk_free_rate=risk_free_rate)
         self.cache_ttl_seconds = cache_ttl_seconds
-        self._cache: dict[str, tuple[float, GammaExposureProfile]] = {}
+        self._cache: dict[tuple[str, int], tuple[float, GammaExposureProfile]] = {}
 
     @classmethod
     def resolve_symbol(cls, symbol: str) -> str:
@@ -52,10 +54,13 @@ class OptionsDataFetcher:
     ) -> GammaExposureProfile:
         """Fetches options chain for symbol (or ETF proxy) and computes gamma exposure profile."""
         target_symbol = self.resolve_symbol(symbol)
+        if max_expirations < 1:
+            raise ValueError("At least one option expiration is required")
+        cache_key = (target_symbol, max_expirations)
         now_ts = datetime.now(UTC).timestamp()
 
-        if not force_refresh and target_symbol in self._cache:
-            cache_time, cached_profile = self._cache[target_symbol]
+        if not force_refresh and cache_key in self._cache:
+            cache_time, cached_profile = self._cache[cache_key]
             if (now_ts - cache_time) < self.cache_ttl_seconds:
                 return cached_profile
 
@@ -74,6 +79,8 @@ class OptionsDataFetcher:
         target_expirations = available_expirations[:max_expirations]
         all_calls: list[pd.DataFrame] = []
         all_puts: list[pd.DataFrame] = []
+        analyzed_expirations: list[str] = []
+        failed_expirations: list[str] = []
         now = datetime.now(UTC)
 
         for exp_date_str in target_expirations:
@@ -92,21 +99,31 @@ class OptionsDataFetcher:
                     p_df = chain.puts.copy()
                     p_df["dte_years"] = dte_years
                     all_puts.append(p_df)
+                if (chain.calls is not None and not chain.calls.empty) or (
+                    chain.puts is not None and not chain.puts.empty
+                ):
+                    analyzed_expirations.append(exp_date_str)
             except Exception as e:
+                failed_expirations.append(exp_date_str)
                 logger.warning(f"Failed to fetch option chain for {target_symbol} on {exp_date_str}: {e}")
 
         combined_calls = pd.concat(all_calls, ignore_index=True) if all_calls else pd.DataFrame()
         combined_puts = pd.concat(all_puts, ignore_index=True) if all_puts else pd.DataFrame()
+        if combined_calls.empty and combined_puts.empty:
+            raise ValueError(f"No usable option-chain rows available for {target_symbol}")
 
         profile = self.calculator.calculate_gex(
             symbol=target_symbol,
             underlying_price=underlying_price,
             calls_df=combined_calls,
             puts_df=combined_puts,
-            expirations=target_expirations,
+            expirations=analyzed_expirations,
         )
-
-        self._cache[target_symbol] = (now_ts, profile)
+        profile.source = "Yahoo Finance options / modeled gamma"
+        if failed_expirations:
+            profile.data_quality_notes.append("Unavailable expirations: " + ", ".join(failed_expirations))
+        logger.info("GEX estimate completed: %s", profile.model_dump(mode="json", exclude={"strikes"}))
+        self._cache[cache_key] = (now_ts, profile)
         return profile
 
     def _get_underlying_price(self, ticker: Any, symbol: str) -> float:
@@ -115,7 +132,7 @@ class OptionsDataFetcher:
             fast_info = getattr(ticker, "fast_info", None)
             if fast_info is not None:
                 last_price = getattr(fast_info, "last_price", None)
-                if last_price and float(last_price) > 0:
+                if last_price and math.isfinite(float(last_price)) and float(last_price) > 0:
                     return float(last_price)
         except Exception:
             pass
@@ -124,11 +141,9 @@ class OptionsDataFetcher:
             hist = ticker.history(period="1d")
             if not hist.empty and "Close" in hist.columns:
                 val = float(hist["Close"].iloc[-1])
-                if val > 0:
+                if math.isfinite(val) and val > 0:
                     return val
         except Exception:
             pass
 
-        # Fallback default estimate for liquid ETFs if offline/mocked
-        default_prices = {"SPY": 500.0, "QQQ": 440.0, "IWM": 200.0, "GLD": 215.0, "USO": 75.0}
-        return default_prices.get(symbol, 100.0)
+        raise ValueError(f"No valid underlying market price available for {symbol}")

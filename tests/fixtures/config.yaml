@@ -1,0 +1,26 @@
+# Unit-test universe; no runtime credentials, production paths, or promoted alphas.
+portfolio:
+  cash: 100000.0
+  max_notional_exposure: 60000.0
+contracts:
+  /MES: {ticker: 'MES=F', name: Micro S&P, multiplier: 5.0, tick_size: 0.25, asset_class: futures}
+  /MNQ: {ticker: 'MNQ=F', name: Micro Nasdaq, multiplier: 2.0, tick_size: 0.25, asset_class: futures}
+  /MGC: {ticker: 'MGC=F', name: Micro Gold, multiplier: 10.0, tick_size: 0.1, asset_class: futures}
+  /MCL: {ticker: 'MCL=F', name: Micro Oil, multiplier: 100.0, tick_size: 0.01, asset_class: futures}
+  SPY: {ticker: SPY, name: S&P ETF, asset_class: equity}
+  QQQ: {ticker: QQQ, name: Nasdaq ETF, asset_class: equity}
+  IWM: {ticker: IWM, name: Small-cap ETF, asset_class: equity}
+  GLD: {ticker: GLD, name: Gold ETF, asset_class: equity}
+  USO: {ticker: USO, name: Oil ETF, asset_class: equity}
+  AAPL: {ticker: AAPL, name: Apple, asset_class: equity}
+  MSFT: {ticker: MSFT, name: Microsoft, asset_class: equity}
+  NVDA: {ticker: NVDA, name: Nvidia, asset_class: equity}
+  AMD: {ticker: AMD, name: AMD, asset_class: equity}
+strategies:
+  mode: parallel
+  active_strategies: [trend_pullback, squeeze_breakout]
+session:
+  calendar_provider: deterministic
+  fallback_providers: [deterministic]
+telemetry:
+  metrics_enabled: false

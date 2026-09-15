@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.position_sizing import (
     calculate_dynamic_sizing,
 )
-from agentic_trader.agent.prompts import SYSTEM_PROMPT, USER_EVALUATION_TEMPLATE
+from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import DEFAULT_CORRELATION_GROUPS, AppConfig
 from agentic_trader.constants import (
@@ -23,7 +24,7 @@ from agentic_trader.constants import (
     StrategyType,
 )
 from agentic_trader.market.session import MarketSessionProtocol
-from agentic_trader.screeners.strategies import ScreenerCandidate
+from agentic_trader.screeners.base import ScreenerCandidate
 
 
 if TYPE_CHECKING:
@@ -261,7 +262,7 @@ class RiskEvaluator:
         effective_leverage = round(notional_value / self.config.portfolio.cash, 2)
         projected_notional = current_open_notional + notional_value
 
-        # 1. Check Portfolio Exposure Limit ($60,000 max)
+        # 1. Check the configured portfolio exposure limit
         if projected_notional > self.config.portfolio.max_notional_exposure:
             return LLMTradeEvaluation(
                 approved=False,
@@ -385,7 +386,7 @@ class RiskEvaluator:
                 pos_contract = str(pos.get("contract") or pos.get("symbol") or "")
                 pos_info = self.config.contracts.get(pos_contract)
                 pos_ticker = pos_info.ticker if pos_info else pos_contract
-                corr = self.data_fetcher.calculate_correlation(cand_ticker, pos_ticker)
+                corr = await asyncio.to_thread(self.data_fetcher.calculate_correlation, cand_ticker, pos_ticker)
                 if corr is not None and corr >= max_corr_thresh:
                     return LLMTradeEvaluation(
                         approved=False,
@@ -523,14 +524,7 @@ class RiskEvaluator:
         regime_summary = self.regime_detector.get_prompt_context(regime)
 
         # If LLM evaluation is disabled or no LLM keys provided, return deterministic evaluation
-        has_api_key = bool(
-            self.config.openai_api_key
-            or self.config.anthropic_api_key
-            or self.config.gemini_api_key
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("ANTHROPIC_API_KEY")
-            or os.getenv("GEMINI_API_KEY")
-        )
+        has_api_key = bool(self.config.openai_api_key or self.config.anthropic_api_key or self.config.gemini_api_key)
 
         if not use_llm or not has_api_key:
             return LLMTradeEvaluation(
@@ -559,6 +553,10 @@ class RiskEvaluator:
 
         # 3. Call LLM for final reasoning & thesis synthesis
         prompt = USER_EVALUATION_TEMPLATE.format(
+            timeframe=candidate.timeframe,
+            min_stop_atr_multiple=self.config.risk.min_stop_atr_multiple,
+            max_notional_exposure=self.config.portfolio.max_notional_exposure,
+            min_risk_reward_ratio=max(regime.min_rr_threshold, self.config.risk.min_risk_reward_ratio),
             contract=candidate.contract,
             multiplier=multiplier,
             tick_size=tick_size,
@@ -585,9 +583,10 @@ class RiskEvaluator:
             # Configure litellm call
             model_name = self.config.llm_model
             response = await litellm.acompletion(
+                api_key=self.config.llm_api_key,
                 model=model_name,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": build_system_prompt(self.config)},
                     {"role": "user", "content": prompt},
                 ],
                 response_format={"type": "json_object"},

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,7 +27,7 @@ class AlphaPromotionManager:
     """
 
     def __init__(self, config_path: Path | str | None = None) -> None:
-        self.config_path = Path(config_path or DEFAULT_PROMOTED_ALPHAS_PATH)
+        self.config_path = Path(config_path or os.environ.get("PROMOTED_ALPHAS_PATH") or DEFAULT_PROMOTED_ALPHAS_PATH)
 
     def load_records(self) -> list[PromotedAlphaRecord]:
         """Load all promoted alpha records from the YAML storage file."""
@@ -61,6 +62,7 @@ class AlphaPromotionManager:
         promoted_by: str = "cli_operator",
         allocation_weight: float = 0.10,
         notes: str = "",
+        eligible_symbols: list[str] | None = None,
     ) -> PromotedAlphaRecord:
         """
         Promote an alpha candidate or definition to production status.
@@ -72,6 +74,9 @@ class AlphaPromotionManager:
         else:
             definition = alpha
             metrics = None
+
+        if eligible_symbols is not None:
+            definition.eligible_symbols = [s.strip().upper() for s in eligible_symbols if s.strip()]
 
         alpha_id = definition.alpha_id.lower()
         now_iso = datetime.now(UTC).isoformat()
@@ -85,6 +90,7 @@ class AlphaPromotionManager:
             allocation_weight=max(0.01, min(1.0, allocation_weight)),
             status=AlphaStatus.PROMOTED,
             notes=notes,
+            eligible_symbols=definition.eligible_symbols,
         )
 
         existing_records = self.load_records()

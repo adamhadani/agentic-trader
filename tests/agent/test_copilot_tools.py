@@ -38,7 +38,6 @@ def mock_copilot():
     # Mock providers
     copilot.get_status_text_html = AsyncMock(return_value="<b>System Status:</b> Operational")
     copilot.get_positions_summary_html = AsyncMock(return_value="<b>Positions:</b> SPY 39x")
-    copilot.get_regime_summary_html = AsyncMock(return_value="<b>Regime:</b> VIX 14.5, 10Y 4.15%, NORMAL")
     copilot.get_macro_summary_html = AsyncMock(
         return_value="<b>Macro Intelligence:</b> Stress LOW, Curve NORMAL_STEEP, OAS 265 bps"
     )
@@ -56,7 +55,7 @@ def mock_copilot():
             "volume": [1_000_000 for _ in range(50)],
         }
     )
-    copilot.data_fetcher.fetch_daily_bars = AsyncMock(return_value=df)
+    copilot.data_fetcher.provider.fetch_bars = MagicMock(return_value=df)
     return copilot
 
 
@@ -67,7 +66,7 @@ async def test_make_copilot_tools_returns_all_tools(mock_copilot):
     expected = {
         "get_open_positions",
         "get_portfolio_status",
-        "get_market_regime",
+        "get_macro_intelligence",
         "trigger_market_scan",
         "run_backtest",
         "get_gex_surface",
@@ -84,12 +83,13 @@ async def test_tool_get_open_positions_with_data(mock_copilot):
     res = await tools["get_open_positions"].ainvoke({})
     assert "SPY" in res
     assert "39" in res
-    assert "500.0" in res or "500" in res
+    mock_copilot.get_positions_summary_html.assert_awaited_once()
+    mock_copilot.db.get_active_positions.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_tool_get_open_positions_empty(mock_copilot):
-    mock_copilot.db.get_active_positions = AsyncMock(return_value=[])
+    mock_copilot.get_positions_summary_html = AsyncMock(return_value="No open positions")
     tools = {t.name: t for t in make_copilot_tools(mock_copilot)}
     res = await tools["get_open_positions"].ainvoke({})
     assert "No open positions" in res or "0 open positions" in res
@@ -99,16 +99,8 @@ async def test_tool_get_open_positions_empty(mock_copilot):
 async def test_tool_get_portfolio_status(mock_copilot):
     tools = {t.name: t for t in make_copilot_tools(mock_copilot)}
     res = await tools["get_portfolio_status"].ainvoke({})
-    assert "100,000" in res or "100000" in res
-    assert "PAPER" in res or "paper" in res
-
-
-@pytest.mark.asyncio
-async def test_tool_get_market_regime(mock_copilot):
-    tools = {t.name: t for t in make_copilot_tools(mock_copilot)}
-    res = await tools["get_market_regime"].ainvoke({})
-    assert "VIX" in res
-    mock_copilot.get_regime_summary_html.assert_called_once()
+    assert res == "System Status: Operational"
+    mock_copilot.get_status_text_html.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -158,7 +150,7 @@ async def test_tool_get_technical_summary(mock_copilot):
     res = await tools["get_technical_summary"].ainvoke({"symbol": "SPY"})
     assert "SPY" in res
     assert "RSI" in res
-    mock_copilot.data_fetcher.fetch_daily_bars.assert_called_once()
+    mock_copilot.data_fetcher.provider.fetch_bars.assert_called_once_with("SPY", "1d", period="60d")
 
 
 @pytest.mark.asyncio

@@ -40,7 +40,7 @@ def test_classify_vix_level():
 
 @pytest.mark.asyncio
 async def test_regime_detector_normal():
-    detector = RegimeDetector()
+    detector = RegimeDetector(RegimeConfig(yield_curve_enabled=False))
 
     with patch("agentic_trader.agent.regime._fetch_ticker_sync") as mock_fetch:
         # Mock VIX=17.5, TNX=4.25, DXY=103.5
@@ -64,7 +64,7 @@ async def test_regime_detector_normal():
 
 @pytest.mark.asyncio
 async def test_regime_detector_extreme():
-    detector = RegimeDetector()
+    detector = RegimeDetector(RegimeConfig(yield_curve_enabled=False))
 
     with patch("agentic_trader.agent.regime._fetch_ticker_sync") as mock_fetch:
         mock_fetch.side_effect = lambda ticker: {
@@ -85,7 +85,7 @@ async def test_regime_detector_extreme():
 
 @pytest.mark.asyncio
 async def test_regime_detector_caching():
-    detector = RegimeDetector(RegimeConfig(cache_ttl_seconds=300))
+    detector = RegimeDetector(RegimeConfig(cache_ttl_seconds=300, yield_curve_enabled=False))
 
     call_count = 0
 
@@ -110,19 +110,17 @@ async def test_regime_detector_caching():
 
 @pytest.mark.asyncio
 async def test_regime_detector_fallback_on_error():
-    detector = RegimeDetector()
+    detector = RegimeDetector(RegimeConfig(yield_curve_enabled=False))
 
-    with patch("agentic_trader.agent.regime._fetch_ticker_sync", return_value=None):
-        snapshot = await detector.get_regime(force_refresh=True)
-
-        # Should fall back to 18.0 NORMAL baseline
-        assert snapshot.vix == 18.0
-        assert snapshot.vix_regime == VolatilityRegime.NORMAL
-        assert snapshot.breakout_allowed is True
+    with (
+        patch("agentic_trader.agent.regime._fetch_ticker_sync", return_value=None),
+        pytest.raises(ValueError, match="VIX data unavailable"),
+    ):
+        await detector.get_regime(force_refresh=True)
 
 
 def test_prompt_context_formatting():
-    detector = RegimeDetector()
+    detector = RegimeDetector(RegimeConfig(yield_curve_enabled=False))
     snapshot = RegimeSnapshot(
         vix=16.5,
         vix_regime=VolatilityRegime.NORMAL,
@@ -140,3 +138,14 @@ def test_prompt_context_formatting():
     assert "4.30%" in ctx
     assert "102.80" in ctx
     assert "ALLOWED" in ctx
+
+
+@pytest.mark.asyncio
+async def test_configured_volatility_thresholds_and_rr():
+    config = RegimeConfig(yield_curve_enabled=False, vix_extreme_threshold=25, extreme_min_rr=2.9)
+    detector = RegimeDetector(config)
+    with patch("agentic_trader.agent.regime._fetch_ticker_sync", return_value=26.0):
+        snapshot = await detector.get_regime()
+    assert snapshot.vix_regime == VolatilityRegime.EXTREME
+    assert not snapshot.breakout_allowed
+    assert snapshot.min_rr_threshold == 2.9

@@ -151,7 +151,7 @@ VIX_TICKER = "^VIX"
 TNX_TICKER = "^TNX"
 DXY_TICKER = "DX-Y.NYB"
 IRX_TICKER = "^IRX"
-TWO_YEAR_TICKER = "2YY=F"
+FRED_TWO_YEAR_SERIES = "DGS2"
 FVX_TICKER = "^FVX"
 TYX_TICKER = "^TYX"
 
@@ -302,3 +302,78 @@ DEFAULT_STRATEGY_ALLOCATIONS: dict[str, float] = {
     "trend_pullback": 0.60,
     "squeeze_breakout": 0.40,
 }
+
+# Database Persistence & Pooling Defaults
+DEFAULT_POSTGRES_DB_URL = "postgresql+asyncpg://adamhadani@localhost:5432/agentic_trader"
+DEFAULT_DB_POOL_SIZE = 10
+DEFAULT_DB_MAX_OVERFLOW = 20
+DEFAULT_DB_POOL_TIMEOUT = 30.0
+DEFAULT_DB_POOL_RECYCLE = 1800
+DEFAULT_DB_ECHO = False
+DEFAULT_DB_MAX_RETRIES = 5
+DEFAULT_DB_RETRY_DELAY = 2.0
+DEFAULT_DUPLICATE_SIGNAL_WINDOW_HOURS = 12
+DEFAULT_RECENT_SIGNALS_LIMIT = 20
+
+
+class RuntimeEnvironment(StrEnum):
+    PRODUCTION = "production"
+    DEVELOPMENT = "development"
+    TEST = "test"
+
+
+class SystemStateKey(StrEnum):
+    TRADING_HALTED = "trading_halted"
+    TRADING_HALT_REASON = "trading_halt_reason"
+
+
+class AuditEventType(StrEnum):
+    SIGNAL_CREATED = "signal_created"
+    SIGNAL_QUARANTINED = "signal_quarantined"
+    ENTRY_EXECUTION_UPDATED = "entry_execution_updated"
+    ENTRY_SYNC_FAILED = "entry_sync_failed"
+    POSITION_CLOSED = "position_closed"
+    EXIT_NOTIFICATION = "exit_notification"
+    EXIT_ORDER_SUBMITTED = "exit_order_submitted"
+    EXIT_SUBMISSION_FAILED = "exit_submission_failed"
+    BROKER_STREAM_UPDATE = "broker_stream_update"
+    RECONCILIATION = "reconciliation"
+    POSITIONS_VALUATION = "positions_valuation"
+    VALUATION_FAILED = "valuation_failed"
+    PERFORMANCE_REPORT = "performance_report"
+    MACRO_REPORT = "macro_report"
+    EXECUTION_CLAIMED = "execution_claimed"
+    RUNTIME_STARTED = "runtime_started"
+    HISTORICAL_TRADE_RESTORED = "historical_trade_restored"
+    INCIDENT_REPAIR = "incident_repair"
+    TELEGRAM_POLL = "telegram_poll"
+    TELEGRAM_COMMAND = "telegram_command"
+    TELEGRAM_ERROR = "telegram_error"
+    TELEGRAM_REQUEST = "telegram_request"
+    EVENT_LOOP_STALL = "event_loop_stall"
+
+
+UNKNOWN_EXECUTION_MODE = "unknown"
+BROKER_QUANTITY_TOLERANCE = 1e-6
+BROKER_PRICE_TOLERANCE = 1e-8
+DEFAULT_STREAM_RECONNECT_INITIAL_SECONDS = 2.0
+DEFAULT_STREAM_RECONNECT_MAX_SECONDS = 60.0
+STREAM_RECONNECT_MULTIPLIER = 2.0
+DEFAULT_MARKET_DATA_CACHE_TTL_SECONDS = 300
+DEFAULT_AUDIT_LIMIT = 100
+MAX_AUDIT_LIMIT = 1000
+
+
+def normalize_asset_class(value: str) -> str:
+    """Normalize public CLI plurals without corrupting 'equities'."""
+    aliases = {
+        "equities": AssetClass.EQUITY.value.lower(),
+        "futures": AssetClass.FUTURES.value.lower(),
+        "stocks": AssetClass.EQUITY.value.lower(),
+    }
+    return aliases.get(value.lower(), value.lower())
+
+
+APP_DISPLAY_NAME = "Agentic Trader"
+DEFAULT_RESEARCH_SYMBOL = "SPY"
+TELEGRAM_MESSAGE_CHUNK_LENGTH = 4000

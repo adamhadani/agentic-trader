@@ -12,6 +12,7 @@ from agentic_trader.presentation.formatters import (
     TelegramHtmlFormatter,
     TerminalFormatter,
 )
+from agentic_trader.research.alpha.models import AlphaDefinition, PromotedAlphaRecord
 
 
 def test_terminal_formatter_positions():
@@ -147,7 +148,7 @@ def test_telegram_html_formatter():
         timestamp=datetime.now(UTC),
         summary_text="Market conditions normal.",
     )
-    regime_html = TelegramHtmlFormatter.format_regime_html(regime)
+    regime_html = TelegramHtmlFormatter.format_macro_dashboard_html(regime)
     assert "NORMAL" in regime_html
     assert "Allowed" in regime_html
 
@@ -257,3 +258,99 @@ def test_presentation_error_and_edge_branches():
     )
     empty_perf_html = TelegramHtmlFormatter.format_performance_html(empty_perf)
     assert "No closed trades recorded yet" in empty_perf_html
+
+
+def test_format_alphas_dashboard_html_universe():
+    rec_targeted = PromotedAlphaRecord(
+        alpha_id="alpha_wq_053",
+        definition=AlphaDefinition(
+            alpha_id="alpha_wq_053",
+            name="WQ 53",
+            expression="delta(close, 5)",
+            eligible_symbols=["NVDA", "AMD"],
+        ),
+        allocation_weight=0.15,
+        eligible_symbols=["NVDA", "AMD"],
+    )
+    rec_global = PromotedAlphaRecord(
+        alpha_id="alpha_wq_006",
+        definition=AlphaDefinition(
+            alpha_id="alpha_wq_006",
+            name="WQ 6",
+            expression="ts_corr(open, volume, 10)",
+            eligible_symbols=None,
+        ),
+        allocation_weight=0.10,
+        eligible_symbols=None,
+    )
+
+    card = TelegramHtmlFormatter.format_alphas_dashboard_html([rec_targeted, rec_global], catalog_count=10)
+    assert "NVDA, AMD" in card
+    assert "ALL (Global)" in card
+    assert "FORMULAIC ALPHA INTELLIGENCE" in card
+
+
+def test_telegram_html_sanitizer():
+    # 1. Unexpected closing tags (the exact error user hit)
+    bad_tags = "<b>Hello</i></b></b>"
+    clean = TelegramHtmlFormatter.sanitize_telegram_html(bad_tags)
+    assert clean == "<b>Hello</b>"
+
+    # 2. Unclosed tags
+    unclosed = "<b>Unclosed bold and <i>italic"
+    clean_unclosed = TelegramHtmlFormatter.sanitize_telegram_html(unclosed)
+    assert clean_unclosed == "<b>Unclosed bold and <i>italic</i></b>"
+
+    # 3. Raw math inequalities and ampersands
+    raw_math = "Yield < 5% & Spread > 2:1, OAS <= 350 bps"
+    clean_math = TelegramHtmlFormatter.sanitize_telegram_html(raw_math)
+    assert "&lt;" in clean_math
+    assert "&gt;" in clean_math
+    assert "&amp;" in clean_math
+
+    # 4. Markdown elements
+    md = "**Bold** and *italic* and `code`\n### Section 1"
+    clean_md = TelegramHtmlFormatter.sanitize_telegram_html(md)
+    assert "<b>Bold</b>" in clean_md
+    assert "<code>code</code>" in clean_md
+    assert "<b>Section 1</b>" in clean_md
+
+    # 5. Unsupported tags like <p>, <br>, <h1>
+    unsupported = "<h1>Title</h1><p>Paragraph 1<br>Break</p>"
+    clean_unsupported = TelegramHtmlFormatter.sanitize_telegram_html(unsupported)
+    assert "<p>" not in clean_unsupported
+    assert "<br>" not in clean_unsupported
+
+
+def test_telegram_strip_html():
+    sample = "<b>Bold</b> &amp; <code>code &lt;10Y&gt;</code><p>Paragraph</p>"
+    stripped = TelegramHtmlFormatter.strip_html(sample)
+    assert stripped == "Bold & code <10Y>\nParagraph"
+
+
+def test_telegram_split_message():
+    # Short message
+    short = "Hello Telegram"
+    assert TelegramHtmlFormatter.split_telegram_message(short, max_chunk_len=100) == ["Hello Telegram"]
+
+    # Long message split across paragraph boundaries
+    p1 = "<b>Paragraph 1</b>: " + ("A" * 200)
+    p2 = "<b>Paragraph 2</b>: " + ("B" * 200)
+    long_msg = f"{p1}\n\n{p2}"
+
+    chunks = TelegramHtmlFormatter.split_telegram_message(long_msg, max_chunk_len=250)
+    assert len(chunks) == 2
+    assert "Paragraph 1" in chunks[0]
+    assert "Paragraph 2" in chunks[1]
+    # Verify each chunk has balanced tags
+    for c in chunks:
+        assert c.count("<b>") == c.count("</b>")
+
+
+def test_accepted_order_does_not_invent_a_fill_price():
+    view = ExecutionResultView(signal_id=1, contract="SPY", direction="LONG", fill_price=None)
+    rendered = TelegramHtmlFormatter.format_execution_html(view)
+    assert "ORDER ACCEPTED" in rendered
+    assert "Awaiting broker fill" in rendered
+    assert "ORDER EXECUTED" not in rendered
+    assert "<b>Fill Price:</b> <code>0.00</code>" not in rendered

@@ -53,3 +53,14 @@ export ALPACA_SECRET_KEY=""
 export ALPACA_BASE_URL="https://paper-api.alpaca.markets"
 export ALPACA_DATA_FEED="iex"
 export ALPACA_PAPER="true"
+
+# Runtime profile (tests never source this file)
+export COPILOT_ENV="production"
+# Optional: COPILOT_CONFIG=/absolute/path/to/config.yaml
+# Optional: COPILOT_ENV_FILE="" disables implicit dotenv loading.
+# DATABASE_URL selects the runtime DB; DB_PATH explicitly overrides it.
+# export DATABASE_URL="postgresql+asyncpg://USER@localhost:5432/agentic_trader"
+
+# Diagnostic messages require a different bot AND chat, and explicit test-alert --send.
+# export TELEGRAM_TEST_BOT_TOKEN=""
+# export TELEGRAM_TEST_CHAT_ID=""

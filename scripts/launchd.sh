@@ -3,9 +3,11 @@ set -euo pipefail
 
 PLIST_NAME="com.agentictrader.copilot"
 WATCHDOG_PLIST_NAME="com.agentictrader.watchdog"
+MINER_PLIST_NAME="com.agentictrader.alphaminer"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 TARGET_PLIST="$LAUNCH_AGENTS_DIR/$PLIST_NAME.plist"
 TARGET_WATCHDOG_PLIST="$LAUNCH_AGENTS_DIR/$WATCHDOG_PLIST_NAME.plist"
+TARGET_MINER_PLIST="$LAUNCH_AGENTS_DIR/$MINER_PLIST_NAME.plist"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -82,6 +84,43 @@ EOF
     echo "Generated $TARGET_WATCHDOG_PLIST"
 }
 
+generate_alphaminer_plist() {
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+    cat <<EOF > "$TARGET_MINER_PLIST"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$MINER_PLIST_NAME</string>
+    <key>WorkingDirectory</key>
+    <string>$REPO_DIR</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>cd "$REPO_DIR" &amp;&amp; if [ -f .envrc ]; then set -a; source .envrc; set +a; fi &amp;&amp; exec "$UV_BIN" run copilot alpha mine --symbols NVDA,AMD,AAPL,MSFT,QQQ,SPY,GOOGL,AMZN,META,TSLA --iterations 25</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>6</integer>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>$DATA_DIR/alphaminer.log</string>
+    <key>StandardErrorPath</key>
+    <string>$DATA_DIR/alphaminer.err.log</string>
+</dict>
+</plist>
+EOF
+    echo "Generated $TARGET_MINER_PLIST"
+}
+
 run_watchdog_probe() {
     local now
     now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -113,18 +152,38 @@ case "${1:-status}" in
     install)
         generate_copilot_plist
         generate_watchdog_plist
+        generate_alphaminer_plist
         launchctl unload "$TARGET_PLIST" 2>/dev/null || true
         launchctl load "$TARGET_PLIST"
         launchctl unload "$TARGET_WATCHDOG_PLIST" 2>/dev/null || true
         launchctl load "$TARGET_WATCHDOG_PLIST"
-        echo "Services $PLIST_NAME and $WATCHDOG_PLIST_NAME installed and loaded."
+        launchctl unload "$TARGET_MINER_PLIST" 2>/dev/null || true
+        launchctl load "$TARGET_MINER_PLIST"
+        echo "Services $PLIST_NAME, $WATCHDOG_PLIST_NAME, and $MINER_PLIST_NAME installed and loaded."
         ;;
     uninstall)
+        launchctl unload "$TARGET_MINER_PLIST" 2>/dev/null || true
+        rm -f "$TARGET_MINER_PLIST"
         launchctl unload "$TARGET_WATCHDOG_PLIST" 2>/dev/null || true
         rm -f "$TARGET_WATCHDOG_PLIST"
         launchctl unload "$TARGET_PLIST" 2>/dev/null || true
         rm -f "$TARGET_PLIST"
-        echo "Services $PLIST_NAME and $WATCHDOG_PLIST_NAME unloaded and removed."
+        echo "Services $PLIST_NAME, $WATCHDOG_PLIST_NAME, and $MINER_PLIST_NAME unloaded and removed."
+        ;;
+    install-miner)
+        generate_alphaminer_plist
+        launchctl unload "$TARGET_MINER_PLIST" 2>/dev/null || true
+        launchctl load "$TARGET_MINER_PLIST"
+        echo "Scheduled alpha miner $MINER_PLIST_NAME installed and loaded."
+        ;;
+    uninstall-miner)
+        launchctl unload "$TARGET_MINER_PLIST" 2>/dev/null || true
+        rm -f "$TARGET_MINER_PLIST"
+        echo "Scheduled alpha miner $MINER_PLIST_NAME unloaded and removed."
+        ;;
+    run-miner)
+        echo "Triggering offline alpha mining run..."
+        cd "$REPO_DIR" && if [ -f .envrc ]; then set -a; source .envrc; set +a; fi && "$UV_BIN" run copilot alpha mine --symbols NVDA,AMD,AAPL,MSFT,QQQ,SPY,GOOGL,AMZN,META,TSLA --iterations 25
         ;;
     start)
         launchctl start "$PLIST_NAME"
@@ -145,6 +204,8 @@ case "${1:-status}" in
         launchctl list | grep "$PLIST_NAME" || echo "  Not currently registered in launchd."
         echo "Watchdog ($WATCHDOG_PLIST_NAME):"
         launchctl list | grep "$WATCHDOG_PLIST_NAME" || echo "  Not currently registered in launchd."
+        echo "Alpha Miner ($MINER_PLIST_NAME):"
+        launchctl list | grep "$MINER_PLIST_NAME" || echo "  Not currently registered in launchd."
         ;;
     health)
         echo "Running Copilot Healthcheck..."
@@ -159,8 +220,11 @@ case "${1:-status}" in
     watchdog-logs)
         tail -n 50 -f "$DATA_DIR/watchdog.log"
         ;;
+    miner-logs)
+        tail -n 50 -f "$DATA_DIR/alphaminer.log"
+        ;;
     *)
-        echo "Usage: $0 {install|uninstall|start|stop|restart|status|health|watchdog|logs|watchdog-logs}"
+        echo "Usage: $0 {install|uninstall|install-miner|uninstall-miner|run-miner|start|stop|restart|status|health|watchdog|logs|watchdog-logs|miner-logs}"
         exit 1
         ;;
 esac

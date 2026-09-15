@@ -37,14 +37,18 @@ class AlphaDefinition:
     exit_threshold: float = 0.0  # signal decay exit point
     timeframe: str = "4h"
     origin: str = AlphaOrigin.MINED
+    eligible_symbols: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["origin"] = str(self.origin.value if hasattr(self.origin, "value") else self.origin)
+        d["eligible_symbols"] = list(self.eligible_symbols) if self.eligible_symbols else None
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AlphaDefinition:
+        symbols_raw = data.get("eligible_symbols")
+        eligible_symbols = [str(s).upper() for s in symbols_raw] if symbols_raw else None
         return cls(
             alpha_id=str(data["alpha_id"]),
             name=str(data.get("name", data["alpha_id"])),
@@ -55,6 +59,7 @@ class AlphaDefinition:
             exit_threshold=float(data.get("exit_threshold", 0.0)),
             timeframe=str(data.get("timeframe", "4h")),
             origin=str(data.get("origin", AlphaOrigin.MINED)),
+            eligible_symbols=eligible_symbols,
         )
 
 
@@ -122,6 +127,13 @@ class PromotedAlphaRecord:
     allocation_weight: float = 0.10
     status: str = AlphaStatus.PROMOTED
     notes: str = ""
+    eligible_symbols: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.eligible_symbols and not self.definition.eligible_symbols:
+            self.definition.eligible_symbols = list(self.eligible_symbols)
+        elif self.definition.eligible_symbols and not self.eligible_symbols:
+            self.eligible_symbols = list(self.definition.eligible_symbols)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,19 +145,24 @@ class PromotedAlphaRecord:
             "allocation_weight": self.allocation_weight,
             "status": str(self.status.value if hasattr(self.status, "value") else self.status),
             "notes": self.notes,
+            "eligible_symbols": list(self.eligible_symbols) if self.eligible_symbols else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PromotedAlphaRecord:
         metrics_raw = data.get("metrics")
         metrics = AlphaEvaluationMetrics.from_dict(metrics_raw) if metrics_raw else None
+        defn = AlphaDefinition.from_dict(data["definition"])
+        symbols_raw = data.get("eligible_symbols") or defn.eligible_symbols
+        eligible_symbols = [str(s).upper() for s in symbols_raw] if symbols_raw else None
         return cls(
             alpha_id=str(data["alpha_id"]),
-            definition=AlphaDefinition.from_dict(data["definition"]),
+            definition=defn,
             metrics=metrics,
             promoted_at=str(data.get("promoted_at", datetime.now(UTC).isoformat())),
             promoted_by=str(data.get("promoted_by", "cli_operator")),
             allocation_weight=float(data.get("allocation_weight", 0.10)),
             status=str(data.get("status", AlphaStatus.PROMOTED)),
             notes=str(data.get("notes", "")),
+            eligible_symbols=eligible_symbols,
         )

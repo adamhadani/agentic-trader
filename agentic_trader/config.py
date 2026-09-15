@@ -1,9 +1,12 @@
+import io
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import dotenv_values
 from pydantic import BaseModel, Field, field_validator
 
 from agentic_trader.constants import (
@@ -16,12 +19,20 @@ from agentic_trader.constants import (
     DEFAULT_DATA_MAX_RETRIES,
     DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
     DEFAULT_DATA_TIMEOUT_SECONDS,
+    DEFAULT_DB_ECHO,
+    DEFAULT_DB_MAX_OVERFLOW,
+    DEFAULT_DB_MAX_RETRIES,
+    DEFAULT_DB_POOL_RECYCLE,
+    DEFAULT_DB_POOL_SIZE,
+    DEFAULT_DB_POOL_TIMEOUT,
+    DEFAULT_DB_RETRY_DELAY,
     DEFAULT_FALLBACK_PROVIDERS,
     DEFAULT_MIN_OOS_SHARPE,
     DEFAULT_MIN_WARMUP_BARS,
     DEFAULT_MIN_WFE,
     DEFAULT_MONTE_CARLO_SIMULATIONS,
     DEFAULT_PORTFOLIO_CASH,
+    DEFAULT_POSTGRES_DB_URL,
     DEFAULT_PRIMARY_EQUITIES_PROVIDER,
     DEFAULT_RANDOM_SEED,
     DEFAULT_RISK_FREE_RATE,
@@ -30,6 +41,8 @@ from agentic_trader.constants import (
     DEFAULT_SESSION_FALLBACK_PROVIDERS,
     DEFAULT_STRATEGY_ALLOCATIONS,
     DEFAULT_STRATEGY_MODE,
+    DEFAULT_STREAM_RECONNECT_INITIAL_SECONDS,
+    DEFAULT_STREAM_RECONNECT_MAX_SECONDS,
     DEFAULT_TRAIL_ATR_MULTIPLE,
     DEFAULT_TRAIL_STEP_TICKS,
     DEFAULT_TRAIL_TRIGGER_R,
@@ -40,33 +53,26 @@ from agentic_trader.constants import (
     DEFAULT_VIX_EXTREME_THRESHOLD,
     DEFAULT_WALK_FORWARD_SPLITS,
     AssetClass,
+    ExecutionMode,
+    RuntimeEnvironment,
 )
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
 
-def load_envrc():
-    """Load export KEY=VAL lines from .envrc if present."""
-    envrc_path = WORKSPACE_ROOT / ".envrc"
-    if not envrc_path.exists():
-        return
-    try:
-        with open(envrc_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                match = re.match(r'^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["\']?(.*?)["\']?$', line)
-                if match:
-                    key, val = match.groups()
-                    if key not in os.environ or not os.environ[key]:
-                        os.environ[key] = val
-    except Exception:
-        pass
-
-
-load_envrc()
+def load_envrc(path: str | Path = WORKSPACE_ROOT / ".envrc") -> dict[str, str]:
+    """Read simple dotenv assignments without executing shell code or mutating os.environ."""
+    source = Path(path)
+    if not source.exists():
+        return {}
+    # .envrc may activate a virtualenv; shell source directives are not settings.
+    text = "\n".join(line for line in source.read_text().splitlines() if not re.match(r"^\s*(?:source\s+|\.\s+)", line))
+    return {
+        key: value
+        for key, value in dotenv_values(stream=io.StringIO(text), interpolate=False).items()
+        if value is not None
+    }
 
 
 class ContractConfig(BaseModel):
@@ -174,12 +180,17 @@ class SchedulerConfig(BaseModel):
     macro_briefing_enabled: bool = True
     macro_briefing_hour: int = 12
     macro_briefing_minute: int = 30
+    intraday_scan_enabled: bool = True
+    intraday_interval_minutes: int = 15
 
 
 class RegimeConfig(BaseModel):
     vix_compressed_threshold: float = DEFAULT_VIX_COMPRESSED_THRESHOLD
     vix_elevated_threshold: float = DEFAULT_VIX_ELEVATED_THRESHOLD
     vix_extreme_threshold: float = DEFAULT_VIX_EXTREME_THRESHOLD
+    vix_watch_threshold: float = 18.0
+    elevated_min_rr: float = Field(default=2.2, ge=2)
+    extreme_min_rr: float = Field(default=2.5, ge=2)
     cache_ttl_seconds: int = 900
     yield_curve_enabled: bool = True
     credit_oas_enabled: bool = True
@@ -198,7 +209,7 @@ class FrictionConfig(BaseModel):
 
 class RedundancyConfig(BaseModel):
     enabled: bool = False
-    fallback_mode: str = "paper"
+    fallback_mode: str = ExecutionMode.PAPER
     max_consecutive_failures: int = 3
     recovery_probe_interval_seconds: float = 60.0
     auto_failback: bool = True
@@ -237,8 +248,8 @@ class ExecutionConfig(BaseModel):
 class OptionsConfig(BaseModel):
     enabled: bool = True
     default_symbols: list[str] = Field(default_factory=lambda: ["SPY", "QQQ", "IWM"])
-    max_expirations: int = 3
-    risk_free_rate: float = 0.045
+    max_expirations: int = Field(default=3, ge=1)
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE
     cache_ttl_seconds: int = 60
 
 
@@ -246,6 +257,8 @@ class TelemetryConfig(BaseModel):
     metrics_enabled: bool = True
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9108
+    event_loop_sample_seconds: float = Field(default=1, gt=0)
+    event_loop_warning_seconds: float = Field(default=2, gt=0)
 
 
 class PairsConfig(BaseModel):
@@ -311,7 +324,7 @@ class TrailingStopConfig(BaseModel):
 
 
 class MarketDataConfig(BaseModel):
-    primary_equities_provider: str = DEFAULT_PRIMARY_EQUITIES_PROVIDER  # "alpaca", "yfinance"
+    primary_equities_provider: str = DEFAULT_PRIMARY_EQUITIES_PROVIDER  # ExecutionMode.ALPACA, "yfinance"
     fallback_providers: list[str] = Field(default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS))
     timeout_seconds: float = DEFAULT_DATA_TIMEOUT_SECONDS
     max_retries: int = DEFAULT_DATA_MAX_RETRIES
@@ -321,9 +334,35 @@ class MarketDataConfig(BaseModel):
 class DatabaseConfig(BaseModel):
     name: str = "signals"
     path: str | None = None
+    url: str | None = None
+    pool_size: int = DEFAULT_DB_POOL_SIZE
+    max_overflow: int = DEFAULT_DB_MAX_OVERFLOW
+    pool_timeout: float = DEFAULT_DB_POOL_TIMEOUT
+    pool_recycle: int = DEFAULT_DB_POOL_RECYCLE
+    echo: bool = DEFAULT_DB_ECHO
+    max_retries: int = DEFAULT_DB_MAX_RETRIES
+    retry_delay: float = DEFAULT_DB_RETRY_DELAY
+
+
+class BrokerStreamConfig(BaseModel):
+    reconnect_initial_seconds: float = Field(default=DEFAULT_STREAM_RECONNECT_INITIAL_SECONDS, gt=0)
+    reconnect_max_seconds: float = Field(default=DEFAULT_STREAM_RECONNECT_MAX_SECONDS, gt=0)
+
+
+class TelegramConfig(BaseModel):
+    poll_timeout_seconds: int = Field(default=10, gt=0)
+    read_timeout_seconds: float = Field(default=15, gt=0)
+    connect_timeout_seconds: float = Field(default=10, gt=0)
+    request_attempts: int = Field(default=3, ge=1, le=5)
+    request_retry_delay_seconds: float = Field(default=1, gt=0)
+    max_retry_after_seconds: float = Field(default=30, gt=0)
+    poll_audit_interval_seconds: float = Field(default=60, gt=0)
 
 
 class AppConfig(BaseModel):
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    broker_stream: BrokerStreamConfig = Field(default_factory=BrokerStreamConfig)
+    environment: RuntimeEnvironment = RuntimeEnvironment.DEVELOPMENT
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -353,10 +392,30 @@ class AppConfig(BaseModel):
     gemini_api_key: str | None = None
     finnhub_api_key: str | None = None
     db_name: str = "signals"
-    db_path: str = str(WORKSPACE_ROOT / "data" / "signals.db")
+    db_path: str | None = None
+    db_url: str | None = None
+
+    @property
+    def resolved_db_url(self) -> str:
+        """Resolve explicit model values only; a bare model never selects a production DB."""
+        path = self.db_path or self.database.path
+        if path:
+            return normalize_db_url(path)
+        url = self.db_url or self.database.url
+        if url:
+            return normalize_db_url(url)
+        raise ValueError("Database is not configured. Load runtime settings or inject an isolated database.")
+
+    @property
+    def llm_api_key(self) -> str | None:
+        if self.llm_model.startswith("anthropic/"):
+            return self.anthropic_api_key
+        if self.llm_model.startswith(("gemini/", "vertex_ai/")):
+            return self.gemini_api_key
+        return self.openai_api_key
 
     # Broker Execution Configuration
-    execution_mode: str = "paper"  # "paper", "tradovate", "alpaca", "manual"
+    execution_mode: str = ExecutionMode.PAPER  # ExecutionMode.PAPER, "tradovate", ExecutionMode.ALPACA, "manual"
     tradovate_api_key: str | None = None
     tradovate_api_secret: str | None = None
     tradovate_username: str | None = None
@@ -379,9 +438,39 @@ class AppConfig(BaseModel):
     copilot_chat_enabled: bool = True
 
 
-def load_config(config_path: str | None = None) -> AppConfig:
-    load_envrc()
+def normalize_db_url(value: str) -> str:
+    if "://" not in value:
+        return f"sqlite+aiosqlite:///{Path(value).resolve()}"
+    if value.startswith("postgresql://"):
+        return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if value.startswith("sqlite://"):
+        return value.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return value
+
+
+def load_config(
+    config_path: str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    env_file: str | Path | None = None,
+) -> AppConfig:
+    """Load settings at the application boundary; explicit mappings never read local secrets.
+
+    COPILOT_CONFIG selects a separate development/test YAML. COPILOT_ENV_FILE=''
+    disables dotenv loading. Environment values, including empty strings, win.
+    """
+    env = dict(os.environ if environ is None else environ)
+    environment = env.get("COPILOT_ENV", RuntimeEnvironment.PRODUCTION)
+    selected_env_file = env_file
+    if environ is None and selected_env_file is None and environment == RuntimeEnvironment.PRODUCTION:
+        selected_env_file = env.get("COPILOT_ENV_FILE", str(WORKSPACE_ROOT / ".envrc"))
+    if selected_env_file:
+        env = {**load_envrc(selected_env_file), **env}
     if not config_path:
+        config_path = env.get("COPILOT_CONFIG")
+    if not config_path:
+        if environment != RuntimeEnvironment.PRODUCTION:
+            raise ValueError("Set COPILOT_CONFIG to a separate configuration for development/test runs.")
         config_path = str(WORKSPACE_ROOT / "config" / "config.yaml")
 
     cfg_dict: dict[str, Any] = {}
@@ -391,81 +480,99 @@ def load_config(config_path: str | None = None) -> AppConfig:
             cfg_dict = yaml.safe_load(f) or {}
 
     # Environment overrides
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    telegram_chat = os.getenv("TELEGRAM_CHAT_ID")
-    llm_model = os.getenv("LLM_MODEL", "openai/gpt-4o")
-    openai_key = os.getenv("OPENAI_API_KEY")
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    finnhub_key = os.getenv("FINNHUB_API_KEY") or os.getenv("FINNHUB__API_KEY")
-    iex_token = os.getenv("IEX_CLOUD_API_TOKEN") or os.getenv("IEX_API_KEY") or os.getenv("IEX_TOKEN")
+    telegram_token = env.get("TELEGRAM_BOT_TOKEN")
+    telegram_chat = env.get("TELEGRAM_CHAT_ID")
+    llm_model = env.get("LLM_MODEL", "openai/gpt-4o")
+    openai_key = env.get("OPENAI_API_KEY")
+    anthropic_key = env.get("ANTHROPIC_API_KEY")
+    gemini_key = env.get("GEMINI_API_KEY")
+    finnhub_key = env.get("FINNHUB_API_KEY") or env.get("FINNHUB__API_KEY")
+    iex_token = env.get("IEX_CLOUD_API_TOKEN") or env.get("IEX_API_KEY") or env.get("IEX_TOKEN")
     db_cfg = cfg_dict.get("database", {})
     if not isinstance(db_cfg, dict):
         db_cfg = {}
 
-    db_name = os.getenv("DB_NAME", db_cfg.get("name", "signals"))
+    db_name = env.get("DB_NAME", db_cfg.get("name", "signals"))
     db_filename = db_name if db_name.endswith(".db") else f"{db_name}.db"
-    default_db_path = str(WORKSPACE_ROOT / "data" / db_filename)
-    db_path = os.getenv("DB_PATH", db_cfg.get("path") or default_db_path)
+    # Explicit environment selection outranks YAML; DB_NAME alone selects a SQLite sandbox.
+    explicit_path = env.get("DB_PATH")
+    if explicit_path:
+        db_url = None
+    elif env.get("DATABASE_URL"):
+        db_url = env["DATABASE_URL"].strip()
+    elif env.get("DB_NAME"):
+        explicit_path = str(WORKSPACE_ROOT / "data" / environment / db_filename)
+        db_url = None
+    else:
+        explicit_path = db_cfg.get("path")
+        db_url = (
+            None
+            if explicit_path
+            else db_cfg.get("url")
+            or (DEFAULT_POSTGRES_DB_URL if environment == RuntimeEnvironment.PRODUCTION else None)
+        )
+    if environment != RuntimeEnvironment.PRODUCTION and not explicit_path and not db_url:
+        raise ValueError("Development/test configuration requires an explicit database.")
+    db_path = explicit_path
 
-    execution_mode = os.getenv("EXECUTION_MODE", "paper").lower()
-    tradovate_api_key = os.getenv("TRADOVATE_API_KEY")
-    tradovate_api_secret = os.getenv("TRADOVATE_API_SECRET")
-    tradovate_username = os.getenv("TRADOVATE_USERNAME")
-    tradovate_password = os.getenv("TRADOVATE_PASSWORD")
-    tradovate_account_id = os.getenv("TRADOVATE_ACCOUNT_ID")
-    tradovate_env = os.getenv("TRADOVATE_ENVIRONMENT", "demo").lower()
+    execution_mode = env.get("EXECUTION_MODE", ExecutionMode.PAPER).lower()
+    tradovate_api_key = env.get("TRADOVATE_API_KEY")
+    tradovate_api_secret = env.get("TRADOVATE_API_SECRET")
+    tradovate_username = env.get("TRADOVATE_USERNAME")
+    tradovate_password = env.get("TRADOVATE_PASSWORD")
+    tradovate_account_id = env.get("TRADOVATE_ACCOUNT_ID")
+    tradovate_env = env.get("TRADOVATE_ENVIRONMENT", "demo").lower()
 
     alpaca_api_key = (
-        os.getenv("APCA_API_KEY_ID")
-        or os.getenv("ALPACA_KEY_ID")
-        or os.getenv("ALPACA_API_KEY")
-        or os.getenv("ALPACA_API_KEY_ID")
+        env.get("APCA_API_KEY_ID")
+        or env.get("ALPACA_KEY_ID")
+        or env.get("ALPACA_API_KEY")
+        or env.get("ALPACA_API_KEY_ID")
     )
     alpaca_api_secret = (
-        os.getenv("APCA_API_SECRET_KEY")
-        or os.getenv("ALPACA_SECRET_KEY")
-        or os.getenv("ALPACA_API_SECRET")
-        or os.getenv("ALPACA_API_SECRET_KEY")
+        env.get("APCA_API_SECRET_KEY")
+        or env.get("ALPACA_SECRET_KEY")
+        or env.get("ALPACA_API_SECRET")
+        or env.get("ALPACA_API_SECRET_KEY")
     )
-    alpaca_base_url = os.getenv("APCA_API_BASE_URL") or os.getenv("ALPACA_BASE_URL")
-    alpaca_data_feed = os.getenv("ALPACA_DATA_FEED") or os.getenv("APCA_DATA_FEED") or "iex"
+    alpaca_base_url = env.get("APCA_API_BASE_URL") or env.get("ALPACA_BASE_URL")
+    alpaca_data_feed = env.get("ALPACA_DATA_FEED") or env.get("APCA_DATA_FEED") or "iex"
 
     if alpaca_base_url:
-        alpaca_paper = "paper" in alpaca_base_url.lower()
+        alpaca_paper = ExecutionMode.PAPER in alpaca_base_url.lower()
     else:
-        alpaca_paper = os.getenv("ALPACA_PAPER", "true").lower() in ("true", "1", "yes")
+        alpaca_paper = env.get("ALPACA_PAPER", "true").lower() in ("true", "1", "yes")
 
-    if os.getenv("PORTFOLIO_CASH"):
-        cfg_dict.setdefault("portfolio", {})["cash"] = float(os.environ["PORTFOLIO_CASH"])
-    if os.getenv("MAX_NOTIONAL_EXPOSURE"):
-        cfg_dict.setdefault("portfolio", {})["max_notional_exposure"] = float(os.environ["MAX_NOTIONAL_EXPOSURE"])
+    if env.get("PORTFOLIO_CASH"):
+        cfg_dict.setdefault("portfolio", {})["cash"] = float(env["PORTFOLIO_CASH"])
+    if env.get("MAX_NOTIONAL_EXPOSURE"):
+        cfg_dict.setdefault("portfolio", {})["max_notional_exposure"] = float(env["MAX_NOTIONAL_EXPOSURE"])
 
-    tradovate_ws_url = os.getenv("TRADOVATE_WS_URL")
+    tradovate_ws_url = env.get("TRADOVATE_WS_URL")
     redundancy_cfg = cfg_dict.get("redundancy", {})
-    if os.getenv("BROKER_REDUNDANCY_ENABLED"):
-        redundancy_cfg["enabled"] = os.getenv("BROKER_REDUNDANCY_ENABLED", "").lower() in ("true", "1", "yes")
-    if os.getenv("BROKER_FALLBACK_MODE"):
-        redundancy_cfg["fallback_mode"] = os.getenv("BROKER_FALLBACK_MODE", "").lower()
+    if env.get("BROKER_REDUNDANCY_ENABLED"):
+        redundancy_cfg["enabled"] = env.get("BROKER_REDUNDANCY_ENABLED", "").lower() in ("true", "1", "yes")
+    if env.get("BROKER_FALLBACK_MODE"):
+        redundancy_cfg["fallback_mode"] = env.get("BROKER_FALLBACK_MODE", "").lower()
 
     sizing_cfg = cfg_dict.get("sizing", {})
-    if os.getenv("SIZING_MODE"):
-        sizing_cfg["mode"] = os.getenv("SIZING_MODE", "").lower()
-    if os.getenv("TARGET_RISK_PCT"):
-        sizing_cfg["target_risk_pct"] = float(os.environ["TARGET_RISK_PCT"])
+    if env.get("SIZING_MODE"):
+        sizing_cfg["mode"] = env.get("SIZING_MODE", "").lower()
+    if env.get("TARGET_RISK_PCT"):
+        sizing_cfg["target_risk_pct"] = float(env["TARGET_RISK_PCT"])
 
     exec_cfg = cfg_dict.get("execution", {})
     strat_dict = cfg_dict.get("strategies", {})
-    if os.getenv("STRATEGY_MODE"):
-        strat_dict["mode"] = os.getenv("STRATEGY_MODE", "").lower()
-    if os.getenv("ACTIVE_STRATEGY"):
-        strat_dict["active_strategy"] = os.getenv("ACTIVE_STRATEGY", "").lower()
-    if os.getenv("ACTIVE_STRATEGIES"):
+    if env.get("STRATEGY_MODE"):
+        strat_dict["mode"] = env.get("STRATEGY_MODE", "").lower()
+    if env.get("ACTIVE_STRATEGY"):
+        strat_dict["active_strategy"] = env.get("ACTIVE_STRATEGY", "").lower()
+    if env.get("ACTIVE_STRATEGIES"):
         strat_dict["active_strategies"] = [
-            s.strip().lower() for s in os.getenv("ACTIVE_STRATEGIES", "").split(",") if s.strip()
+            s.strip().lower() for s in env.get("ACTIVE_STRATEGIES", "").split(",") if s.strip()
         ]
-    if os.getenv("CONFLICT_RESOLUTION"):
-        strat_dict["conflict_resolution"] = os.getenv("CONFLICT_RESOLUTION", "").lower()
+    if env.get("CONFLICT_RESOLUTION"):
+        strat_dict["conflict_resolution"] = env.get("CONFLICT_RESOLUTION", "").lower()
 
     trend_cfg = strat_dict.get("trend_pullback", {})
     squeeze_cfg = strat_dict.get("squeeze_breakout", {})
@@ -480,6 +587,9 @@ def load_config(config_path: str | None = None) -> AppConfig:
     strategies_config = StrategyConfig(**strat_kwargs)
 
     config = AppConfig(
+        telegram=TelegramConfig(**cfg_dict.get("telegram", {})),
+        environment=RuntimeEnvironment(environment),
+        broker_stream=BrokerStreamConfig(**cfg_dict.get("broker_stream", {})),
         portfolio=PortfolioConfig(**cfg_dict.get("portfolio", {})),
         contracts={k: ContractConfig(**v) for k, v in cfg_dict.get("contracts", {}).items()},
         risk=RiskConfig(**cfg_dict.get("risk", {})),
@@ -493,9 +603,27 @@ def load_config(config_path: str | None = None) -> AppConfig:
         options=OptionsConfig(**cfg_dict.get("options", {})),
         telemetry=TelemetryConfig(**cfg_dict.get("telemetry", {})),
         pairs=PairsConfig(**cfg_dict.get("pairs", {})),
-        database=DatabaseConfig(name=db_name, path=db_path),
-        telegram_bot_token=telegram_token if telegram_token and "your_" not in telegram_token else None,
-        telegram_chat_id=telegram_chat if telegram_chat and "your_" not in telegram_chat else None,
+        backtest=BacktestConfig(**cfg_dict.get("backtest", {})),
+        research=ResearchConfig(**cfg_dict.get("research", {})),
+        trailing_stop=TrailingStopConfig(**cfg_dict.get("trailing_stop", {})),
+        database=DatabaseConfig(
+            name=db_name,
+            path=explicit_path,
+            url=db_url,
+            pool_size=int(db_cfg.get("pool_size", DEFAULT_DB_POOL_SIZE)),
+            max_overflow=int(db_cfg.get("max_overflow", DEFAULT_DB_MAX_OVERFLOW)),
+            pool_timeout=float(db_cfg.get("pool_timeout", DEFAULT_DB_POOL_TIMEOUT)),
+            pool_recycle=int(db_cfg.get("pool_recycle", DEFAULT_DB_POOL_RECYCLE)),
+            echo=bool(db_cfg.get("echo", DEFAULT_DB_ECHO)),
+            max_retries=int(db_cfg.get("max_retries", DEFAULT_DB_MAX_RETRIES)),
+            retry_delay=float(db_cfg.get("retry_delay", DEFAULT_DB_RETRY_DELAY)),
+        ),
+        telegram_bot_token=telegram_token
+        if environment != RuntimeEnvironment.TEST and telegram_token and "your_" not in telegram_token
+        else None,
+        telegram_chat_id=telegram_chat
+        if environment != RuntimeEnvironment.TEST and telegram_chat and "your_" not in telegram_chat
+        else None,
         llm_model=llm_model,
         openai_api_key=openai_key,
         anthropic_api_key=anthropic_key,
@@ -504,6 +632,7 @@ def load_config(config_path: str | None = None) -> AppConfig:
         iex_cloud_api_token=iex_token,
         db_name=db_name,
         db_path=db_path,
+        db_url=db_url,
         execution_mode=execution_mode,
         tradovate_api_key=tradovate_api_key,
         tradovate_api_secret=tradovate_api_secret,
