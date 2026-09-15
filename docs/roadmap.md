@@ -917,13 +917,13 @@ Provide clean operational tooling to purge historical development/testing signal
 ## Phase 36: Dedicated Database Configuration & Strict Pytest Session Isolation
 
 ### Objective
-Eliminate cross-talk between test executions, local CLI invocations, and continuous production daemon operations by parameterizing database locations and enforcing strict session-scoped isolation in pytest.
+Historical initial isolation effort; superseded by the September 15 incident remediation and function-scoped safety boundaries described in development-notes.md.
 
 ### Key Deliverables
 1. **Configurable Database Settings (`agentic_trader/config.py`)**:
    - Added `database.name` in `config/config.yaml` with precedence cascade: CLI `--db-name` / `--db-path` -> Env var `DB_NAME` / `DB_PATH` -> YAML config -> default `signals`.
 2. **Pytest Session Isolation (`tests/conftest.py`)**:
-   - Configured an autouse session fixture `isolate_test_database` overriding `DB_NAME="test_signals"` and pointing `DB_PATH` to a fresh pytest `tmp_path`, guaranteeing that unit tests NEVER touch or pollute production `data/signals.db`.
+   - The initial environment override was insufficient for PostgreSQL/global settings. Current `isolated_runtime` fixtures require explicit test configuration, temporary DB paths, credential stripping, blocked sockets/native drivers and guarded disposable PostgreSQL integration targets.
 3. **Comprehensive Verification (`tests/config/test_db_isolation.py`)**:
    - Added test suite confirming default path resolution, custom name overrides, explicit path resolution, and absolute test isolation.
 

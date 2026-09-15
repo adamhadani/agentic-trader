@@ -345,6 +345,11 @@ class AuditEventType(StrEnum):
     RUNTIME_STARTED = "runtime_started"
     HISTORICAL_TRADE_RESTORED = "historical_trade_restored"
     INCIDENT_REPAIR = "incident_repair"
+    TELEGRAM_POLL = "telegram_poll"
+    TELEGRAM_COMMAND = "telegram_command"
+    TELEGRAM_ERROR = "telegram_error"
+    TELEGRAM_REQUEST = "telegram_request"
+    EVENT_LOOP_STALL = "event_loop_stall"
 
 
 UNKNOWN_EXECUTION_MODE = "unknown"

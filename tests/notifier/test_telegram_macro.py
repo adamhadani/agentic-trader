@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from telegram.error import BadRequest
 
 from agentic_trader.agent.macro import (
     CreditSpreads,
@@ -167,7 +168,7 @@ async def test_telegram_handle_explain_macro_command_entity_error_fallback():
     # Make HTML parse fail with Telegram BadRequest exception on the briefing message
     async def mock_reply_text(*args, **kwargs):
         if kwargs.get("parse_mode") == "HTML" and args and "MACRO BRIEFING" in args[0]:
-            raise RuntimeError("Can't parse entities: unexpected end tag at byte offset 5321")
+            raise BadRequest("Can't parse entities: unexpected end tag at byte offset 5321")
         return MagicMock()
 
     mock_message.reply_text = AsyncMock(side_effect=mock_reply_text)

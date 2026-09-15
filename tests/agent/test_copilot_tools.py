@@ -56,7 +56,7 @@ def mock_copilot():
             "volume": [1_000_000 for _ in range(50)],
         }
     )
-    copilot.data_fetcher.fetch_daily_bars = AsyncMock(return_value=df)
+    copilot.data_fetcher.provider.fetch_bars = MagicMock(return_value=df)
     return copilot
 
 
@@ -158,7 +158,7 @@ async def test_tool_get_technical_summary(mock_copilot):
     res = await tools["get_technical_summary"].ainvoke({"symbol": "SPY"})
     assert "SPY" in res
     assert "RSI" in res
-    mock_copilot.data_fetcher.fetch_daily_bars.assert_called_once()
+    mock_copilot.data_fetcher.provider.fetch_bars.assert_called_once_with("SPY", "1d", period="60d")
 
 
 @pytest.mark.asyncio

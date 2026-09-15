@@ -123,13 +123,13 @@ class MetricsCollector:
                     for (m_name, lbl_tuple), val in sorted(self._gauges.items()):
                         if m_name == name:
                             lbl_dict = dict(lbl_tuple)
-                            lines.append(f"{name}{_format_labels(lbl_dict)} {val:g}")
+                            lines.append(f"{name}{_format_labels(lbl_dict)} {val:.17g}")
 
                 elif m_type == MetricType.COUNTER:
                     for (m_name, lbl_tuple), val in sorted(self._counters.items()):
                         if m_name == name:
                             lbl_dict = dict(lbl_tuple)
-                            lines.append(f"{name}{_format_labels(lbl_dict)} {val:g}")
+                            lines.append(f"{name}{_format_labels(lbl_dict)} {val:.17g}")
 
                 elif m_type == MetricType.HISTOGRAM:
                     for (m_name, lbl_tuple), h in sorted(self._histograms.items()):
@@ -144,7 +144,7 @@ class MetricsCollector:
                             lines.append(f"{name}_bucket{_format_labels(inf_lbls)} {h['count']}")
 
                             # _sum and _count
-                            lines.append(f"{name}_sum{_format_labels(base_labels)} {h['sum']:g}")
+                            lines.append(f"{name}_sum{_format_labels(base_labels)} {h['sum']:.17g}")
                             lines.append(f"{name}_count{_format_labels(base_labels)} {h['count']}")
 
             return "\n".join(lines) + ("\n" if lines else "")

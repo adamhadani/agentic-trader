@@ -171,3 +171,15 @@ async def test_copilot_telemetry_gauges() -> None:
     exposition = copilot.metrics.format_prometheus()
     assert "trader_account_cash_dollars" in exposition
     assert "trader_active_positions_count 0" in exposition
+
+
+def test_metrics_preserve_timestamp_precision() -> None:
+    collector = MetricsCollector()
+    timestamp = 1789500000.125
+    collector.set_gauge("last_success_seconds", timestamp)
+    line = next(
+        line
+        for line in collector.format_prometheus_exposition().splitlines()
+        if line.startswith("last_success_seconds ")
+    )
+    assert float(line.split()[1]) == timestamp

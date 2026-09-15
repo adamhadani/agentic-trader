@@ -42,7 +42,7 @@ The **Cash-Plus Trading Copilot** is a multi-asset trading system designed aroun
 - `uv run copilot explain-macro`: Educational tutorial & breakdown of live macro indicators via LLM.
 - `uv run copilot scan`: On-demand quantitative market scan (`--dry-run`, `--no-llm`, `--strategy`, `--strategy-mode`, `--asset-class`, `--symbols`, `--timeframe`). A dry run uses isolated temporary storage and simulated execution, with no Telegram or monitoring.
 - `uv run copilot execute <signal_id>`: Manually authorize and submit an approved signal to broker.
-- `uv run copilot close <signal_id> --price <exit_price>`: Request broker closure and record the supplied exit price; see the broker-confirmation caveat in the development notes.
+- `uv run copilot close <signal_id> --price <exit_price>`: Request broker closure. Alpaca accounting waits for the confirmed broker fill; the supplied price is only for simulation/manual adapters.
 - `uv run copilot panic [--confirm]`: Emergency kill switch: cancel resting orders, market liquidate active positions, halt trading.
 - `uv run copilot resume`: Clear emergency trading halt and resume autonomous scanning/execution.
 - `uv run copilot gex [symbol]`: Market maker dealer gamma exposure, pinning walls, and gamma flip.
@@ -155,3 +155,5 @@ Preserve these intended safeguards when changing logic. They are design requirem
 
 13. **Brokerage as valuation authority**: Both CLI and Telegram positions use the same broker snapshot. Preserve source/time; show failures or mismatches, never fabricate zero P&L. Realized Alpaca performance includes confirmed closed fills with entry/exit IDs and actual average prices; it is all recorded closed-trade history before fees, not account-day return.
 14. **Audit and provenance**: Head revision is `003_audit_provenance`; every signal has environment/account mode and run identity. Quarantine preserves original values and excludes confirmed test rows from risk, deduplication, positions and performance.
+
+15. **Async boundaries**: Use `asyncio.to_thread` for blocking SDK/provider calls and CPU-heavy research from async handlers. Keep related scans serialized; review shared state before adding concurrency. Telegram retries belong in `notifier/transport.py`, never around a trade handler. Preserve request/update audit IDs, poll freshness metrics, and `telemetry/event_loop.py` stall monitoring.

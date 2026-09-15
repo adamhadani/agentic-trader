@@ -61,7 +61,9 @@ with `ALPACA_PAPER=true` for the brokerage paper account. Run one daemon/poller.
 Positions use Alpaca's account valuation. `/perf` shows broker open-position P&L
 and separately labels confirmed closed-trade history before fees. Quarantined test
 rows and unverified Alpaca closes are excluded. Source changes require a daemon
-restart; startup audit records the deployed revision.
+restart; startup audit records the deployed revision. Telegram has shared transport retries,
+persistent command/request/poll audits, poll freshness metrics, and event-loop stall detection.
+Run `uv run python scripts/verify_runtime.py` for a read-only paper-desk smoke check.
 
 ## 1. Core Risk & Portfolio Constraints
 
@@ -158,7 +160,7 @@ uv run copilot resume               # Clear emergency trading halt and resume au
 uv run copilot gex [symbol]        # View options dealer gamma exposure, call/put walls, and gamma flip
 uv run copilot pairs               # Screen cross-asset pairs for cointegration and rolling spread Z-scores
 uv run copilot metrics             # Prometheus exposition (:9108/metrics) & JSON healthcheck (:9108/healthcheck)
-uv run copilot test-alert          # Send synthetic signal card with sizing tiers to test Telegram buttons
+uv run copilot test-alert          # Preview a non-actionable [TEST] notification locally
 ```
 
 ### C. Quantitative Research, Alpha Mining & Calibration (Offline)
@@ -246,10 +248,10 @@ uv run pre-commit install
 
 ## 7. Quality Assurance & Testing
 
-The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`. An automatic session-scoped fixture in `tests/conftest.py` guarantees that pytest runs against an ephemeral database in `tmp_path`, strictly isolating production `data/signals.db`:
+The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`. Function-scoped autouse fixtures in `tests/conftest.py` select temporary SQLite databases, strip credentials, and block external I/O. PostgreSQL integration tests require an explicitly selected disposable `test_` database; the production PostgreSQL database is never a test target:
 
 ```bash
-# Run pytest unit test suite (365 tests across 18 modular package subdirectories)
+# Run the isolated unit test suite
 uv run pytest
 
 # Run targeted component unit tests (e.g. agent, broker, market, research, storage)

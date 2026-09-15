@@ -160,7 +160,7 @@ incident snapshots, DB files, `.envrc`, and derived calibration files out of Git
    scan and quote age; watchdog liveness alone cannot establish trading readiness.
 4. Update local trailing stops only after confirmed broker modification. Audit
    stop discrepancies and preserve the original thesis instead of overwriting it.
-5. Move blocking market-data calls off the event loop; verify timeframe filtering
+5. Keep heavy research off the trading executor as workload grows; verify timeframe filtering
    before cross-strategy netting. Review missing-data macro fallbacks and drawdown
    plumbing before increasing automation or enabling live money.
 6. Keep sliced execution disabled until partial plans and protective brackets are
@@ -168,8 +168,29 @@ incident snapshots, DB files, `.envrc`, and derived calibration files out of Git
 
 ## Validation baseline
 
-September 15 verification before deployment: **397 tests passed**, including four
+September 15 verification before deployment: **410 tests passed**, including four
 PostgreSQL integration tests on an explicitly provisioned disposable `test_` database.
-Mypy passed for 98 application modules. Expected socket-block warnings in older
+Mypy passed for 100 application modules. Two additional command-correlation cases
+passed in the focused transport suite afterward. Expected socket-block warnings in older
 fallback tests and a third-party WebSocket deprecation remain. Deployment identity
 and later smoke checks are recorded separately in startup/valuation audit events.
+
+## Telegram transport and event-loop diagnostics
+
+`notifier/transport.py` supplies shared request retries (network errors, server
+errors, bounded rate limits) and polling observation; trade handlers are never
+replayed. `telegram` YAML settings control poll/read/connect timeouts, request
+attempts/delay, maximum rate-limit wait, and poll audit interval. Default attempts
+are three; polling retains the SDK retry loop. Handler processing remains serial.
+
+Audit events: `telegram_request`, `telegram_command`, `telegram_poll`,
+`telegram_error`, `event_loop_stall`. They retain request outcomes/message IDs,
+update IDs/handler phases, and recovery evidence without chat contents/tokens.
+Metrics include `trader_telegram_poll_healthy`,
+`trader_telegram_last_poll_success_timestamp_seconds`, request retries/command
+latency, and `trader_event_loop_lag_seconds`. Poll success alone does not prove a
+particular command completed; correlate its command/request audits.
+
+`uv run python scripts/verify_runtime.py` verifies committed daemon identity,
+Alpaca snapshot/report agreement, bot identity/commands, and actual daemon poll
+freshness without sending messages or placing orders. It records a valuation audit.

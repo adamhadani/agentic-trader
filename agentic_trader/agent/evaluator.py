@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -385,7 +386,7 @@ class RiskEvaluator:
                 pos_contract = str(pos.get("contract") or pos.get("symbol") or "")
                 pos_info = self.config.contracts.get(pos_contract)
                 pos_ticker = pos_info.ticker if pos_info else pos_contract
-                corr = self.data_fetcher.calculate_correlation(cand_ticker, pos_ticker)
+                corr = await asyncio.to_thread(self.data_fetcher.calculate_correlation, cand_ticker, pos_ticker)
                 if corr is not None and corr >= max_corr_thresh:
                     return LLMTradeEvaluation(
                         approved=False,

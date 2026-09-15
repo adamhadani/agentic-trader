@@ -254,6 +254,8 @@ class TelemetryConfig(BaseModel):
     metrics_enabled: bool = True
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9108
+    event_loop_sample_seconds: float = Field(default=1, gt=0)
+    event_loop_warning_seconds: float = Field(default=2, gt=0)
 
 
 class PairsConfig(BaseModel):
@@ -344,7 +346,18 @@ class BrokerStreamConfig(BaseModel):
     reconnect_max_seconds: float = Field(default=DEFAULT_STREAM_RECONNECT_MAX_SECONDS, gt=0)
 
 
+class TelegramConfig(BaseModel):
+    poll_timeout_seconds: int = Field(default=10, gt=0)
+    read_timeout_seconds: float = Field(default=15, gt=0)
+    connect_timeout_seconds: float = Field(default=10, gt=0)
+    request_attempts: int = Field(default=3, ge=1, le=5)
+    request_retry_delay_seconds: float = Field(default=1, gt=0)
+    max_retry_after_seconds: float = Field(default=30, gt=0)
+    poll_audit_interval_seconds: float = Field(default=60, gt=0)
+
+
 class AppConfig(BaseModel):
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     broker_stream: BrokerStreamConfig = Field(default_factory=BrokerStreamConfig)
     environment: RuntimeEnvironment = RuntimeEnvironment.DEVELOPMENT
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
@@ -571,6 +584,7 @@ def load_config(
     strategies_config = StrategyConfig(**strat_kwargs)
 
     config = AppConfig(
+        telegram=TelegramConfig(**cfg_dict.get("telegram", {})),
         environment=RuntimeEnvironment(environment),
         broker_stream=BrokerStreamConfig(**cfg_dict.get("broker_stream", {})),
         portfolio=PortfolioConfig(**cfg_dict.get("portfolio", {})),

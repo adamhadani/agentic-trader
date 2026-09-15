@@ -44,7 +44,7 @@ def mock_copilot():
     copilot.run_backtest_summary_html = AsyncMock(return_value="<b>Backtest:</b> Sharpe 1.5")
     copilot.run_gex_summary_html = AsyncMock(return_value="<b>GEX:</b> Neutral")
     copilot.run_pairs_summary_html = AsyncMock(return_value="<b>Pairs:</b> None")
-    copilot.data_fetcher.fetch_daily_bars = AsyncMock(return_value=MagicMock(empty=True))
+    copilot.data_fetcher.provider.fetch_bars = MagicMock(return_value=MagicMock(empty=True))
     return copilot
 
 

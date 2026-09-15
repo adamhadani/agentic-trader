@@ -40,9 +40,12 @@ class DiagnosticReport(BaseModel):
 async def check_database(config: AppConfig) -> ComponentHealth:
     """Check database persistence layer and table connectivity."""
     try:
-        db = SignalDatabase(db_url=config.resolved_db_url)
-        active_count = await db.get_active_position_count()
-        exposure = await db.get_active_notional_exposure()
+        db = await asyncio.to_thread(SignalDatabase, config=config)
+        try:
+            active_count = await db.get_active_position_count()
+            exposure = await db.get_active_notional_exposure()
+        finally:
+            await db.engine.dispose()
         return ComponentHealth(
             name="database",
             status="OK",

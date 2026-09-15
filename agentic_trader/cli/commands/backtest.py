@@ -157,7 +157,8 @@ async def backtest(
         enable_attribution=not no_attribution,
     )
     if monte_carlo and result.trades:
-        result.monte_carlo = run_monte_carlo_simulation(
+        result.monte_carlo = await asyncio.to_thread(
+            run_monte_carlo_simulation,
             result.trades,
             starting_cash=cash,
             n_simulations=mc_sims,

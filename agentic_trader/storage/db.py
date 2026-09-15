@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 class SignalDatabase:
     """
     SQLAlchemy 2.0 Async ORM Persistence Layer.
-    Provides database-agnostic operations (SQLite, PostgreSQL, MySQL)
+    Provides explicit PostgreSQL runtime and SQLite test/development storage
     with Alembic readiness and automatic schema initialization.
     """
 
@@ -136,11 +137,15 @@ class SignalDatabase:
             )
             await session.commit()
 
-    async def get_audit_events(self, signal_id: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    async def get_audit_events(
+        self, signal_id: int | None = None, limit: int = 100, event_type: str | None = None
+    ) -> list[dict[str, Any]]:
         async with self.session_factory() as session:
             stmt = select(AuditEventRecord).where(AuditEventRecord.environment == self.environment)
             if signal_id is not None:
                 stmt = stmt.where(AuditEventRecord.signal_id == signal_id)
+            if event_type is not None:
+                stmt = stmt.where(AuditEventRecord.event_type == event_type)
             records = (await session.execute(stmt.order_by(AuditEventRecord.id.desc()).limit(limit))).scalars()
             return [
                 {
@@ -193,7 +198,7 @@ class SignalDatabase:
 
     async def init_db(self):
         """Initialize all ORM tables and indexes via Alembic migrations."""
-        run_migrations_head(self.db_url)
+        await asyncio.to_thread(run_migrations_head, self.db_url)
 
     async def is_duplicate_recent(
         self,

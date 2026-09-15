@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import urllib.request
 
 from telegram import Bot
@@ -69,8 +70,8 @@ async def main() -> None:
         )
         if not all(report.total_pnl_str in text for text in rendered) and report.positions:
             raise RuntimeError("CLI/Telegram report rendering differs")
-        events = await db.get_audit_events(limit=1000)
-        startup = next(e for e in events if e["event_type"] == AuditEventType.RUNTIME_STARTED)
+        events = await db.get_audit_events(limit=1, event_type=AuditEventType.RUNTIME_STARTED)
+        startup = events[0]
         identity = startup["payload"]
         if identity["revision"] != runtime_identity()["revision"] or "dirty" in identity["revision"]:
             raise RuntimeError("Daemon source revision differs from the clean checkout")
@@ -79,6 +80,18 @@ async def main() -> None:
         with response:
             if response.status != 200:
                 raise RuntimeError("Health endpoint failed")
+        response = await asyncio.to_thread(urllib.request.urlopen, "http://127.0.0.1:9108/metrics", timeout=5)
+        with response:
+            metrics = {
+                line.split()[0]: float(line.split()[1])
+                for line in response.read().decode().splitlines()
+                if line and not line.startswith("#") and "{" not in line
+            }
+        poll_age = time.time() - metrics.get("trader_telegram_last_poll_success_timestamp_seconds", 0)
+        if metrics.get("trader_telegram_poll_healthy") != 1 or poll_age > 2 * (
+            config.telegram.poll_timeout_seconds + config.telegram.read_timeout_seconds
+        ):
+            raise RuntimeError(f"Daemon Telegram polling is unhealthy or stale ({poll_age:.1f}s)")
         if not config.telegram_bot_token or not config.telegram_chat_id:
             raise RuntimeError("Telegram is not configured")
         async with Bot(config.telegram_bot_token) as bot:
@@ -95,6 +108,8 @@ async def main() -> None:
                     "runtime": identity,
                     "alpaca_paper": True,
                     "telegram_identity_and_chat": "verified",
+                    "telegram_poll_age_seconds": round(poll_age, 2),
+                    "event_loop_lag_seconds": metrics.get("trader_event_loop_lag_seconds"),
                     "commands": sorted(commands),
                     "positions_match_broker": True,
                     "source": report.source,

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import html
-import inspect
 import re
 from typing import TYPE_CHECKING
 
-import pandas as pd
 from langchain_core.tools import BaseTool, tool
 
 from agentic_trader.constants import ExecutionMode
@@ -151,20 +149,7 @@ def make_copilot_tools(copilot: TradingCopilot) -> list[BaseTool]:
     async def get_technical_summary(symbol: str) -> str:
         """Calculate technical indicators (RSI, EMA 20/50, ATR) for a given symbol based on recent daily bars."""
         try:
-            df: pd.DataFrame | None = None
-            fetcher = getattr(copilot, "data_fetcher", None)
-            if fetcher:
-                provider = getattr(fetcher, "provider", None)
-                if provider and hasattr(provider, "fetch_bars"):
-                    raw = await asyncio.to_thread(lambda: provider.fetch_bars(symbol, "1d", period="60d"))
-                    if isinstance(raw, pd.DataFrame):
-                        df = raw
-                if df is None and hasattr(fetcher, "fetch_daily_bars"):
-                    raw = fetcher.fetch_daily_bars(symbol, limit=50)
-                    if inspect.isawaitable(raw):
-                        raw = await raw
-                    if isinstance(raw, pd.DataFrame):
-                        df = raw
+            df = await asyncio.to_thread(copilot.data_fetcher.provider.fetch_bars, symbol, "1d", period="60d")
 
             if df is None or getattr(df, "empty", True):
                 return f"No price bar data available for symbol {symbol}."

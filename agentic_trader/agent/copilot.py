@@ -130,6 +130,7 @@ class TradingCopilot:
             notifier
             if notifier is not None
             else TelegramNotifier(
+                settings=config.telegram,
                 environment=config.environment,
                 bot_token=config.telegram_bot_token,
                 chat_id=config.telegram_chat_id,
@@ -168,6 +169,7 @@ class TradingCopilot:
         self.is_halted: bool = False
         self.halt_reason: str | None = None
         self._shutdown_event = asyncio.Event()
+        self._scan_lock = asyncio.Lock()
 
     async def ask_copilot(self, query: str, chat_id: str | int = "default") -> str:
         """Handle a natural language conversational turn through the LangGraph copilot."""
@@ -214,232 +216,236 @@ class TradingCopilot:
         strategy_mode: str | None = None,
         timeframe: str | None = None,
     ):
-        await self.check_halt_state()
-        if self.is_halted:
-            logger.warning(
-                "Trading scan halted: Emergency kill switch active (%s). Skipping universe scan.",
-                self.halt_reason,
-                extra={"event": "trading_halted_scan_blocked", "reason": self.halt_reason},
-            )
-            return
+        async with self._scan_lock:
+            await self.check_halt_state()
+            if self.is_halted:
+                logger.warning(
+                    "Trading scan halted: Emergency kill switch active (%s). Skipping universe scan.",
+                    self.halt_reason,
+                    extra={"event": "trading_halted_scan_blocked", "reason": self.halt_reason},
+                )
+                return
 
-        logger.info("=== Starting Quantitative Scan ===")
-        regime = await self.regime_detector.get_regime()
-        logger.info("Current market volatility context: %s", regime.summary_text)
-        current_exposure = await self.db.get_active_notional_exposure()
-        active_count = await self.db.get_active_position_count()
-        active_positions = await self.db.get_active_positions()
-        max_positions = getattr(
-            self.config.portfolio,
-            "max_concurrent_positions",
-            self.config.portfolio.max_concurrent_contracts,
-        )
-        logger.info(
-            f"Portfolio Status: {active_count}/{max_positions} active positions | "
-            f"Open Notional: ${current_exposure:,.2f} / ${self.config.portfolio.max_notional_exposure:,.2f} max"
-        )
-        session_allowed, session_reason = await self.session_provider.is_session_active(
-            instrument_type=asset_class or "all"
-        )
-        if not session_allowed and not bypass_session_filter:
+            logger.info("=== Starting Quantitative Scan ===")
+            regime = await self.regime_detector.get_regime()
+            logger.info("Current market volatility context: %s", regime.summary_text)
+            current_exposure = await self.db.get_active_notional_exposure()
+            active_count = await self.db.get_active_position_count()
+            active_positions = await self.db.get_active_positions()
+            max_positions = getattr(
+                self.config.portfolio,
+                "max_concurrent_positions",
+                self.config.portfolio.max_concurrent_contracts,
+            )
             logger.info(
-                "Market session filter inactive (%s): %s. Skipping universe scan.",
-                asset_class,
-                session_reason,
-                extra={"event": "session_blocked", "asset_class": asset_class, "reason": session_reason},
+                f"Portfolio Status: {active_count}/{max_positions} active positions | "
+                f"Open Notional: ${current_exposure:,.2f} / ${self.config.portfolio.max_notional_exposure:,.2f} max"
             )
-            return
-
-        in_lockout, lock_event = await self.calendar.is_in_lockout_window(
-            pre_minutes=self.config.risk.lockout_pre_event_minutes,
-            post_minutes=self.config.risk.lockout_post_event_minutes,
-        )
-        if in_lockout and lock_event:
-            logger.warning(
-                f"Macro Lockout Active: '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}. "
-                "No entry alerts will be emitted during this window.",
-                extra={
-                    "event": "macro_lockout_active",
-                    "lock_event": lock_event.title,
-                    "event_time": str(lock_event.timestamp),
-                },
+            session_allowed, session_reason = await self.session_provider.is_session_active(
+                instrument_type=asset_class or "all"
             )
-            return
+            if not session_allowed and not bypass_session_filter:
+                logger.info(
+                    "Market session filter inactive (%s): %s. Skipping universe scan.",
+                    asset_class,
+                    session_reason,
+                    extra={"event": "session_blocked", "asset_class": asset_class, "reason": session_reason},
+                )
+                return
 
-        total_candidates = 0
-        total_alerts = 0
+            in_lockout, lock_event = await self.calendar.is_in_lockout_window(
+                pre_minutes=self.config.risk.lockout_pre_event_minutes,
+                post_minutes=self.config.risk.lockout_post_event_minutes,
+            )
+            if in_lockout and lock_event:
+                logger.warning(
+                    f"Macro Lockout Active: '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}. "
+                    "No entry alerts will be emitted during this window.",
+                    extra={
+                        "event": "macro_lockout_active",
+                        "lock_event": lock_event.title,
+                        "event_time": str(lock_event.timestamp),
+                    },
+                )
+                return
 
-        target_syms = [s.strip().upper() for s in symbols] if symbols else None
+            total_candidates = 0
+            total_alerts = 0
 
-        for contract, info in self.config.contracts.items():
-            clean_contract = contract.strip("/").upper()
-            if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
-                continue
+            target_syms = [s.strip().upper() for s in symbols] if symbols else None
 
-            inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
-            inst_class_norm = normalize_asset_class(str(inst_class))
-            req_class_norm = normalize_asset_class(asset_class)
-            if asset_class and asset_class.lower() != "all" and inst_class_norm != req_class_norm:
-                continue
-
-            logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
-            try:
-                data = self.data_fetcher.fetch_data(contract, info.ticker)
-                if data.daily.empty or data.four_hour.empty:
-                    logger.warning(f"Insufficient data for {contract}, skipping.")
+            for contract, info in self.config.contracts.items():
+                clean_contract = contract.strip("/").upper()
+                if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
                     continue
 
-                candidates = self.strategy_engine.scan_contract(
-                    data,
-                    asset_class=inst_class,
-                    override_strategy=strategy,
-                    override_mode=strategy_mode,
-                )
-                if timeframe:
-                    tf_norm = timeframe.strip().lower()
-                    candidates = [c for c in candidates if getattr(c, "timeframe", "").lower() == tf_norm]
+                inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
+                inst_class_norm = normalize_asset_class(str(inst_class))
+                req_class_norm = normalize_asset_class(asset_class)
+                if asset_class and asset_class.lower() != "all" and inst_class_norm != req_class_norm:
+                    continue
 
-                for candidate in candidates:
-                    total_candidates += 1
-                    logger.info(
-                        "Found setup: %s %s via %s at %.2f",
-                        candidate.contract,
-                        candidate.direction,
-                        candidate.strategy,
-                        candidate.current_price,
-                        extra={
-                            "event": "candidate_found",
-                            "contract": candidate.contract,
-                            "direction": candidate.direction,
-                            "strategy": candidate.strategy,
-                            "price": candidate.current_price,
-                        },
+                logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
+                try:
+                    data = await asyncio.to_thread(self.data_fetcher.fetch_data, contract, info.ticker)
+                    if data.daily.empty or data.four_hour.empty:
+                        logger.warning(f"Insufficient data for {contract}, skipping.")
+                        continue
+
+                    candidates = await asyncio.to_thread(
+                        self.strategy_engine.scan_contract,
+                        data,
+                        asset_class=inst_class,
+                        override_strategy=strategy,
+                        override_mode=strategy_mode,
                     )
+                    if timeframe:
+                        tf_norm = timeframe.strip().lower()
+                        candidates = [c for c in candidates if getattr(c, "timeframe", "").lower() == tf_norm]
 
-                    # Deduplication check
-                    dedup_hours = self.config.risk.deduplication_hours
-                    candidate_tf = getattr(candidate, "timeframe", "4h").lower()
-                    if candidate_tf in ("15m", "15min", "fifteen_minute"):
-                        dedup_hours = min(dedup_hours, 2)
-                    elif candidate_tf in ("1h", "hourly"):
-                        dedup_hours = min(dedup_hours, 4)
-
-                    is_dup = await self.db.is_duplicate_recent(
-                        candidate.contract,
-                        candidate.strategy,
-                        hours=dedup_hours,
-                    )
-                    if is_dup:
+                    for candidate in candidates:
+                        total_candidates += 1
                         logger.info(
-                            "Skipping duplicate signal: %s %s already alerted within %d hours.",
+                            "Found setup: %s %s via %s at %.2f",
+                            candidate.contract,
+                            candidate.direction,
+                            candidate.strategy,
+                            candidate.current_price,
+                            extra={
+                                "event": "candidate_found",
+                                "contract": candidate.contract,
+                                "direction": candidate.direction,
+                                "strategy": candidate.strategy,
+                                "price": candidate.current_price,
+                            },
+                        )
+
+                        # Deduplication check
+                        dedup_hours = self.config.risk.deduplication_hours
+                        candidate_tf = getattr(candidate, "timeframe", "4h").lower()
+                        if candidate_tf in ("15m", "15min", "fifteen_minute"):
+                            dedup_hours = min(dedup_hours, 2)
+                        elif candidate_tf in ("1h", "hourly"):
+                            dedup_hours = min(dedup_hours, 4)
+
+                        is_dup = await self.db.is_duplicate_recent(
                             candidate.contract,
                             candidate.strategy,
-                            dedup_hours,
-                            extra={
-                                "event": "duplicate_signal_skipped",
-                                "contract": candidate.contract,
-                                "strategy": candidate.strategy,
-                            },
+                            hours=dedup_hours,
                         )
-                        continue
-
-                    # Risk evaluation
-                    eval_res = await self.evaluator.evaluate_candidate(
-                        candidate,
-                        current_open_notional=current_exposure,
-                        use_llm=use_llm,
-                        active_positions=active_positions,
-                    )
-
-                    if not eval_res.approved:
-                        logger.info(
-                            "Candidate rejected by risk engine: %s",
-                            eval_res.rejection_reason,
-                            extra={
-                                "event": "candidate_rejected",
-                                "contract": candidate.contract,
-                                "rejection_reason": eval_res.rejection_reason,
-                            },
-                        )
-                        continue
-
-                    if dry_run:
-                        logger.info("[DRY RUN] Approved signal would be emitted:")
-                        print(
-                            format_terminal_card(
-                                eval_res,
+                        if is_dup:
+                            logger.info(
+                                "Skipping duplicate signal: %s %s already alerted within %d hours.",
+                                candidate.contract,
                                 candidate.strategy,
-                                self.config.portfolio.cash,
-                                regime_summary=regime.summary_text,
+                                dedup_hours,
+                                extra={
+                                    "event": "duplicate_signal_skipped",
+                                    "contract": candidate.contract,
+                                    "strategy": candidate.strategy,
+                                },
                             )
+                            continue
+
+                        # Risk evaluation
+                        eval_res = await self.evaluator.evaluate_candidate(
+                            candidate,
+                            current_open_notional=current_exposure,
+                            use_llm=use_llm,
+                            active_positions=active_positions,
                         )
-                        continue
 
-                    # Record to database
-                    sig_id = await self.db.record_signal(
-                        contract=eval_res.contract,
-                        strategy=candidate.strategy,
-                        direction=eval_res.direction,
-                        entry_price=eval_res.entry_price,
-                        stop_loss=eval_res.stop_loss,
-                        take_profit=eval_res.take_profit,
-                        risk_dollars=eval_res.risk_dollars,
-                        reward_dollars=eval_res.reward_dollars,
-                        notional_value=eval_res.notional_value,
-                        status=SignalStatus.PENDING,
-                        raw_response=eval_res.model_dump_json(),
-                        asset_class=str(eval_res.asset_class),
-                        quantity=eval_res.quantity,
-                    )
+                        if not eval_res.approved:
+                            logger.info(
+                                "Candidate rejected by risk engine: %s",
+                                eval_res.rejection_reason,
+                                extra={
+                                    "event": "candidate_rejected",
+                                    "contract": candidate.contract,
+                                    "rejection_reason": eval_res.rejection_reason,
+                                },
+                            )
+                            continue
 
-                    logger.info(
-                        "Signal #%d approved and recorded: %s %s via %s (risk: $%.2f, notional: $%.2f)",
-                        sig_id,
-                        eval_res.contract,
-                        eval_res.direction,
-                        candidate.strategy,
-                        eval_res.risk_dollars,
-                        eval_res.notional_value,
-                        extra={
-                            "event": "signal_approved",
-                            "signal_id": sig_id,
-                            "contract": eval_res.contract,
-                            "direction": eval_res.direction,
-                            "strategy": candidate.strategy,
-                            "risk_dollars": eval_res.risk_dollars,
-                            "notional_value": eval_res.notional_value,
-                            "quantity": eval_res.quantity,
-                            "entry_price": eval_res.entry_price,
-                        },
-                    )
+                        if dry_run:
+                            logger.info("[DRY RUN] Approved signal would be emitted:")
+                            print(
+                                format_terminal_card(
+                                    eval_res,
+                                    candidate.strategy,
+                                    self.config.portfolio.cash,
+                                    regime_summary=regime.summary_text,
+                                )
+                            )
+                            continue
 
-                    # Dispatch alert
-                    await self.notifier.send_signal_alert(
-                        eval_res=eval_res,
-                        strategy=candidate.strategy,
-                        signal_id=sig_id,
-                        regime_summary=regime.summary_text,
-                    )
-                    total_alerts += 1
-                    # Update exposure in memory for subsequent checks in this run
-                    current_exposure += eval_res.notional_value
-                    active_positions.append(
-                        {
-                            "contract": eval_res.contract,
-                            "symbol": eval_res.contract,
-                            "direction": eval_res.direction,
-                            "asset_class": str(eval_res.asset_class),
-                            "notional_value": eval_res.notional_value,
-                        }
-                    )
+                        # Record to database
+                        sig_id = await self.db.record_signal(
+                            contract=eval_res.contract,
+                            strategy=candidate.strategy,
+                            direction=eval_res.direction,
+                            entry_price=eval_res.entry_price,
+                            stop_loss=eval_res.stop_loss,
+                            take_profit=eval_res.take_profit,
+                            risk_dollars=eval_res.risk_dollars,
+                            reward_dollars=eval_res.reward_dollars,
+                            notional_value=eval_res.notional_value,
+                            status=SignalStatus.PENDING,
+                            raw_response=eval_res.model_dump_json(),
+                            asset_class=str(eval_res.asset_class),
+                            quantity=eval_res.quantity,
+                        )
 
-            except Exception:
-                logger.exception(f"Error scanning {contract}")
+                        logger.info(
+                            "Signal #%d approved and recorded: %s %s via %s (risk: $%.2f, notional: $%.2f)",
+                            sig_id,
+                            eval_res.contract,
+                            eval_res.direction,
+                            candidate.strategy,
+                            eval_res.risk_dollars,
+                            eval_res.notional_value,
+                            extra={
+                                "event": "signal_approved",
+                                "signal_id": sig_id,
+                                "contract": eval_res.contract,
+                                "direction": eval_res.direction,
+                                "strategy": candidate.strategy,
+                                "risk_dollars": eval_res.risk_dollars,
+                                "notional_value": eval_res.notional_value,
+                                "quantity": eval_res.quantity,
+                                "entry_price": eval_res.entry_price,
+                            },
+                        )
 
-        logger.info(f"=== Scan Complete: {total_candidates} candidates evaluated, {total_alerts} alerts emitted ===")
-        # Monitor any active positions for stop loss or take profit crossings
-        if not dry_run:
-            await self.monitor_positions()
+                        # Dispatch alert
+                        await self.notifier.send_signal_alert(
+                            eval_res=eval_res,
+                            strategy=candidate.strategy,
+                            signal_id=sig_id,
+                            regime_summary=regime.summary_text,
+                        )
+                        total_alerts += 1
+                        # Update exposure in memory for subsequent checks in this run
+                        current_exposure += eval_res.notional_value
+                        active_positions.append(
+                            {
+                                "contract": eval_res.contract,
+                                "symbol": eval_res.contract,
+                                "direction": eval_res.direction,
+                                "asset_class": str(eval_res.asset_class),
+                                "notional_value": eval_res.notional_value,
+                            }
+                        )
+
+                except Exception:
+                    logger.exception(f"Error scanning {contract}")
+
+            logger.info(
+                f"=== Scan Complete: {total_candidates} candidates evaluated, {total_alerts} alerts emitted ==="
+            )
+            # Monitor any active positions for stop loss or take profit crossings
+            if not dry_run:
+                await self.monitor_positions()
 
     async def process_reconciliation_event(
         self, ev: ReconciliationEvent, active_positions: list[dict[str, Any]] | None = None
@@ -772,7 +778,7 @@ class TradingCopilot:
                     else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
                 )
 
-                current_price = self.data_fetcher.fetch_latest_price(ticker)
+                current_price = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
                 if current_price is None or current_price <= 0:
                     continue
 
@@ -1029,7 +1035,9 @@ class TradingCopilot:
                 instrument = self.config.contracts.get(contract)
                 multiplier = instrument.multiplier if instrument else 1.0
                 entry, qty = float(pos["entry_price"]), float(pos.get("quantity") or 1.0)
-                price = self.data_fetcher.fetch_latest_price(instrument.ticker if instrument else contract)
+                price = await asyncio.to_thread(
+                    self.data_fetcher.fetch_latest_price, instrument.ticker if instrument else contract
+                )
                 pnl = (
                     None
                     if price is None
@@ -1160,7 +1168,7 @@ class TradingCopilot:
         if exit_price is not None:
             final_exit = exit_price
         else:
-            live = self.data_fetcher.fetch_latest_price(ticker)
+            live = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
             final_exit = live if live is not None else entry
 
         if direction == Direction.LONG:
@@ -1460,7 +1468,7 @@ class TradingCopilot:
 
             final_exit = entry
             try:
-                q = self.data_fetcher.fetch_latest_price(ticker)
+                q = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
                 if q and q > 0:
                     final_exit = q
             except Exception:
@@ -1718,7 +1726,12 @@ class TradingCopilot:
             lookback=lookback,
         )
         if len(res.trades) >= 3:
-            res.monte_carlo = run_monte_carlo_simulation(res.trades, starting_cash=res.starting_cash, n_simulations=500)
+            res.monte_carlo = await asyncio.to_thread(
+                run_monte_carlo_simulation,
+                res.trades,
+                starting_cash=res.starting_cash,
+                n_simulations=self.config.backtest.monte_carlo_simulations,
+            )
         return TelegramHtmlFormatter.format_backtest_html(res, symbols=[symbol], lookback=lookback, strategy="all")
 
     async def run_gex_summary_html(self, symbol: str = "SPY") -> str:

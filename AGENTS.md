@@ -21,3 +21,7 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   Preserve external wire formats and frozen migration literals.
 - Update docs for changed behavior. Record tests and deployed verification separately;
   a healthy process is not proof of broker, data-feed, or Telegram freshness.
+
+- Keep blocking I/O/CPU work off the asyncio loop. Use shared transport retry and
+  observation mechanisms; never retry a trade handler to recover a Telegram reply.
+  Validate event-loop responsiveness and shared-state races when adding threads.

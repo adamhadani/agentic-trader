@@ -15,6 +15,7 @@ from agentic_trader.cli.utils import coro, get_copilot_and_config
 from agentic_trader.constants import AuditEventType
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 from agentic_trader.runtime import runtime_identity
+from agentic_trader.telemetry.event_loop import monitor_event_loop
 
 
 logger = logging.getLogger("copilot")
@@ -159,9 +160,6 @@ async def daemon(no_llm: bool) -> None:
             config.scheduler.macro_briefing_hour,
             config.scheduler.macro_briefing_minute,
         )
-    scheduler.start()
-    logger.info("Scheduler started: scanning every %dh, reconciling positions every 1m.", interval)
-
     if copilot.notifier.is_configured():
         logger.info("Starting Telegram Bot listener for interactive callbacks...")
         await copilot.notifier.start_polling()
@@ -173,12 +171,19 @@ async def daemon(no_llm: bool) -> None:
     if copilot.metrics_server:
         await copilot.metrics_server.start()
 
+    lag_task = asyncio.create_task(monitor_event_loop(config.telemetry, copilot.metrics, copilot.db.record_audit))
+    scheduler.start()
+    logger.info("Scheduler started: scanning every %dh, reconciling positions every 1m.", interval)
+
     try:
         while True:
             await asyncio.sleep(1)
     except KeyboardInterrupt, SystemExit, asyncio.CancelledError:
         logger.info("Shutting down daemon...")
         copilot._shutdown_event.set()
+        lag_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await lag_task
         if copilot.metrics_server:
             await copilot.metrics_server.stop()
         if stream_task and not stream_task.done():

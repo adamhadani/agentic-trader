@@ -142,3 +142,22 @@ docker compose exec copilot copilot db current
 For systemd or another supervisor, run the same `copilot daemon` command with one
 process, an explicit working directory/environment, persistent DB storage and restart
 policy. Review data/Telegram freshness in addition to process health.
+
+## Polling freshness and event-loop stalls
+
+Run `uv run python scripts/verify_runtime.py` after restart. Besides broker/report
+agreement, it checks the running daemon's successful-poll timestamp and poll-health
+gauge; a separate `getMe` request alone cannot establish poller health.
+
+Telegram request retries and timeouts live under `telegram` in YAML. Poll errors
+are recovered by the SDK and audited with recovery/periodic success. Every handler
+records update ID and lifecycle; request audits retain delivery outcome/message ID.
+No handler or trade action is automatically replayed. A lost Telegram HTTP response
+may produce a duplicate message on retry. Slow interactive commands still queue
+later commands because handler execution remains serialized.
+
+The generic event-loop monitor exports lag and records `event_loop_stall` above
+`telemetry.event_loop_warning_seconds` (default 2s), sampled every
+`telemetry.event_loop_sample_seconds` (default 1s). Consult those records alongside
+poll/command audits when a command appears delayed. Market-data, simulation quote,
+correlation and research computation boundaries now offload blocking work.
