@@ -11,6 +11,9 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from langchain_core.tools import BaseTool, tool
 
+from agentic_trader.research.alpha.catalog import AlphaCatalog
+from agentic_trader.research.alpha.promotion import AlphaPromotionManager
+from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 from agentic_trader.screeners.indicators import (
     calculate_atr,
     calculate_ema,
@@ -224,6 +227,99 @@ def make_copilot_tools(copilot: TradingCopilot) -> list[BaseTool]:
         except Exception as e:
             return f"Error retrieving system health: {e}"
 
+    @tool
+    async def get_alpha_catalog() -> str:
+        """Fetch the formulaic alpha catalog, including institutional WorldQuant 101 formulas and active promoted production alphas."""
+        try:
+            mgr = AlphaPromotionManager()
+            promoted = mgr.list_active_alphas()
+            catalog = AlphaCatalog()
+            catalog_alphas = catalog.list_alphas()
+
+            lines = ["🧪 Formulaic Alpha Intelligence:"]
+            lines.append(f"\nActive Production Alphas ({len(promoted)}):")
+            if not promoted:
+                lines.append("  - None currently active in production desk.")
+            else:
+                for a in promoted:
+                    m = a.metrics
+                    sr_str = f"{m.sharpe_oos:.2f}" if m else "N/A"
+                    dsr_str = f"{m.dsr:.2f}" if m else "N/A"
+                    lines.append(
+                        f"  - [{a.alpha_id}] {a.definition.name} (Alloc: {a.allocation_weight * 100:.0f}%, "
+                        f"OOS Sharpe: {sr_str}, DSR: {dsr_str})\n"
+                        f"    Expression: {a.definition.expression}"
+                    )
+
+            lines.append(f"\nCatalog Library ({len(catalog_alphas)} Institutional Formulas):")
+            lines.extend(f"  - [{ca.alpha_id}] {ca.name}: {ca.expression}" for ca in catalog_alphas[:10])
+            if len(catalog_alphas) > 10:
+                lines.append(f"  ... and {len(catalog_alphas) - 10} more formulas.")
+
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error retrieving alpha catalog: {e}"
+
+    @tool
+    async def promote_alpha(alpha_id: str, allocation_weight: float = 0.10, notes: str = "") -> str:
+        """Promote an institutional or candidate formulaic alpha into production desk trading.
+
+        Args:
+            alpha_id: Identifier of the alpha (e.g., 'alpha_wq_006', 'alpha_wq_054').
+            allocation_weight: Capital allocation weight (e.g. 0.10 for 10%, default 0.10).
+            notes: Optional operator rationale or audit notes.
+        """
+        try:
+            mgr = AlphaPromotionManager()
+            catalog = AlphaCatalog()
+            defn = catalog.get(alpha_id)
+            if not defn:
+                return f"Alpha '{alpha_id}' not found in catalog. Use get_alpha_catalog to list available alphas."
+
+            rec = mgr.promote(
+                alpha=defn,
+                promoted_by="copilot_chat",
+                allocation_weight=allocation_weight,
+                notes=notes or f"Promoted via conversational copilot: {defn.name}",
+            )
+
+            # Dynamically register in Copilot's active strategy engine if available
+            if hasattr(copilot, "strategy_engine") and hasattr(copilot.strategy_engine, "registry"):
+                copilot.strategy_engine.registry.register(FormulaicAlphaStrategy(definition=defn))
+
+            return (
+                f"✅ Successfully promoted '{rec.alpha_id}' ({defn.name}) into production desk!\n"
+                f"- Allocation: {rec.allocation_weight * 100:.0f}%\n"
+                f"- Expression: {defn.expression}\n"
+                f"- Audit Trail: Stored in config/promoted_alphas.yaml"
+            )
+        except Exception as e:
+            return f"Error promoting alpha '{alpha_id}': {e}"
+
+    @tool
+    async def demote_alpha(alpha_id: str, notes: str = "") -> str:
+        """Demote and deactivate a formulaic alpha from production trading.
+
+        Args:
+            alpha_id: Identifier of the promoted alpha to demote (e.g., 'alpha_wq_006').
+            notes: Optional reason for deactivation / demotion.
+        """
+        try:
+            mgr = AlphaPromotionManager()
+            success = mgr.demote(alpha_id=alpha_id, reason=notes)
+            if not success:
+                return f"No active promoted alpha found with ID '{alpha_id}'."
+
+            if hasattr(copilot, "strategy_engine") and hasattr(copilot.strategy_engine, "registry"):
+                copilot.strategy_engine.registry.unregister(alpha_id)
+
+            return (
+                f"🛑 Successfully demoted '{alpha_id}' from production desk.\n"
+                f"- Reason: {notes or 'Deactivated via copilot'}"
+            )
+        except Exception as e:
+            return f"Error demoting alpha '{alpha_id}': {e}"
+
     return [
         get_open_positions,
         get_portfolio_status,
@@ -235,4 +331,7 @@ def make_copilot_tools(copilot: TradingCopilot) -> list[BaseTool]:
         get_pairs_cointegration,
         get_technical_summary,
         get_system_health,
+        get_alpha_catalog,
+        promote_alpha,
+        demote_alpha,
     ]

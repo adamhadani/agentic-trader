@@ -5,6 +5,7 @@ import os
 
 import click
 
+from agentic_trader.cli.commands.alpha import alpha_group
 from agentic_trader.cli.commands.backtest import backtest
 from agentic_trader.cli.commands.db import db_group
 from agentic_trader.cli.commands.options import gex
@@ -78,6 +79,7 @@ cli.add_command(listen)
 cli.add_command(doctor)
 cli.add_command(eval_command, name="eval")
 cli.add_command(db_group, name="db")
+cli.add_command(alpha_group, name="alpha")
 
 
 def main() -> None:

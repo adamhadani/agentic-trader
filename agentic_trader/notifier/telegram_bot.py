@@ -34,6 +34,8 @@ from agentic_trader.constants import (
     ExitReason,
     SignalStatus,
 )
+from agentic_trader.presentation.formatters import TelegramHtmlFormatter
+from agentic_trader.research.alpha import AlphaCatalog, AlphaPromotionManager
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -332,6 +334,7 @@ class TelegramNotifier:
         panic_handler: Callable[[str], Awaitable[Any]] | None = None,
         resume_handler: Callable[[], Awaitable[Any]] | None = None,
         chat_handler: Callable[[str, str | int], Awaitable[str]] | None = None,
+        alphas_provider: Callable[[], Awaitable[str]] | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
@@ -352,6 +355,7 @@ class TelegramNotifier:
         self.panic_handler = panic_handler
         self.resume_handler = resume_handler
         self.chat_handler = chat_handler
+        self.alphas_provider = alphas_provider
         self.app: Application | None = None
 
         if self.is_configured() and self.bot_token:
@@ -385,6 +389,7 @@ class TelegramNotifier:
                 BotCommand("perf", "Cumulative closed trade performance and win rate"),
                 BotCommand("regime", "Real-time VIX, 10Y yield, and Dollar Index regime"),
                 BotCommand("macro", "Yield curve, credit OAS, inflation & macro stress"),
+                BotCommand("alphas", "Formulaic alpha intelligence & active strategies"),
                 BotCommand("pairs", "Statistical arbitrage pairs, cointegration & Z-scores"),
                 BotCommand("gex", "Gamma exposure, dealer walls, and gamma flip"),
                 BotCommand("backtest", "Offline backtest simulation"),
@@ -447,6 +452,7 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("perf", self.handle_perf_command))
             self.app.add_handler(CommandHandler("regime", self.handle_regime_command))
             self.app.add_handler(CommandHandler("macro", self.handle_macro_command))
+            self.app.add_handler(CommandHandler("alphas", self.handle_alphas_command))
             self.app.add_handler(CommandHandler("backtest", self.handle_backtest_command))
             self.app.add_handler(CommandHandler("gex", self.handle_gex_command))
             self.app.add_handler(CommandHandler("pairs", self.handle_pairs_command))
@@ -520,8 +526,9 @@ class TelegramNotifier:
             "• /status - View portfolio exposure, cash base, and macro events\n"
             "• /positions - View active tracked trades and unrealized P&amp;L\n"
             "• /perf - View cumulative closed trade performance and win rate\n"
-            "• /regime - View real-time VIX, 10Y yield, and Dollar Index regime\n"
-            "• /macro - View yield curve structure, credit OAS, inflation &amp; macro stress\n"
+            "• /regime - View real-time VIX, 10Y yield, and Dollar Index macro filter\n"
+            "• /macro - View yield curve spreads, credit OAS, and macro stress index\n"
+            "• /alphas - View formulaic alpha intelligence, catalog, and active strategies\n"
             "• /pairs - View statistical arbitrage pairs, cointegration &amp; Z-scores\n"
             "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
@@ -589,6 +596,27 @@ class TelegramNotifier:
                 await update.message.reply_text(f"❌ Macro intelligence error: {e}")
         else:
             await update.message.reply_text("Macro intelligence provider not attached.")
+
+    async def handle_alphas_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        if self.alphas_provider:
+            try:
+                resp = await self.alphas_provider()
+                await update.message.reply_text(resp, parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Formulaic alphas error: {e}")
+        else:
+            try:
+                mgr = AlphaPromotionManager()
+                catalog = AlphaCatalog()
+                promoted = mgr.list_active_alphas()
+                resp = TelegramHtmlFormatter.format_alphas_dashboard_html(
+                    promoted, catalog_count=len(catalog.list_alphas())
+                )
+                await update.message.reply_text(resp, parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error displaying alphas: {e}")
 
     async def handle_backtest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:

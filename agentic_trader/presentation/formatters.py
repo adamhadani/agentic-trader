@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from agentic_trader.agent.macro import MacroIntelligenceReport
     from agentic_trader.agent.regime import RegimeSnapshot
     from agentic_trader.backtest.models import BacktestResult
+    from agentic_trader.research.alpha.models import AlphaCandidate, PromotedAlphaRecord
 
 
 @dataclass
@@ -559,3 +560,101 @@ class TelegramHtmlFormatter:
         lines.append("⚠️ <i>All automated scans and order executions are strictly HALTED.</i>")
         lines.append("👉 Send <code>/resume</code> to clear the kill switch and restore normal operations.")
         return "\n".join(lines)
+
+    @staticmethod
+    def format_alphas_dashboard_html(
+        promoted: list[PromotedAlphaRecord],
+        catalog_count: int = 0,
+    ) -> str:
+        """Render active promoted formulaic alphas as an institutional Telegram HTML card."""
+        lines = [
+            "🧪 <b>FORMULAIC ALPHA INTELLIGENCE</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"• <b>Active Promoted Alphas:</b> <code>{len(promoted)}</code>",
+            f"• <b>Catalog Library Size:</b> <code>{catalog_count}</code> institutional formulas",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        if not promoted:
+            lines.append("<i>No formulaic alphas currently active in production desk.</i>")
+            lines.append("👉 Run <code>copilot alpha mine --auto-promote</code> to discover candidates.")
+        else:
+            lines.append("<b>Active Production Alphas:</b>")
+            for a in promoted:
+                defn = a.definition
+                m = a.metrics
+                aid = html.escape(a.alpha_id)
+                name = html.escape(defn.name)
+                expr = html.escape(defn.expression)
+                weight_pct = a.allocation_weight * 100.0
+
+                sharpe_str = f"{m.sharpe_oos:.2f}" if m else "N/A"
+                dsr_str = f"{m.dsr:.2f}" if m else "N/A"
+                ic_str = f"{m.rank_ic_mean:+.3f}" if m else "N/A"
+
+                lines.append(f"• <b><code>{aid}</code></b> ({name}) [Alloc: <code>{weight_pct:.0f}%</code>]")
+                lines.append(f"  <i>Expr:</i> <code>{expr}</code>")
+                lines.append(
+                    f"  <i>OOS Sharpe:</i> <code>{sharpe_str}</code> | <i>DSR:</i> <code>{dsr_str}</code> | <i>IC:</i> <code>{ic_str}</code>"
+                )
+                lines.append("")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("💡 <i>Use /alphas for status or 'copilot alpha' in CLI.</i>")
+        return "\n".join(lines)
+
+
+def format_mined_alphas_table(candidates: list[AlphaCandidate]) -> str:
+    """Format mined alpha candidates as a clean ASCII tabular tearsheet."""
+    if not candidates:
+        return "No alpha candidates met the minimum statistical gating filters."
+
+    lines = [
+        "=" * 105,
+        f"{'ALPHA ID':<20} | {'NAME':<32} | {'OOS SR':<7} | {'DSR':<6} | {'RANK IC':<8} | {'WIN%':<6} | {'TRADES':<6}",
+        "-" * 105,
+    ]
+    for c in candidates:
+        m = c.metrics
+        d = c.definition
+        lines.append(
+            f"{d.alpha_id:<20} | {d.name[:30]:<32} | {m.sharpe_oos:>7.2f} | {m.dsr:>6.2f} | {m.rank_ic_mean:>+8.3f} | {m.win_rate * 100:>5.1f}% | {m.total_trades:>6d}"
+        )
+    lines.append("=" * 105)
+    return "\n".join(lines)
+
+
+def format_alpha_inspection_report(candidate: AlphaCandidate) -> str:
+    """Format a detailed quantitative tearsheet for an individual formulaic alpha candidate."""
+    d = candidate.definition
+    m = candidate.metrics
+
+    lines = [
+        "=" * 78,
+        f"🔬 QUANTITATIVE TEARSHEET: {d.alpha_id.upper()} ({d.name})",
+        "=" * 78,
+        f"Expression:       {d.expression}",
+        f"Description:      {d.description}",
+        f"Origin:           {d.origin} | Direction: {d.direction} | Timeframe: {d.timeframe}",
+        f"Thresholds:       Entry Z >= {d.entry_threshold:.2f} | Exit Z <= {d.exit_threshold:.2f}",
+        "-" * 78,
+        "STATISTICAL & OVERFITTING METRICS (Out-of-Sample):",
+        f"• Out-of-Sample Sharpe Ratio:     {m.sharpe_oos:+.2f}",
+        f"• In-Sample Sharpe Ratio:         {m.sharpe_is:+.2f}",
+        f"• Deflated Sharpe Ratio (DSR):    {m.dsr:.2f}  ({'✅ PASS (>0.95)' if m.dsr >= 0.95 else '⚠️ CAUTION'})",
+        f"• Mean Rank IC (Spearman):        {m.rank_ic_mean:+.4f}",
+        f"• Rank IC Information Ratio (IR): {m.rank_ic_ir:+.2f}",
+        f"• Annualized Strategy Return:     {m.annualized_return_pct:+.2f}%",
+        f"• Maximum Drawdown:               {m.max_drawdown_pct:.2f}%",
+        f"• Profit Factor:                  {m.profit_factor:.2f}",
+        f"• Win Rate:                       {m.win_rate * 100:.1f}% ({m.total_trades} trades)",
+    ]
+
+    if candidate.correlations:
+        lines.append("-" * 78)
+        lines.append("CROSS-STRATEGY RETURN CORRELATIONS:")
+        for strat_name, corr_val in candidate.correlations.items():
+            lines.append(f"• vs {strat_name:<25}: {corr_val:+.3f}")
+
+    lines.append("=" * 78)
+    return "\n".join(lines)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agentic_trader.constants import ConflictResolutionMode, Direction, StrategyMode
@@ -99,8 +100,45 @@ class ConflictResolver:
 class StrategyRegistry:
     """Central registry and lifecycle manager for all quantitative trading strategies."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        auto_load_promoted: bool = False,
+        promoted_alphas_path: Path | str | None = None,
+    ) -> None:
         self._strategies: dict[str, BaseStrategy] = {}
+        if auto_load_promoted:
+            self.load_promoted_alphas(config_path=promoted_alphas_path)
+
+    def load_promoted_alphas(self, config_path: Path | str | None = None) -> int:
+        """Load all active promoted formulaic alphas from configuration."""
+        try:
+            from agentic_trader.research.alpha.promotion import AlphaPromotionManager  # noqa: PLC0415
+            from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy  # noqa: PLC0415
+
+            mgr = AlphaPromotionManager(config_path)
+            active = mgr.list_active_alphas()
+            active_ids = {rec.alpha_id.lower() for rec in active}
+
+            # Remove previously registered formulaic alphas that are no longer active
+            to_remove = [
+                sid
+                for sid, s in self._strategies.items()
+                if isinstance(s, FormulaicAlphaStrategy) and sid not in active_ids
+            ]
+            for sid in to_remove:
+                self.unregister(sid)
+
+            loaded = 0
+            for rec in active:
+                strat = FormulaicAlphaStrategy(definition=rec.definition)
+                self.register(strat)
+                loaded += 1
+            if loaded > 0:
+                logger.debug("Loaded %d active promoted formulaic alphas into registry", loaded)
+            return loaded
+        except Exception as e:
+            logger.warning("Could not load promoted alphas into registry: %s", e)
+            return 0
 
     def register(self, strategy: BaseStrategy) -> None:
         """Register a strategy instance into the registry."""
@@ -109,6 +147,14 @@ class StrategyRegistry:
             logger.debug("Overwriting strategy registration for '%s'", sid)
         self._strategies[sid] = strategy
 
+    def unregister(self, strategy_id: str) -> bool:
+        """Unregister a strategy by ID."""
+        sid = strategy_id.lower()
+        if sid in self._strategies:
+            del self._strategies[sid]
+            return True
+        return False
+
     def get(self, strategy_id: str) -> BaseStrategy | None:
         """Retrieve a registered strategy by ID (case-insensitive)."""
         return self._strategies.get(strategy_id.lower())
@@ -116,6 +162,10 @@ class StrategyRegistry:
     def list_strategies(self) -> list[str]:
         """Return list of all registered strategy IDs."""
         return sorted(self._strategies.keys())
+
+    def list_registered_strategies(self) -> list[str]:
+        """Alias for list_strategies."""
+        return self.list_strategies()
 
     def get_active_strategies(
         self,
@@ -156,7 +206,12 @@ class StrategyRegistry:
         active_strats: list[BaseStrategy] = []
         for sid in configured_active:
             strat = self.get(sid.lower())
-            if strat and strat.is_enabled(config):
+            if strat and strat.is_enabled(config) and strat not in active_strats:
+                active_strats.append(strat)
+
+        # Include any active promoted formulaic alphas in parallel screening
+        for sid, strat in self._strategies.items():
+            if sid.startswith("alpha_") and strat.is_enabled(config) and strat not in active_strats:
                 active_strats.append(strat)
 
         return active_strats

@@ -48,7 +48,7 @@ This document tracks the prioritized strategic initiatives for the **Cash-Plus T
 | **Phase 38** | Live Alpaca Paper Trade Execution, Reconciler Safety & Codebase Simplification | **Completed** | Strict directional opposing side rules, dynamic unit sizing on exit cards, pruning unused shims |
 | **Phase 39** | Conversational Trading Copilot & Agentic Tool Calling via LangGraph, LiteLLM & LangSmith | **Completed** | Stateful ReAct copilot in Telegram with LangGraph, tool palette, LiteLLM provider support, and LangSmith tracing |
 | **Phase 40** | Multi-Asset Macro Intelligence, Yield Curve & Credit Regime Filter | **Completed** | US Treasury curve (3M-30Y), public FRED OAS/Breakevens, compound macro stress index, Telegram `/macro`, morning briefing |
-| **Phase 41** | Formulaic Alpha Mining, Expression DSL & VectorBT Research Harness | **Planned** | WorldQuant 101-style alpha DSL, genetic expression search, VectorBT backtesting, auto-promotion |
+| **Phase 41** | Formulaic Alpha Mining, Expression DSL & VectorBT Research Harness | **Completed** | WorldQuant 101-style alpha DSL, genetic search engine, DSR overfitting protection, auto-promotion |
 
 ---
 
@@ -1021,24 +1021,34 @@ Expand macro regime detection beyond single-point VIX and 10Y yield metrics to i
 
 ---
 
-## Phase 41: Formulaic Alpha Mining, Expression DSL & VectorBT Research Harness
+## Phase 41: Formulaic Alpha Mining, Expression DSL & VectorBT Research Harness (**Completed**)
 
 ### Objective
 Build a research-grade alpha generation and exploration engine inspired by quantitative institutional workflows (e.g. WorldQuant 101 Alphas), enabling programmatic discovery and validation of novel trading signals.
 
-### Key Deliverables
-1. **Domain-Specific Expression Language (DSL) for Alphas**:
-   - Implement composable time-series and cross-sectional operators:
-     - Time-series: `ts_rank(x, d)`, `ts_corr(x, y, d)`, `ts_std(x, d)`, `decay_linear(x, d)`, `ts_argmax(x, d)`, `delta(x, d)`.
-     - Cross-sectional: `rank(x)`, `zscore(x)`, `scale(x)`, `indneutralize(x, g)`.
-2. **Genetic Programming & Expression Tree Search**:
-   - Automated exploration of formulaic alpha expressions on multi-asset universe (equities, ETFs, futures).
-   - Tree mutation, crossover, and fitness evaluation against Out-of-Sample (OOS) data.
-3. **VectorBT Pro Integration & Overfitting Protection**:
-   - High-throughput vectorized backtesting across parameter grids using `vectorbt`.
-   - Deflated Sharpe Ratio (DSR), Family-Wise Error Rate (FWER) controls, and White's Reality Check to eliminate p-hacking and selection bias.
-4. **Auto-Promotion Pipeline**:
-   - Discovered alphas meeting Sharpe, turnover, and low correlation thresholds can be exported directly to YAML strategy configurations for live paper testing.
+### Key Deliverables & Implementation Summary
+1. **Domain-Specific Expression Language (DSL) & Safe AST Parser**:
+   - Implemented vectorized math, time-series, and cross-sectional operators without `eval()`:
+     - Time-series: `ts_rank(x, d)`, `ts_corr(x, y, d)`, `ts_std(x, d)`, `decay_linear(x, d)`, `ts_argmax(x, d)`, `delta(x, d)`, `sma(x, d)`.
+     - Cross-sectional & scaling: `rank(x)`, `zscore(x)`, `scale(x)`, `sign(x)`, `log(x)`, `abs(x)`.
+   - AST expression evaluator safely binds OHLCV market features with clean syntax tree validation in `agentic_trader/research/alpha/dsl.py` and `operators.py`.
+2. **Institutional Alpha Catalog & Genetic Search Engine**:
+   - Pre-cataloged institutional WorldQuant 101 and factor library alphas (`alpha_wq_001`, `alpha_wq_006`, `alpha_wq_012`, `alpha_wq_028`, `alpha_wq_053`, `alpha_vol_reversal`, `alpha_trend_expansion`).
+   - Exploration engine (`AlphaMiner`) performing combinatorial and genetic formula generation, In-Sample / Out-of-Sample splitting, and composite ranking.
+3. **Statistical Overfitting Protection & Deflated Sharpe Ratio (DSR)**:
+   - Implemented Bailey & López de Prado Deflated Sharpe Ratio (`calculate_deflated_sharpe_ratio`) correcting for non-normality (skewness, kurtosis) and multiple testing trials ($N$).
+   - Spearman Rank Information Coefficient (`calculate_rank_ic`) with Information Ratio (IR).
+   - Cross-strategy correlation gating against live desk returns to reject redundant signals.
+4. **Auto-Promotion Pipeline & Production Execution Integration**:
+   - Atomic YAML persistence (`AlphaPromotionManager`) managing lifecycle states (`promoted`, `demoted`, `candidate`) in `config/promoted_alphas.yaml`.
+   - `FormulaicAlphaStrategy(BaseStrategy)` dynamically registered in `StrategyRegistry`. Every trade and candidate is stamped with its immutable logical strategy ID (e.g., `alpha_wq_006`), ensuring 100% auditability across screener, risk evaluator, and order execution.
+5. **Operator Interfaces & Copilot Architecture**:
+   - CLI commands: `copilot alpha catalog`, `list`, `mine`, `inspect <id>`, `promote <id>`, `demote <id>`, `test <id>`.
+   - Telegram `/alphas` command, autocomplete registration, and interactive HTML dashboard.
+   - LangGraph Copilot tools: `get_alpha_catalog`, `promote_alpha`, `demote_alpha` allowing autonomous and conversational alpha management from Telegram chat.
+6. **Test Coverage & Verification**:
+   - 100% pre-commit compliance across all 19 hooks (ruff, mypy, pytest).
+   - Dedicated unit test suite across DSL (`test_alpha_dsl.py`), metrics (`test_alpha_metrics.py`), miner (`test_alpha_miner.py`), promotion (`test_alpha_promotion.py`), formulaic strategy (`test_formulaic_strategy.py`), CLI (`test_cli_alpha.py`), Telegram (`test_telegram_alphas.py`), and copilot tools (`test_copilot_alpha_tools.py`, `test_copilot_tools.py`).
 
 ---
 
