@@ -91,6 +91,16 @@ def make_copilot_tools(copilot: TradingCopilot) -> list[BaseTool]:
             return f"Error retrieving market regime: {e}"
 
     @tool
+    async def get_macro_intelligence() -> str:
+        """Fetch comprehensive multi-asset macro intelligence: US Treasury yield curve structure (3M, 2Y, 5Y, 10Y, 30Y),
+        10Y-2Y and 10Y-3M slopes, High Yield OAS credit spreads, breakeven inflation rates, and compound macro stress index."""
+        try:
+            raw_html = await copilot.get_macro_summary_html()
+            return _clean_html(raw_html)
+        except Exception as e:
+            return f"Error retrieving macro intelligence: {e}"
+
+    @tool
     async def trigger_market_scan(
         asset_class: str = "equities",
         strategy: str = "trend_pullback",
@@ -218,6 +228,7 @@ def make_copilot_tools(copilot: TradingCopilot) -> list[BaseTool]:
         get_open_positions,
         get_portfolio_status,
         get_market_regime,
+        get_macro_intelligence,
         trigger_market_scan,
         run_backtest,
         get_gex_surface,

@@ -12,9 +12,9 @@ from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
 from agentic_trader.screeners.strategies import ScreenerCandidate
 
 
-def create_candidate(direction="LONG", price=5800.0, atr=20.0, swing_low=5770.0, swing_high=5830.0):
+def create_candidate(contract="/MES", direction="LONG", price=5800.0, atr=20.0, swing_low=5770.0, swing_high=5830.0):
     return ScreenerCandidate(
-        contract="/MES",
+        contract=contract,
         timeframe="4h",
         strategy="TREND_PULLBACK",
         direction=direction,
@@ -262,3 +262,58 @@ async def test_evaluator_market_session_rejection(config):
 
     assert eval_res.approved is False
     assert "Market Session Filter" in (eval_res.rejection_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_macro_stress_risk_budget_scaling(config):
+    # Setup mock regime with HIGH macro stress (risk multiplier 0.50)
+    mock_regime_high = RegimeDetector()
+    high_snapshot = RegimeSnapshot(
+        vix=25.0,
+        vix_regime=VolatilityRegime.ELEVATED,
+        tnx=4.8,
+        dxy=105.0,
+        breakout_allowed=True,
+        min_rr_threshold=2.2,
+        timestamp=datetime.now(UTC),
+        summary_text="VIX: 25.00 | Macro Stress: HIGH (0.50x)",
+        risk_multiplier=0.50,
+    )
+    mock_regime_high.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=high_snapshot)  # type: ignore
+
+    evaluator_high = RiskEvaluator(config, regime_detector=mock_regime_high)
+
+    # Setup normal regime (risk multiplier 1.0)
+    mock_regime_norm = RegimeDetector()
+    norm_snapshot = RegimeSnapshot(
+        vix=17.0,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=4.2,
+        dxy=102.0,
+        breakout_allowed=True,
+        min_rr_threshold=2.0,
+        timestamp=datetime.now(UTC),
+        summary_text="VIX: 17.00 | Macro Stress: LOW (1.00x)",
+        risk_multiplier=1.00,
+    )
+    mock_regime_norm.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=norm_snapshot)  # type: ignore
+
+    evaluator_norm = RiskEvaluator(config, regime_detector=mock_regime_norm)
+
+    candidate = create_candidate(
+        contract="SPY",
+        direction="LONG",
+        price=500.0,
+        atr=5.0,
+        swing_low=492.0,
+        swing_high=508.0,
+    )
+    candidate.asset_class = AssetClass.EQUITY
+
+    eval_norm = await evaluator_norm.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
+    eval_high = await evaluator_high.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
+
+    assert eval_norm.approved is True
+    assert eval_high.approved is True
+    assert eval_high.quantity < eval_norm.quantity
+    assert eval_high.risk_dollars < eval_norm.risk_dollars

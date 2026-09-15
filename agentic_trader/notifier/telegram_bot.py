@@ -325,6 +325,7 @@ class TelegramNotifier:
         execute_handler: Callable[..., Awaitable[tuple[bool, str]]] | None = None,
         perf_provider: Callable[[], Awaitable[str]] | None = None,
         regime_provider: Callable[[], Awaitable[str]] | None = None,
+        macro_provider: Callable[[], Awaitable[str]] | None = None,
         backtest_runner: Callable[[str, str], Awaitable[str]] | None = None,
         gex_provider: Callable[[str], Awaitable[str]] | None = None,
         pairs_provider: Callable[[], Awaitable[str]] | None = None,
@@ -344,6 +345,7 @@ class TelegramNotifier:
         self.execute_handler = execute_handler
         self.perf_provider = perf_provider
         self.regime_provider = regime_provider
+        self.macro_provider = macro_provider
         self.backtest_runner = backtest_runner
         self.gex_provider = gex_provider
         self.pairs_provider = pairs_provider
@@ -382,6 +384,7 @@ class TelegramNotifier:
                 BotCommand("positions", "Active tracked trades and unrealized P&L"),
                 BotCommand("perf", "Cumulative closed trade performance and win rate"),
                 BotCommand("regime", "Real-time VIX, 10Y yield, and Dollar Index regime"),
+                BotCommand("macro", "Yield curve, credit OAS, inflation & macro stress"),
                 BotCommand("pairs", "Statistical arbitrage pairs, cointegration & Z-scores"),
                 BotCommand("gex", "Gamma exposure, dealer walls, and gamma flip"),
                 BotCommand("backtest", "Offline backtest simulation"),
@@ -443,6 +446,7 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("close", self.handle_close_command))
             self.app.add_handler(CommandHandler("perf", self.handle_perf_command))
             self.app.add_handler(CommandHandler("regime", self.handle_regime_command))
+            self.app.add_handler(CommandHandler("macro", self.handle_macro_command))
             self.app.add_handler(CommandHandler("backtest", self.handle_backtest_command))
             self.app.add_handler(CommandHandler("gex", self.handle_gex_command))
             self.app.add_handler(CommandHandler("pairs", self.handle_pairs_command))
@@ -517,6 +521,7 @@ class TelegramNotifier:
             "• /positions - View active tracked trades and unrealized P&amp;L\n"
             "• /perf - View cumulative closed trade performance and win rate\n"
             "• /regime - View real-time VIX, 10Y yield, and Dollar Index regime\n"
+            "• /macro - View yield curve structure, credit OAS, inflation &amp; macro stress\n"
             "• /pairs - View statistical arbitrage pairs, cointegration &amp; Z-scores\n"
             "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
@@ -572,6 +577,18 @@ class TelegramNotifier:
             await update.message.reply_text(resp, parse_mode="HTML")
         else:
             await update.message.reply_text("Regime provider not attached.")
+
+    async def handle_macro_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        if self.macro_provider:
+            try:
+                resp = await self.macro_provider()
+                await update.message.reply_text(resp, parse_mode="HTML")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Macro intelligence error: {e}")
+        else:
+            await update.message.reply_text("Macro intelligence provider not attached.")
 
     async def handle_backtest_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:

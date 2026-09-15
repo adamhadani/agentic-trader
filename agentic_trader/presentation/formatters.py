@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
+    from agentic_trader.agent.macro import MacroIntelligenceReport
     from agentic_trader.agent.regime import RegimeSnapshot
     from agentic_trader.backtest.models import BacktestResult
 
@@ -420,6 +421,48 @@ class TelegramHtmlFormatter:
             f"• <b>Squeeze Breakouts:</b> <b>{breakout_str}</b>\n\n"
             f"📝 <b>Quantitative Assessment:</b>\n"
             f"<i>{regime.summary_text}</i>"
+        )
+
+    @staticmethod
+    def format_macro_dashboard_html(report: MacroIntelligenceReport) -> str:
+        s = report.stress
+        y = report.yields
+        sp = report.spreads
+        c = report.credit
+        inf = report.inflation
+
+        stress_badge = {
+            "LOW": "🟢 LOW STRESS",
+            "MODERATE": "🟡 MODERATE STRESS",
+            "HIGH": "🟠 HIGH STRESS",
+            "EXTREME": "🔴 EXTREME STRESS",
+        }.get(s.level.value, s.level.value)
+
+        curve_color = "🟢" if sp.regime == "NORMAL_STEEP" else ("🟡" if sp.regime in ("FLAT", "STEEP") else "🔴")
+        credit_color = "🟢" if c.regime == "BENIGN" else ("🟡" if c.regime == "ELEVATED" else "🔴")
+        breakout_str = "Allowed ✅" if s.squeeze_breakout_allowed else "Suppressed ⚠️"
+
+        drivers_text = ", ".join(s.key_drivers) if s.key_drivers else "Benign conditions"
+
+        return (
+            "🏛️ <b>MACRO INTELLIGENCE & YIELD CURVE</b>\n\n"
+            f"<b>Status:</b> {stress_badge} (Risk Multiplier: <code>{s.risk_multiplier:.2f}x</code>)\n\n"
+            f"📈 <b>US Treasury Term Structure:</b> {curve_color} <code>{sp.regime.value}</code>\n"
+            f"• <b>3M:</b> <code>{y.yield_3m:.2f}%</code> | <b>2Y:</b> <code>{y.yield_2y:.2f}%</code> | <b>5Y:</b> <code>{y.yield_5y:.2f}%</code>\n"
+            f"• <b>10Y:</b> <code>{y.yield_10y:.2f}%</code> | <b>30Y:</b> <code>{y.yield_30y:.2f}%</code>\n"
+            f"• <b>10Y-2Y Slope:</b> <code>{sp.slope_10y_2y_bps:+.1f} bps</code>\n"
+            f"• <b>10Y-3M Slope:</b> <code>{sp.slope_10y_3m_bps:+.1f} bps</code>\n"
+            f"• <b>Butterfly Curvature:</b> <code>{sp.curvature_butterfly_bps:+.1f} bps</code>\n\n"
+            f"💳 <b>Credit Risk & Inflation Expectations:</b>\n"
+            f"• <b>High Yield OAS:</b> {credit_color} <code>{c.high_yield_oas_bps:.0f} bps</code> ({c.high_yield_oas_pct:.2f}%) | <b>{c.regime.value}</b>\n"
+            f"• <b>10Y Breakeven Inflation:</b> <code>{inf.breakeven_10y:.2f}%</code> ({inf.regime.value})\n"
+            f"• <b>5Y Breakeven Inflation:</b> <code>{inf.breakeven_5y:.2f}%</code>\n\n"
+            f"🌪️ <b>Volatility & Dollar:</b>\n"
+            f"• <b>CBOE VIX:</b> <code>{report.vix:.2f}</code> | <b>DXY:</b> <code>{report.dxy:.2f}</code>\n\n"
+            f"🛡️ <b>Strategy Policy & Risk Budget:</b>\n"
+            f"• <b>Squeeze Breakouts:</b> <b>{breakout_str}</b>\n"
+            f"• <b>Minimum Required R:R:</b> <code>{s.min_rr_threshold:.1f}:1</code>\n"
+            f"• <b>Key Drivers:</b> <i>{html.escape(drivers_text)}</i>"
         )
 
     @staticmethod

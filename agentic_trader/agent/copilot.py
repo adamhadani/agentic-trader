@@ -117,6 +117,7 @@ class TradingCopilot:
             execute_handler=self.execute_signal_by_id,
             perf_provider=self.get_performance_summary_html,
             regime_provider=self.get_regime_summary_html,
+            macro_provider=self.get_macro_summary_html,
             backtest_runner=self.run_backtest_summary_html,
             gex_provider=self.run_gex_summary_html,
             pairs_provider=self.run_pairs_summary_html,
@@ -1540,6 +1541,21 @@ class TradingCopilot:
         """Format HTML volatility and macro regime for Telegram /regime."""
         regime = await self.regime_detector.get_regime()
         return TelegramHtmlFormatter.format_regime_html(regime)
+
+    async def get_macro_summary_html(self) -> str:
+        """Format HTML multi-asset macro intelligence & yield curve dashboard for Telegram /macro."""
+        report = await self.regime_detector.macro_engine.get_macro_report()
+        return TelegramHtmlFormatter.format_macro_dashboard_html(report)
+
+    async def broadcast_macro_briefing(self) -> None:
+        """Broadcast morning macro intelligence card to Telegram."""
+        if self.notifier.is_configured():
+            try:
+                card = await self.get_macro_summary_html()
+                await self.notifier.send_message(card)
+                logger.info("Successfully broadcasted morning macro intelligence briefing to Telegram.")
+            except Exception as e:
+                logger.warning("Failed to broadcast morning macro briefing: %s", e)
 
     async def run_backtest_summary_html(self, symbol: str = "SPY", lookback: str = "1y") -> str:
         """Run on-demand backtest and format result as Telegram HTML."""
