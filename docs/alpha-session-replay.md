@@ -113,6 +113,8 @@ inspection: SPY, `delta(close,3)`, 15m, 60-second assumed delay, IEX and SIP, ov
 Retain missing coverage or denied-feed results. No feed fallback, date replacement,
 formula selection or threshold tuning follows inspection. This checks software/data
 contracts, not alpha profitability, statistical power or superiority of a feed.
+The [September 16 results](alpha-session-replay-2026-09-16.md) retain both SIP
+completions and both IEX coverage failures, with no simulated entries or promotions.
 
 ## Remaining promotion gates
 

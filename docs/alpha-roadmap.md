@@ -30,7 +30,7 @@ also recognize controlled positive cases and quantify its statistical power.
 | --- | --- | --- |
 | A1a | Implemented — [PR #35](https://github.com/adamhadani/agentic-trader/pull/35) | Calibration instruments and permanent control/reference tests; diagnostic outputs cannot authorize promotion. [Pilot evidence](alpha-calibration-2026-09-16.md). |
 | A1b | Implemented — [PR #36](https://github.com/adamhadani/agentic-trader/pull/36), [study results](alpha-study-2026-09-16.md) | All 1,952 jobs retained; scientific status incomplete (22 unavailable comparisons). No replacement gate accepted. |
-| A2 | A2a implemented — [PR #37](https://github.com/adamhadani/agentic-trader/pull/37); A2b session/minute replay groundwork implemented | [Replay contract](alpha-session-replay.md): observed calendar, strict minute coverage, shared execution engine and journaled diagnostics. Live signal-clock migration and broker execution observations remain; intraday promotion stays blocked. |
+| A2 | A2a implemented — [PR #37](https://github.com/adamhadani/agentic-trader/pull/37); A2b replay groundwork — [PR #38](https://github.com/adamhadani/agentic-trader/pull/38) | [Replay contract](alpha-session-replay.md) and [four-run evidence](alpha-session-replay-2026-09-16.md): SIP coverage complete, IEX incomplete in both windows. Live signal-clock migration and broker execution observations remain; intraday promotion stays blocked. |
 | A3 | Planned; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
 | A4 | Planned | Broader economic hypotheses and point-in-time universe/data coverage. |
 | A5 | Planned | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
@@ -105,6 +105,9 @@ sessions, 15m/1h/4h/session aggregation, a shared minute execution state machine
 explicit decision latency and durable diagnostic artifacts. It preserves the
 existing daily validation semantics. The predeclared four-run deployment-feed
 smoke test checks DST/early-close coverage without tuning a formula.
+Its [results](alpha-session-replay-2026-09-16.md) retain two SIP completions and two
+IEX coverage failures; neither successful replay generated an entry. No live-feed
+change or alpha qualification follows from this mechanics/data check.
 
 Remaining A2b: version and install this signal-bar contract in live acquisition,
 freshness and scan timing; collect actual publication/acknowledgment/fill evidence.

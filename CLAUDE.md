@@ -33,7 +33,7 @@ starting map; the linked domain guides own detailed contracts.
 | CLI composition and lifecycle | `cli/main.py`, `cli/utils.py`, `cli/commands/` |
 | Application orchestration | `agent/copilot.py:TradingCopilot` |
 | Signal evaluation and risk | `agent/evaluator.py`, `position_sizing.py`, `regime.py`, `macro.py`, `calendar.py` |
-| Market data and sessions | `data/`, `market/session.py`, `resilience/fallback.py` |
+| Market data and sessions | `data/`, `market/session.py`, `market/bars.py`, `resilience/fallback.py` |
 | Strategies | `screeners/base.py`, `strategies.py`, `registry.py`, `formulaic.py` |
 | Entry/close application services | `execution/entries.py`, `admission.py`, `closing.py` |
 | Broker adapters and transport | `broker/base.py`, `alpaca.py`, `paper.py`, `tradovate.py` |
