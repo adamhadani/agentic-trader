@@ -340,9 +340,20 @@ def search_comparison(bars, protocol, *, search_seed, bootstrap_seed, method):
     if not ranked:
         result["outcomes"] = dict.fromkeys(keys, False)
         return result
-    winner = ranked[0].definition
-    result["winner"] = winner.version_id  # Fixed before the first holdout computation.
-    variance = ranked[0].evidence["trial_variance"]
+    result["winner"] = ranked[0].definition.version_id  # Fixed before the first holdout computation.
+    try:
+        return _compare_frozen_winner(result, ranked[0], bars, protocol, policy=policy, bootstrap_seed=bootstrap_seed)
+    except Exception as exc:
+        # Retain completed discovery even when a numerical dependency fails later.
+        # The caller marks every matched endpoint unavailable, never a rejection.
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+
+def _compare_frozen_winner(result, candidate, bars, protocol, *, policy, bootstrap_seed):
+    winner = candidate.definition
+    run = result["run"]
+    variance = candidate.evidence["trial_variance"]
     families = {
         "current_local": {"trial_count": protocol.trial_budget, "trial_variance": variance},
         "current_lifetime": {

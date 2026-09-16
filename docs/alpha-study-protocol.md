@@ -3,6 +3,8 @@
 This predeclares the next calibration experiment. It can reject a proposed
 statistical procedure or identify uncertainty; it cannot activate an alpha or
 change production gates. The [roadmap](alpha-roadmap.md) owns milestone status.
+The completed run's [results and limitations](alpha-study-2026-09-16.md) are separate
+from this unchanged experimental design.
 
 ## Experiments
 

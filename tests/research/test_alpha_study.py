@@ -8,6 +8,7 @@ import pytest
 from arch.bootstrap import SPA
 from scipy.stats import binomtest
 
+from agentic_trader.research.alpha import study
 from agentic_trader.research.alpha.study import (
     StudyPhase,
     StudyProtocol,
@@ -159,6 +160,27 @@ def test_failed_or_missing_replicates_cannot_look_like_low_false_positive_rates(
     assert summary["missing_jobs"] == len(list(study_jobs(small_protocol)))
     assert not summary["authorizes_promotion"]
     assert all(r["rate"] is None for r in summary["summaries"])
+
+
+@pytest.mark.parametrize("stage", ["assessment", "bootstrap"])
+def test_comparison_failure_retains_frozen_winner_and_completed_search(monkeypatch, small_protocol, stage):
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected comparison failure")
+
+    if stage == "assessment":
+        monkeypatch.setattr(study, "assess_statistical_evidence", fail)
+    else:
+        monkeypatch.setattr(study.StationaryBootstrap, "conf_int", fail)
+    job = next(j for j in study_jobs(small_protocol) if j.scenario.name == "dense_edge" and j.method == "random")
+    record = evaluate_job(job, small_protocol)
+    detail = record["detail"]
+    assert record["status"] == "failed"
+    assert detail["error"] == "RuntimeError: injected comparison failure"
+    assert detail["run"]["status"] == "completed"
+    assert detail["run"]["trial_count"] == len(detail["run"]["trials"]) == small_protocol.trial_budget
+    assert detail["winner"]
+    assert all(row["accepted"] is None for row in record["rows"])
+    assert not record["authorizes_promotion"]
 
 
 def test_duplicate_endpoint_cannot_silently_collapse(small_protocol):

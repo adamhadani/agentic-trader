@@ -133,13 +133,16 @@ stack. Compose's PostgreSQL image is independent of the installed Homebrew versi
 
 Research commands include `backtest`, `optimize`, `retune`, `stress`, `gex`, `pairs`
 and `alpha` mining/inspection/promotion. Research results are not live account P&L.
-Promotion writes configuration; external edits require a daemon restart. Allocation
+Research does not automatically change running strategy parameters. External config
+edits require a restart; alpha registry changes load between scans. Allocation
 weights/convex optimization are not yet integrated into live sizing.
 The [alpha pipeline](docs/alpha-pipeline.md) documents causal validation, versioned
 journal-backed promotion, shadow gates and research-only portfolio targets.
 Historical YAML metrics do not authorize deployment. The [original review](docs/alpha-stack-review.md)
 and [implementation evidence](docs/alpha-pipeline-implementation.md) separate defects,
 regression verification and actual trading evidence.
+The [predeclared calibration study](docs/alpha-study-2026-09-16.md) records current
+power, uncertainty and execution-coverage limitations; it grants no promotion credit.
 
 Read docs as Markdown or preview with `cd docs && bundle install && bundle exec jekyll serve`.
 Historical design notes and the reference PDF are source material, not runtime guarantees.

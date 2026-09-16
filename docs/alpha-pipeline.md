@@ -251,6 +251,11 @@ all missing/failed jobs keep their denominators and make the summary incomplete.
 or mismatched evidence is refused. `completion.json` separates completion from meeting
 the statistical criteria; a completed negative study exits successfully, while an
 incomplete study exits nonzero. No result grants deployment or shadow credit.
+The [September 16 study](alpha-study-2026-09-16.md) retained all 1,952 records but
+has 22 unavailable comparisons. A2 must address execution return coverage before
+fresh calibration; existing policy remains unchanged. Unexpected post-mining
+comparison errors retain completed search history. Hard interruption mid-replicate
+retains the manifest/prior records, not every in-memory trial.
 
 ### Mining operation
 

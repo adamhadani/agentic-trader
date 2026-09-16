@@ -29,7 +29,7 @@ also recognize controlled positive cases and quantify its statistical power.
 | ID | Status | Milestone / acceptance boundary |
 | --- | --- | --- |
 | A1a | Implemented — [PR #35](https://github.com/adamhadani/agentic-trader/pull/35) | Calibration instruments and permanent control/reference tests; diagnostic outputs cannot authorize promotion. [Pilot evidence](alpha-calibration-2026-09-16.md). |
-| A1b | In progress — [frozen protocol](alpha-study-protocol.md) | Predeclared statistical-power/false-discovery study; review dependence and selection treatment before choosing any replacement gate. |
+| A1b | Implemented — [PR #36](https://github.com/adamhadani/agentic-trader/pull/36), [study results](alpha-study-2026-09-16.md) | All 1,952 jobs retained; scientific status incomplete (22 unavailable comparisons). No replacement gate accepted. |
 | A2 | Planned; intraday promotion blocked | Session-correct fine-bar execution replay and research/live parity. |
 | A3 | Planned; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
 | A4 | Planned | Broader economic hypotheses and point-in-time universe/data coverage. |
@@ -47,8 +47,11 @@ references and fail-closed invalid-evidence checks. The 32-seed pilot detected d
 positive controls, rejected null strategy controls and exposed limited sparse-control
 power. PR review required separating data and resampling random streams; retain both
 the initial and corrected study evidence. Neither is approval of a 5% error-control
-claim. **Next: A1b**, with fresh scenarios, block-length sensitivity,
-established method comparisons and adaptive-search replay before any gate change.
+claim. A1b adds predeclared scenarios, block-length sensitivity, ARCH comparisons
+and adaptive-search replay. Its [results](alpha-study-2026-09-16.md) expose return
+coverage and execution/objective limitations; no gate replacement is justified.
+**Next: A2**, starting with the explicit execution return timeline below. Revisit
+calibration with a versioned policy and fresh validation after changing those semantics.
 
 The September 16 campaign found zero qualifying candidates among 3,648 trials.
 Another 1,368 trials exercised 24 nested walk-forward folds. Artificial dense edges
@@ -87,6 +90,13 @@ A1b acceptance:
   past rejections or consumed holdouts.
 
 ### A2 — Session-correct execution replay
+
+First fix the return-timeline contract exposed by A1b: missing feature scores while
+flat currently remove known cash observations from the return series. Use TDD for
+warmup/intermittent undefined features, pending entries, held positions and genuinely
+missing prices. Preserve the full known execution clock, explicit feature coverage
+and causal signals; verify annualization, resampling spacing and statistical sample
+length. The old A1b failures stay unavailable; do not reinterpret them after a fix.
 
 Use observed exchange sessions and a finer execution timeline for 15m/1h/4h signals.
 Cover timezone/DST, holidays/early closes, extended-hours aggregation, closed-bar
