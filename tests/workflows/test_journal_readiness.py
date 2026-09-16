@@ -159,3 +159,16 @@ async def test_cancel_seen_before_entry_ack_is_applied_on_next_observation(store
     await store.db.update_signal_execution(request.signal_id, observation.order_id)
     await store.observe_orders([canceled])
     assert (await store.db.get_signal_by_id(request.signal_id))["status"] == "FAILED"
+
+
+@pytest.mark.parametrize("observation", [None, False, True])
+async def test_accounting_readiness_requires_current_run_evidence(store, app_config, observation):
+    metrics = MetricsCollector()
+    metrics.set_gauge("trader_event_loop_lag_seconds", 0)
+    service = ReadinessService(store, app_config, metrics, accounting_enabled=True)
+    service.started = True
+    for component in (HealthComponent.RECONCILIATION, HealthComponent.WORKER, HealthComponent.SCAN):
+        await service.observe(component, True)
+    if observation is not None:
+        await service.observe(HealthComponent.ACCOUNTING, observation)
+    assert (await service.report())["ready"] is (observation is True)

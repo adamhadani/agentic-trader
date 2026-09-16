@@ -39,6 +39,8 @@ The **Agentic Trader** is a multi-asset trading system designed around a $100k c
 
 - `uv run copilot status`: Portfolio cash base, open notional exposure, leverage, and macro calendar.
 - `uv run copilot positions`: Tracked positions, live quotes, stop-loss / take-profit prices, and unrealized P&L.
+- `uv run copilot perf`: Refresh read-only account activities and render the shared performance report.
+- `uv run copilot db ledger [--sync|--rebuild]`: Inspect/import/replay account evidence.
 - `uv run copilot explain-macro`: Educational tutorial & breakdown of live macro indicators via LLM.
 - `uv run copilot scan`: On-demand quantitative market scan (`--dry-run`, `--no-llm`, `--strategy`, `--strategy-mode`, `--asset-class`, `--symbols`, `--timeframe`). A dry run uses isolated temporary storage and simulated execution, with no Telegram or monitoring.
 - `uv run copilot execute <signal_id>`: Manually authorize and submit an approved signal to broker.
@@ -154,8 +156,8 @@ Preserve these intended safeguards when changing logic. They are design requirem
     - **Order ID Distinctness**: Bracket legs (TP/SL) and manual exits generate distinct order IDs from the entry order ID.
     - **Defense-in-Depth**: Stream updates wake the same exact-parent REST reconciliation path as polling. Full fill, chronological order, quantity, side and symbol checks are required. Conditional DB closure gates alerts; partial fills remain tracked.
 
-13. **Brokerage as valuation authority**: Both CLI and Telegram positions use the same broker snapshot. Preserve source/time; show failures or mismatches, never fabricate zero P&L. Realized Alpaca performance includes confirmed closed fills with entry/exit IDs and actual average prices; it is all recorded closed-trade history before fees, not account-day return.
-14. **Audit and provenance**: Head revision is `005_execution_workflows`; every signal has environment/account mode and run identity. Quarantine preserves original values and excludes confirmed test rows from risk, deduplication, positions and performance.
+13. **Brokerage as valuation authority**: Both CLI and Telegram positions use the same broker snapshot. Preserve source/time; show failures or mismatches, never fabricate zero P&L. Account performance uses reconciled activities plus signed broker cost basis; tracked confirmed full closes remain a separate subset. See [account ledger](docs/account-ledger.md). Withhold account realized totals on unsupported activities, stale/failed imports or cash/inventory mismatch.
+14. **Audit and provenance**: Head revision is `006_account_ledger`; every signal has environment/account mode and run identity. Quarantine preserves original values and excludes confirmed test rows from risk, deduplication, positions and performance.
 
 15. **Async boundaries**: Use `asyncio.to_thread` for blocking SDK/provider calls and CPU-heavy research from async handlers. Keep related scans serialized; review shared state before adding concurrency. Telegram retries belong in `notifier/transport.py`, never around a trade handler. Preserve request/update audit IDs, poll freshness metrics, and `telemetry/event_loop.py` stall monitoring.
 
@@ -186,7 +188,7 @@ tests; PostgreSQL CI covers migrations, exclusive claims and the complete lifecy
 Never infer replacement success from a PATCH response or replay an ambiguous
 mutation. Confirm exact replacement IDs/prices before saving stop changes; preserve
 initial risk and thesis. Uncertain entries remain claimed and halt new risk pending
-reconciliation. Broker-backed multi-slice execution is disabled until a fill ledger
+reconciliation. Broker-backed multi-slice execution is disabled until per-slice allocation
 and protection exist. The SDK timeout/no-mutation-retry extension is deliberately
 isolated and covered by transport tests.
 
@@ -205,3 +207,13 @@ once, and must never retry a trade handler. Order views replay only broker evide
 partial/account-wide realized accounting remains explicitly incomplete. Runtime
 health is `/readyz` or `doctor --readiness`; `/healthz` remains liveness. See the
 new `db queue`, `db events`, `db orders`, and `db outbox` commands.
+
+## Account ledger handoff (schema 006)
+
+Read [account-ledger.md](docs/account-ledger.md). `accounting/ledger.py` owns Decimal
+reconciliation; injected `AccountLedgerService` imports broker evidence;
+`storage/ledger.py` journals revisions/retractions and fences concurrent refreshes.
+The daemon has an independent accounting worker and current-run readiness check.
+Account UUID binding must survive replay; never switch credentials against an
+existing scope. Keep broker wire decimals and activity IDs intact. Raw evidence
+stays private. Partial account P&L does not imply per-signal partial-close ownership.

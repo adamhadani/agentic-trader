@@ -20,6 +20,7 @@ class HealthComponent(StrEnum):
     SCAN = "scan"
     TELEGRAM = "telegram"
     DELIVERY = "delivery"
+    ACCOUNTING = "accounting"
 
 
 class ReadinessService:
@@ -31,9 +32,11 @@ class ReadinessService:
         *,
         run_id: str = RUN_ID,
         stream_connected: Callable[[], bool] | None = None,
+        accounting_enabled: bool = False,
     ):
         self.store, self.config, self.metrics, self.run_id = store, config, metrics, run_id
         self.started = False
+        self.accounting_enabled = accounting_enabled
         self.stream_connected = stream_connected
         self._last_observation: dict[str, tuple[float, bool, str]] = {}
 
@@ -66,6 +69,8 @@ class ReadinessService:
         if self.config.telegram_bot_token and self.config.telegram_chat_id:
             limits[HealthComponent.TELEGRAM] = self.config.telemetry.telegram_max_age_seconds
             limits[HealthComponent.DELIVERY] = self.config.telemetry.worker_max_age_seconds
+        if self.accounting_enabled:
+            limits[HealthComponent.ACCOUNTING] = self.config.accounting.max_age_seconds
         checks: dict[str, Any] = {}
         try:
             for component, age_limit in limits.items():

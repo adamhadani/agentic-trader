@@ -117,6 +117,13 @@ async def main() -> None:
                 or not me.is_bot
             ):
                 raise RuntimeError("Telegram identity or commands invalid")
+        if copilot.ledger is None:
+            raise RuntimeError("Account ledger is not configured")
+        ledger_report = await copilot.ledger.refresh()
+        if not ledger_report.ready:
+            raise RuntimeError("Account activity reconciliation failed: " + "; ".join(ledger_report.issues))
+        if not readiness["checks"].get("accounting", {}).get("ready"):
+            raise RuntimeError("Daemon accounting worker is not fresh and healthy")
         stats = await db.get_closed_positions_stats()
         print(
             json.dumps(
@@ -130,6 +137,7 @@ async def main() -> None:
                     "event_loop_lag_seconds": metrics.get("trader_event_loop_lag_seconds"),
                     "commands": sorted(commands),
                     "positions_match_broker": True,
+                    "account_ledger": ledger_report.model_dump(mode="json"),
                     "source": report.source,
                     "as_of": report.as_of,
                     "positions": [p.model_dump(mode="json") for p in broker.snapshot],

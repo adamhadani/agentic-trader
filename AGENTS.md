@@ -51,3 +51,9 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
 - `/readyz` and `doctor --readiness` are passive current-run freshness checks.
   Keep TCP/WebSocket and PostgreSQL integration verification separate from the
   optional in-process SDK transport used in restricted environments.
+
+- Account performance uses the [activity ledger](docs/account-ledger.md): exact
+  activity IDs, Decimal cash/inventory reconciliation and signed broker cost basis.
+  Preserve account binding, fenced refreshes, revisions/retractions and replay.
+  Unsupported/stale/unreconciled evidence must withhold account realized P&L;
+  tracked full-close metrics are a separate subset. Never infer partial ownership.

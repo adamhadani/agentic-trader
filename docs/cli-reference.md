@@ -402,3 +402,17 @@ changed conditions require a new scan/approval. `resume` refuses unresolved entr
 - `copilot db outbox [--retry JOB_ID]`: inspect delivery jobs or explicitly requeue a dead letter.
 
 See [workflow guarantees, limits and configuration](durable-execution.md).
+
+## Account activity performance
+
+`copilot perf` refreshes read-only broker accounting and uses the same performance
+renderer as Telegram `/perf`. Account-wide realized/unrealized values and
+tracked full-close metrics are separate.
+
+- `copilot db ledger`: cached reconciliation status.
+- `copilot db ledger --sync`: read-only activity import; no orders/messages.
+- `copilot db ledger --rebuild`: replay journal projections; no broker requests.
+- `copilot db activities`: private raw fill/cash evidence with exact IDs.
+
+See [account ledger](account-ledger.md) for unsupported activities, freshness and
+reconciliation rules. A failed reconciliation never becomes zero profit.

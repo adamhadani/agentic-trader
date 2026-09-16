@@ -48,6 +48,7 @@ The local desk uses **Alpaca paper trading with PostgreSQL** under macOS launchd
 `EXECUTION_MODE=paper` means the in-process simulator; use `EXECUTION_MODE=alpaca`
 with `ALPACA_PAPER=true` for the brokerage paper account. Run one daemon/poller.
 
+- [Broker account activity ledger and accounting limits](docs/account-ledger.md)
 - [Durable execution queue, order journal, outbox and readiness](docs/durable-execution.md)
 - [Architecture review and priorities](docs/architecture-review.md)
 - [Development map and test isolation](docs/development-notes.md)
@@ -59,8 +60,9 @@ with `ALPACA_PAPER=true` for the brokerage paper account. Run one daemon/poller.
   broker execution or monitoring; market-data access still occurs.
 - `uv run copilot db audit --limit 20`: fill, valuation, notification and startup evidence.
 
-Positions use Alpaca's account valuation. `/perf` shows broker open-position P&L
-and separately labels confirmed closed-trade history before fees. Quarantined test
+Positions use Alpaca's account valuation. `/perf` and CLI `perf` separate reconciled
+account performance (including partial/external fills, fees and income) from tracked
+full-close statistics. Unknown or inconsistent activity withholds account totals. Quarantined test
 rows and unverified Alpaca closes are excluded. Source changes require a daemon
 restart; startup audit records the deployed revision. Telegram has shared transport retries,
 persistent command/request/poll audits, poll freshness metrics, and event-loop stall detection.
@@ -207,7 +209,7 @@ When the daemon is running, operators can query and command the trading desk dir
 |---|---|---|
 | `/status` | View cash base, open notional exposure, leverage, and macro events | `/status` |
 | `/positions` | Broker positions, actual cost basis and broker unrealized P&L | `/positions` |
-| `/perf` | Confirmed closed-fill P&L and current broker unrealized P&L | `/perf` |
+| `/perf` | Account performance and separate tracked trade statistics | `/perf` |
 | `/macro` | VIX regime, Treasury curve, credit, inflation and combined trading filters | `/macro` |
 | `/explain_macro` | View educational tutorial & breakdown of live macro indicators with LLM context | `/explain_macro` |
 | `/alphas` | View production promoted formulaic alphas, weights, and tearsheets | `/alphas` |
@@ -276,5 +278,5 @@ uv run pytest --cov=agentic_trader --cov-report=term-missing
 
 See the [Alpaca integration review](docs/alpaca-integration-review.md) for actual-SDK
 HTTP/WebSocket tests, disposable PostgreSQL CI, confirmed stop replacement, and
-remaining entry reservation/fill-ledger work. `/flatten` previews by default;
+remaining corporate-action, partial trade allocation and alerting work. `/flatten` previews by default;
 `/flatten confirm` closes positions without halting future trading.

@@ -21,6 +21,7 @@ from agentic_trader.cli.commands.trade import (
     explain_macro,
     flatten,
     panic,
+    perf,
     positions,
     resume,
     status,
@@ -72,6 +73,7 @@ def cli(verbose: bool, db_name: str | None = None, db_path: str | None = None) -
 cli.add_command(scan)
 cli.add_command(status)
 cli.add_command(positions)
+cli.add_command(perf)
 cli.add_command(close)
 cli.add_command(flatten)
 cli.add_command(execute)

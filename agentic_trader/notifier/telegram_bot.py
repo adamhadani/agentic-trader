@@ -510,7 +510,7 @@ class TelegramNotifier:
             commands = [
                 BotCommand("status", "Portfolio exposure, cash base, and macro events"),
                 BotCommand("positions", "Broker positions, cost basis and unrealized P&L"),
-                BotCommand("perf", "Confirmed closed P&L and broker unrealized P&L"),
+                BotCommand("perf", "Account performance and tracked trade statistics"),
                 BotCommand("macro", "VIX, yield curve, credit, inflation & trading filters"),
                 BotCommand("explain_macro", "Tutorial & breakdown of live macro indicators"),
                 BotCommand("alphas", "Formulaic alpha intelligence & active strategies"),
@@ -660,7 +660,7 @@ class TelegramNotifier:
             "<b>Available Commands:</b>\n"
             "• /status - View portfolio exposure, cash base, and macro events\n"
             "• /positions - Broker positions, cost basis and unrealized P&amp;L\n"
-            "• /perf - Confirmed closed-trade P&amp;L and broker unrealized P&amp;L\n"
+            "• /perf - Account performance and tracked trade statistics\n"
             "• /macro - VIX, yields, credit, inflation and combined trading filters\n"
             "• /explain_macro - Tutorial &amp; educational indicator breakdown with LLM context\n"
             "• /alphas - View formulaic alpha intelligence, catalog, and active strategies\n"

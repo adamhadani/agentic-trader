@@ -25,6 +25,7 @@ def test_cli_root_help(runner: CliRunner):
     for expected_cmd in [
         "status",
         "positions",
+        "perf",
         "scan",
         "doctor",
         "backtest",
@@ -46,6 +47,7 @@ def test_cli_root_help(runner: CliRunner):
     [
         ("status", "--help"),
         ("positions", "--help"),
+        ("perf", "--help"),
         ("scan", "--bypass-session-filter"),
         ("execute", "--qty"),
         ("close", "--price"),

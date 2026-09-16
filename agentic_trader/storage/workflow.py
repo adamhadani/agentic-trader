@@ -69,7 +69,8 @@ class WorkflowStore:
         self.db = db
         self.scope = f"{db.environment}/{db.execution_mode}"
 
-    async def lock(self, session: AsyncSession) -> None:
+    async def lock(self, session: AsyncSession, *, resource: str | None = None) -> None:
+        scope = f"{self.scope}/{resource}" if resource else self.scope
         insert: Any
         dialect = session.bind.dialect.name
         if dialect == "postgresql":
@@ -78,10 +79,10 @@ class WorkflowStore:
             insert = sqlite_insert
         else:
             raise ValueError(f"Unsupported workflow database: {dialect}")
-        await session.execute(insert(WorkflowLockRecord).values(scope=self.scope, version=0).on_conflict_do_nothing())
+        await session.execute(insert(WorkflowLockRecord).values(scope=scope, version=0).on_conflict_do_nothing())
         await session.execute(
             update(WorkflowLockRecord)
-            .where(WorkflowLockRecord.scope == self.scope)
+            .where(WorkflowLockRecord.scope == scope)
             .values(version=WorkflowLockRecord.version + 1)
         )
 

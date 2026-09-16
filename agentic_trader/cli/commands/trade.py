@@ -30,6 +30,19 @@ async def positions() -> None:
     await copilot.show_positions()
 
 
+@click.command("perf", help="Show account activity performance and tracked trade statistics")
+@coro
+async def perf() -> None:
+    copilot, _config = get_copilot_and_config()
+    try:
+        await copilot.broker.connect()
+        if copilot.ledger:
+            await copilot.ledger.refresh()
+        click.echo(TelegramHtmlFormatter.strip_html(await copilot.get_performance_summary_html()))
+    finally:
+        await copilot.db.engine.dispose()
+
+
 @click.command("close", help="Close a position without halting trading; Alpaca confirms actual fills")
 @click.argument("signal_id", type=int)
 @click.option(

@@ -40,9 +40,10 @@ production default. `--db-path` accepts a URL or SQLite path; `--db-name` explic
 selects a SQLite sandbox. There is no automatic SQLite failover. `data/signals.db`
 is historical and must not be mistaken for the current PostgreSQL database.
 
-Head migration is `005_execution_workflows`. `signals`, `system_state` and
-`audit_events`, `close_requests`, `work_items`, `domain_events`, `order_projections`
-and `workflow_locks` hold trading and operational state. Construction currently checks
+Head migration is `006_account_ledger`. `signals`, `system_state` and
+`audit_events`, `close_requests`, `work_items`, `domain_events`, `order_projections`,
+`workflow_locks`, `activity_projections` and `ledger_checkpoints` hold trading and
+operational state. Construction currently checks
 migrations, even for informational copilot commands. Back up PostgreSQL before
 schema or historical repairs. Do not use `db clear` to fix contamination: quarantine
 preserves original evidence and removes rows from operational queries.
@@ -54,11 +55,18 @@ average entry, current price and unrealized P&L. Source/retrieval time and track
 mismatches are shown and audited. Broker-only positions are displayed once. A
 failed snapshot reports an error; another feed or zero is not substituted.
 
-`/perf` separates current broker open-position P&L from **all recorded confirmed
-closed-trade P&L before fees**. It is not an account-day return. Entry/exit IDs,
-actual average fill prices, full quantity and chronological order determine realized
-profit. Unverified Alpaca closes and quarantined signals are excluded. Out-of-band
-or partial transactions may remain unmatched pending review; see architecture findings.
+`/perf` and `copilot perf` separate reconciled account performance from tracked
+full-close statistics. The account section includes partial/external fills and
+signed fees/income, uses broker cost basis and withholds realized totals on
+cash/inventory mismatch, unsupported activity or stale/failed imports. Telegram
+uses the timestamped worker cache; CLI `perf` refreshes it read-only first. The
+60-second accounting worker has a separate current-run readiness check. This is
+all available history, not account-day return or tax accounting. See the
+[ledger contracts and recovery commands](account-ledger.md).
+
+Tracked metrics still require exact entry/exit IDs, actual full fill prices and
+chronological order; quarantined/unverified signals are excluded. Account-level
+partial realization does not assign partial exits to a signal by symbol.
 
 Alpaca manual close submits an order and waits for confirmed fill accounting.
 A requested `exit_price` cannot become brokerage profit. Panic persists the halt
@@ -272,3 +280,11 @@ up before migration/restart. Verify `/readyz` and `copilot doctor --readiness`, 
 existing read-only broker/Telegram verification. A running old process does not
 mean schema 005 code is deployed. The launchd watchdog still checks PID only;
 readiness should feed alerting rather than repeated blind restarts.
+
+## Schema 006 account ledger deployment
+
+Back up PostgreSQL before migration 006, then restart the single launchd daemon.
+Verify `/readyz` includes a fresh successful `accounting` observation, `db ledger`
+shows no issues and zero quantity differences, and the runtime verifier confirms
+activity reconciliation and current source revision. A healthy PID alone is
+insufficient. Keep verification output private. See [account ledger](account-ledger.md).

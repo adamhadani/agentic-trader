@@ -39,6 +39,10 @@ class EventKind(StrEnum):
     NOTIFICATION_RESULT = "notification_result"
     NOTIFICATION_REQUEUED = "notification_requeued"
     HEALTH_OBSERVED = "health_observed"
+    ACCOUNT_BOUND = "account_bound"
+    ACTIVITY_OBSERVED = "activity_observed"
+    ACTIVITY_RETRACTED = "activity_retracted"
+    LEDGER_CHECKPOINT = "ledger_checkpoint"
 
 
 class NotificationKind(StrEnum):

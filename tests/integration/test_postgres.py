@@ -13,6 +13,7 @@ from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import CloseRequestStatus
 from agentic_trader.execution.durable import WorkKind, WorkStatus
 from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
     get_current_revision,
@@ -33,7 +34,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 2. Upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "005_execution_workflows"
+    assert get_current_revision(db_url) == "006_account_ledger"
 
     # Verify tables in PostgreSQL
     with psycopg2.connect(sync_url) as conn, conn.cursor() as cur:
@@ -96,7 +97,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 5. Re-upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "005_execution_workflows"
+    assert get_current_revision(db_url) == "006_account_ledger"
 
 
 @pytest.mark.asyncio
@@ -104,7 +105,7 @@ async def test_postgres_signal_database_operations(postgres_test_db: str):
     db_url = postgres_test_db
     db = SignalDatabase(db_url=db_url)
 
-    assert get_current_revision(db_url) == "005_execution_workflows"
+    assert get_current_revision(db_url) == "006_account_ledger"
 
     sig_id = await db.record_signal(
         contract="NQ",
@@ -178,7 +179,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r3.returncode == 0
-    assert "005_execution_workflows" in r3.stdout
+    assert "006_account_ledger" in r3.stdout
 
     # 4. Downgrade to 001_initial
     r4 = subprocess.run(
@@ -211,7 +212,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r6.returncode == 0
-    assert "005_execution_workflows" in r6.stdout
+    assert "006_account_ledger" in r6.stdout
 
     # 7. History
     r7 = subprocess.run(
@@ -222,7 +223,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r7.returncode == 0
-    assert "005_execution_workflows" in r7.stdout
+    assert "006_account_ledger" in r7.stdout
     assert "001_initial" in r7.stdout
 
     # 8. Clear
@@ -393,4 +394,38 @@ async def test_postgres_workflow_upgrade_preserves_existing_trading_state(postgr
     assert before
     run_migrations_head(postgres_test_db)
     assert snapshot() == before
-    assert get_current_revision(postgres_test_db) == "005_execution_workflows"
+    assert get_current_revision(postgres_test_db) == "006_account_ledger"
+
+
+async def test_postgres_account_ledger_fences_independent_importers(postgres_test_db):
+
+    first = SignalDatabase(db_url=postgres_test_db)
+    second = SignalDatabase(db_url=postgres_test_db)
+    try:
+        a, b = LedgerStore(first.workflows), LedgerStore(second.workflows)
+        tokens = await asyncio.gather(a.begin("account"), b.begin("account"))
+        results = await asyncio.gather(
+            a.commit(tokens[0], [{"id": "a"}], {"source": "a"}),
+            b.commit(tokens[1], [{"id": "b"}], {"source": "b"}),
+        )
+        assert sum(results) == 1
+        assert len(await a.activities()) == 1
+        before = await a.status()
+        await b.rebuild()
+        assert await a.status() == before
+        assert not await a.commit(tokens[0], [], {})
+        assert not await b.commit(tokens[1], [], {})
+    finally:
+        await first.engine.dispose()
+        await second.engine.dispose()
+
+
+async def test_postgres_ledger_transaction_does_not_block_entry_admission_lock(postgres_test_db):
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        async with db.session_factory() as ledger_session, ledger_session.begin():
+            await db.workflows.lock(ledger_session, resource="ledger")
+            async with db.session_factory() as entry_session, entry_session.begin():
+                await asyncio.wait_for(db.workflows.lock(entry_session), timeout=2)
+    finally:
+        await db.engine.dispose()

@@ -55,6 +55,7 @@ No test has production credentials, database access, or external network permiss
 
 | Critical path | Coverage |
 | --- | --- |
+| Account activities → pagination → cash/inventory checks → journal/replay → performance | `tests/integration/test_account_ledger.py`, actual SDK/HTTP and opt-in PostgreSQL; account mismatch, partials, corrupt pages, errors and snapshot races |
 | Entry request → accepted → partial → complete fill → valuation → close → performance | `tests/integration/test_alpaca_http.py`, actual SDK/HTTP plus SQLite and opt-in PostgreSQL |
 | Native bracket/held-leg cancellation, close after stop replacement | Same HTTP suite; stateful cancellation and exact replacement chains |
 | Stop acknowledgement versus confirmed replacement; thesis/risk preservation | HTTP + real storage; parametrized NEW/pending/rejected results |
@@ -79,10 +80,12 @@ No runtime DB guard is disabled.
    integration coverage. Approval, signal, quote and session deadlines are rechecked
    after slow preflight work. Verify each deployment separately with the shared runtime
    verifier. See [workflow design](durable-execution.md).
-2. **Complete account accounting:** cumulative order observations now preserve
-   partial/replaced/canceled/external order evidence and replayable views. Individual
-   execution allocation, fees, corrections and corporate actions still need an
-   account/lot ledger. `/perf` remains confirmed tracked full closes, before fees.
+2. **Account accounting:** schema 006 preserves individual execution IDs and exact
+   decimals through the SDK's public GET API. Account cash and signed inventory
+   must reconcile before realized totals are published; remaining cost basis stays
+   broker-authoritative. Revisions/retractions replay from the journal. Corporate
+   actions, tax lots and partial per-signal allocation remain explicitly unsupported.
+   See [account ledger and official contracts](account-ledger.md).
 3. **Operational alerting:** wire readiness/dead letters to alerting and define event
    retention. Daily macro feed age and shared research executor contention remain.
 4. **Module boundaries:** extract entry admission/reconciliation and move remaining
