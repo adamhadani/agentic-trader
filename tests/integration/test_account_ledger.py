@@ -16,6 +16,7 @@ from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
+from scripts.verify_runtime import verified_account_report
 
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
@@ -159,3 +160,37 @@ async def test_cli_and_telegram_performance_use_the_imported_account_ledger(ledg
     assert result.exit_code == 0, result.exception
     assert "100 executions" in result.output and "$+50.00" in result.output
     assert {c[0] for c in venue.calls} == {"GET"}
+
+
+@pytest.mark.parametrize(
+    ("mode", "ledger_desk"),
+    [(mode, "sqlite") for mode in ("missing", "stale", "failed", "unreconciled", "ready", "inflight")]
+    + [pytest.param("inflight", "postgres", marks=pytest.mark.postgres)],
+    indirect=["ledger_desk"],
+)
+async def test_runtime_verification_is_passive_and_preserves_importer_ownership(ledger_desk, mode):
+    service, venue, state = ledger_desk
+    if mode != "missing":
+        if mode == "unreconciled":
+            state["account"]["cash"] = "8999"
+        await service.refresh()
+    if mode == "stale":
+        service.config.max_age_seconds = 0
+    if mode in ("failed", "inflight"):
+        token = await service.store.begin("account")
+        if mode == "failed":
+            await service.store.fail(token, "TimeoutError")
+    before = await service.store.status()
+    requests = len(venue.calls)
+    if mode in ("ready", "inflight"):
+        report = await verified_account_report(service)
+        assert report.ready
+    else:
+        with pytest.raises(RuntimeError, match="Account activity"):
+            await verified_account_report(service)
+    assert len(venue.calls) == requests, "Verification must not launch a second broker importer"
+    assert await service.store.status() == before
+    if mode == "inflight":
+        assert await service.store.commit(token, state["activities"], before), (
+            "Verifier stole the daemon's import token"
+        )

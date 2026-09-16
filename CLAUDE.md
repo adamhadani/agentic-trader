@@ -108,8 +108,9 @@ uv run python scripts/verify_runtime.py
 ```
 
 Full TCP/WebSocket and PostgreSQL checks remain mandatory; the optional in-memory
-SDK harness is only an aid for restricted environments. Runtime verification must
-match the clean committed revision, current run, poll/stream freshness, broker
+SDK harness is only an aid for restricted environments. The runtime verifier reads
+the daemon's fresh persisted ledger without starting a competing import. Verification
+must match the clean committed revision, current run, poll/stream freshness, broker
 positions and account reconciliation. Record deployment evidence separately.
 
 Next priorities and accepted limits live in the [architecture review](docs/architecture-review.md).

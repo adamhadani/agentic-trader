@@ -1,6 +1,7 @@
 """Check the running paper desk without submitting orders or sending messages.
 
 Reads Alpaca, Telegram identity/chat/commands, daemon health and startup audit.
+Account reconciliation uses the daemon's fresh persisted report; no second importer.
 Building the shared position report records a valuation audit entry.
 """
 
@@ -14,6 +15,8 @@ import urllib.request
 
 from telegram import Bot, BotCommandScopeAllPrivateChats, BotCommandScopeChat
 
+from agentic_trader.accounting.ledger import LedgerReport
+from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.base import BrokerPosition
@@ -33,6 +36,16 @@ class SnapshotBroker(AlpacaBroker):
     async def get_positions(self) -> list[BrokerPosition]:
         self.snapshot = await super().get_positions()
         return self.snapshot
+
+
+async def verified_account_report(ledger: AccountLedgerService) -> LedgerReport:
+    """Inspect fresh evidence without fencing the daemon's in-flight activity import."""
+    report, reason = await ledger.current()
+    if report is None:
+        raise RuntimeError("Account activity reconciliation unavailable: " + reason)
+    if not report.ready:
+        raise RuntimeError("Account activity reconciliation failed: " + "; ".join(report.issues))
+    return report
 
 
 async def main() -> None:
@@ -119,9 +132,7 @@ async def main() -> None:
                 raise RuntimeError("Telegram identity or commands invalid")
         if copilot.ledger is None:
             raise RuntimeError("Account ledger is not configured")
-        ledger_report = await copilot.ledger.refresh()
-        if not ledger_report.ready:
-            raise RuntimeError("Account activity reconciliation failed: " + "; ".join(ledger_report.issues))
+        ledger_report = await verified_account_report(copilot.ledger)
         if not readiness["checks"].get("accounting", {}).get("ready"):
             raise RuntimeError("Daemon accounting worker is not fresh and healthy")
         stats = await db.get_closed_positions_stats()
