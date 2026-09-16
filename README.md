@@ -141,8 +141,11 @@ journal-backed promotion, shadow gates and research-only portfolio targets.
 Historical YAML metrics do not authorize deployment. The [original review](docs/alpha-stack-review.md)
 and [implementation evidence](docs/alpha-pipeline-implementation.md) separate defects,
 regression verification and actual trading evidence.
-The [predeclared calibration study](docs/alpha-study-2026-09-16.md) records current
-power, uncertainty and execution-coverage limitations; it grants no promotion credit.
+The [original calibration study](docs/alpha-study-2026-09-16.md) exposed execution
+coverage defects. The [fresh follow-up](docs/alpha-timeline-study-2026-09-16.md)
+completed all 1,952 jobs; discovery power remains insufficient. Neither grants promotion credit.
+The [return-timeline correction](docs/alpha-return-timeline.md) retains cash periods,
+exposes feature coverage and requires current-policy evidence before alpha activation.
 
 Read docs as Markdown or preview with `cd docs && bundle install && bundle exec jekyll serve`.
 Historical design notes and the reference PDF are source material, not runtime guarantees.

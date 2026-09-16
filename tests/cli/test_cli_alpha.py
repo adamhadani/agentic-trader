@@ -116,6 +116,16 @@ def test_calibration_cli_is_synthetic_and_cannot_construct_runtime_services(monk
     assert not list(tmp_path.glob("*.db"))
 
 
+@pytest.mark.parametrize("seed", [0, 2**127 + 9])
+def test_study_plan_freezes_explicit_seed_without_evaluation(tmp_path, seed):
+    path = tmp_path / "protocol.json"
+    result = CliRunner().invoke(cli, ["alpha", "study-plan", "--seed", str(seed), "--output", str(path)])
+    assert result.exit_code == 0, result.output
+    restored = StudyProtocol.from_document(json.loads(path.read_text()))
+    assert restored.seed == seed
+    assert restored.identity in result.output
+
+
 def test_study_cli_runs_actual_calculation_without_runtime_services(monkeypatch, tmp_path):
     def forbidden(*args, **kwargs):
         raise AssertionError("Study cannot access runtime services")

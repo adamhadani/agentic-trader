@@ -1,11 +1,12 @@
 import asyncio
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete
 
 from agentic_trader.research.alpha.models import AlphaDefinition
+from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.models import AlphaProjectionRecord
 
@@ -65,6 +66,7 @@ async def test_replay_restores_registry_without_mutations(repository, definition
 async def test_holdout_consumption_survives_failure_and_restart(repository, definition):
     await repository.register(definition, actor="test")
     run = {
+        "policy": asdict(ValidationPolicy()),
         "trial_count": 1,
         "trials": [{"definition": definition.to_dict(), "status": "evaluated"}],
         "holdout_start": 600,
@@ -112,6 +114,7 @@ async def test_signal_attribution_and_version_aware_dedup(repository, definition
 async def test_overlapping_holdout_cannot_be_reused_with_new_run_or_end_date(repository, definition):
     await repository.register(definition, actor="test")
     run = {
+        "policy": asdict(ValidationPolicy()),
         "trial_count": 1,
         "trials": [{"definition": definition.to_dict(), "status": "evaluated"}],
         "holdout_start": 600,
@@ -133,11 +136,13 @@ async def test_overlapping_holdout_cannot_be_reused_with_new_run_or_end_date(rep
         await repository.begin_holdout("two", definition.version_id)
 
 
-async def test_promotion_requires_decisions_and_frozen_incumbents_then_replays(repository, definition):
+@pytest.mark.parametrize("current_policy", [True, False])
+async def test_promotion_requires_decisions_and_frozen_incumbents_then_replays(repository, definition, current_policy):
     definition = replace(definition, data_feed="alpaca:sip")
     await repository.register(definition, actor="test")
     await repository.set_shadow(definition.version_id, actor="test", expected_generation=0)
     run = {
+        "policy": asdict(ValidationPolicy()),
         "trial_count": 1,
         "trials": [{"definition": definition.to_dict(), "status": "evaluated"}],
         "holdout_start": 600,
@@ -158,8 +163,19 @@ async def test_promotion_requires_decisions_and_frozen_incumbents_then_replays(r
     await repository.record_qualification(
         "qualified",
         definition.version_id,
-        {"qualified": True, "reasons": [], "eligible_symbols": ["SPY"], "manifest": manifest},
+        {
+            "qualified": True,
+            "reasons": [],
+            "eligible_symbols": ["SPY"],
+            "manifest": manifest,
+            "policy": asdict(ValidationPolicy()) if current_policy else {},
+        },
     )
+    if not current_policy:
+        with pytest.raises(ValueError, match="policy"):
+            await repository.promote(definition.version_id, actor="test", expected_generation=1)
+        assert not (await repository.snapshot()).active
+        return
     for day in range(20):
         timestamp = (datetime.now(UTC) - timedelta(days=20 - day)).isoformat()
         await repository.record_forecast(
@@ -211,6 +227,7 @@ async def test_runtime_acknowledgment_detects_pending_registry_and_restart(repos
 async def test_holdout_cannot_be_recycled_by_changing_feed_or_timeframe(repository, definition):
     await repository.register(definition, actor="test")
     run = {
+        "policy": asdict(ValidationPolicy()),
         "trial_count": 1,
         "trials": [{"definition": definition.to_dict(), "status": "evaluated"}],
         "holdout_start": 600,
@@ -244,6 +261,7 @@ async def test_external_diagnostic_evidence_is_counted_and_excluded_idempotently
     assert (await repository.get("family/all"))["trial_count"] == 3
     await repository.register(definition, actor="test")
     run = {
+        "policy": asdict(ValidationPolicy()),
         "trial_count": 1,
         "trials": [{"definition": definition.to_dict(), "status": "evaluated"}],
         "holdout_start": 600,
@@ -268,5 +286,9 @@ async def test_crashed_research_budget_cannot_disappear_from_family_count(reposi
     await repository.record_failure("crashed", symbol="SPY", timeframe="1d", error="interrupted")
     assert (await repository.get("family/all"))["trial_count"] == 16
     await repository.reserve_run("completed", symbol="SPY", timeframe="1d", trials=16)
-    await repository.record_run("completed", {"trial_count": 2, "trials": []}, {"symbol": "SPY", "timeframe": "1d"})
+    await repository.record_run(
+        "completed",
+        {"policy": asdict(ValidationPolicy()), "trial_count": 2, "trials": []},
+        {"symbol": "SPY", "timeframe": "1d"},
+    )
     assert (await repository.get("family/all"))["trial_count"] == 32  # no double count or refund

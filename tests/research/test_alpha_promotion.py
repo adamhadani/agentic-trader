@@ -28,6 +28,16 @@ def test_bootstrap_is_reproducible_and_respects_blocks():
         block_bootstrap_mean(returns.iloc[:10], seed=10)
 
 
+def test_old_policy_is_rejected_before_reading_holdout(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Historical policy must not evaluate current holdout")
+
+    monkeypatch.setattr("agentic_trader.research.alpha.promotion.simulate_strategy", forbidden)
+    definition = AlphaDefinition("old", "Old", "close", timeframe="1d")
+    with pytest.raises(ValueError, match="policy"):
+        assess_qualification(definition, None, {"policy": {}}, {}, {}, policy=ValidationPolicy())
+
+
 @pytest.mark.parametrize("timeframe", ["15m", "1h", "4h"])
 def test_intraday_data_cannot_claim_session_correct_bracket_execution(timeframe):
     definition = AlphaDefinition(

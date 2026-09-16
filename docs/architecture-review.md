@@ -113,8 +113,13 @@ merely because the new infrastructure passes regression tests.
 
 The ordered research work queue now lives in [alpha-roadmap.md](alpha-roadmap.md), including calibration before broader search. This document continues to own the operational priorities above.
 
-[A1b evidence](alpha-study-2026-09-16.md) additionally identifies feature-dependent
-return coverage: flat periods with undefined scores are dropped from simulation
-statistics. A2 must define the execution clock separately from feature availability
-before retesting calibration. Preserve the incomplete study and existing gates;
+[A1b evidence](alpha-study-2026-09-16.md) identified feature-dependent return
+coverage: flat periods with undefined scores were dropped from simulation
+statistics, as were some pending orders' same-bar exit losses. Implemented
+[A2a](alpha-return-timeline.md) defines the execution clock separately
+from feature availability, with compatible variance samples and policy fencing.
+The [fresh study](alpha-timeline-study-2026-09-16.md) has no unavailable comparisons
+and passes null-search criteria, but positive-control power remains insufficient.
+Session-correct finer-bar replay remains A2b, followed by A3 objective alignment.
+Preserve the original incomplete study and gates;
 do not treat missing comparisons as null rejections or loosen trade-count requirements.

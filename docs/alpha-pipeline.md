@@ -94,6 +94,12 @@ on both fills. Win rate and profit factor use completed trades; an undefined pro
 factor stays null. Annualization uses observed calendar cadence; DSR uses unrounded
 per-observation Sharpe and actual sample moments.
 
+Every supplied execution bar contributes a finite equity return, including cash
+periods with unavailable features. Missing features suppress signals; missing OHLC
+invalidates the simulation. Return consumers reject missing/duplicate/unordered
+observations instead of compressing time. Trial and holdout evidence includes
+feature coverage. See the [return-timeline contract](alpha-return-timeline.md).
+
 OHLC bars cannot establish queue priority, available fill size, partial fills,
 spread/borrow costs, intrabar paths or operator approval latency. Macro/session/risk
 admission can suppress live entries. Trailing runs at observed closes in simulation
@@ -114,7 +120,10 @@ trials (including rejection) retain their individual evidence; interrupted symbo
 retain the conservative reserved count. Runs persist seeds, policy,
 all candidates, data/universe hashes, package versions, lockfile hash and source
 revision. Family counts span symbols, seeds, methods and timeframes; variance remains in the
-matching per-observation timeframe units. Ridge
+matching per-observation timeframe and return-timeline units. Lifetime attempt
+counts retain old research, while variance samples use the current timeline only.
+New runs, qualifications, promotion and entry commit check the current validation
+policy. Old policy evidence cannot be silently reinterpreted. Ridge
 and boosted-tree experiments count too. DSR is a model-dependent screening statistic,
 not a calibrated probability of live profit. See the
 [original DSR paper](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf).
@@ -228,9 +237,12 @@ still requires the exact Alpaca data contract and durable journal permissions.
 ### Predeclared calibration studies
 
 `alpha study-plan --output NEW.json` writes a frozen default protocol. The reviewed
-A1b protocol is committed as `config/research/a1b-v1.json`; its
+A1b protocol is preserved as `config/research/a1b-v1.json`; its
 [study design](alpha-study-protocol.md) defines the comparisons and acceptance bounds.
-Run it with `alpha study config/research/a1b-v1.json --output /private/path/NEW-DIRECTORY`.
+The current [A2a follow-up](alpha-return-timeline.md) uses `config/research/a2a-v1.json`:
+`alpha study config/research/a2a-v1.json --output /private/path/NEW-DIRECTORY`.
+Use `study-plan --seed N` to predeclare fresh streams. Current code refuses the old
+A1b protocol because its scientific contracts differ; preserve the original results.
 
 The study runs development before validation with disjoint 128-bit seed namespaces.
 It compares fixed-panel bootstrap/ARCH SPA methods and replays actual random/genetic
@@ -252,8 +264,10 @@ or mismatched evidence is refused. `completion.json` separates completion from m
 the statistical criteria; a completed negative study exits successfully, while an
 incomplete study exits nonzero. No result grants deployment or shadow credit.
 The [September 16 study](alpha-study-2026-09-16.md) retained all 1,952 records but
-has 22 unavailable comparisons. A2 must address execution return coverage before
-fresh calibration; existing policy remains unchanged. Unexpected post-mining
+has 22 unavailable comparisons. A2a corrects execution return coverage and versions
+the validation contract. Its [fresh study](alpha-timeline-study-2026-09-16.md)
+completed 1,952 jobs without unavailable comparisons. Null-search criteria passed;
+positive-control power remains insufficient and thresholds remain unchanged. Unexpected post-mining
 comparison errors retain completed search history. Hard interruption mid-replicate
 retains the manifest/prior records, not every in-memory trial.
 

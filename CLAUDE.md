@@ -138,5 +138,12 @@ Keep development/validation seed namespaces separate, freeze the winner before
 holdout, retain incomplete denominators, and never tune gates on validation results.
 The [A1b result](docs/alpha-study-2026-09-16.md) retains all 1,952 jobs but is
 scientifically incomplete (22 unavailable comparisons). No gate change is justified.
-Next is A2: start with cash-return/undefined-feature clock semantics, then session
-replay. Preserve this evidence and use fresh validation after policy changes.
+A2a's [return-timeline contract](docs/alpha-return-timeline.md) includes cash bars
+independently of feature availability and persists coverage. The validation policy
+versions this calculation; old evidence cannot promote or commit new alpha risk.
+Lifetime trial counts persist; variance uses comparable current-clock samples.
+The [fresh study](docs/alpha-timeline-study-2026-09-16.md), using
+`config/research/a2a-v1.json`, completed 1,952 jobs without unavailable comparisons.
+Null-search criteria passed; positive-control power is still insufficient. Keep
+the gates unchanged. Next is A2b session replay;
+preserve historical study evidence and use fresh validation after policy changes.

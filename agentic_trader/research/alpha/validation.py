@@ -13,8 +13,12 @@ import pandas as pd
 from agentic_trader.research.alpha.data import BAR_DURATIONS
 
 
+RETURN_TIMELINE = "complete_observed_bars_v1"
+
+
 @dataclass(frozen=True)
 class ValidationPolicy:
+    return_timeline: str = RETURN_TIMELINE
     holdout_fraction: float = 0.2
     folds: int = 3
     initial_train_fraction: float = 0.5
@@ -28,6 +32,8 @@ class ValidationPolicy:
     max_drawdown_pct: float = 20.0
 
     def __post_init__(self):
+        if self.return_timeline != RETURN_TIMELINE:
+            raise ValueError("Unsupported research return timeline")
         if not 0 < self.holdout_fraction < 0.5 or not 0.2 <= self.initial_train_fraction <= 0.8:
             raise ValueError("Invalid temporal split")
         if (

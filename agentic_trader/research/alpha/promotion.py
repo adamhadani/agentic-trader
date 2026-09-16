@@ -15,7 +15,7 @@ import pandas as pd
 import yaml
 
 from agentic_trader.research.alpha.dsl import compile_expression
-from agentic_trader.research.alpha.metrics import calculate_deflated_sharpe_ratio
+from agentic_trader.research.alpha.metrics import calculate_deflated_sharpe_ratio, observed_return_values
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.orthogonalization import residual_validation
 from agentic_trader.research.alpha.simulation import simulate_strategy
@@ -39,7 +39,7 @@ def read_alpha_definitions(path: Path) -> list[AlphaDefinition]:
 
 
 def block_bootstrap_mean(returns: pd.Series, *, seed: int, samples: int = 1000, block: int = 10) -> tuple[float, float]:
-    values = returns.dropna().to_numpy()
+    values = observed_return_values(returns)
     if len(values) < 2 * block:
         raise ValueError("Insufficient block-bootstrap observations")
     rng = np.random.default_rng(seed)
@@ -50,9 +50,9 @@ def block_bootstrap_mean(returns: pd.Series, *, seed: int, samples: int = 1000, 
 
 
 class AlphaPromotionService:
-    def __init__(self, repository: AlphaRepository, policy: ValidationPolicy | None = None):
+    def __init__(self, repository: AlphaRepository):
         self.repository = repository
-        self.policy = policy or ValidationPolicy()
+        self.policy = repository.validation_policy
 
     async def qualify(self, run_id: str, version_id: str, bars: pd.DataFrame):
         saved = await self.repository.get(f"run/{run_id}")
@@ -91,7 +91,7 @@ def assess_statistical_evidence(definition, bars, run, manifest, family, *, poli
     if definition.timeframe != "1d":
         reasons.append("intraday_session_execution_unverified")
     if run.get("policy") != asdict(policy):
-        reasons.append("qualification_policy_differs_from_frozen_run")
+        raise ValueError("Qualification policy differs from frozen discovery; do not reinterpret old evidence")
     # Recursive EMA depends on its initialization history. It remains a valid
     # research operator but cannot deploy until shared state is persisted.
     if any(

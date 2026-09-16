@@ -1,6 +1,7 @@
 """Real PostgreSQL transactions and real Alpaca SDK HTTP parsing for alpha evidence."""
 
 import asyncio
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 import numpy as np
@@ -14,7 +15,7 @@ from agentic_trader.execution.durable import EventKind, WorkStatus
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.promotion import AlphaPromotionService
-from agentic_trader.research.alpha.validation import DatasetManifest
+from agentic_trader.research.alpha.validation import DatasetManifest, ValidationPolicy
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import AlphaProjectionRecord
@@ -48,6 +49,7 @@ async def test_alpha_transactions_replay_and_concurrent_holdout_claim(postgres_t
         )
         assert sum(isinstance(outcome, ValueError) for outcome in outcomes) == 1
         run = {
+            "policy": asdict(ValidationPolicy()),
             "trial_count": 1,
             "trials": [{"definition": definition.to_dict(), "status": "evaluated"}],
             "holdout_start": 600,
@@ -72,7 +74,8 @@ async def test_alpha_transactions_replay_and_concurrent_holdout_claim(postgres_t
             await session.execute(delete(AlphaProjectionRecord))
         await repositories[1].rebuild()
         assert await repositories[0].snapshot() == expected
-        assert await repositories[0].get("consumption/concurrent")
+        consumption = await repositories[0].get("consumption/concurrent")
+        assert consumption["return_timeline"] == ValidationPolicy().return_timeline
     finally:
         await first.engine.dispose()
         await second.engine.dispose()
@@ -137,6 +140,9 @@ async def test_full_discovery_qualification_replay_stays_fail_closed(temp_db):
     result = await AlphaPromotionService(repository).qualify("full", definition.version_id, bars)
     assert not result["qualified"]
     assert result["reasons"]
+    assert result["policy"] == asdict(ValidationPolicy())
+    assert result["holdout"]["sample_length"] == 118
+    assert result["holdout"]["feature_coverage"]["bars"] == 118
     with pytest.raises(ValueError, match="qualification"):
         await repository.promote(definition.version_id, actor="integration", expected_generation=0)
     await repository.rebuild()
@@ -151,8 +157,9 @@ async def test_full_discovery_qualification_replay_stays_fail_closed(temp_db):
 @pytest.mark.enable_socket
 @pytest.mark.allow_hosts(["127.0.0.1", "localhost"])
 @pytest.mark.parametrize("demote_first", [True, False])
+@pytest.mark.parametrize("change", ["demotion", "obsolete_qualification"])
 async def test_independent_registry_and_submission_clients_have_a_commit_boundary(
-    postgres_test_db, app_config, demote_first
+    postgres_test_db, app_config, demote_first, change
 ):
     first, second = SignalDatabase(db_url=postgres_test_db), SignalDatabase(db_url=postgres_test_db)
     repository, operator = AlphaRepository(first.workflows), AlphaRepository(second.workflows)
@@ -172,6 +179,28 @@ async def test_independent_registry_and_submission_clients_have_a_commit_boundar
                 EventKind.ALPHA_REGISTRY,
                 "fixture",
             )
+            await repository._append(
+                session,
+                f"qualification/{definition.version_id}",
+                {"policy": asdict(ValidationPolicy())},
+                EventKind.ALPHA_RESEARCH,
+                "fixture",
+            )
+
+        async def invalidate():
+            if change == "demotion":
+                await operator.demote(definition.version_id, actor="test", expected_generation=1)
+            else:
+                async with second.session_factory() as session, session.begin():
+                    await second.workflows.lock(session, resource="alpha")
+                    await operator._append(
+                        session,
+                        f"qualification/{definition.version_id}",
+                        {"policy": {}},
+                        EventKind.ALPHA_RESEARCH,
+                        "fixture",
+                    )
+
         sid = await first.record_signal(
             "SPY",
             definition.alpha_id,
@@ -199,10 +228,10 @@ async def test_independent_registry_and_submission_clients_have_a_commit_boundar
         assert item, reason
         claim = await first.workflows.claim_entry(lease_seconds=60)
         if demote_first:
-            await operator.demote(definition.version_id, actor="test", expected_generation=1)
+            await invalidate()
         assert await first.workflows.begin_submission(claim) == (not demote_first)
         if not demote_first:
-            await operator.demote(definition.version_id, actor="test", expected_generation=1)
+            await invalidate()
             assert (await second.workflows.get_work(item.id)).status == WorkStatus.SUBMITTING
     finally:
         await first.engine.dispose()

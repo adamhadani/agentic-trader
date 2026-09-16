@@ -8,6 +8,21 @@ import pandas as pd
 from scipy import stats
 
 
+def observed_return_values(returns: pd.Series) -> np.ndarray:
+    """Require the complete supplied execution clock; never compress missing bars."""
+    if (
+        returns.empty
+        or returns.index.hasnans
+        or not returns.index.is_unique
+        or not returns.index.is_monotonic_increasing
+    ):
+        raise ValueError("Unique, ordered return observations required")
+    values = returns.to_numpy(dtype=float)
+    if not np.isfinite(values).all():
+        raise ValueError("Finite return observations required; missing valuations cannot be dropped")
+    return values
+
+
 def calculate_rank_ic(
     alpha_scores: pd.Series,
     forward_returns: pd.Series,

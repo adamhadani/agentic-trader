@@ -262,8 +262,8 @@ a definition without downloading data or inventing a performance result.
 
 ```bash
 uv run copilot alpha calibrate --seeds 10 --bootstrap-samples 499
-uv run copilot alpha study-plan --output /private/path/new-protocol.json
-uv run copilot alpha study config/research/a1b-v1.json --output /private/path/new-study-directory
+uv run copilot alpha study-plan --seed 10472909262026 --output /private/path/new-protocol.json
+uv run copilot alpha study config/research/a2a-v1.json --output /private/path/new-study-directory
 uv run copilot alpha mine --symbol SPY --feed alpaca --interval 1d --lookback 5y --iterations 25 --method random
 uv run copilot alpha mine --universe etf32 --feed alpaca --method genetic --iterations 9 --max-seconds 120
 uv run copilot alpha benchmark RUN_ID --method ridge --budget 5

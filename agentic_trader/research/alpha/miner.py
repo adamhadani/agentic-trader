@@ -177,6 +177,8 @@ class AlphaMiner:
                 "version_id": definition.version_id,
                 "validation_intervals": validation,
                 "fold_sharpes": [s["sharpe"] for s in simulations],
+                "validation_coverage": [s["feature_coverage"] for s in simulations],
+                "training_coverage": train["feature_coverage"],
                 "trial_count": total_trials,
                 "holdout_evaluated": False,
                 "calibration": calibration,

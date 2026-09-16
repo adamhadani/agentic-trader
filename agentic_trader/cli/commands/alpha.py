@@ -479,10 +479,11 @@ async def alpha_calibrate_cmd(
 
 @alpha_group.command("study-plan")
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New frozen protocol JSON file")
+@click.option("--seed", type=click.IntRange(0, 2**128 - 1), default=StudyProtocol.model_fields["seed"].default)
 @coro
-async def alpha_study_plan_cmd(output):
-    """Freeze the A1b protocol without evaluating any observations."""
-    protocol = StudyProtocol()
+async def alpha_study_plan_cmd(output, seed):
+    """Freeze a synthetic protocol under current contracts without evaluating observations."""
+    protocol = StudyProtocol(seed=seed)
     try:
         await asyncio.to_thread(save_json_report, protocol.document(), output)
     except (ValueError, OSError) as exc:

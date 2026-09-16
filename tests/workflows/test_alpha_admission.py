@@ -1,11 +1,14 @@
 """An alpha's lifecycle is checked by the durable submission transaction."""
 
+from dataclasses import asdict
+
 import pytest
 from sqlalchemy import select
 
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.execution.durable import EventKind, WorkStatus
 from agentic_trader.research.alpha.models import AlphaDefinition
+from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.models import SignalRecord
 
@@ -26,6 +29,13 @@ async def alpha_entry(store):
             "registry",
             {"generation": 1, "active": [definition.version_id], "shadow": []},
             EventKind.ALPHA_REGISTRY,
+            "fixture",
+        )
+        await repository._append(
+            session,
+            f"qualification/{definition.version_id}",
+            {"policy": asdict(ValidationPolicy())},
+            EventKind.ALPHA_RESEARCH,
             "fixture",
         )
     sid = await store.db.record_signal(
@@ -55,11 +65,20 @@ async def alpha_entry(store):
     return repository, definition, request
 
 
-@pytest.mark.parametrize("defect", ["demoted", "missing_version", "mismatched_policy"])
+@pytest.mark.parametrize("defect", ["demoted", "missing_version", "mismatched_policy", "obsolete_qualification"])
 async def test_unqualified_or_changed_alpha_cannot_reserve_new_risk(store, app_config, alpha_entry, defect):
     repository, definition, request = alpha_entry
     if defect == "demoted":
         await repository.demote(definition.version_id, actor="test", expected_generation=1)
+    elif defect == "obsolete_qualification":
+        async with store.db.session_factory() as session, session.begin():
+            await repository._append(
+                session,
+                f"qualification/{definition.version_id}",
+                {"policy": {}},
+                EventKind.ALPHA_RESEARCH,
+                "fixture",
+            )
     else:
         async with store.db.session_factory() as session, session.begin():
             signal = await session.scalar(select(SignalRecord).where(SignalRecord.id == request.signal_id))
@@ -72,11 +91,23 @@ async def test_unqualified_or_changed_alpha_cannot_reserve_new_risk(store, app_c
     assert "alpha" in reason.lower()
 
 
-async def test_demotion_during_preflight_blocks_submission_commit(store, app_config, alpha_entry):
+@pytest.mark.parametrize("change", ["demotion", "obsolete_qualification"])
+async def test_alpha_change_during_preflight_blocks_submission_commit(store, app_config, alpha_entry, change):
     repository, definition, request = alpha_entry
     item, reason = await store.enqueue_entry(request, app_config)
     assert item, reason
     claim = await store.claim_entry(lease_seconds=60)
-    await repository.demote(definition.version_id, actor="test", expected_generation=1)
+    if change == "demotion":
+        await repository.demote(definition.version_id, actor="test", expected_generation=1)
+    else:
+        async with store.db.session_factory() as session, session.begin():
+            await store.lock(session, resource="alpha")
+            await repository._append(
+                session,
+                f"qualification/{definition.version_id}",
+                {"policy": {}},
+                EventKind.ALPHA_RESEARCH,
+                "fixture",
+            )
     assert not await store.begin_submission(claim)
     assert (await store.get_work(item.id)).status == WorkStatus.CHECKING
