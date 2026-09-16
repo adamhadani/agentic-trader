@@ -18,10 +18,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Re-export ScreenerCandidate for backward compatibility
 __all__ = [
     "FormulaicAlphaStrategy",
-    "ScreenerCandidate",
     "SqueezeBreakoutStrategy",
     "StrategyEngine",
     "TrendPullbackStrategy",
@@ -325,7 +323,7 @@ class StrategyEngine:
     def check_trend_pullback(
         self, data: ContractMarketData, asset_class: AssetClass = AssetClass.FUTURES
     ) -> ScreenerCandidate | None:
-        """Backward-compatible helper evaluating Strategy A: Trend-Pullback."""
+        """Evaluate the single trend-pullback candidate used by research backtests."""
         candidates = self.trend_pullback_strat.evaluate(data, asset_class=asset_class)
         return candidates[0] if candidates else None
 
@@ -335,7 +333,7 @@ class StrategyEngine:
         timeframe: str = "4h",
         asset_class: AssetClass = AssetClass.FUTURES,
     ) -> ScreenerCandidate | None:
-        """Backward-compatible helper evaluating Strategy B: Squeeze Breakout."""
+        """Evaluate one explicitly selected squeeze timeframe for research backtests."""
         return self.squeeze_breakout_strat.evaluate_timeframe(data, timeframe=timeframe, asset_class=asset_class)
 
     def scan_contract(

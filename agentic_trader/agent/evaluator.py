@@ -5,12 +5,13 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import litellm
 from pydantic import BaseModel, Field
 
-from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
+from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
 from agentic_trader.agent.position_sizing import (
     calculate_dynamic_sizing,
 )
@@ -34,7 +35,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class DeterministicLevels(tuple):
+@dataclass(frozen=True)
+class DeterministicLevels:
     stop_loss: float
     take_profit: float
     stop_distance: float
@@ -43,46 +45,8 @@ class DeterministicLevels(tuple):
     reward_dollars: float
     notional_value: float
     quantity: float
-    sizing_tiers: list[dict[str, Any]]
-    gating_reasons: list[str]
-
-    def __new__(
-        cls,
-        stop_loss: float,
-        take_profit: float,
-        stop_distance: float,
-        target_distance: float,
-        risk_dollars: float,
-        reward_dollars: float,
-        notional_value: float,
-        quantity: float,
-        sizing_tiers: list[dict[str, Any]] | None = None,
-        gating_reasons: list[str] | None = None,
-    ):
-        instance = super().__new__(
-            cls,
-            (
-                stop_loss,
-                take_profit,
-                stop_distance,
-                target_distance,
-                risk_dollars,
-                reward_dollars,
-                notional_value,
-                quantity,
-            ),
-        )
-        instance.stop_loss = stop_loss
-        instance.take_profit = take_profit
-        instance.stop_distance = stop_distance
-        instance.target_distance = target_distance
-        instance.risk_dollars = risk_dollars
-        instance.reward_dollars = reward_dollars
-        instance.notional_value = notional_value
-        instance.quantity = quantity
-        instance.sizing_tiers = sizing_tiers or []
-        instance.gating_reasons = gating_reasons or []
-        return instance
+    sizing_tiers: list[dict[str, Any]] = field(default_factory=list)
+    gating_reasons: list[str] = field(default_factory=list)
 
 
 class LLMTradeEvaluation(BaseModel):
@@ -119,7 +83,7 @@ class RiskEvaluator:
         session_provider: MarketSessionProtocol | None = None,
     ):
         self.config = config
-        self.calendar: BaseEconomicCalendar = calendar or EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
+        self.calendar: BaseEconomicCalendar = calendar or ForexFactoryCalendar()
         self.regime_detector: RegimeDetector = regime_detector or RegimeDetector(config=config.regime)
         self.data_fetcher = data_fetcher
         self.session_provider = session_provider
@@ -145,7 +109,7 @@ class RiskEvaluator:
     ) -> DeterministicLevels:
         """
         Calculate structural stop loss, 2:1 profit target, and dynamic position sizing deterministically.
-        Returns DeterministicLevels (unpacks as 8 elements for backwards compatibility).
+        Returns explicit prices, distances, exposure, quantity and sizing tiers.
         """
         contract_info = self.config.contracts.get(candidate.contract)
         asset_class = (
@@ -237,16 +201,14 @@ class RiskEvaluator:
             current_drawdown_pct=current_drawdown_pct,
             macro_risk_multiplier=regime.risk_multiplier,
         )
-        (
-            stop_loss,
-            take_profit,
-            stop_distance,
-            target_distance,
-            risk_dollars,
-            reward_dollars,
-            notional_value,
-            quantity,
-        ) = levels
+        stop_loss = levels.stop_loss
+        take_profit = levels.take_profit
+        stop_distance = levels.stop_distance
+        target_distance = levels.target_distance
+        risk_dollars = levels.risk_dollars
+        reward_dollars = levels.reward_dollars
+        notional_value = levels.notional_value
+        quantity = levels.quantity
         sizing_tiers = levels.sizing_tiers
         gating_reasons = levels.gating_reasons
 

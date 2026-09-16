@@ -3,14 +3,16 @@ layout: default
 title: Quantitative Strategies & Models - Agentic Trader
 ---
 
-> Runtime note (2026-09-15): research backtests and formulaic return streams do not
+> Runtime note (2026-09-16): research backtests and formulaic return streams do not
 > produce live performance records. Broker reports use actual Alpaca fills and account
 > valuations. Promotion allocation weights and the convex optimizer remain research
 > metadata/library functionality, not live position sizing. See [development notes](development-notes.md).
 
 # 📊 Quantitative Strategies & Econometric Models
 
-This document details the mathematical and statistical formulations governing the quantitative screening engines and econometric analytics in the **Agentic Trader**.
+This document summarizes screening defaults and research models. Effective parameters
+come from validated configuration; these models do not guarantee predictive power.
+GEX and pairs are analytical reports, not integrated multi-leg execution strategies.
 
 ---
 
@@ -26,9 +28,10 @@ Capture high-probability trend-continuation entries during temporary counter-tre
 2. **4-Hour Trigger**:
    - Price must pull back near the 20-period EMA:
      $$|\text{Close}_{4\text{h}} - \text{EMA}(20)_{4\text{h}}| \le 0.5 \times \text{ATR}(14)_{4\text{h}}$$
-   - Relative Strength Index (Wilder's RSI-14) must indicate temporary oversold/overbought condition:
-     - **Long**: $\text{RSI}(14) \le 40.0$ with upward tick.
-     - **Short**: $\text{RSI}(14) \ge 60.0$ with downward tick.
+   - RSI uses configured dip/recovery thresholds across three candles. Long:
+     either of the previous two values is below `rsi_oversold_dip`, and the current
+     value recovers to at least `rsi_oversold`. Short uses the corresponding
+     `rsi_overbought_surge` and `rsi_overbought` thresholds.
 3. **Levels & Exit Brackets**:
    - **Stop Loss**: Minimum stop distance floor of $1.5 \times \text{ATR}(14)$ behind the local swing low/high.
    - **Take Profit**: Configured for at least $2.0 \times \text{Risk Distance}$ ($R:R \ge 2.0$).
@@ -57,10 +60,13 @@ Exploit volatility compression regimes (John Carter Squeeze) where trading range
 
 ---
 
-## 3. Strategy C: Options Implied Volatility Surface & GEX
+## 3. Research: Options Gamma Exposure Estimates
 
 ### Objective
-Analyze real-time option chains across index ETFs (`SPY`, `QQQ`, `IWM`) and futures proxies to infer market maker positioning, structural support/resistance walls, and volatility regimes.
+Analyze available Yahoo option chains across ETFs and futures proxies using
+Black-Scholes assumptions. Calls-positive/puts-negative is a model convention;
+the feed does not reveal dealer inventory. Missing counts/defaults are disclosed;
+a real underlying quote is required.
 
 ### Formulations
 1. **Black-Scholes Analytical Gamma**:
@@ -73,14 +79,18 @@ Analyze real-time option chains across index ETFs (`SPY`, `QQQ`, `IWM`) and futu
 3. **Structural Pinning Levels**:
    - **Call Wall**: Strike with peak call open interest (major overhead resistance).
    - **Put Wall**: Strike with peak put open interest (major downside support floor).
-   - **Gamma Flip**: Price level where total net dealer gamma crosses zero ($+\text{GEX} \leftrightarrow -\text{GEX}$).
+   - **Gamma Flip**: Interpolation across strike-level net GEX sign changes. This
+     heuristic does not reprice the entire option book across hypothetical spot prices.
 
 ---
 
-## 4. Strategy D: Cointegration & Statistical Pairs Arbitrage
+## 4. Research: Cointegration and Pairs Screening
 
 ### Objective
-Identify stationary, mean-reverting linear combinations of cross-asset prices and generate statistical arbitrage spread trades.
+Screen price pairs for residual stationarity and spread signals. No automatic
+paired-leg execution or position protection is implemented. The current code uses
+OLS plus residual ADF; statistical calibration should be reviewed before using this
+as a trading admission rule.
 
 ### Formulations
 1. **Engle-Granger Two-Step Cointegration**:
@@ -138,22 +148,27 @@ Promoted alphas persisted in `config/promoted_alphas.yaml` are loaded into `Stra
    - **Take Profit**: $\ge 2.0 \times \text{Risk Distance}$ ($R:R \ge 2.0$).
 
 ### Statistical Overfitting Gating (DSR & Rank IC)
-To eliminate curve-fitting and multi-testing p-hacking:
+To penalize multiple testing and measure out-of-sample association (without eliminating overfitting):
 1. **Spearman Rank Information Coefficient**:
    $$\text{Rank IC} = \text{corr}_{\text{rank}}(\alpha_t, R_{t+1})$$
    $$\text{IC\_IR} = \frac{\mu_{\text{IC}}}{\sigma_{\text{IC}}}$$
 2. **Deflated Sharpe Ratio (DSR)**:
    Accounts for the number of tested trials $N$, sample length $T$, skewness $\gamma_3$, and kurtosis $\gamma_4$:
    $$\text{DSR} = \Phi\left(\frac{(\widehat{\text{SR}} - \text{SR}^*) \sqrt{T-1}}{\sqrt{1 - \widehat{\gamma}_3 \widehat{\text{SR}} + \frac{\widehat{\gamma}_4 - 1}{4}\widehat{\text{SR}}^2}}\right)$$
-   Alphas are only eligible for auto-promotion if $\text{DSR} \ge 0.85$ (typically $\ge 0.95$ for high-confidence institutional deployment).
+   The mining DSR threshold defaults to 0.85 and is configurable. CLI auto-promotion
+   is explicit; the scheduled miner does not enable it. These thresholds do not
+   establish future profitability.
 
 ### Signal Orthogonalization Pipeline
-Before promoting an alpha candidate into production, it is checked for collinearity against the incumbent promoted strategy subspace via **Gram-Schmidt Residualization**:
-$$\alpha_{\text{ortho}} = \alpha_{\text{cand}} - \sum_{k=1}^K \frac{\langle \alpha_{\text{cand}}, \alpha_k \rangle}{\|\alpha_k\|^2} \alpha_k$$
-1. **Linear Independence**: Guarantees $\langle \alpha_{\text{ortho}}, \alpha_k \rangle = 0$ for all existing portfolio alphas.
+The mining report checks residual association against the incumbent signal
+subspace using a pseudoinverse projection. It is not a universal promotion gate:
+$$\alpha_{\text{ortho}} = \alpha_{\text{cand}} - A A^+ \alpha_{\text{cand}}$$
+1. **Linear Independence**: Projects away the supplied incumbent subspace within numerical precision;
+   this is a sample calculation, not a guarantee of future independence.
 2. **Residual Predictive Power**: Evaluates whether the orthogonal residual maintains incremental alpha against forward returns $r$:
    $$\text{IC}(\alpha_{\text{ortho}}) = \frac{\langle \alpha_{\text{ortho}}, r \rangle}{\|\alpha_{\text{ortho}}\| \|r\|}$$
-   Candidates with residual $\text{IC} < 0.015$ are rejected as redundant linear repackagings.
+   The report uses a default residual-IC threshold of 0.015 to label novelty;
+   inspect the CLI qualification and promotion path before treating that label as a gate.
 3. **Factor Annihilator Operator ($M_X$)**:
    Multi-factor projection operator neutralizing market beta and sector risk:
    $$M_X = I_N - X(X^T W X)^{-1} X^T W, \quad X^T M_X = 0$$
@@ -165,10 +180,12 @@ Subject to:
 - Gross leverage: $\sum_{i=1}^N |w_i| \le L_{\max}$
 - Box limits: $w_{\min} \le w_i \le w_{\max}$
 - Factor bounds: $b_{\text{lower}} \le X^T w \le b_{\text{upper}}$
-Hyperbolic $L_1$ turnover smoothing ($\epsilon = 10^{-6}$) guarantees continuous differentiability and numerical stability without derivative stalls.
+Smoothed turnover uses $\epsilon = 10^{-6}$ in the research optimizer. Solver
+convergence and useful allocations require validation; these weights are not used
+by the live sizing path.
 
 ### Multi-Asset Universe Routing (`eligible_symbols`)
 Each formulaic alpha can be targeted to specific market universes where its factor dynamics are statistically validated:
-- `eligible_symbols: null` $\rightarrow$ Universal execution across all configured contracts.
-- `eligible_symbols: ["NVDA", "AMD"]` $\rightarrow$ Targeted execution restricted to high-beta semiconductor equities.
+- `eligible_symbols: null` $\rightarrow$ Eligible screening across configured contracts, still subject to approval/risk.
+- `eligible_symbols: ["NVDA", "AMD"]` $\rightarrow$ Eligible screening restricted to high-beta semiconductor equities.
 - `eligible_symbols: ["QQQ", "SPY"]` $\rightarrow$ Broad index ETF regime momentum.

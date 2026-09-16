@@ -65,6 +65,7 @@ No test has production credentials, database access, or external network permiss
 | Concurrent close intents, migrations, DB guards | `tests/integration/test_postgres.py`; independent DB clients and disposable `test_` database |
 | Partial/external/unrelated fills and cancellation races | `tests/broker/test_incident_regressions.py`, `tests/execution/test_position_closing.py` |
 | Telegram delivery retry/poll recovery and command authorization | Loopback HTTP transport tests plus command/service fixtures; handlers execute once |
+| Readiness → incidents/outbox → Telegram delivery/dead letters | `tests/integration/test_operations_http.py`; real loopback and Telegram SDK, plus independent PostgreSQL observers |
 | CLI preview/confirmation, Telegram flatten menu/scopes | Close lifecycle tests and read-only deployed `scripts/verify_runtime.py` |
 | Event-loop responsiveness during broker calls | Delayed real HTTP response with concurrent asyncio task |
 
@@ -86,9 +87,12 @@ No runtime DB guard is disabled.
    broker-authoritative. Revisions/retractions replay from the journal. Corporate
    actions, tax lots and partial per-signal allocation remain explicitly unsupported.
    See [account ledger and official contracts](account-ledger.md).
-3. **Operational alerting:** wire readiness/dead letters to alerting and define event
-   retention. Daily macro feed age and shared research executor contention remain.
-4. **Module boundaries:** extract entry admission/reconciliation and move remaining
+3. **Operational alerting:** schema 007 adds external readiness/dead-letter incidents
+   through the existing outbox and bounded healthy-observation compaction. See
+   [monitoring](operational-monitoring.md). Independent external alerting, daily macro
+   feed age and shared research executor contention remain.
+4. **Module boundaries:** entry admission already has an application service; extract
+   remaining reconciliation/report responsibilities and move remaining
    construction into a composition root. Keep small typed service results separate
    from HTML. The shared close coordinator and broker transport are useful boundaries.
 5. **Remaining async/config work:** synchronous YAML promotion reads/writes remain

@@ -7,7 +7,7 @@ from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.config import AppConfig, ContractConfig, PortfolioConfig
 from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.data.market_data import MarketDataFetcher
-from agentic_trader.screeners.strategies import ScreenerCandidate
+from agentic_trader.screeners.base import ScreenerCandidate
 
 
 @pytest.fixture

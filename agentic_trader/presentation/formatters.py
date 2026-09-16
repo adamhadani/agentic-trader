@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from agentic_trader.accounting.ledger import LedgerReport
@@ -95,55 +95,9 @@ class PortfolioStatusReport:
     tnx_value: float | None = None
     dxy_value: float | None = None
     breakout_allowed: bool = True
-    recent_signals: list[dict[str, Any]] = None  # type: ignore
+    recent_signals: list[dict[str, Any]] = field(default_factory=list)
 
-    # Aliases and extra fields
-    max_notional_exposure: float = 0.0
-    active_exposure: float = 0.0
-    active_position_count: int = 0
-    macro_calendar_summary: str = ""
-    vix: float = 0.0
-    tnx: float | None = None
-    dxy: float | None = None
     execution_mode: str = ExecutionMode.PAPER
-
-    def __post_init__(self):
-        if self.recent_signals is None:
-            self.recent_signals = []
-        if self.max_notional_exposure and not self.max_notional:
-            self.max_notional = self.max_notional_exposure
-        elif self.max_notional and not self.max_notional_exposure:
-            self.max_notional_exposure = self.max_notional
-
-        if self.active_exposure and not self.current_exposure:
-            self.current_exposure = self.active_exposure
-        elif self.current_exposure and not self.active_exposure:
-            self.active_exposure = self.current_exposure
-
-        if self.active_position_count and not self.active_contract_count:
-            self.active_contract_count = self.active_position_count
-        elif self.active_contract_count and not self.active_position_count:
-            self.active_position_count = self.active_contract_count
-
-        if self.macro_calendar_summary and not self.macro_summary:
-            self.macro_summary = self.macro_calendar_summary
-        elif self.macro_summary and not self.macro_calendar_summary:
-            self.macro_calendar_summary = self.macro_summary
-
-        if self.vix and not self.vix_value:
-            self.vix_value = self.vix
-        elif self.vix_value and not self.vix:
-            self.vix = self.vix_value
-
-        if self.tnx is not None and self.tnx_value is None:
-            self.tnx_value = self.tnx
-        elif self.tnx_value is not None and self.tnx is None:
-            self.tnx = self.tnx_value
-
-        if self.dxy is not None and self.dxy_value is None:
-            self.dxy_value = self.dxy
-        elif self.dxy_value is not None and self.dxy is None:
-            self.dxy = self.dxy_value
 
 
 @dataclass
@@ -156,7 +110,6 @@ class ExecutionResultView:
     quantity: float = 1.0
     fill_price: float | None = None
     order_id: str | None = None
-    broker_order_id: str | None = None
     notional_value: float = 0.0
     risk_dollars: float = 0.0
     stop_loss: float = 0.0
@@ -164,12 +117,6 @@ class ExecutionResultView:
     execution_mode: str = ExecutionMode.PAPER
     success: bool = True
     error_message: str | None = None
-
-    def __post_init__(self):
-        if self.broker_order_id and not self.order_id:
-            self.order_id = self.broker_order_id
-        elif self.order_id and not self.broker_order_id:
-            self.broker_order_id = self.order_id
 
 
 @dataclass
@@ -203,28 +150,7 @@ class PerformanceSummaryReport:
     account_ledger_unavailable: str = ""
     active_count: int = 0
     active_exposure: float = 0.0
-    recent_closed_trades: list[dict[str, Any]] = None  # type: ignore
-
-    # Aliases
-    active_open_positions: int = 0
-    active_notional_exposure: float = 0.0
-    recent_trades: list[dict[str, Any]] = None  # type: ignore
-
-    def __post_init__(self):
-        if self.recent_closed_trades is None and self.recent_trades is not None:
-            self.recent_closed_trades = self.recent_trades
-        elif self.recent_closed_trades is None:
-            self.recent_closed_trades = []
-
-        if self.active_open_positions and not self.active_count:
-            self.active_count = self.active_open_positions
-        elif self.active_count and not self.active_open_positions:
-            self.active_open_positions = self.active_count
-
-        if self.active_notional_exposure and not self.active_exposure:
-            self.active_exposure = self.active_notional_exposure
-        elif self.active_exposure and not self.active_notional_exposure:
-            self.active_notional_exposure = self.active_exposure
+    recent_closed_trades: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -236,13 +162,9 @@ class PanicReportView:
     total_realized_pnl: float
     is_halted: bool
     halt_reason: str
-    closed_positions: list[dict[str, Any]] = None  # type: ignore
+    closed_positions: list[dict[str, Any]] = field(default_factory=list)
     success: bool = True
     error_message: str | None = None
-
-    def __post_init__(self):
-        if self.closed_positions is None:
-            self.closed_positions = []
 
 
 class TerminalFormatter:
@@ -281,7 +203,7 @@ class TerminalFormatter:
             f"{APP_DISPLAY_NAME.upper()}: PORTFOLIO & RISK STATUS",
             sep,
             f"Cash Base:            ${report.cash_base:,.2f}",
-            f"Max Notional Ceiling: ${report.max_notional:,.2f} (0.6x max leverage)",
+            f"Max Notional Ceiling: ${report.max_notional:,.2f}",
             f"Active Exposure:      ${report.current_exposure:,.2f} ({report.effective_leverage:.2f}x effective leverage)",
             f"Active Position Count:{report.active_contract_count} positions",
             f"Telegram Configured:  {report.telegram_configured}",

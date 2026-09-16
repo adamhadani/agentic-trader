@@ -1,282 +1,139 @@
 # Agentic Trader
-### Autonomous Multi-Asset Quantitative Trading System
 
-[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/)
-[![Checked with mypy](https://img.shields.io/badge/mypy-checked-blue)](http://mypy-lang.org/)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
-[![Documentation](https://img.shields.io/badge/docs-local%20markdown-blue)](docs/)
+A quantitative screening and operator-approved trading desk. The current deployment
+uses **Alpaca paper equities/ETFs**, PostgreSQL, Telegram and a single macOS launchd
+daemon. Scans propose trades; operator approval enters a durable execution queue.
 
-The **Agentic Trader** screens multi-asset markets, evaluates setups with deterministic risk rules and optional LLM reasoning, and stages suggestions for operator approval. The current desk runs **Alpaca paper equities/ETFs** with PostgreSQL, Telegram oversight and Prometheus telemetry. Local simulation is separate. Additional broker adapters require the fresh-admission contract before using the durable entry queue. The portfolio model uses a $100,000 cash baseline and portable-alpha accounting.
+Python **3.14** · `uv` · SQLAlchemy/Alembic · `alpaca-py` · pytest · Ruff · mypy
 
----
+## Start here
 
-## 📚 Documentation & Reference Manuals
+- [Operations and deployment](docs/production.md): ownership, schedules, restart and verification.
+- [CLI reference](docs/cli-reference.md): commands and recovery tools.
+- [Development handoff](docs/development-notes.md) and [assistant instructions](CLAUDE.md).
+- [Architecture review and priorities](docs/architecture-review.md).
+- [Entry queue, broker events and outbox](docs/durable-execution.md).
+- [Account activity ledger](docs/account-ledger.md).
+- [Readiness alerts and retention](docs/operational-monitoring.md).
+- [Alpaca contracts and integration coverage](docs/alpaca-integration-review.md).
+- [Research strategies](docs/strategies.md), [historical roadmap](docs/roadmap.md),
+  and [September 15 incident](docs/incident-2026-09-15.md).
 
-- [**Production Operations Guide**](docs/production.md): **Single Source of Truth** for 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
-- [**CLI Command Reference**](docs/cli-reference.md): Exhaustive guide to all Click CLI subcommands, flags, and outputs.
-- [**Quantitative Strategies & Models**](docs/strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX, and Pairs Trading.
-- [**Development Roadmap**](docs/roadmap.md): Complete chronological record of completed phases (Phases 1 through 45) and future milestones.
+## Runtime model
 
-### Compiling & Viewing Documentation Locally
+`EXECUTION_MODE=alpaca` with `ALPACA_PAPER=true` selects brokerage paper trading.
+`EXECUTION_MODE=paper` selects the local simulator. They have separate state scopes.
+Other broker adapters exist but require the fresh-admission contract before using
+the entry queue. Alpaca crypto brackets and broker-backed slicing are unsupported.
 
-Since the GitHub repository is private, you can preview the complete formatted documentation site locally:
+One daemon owns:
 
-**Method 1: Local Ruby / Bundler**
+- Four-hour swing scans and session-gated 15-minute intraday scans, relative to startup.
+- Minute position reconciliation plus Alpaca trade-stream wakeups.
+- Independent entry, notification and 60-second account-activity workers.
+- Telegram commands, approval buttons and command-menu registration.
+- `/metrics`, `/healthz` liveness and `/readyz` current-run freshness on port 9108.
+
+The external launchd watchdog runs every 60 seconds. It restores missing/stopped
+processes, persists sustained readiness incidents and queues alerts through the
+existing outbox. It does not blindly restart an unready process. A separate weekly
+alpha-miner job performs research without automatic promotion.
+
+Positions use the broker's quantity, average entry, current price and unrealized
+P&L from one snapshot. `/perf` separates reconciled account performance—including
+partial/external executions and supported fees/income—from tracked full-close
+statistics. Missing, stale or unreconciled evidence withholds realized totals.
+`/status` shows configured risk capital and tracked exposure, not broker cash.
+
+Risk policy comes from `config/config.yaml` and validated configuration. Defaults
+include a $100k capital baseline, $60k total notional ceiling, per-class limits,
+minimum R:R 2, and minimum stop distance 1.5 ATR. The baseline is a sizing input;
+it does not imply the account earns modeled Treasury yield. Entry preflight
+rechecks broker positions/orders, price age/drift, session, halt and risk capacity.
+
+## Common operator commands
+
 ```bash
-cd docs
-bundle install
-bundle exec jekyll serve
-# Open http://localhost:4000/agentic-trader/ in your browser
+uv run copilot doctor --readiness   # passive current-run freshness; nonzero if unready
+uv run copilot positions            # broker-backed positions
+uv run copilot perf                 # read-only account refresh + performance
+uv run copilot status               # configured risk budget and tracked exposure
+uv run copilot scan                # scan and stage suggestions for approval
+uv run copilot execute 4            # authorize signal 4; accepted does not mean filled
+uv run copilot close 4 --dry-run     # preview a tracked close
+uv run copilot close 4              # request fill-confirmed closure
+uv run copilot flatten              # preview all current Alpaca positions
+uv run copilot flatten --confirm    # close positions, preserving trading halt state
+uv run copilot panic                # confirmation, persistent halt and emergency exits
+uv run copilot resume               # clear halt only after unresolved-entry checks
+uv run copilot db incidents         # persisted operational incident state
+uv run copilot db outbox            # deliveries, retries and dead letters
+uv run copilot db retention         # preview bounded healthy-observation compaction
 ```
 
-**Method 2: Docker (Zero Ruby Installation Required)**
-```bash
-docker run --rm -v "$PWD/docs:/srv/jekyll" -p 4000:4000 jekyll/jekyll:latest jekyll serve
-# Open http://localhost:4000/agentic-trader/ in your browser
-```
+Telegram supports `/status`, `/positions`, `/perf`, `/macro`, `/explain_macro`,
+`/alphas`, `/gex`, `/pairs`, `/backtest`, `/scan`, `/close`, `/flatten`, `/panic`,
+`/resume` and `/help`. `/macro` owns combined market context; `/regime` was removed.
+The menu is registered in default, private-chat and operator-chat scopes at startup.
 
-**Method 3: Native Markdown**
-All documentation pages in [`docs/`](docs/) are formatted in standard GitHub Flavored Markdown and can be read directly in your IDE or the private GitHub web UI.
+Normal equity closes require regular trading hours before canceling protection.
+Panic can queue emergency exits for the next session. A requested or accepted close
+is not a confirmed liquidation. Inspect per-position outcomes and broker positions.
 
----
+## Development setup
 
-
-## Development and operational safety
-
-The local desk uses **Alpaca paper trading with PostgreSQL** under macOS launchd.
-`EXECUTION_MODE=paper` means the in-process simulator; use `EXECUTION_MODE=alpaca`
-with `ALPACA_PAPER=true` for the brokerage paper account. Run one daemon/poller.
-
-- [Broker account activity ledger and accounting limits](docs/account-ledger.md)
-- [Durable execution queue, order journal, outbox and readiness](docs/durable-execution.md)
-- [Architecture review and priorities](docs/architecture-review.md)
-- [Development map and test isolation](docs/development-notes.md)
-- [September 15 incident and fixes](docs/incident-2026-09-15.md)
-- `uv run pytest`: isolated fixtures, no production credentials/database/network.
-- PG tests: `TEST_POSTGRES_URL=.../test_trader uv run pytest tests/integration --run-postgres`.
-- `uv run pre-commit run --all-files`: required before committing.
-- `uv run copilot scan --dry-run --no-llm`: empty temporary portfolio, no Telegram,
-  broker execution or monitoring; market-data access still occurs.
-- `uv run copilot db audit --limit 20`: fill, valuation, notification and startup evidence.
-
-Positions use Alpaca's account valuation. `/perf` and CLI `perf` separate reconciled
-account performance (including partial/external fills, fees and income) from tracked
-full-close statistics. Unknown or inconsistent activity withholds account totals. Quarantined test
-rows and unverified Alpaca closes are excluded. Source changes require a daemon
-restart; startup audit records the deployed revision. Telegram has shared transport retries,
-persistent command/request/poll audits, poll freshness metrics, and event-loop stall detection.
-Run `uv run python scripts/verify_runtime.py` for a read-only paper-desk smoke check.
-
-## 1. Core Risk & Portfolio Constraints
-
-1. **Instrument Scope:** Micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`) and liquid ETF/equity proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`).
-2. **Fixed Sizing:** Static mode defaults to one micro contract; equity sizing and operator tiers obey configured risk caps. Total active open notional exposure across all concurrent positions must not exceed **$60,000** (0.6x effective leverage on $100k cash).
-3. **Reward-to-Risk (R:R):** Strictly $\ge 2.0$. Stop distance must be $\ge 1.5 \times \text{ATR}(14)$ to prevent noise stop-outs.
-4. **Macro Event Lockout:** Zero entry alerts permitted within **$[-60\text{m}, +30\text{m}]$** of scheduled Tier-1 economic releases (CPI, PPI, FOMC, Non-Farm Payrolls).
-5. **Deduplication Rule:** Zero duplicate signals for the same contract + strategy within 12 hours.
-
----
-
-## 2. Production Steady-State: What Runs 24/7
-
-In production, **only one continuous background process runs**:
+Inspect launchd registration before starting services. **Do not run a second daemon,
+`listen`, or Compose stack alongside the installed poller.** Develop in a worktree
+when changing supervisor scripts: the installed watchdog executes them every minute.
 
 ```bash
-copilot daemon
-```
-
-### What `copilot daemon` Executes Under Its Unified Event Loop:
-1. **APScheduler Scan Job**: Scans multi-asset universe every 4 hours relative to startup, plus session-gated 15-minute intraday scans.
-2. **Position Monitor & Reconciler**: Polls active broker positions every minute, tracking stop-loss and take-profit triggers against live quotes.
-3. **Sub-Second WebSocket Streams**:
-   - **Alpaca `TradingStream`**: Sub-second synchronization for bracket order fills, stops, targets, and cancellations.
-   - **Tradovate WebSocket**: Account, position, and CME order state synchronization.
-4. **Two-Way Telegram Interactive Bot**: Continuous async polling listener processing operator commands (`/status`, `/positions`, `/perf`, `/macro`, `/gex`, `/pairs`, `/scan`, `/close`, `/flatten`) and inline action buttons (`[ 🚀 Execute ]` / `[ ❌ Dismiss ]`).
-5. **Native Prometheus Exporter**: Lightweight async HTTP server running on `0.0.0.0:9108` serving `GET /metrics` and container health probe at `GET /healthz`.
-6. **Dynamic Trailing Stop & Broker Sync**: Evaluates active positions for risk-distance trailing stops (the live implementation is not yet a true Chandelier ATR high-water mark calculation) and amends resting bracket stop orders directly on exchange brokers (Alpaca and Tradovate) only persisting local ratchets after broker success. Alpaca additionally verifies the working replacement price.
-7. **Resilient Multi-Tier Market Data**: Dual-feed market data engine (`RunnableWithFallbacks`) querying Alpaca historical bars with automatic failover to Yahoo Finance.
-8. **Institutional Emergency Kill Switch**: Persistent database halt state (`system_state`) with order cancellation and fill-confirmed position liquidation across all active brokers via `/panic` or `copilot panic`.
-9. **Native Telegram Command Autocomplete**: On startup, synchronizes commands with Telegram servers via `set_my_commands` to render interactive autocomplete menus in operator chat clients.
-10. **Resilient Third-Party Market Calendar Delegation**: Multi-tier calendar engine (`RunnableWithFallbacks`) querying authoritative exchange calendars from Alpaca (`GET /v2/calendar`) and Finnhub (`/stock/market-holiday`) with fallback to deterministic exchange calculation, synchronizing cash equity and CME index futures sessions.
-11. **Alpaca Execution & Multi-Strategy Framework**: Seamless paper-to-live execution on Alpaca utilizing liquid ETF proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`) with exchange-held server-side bracket orders, plus an institutional Multi-Strategy framework supporting switchable `single` vs. `parallel` execution modes, dynamic risk budgeting, and signal conflict resolution (netting / conviction policies).
-
----
-
-## 3. Production Deployment Methods
-
-### Option A: Docker Compose (Recommended)
-Docker Compose provisions a multi-container stack with a high-throughput **PostgreSQL 18.6** database container (`postgres:18.6-alpine`), automated service orchestration, persistent data volumes, and Prometheus metrics port mapping (`:9108`):
-
-```bash
-# 1. Launch PostgreSQL 18.6 & Copilot daemon in detached mode
-docker compose up -d
-
-# 2. Inspect container status and health
-docker compose ps
-
-# 3. View live logs
-docker compose logs -f trading-copilot
-
-# 4. Apply Alembic migrations inside container
-docker compose exec copilot copilot db upgrade head
-```
-
-### Option B: macOS `launchd` (Local Mac Mini Desk)
-For dedicated local Mac machines, `launchd` keeps the daemon running across reboots with automated 60s watchdog supervision:
-```bash
-./scripts/launchd.sh install       # Installs copilot daemon, watchdog, and scheduled alpha miner
-./scripts/launchd.sh status        # Check daemon, watchdog, and alpha miner registration/PID status
-./scripts/launchd.sh health        # Run copilot doctor diagnostic health check
-./scripts/launchd.sh restart       # Gracefully restart copilot daemon
-./scripts/launchd.sh run-miner     # Manually trigger offline alpha mining run
-./scripts/launchd.sh logs          # Tail data/copilot.log in real time
-./scripts/launchd.sh watchdog-logs # Tail data/watchdog.log in real time
-./scripts/launchd.sh miner-logs    # Tail data/alphaminer.log in real time
-./scripts/launchd.sh stop          # Temporarily pause service
-./scripts/launchd.sh uninstall     # Unload and remove daemon, watchdog, and miner
-```
-
----
-
-## 4. Complete CLI Command Reference by Lifecycle
-
-The `copilot` CLI separates commands into distinct operational lifecycles:
-
-### A. Production Daemon & Services
-```bash
-uv run copilot daemon              # Run 24/7 continuous trading daemon (Scheduler, WS streams, Bot, Metrics)
-uv run copilot listen              # Run Telegram bot listener only in isolation (without scheduled scans)
-```
-
-### B. Day-to-Day Desk Operations
-```bash
-uv run copilot doctor              # Run pre-flight diagnostic probes across DB, Telegram, Alpaca, Finnhub, LLM
-uv run copilot status              # View cash base, active notional exposure, leverage, and macro events
-uv run copilot positions           # View active tracked positions, stops, targets, and unrealized P&L
-uv run copilot explain-macro       # Educational tutorial & breakdown of live macro indicators via LLM
-uv run copilot scan                # Trigger on-demand market scan (--dry-run, --strategy, --strategy-mode, --asset-class)
-uv run copilot execute <id> [--qty <N>] # Authorize signal with optional custom tiered quantity override
-uv run copilot close <id>          # Bracket-aware close; accounting waits for actual broker fills
-uv run copilot close <id> --dry-run # Read-only position preview
-uv run copilot flatten --dry-run    # Preview all current broker positions
-uv run copilot flatten --confirm    # Close positions without changing the trading halt
-uv run copilot panic [--confirm]    # Emergency kill switch: cancel all resting orders, liquidate positions, halt trading
-uv run copilot resume               # Clear emergency trading halt and resume autonomous trading operations
-uv run copilot gex [symbol]        # View options dealer gamma exposure, call/put walls, and gamma flip
-uv run copilot pairs               # Screen cross-asset pairs for cointegration and rolling spread Z-scores
-uv run copilot metrics             # Prometheus exposition (:9108/metrics) & JSON healthcheck (:9108/healthcheck)
-uv run copilot test-alert          # Preview a non-actionable [TEST] notification locally
-```
-
-### C. Quantitative Research, Alpha Mining & Calibration (Offline)
-```bash
-uv run copilot backtest            # Historical backtest with friction, Cash-Plus attribution, & Monte Carlo
-uv run copilot optimize            # Parameter grid search & rolling walk-forward validation (--walk-forward)
-uv run copilot retune              # Automated parameter recalibration with Walk-Forward Efficiency (WFE) filtering
-uv run copilot stress              # Crisis replay (2008 GFC, 2020 COVID, 2022 Inflation) & factor shocks
-uv run copilot eval                # Benchmark LLM decision prompts against risk invariants (Promptfoo)
-
-# Formulaic Alpha Mining & Expression DSL Suite (copilot alpha)
-uv run copilot alpha catalog       # Display pre-cataloged institutional alphas (WorldQuant 101, etc.)
-uv run copilot alpha list          # Display production promoted alphas, weights, and eligible universe
-uv run copilot alpha mine          # Mine & discover formulaic alphas with DSR & orthogonalization (--symbols)
-uv run copilot alpha inspect <id>  # Display quantitative tearsheet (OOS Sharpe, DSR, Rank IC, Win Rate)
-uv run copilot alpha promote <id>  # Promote an alpha into production desk (--allocation 0.15 --symbols NVDA,AMD)
-uv run copilot alpha demote <id>   # Retire active alpha with zombie protection (--liquidate-positions)
-# ConvexAlphaPortfolioOptimizer is a Python library; no alpha optimize CLI or live allocation integration exists.
-uv run copilot alpha test <expr>   # Validate and backtest an ad-hoc formulaic DSL expression
-```
-
-### D. Database Migrations & Administration (`copilot db`)
-```bash
-uv run copilot db upgrade head     # Apply pending Alembic database schema migrations
-uv run copilot db current          # View current schema revision
-uv run copilot db history          # View migration history
-uv run copilot db downgrade -1     # Roll back last migration
-uv run copilot db clear [--yes]    # Purge historical test signals and reset sequence (schema preserved)
-```
-
-Global database flags (`--db-name <name>`, `--db-path <path>`) or the `DB_NAME` / `DB_PATH` environment variables can be passed to redirect execution to isolated database environments without modifying production data.
-
----
-
-## 5. Interactive Telegram Commands
-
-When the daemon is running, operators can query and command the trading desk directly from Telegram:
-
-| Command | Description | Example |
-|---|---|---|
-| `/status` | View cash base, open notional exposure, leverage, and macro events | `/status` |
-| `/positions` | Broker positions, actual cost basis and broker unrealized P&L | `/positions` |
-| `/perf` | Account performance and separate tracked trade statistics | `/perf` |
-| `/macro` | VIX regime, Treasury curve, credit, inflation and combined trading filters | `/macro` |
-| `/explain_macro` | View educational tutorial & breakdown of live macro indicators with LLM context | `/explain_macro` |
-| `/alphas` | View production promoted formulaic alphas, weights, and tearsheets | `/alphas` |
-| `/gex [sym]` | Yahoo option-chain gamma estimates, quality notes, walls and gamma flip | `/gex SPY` |
-| `/pairs` | View cross-asset cointegration, mean-reversion half-life, and Z-scores | `/pairs` |
-| `/backtest [sym] [lookback]` | Trigger on-demand offline backtest simulation from mobile | `/backtest SPY 1y` |
-| `/scan` | Trigger an immediate quantitative scan across the universe | `/scan` |
-| `/close <id> [price]` | Request broker closure; accounting waits for the confirmed fill | `/close 3` |
-| `/flatten [confirm\|dry-run]` | Preview by default; close current broker positions without changing the halt | `/flatten` |
-| `/panic [confirm]` | Emergency kill switch: cancel orders, market liquidate, halt trading | `/panic` |
-| `/resume` | Clear emergency trading halt and resume scanning and operator-approved execution | `/resume` |
-| `/help` | Display commands and the configured trading workflow | `/help` |
-
-`/macro` replaces `/regime`: it includes the same volatility filter plus the richer
-macro indicators, combined breakout policy, risk multiplier and configured minimum
-R:R. `/explain_macro` remains an educational explanation. Macro feeds are latest
-published observations, not synchronized live ticks; FRED dates are shown. Missing
-values are never replaced with invented yields or a normal VIX baseline. Telegram
-backtests default to `backtest.lookback`; the research symbol default is `SPY`.
-
-> **Interactive Autocomplete & Menu Button**: On startup, the Telegram bot registers slash commands via `set_my_commands` and configures the native chat menu button via `set_chat_menu_button(MenuButtonCommands())` across default, private, and chat-specific scopes. Modern Telegram mobile, desktop, and web clients display a dedicated `[Menu]` / `[/]` button with interactive autocomplete for instant command discovery.
-
----
-
-## 6. System Prerequisites & Setup
-
-On macOS:
-```bash
-# Core package manager, Python runner, and database (Python >= 3.14)
-brew install uv hadolint postgresql@18 sqlite node
-
-# Clone and sync dependencies
-uv sync
-
-# Copy environment template
-cp .envrc.example .envrc
-# Fill in your API keys (Telegram, LLM, Tradovate, Alpaca, Finnhub)
-# Optional: Set DATABASE_URL=postgresql+asyncpg://localhost:5432/agentic_trader for PostgreSQL 18.6
-direnv allow  # or source .envrc
-
-# Run database migrations
+uv sync --dev
+# On a new installation only: copy .envrc.example to .envrc and configure credentials/DB.
 uv run copilot db upgrade head
-
-# Install pre-commit git hooks
 uv run pre-commit install
+uv run pytest
+uv run pre-commit run --all-files
 ```
 
----
-
-## 7. Quality Assurance & Testing
-
-The repository enforces 100% test passing and strict linting via `pre-commit` and `pytest-impacted[fast]`. Function-scoped autouse fixtures in `tests/conftest.py` select temporary SQLite databases, strip credentials, and block external I/O. PostgreSQL integration tests require an explicitly selected disposable `test_` database; the production PostgreSQL database is never a test target:
+PostgreSQL is the runtime backend. SQLite is explicitly selected for tests and
+sandboxes; there is no automatic failover. Tests strip credentials, use temporary
+DBs, block Python/native network I/O and enforce DB guards. Real SDK HTTP/WebSocket
+integration uses loopback only. For PostgreSQL integration, create an empty
+disposable database whose name starts `test_`:
 
 ```bash
-# Run the isolated unit test suite
-uv run pytest
-
-# Run targeted component unit tests (e.g. agent, broker, market, research, storage)
-uv run pytest tests/agent/ tests/broker/ tests/market/ tests/research/ tests/storage/
-
-# Run pytest with code coverage report
-uv run pytest --cov=agentic_trader --cov-report=term-missing
+TEST_POSTGRES_URL=postgresql+asyncpg://localhost/test_trader uv run pytest tests/integration --run-postgres
 ```
 
-### Broker contract and integration testing
+Safe local checks:
 
-See the [Alpaca integration review](docs/alpaca-integration-review.md) for actual-SDK
-HTTP/WebSocket tests, disposable PostgreSQL CI, confirmed stop replacement, and
-remaining corporate-action, partial trade allocation and alerting work. `/flatten` previews by default;
-`/flatten confirm` closes positions without halting future trading.
+```bash
+uv run copilot scan --dry-run --no-llm --symbols IWM
+uv run copilot test-alert
+uv run python scripts/verify_runtime.py
+```
+
+Dry scans use an empty temporary simulator and no Telegram or broker mutations;
+market-data calls remain possible. `test-alert` previews locally. Explicit sending
+requires a separate test bot/chat. The runtime verifier reads broker/Telegram state,
+checks current source revision and daemon freshness, and submits no orders/messages.
+Keep credentials, chat identifiers, raw logs, DBs and verification output private.
+
+## Deployment and research
+
+The installed Mac desk uses `./scripts/launchd.sh status` and controlled restarts.
+Pause watchdog then daemon before updating its checkout or applying migrations.
+Verify startup revision, readiness, broker/report parity, stream and actual poll
+freshness afterward. See the [operations runbook](docs/production.md).
+
+Docker Compose is an alternative deployment with `postgres` and `copilot` services;
+use `docker compose logs -f copilot`. Never start it alongside this desk's launchd
+stack. Compose's PostgreSQL image is independent of the installed Homebrew version.
+
+Research commands include `backtest`, `optimize`, `retune`, `stress`, `gex`, `pairs`
+and `alpha` mining/inspection/promotion. Research results are not live account P&L.
+Promotion writes configuration; external edits require a daemon restart. Allocation
+weights/convex optimization are not yet integrated into live sizing.
+
+Read docs as Markdown or preview with `cd docs && bundle install && bundle exec jekyll serve`.
+Historical design notes and the reference PDF are source material, not runtime guarantees.

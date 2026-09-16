@@ -30,8 +30,9 @@ hold the execution worker. Short database transactions never span remote calls.
 
 This is **bounded event sourcing for broker order views**, plus a transactional
 inbox/outbox for application workflows. It does not claim every legacy signal,
-portfolio calculation or account balance is event sourced. `domain_events` is
-append-only through its repository; normal DB administrative privileges still
+portfolio calculation or account balance is event sourced. `domain_events` financial/workflow evidence is
+append-only through its repository; redundant old healthy observations have a
+[bounded compaction exception](operational-monitoring.md#retention-contract); normal DB administrative privileges still
 allow changes. Event schema version 1 is explicit. `order_projections` can be
 reconstructed without broker mutations. Existing `audit_events` remains the
 operational trace (commands, HTTP outcomes, startup revision, valuations).
@@ -172,8 +173,10 @@ activity ledger to the broker account UUID.
 Telemetry defaults: reconciliation 180s, Telegram poll 120s, worker 30s, scan 18000s,
 notification backlog 1800s, health observation interval 10s. All are configured
 under `telemetry`. Match poll audit/health sampling intervals to freshness limits.
-A dead letter makes readiness unhealthy. Archive/retention policy is still needed
-for long-running event/health history; do not delete events needed for replay.
+A dead letter makes readiness unhealthy. The [external monitor](operational-monitoring.md)
+alerts sustained failures and compacts redundant old healthy observations. Financial
+and workflow history still require capacity/backup planning; never delete replay or
+deduplication evidence.
 
 ## Validation and deployment
 
@@ -188,16 +191,16 @@ binding, socket timeout behavior, WebSocket reconnection, or PostgreSQL locking.
 Those tests remain mandatory in unrestricted CI before merge/deployment.
 
 Before deployment: run full tests/PG integration/pre-commit, review and merge,
-back up PostgreSQL, apply migration 005, and perform a controlled single-daemon
+back up PostgreSQL, apply migrations to head, and perform a controlled single-daemon
 restart. Verify startup revision/PID, `/readyz`, poll and stream state, fresh
 reconciliation, account valuation parity and delivery backlog. No live test order
 or synthetic production Telegram message is necessary. Do not downgrade after
 work is accepted without a recovery plan: removing the queue destroys uncertainty
 and duplicate-submission protection.
 
-### Current verification record
+### Historical schema 005 verification record
 
-September 16 local validation on Python 3.14:
+Initial schema 005 validation on Python 3.14 (these are historical counts; use current CI for the latest suite):
 
 - Full default suite: **589 passed, 8 opt-in PostgreSQL skips**.
 - Integration suite with `--run-postgres`: **37 passed**, using real loopback

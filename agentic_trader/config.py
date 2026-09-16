@@ -235,6 +235,19 @@ class PositionSizingConfig(BaseModel):
     suggest_tiers_enabled: bool = True  # Suggest Half, Base, and Max sizing tiers in Telegram
 
 
+class OperationsConfig(BaseModel):
+    notifications_enabled: bool = True
+    startup_grace_seconds: float = Field(default=120, ge=0, allow_inf_nan=False)
+    failure_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
+    recovery_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+    reminder_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
+    probe_timeout_seconds: float = Field(default=5, gt=0, le=30, allow_inf_nan=False)
+    snapshot_max_age_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    healthy_observation_days: int = Field(default=30, ge=1)
+    retention_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
+    retention_batch_size: int = Field(default=1000, ge=1, le=10000)
+
+
 class AccountingConfig(BaseModel):
     refresh_seconds: float = Field(default=60, gt=0, le=3600, allow_inf_nan=False)
     max_age_seconds: float = Field(default=180, gt=0, allow_inf_nan=False)
@@ -418,6 +431,7 @@ class AppConfig(BaseModel):
     friction: FrictionConfig = Field(default_factory=FrictionConfig)
     redundancy: RedundancyConfig = Field(default_factory=RedundancyConfig)
     sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
+    operations: OperationsConfig = Field(default_factory=OperationsConfig)
     accounting: AccountingConfig = Field(default_factory=AccountingConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     options: OptionsConfig = Field(default_factory=OptionsConfig)
@@ -646,6 +660,7 @@ def load_config(
         friction=FrictionConfig(**cfg_dict.get("friction", {})),
         redundancy=RedundancyConfig(**redundancy_cfg),
         sizing=PositionSizingConfig(**sizing_cfg),
+        operations=OperationsConfig(**cfg_dict.get("operations", {})),
         accounting=AccountingConfig(**cfg_dict.get("accounting", {})),
         execution=ExecutionConfig(**exec_cfg),
         options=OptionsConfig(**cfg_dict.get("options", {})),

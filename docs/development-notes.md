@@ -1,301 +1,148 @@
 # Development and debugging handoff
 
-Updated **2026-09-16**. Start with [CLAUDE.md](../CLAUDE.md), the
-[operations guide](production.md), and [incident notes](incident-2026-09-15.md).
+Updated **2026-09-16**. Read [CLAUDE.md](../CLAUDE.md), [operations](production.md)
+and the [architecture review](architecture-review.md). Detailed workflow contracts
+live in [durable execution](durable-execution.md), [accounting](account-ledger.md)
+and [operational monitoring](operational-monitoring.md).
 
-## Runtime and ownership
+## Runtime ownership
 
-This checkout runs under `com.agentictrader.copilot` in macOS launchd. Its shell
-sources `.envrc` and runs `uv run copilot daemon`. The configured execution adapter
-is **Alpaca paper**, with PostgreSQL 17.11 (Homebrew), database `agentic_trader` on localhost. `data/signals.db`
-is historical SQLite storage, not the active database. Never run a second daemon,
-Telegram poller, or Compose stack alongside the installed service.
+The installed checkout runs `com.agentictrader.copilot` under launchd. Its shell
+sources `.envrc` and runs `uv run copilot daemon`. The desk uses **Alpaca paper**,
+PostgreSQL 17.11 (Homebrew) on localhost and one Telegram poller. The historical
+`data/signals.db` SQLite file is not the active database. Compose's declared image
+version does not establish the installed local server version.
 
-| Task | Actual schedule |
+| Task | Schedule |
 | --- | --- |
-| Swing scan | Every 4 hours from startup, immediate first run; no timeframe filter |
-| Intraday scan | Every 15 minutes from startup, session gated, `timeframe="15m"` |
-| Account activity reconciliation | Every 60 seconds in an independent worker; configurable |
-| Position reconciliation | Every minute, plus broker stream wakeups |
-| Macro briefing | Weekdays 12:30 in the scheduler/system timezone |
-| Retuning | Saturday 02:00 in the scheduler/system timezone |
-| launchd watchdog | Every 60 seconds; checks registered PID, not readiness |
-| launchd alpha miner | Saturday 02:00 local time, 25 iterations, ten stock/ETF symbols; no automatic promotion |
+| Swing scan | Every 4 hours from startup, immediate first run, no timeframe filter |
+| Intraday scan | Every 15 minutes, session gated, `15m` filter |
+| Position reconciliation | Every minute plus broker-stream wakeups |
+| Account activity reconciliation | Independent worker, default 60 seconds |
+| Entry / notification workers | Independent loops, default 2 seconds |
+| Macro briefing | Weekdays 12:30, scheduler/system timezone |
+| Retuning | Saturday 02:00, scheduler/system timezone |
+| External watchdog | Every 60 seconds: process check, readiness incidents and due compaction |
+| Alpha miner | Saturday 02:00 local launchd time, 25 iterations; no automatic promotion |
 
-APScheduler interval jobs are not aligned to candle boundaries. Cron logs that
-mention UTC do not change the scheduler timezone. Market calendars use New York
-exchange time; database timestamps and JSON logs use UTC. A watchdog can undo a
-simple stop; unload it for a maintenance pause, then restore it afterward.
+Intervals are not candle-close aligned. Cron logs mentioning UTC do not change
+the scheduler timezone. Market sessions use exchange time; DB/log timestamps use
+UTC. Configuration and strategy registry load at construction and require restart
+after external edits. Telegram/metrics initialize before immediate jobs; scheduler
+jobs coalesce delays and allow one instance each.
 
-## Code map
-
-| Concern | Entry points |
-| --- | --- |
-| CLI / daemon | `main.py` entry point → `cli/main.py`, `cli/commands/service.py` |
-| Orchestration | `agent/copilot.py:TradingCopilot`; canonical class with DB/broker/data/notifier injection |
-| Risk / sizing | `agent/evaluator.py`, `position_sizing.py`, `regime.py`, `macro.py`, `calendar.py` |
-| Data / calendars | `data/market_data.py`, `data/providers.py`, `market/session.py`, `resilience/fallback.py` |
-| Strategies | `screeners/strategies.py`, `registry.py`, `formulaic.py`, `config/promoted_alphas.yaml` |
-| Execution | `broker/`, `execution/`; current runtime uses immediate orders |
-| Account accounting | `accounting/ledger.py`, `accounting/service.py`, `storage/ledger.py`; [contracts](account-ledger.md) |
-| Persistence | `storage/db.py`, `models.py`, `migrations.py`, `alembic/versions/` |
-| Telegram / reports | `notifier/telegram_bot.py`, `presentation/formatters.py` |
-| Chat tools | `agent/copilot_graph.py`, `copilot_tools.py`; in-memory conversation history |
-| Research | `backtest/`, `research/`, `research/alpha/`, `options/`, `pairs/` |
-| Diagnostics | `diagnostics/doctor.py`, `telemetry/`, `runtime.py` |
-
-### Signal lifecycle and reconciliation
-
-Scans read halt/risk state, fetch candles, evaluate strategies, deduplicate, and
-stage `PENDING` signals with Telegram cards. An operator explicitly executes them.
-`SUBMITTING` precedes broker submission. An accepted order becomes `EXECUTED`,
-which currently means tracked/submitted; `executed_at` identifies a confirmed
-complete entry fill. The monitor refreshes average entry, quantity, notional and
-risk from the exact broker entry order.
-
-Alpaca exits must be full fills of that entry's bracket legs or an explicitly
-recorded manual close order. Matching only a symbol or an old opposing order is
-forbidden. Price, quantity, side, symbol and chronological checks must pass.
-Partial fills trigger reconciliation and remain tracked. Polling and WebSocket
-wakeups share a local lock; the database's conditional close gates metrics and
-notification delivery across processes. Alpaca manual close/panic do not record
-estimated exits. Panic persists its halt before broker operations.
-
-`/positions` and CLI `positions` share one report builder. Alpaca quantity, cost
-basis, current price and unrealized P&L come from a single account snapshot. Quotes
-from another feed are not substituted. Untracked/ambiguous broker positions appear
-once, with notes; a failed snapshot reports an error. Simulation valuations are
-explicitly marked estimates. Reports preserve source and retrieval time in audit.
-
-### Storage and audit
-
-Head revision: `006_account_ledger`. Tables:
-
-- `signals`: lifecycle, sizing, entry/exit order IDs, execution time, environment,
-  execution mode/account type, process run ID, and reversible quarantine flag.
-- `system_state`: halt flags and operational key/value state.
-- `close_requests`: durable exclusive close intents and broker request IDs.
-- `workflow_locks`, `work_items`: scoped transactional reservations, command queue and outbox.
-- `domain_events`, `order_projections`: immutable evidence and rebuildable broker order views.
-- `activity_projections`, `ledger_checkpoints`: account-bound execution evidence and reconciled reports, replayed from `domain_events`.
-- `audit_events`: append-only creation, fills, stream/reconciliation evidence,
-  valuations, close submissions/completions, notification results, repairs, and
-  daemon startup identity. JSON payloads avoid credentials and chat identifiers.
-
-Operational queries exclude quarantined signals and other environments/execution
-modes. Legacy rows have `production`/`unknown` provenance and remain eligible until
-reviewed. Signal dictionaries use `contract`; timeframe is not yet a stored column.
-`copilot db audit --signal-id N --limit 50` retrieves the evidence. Database
-construction still applies migrations, including for informational CLI commands.
+Never start another daemon, `listen` or Compose stack alongside the installed bot.
+Use a worktree for supervisor changes. Unload watchdog before daemon for maintenance;
+a simple stop can be undone by the watchdog. See the controlled deployment runbook.
 
 ## Configuration and isolated development
 
-`config.py` has **no import-time dotenv side effect**. `load_config()` is the
-application boundary. Production reads `.envrc` without modifying `os.environ`;
-existing environment values, including empty strings, win. Explicit `environ={...}`
-never reads local secrets unless `env_file` is also explicit. LLM clients receive
-the selected API key from the resulting model.
+`load_config()` is the explicit application boundary; importing config loads no
+secrets and never changes `os.environ`. Production merges YAML, `.envrc` and
+environment values. Explicit environment values, even empty ones, win.
+`COPILOT_ENV_FILE=''` disables dotenv. Explicit `environ={...}` does not read local
+secrets unless an environment file is also explicitly supplied.
 
-`COPILOT_ENV` selects `production`, `development`, or `test`. Nonproduction runs
-require an explicit `COPILOT_CONFIG` and database; `COPILOT_ENV_FILE=''` disables
-dotenv loading. Bare `AppConfig()` cannot select a database: inject a DB or set an
-explicit path/URL. An already constructed config never consults ambient DB variables.
+`COPILOT_ENV` selects production/development/test. Nonproduction requires explicit
+config and storage. Bare `AppConfig()` cannot select a runtime DB. Load-time DB
+precedence is `DB_PATH` → `DATABASE_URL` → explicit `DB_NAME` → YAML → production
+default. A constructed config never consults ambient DB variables. `--db-path`
+accepts a path or URL; named sandboxes live under `data/<environment>/`. PostgreSQL
+has no automatic SQLite failover.
 
-At load time DB selection is `DB_PATH` → `DATABASE_URL` → explicit `DB_NAME` → YAML
-path/URL → production default. `DB_PATH` supports a SQLite path or full connection
-URL. A named SQLite sandbox resides under `data/<environment>/`. Explicit paths
-on `AppConfig` win over its URL fields. YAML backtest, research, trailing-stop and
-broker-stream settings are passed through.
+A dry scan uses a temporary SQLite DB and empty PaperBroker portfolio, disables
+Telegram and skips broker connection/monitoring. Market data and optional LLM
+calls still occur. `test-alert` previews locally; explicit sending requires a
+separate test token/chat and creates no signal. Nonproduction messages are labeled.
 
-`scan --dry-run` constructs an isolated temporary SQLite database and PaperBroker,
-disables Telegram, skips broker connection and position monitoring, and prints
-`[DRY RUN]`. It evaluates an **empty simulated portfolio**, while market-data/LLM
-calls remain possible. `test-alert` previews locally by default. `test-alert --send`
-requires both a separate test bot token and separate test chat ID and sends a
-non-actionable `[TEST]` message; it creates no signal. Development/test notifier
-messages carry an environment label.
+## Test and review workflow
 
-### Test rules
+- Function-scoped autouse isolation removes credentials, selects fixture YAML and
+  temporary DB paths. Socket/libcurl guards block external I/O; native psycopg2 and
+  SQLAlchemy guards prevent bypassing DB isolation.
+- Inject config/storage/providers before construction. Prefer local fixtures for
+  shared domain setup and `pytest.mark.parametrize` for meaningful variations.
+  Avoid fixtures that share mutable trading state across tests.
+- Real SDK tests use marked loopback HTTP/WebSocket. PostgreSQL is explicit:
+  `TEST_POSTGRES_URL=postgresql+asyncpg://localhost/test_trader uv run pytest tests/integration --run-postgres`.
+  Its database must be disposable and named `test_*`; tests migrate/downgrade it.
+- Run `uv run pytest` for cross-cutting changes, then
+  `uv run pre-commit run --all-files`. Hooks include formatting, lockfile checks,
+  mypy and impacted tests. Full transport/PG integration remains required before
+  deploying persistence or execution changes.
+- Do not disable safety guards or replace integration with permissive mocks. The
+  optional in-process SDK adapter does not prove TCP/WebSocket or PG behavior.
 
-- Use `uv run pytest`. Autouse fixtures remove inherited credentials, select
-  `tests/fixtures/config.yaml`, and allocate per-test SQLite files.
-- Python network sockets and native libcurl I/O are blocked. Only marked HTTP
-  server tests allow loopback. SQLAlchemy, SQLite and native psycopg2 guards reject
-  DB paths outside the test root and URLs outside the explicit disposable DB.
-- PostgreSQL tests are opt-in: provision a database whose name starts `test_`, set
-  `TEST_POSTGRES_URL`, then run `uv run pytest tests/integration --run-postgres`.
-  The fixture migrates/downgrades this DB only. Never supply the application DB.
-- Inject `TradingCopilot(config, db=mock_or_temp_db)` before construction. Mock
-  external providers explicitly. Fixtures should use their returned DB/config
-  together, including environment and execution-mode provenance.
-- Before committing: `uv run pre-commit run --all-files`. It runs formatting,
-  dependency locking, mypy, and impacted tests; also run the full suite for changes
-  to isolation, persistence or execution. Loopback tests need a sandbox that permits
-  binding localhost. Do not disable isolation to make a test pass.
+## State and evidence
 
-## Reloads and inspection
+Schema head: `007_operational_incidents`.
 
-Configuration and strategy registry load at construction; there is no file watcher.
-External alpha promotion writes YAML but requires a daemon reload to activate.
-`/alphas` reads YAML and can differ from a long-running registry. Retuner calibration
-JSON is not automatically consumed by the scanner. `ConvexAlphaPortfolioOptimizer`
-is a library; no `alpha optimize` CLI or live allocation integration exists.
+| Storage | Responsibility |
+| --- | --- |
+| `signals` | Tracked proposals/lifecycle, entry/exit identities, provenance and quarantine |
+| `system_state` | Persistent halt and operational keys |
+| `close_requests` | Exclusive durable close intent and retained terminal history |
+| `workflow_locks`, `work_items` | Scoped coordination, entry reservations/queue and notification outbox |
+| `domain_events` | Versioned workflow/broker/account/incident evidence and health observations |
+| `order_projections` | Exact cumulative order views |
+| `activity_projections`, `ledger_checkpoints` | Account-bound activity evidence and reconciled reports |
+| `incident_projections` | Replayable incident lifecycle plus latest observation watermarks |
+| `audit_events` | Operational command, fill, valuation, delivery and startup traces |
+
+Queries exclude quarantined and other-environment rows. Historical unknown-mode
+signals remain visible until reviewed. Signals use `contract`; timeframe is not
+persisted. Construction currently checks migrations, including many informational
+CLI paths—explicit bootstrap is a documented refactor, not silently assumed done.
+
+`SUBMITTING` precedes broker POST. `EXECUTED` means tracked/accepted; confirmed
+complete entry fills set `executed_at`. Exact full exit fills plus conditional SQL
+govern tracked closure. Partial account executions appear in the account ledger
+without fabricating per-signal ownership. `/positions` is broker-authoritative;
+`/perf` separates account and tracked scopes; `/status` is configured risk capital
+and tracked exposure. Accepted orders without fills say they await broker fill.
+
+Use `db audit`, `db events`, `db queue`, `db orders`, `db ledger`, `db outbox` and
+`db incidents` for investigation. Preserve raw evidence privately. Financial events
+and dead letters have no TTL; only redundant old healthy journal observations are
+compacted. `db clear` refuses to reset signal IDs while events/work exist. Contamination
+repairs use audited quarantine; see the [September 15 incident](incident-2026-09-15.md).
+
+## Async and operator surfaces
+
+Blocking SDK/provider/calculation work is offloaded at boundaries; scans and
+reconciliation serialize related shared state. Threads do not cancel synchronous
+calls or isolate shared executors. Remaining contention and slow serialized Telegram
+handlers are documented in the architecture review. Keep request timeouts and
+loop-lag audits when extending these paths.
+
+Telegram has shared transport retries, command/update correlation, polling
+observations and persistent delivery audits. Retry HTTP delivery, never handlers.
+`/macro` is the single combined market context; published feed dates and missing
+enrichment are explicit. Missing VIX fails regime evaluation; missing enrichment
+can leave volatility-only policy. Daily-feed admission age remains a gap.
+GEX is an option-chain/model estimate with quality notes and a required real spot.
+
+Research/retuning outputs do not automatically change running strategy parameters.
+External promotion changes require restart; `/alphas` can show file contents that
+differ from a loaded registry. Convex allocation and promotion weights are not live
+sizing. Broker slicing stays disabled pending per-slice ownership/protection.
+
+## Verify deployment separately
 
 ```bash
 launchctl list | rg 'com\.agentictrader\.'
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9108/healthz
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9108/metrics
-uv run copilot db audit --limit 20
+uv run copilot doctor --readiness
+uv run python scripts/verify_runtime.py
+uv run copilot db incidents
 ```
 
-`/healthz` is liveness. `/healthcheck`, `doctor`, and `launchd.sh health` run active
-probes, including migrations and an LLM request. `copilot metrics` has a separate
-in-process registry; scrape the daemon's endpoint for its metrics. JSON logs in
-`data/copilot.err.log` retain UTC timestamps/run IDs through migrations and redact
-Telegram token URLs. Printed cards go to `data/copilot.log`. Keep raw logs,
-incident snapshots, DB files, `.envrc`, and derived calibration files out of Git.
+Verify clean committed revision/PID/run, current-run component freshness,
+authenticated broker stream, actual Telegram poll freshness/menu registration,
+account reconciliation and position parity. The verifier sends no messages/orders.
+`/healthz` only proves liveness; a separate `getMe` does not prove polling health.
+Active `doctor` is CLI-only; `/healthcheck` has been removed.
 
-## High-priority follow-ups
-
-1. Schema 006 now reconciles partial/external executions at account level. Next:
-   corporate actions and explicit partial per-signal allocation/protection; uncertain
-   ownership remains deferred. Persist timeframe and immutable original risk.
-2. Use `/readyz` and `doctor --readiness` for freshness; configure operational
-   alerting and event retention. Daily macro-feed freshness remains a policy gap.
-3. Stop confirmation and thesis preservation are now implemented. Follow up with
-   a proper ATR/high-water mark policy and persistent requested-versus-acknowledged
-   order ledger for unresolved replacement outcomes.
-4. Keep heavy research off the trading executor as workload grows; verify timeframe filtering
-   before cross-strategy netting. Define missing/stale macro admission policy and review drawdown
-   plumbing before increasing automation or enabling live money.
-5. Keep sliced execution disabled until partial plans and protective brackets are
-   implemented. Integrate alpha allocation into risk sizing only after validation.
-
-## Validation baseline
-
-September 15 verification: **468 tests passed**, including four PostgreSQL
-integration tests on an explicitly provisioned disposable `test_` database. A
-subsequent 88-case command/broker/presentation run passed, including the new
-accepted-order-without-fill regression. Mypy passed for 100 application modules.
-Pre-commit validates the final staged tree. Intentional socket-isolation warnings
-and a third-party WebSocket deprecation remain. Deployment revision and live smoke
-checks are recorded separately in startup/valuation audit events and private
-incident evidence; test success alone is not deployment verification.
-
-## Telegram transport and event-loop diagnostics
-
-`notifier/transport.py` supplies shared request retries (network errors, server
-errors, bounded rate limits) and polling observation; trade handlers are never
-replayed. `telegram` YAML settings control poll/read/connect timeouts, request
-attempts/delay, maximum rate-limit wait, and poll audit interval. Default attempts
-are three; polling retains the SDK retry loop. Handler processing remains serial.
-
-Audit events: `telegram_request`, `telegram_command`, `telegram_poll`,
-`telegram_error`, `event_loop_stall`. They retain request outcomes/message IDs,
-update IDs/handler phases, and recovery evidence without chat contents/tokens.
-Metrics include `trader_telegram_poll_healthy`,
-`trader_telegram_last_poll_success_timestamp_seconds`, request retries/command
-latency, and `trader_event_loop_lag_seconds`. Poll success alone does not prove a
-particular command completed; correlate its command/request audits.
-
-`uv run python scripts/verify_runtime.py` verifies committed daemon identity,
-Alpaca snapshot/report agreement, bot identity/commands, and actual daemon poll
-freshness without sending messages or placing orders. It records a valuation audit.
-
-## Unified macro reporting and response defaults
-
-`/macro` is the single market-context command. `/regime`, its callback and its
-conversational tool were removed. The dashboard takes the same `RegimeSnapshot`
-used by evaluation and combines VIX classification, macro indicators, breakout
-permission, risk multiplier and `max(regime minimum R:R, risk.min_risk_reward_ratio)`.
-`/explain_macro` explains the macro model; it is not a replacement for the combined
-entry checks. The menu, help and inline buttons use `/macro`.
-
-Macro enrichment reuses one VIX/yield/dollar snapshot. The two-year Treasury yield
-comes from [FRED DGS2](https://fred.stlouisfed.org/series/DGS2); FRED observation
-dates and the snapshot fetch time are displayed. These daily/closing observations
-can have different dates. Missing/invalid macro data is reported as unavailable,
-not replaced by fixed yields, credit spreads, inflation or VIX. If enrichment
-fails, the dashboard explicitly labels the remaining volatility-only policy;
-if VIX itself is missing, regime evaluation fails. Stale-data admission policy
-and per-feed freshness alerts remain follow-up work.
-
-VIX display colors use the classified enum, and stress scoring shares configured
-VIX thresholds (`regime.vix_watch_threshold`, `vix_elevated_threshold`,
-`vix_extreme_threshold`). Elevated/extreme minimum R:R uses
-`regime.elevated_min_rr` / `extreme_min_rr`. Telegram backtests receive
-`backtest.lookback` from the loaded app config; research symbol and message chunk
-size use shared constants. Typed evaluation fields have no presentation fallback.
-Conversational positions/status use the same report providers as slash commands,
-removing invented default prices/P&L and duplicate notional calculations.
-`macro_report` audit events retain fetched time, published dates, VIX and the
-combined filter decision, including missing-enrichment details.
-
-### Scheduler startup timing
-
-Telegram/metrics initialize before immediate jobs receive their first deadline.
-`scheduler.misfire_grace_seconds` defaults to 60; jobs coalesce delayed executions
-and allow one concurrent instance per job. This prevents initialization latency
-from silently skipping the first scan/monitor run. The deployment log review
-reproduced a 1.5-second delay exceeding APScheduler's former one-second default.
-
-Old Telegram messages can retain removed callback names. Use `/help` or the current
-command menu for `/macro`; historical `/regime` buttons are no longer active.
-
-## September 16 close lifecycle
-
-`PositionCloseService` is injected into the copilot. It shares durable close
-coordination across CLI, Telegram and panic's tracked Alpaca closes; adapters own
-broker-specific cancellation and submission. Migration `004_close_requests` adds
-exclusive active per-symbol requests and retained terminal history. The copilot
-serializes operator close/flatten with monitoring; trailing updates skip symbols
-with active close requests. Unknown submissions are recovered by exact client ID.
-
-`tests/execution/test_position_closing.py` rehearses the SDK boundary, real temporary
-storage and public command handlers entirely offline. It covers long/short fills,
-cancellation delays/fill races/timeouts, lost acknowledgements, competing coordinators,
-partial exits, preview isolation, halt preservation, broker-only positions, menu
-registration and event-loop responsiveness. PostgreSQL integration independently
-checks migration and uniqueness between separate database clients. See operations
-for conservative recovery and after-hours behavior.
-
-Validation on September 16: the full isolated suite passed **502 tests**, including
-five disposable-PostgreSQL tests. After final cancellation-race/quantity-release
-hardening, **98 targeted broker/close/panic tests passed**, including the 36-case offline
-close rehearsal. Mypy checks 101 application modules. The two known warnings remain
-(WebSocket deprecation and the deliberate blocked-socket assertion). Pre-commit and
-GitHub CI validate the committed tree; deployment and read-only account/menu checks
-are recorded separately in startup/valuation audits and private verification output.
-
-Read-only paper-account verification reproduced Alpaca OPEN queries omitting held
-stop legs (one listed order versus two verified group orders per position). The
-adapter now resolves the exact bracket group and confirms both cancellations;
-regressions cover tracked, broker-only and unresolved-group cases.
-
-### Alpaca SDK contract tests and stop confirmation
-
-Read the [Alpaca integration review](alpaca-integration-review.md). Critical lifecycle
-coverage uses the actual SDK over loopback HTTP/WebSocket; the entry-to-realized-P&L
-path also runs on disposable PostgreSQL in CI. Do not replace these tests with
-permissive mocks when upgrading the SDK.
-
-`BoundedTradingClient` supplies a configured socket timeout and suppresses mutation
-retries. Entry client IDs are audited before POST; uncertain outcomes retain the
-claim and halt new risk pending reconciliation. Broker slicing is disabled.
-Trailing stops save only broker-confirmed prices, preserve the original thesis and
-risk, and audit `stop_replacement` / `stop_updated`. Replacement chains are followed
-by exact order ID for cancellation and realized-fill reconciliation too.
-
-## Schema 005 verification boundary
-
-Entry and delivery services are dependency-injected. Cross-signal reservations
-serialize in PostgreSQL; post-submission recovery is lookup-only. State changes
-and critical notification intents commit together. Read
-[workflow semantics and operator commands](durable-execution.md).
-
-Full local TCP/WebSocket and disposable-PostgreSQL integration verification is now
-available. Test credentials, sockets and database guards remain enforced. See the
-workflow guide for the final test record. Source tests do not establish deployed
-health: `scripts/verify_runtime.py` checks the clean daemon revision, matching-run
-readiness, authenticated broker stream, recent reconciliation, Telegram poll and
-menu, and exact account/report parity without sending messages or orders.
+Keep UTC/run-correlated logs and private verification artifacts separate from Git.
+Test results/CI establish source behavior; startup and observation audits establish
+deployment evidence. Consult [ranked remaining work](architecture-review.md#remaining-findings-ranked)
+instead of appending duplicate historical status reports to this handoff.

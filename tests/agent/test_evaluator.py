@@ -4,12 +4,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agentic_trader.agent.calendar import EconomicCalendar, MacroEvent
+from agentic_trader.agent.calendar import ForexFactoryCalendar, MacroEvent
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.constants import AssetClass, StrategyType, VolatilityRegime
 from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
-from agentic_trader.screeners.strategies import ScreenerCandidate
+from agentic_trader.screeners.base import ScreenerCandidate
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def evaluator_factory(config):
                 summary_text="Test context",
             )
         )
-        calendar = AsyncMock(spec=EconomicCalendar)
+        calendar = AsyncMock(spec=ForexFactoryCalendar)
         calendar.is_in_lockout_window.return_value = (False, None)
         return RiskEvaluator(config, **{"regime_detector": detector, "calendar": calendar, **overrides})
 
@@ -105,7 +105,7 @@ async def test_notional_limit_rejection(evaluator_factory):
 
 @pytest.mark.asyncio
 async def test_macro_lockout_rejection(evaluator_factory):
-    class MockCalendar(EconomicCalendar):
+    class MockCalendar(ForexFactoryCalendar):
         async def is_in_lockout_window(self, pre_minutes=60, post_minutes=30, now=None):
             return True, MacroEvent(
                 title="FOMC Rate Decision",

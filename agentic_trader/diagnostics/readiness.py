@@ -36,6 +36,7 @@ class ReadinessService:
     ):
         self.store, self.config, self.metrics, self.run_id = store, config, metrics, run_id
         self.started = False
+        self.started_at = datetime.now(UTC)
         self.accounting_enabled = accounting_enabled
         self.stream_connected = stream_connected
         self._last_observation: dict[str, tuple[float, bool, str]] = {}
@@ -71,7 +72,7 @@ class ReadinessService:
             limits[HealthComponent.DELIVERY] = self.config.telemetry.worker_max_age_seconds
         if self.accounting_enabled:
             limits[HealthComponent.ACCOUNTING] = self.config.accounting.max_age_seconds
-        checks: dict[str, Any] = {}
+        checks: dict[str, Any] = {"daemon_started": {"ready": self.started}}
         try:
             for component, age_limit in limits.items():
                 rows = await self.store.events(f"health/{self.run_id}/{component}", limit=1)
@@ -149,6 +150,7 @@ class ReadinessService:
             "ready": ready,
             "run_id": self.run_id,
             "checked_at": now.isoformat(),
+            "started_at": self.started_at.isoformat(),
             "checks": checks,
             "note": "Freshness is operational readiness; session/price/risk are revalidated for every entry.",
         }

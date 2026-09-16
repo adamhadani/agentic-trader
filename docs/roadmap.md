@@ -34,8 +34,9 @@ integration coverage. Each deployment requires matching-run readiness verificati
 Schema 006 adds a [reconciled account activity ledger](account-ledger.md), including
 partial/external executions, fees/income and replayable evidence. Corporate actions
 and per-signal partial allocation remain unsupported.
-Priority next work: readiness alerting and retention;
-confirmed trailing-stop parity; nonblocking data access and timeframe/risk integration.
+Schema 007 adds [operational incidents and bounded health compaction](operational-monitoring.md).
+Current priorities are maintained in the [architecture review](architecture-review.md);
+the future-horizon table below is historical planning, not the active work queue.
 
 ## Strategic Initiatives Overview
 
@@ -1159,7 +1160,7 @@ Expand the quantitative trading engine beyond 4-hour swing scans to ingest, calc
 
 ---
 
-## Next Horizon: Extended Strategic Initiatives (Phases 46+)
+## Historical future-horizon ideas (superseded by the architecture review)
 
 | Priority | Target Area | Status | Focus |
 |---|---|---|---|

@@ -3,193 +3,84 @@ layout: default
 title: Architecture review — September 2026
 ---
 
-# Architecture review — September 2026
+# Architecture review — September 16, 2026
 
 ## Assessment
 
-The package boundaries are useful: broker adapters, storage, screeners, risk,
-research, presentation and transport have separate modules and tests. The largest
-remaining coupling sits in `TradingCopilot`, which combines orchestration, execution,
-report building, trailing stops, research commands and dependency construction.
-PostgreSQL is the runtime backend; SQLite is an explicitly selected test/development
-backend, not a production failover mechanism.
+The central architecture is sound for an operator-approved paper desk: application
+services coordinate business transitions, broker adapters own remote contracts,
+repositories own transactional concurrency, and one outbox owns durable delivery.
+The main structural debt is still `TradingCopilot`, which combines composition,
+orchestration, reporting and research. Avoid adding new responsibilities there.
 
-## Changes made during this review
+## Boundaries and mechanisms
 
-- Config is loaded at an explicit boundary, without import-time secrets or ambient
-  overrides of constructed models. Storage requires an explicit target/config.
-- DB, broker, data fetcher and notifier can be injected before copilot construction.
-  The unused `FuturesCopilot` alias and main-module class reexports were removed;
-  callers import the canonical class from `agent/copilot.py`.
-- Same-signal execution claims and position closure use conditional SQL updates.
-  Polling/stream reconciliation share a lock; a losing close sends no duplicate alert.
-- The broker owns cost basis and valuation. Exact order ownership and actual fills
-  govern realized P&L. Unverified Alpaca closes and quarantined rows are excluded.
-- Runtime environments, audit vocabulary, halt keys, broker tolerances, retry defaults
-  and shared data defaults are centralized. Alpaca protocol states use SDK enums;
-  stream retry timing is validated config. External payload keys, historical migrations,
-  mathematical identities and explicit test examples retain literals intentionally.
-- Test config/secrets are isolated at collection and per-test setup. Function-scoped
-  temporary DBs prevent state sharing; native-driver guards cover libpq/libcurl.
-  PostgreSQL is opt-in against a `test_` database. Regression variations use parametrization.
-- JSON UTC logs retain run IDs through Alembic; persistent audit records include
-  source revision, order IDs, fill evidence, valuations and notification outcomes.
+| Concern | Mechanism and reason |
+| --- | --- |
+| Entry admission | Durable FIFO, atomic reservations and fenced preflight leases. A committed submission never expires/replays; exact client-ID lookup resolves uncertainty. |
+| Closing | Per-symbol exclusive intent plus broker cancellation/revalidation. Its lifecycle differs from entry admission; sharing broker mutations through a generic retry queue would be unsafe. |
+| Broker evidence | Versioned `domain_events`, exact identities, replayable order/activity projections. Account reconciliation uses Decimal and broker cost basis, without guessed tax lots. |
+| Operator traces | `audit_events` records commands, transport outcomes, valuations and startup identity. This complements replayable domain facts; it is not a second execution state machine. |
+| Critical notifications | Transactional outbox, fenced claims, bounded retries and preserved dead letters. HTTP retries handle individual delivery attempts; the outbox survives process failure. Neither repeats a trading action. |
+| Health | One passive `/readyz` contract; external watchdog persists debounced incidents and uses the same journal/outbox. Active `doctor` probes remain CLI-only. |
+| Retention | Bounded compaction of redundant old healthy observations, preserving failures/recovery boundaries/latest observations and all financial evidence. |
+| Data resilience | Explicit market-data/calendar provider fallbacks. Broker valuations and fills have no alternative-feed/zero fallback. SQLite is explicit test storage, never runtime DB failover. |
 
-## Remaining findings, in priority order
+Application services receive dependencies. Short DB transactions never span remote
+calls. Protocol/SDK conversion belongs in adapters; policy belongs in validated
+config; rendering belongs in presentation/transport modules. No Redis/pubsub or
+second job infrastructure is justified for the current single-destination outbox.
 
-| Priority | Finding / consequence | Recommendation |
+## Changes from this review
+
+- Removed active `/healthcheck` HTTP diagnostics. It could run migrations and
+  external calls and expose connection details. `/readyz` is passive; active CLI
+  diagnostics redact DB destinations and Telegram identities/errors. The Finnhub
+  probe now calls its exchange-holiday provider instead of mislabeling a ForexFactory
+  lookup as authenticated Finnhub success.
+- Added an external operational monitor with a pure incident state machine,
+  transactional projection/journal/outbox writes, stale-observation fencing and
+  delivery-aware reminders. Replay never resends a notification.
+- Added bounded healthy-observation compaction with independent maintenance locking.
+  Financial evidence, notification deduplication records and dead letters stay intact.
+- Removed duplicated report field aliases/post-init copying, a cointegration alias,
+  an economic-calendar alias, research metrics alias, unused broker forwarding method
+  and a screener type re-export. Callers now use canonical fields/modules; collection
+  fields use dataclass factories. Deterministic levels are a dataclass, not a tuple
+  with duplicate attributes. Removed fixed leverage wording and the unused sizing
+  wrapper that substituted $100; parametrized sizing tests now exercise real prices
+  and notional caps.
+- Active `doctor` no longer constructs the whole copilot. Supervisor DB construction
+  runs off the asyncio loop. No generic retry wrapper was introduced around trades.
+- Consolidated current docs and distinguished historical designs from present behavior.
+  Live status risk capital, account performance, research returns and broker cash
+  have different meanings and are now described explicitly.
+
+## Remaining findings, ranked
+
+| Priority | Finding and use case | Recommendation / tradeoff |
 | --- | --- | --- |
-| Implemented; integration verified | Schema 005 atomically reserves cross-signal capacity and serializes entry admission. | Preserve fenced preflight leases and lookup-only recovery after the durable submission boundary; retain PostgreSQL race and real-transport coverage. |
-| Implemented; bounded accounting | Schema 006 journals individual partial/external activities and reconciles account cash/inventory using broker cost basis. | Preserve account binding and replay. Corporate actions, per-signal partial allocation and sliced protection remain unsupported; keep broker slicing disabled. See [account ledger](account-ledger.md). |
-| Resolved Sep 16 | Stop replacement previously persisted intent as fact and overwrote the thesis. | Exact replacement-chain verification now precedes a conditional stop update; request/result audits preserve initial risk and thesis. See the Alpaca review. |
-| Implemented; integration verified | `/readyz` and `doctor --readiness` combine current-run component freshness, broker stream state, halt, entry recovery and outbox health. | Add operational alerting; keep daily macro-feed age policy separate from per-entry quote checks. Watchdog remains liveness-only. |
-| Implemented; integration verified | Signal/close/stop transactions now include durable notification jobs with retry/dead-letter states and correlated audit IDs. | Delivery is at least once; an acknowledgement loss can duplicate a message. Never repeat trading actions to recover a reply. |
-| P2 | `TradingCopilot` still constructs calendar, regime, strategy, graph and research services and returns transport-specific strings. | Move construction to a composition module; extract execution/reconciliation/report services with small protocols and typed results. Keep Telegram/CLI rendering at the transport boundary. |
-| P2 | Missing macro enrichment is explicit but still allows volatility-only evaluation; daily observations lack a maximum-age admission policy. Worker threads keep the event loop responsive but share executor capacity; heavy research can still contend with trading work. | Propagate data age/quality, define stale-data policy, and move heavy research into a bounded job worker when workload grows. |
-| P2 | Timeframe filtering follows strategy conflict resolution; timeframe is absent from persisted signals. Research annualization and live bar routing differ. | Filter before netting, persist timeframe/data timestamp, and validate per-timeframe research/live parity. |
-| P2 | Promotion weights/convex optimizer are not used in live sizing. External YAML edits do not refresh the daemon registry. | Make allocation integration and reload explicit; report the loaded registry version, not only current file contents. |
-| P3 | Model aliases remain for symbol/contract and duplicated report fields; multiple legacy helper exports persist. | Consolidate one model vocabulary when extracting services, update all callers, and remove alias-only tests rather than adding adapters. |
-| P3 | Some older tests exercise provider-failure fallback via blocked network attempts; constructors still trigger repeated migrations. | Replace incidental network fallback with explicit fixtures; separate schema setup from repository construction. Retain real loopback/PG tests in integration groups and keep assertions on behavior, not implementation mirrors. |
+| P1 | Corporate actions or stock transfers make account reconciliation unsupported; per-signal partial exits remain conservative. | Add exact typed activity semantics and replay fixtures, then explicit ownership/allocation/protection models. Keep totals withheld and sliced trading disabled until complete; never assign by symbol. |
+| P1 | Missing macro enrichment permits volatility-only evaluation; daily feeds have no maximum-age admission policy. The economic-calendar fetch can also turn a provider error into an empty event list. | Define per-feed age/calendar policy and fail/size decisions before increasing automation. Strict gates improve safety but can block valid trades on provider holidays/outages. |
+| P1 | Live trailing uses recorded risk distance, while research supports ATR/high-water marks; replacement uncertainty has limited durable requested/acknowledged modeling. | Unify policy inputs and persistent stop intent, retaining exact broker confirmation and thesis/risk. Avoid changing existing protective orders during an incidental refactor. |
+| P2 | `TradingCopilot` still constructs several services and returns some transport-specific strings. Constructors run migrations. | Extract composition/bootstrap and typed report/reconciliation services incrementally. Explicit migration startup needs coordinated changes to every CLI/daemon path; do not leave a compatibility fallback. |
+| P2 | Heavy research shares executor capacity with trading I/O; Telegram handlers serialize. | Add a bounded research job service with cancellation/status and separate capacity. Do not enable blanket concurrent trade handlers. |
+| P2 | Timeframe filtering follows conflict resolution; timeframe is absent from persisted signals. | Filter before netting and persist timeframe/data timestamps, with research/live parity tests. Changes alter candidate selection and require targeted replay. |
+| P2 | Promotion YAML writes lack cross-process coordination; registry versions differ from edited files; allocation weights are not in live sizing. | Make writes atomic/locked, add explicit registry reload/version, then validate allocation integration separately. |
+| P2 | Monitoring depends on the same host/DB/Telegram destination; local files and audit/financial history still grow. | Add an independent external alert destination and backup/restore/log-rotation policy. Archive durable evidence only with tested replay and deduplication preservation. |
+| P3 | Some symbol/contract aliases and dictionary/SDK shape handling remain; older tests can exercise implicit provider failure paths. | Consolidate typed boundary models when touching those services and use explicit provider fixtures. Preserve SDK transport contracts, not unnecessary internal aliases. |
 
-## Test design and operational evidence
+## Testing and review evidence
 
-`tests/conftest.py` owns safety boundaries; domain-specific mocks belong in local
-fixtures. `tests/broker/test_incident_regressions.py` parametrizes exit ownership,
-chronology, side, symbol and quantity failures. The default suite cannot silently
-fall back to a developer's broker or DB credentials. Integration tests validate
-both fresh migrations and upgrade/downgrade paths on a dedicated database.
+Safety fixtures are function-scoped; credentials and native network/DB guards
+apply before collection and per test. Parametrized tests exercise state transitions,
+races, recovery, unknown submissions, order ownership and projection replay.
+Integration uses the actual Alpaca SDK over loopback HTTP/WebSocket plus disposable
+PostgreSQL. New monitoring tests exercise passive HTTP → incident transaction →
+Telegram SDK HTTP delivery, including permanent failure/dead letters; PostgreSQL
+checks independent observers and maintenance/admission locks.
 
-The concrete incident is recorded in [incident notes](incident-2026-09-15.md).
-Use `copilot db audit` and the daemon's `/metrics` for future investigations.
-Audit data has no automatic retention/archive job yet; size and back it up along
-with PostgreSQL. Historical research notes and the reference PDF are design/source
-material, not statements of current operational guarantees.
-
-## Telegram and asyncio follow-up
-
-The deployed incident traces showed `httpx.ReadError` while sending `/status`
-and `/positions` replies. Those commands reached their handlers but response
-delivery failed. The SDK retries polling automatically, but outbound delivery
-needed its own transport policy. Previously there were no durable command
-receipt/completion audits or poll freshness timestamps.
-
-- Shared `RetryingTelegramRequest` retries transient network errors, HTTP 5xx and
-  bounded rate limits for every Telegram API caller. Permanent 4xx responses retain
-  SDK error handling. It does not repeat application/trade handlers. An ambiguous
-  lost response can still produce a duplicate message; this is not an outbox.
-- `ObservedPollingRequest` preserves the SDK retry loop and records errors,
-  recovery, periodic successful polls and last-success metrics. One handler wrapper
-  records update ID, handler name and start/completion/failure without message text
-  or chat IDs. A shared error handler records failures and attempts an operator notice.
-- Blocking scan fetches/strategy calculations, spot valuations, simulator quotes,
-  dynamic correlation, Monte Carlo runs and async schema/diagnostic work now use
-  worker threads. Scans share a lock; registry iteration snapshots its entries;
-  Alembic upgrade/downgrade calls share a thread lock for its global context.
-- Telegram and metrics initialize before the scheduler starts immediate scans.
-  A generic event-loop monitor records lag metrics and persistent stall events.
-  Metric values preserve timestamp precision instead of rounding epoch seconds.
-- Removed the unused sync-or-async `fetch_daily_bars` compatibility branch and
-  updated tests to the actual provider protocol.
-
-Remaining limits: Telegram update handlers are serialized, so a long interactive
-scan/backtest can queue later commands even while polling remains healthy. A bounded
-job interface for slow commands is preferable to enabling blanket concurrent trade
-handling. Synchronous constructor migrations and small configuration/catalog file
-reads remain; separate schema setup from construction in the next persistence
-refactor. Threads do not forcibly cancel synchronous SDK calls; enforce provider
-timeouts and avoid sharing mutable provider configuration during a request.
-
-## GEX and command-surface review
-
-The real SPY option chain reproduced `cannot convert float NaN to integer`.
-Both calls and puts now share numeric normalization before aggregation: invalid
-strikes are excluded; missing counts become zero; modeled IV/time defaults and
-missing fields are disclosed in quality notes. Spot prices must come from actual
-provider data; hard-coded ETF estimates were removed. Expiration count participates
-in cache identity, and unavailable/empty chains are reported explicitly.
-
-GEX is labeled a Yahoo option-chain/model estimate. Its sign convention, approximate
-time-to-expiry and strike-based gamma-flip calculation are research heuristics,
-not measured dealer inventory or an Alpaca account valuation. Validate/refine this
-model before using it as an execution gate.
-
-Report titles now use the shared Agentic Trader name. Telegram help describes
-operator approval and broker-confirmed accounting; fixed risk numbers were removed
-from help, and the evaluation prompt renders actual configuration/timeframe limits.
-CLI async errors use one logged nonzero-exit boundary; GEX JSON output contains
-only JSON on stdout. Parametrized tests cover command help and read-command routing.
-
-## Unified macro reporting and response defaults
-
-`/macro` is the single market-context command. `/regime`, its callback and its
-conversational tool were removed. The dashboard takes the same `RegimeSnapshot`
-used by evaluation and combines VIX classification, macro indicators, breakout
-permission, risk multiplier and `max(regime minimum R:R, risk.min_risk_reward_ratio)`.
-`/explain_macro` explains the macro model; it is not a replacement for the combined
-entry checks. The menu, help and inline buttons use `/macro`.
-
-Macro enrichment reuses one VIX/yield/dollar snapshot. The two-year Treasury yield
-comes from [FRED DGS2](https://fred.stlouisfed.org/series/DGS2); FRED observation
-dates and the snapshot fetch time are displayed. These daily/closing observations
-can have different dates. Missing/invalid macro data is reported as unavailable,
-not replaced by fixed yields, credit spreads, inflation or VIX. If enrichment
-fails, the dashboard explicitly labels the remaining volatility-only policy;
-if VIX itself is missing, regime evaluation fails. Stale-data admission policy
-and per-feed freshness alerts remain follow-up work.
-
-VIX display colors use the classified enum, and stress scoring shares configured
-VIX thresholds (`regime.vix_watch_threshold`, `vix_elevated_threshold`,
-`vix_extreme_threshold`). Elevated/extreme minimum R:R uses
-`regime.elevated_min_rr` / `extreme_min_rr`. Telegram backtests receive
-`backtest.lookback` from the loaded app config; research symbol and message chunk
-size use shared constants. Typed evaluation fields have no presentation fallback.
-Conversational positions/status use the same report providers as slash commands,
-removing invented default prices/P&L and duplicate notional calculations.
-`macro_report` audit events retain fetched time, published dates, VIX and the
-combined filter decision, including missing-enrichment details.
-
-Accepted orders without a broker fill price now say “ORDER ACCEPTED / Awaiting
-broker fill”; they do not label the proposed entry or zero as a fill. Research
-provider errors reach the shared command error/audit boundary.
-
-## Coordinated closes (September 16)
-
-The new close service separates lifecycle/persistence from Alpaca transport and
-Telegram/CLI presentation. Per-symbol database exclusivity and broker client IDs
-prevent duplicate close submissions across processes. Preview and confirmation
-share the same service; the adapter verifies cancellation before a market close.
-Full-fill accounting remains separate and authoritative. `/flatten` preserves halt
-state and does not fabricate trade history for externally opened positions.
-
-Remaining boundaries: there is no atomic transaction across broker cancellation
-and replacement, so failure after cancellation can leave a position unprotected;
-responses and audits expose it. Uncertain requests block further closes until
-exact recovery/operator review. Complete partial-fill allocation, durable recovery
-of abandoned pre-submission claims, and coordination of concurrent external/new
-entry orders remain work for the broader execution ledger/reservation design.
-The live trailing implementation uses recorded risk distance rather than the
-configured mode's promised ATR/high-water mark; correcting that is a separate task.
-
-## Alpaca contract and integration follow-up
-
-The [September 16 Alpaca review](alpaca-integration-review.md) records official
-contracts, SDK transport fixes, HTTP/WebSocket/PostgreSQL coverage, and remaining
-entry reservation/fill-ledger/readiness gaps. Broker-backed slicing is now refused
-because acceptance alone cannot establish per-slice fills or protection.
-
-## Durable workflow review (September 16)
-
-See [design, guarantees, configuration and recovery](durable-execution.md).
-The bounded event journal covers partial/replaced/canceled/external order evidence;
-rebuildable projections retain exact identities. Complete account-wide realized
-accounting (individual executions, partial lot allocation, corrections, fees and
-corporate actions) is still a P1 follow-up. Conservative full-fill accounting and
-broker-backed slicing restrictions remain.
-
-The implementation review also covered stale preflight tokens, lost POST responses,
-independent queue consumers, zero-fill cancellation release, stale observations,
-stale dismiss buttons, notification worker crashes and schema downgrade risks.
-PostgreSQL and real socket integrations now pass locally. Review also added
-post-preflight approval/signal/session expiry regressions and authenticated-stream
-readiness assertions. In-process SDK tests remain an optional restricted-environment
-aid; they do not replace TCP/WebSocket and PostgreSQL verification.
+Source tests do not prove deployed broker or Telegram freshness. Use the current
+run/revision verifier, `/readyz`, account reconciliation and actual poll metrics
+following a controlled single-daemon restart. See [operations](production.md),
+[monitoring](operational-monitoring.md) and [Alpaca coverage](alpaca-integration-review.md).

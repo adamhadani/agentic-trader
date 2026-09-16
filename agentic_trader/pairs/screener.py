@@ -13,7 +13,7 @@ from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.pairs.cointegration import (
     calculate_rolling_spread_zscore,
     generate_spread_signal,
-    test_engle_granger,
+    run_engle_granger_test,
 )
 from agentic_trader.pairs.models import PairEvaluation, SignalType
 
@@ -88,7 +88,7 @@ class PairsScreener:
             series_x.name = asset_x
 
             # Run Engle-Granger test
-            coint_result = test_engle_granger(
+            coint_result = run_engle_granger_test(
                 series_y=series_y,
                 series_x=series_x,
                 asset_y_name=asset_y,

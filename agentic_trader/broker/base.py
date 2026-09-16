@@ -166,13 +166,6 @@ class BaseBroker(ABC):
     async def disconnect(self) -> None:
         """Tear down active connections or sessions."""
 
-    async def submit_order(self, request: OrderRequest) -> OrderResult:
-        """
-        Submit a general order (market, limit, stop, or bracket).
-        Default implementation delegates to submit_entry_order for backward compatibility.
-        """
-        return await self.submit_entry_order(request)
-
     @abstractmethod
     async def submit_entry_order(self, request: OrderRequest) -> OrderResult:
         """

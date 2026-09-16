@@ -151,7 +151,7 @@ def test_cli_doctor_smoke(runner: CliRunner):
         assert result.exit_code == 0
         assert "PRE-FLIGHT SYSTEM DOCTOR" in result.output
         assert "HEALTHY" in result.output
-        assert "ALL CRITICAL SYSTEMS OPERATIONAL" in result.output
+        assert "ACTIVE PROBES PASSED" in result.output
 
 
 def test_cli_status_smoke(runner: CliRunner):

@@ -126,8 +126,7 @@ class BaseEconomicCalendar(ABC):
 class ForexFactoryCalendar(BaseEconomicCalendar):
     """Default economic calendar implementation parsing the public ForexFactory JSON feed."""
 
-    def __init__(self, finnhub_api_key: str | None = None, cache_ttl_minutes: int = 30):
-        self.finnhub_api_key = finnhub_api_key
+    def __init__(self, cache_ttl_minutes: int = 30):
         self.cache_ttl = timedelta(minutes=cache_ttl_minutes)
         self._cached_events: list[MacroEvent] = []
         self._last_fetch_time: datetime | None = None
@@ -175,13 +174,9 @@ class ForexFactoryCalendar(BaseEconomicCalendar):
         return events
 
 
-# Backward-compatible alias for existing callers
-EconomicCalendar = ForexFactoryCalendar
-
 __all__ = [
     "TIER_1_KEYWORDS",
     "BaseEconomicCalendar",
-    "EconomicCalendar",
     "EconomicCalendarProtocol",
     "ForexFactoryCalendar",
     "MacroEvent",
