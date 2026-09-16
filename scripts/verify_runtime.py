@@ -76,11 +76,17 @@ async def main() -> None:
         if identity["revision"] != runtime_identity()["revision"] or "dirty" in identity["revision"]:
             raise RuntimeError("Daemon source revision differs from the clean checkout")
         os.kill(identity["pid"], 0)
-        response = await asyncio.to_thread(urllib.request.urlopen, "http://127.0.0.1:9108/healthz", timeout=5)
+        health_url = f"http://127.0.0.1:{config.telemetry.metrics_port}"
+        response = await asyncio.to_thread(urllib.request.urlopen, f"{health_url}/healthz", timeout=5)
         with response:
             if response.status != 200:
                 raise RuntimeError("Health endpoint failed")
-        response = await asyncio.to_thread(urllib.request.urlopen, "http://127.0.0.1:9108/metrics", timeout=5)
+        response = await asyncio.to_thread(urllib.request.urlopen, f"{health_url}/readyz", timeout=5)
+        with response:
+            readiness = json.load(response)
+        if not readiness["ready"] or readiness["run_id"] != identity["run_id"]:
+            raise RuntimeError("Readiness is unhealthy or belongs to a different daemon run")
+        response = await asyncio.to_thread(urllib.request.urlopen, f"{health_url}/metrics", timeout=5)
         with response:
             metrics = {
                 line.split()[0]: float(line.split()[1])
@@ -117,6 +123,7 @@ async def main() -> None:
                 {
                     "healthy": True,
                     "runtime": identity,
+                    "readiness": readiness,
                     "alpaca_paper": True,
                     "telegram_identity_and_chat": "verified",
                     "telegram_poll_age_seconds": round(poll_age, 2),

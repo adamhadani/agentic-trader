@@ -34,15 +34,16 @@ threads; HTTP and WebSocket tests exercise the installed SDK itself.
   [crypto trading](https://docs.alpaca.markets/us/docs/crypto-trading).
 
 The installed SDK retries HTTP 429/504 and does not set request timeouts.
-`BoundedTradingClient` is the one documented SDK extension: it supplies a socket
-timeout and disables mutation retries. GET requests retain SDK retries. The SDK
+`BoundedTransport` is the shared SDK extension used by trading and stock-data
+clients: it supplies a socket timeout and disables mutation retries. GET requests retain SDK retries. The SDK
 exposes this boundary privately, so the HTTP tests must pass on upgrades.
 `execution.broker_request_timeout_seconds` is per HTTP attempt, not a total
 transaction deadline. Stop verification uses `execution.stop_replace_timeout_seconds`.
 
 Ambiguous entry submissions retain `SUBMITTING`, record the client ID before the
 request, and persist a trading halt. They require exact broker lookup and operator
-reconciliation before `/resume`; automatic entry recovery remains follow-up work.
+review before `/resume`; schema 005 workers now perform exact client-ID recovery,
+and `/resume` refuses unresolved requests.
 Close intents already support exact lookup recovery. Neither path blindly replays
 an order. Broker-backed multi-slice execution is disabled until per-slice accounting
 and protection exist; immediate execution remains available.
@@ -73,20 +74,17 @@ No runtime DB guard is disabled.
 
 ## Holistic findings and next priorities
 
-1. **Transactional entry reservations and recovery:** different simultaneous
-   signals can pass an aggregate exposure check before either submits. Add a
-   portfolio-wide transactional reservation, approval-time session/macro/risk
-   revalidation, and recovery for `SUBMITTING` after process death. The new timeout
-   halt contains detected ambiguity but does not solve a crash before the halt.
-2. **Immutable order/fill ledger:** partial exits and externally created trades
-   remain explicitly unmatched rather than receiving invented P&L. Account fees,
-   corporate actions and multi-fill allocations need a broker account/execution
-   ledger. `/perf` describes confirmed tracked trades, not the entire brokerage
-   account's historical P&L. Panic currently iterates tracked signals; use flatten
-   or the broker to handle untracked positions and review each result.
-3. **Readiness and delivery:** automate feed/stream/reconciliation freshness checks
-   and add a transactional notification outbox. Current audits diagnose failures;
-   they cannot guarantee delivery after a crash.
+1. **Schema 005 verification:** durable reservation/FIFO admission, lookup recovery,
+   event journal, outbox and readiness have real HTTP/WebSocket and PostgreSQL
+   integration coverage. Approval, signal, quote and session deadlines are rechecked
+   after slow preflight work. Verify each deployment separately with the shared runtime
+   verifier. See [workflow design](durable-execution.md).
+2. **Complete account accounting:** cumulative order observations now preserve
+   partial/replaced/canceled/external order evidence and replayable views. Individual
+   execution allocation, fees, corrections and corporate actions still need an
+   account/lot ledger. `/perf` remains confirmed tracked full closes, before fees.
+3. **Operational alerting:** wire readiness/dead letters to alerting and define event
+   retention. Daily macro feed age and shared research executor contention remain.
 4. **Module boundaries:** extract entry admission/reconciliation and move remaining
    construction into a composition root. Keep small typed service results separate
    from HTML. The shared close coordinator and broker transport are useful boundaries.
@@ -99,3 +97,14 @@ No runtime DB guard is disabled.
 
 See the broader [architecture review](architecture-review.md) and
 [operations](production.md) for deployment checks and recovery boundaries.
+
+### Schema 005 contracts
+
+Entry preflight uses the official latest-trade and order/clock/position SDK models.
+Recovery uses the persisted `client_order_id`, validates symbol/side/quantity, and
+never resubmits after a 404. Cumulative order snapshots retain `filled_qty`,
+`filled_avg_price`, update time and replacement links; they are not presented as
+individual execution IDs. See [SDK order models](https://alpaca.markets/sdks/python/api_reference/trading/models.html)
+and [client-ID order lookup](https://docs.alpaca.markets/us/docs/working-with-orders).
+The in-process HTTP adapter is an explicit restricted-environment test option;
+the default harness and CI retain real TCP/WebSocket and disposable PostgreSQL.

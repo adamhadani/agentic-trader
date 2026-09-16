@@ -42,6 +42,12 @@ os.environ["COPILOT_CONFIG"] = str(TEST_CONFIG)
 
 def pytest_addoption(parser):
     parser.addoption(
+        "--alpaca-transport",
+        choices=("socket", "memory"),
+        default="socket",
+        help="Real SDK contract harness transport; memory does not replace TCP/WebSocket verification.",
+    )
+    parser.addoption(
         "--run-postgres",
         action="store_true",
         default=False,
@@ -221,6 +227,7 @@ def sample_signal_dict() -> dict[str, Any]:
 def mock_notifier() -> MagicMock:
     """Mock TelegramNotifier with AsyncMock coroutine methods."""
     notifier = MagicMock()
+    notifier.send_message = AsyncMock(return_value=True)
     notifier.send_signal_alert = AsyncMock(return_value=True)
     notifier.send_execution_alert = AsyncMock(return_value=True)
     notifier.send_trailing_stop_alert = AsyncMock(return_value=True)

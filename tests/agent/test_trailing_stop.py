@@ -58,6 +58,7 @@ async def test_trailing_policy_preserves_initial_risk_and_thesis(
     row = await copilot.db.get_signal_by_id(sid)
     assert (row["stop_loss"], row["risk_dollars"], row["raw_response"]) == (expected, risk, "Original thesis")
     if reason:
+        await copilot.outbox.drain()
         copilot.notifier.send_trailing_stop_alert.assert_awaited_once()
         assert copilot.notifier.send_trailing_stop_alert.call_args.kwargs["reason"] == reason
         # A subsequent adverse move cannot loosen the acknowledged stop.

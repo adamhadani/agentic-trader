@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.alpaca import AlpacaBroker
-from agentic_trader.broker.base import BrokerPosition, OrderResult, ReconciliationEvent
+from agentic_trader.broker.base import BrokerPosition, OrderRequest, OrderResult, ReconciliationEvent
 from agentic_trader.cli.main import cli
 from agentic_trader.cli.utils import get_copilot_and_config
 from agentic_trader.constants import SignalStatus, normalize_asset_class
@@ -20,12 +20,14 @@ from agentic_trader.storage.models import SignalRecord
 
 
 @pytest.fixture
-def incident(app_config, temp_db):
+def incident(app_config, temp_db, mock_notifier):
     app_config.execution_mode = "alpaca"
     client = MagicMock()
-    copilot = TradingCopilot(app_config, db=temp_db, broker=AlpacaBroker(app_config, client=client))
+    copilot = TradingCopilot(
+        app_config, db=temp_db, broker=AlpacaBroker(app_config, client=client), notifier=mock_notifier
+    )
     copilot.broker._connected = True
-    copilot.notifier = MagicMock(send_exit_alert=AsyncMock(return_value=987))
+    copilot.broker.observe_orders = AsyncMock(return_value=[])
     copilot.manage_trailing_stops = AsyncMock()
     return copilot, client
 
@@ -210,6 +212,7 @@ async def test_atomic_close_suppresses_duplicate_alert_from_stale_snapshot(incid
     )
     assert await copilot.process_reconciliation_event(event, stale)
     assert not await copilot.process_reconciliation_event(event, stale)
+    await copilot.outbox.drain()
     copilot.notifier.send_exit_alert.assert_awaited_once()
 
 
@@ -271,7 +274,7 @@ def test_test_alert_defaults_to_preview_without_runtime_construction(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_same_signal_can_only_be_claimed_once(temp_db):
+async def test_same_signal_can_only_be_claimed_once(temp_db, app_config):
 
     sid = await temp_db.record_signal(
         contract="SPY",
@@ -282,8 +285,18 @@ async def test_same_signal_can_only_be_claimed_once(temp_db):
         take_profit=102,
         risk_dollars=1,
     )
-    results = await asyncio.gather(temp_db.claim_signal(sid), temp_db.claim_signal(sid))
-    assert sorted(results) == [False, True]
+    request = OrderRequest(
+        signal_id=sid,
+        symbol="SPY",
+        direction="LONG",
+        asset_class="EQUITY",
+        quantity=1,
+        entry_price=100,
+        stop_loss=99,
+        take_profit=102,
+    )
+    results = await asyncio.gather(*(temp_db.workflows.enqueue_entry(request, app_config) for _ in range(2)))
+    assert results[0][0].id == results[1][0].id
     assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.SUBMITTING
 
 

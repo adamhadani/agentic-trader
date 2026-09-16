@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import logging
 import math
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
 from typing import Any
-from uuid import uuid4
 
 from alpaca.trading.client import TradingClient
 
@@ -30,13 +31,18 @@ from agentic_trader.constants import (
     ExitReason,
     SignalStatus,
     StopAdjustmentReason,
+    StrategyType,
     SystemStateKey,
     normalize_asset_class,
 )
 from agentic_trader.data.market_data import MarketDataFetcher
+from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
 from agentic_trader.execution import SlicedExecutionEngine
 from agentic_trader.execution.closing import PositionCloseService
+from agentic_trader.execution.durable import OrderObservation, WorkKind, WorkStatus
+from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.market.session import CompositeMarketSessionProvider
+from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
 from agentic_trader.pairs import PairEvaluation, PairsScreener, format_pairs_telegram
@@ -76,9 +82,12 @@ class TradingCopilot:
         data_fetcher: MarketDataFetcher | None = None,
         notifier: TelegramNotifier | None = None,
         close_service: PositionCloseService | None = None,
+        entry_service: EntryExecutionService | None = None,
+        outbox: NotificationDispatcher | None = None,
     ):
         self._dry_run_directory: TemporaryDirectory[str] | None = None
         self._reconciliation_lock = asyncio.Lock()
+        self._reconciliation_errors: list[str] = []
         self.config = config
         self.db = db if db is not None else SignalDatabase(db_url=config.resolved_db_url, config=config)
         self.data_fetcher = data_fetcher if data_fetcher is not None else MarketDataFetcher(config=config)
@@ -162,13 +171,32 @@ class TradingCopilot:
                 chat_handler=self.ask_copilot,
             )
         )
+        self.entry_service = (
+            entry_service
+            if entry_service is not None
+            else EntryExecutionService(
+                config, self.db.workflows, self.broker, self.execution_engine, self._entry_macro_check
+            )
+        )
+        self.outbox = (
+            outbox if outbox is not None else NotificationDispatcher(self.db.workflows, self.notifier, config.execution)
+        )
         self.metrics = global_metrics
+        self.readiness = ReadinessService(
+            self.db.workflows,
+            config,
+            self.metrics,
+            stream_connected=(lambda: self.broker.trade_stream_connected)
+            if self.broker.supports_trade_stream
+            else None,
+        )
         self.metrics_server = (
             MetricsServer(
                 host=config.telemetry.metrics_host,
                 port=config.telemetry.metrics_port,
                 collector=self.metrics,
                 config=config,
+                readiness=self.readiness.report,
             )
             if config.telemetry.metrics_enabled
             else None
@@ -233,6 +261,7 @@ class TradingCopilot:
                 )
                 return
 
+            scan_errors = 0
             logger.info("=== Starting Quantitative Scan ===")
             regime = await self.regime_detector.get_regime()
             logger.info("Current market volatility context: %s", regime.summary_text)
@@ -252,6 +281,7 @@ class TradingCopilot:
                 instrument_type=asset_class or "all"
             )
             if not session_allowed and not bypass_session_filter:
+                await self.readiness.observe(HealthComponent.SCAN, True, f"Session gate checked: {session_reason}")
                 logger.info(
                     "Market session filter inactive (%s): %s. Skipping universe scan.",
                     asset_class,
@@ -401,6 +431,11 @@ class TradingCopilot:
                             raw_response=eval_res.model_dump_json(),
                             asset_class=str(eval_res.asset_class),
                             quantity=eval_res.quantity,
+                            notification={
+                                "eval_res": eval_res.model_dump(mode="json"),
+                                "strategy": candidate.strategy,
+                                "regime_summary": regime.summary_text,
+                            },
                         )
 
                         logger.info(
@@ -424,13 +459,6 @@ class TradingCopilot:
                             },
                         )
 
-                        # Dispatch alert
-                        await self.notifier.send_signal_alert(
-                            eval_res=eval_res,
-                            strategy=candidate.strategy,
-                            signal_id=sig_id,
-                            regime_summary=regime.summary_text,
-                        )
                         total_alerts += 1
                         # Update exposure in memory for subsequent checks in this run
                         current_exposure += eval_res.notional_value
@@ -445,11 +473,14 @@ class TradingCopilot:
                         )
 
                 except Exception:
+                    scan_errors += 1
                     logger.exception(f"Error scanning {contract}")
 
             logger.info(
                 f"=== Scan Complete: {total_candidates} candidates evaluated, {total_alerts} alerts emitted ==="
             )
+            if not dry_run:
+                await self.readiness.observe(HealthComponent.SCAN, scan_errors == 0, f"{scan_errors} instrument errors")
             # Monitor any active positions for stop loss or take profit crossings
             if not dry_run:
                 await self.monitor_positions()
@@ -525,7 +556,20 @@ class TradingCopilot:
             },
         )
 
+        notification = {
+            "contract": contract,
+            "direction": ev.direction,
+            "exit_reason": str(ev.exit_reason),
+            "entry_price": entry_price,
+            "exit_price": ev.exit_price,
+            "realized_pnl": ev.realized_pnl or 0.0,
+            "strategy": strategy,
+            "quantity": float(pos_dict.get("quantity") or 1.0),
+            "asset_class": pos_dict.get("asset_class")
+            or (AssetClass.FUTURES if contract.startswith("/") else AssetClass.EQUITY),
+        }
         closed = await self.db.close_position(
+            notification=notification,
             signal_id=ev.signal_id,
             exit_price=ev.exit_price,
             exit_reason=str(ev.exit_reason),
@@ -542,31 +586,12 @@ class TradingCopilot:
             help_text="Total filled orders count",
         )
 
-        pos_qty = float(pos_dict.get("quantity") or 1.0)
-        pos_asset_class = pos_dict.get("asset_class") or (
-            AssetClass.EQUITY if not contract.startswith("/") else AssetClass.FUTURES
-        )
-
-        message_id = await self.notifier.send_exit_alert(
-            contract=contract,
-            direction=ev.direction,
-            exit_reason=str(ev.exit_reason),
-            entry_price=entry_price,
-            exit_price=ev.exit_price,
-            realized_pnl=ev.realized_pnl or 0.0,
-            strategy=strategy,
-            quantity=pos_qty,
-            asset_class=pos_asset_class,
-        )
-        await self.db.record_audit(
-            AuditEventType.EXIT_NOTIFICATION,
-            {"message_id": message_id, "delivered": message_id is not None, "broker_exit_order_id": ev.broker_order_id},
-            signal_id=ev.signal_id,
-        )
         return True
 
     async def on_stream_trade_update(self, ev: ReconciliationEvent) -> None:
         """Record stream evidence and refresh exact entry/exit orders, including partial fills."""
+        if ev.observation is not None:
+            await self.db.workflows.observe_orders([OrderObservation.model_validate(ev.observation)])
         await self.db.record_audit(AuditEventType.BROKER_STREAM_UPDATE, ev.model_dump(mode="json"))
         await self.monitor_positions()
 
@@ -646,7 +671,16 @@ class TradingCopilot:
 
     async def monitor_positions(self) -> int:
         async with self._reconciliation_lock:
-            return await self._monitor_positions()
+            self._reconciliation_errors = []
+            try:
+                result = await self._monitor_positions()
+            except Exception as exc:
+                await self.readiness.observe(HealthComponent.RECONCILIATION, False, type(exc).__name__)
+                raise
+            evidence = getattr(self.broker, "reconciliation_evidence", [])
+            errors = self._reconciliation_errors + [row["error_type"] for row in evidence if "error_type" in row]
+            await self.readiness.observe(HealthComponent.RECONCILIATION, not errors, ", ".join(errors))
+            return result
 
     async def _monitor_positions(self) -> int:
         """Periodic position reconciliation loop.
@@ -654,6 +688,28 @@ class TradingCopilot:
         Detects server-side bracket order fills or simulated price threshold hits,
         records exits in database, and emits Telegram alerts.
         """
+        await self.entry_service.recover()
+        if self.broker.supports_order_journal:
+            try:
+                tracked = await self.db.get_active_positions()
+                views = await self.db.workflows.order_views()
+                order_ids = [
+                    str(p[key]) for p in tracked for key in ("broker_order_id", "broker_exit_order_id") if p.get(key)
+                ]
+                order_ids.extend(
+                    o.order_id
+                    for o in views
+                    if o.status not in {"filled", "canceled", "expired", "rejected", "replaced"}
+                )
+                observations = await self.broker.observe_orders(order_ids)
+                await self.db.workflows.observe_orders(observations)
+                await self.broker.get_positions()
+            except Exception as exc:
+                self._reconciliation_errors.append(f"order_journal:{type(exc).__name__}")
+                logger.exception("Order journal refresh failed; continuing exact position reconciliation")
+                await self.db.record_audit(
+                    AuditEventType.RECONCILIATION, {"phase": "order_journal_failed", "error_type": type(exc).__name__}
+                )
         if self.broker.authoritative_positions:
             await self.close_service.recover()
         active_positions = await self.sync_entry_executions(await self.db.get_active_positions())
@@ -767,19 +823,21 @@ class TradingCopilot:
                 )
                 if not result.success or (self.broker.authoritative_positions and result.stop_price is None):
                     continue
-                if not await self.db.update_position_stop(pos["id"], confirmed, reason=reason):
+                notification = {
+                    "signal_id": pos["id"],
+                    "contract": contract,
+                    "direction": pos["direction"],
+                    "old_stop": old_stop,
+                    "new_stop": confirmed,
+                    "current_price": current,
+                    "reason": reason,
+                    "broker_synced": True,
+                }
+                if not await self.db.update_position_stop(
+                    pos["id"], confirmed, reason=reason, notification=notification
+                ):
                     continue
                 updated += 1
-                await self.notifier.send_trailing_stop_alert(
-                    signal_id=pos["id"],
-                    contract=contract,
-                    direction=pos["direction"],
-                    old_stop=old_stop,
-                    new_stop=confirmed,
-                    current_price=current,
-                    reason=reason,
-                    broker_synced=True,
-                )
             except Exception:
                 logger.exception("Trailing stop update failed for #%s", pos.get("id"))
         return updated
@@ -1033,21 +1091,6 @@ class TradingCopilot:
             status=status,
         )
 
-        pos_asset_class = pos.get("asset_class") or (
-            AssetClass.EQUITY if not contract.startswith("/") else AssetClass.FUTURES
-        )
-        await self.notifier.send_exit_alert(
-            contract=contract,
-            direction=direction,
-            exit_reason=ExitReason.MANUAL_CLOSE,
-            entry_price=entry,
-            exit_price=final_exit,
-            realized_pnl=realized_pnl,
-            strategy=pos["strategy"],
-            quantity=qty,
-            asset_class=pos_asset_class,
-        )
-
         view = ManualCloseResultView(
             signal_id=signal_id,
             contract=contract,
@@ -1101,33 +1144,15 @@ class TradingCopilot:
         )
 
         multiplier = contract_info.multiplier if contract_info else (1.0 if asset_class == AssetClass.EQUITY else 5.0)
-        target_qty = float(quantity) if quantity is not None and quantity > 0 else float(sig.get("quantity") or 1.0)
+        if quantity is not None and (not math.isfinite(quantity) or quantity <= 0):
+            return False, "Execution Rejected: quantity must be finite and positive."
+        target_qty = float(quantity) if quantity is not None else float(sig.get("quantity") or 1.0)
         entry_price = float(sig["entry_price"])
         stop_loss = float(sig["stop_loss"])
         take_profit = float(sig["take_profit"])
         stop_dist = abs(entry_price - stop_loss)
         notional_value = round(entry_price * multiplier * target_qty, 2)
         risk_dollars = round(stop_dist * multiplier * target_qty, 2)
-
-        # Re-verify portfolio risk limits prior to live execution
-        active_count = await self.db.get_active_position_count()
-        max_positions = getattr(
-            self.config.portfolio,
-            "max_concurrent_positions",
-            self.config.portfolio.max_concurrent_contracts,
-        )
-        if active_count >= max_positions:
-            return False, (f"⚠️ <b>Execution Rejected:</b> Maximum concurrent positions ({max_positions}) reached.")
-
-        current_exposure = await self.db.get_active_notional_exposure()
-        if current_exposure + notional_value > self.config.portfolio.max_notional_exposure:
-            return False, (
-                f"⚠️ <b>Execution Rejected:</b> Order notional (${notional_value:,.2f}) would breach "
-                f"${self.config.portfolio.max_notional_exposure:,.2f} maximum portfolio notional ceiling."
-            )
-
-        if not await self.db.claim_signal(signal_id):
-            return False, f"❌ Signal #{signal_id} was already claimed or is no longer pending."
 
         req = OrderRequest(
             signal_id=signal_id,
@@ -1140,114 +1165,79 @@ class TradingCopilot:
             stop_loss=stop_loss,
             take_profit=take_profit,
             quantity=target_qty,
-            client_order_id=f"entry-{uuid4().hex}",
         )
-        await self.db.record_audit(
-            AuditEventType.ENTRY_SUBMISSION,
-            {"client_order_id": req.client_order_id, "quantity": target_qty},
+        item, reason = await self.entry_service.authorize(req)
+        if item is None:
+            return False, f"⚠️ <b>Execution Rejected:</b> {html.escape(reason)}"
+        if item.status in (WorkStatus.QUEUED, WorkStatus.CHECKING):
+            return (
+                False,
+                f"⏳ Entry #{signal_id} queued as <code>{item.id}</code>. Fresh checks precede submission; final status will be notified.",
+            )
+        if item.status in (WorkStatus.SUBMITTING, WorkStatus.UNKNOWN):
+            return False, f"⚠️ Entry #{signal_id} awaiting exact broker lookup ({item.id}). No automatic resubmission."
+        result = item.result
+        view = ExecutionResultView(
             signal_id=signal_id,
+            contract=contract,
+            direction=direction,
+            quantity=target_qty,
+            fill_price=result.get("fill_price"),
+            broker_order_id=result.get("order_id"),
+            notional_value=notional_value,
+            risk_dollars=risk_dollars,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            execution_mode=self.config.execution_mode.upper(),
+            success=item.status == WorkStatus.ACCEPTED,
+            error_message=result.get("error_message"),
         )
+        return item.status == WorkStatus.ACCEPTED, TelegramHtmlFormatter.format_execution_html(view)
 
-        try:
-            order_result = await self.execution_engine.execute_order(req, self.broker)
-        except Exception as e:
-            logger.exception(
-                "Error calling execution_engine.execute_order for signal #%d",
-                signal_id,
-                extra={"signal_id": signal_id, "error": str(e)},
-            )
-            return await self._unknown_entry(signal_id, req.client_order_id, str(e))
-
-        if order_result.success:
-            fill_price = order_result.fill_price
-            await self.db.update_signal_execution(
-                signal_id=signal_id,
-                broker_order_id=order_result.order_id,
-                fill_price=fill_price,
-                status=SignalStatus.EXECUTED,
-                quantity=target_qty,
-                notional_value=notional_value,
-                risk_dollars=risk_dollars,
-            )
-            logger.info(
-                "Signal #%d executed successfully via broker (%s) with qty %g",
-                signal_id,
-                self.config.execution_mode,
-                target_qty,
-                extra={
-                    "signal_id": signal_id,
-                    "order_id": order_result.order_id,
-                    "fill_price": fill_price,
-                    "quantity": target_qty,
-                    "execution_mode": self.config.execution_mode,
-                },
-            )
-            view = ExecutionResultView(
-                signal_id=signal_id,
-                contract=contract,
-                direction=direction,
-                quantity=target_qty,
-                fill_price=fill_price,
-                broker_order_id=order_result.order_id,
-                notional_value=notional_value,
-                risk_dollars=risk_dollars,
-                stop_loss=float(sig["stop_loss"]),
-                take_profit=float(sig["take_profit"]),
-                execution_mode=self.config.execution_mode.upper(),
-                success=True,
-            )
-            return True, TelegramHtmlFormatter.format_execution_html(view)
-        else:
-            if order_result.submission_uncertain:
-                return await self._unknown_entry(
-                    signal_id, req.client_order_id, order_result.error_message or "Unknown broker outcome"
-                )
-            await self.db.update_signal_status(signal_id, SignalStatus.FAILED)
-            err = order_result.error_message or "Unknown broker rejection"
-            logger.warning(
-                "Signal #%d execution rejected by broker (%s): %s",
-                signal_id,
-                self.config.execution_mode,
-                err,
-                extra={
-                    "event": "signal_execution_rejected",
-                    "signal_id": signal_id,
-                    "error": err,
-                    "execution_mode": self.config.execution_mode,
-                },
-            )
-            view = ExecutionResultView(
-                signal_id=signal_id,
-                contract=contract,
-                direction=direction,
-                quantity=target_qty,
-                fill_price=0.0,
-                broker_order_id=None,
-                notional_value=notional_value,
-                risk_dollars=risk_dollars,
-                stop_loss=float(sig["stop_loss"]),
-                take_profit=float(sig["take_profit"]),
-                execution_mode=self.config.execution_mode.upper(),
-                success=False,
-                error_message=err,
-            )
-            return False, TelegramHtmlFormatter.format_execution_html(view)
-
-    async def _unknown_entry(self, signal_id: int, client_order_id: str | None, error: str) -> tuple[bool, str]:
-        """Reserve the claimed signal and halt new risk after an ambiguous POST."""
-        reason = f"Unconfirmed broker entry for signal #{signal_id}; reconcile client order {client_order_id} before resuming"
-        await self.db.set_state(SystemStateKey.TRADING_HALTED, "true")
-        await self.db.set_state(SystemStateKey.TRADING_HALT_REASON, reason)
-        self.is_halted, self.halt_reason = True, reason
-        await self.db.record_audit(
-            AuditEventType.ENTRY_SUBMISSION_UNKNOWN,
-            {
-                "client_order_id": client_order_id,
-                "error": error,
-            },
-            signal_id=signal_id,
+    async def _entry_macro_check(self, request: OrderRequest, signal: dict[str, Any]) -> str | None:
+        in_lockout, event = await self.calendar.is_in_lockout_window(
+            pre_minutes=self.config.risk.lockout_pre_event_minutes,
+            post_minutes=self.config.risk.lockout_post_event_minutes,
         )
-        return False, f"⚠️ {html.escape(reason)}. No automatic resubmission."
+        if in_lockout:
+            return f"Macro event lockout active: {event.title if event else 'scheduled release'}."
+        regime = await self.regime_detector.get_regime(force_refresh=True)
+        if signal["strategy"] == StrategyType.SQUEEZE_BREAKOUT and not regime.breakout_allowed:
+            return "Current macro/volatility policy suppresses breakout entries."
+        assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
+        risk_distance = abs(request.entry_price - request.stop_loss)
+        if abs(request.take_profit - request.entry_price) / risk_distance < max(
+            self.config.risk.min_risk_reward_ratio, regime.min_rr_threshold
+        ):
+            return "Current macro/volatility policy requires a higher reward/risk ratio."
+        info = self.config.contracts.get(request.symbol)
+        risk = risk_distance * request.quantity * (info.multiplier if info else 1)
+        if risk > self.config.portfolio.cash * self.config.sizing.max_risk_pct_cap * regime.risk_multiplier:
+            return "Current macro risk scaling no longer permits the approved size."
+        return None
+
+    async def run_entries(self) -> None:
+        await self.entry_service.recover()
+        for _ in range(self.config.execution.worker_batch_size):
+            if not await self.entry_service.dispatch_one():
+                break
+
+    async def workflow_worker(self) -> None:
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(self._run_worker(HealthComponent.WORKER, self.run_entries))
+            tasks.create_task(self._run_worker(HealthComponent.DELIVERY, self.outbox.drain))
+
+    async def _run_worker(self, component: HealthComponent, action: Callable[[], Awaitable[Any]]) -> None:
+        while not self._shutdown_event.is_set():
+            try:
+                await action()
+                await self.readiness.observe(component, True)
+            except Exception as exc:
+                logger.exception("Durable workflow worker failed")
+                with contextlib.suppress(Exception):
+                    await self.readiness.observe(component, False, type(exc).__name__)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._shutdown_event.wait(), self.config.execution.worker_interval_seconds)
 
     async def emergency_panic_halt(self, reason: str = "Manual emergency panic trigger") -> PanicReportView:
         """Institutional emergency kill switch:
@@ -1376,7 +1366,7 @@ class TradingCopilot:
 
         # 5. Telegram notification
         try:
-            await self.notifier.send_message(TelegramHtmlFormatter.format_panic_html(view))
+            await self.outbox.publish_message(TelegramHtmlFormatter.format_panic_html(view))
         except Exception as notify_err:
             logger.warning("Failed to send Telegram panic notification: %s", notify_err)
 
@@ -1384,6 +1374,16 @@ class TradingCopilot:
 
     async def resume_trading(self) -> dict[str, Any]:
         """Clear emergency halt state and resume normal autonomous operations."""
+        await self.entry_service.recover()
+        unresolved = await self.db.workflows.list_work(
+            WorkKind.ENTRY, statuses=(WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)
+        )
+        if unresolved or await self.db.workflows.legacy_claims():
+            return {
+                "success": False,
+                "is_halted": True,
+                "message": "Unconfirmed broker entry remains; inspect execution journal before resuming.",
+            }
         logger.info("Resuming trading operations from emergency halt...")
         self.is_halted = False
         self.halt_reason = None
@@ -1402,7 +1402,7 @@ class TradingCopilot:
             "• <b>Safety:</b> Standard portfolio risk limits, macro lockouts &amp; session filters remain in effect."
         )
         try:
-            await self.notifier.send_message(msg)
+            await self.outbox.publish_message(msg)
         except Exception as notify_err:
             logger.warning("Failed to send Telegram resume notification: %s", notify_err)
 
@@ -1547,7 +1547,7 @@ class TradingCopilot:
         if self.notifier.is_configured():
             try:
                 card = await self.get_macro_summary_html()
-                await self.notifier.send_message(card)
+                await self.outbox.publish_message(card)
                 logger.info("Successfully broadcasted morning macro intelligence briefing to Telegram.")
             except Exception as e:
                 logger.warning("Failed to broadcast morning macro briefing: %s", e)
@@ -1612,7 +1612,7 @@ class TradingCopilot:
             strategies=strategies,
         )
         if self.notifier.is_configured():
-            await self.notifier.send_message(res["summary_html"])
+            await self.outbox.publish_message(res["summary_html"])
         return res
 
     async def send_test_alert(self):

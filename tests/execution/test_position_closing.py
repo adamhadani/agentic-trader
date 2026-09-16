@@ -204,6 +204,7 @@ async def test_close_waits_for_cancellation_and_uses_actual_fill(
     assert all(key.startswith(symbol) for key in client.cancelled)
     assert client.actions[-1] == ("submit", symbol)
     assert row["broker_exit_order_id"] == f"exit-{symbol}"
+    await copilot.outbox.drain()
     copilot.notifier.send_exit_alert.assert_awaited_once()
     assert await copilot.db.get_state(SystemStateKey.TRADING_HALTED) is None
     events = await copilot.db.get_audit_events(sid)

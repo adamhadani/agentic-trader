@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 
 import click
 
 from agentic_trader.cli.utils import coro
 from agentic_trader.config import load_config
+from agentic_trader.execution.durable import WorkKind
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
@@ -91,5 +93,59 @@ async def audit(signal_id: int | None, limit: int) -> None:
     db = SignalDatabase(config=config)
     try:
         click.echo(json.dumps(await db.get_audit_events(signal_id, limit), indent=2))
+    finally:
+        await db.engine.dispose()
+
+
+@db_group.command("events", help="Read the append-only execution journal (newest first)")
+@click.option("--stream", default=None, help="Exact stream, e.g. order/<broker-id> or entry/<client-id>")
+@click.option("--limit", type=click.IntRange(1, 1000), default=100)
+@coro
+async def events(stream: str | None, limit: int) -> None:
+    db = SignalDatabase(config=load_config())
+    try:
+        click.echo(json.dumps(await db.workflows.events(stream, limit=limit), indent=2))
+    finally:
+        await db.engine.dispose()
+
+
+@db_group.command("queue", help="Inspect durable entry authorizations and outcomes")
+@coro
+async def queue() -> None:
+    db = SignalDatabase(config=load_config())
+    try:
+        for item in await db.workflows.list_work(WorkKind.ENTRY):
+            click.echo(json.dumps(asdict(item), default=str))
+    finally:
+        await db.engine.dispose()
+
+
+@db_group.command("outbox", help="Inspect notifications; explicitly requeue a dead letter")
+@click.option(
+    "--retry", "retry_id", default=None, help="Dead-letter ID to requeue; may duplicate a previously delivered message"
+)
+@coro
+async def outbox(retry_id: str | None) -> None:
+    db = SignalDatabase(config=load_config())
+    try:
+        if retry_id and not await db.workflows.requeue_notification(retry_id):
+            raise click.ClickException("No matching dead letter in this environment/account.")
+        for item in await db.workflows.list_work(WorkKind.NOTIFICATION):
+            click.echo(json.dumps(asdict(item), default=str))
+    finally:
+        await db.engine.dispose()
+
+
+@db_group.command("orders", help="Inspect broker order projections or rebuild them from journal events")
+@click.option("--rebuild", is_flag=True, help="Rebuild this account's read model; never submits an order")
+@coro
+async def orders(rebuild: bool) -> None:
+    db = SignalDatabase(config=load_config())
+    try:
+        if rebuild:
+            count = await db.workflows.rebuild_order_views()
+            click.echo(f"Replayed {count} observations.")
+        for order in await db.workflows.order_views():
+            click.echo(order.model_dump_json())
     finally:
         await db.engine.dispose()

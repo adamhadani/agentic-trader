@@ -105,7 +105,10 @@ class PositionCloseService:
             }
         )
         if not claimed:
-            return "A close request is already active; awaiting broker reconciliation. No duplicate order submitted."
+            return (
+                record.get("detail")
+                or "A close request is already active; awaiting broker reconciliation. No duplicate order submitted."
+            )
         request = PositionCloseRequest(
             symbol=position.symbol,
             direction=Direction(position.direction),

@@ -123,7 +123,7 @@ The **Agentic Trader** is a multi-asset trading system designed around a $100k c
   - `fetcher.py`: Option chain fetcher with TTL caching and ETF proxy mapping.
 - `agentic_trader/telemetry/`:
   - `collector.py`: Thread-safe Prometheus metrics registry (`MetricsCollector`).
-  - `server.py`: Lightweight async HTTP server serving `/metrics` and `/healthz`.
+  - `server.py`: Lightweight async HTTP server serving `/metrics`, `/healthz`, `/readyz` and active `/healthcheck`.
 - `agentic_trader/screeners/`: Multi-strategy framework (`StrategyRegistry`, `ConflictResolver`, `TrendPullbackStrategy`, `SqueezeBreakoutStrategy`, `FormulaicAlphaStrategy`). Loads promoted alphas from `config/promoted_alphas.yaml` when constructing the registry; CLI/YAML edits do not automatically refresh a running registry. Conversational promotion/demotion also updates that process's registry.
 - `agentic_trader/backtest/`: Backtest engine, transaction friction, Cash-Plus attribution, Monte Carlo simulation, crisis replay, and dynamic Chandelier ATR trailing stop ratcheting.
 - `agentic_trader/research/`: VectorBT parameter optimizer, rolling walk-forward cross-validation, and `alpha/` package (`dsl.py`, `operators.py`, `catalog.py`, `metrics.py`, `miner.py`, `promotion.py`, `orthogonalization.py`, `optimizer.py`) for formulaic alpha mining, Gram-Schmidt signal orthogonalization, convex portfolio optimization (QP/SLSQP), and DSR overfitting controls.
@@ -155,7 +155,7 @@ Preserve these intended safeguards when changing logic. They are design requirem
     - **Defense-in-Depth**: Stream updates wake the same exact-parent REST reconciliation path as polling. Full fill, chronological order, quantity, side and symbol checks are required. Conditional DB closure gates alerts; partial fills remain tracked.
 
 13. **Brokerage as valuation authority**: Both CLI and Telegram positions use the same broker snapshot. Preserve source/time; show failures or mismatches, never fabricate zero P&L. Realized Alpaca performance includes confirmed closed fills with entry/exit IDs and actual average prices; it is all recorded closed-trade history before fees, not account-day return.
-14. **Audit and provenance**: Head revision is `004_close_requests`; every signal has environment/account mode and run identity. Quarantine preserves original values and excludes confirmed test rows from risk, deduplication, positions and performance.
+14. **Audit and provenance**: Head revision is `005_execution_workflows`; every signal has environment/account mode and run identity. Quarantine preserves original values and excludes confirmed test rows from risk, deduplication, positions and performance.
 
 15. **Async boundaries**: Use `asyncio.to_thread` for blocking SDK/provider calls and CPU-heavy research from async handlers. Keep related scans serialized; review shared state before adding concurrency. Telegram retries belong in `notifier/transport.py`, never around a trade handler. Preserve request/update audit IDs, poll freshness metrics, and `telemetry/event_loop.py` stall monitoring.
 
@@ -189,3 +189,19 @@ initial risk and thesis. Uncertain entries remain claimed and halt new risk pend
 reconciliation. Broker-backed multi-slice execution is disabled until a fill ledger
 and protection exist. The SDK timeout/no-mutation-retry extension is deliberately
 isolated and covered by transport tests.
+
+## Durable execution handoff (schema 005)
+
+Read [durable execution](docs/durable-execution.md) before changing admission,
+recovery, order observations or delivery. Entry authorization and capacity are
+transactional; do not reintroduce `claim_signal` or bypass `EntryExecutionService`.
+A stale dismissal only changes `PENDING`. A `submitting` command never expires or
+replays; client-ID lookup resolves uncertainty. `/resume` refuses unresolved or
+unmapped legacy submissions. Confirmed zero-fill cancellation releases capacity.
+
+Signal/exit/stop notifications use the transactional outbox. Inject notifiers before
+construction so the dispatcher shares the same dependency. Delivery is at least
+once, and must never retry a trade handler. Order views replay only broker evidence;
+partial/account-wide realized accounting remains explicitly incomplete. Runtime
+health is `/readyz` or `doctor --readiness`; `/healthz` remains liveness. See the
+new `db queue`, `db events`, `db orders`, and `db outbox` commands.

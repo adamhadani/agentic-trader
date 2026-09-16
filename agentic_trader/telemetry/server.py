@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from agentic_trader.diagnostics.doctor import run_diagnostics
 from agentic_trader.telemetry.collector import MetricsCollector, global_metrics
@@ -27,11 +29,13 @@ class MetricsServer:
         port: int = 9108,
         collector: MetricsCollector | None = None,
         config: AppConfig | None = None,
+        readiness: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.collector = collector or global_metrics
         self.config = config
+        self.readiness = readiness
         self._server: asyncio.Server | None = None
         self._running = False
 
@@ -96,6 +100,23 @@ class MetricsServer:
                     "\r\n"
                 )
                 writer.write(headers.encode("utf-8") + body_bytes)
+                await writer.drain()
+
+            elif method == "GET" and path in ("/readyz", "/readyz/"):
+                readiness_report = (
+                    await self.readiness()
+                    if self.readiness
+                    else {"ready": False, "detail": "No daemon readiness provider"}
+                )
+                body_bytes = json.dumps(readiness_report).encode()
+                status = "200 OK" if readiness_report["ready"] else "503 Service Unavailable"
+                writer.write(
+                    (
+                        f"HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\n"
+                        f"Content-Length: {len(body_bytes)}\r\nConnection: close\r\n\r\n"
+                    ).encode()
+                    + body_bytes
+                )
                 await writer.drain()
 
             elif method == "GET" and path in ("/healthcheck", "/healthcheck/"):

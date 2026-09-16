@@ -7,7 +7,7 @@ Updated **2026-09-16**. Start with [CLAUDE.md](../CLAUDE.md), the
 
 This checkout runs under `com.agentictrader.copilot` in macOS launchd. Its shell
 sources `.envrc` and runs `uv run copilot daemon`. The configured execution adapter
-is **Alpaca paper**, with PostgreSQL `agentic_trader` on localhost. `data/signals.db`
+is **Alpaca paper**, with PostgreSQL 17.11 (Homebrew), database `agentic_trader` on localhost. `data/signals.db`
 is historical SQLite storage, not the active database. Never run a second daemon,
 Telegram poller, or Compose stack alongside the installed service.
 
@@ -67,12 +67,14 @@ explicitly marked estimates. Reports preserve source and retrieval time in audit
 
 ### Storage and audit
 
-Head revision: `004_close_requests`. Tables:
+Head revision: `005_execution_workflows`. Tables:
 
 - `signals`: lifecycle, sizing, entry/exit order IDs, execution time, environment,
   execution mode/account type, process run ID, and reversible quarantine flag.
 - `system_state`: halt flags and operational key/value state.
 - `close_requests`: durable exclusive close intents and broker request IDs.
+- `workflow_locks`, `work_items`: scoped transactional reservations, command queue and outbox.
+- `domain_events`, `order_projections`: immutable evidence and rebuildable broker order views.
 - `audit_events`: append-only creation, fills, stream/reconciliation evidence,
   valuations, close submissions/completions, notification results, repairs, and
   daemon startup identity. JSON payloads avoid credentials and chat identifiers.
@@ -152,20 +154,18 @@ incident snapshots, DB files, `.envrc`, and derived calibration files out of Git
 
 ## High-priority follow-ups
 
-1. Atomic execution claims/reservations and risk/session revalidation at approval;
-   same-signal claims are atomic; different signals can still race total exposure limits.
-2. A fill ledger for partial entries/exits, replacements, cancellations, and broker
+1. A fill ledger for partial entries/exits, replacements, cancellations, and broker
    trades created outside the copilot; current matching deliberately defers uncertain
    cases. Persist timeframe and original risk separately from mutable stop levels.
-3. Readiness/freshness monitoring for broker stream, Telegram poller, successful
-   scan and quote age; watchdog liveness alone cannot establish trading readiness.
-4. Stop confirmation and thesis preservation are now implemented. Follow up with
+2. Use `/readyz` and `doctor --readiness` for freshness; configure operational
+   alerting and event retention. Daily macro-feed freshness remains a policy gap.
+3. Stop confirmation and thesis preservation are now implemented. Follow up with
    a proper ATR/high-water mark policy and persistent requested-versus-acknowledged
    order ledger for unresolved replacement outcomes.
-5. Keep heavy research off the trading executor as workload grows; verify timeframe filtering
+4. Keep heavy research off the trading executor as workload grows; verify timeframe filtering
    before cross-strategy netting. Define missing/stale macro admission policy and review drawdown
    plumbing before increasing automation or enabling live money.
-6. Keep sliced execution disabled until partial plans and protective brackets are
+5. Keep sliced execution disabled until partial plans and protective brackets are
    implemented. Integrate alpha allocation into risk sizing only after validation.
 
 ## Validation baseline
@@ -282,3 +282,17 @@ claim and halt new risk pending reconciliation. Broker slicing is disabled.
 Trailing stops save only broker-confirmed prices, preserve the original thesis and
 risk, and audit `stop_replacement` / `stop_updated`. Replacement chains are followed
 by exact order ID for cancellation and realized-fill reconciliation too.
+
+## Schema 005 verification boundary
+
+Entry and delivery services are dependency-injected. Cross-signal reservations
+serialize in PostgreSQL; post-submission recovery is lookup-only. State changes
+and critical notification intents commit together. Read
+[workflow semantics and operator commands](durable-execution.md).
+
+Full local TCP/WebSocket and disposable-PostgreSQL integration verification is now
+available. Test credentials, sockets and database guards remain enforced. See the
+workflow guide for the final test record. Source tests do not establish deployed
+health: `scripts/verify_runtime.py` checks the clean daemon revision, matching-run
+readiness, authenticated broker stream, recent reconciliation, Telegram poll and
+menu, and exact account/report parity without sending messages or orders.

@@ -44,8 +44,14 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SignalStatus,
 )
-from agentic_trader.notifier.transport import ObservedPollingRequest, RetryingTelegramRequest, telegram_update_id
+from agentic_trader.notifier.transport import (
+    ObservedPollingRequest,
+    RetryingTelegramRequest,
+    notification_id,
+    telegram_update_id,
+)
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
+from agentic_trader.runtime import RUN_ID
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.telemetry.collector import MetricsCollector, global_metrics
 
@@ -418,6 +424,8 @@ class TelegramNotifier:
     async def _audit(self, event: AuditEventType, payload: dict[str, Any]) -> None:
         if self.db is not None:
             try:
+                if (delivery_id := notification_id.get()) is not None:
+                    payload = {**payload, "outbox_id": delivery_id}
                 if (update_id := telegram_update_id.get()) is not None:
                     payload = {**payload, "update_id": update_id}
                 await self.db.record_audit(event, payload)
@@ -435,6 +443,11 @@ class TelegramNotifier:
             self.metrics.inc_counter("trader_telegram_poll_errors_total", labels={"error": error_type or "unknown"})
         if not success or not previous or now - self._last_poll_audit >= self.settings.poll_audit_interval_seconds:
             await self._audit(AuditEventType.TELEGRAM_POLL, {"success": success, "error_type": error_type})
+            if self.db:
+                try:
+                    await self.db.workflows.record_health("telegram", success, error_type or "", run_id=RUN_ID)
+                except Exception:
+                    logger.exception("Could not persist poll readiness; poll transport continues")
             self._last_poll_audit = now
         if success and not previous:
             logger.info("Telegram polling healthy; successful getUpdates response received")
@@ -979,11 +992,14 @@ class TelegramNotifier:
                 signal_id,
                 extra={"signal_id": signal_id, "action": "dismiss"},
             )
-            if self.db:
-                await self.db.update_signal_status(signal_id, SignalStatus.DISMISSED)
+            dismissed = await self.db.dismiss_signal(signal_id) if self.db else False
             await _safe_clear_markup()
             if msg and hasattr(msg, "reply_text"):
-                await msg.reply_text(f"❌ Signal #{signal_id} {SignalStatus.DISMISSED}.")
+                await msg.reply_text(
+                    f"❌ Signal #{signal_id} {SignalStatus.DISMISSED}."
+                    if dismissed
+                    else f"Signal #{signal_id} is no longer pending; no trade state changed."
+                )
         elif data == "panic_confirm":
             await query.answer("Executing emergency kill switch...")
             await _safe_clear_markup()

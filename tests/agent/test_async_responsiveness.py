@@ -9,7 +9,6 @@ from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.cli.commands import service
 from agentic_trader.config import load_config
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
-from agentic_trader.storage.db import SignalDatabase
 
 
 @pytest.mark.parametrize("operation", ["scan", "schema"])
@@ -30,11 +29,7 @@ async def test_blocking_dependencies_leave_event_loop_responsive(operation, monk
         config = load_config()
         fetcher = MagicMock()
         fetcher.fetch_data.side_effect = blocking_work
-        db = AsyncMock(spec=SignalDatabase)
-        db.get_state.return_value = None
-        db.get_active_notional_exposure.return_value = 0
-        db.get_active_position_count.return_value = 0
-        db.get_active_positions.return_value = []
+        db = temp_db
         copilot = TradingCopilot(config, db=db, data_fetcher=fetcher, notifier=TelegramNotifier(None, None))
         copilot.regime_detector = AsyncMock()
         copilot.session_provider = AsyncMock()
@@ -81,6 +76,7 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
         monitor_ran.set()
 
     copilot.notifier.start_polling = slow_start
+    copilot.workflow_worker = AsyncMock()
     copilot.run_scan = scan
     copilot.monitor_positions = monitor
     monkeypatch.setattr(service, "get_copilot_and_config", lambda: (copilot, config))

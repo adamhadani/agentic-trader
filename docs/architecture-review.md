@@ -3,7 +3,7 @@ layout: default
 title: Architecture review — September 2026
 ---
 
-# Architecture review — 2026-09-15
+# Architecture review — September 2026
 
 ## Assessment
 
@@ -39,11 +39,11 @@ backend, not a production failover mechanism.
 
 | Priority | Finding / consequence | Recommendation |
 | --- | --- | --- |
-| P1 | `execute_signal_by_id` reads portfolio exposure before claiming. Two different pending signals can both pass the aggregate limit. `SUBMITTING` does not reserve capacity. | Add a transactional portfolio reservation covering quantity/notional/class budgets, plus approval-time session/macro/risk revalidation. Use a deterministic broker client-order ID for ambiguous submission recovery. |
+| Implemented; integration verified | Schema 005 atomically reserves cross-signal capacity and serializes entry admission. | Preserve fenced preflight leases and lookup-only recovery after the durable submission boundary; retain PostgreSQL race and real-transport coverage. |
 | P1 | Complete fills work; partial entry/exit combinations, cancellations, replacements, sliced plan IDs and externally created broker trades lack a fill ledger. | Add immutable order/fill tables keyed by broker account/order/execution IDs. Reconcile idempotently; expose unmatched/partial states to operators. Keep sliced execution disabled until protective brackets and partial accounting work. |
 | Resolved Sep 16 | Stop replacement previously persisted intent as fact and overwrote the thesis. | Exact replacement-chain verification now precedes a conditional stop update; request/result audits preserve initial risk and thesis. See the Alpaca review. |
-| P1 | Watchdog and `/healthz` prove process liveness, not data, broker-stream or Telegram freshness. | Add readiness with last successful scan, quote age, broker sync, Telegram poll and reconciliation backlog; alert on staleness. Bind active diagnostic endpoints to a trusted interface or protect them. |
-| P2 | Notification happens after the close transaction. A process crash or Telegram failure can lose delivery despite a correct closed trade. | Transactional outbox with idempotent delivery, retries, message ID and visible terminal failure state. Current audit records attempts/results but is not a retry worker. |
+| Implemented; integration verified | `/readyz` and `doctor --readiness` combine current-run component freshness, broker stream state, halt, entry recovery and outbox health. | Add operational alerting; keep daily macro-feed age policy separate from per-entry quote checks. Watchdog remains liveness-only. |
+| Implemented; integration verified | Signal/close/stop transactions now include durable notification jobs with retry/dead-letter states and correlated audit IDs. | Delivery is at least once; an acknowledgement loss can duplicate a message. Never repeat trading actions to recover a reply. |
 | P2 | `TradingCopilot` still constructs calendar, regime, strategy, graph and research services and returns transport-specific strings. | Move construction to a composition module; extract execution/reconciliation/report services with small protocols and typed results. Keep Telegram/CLI rendering at the transport boundary. |
 | P2 | Missing macro enrichment is explicit but still allows volatility-only evaluation; daily observations lack a maximum-age admission policy. Worker threads keep the event loop responsive but share executor capacity; heavy research can still contend with trading work. | Propagate data age/quality, define stale-data policy, and move heavy research into a bounded job worker when workload grows. |
 | P2 | Timeframe filtering follows strategy conflict resolution; timeframe is absent from persisted signals. Research annualization and live bar routing differ. | Filter before netting, persist timeframe/data timestamp, and validate per-timeframe research/live parity. |
@@ -176,3 +176,20 @@ The [September 16 Alpaca review](alpaca-integration-review.md) records official
 contracts, SDK transport fixes, HTTP/WebSocket/PostgreSQL coverage, and remaining
 entry reservation/fill-ledger/readiness gaps. Broker-backed slicing is now refused
 because acceptance alone cannot establish per-slice fills or protection.
+
+## Durable workflow review (September 16)
+
+See [design, guarantees, configuration and recovery](durable-execution.md).
+The bounded event journal covers partial/replaced/canceled/external order evidence;
+rebuildable projections retain exact identities. Complete account-wide realized
+accounting (individual executions, partial lot allocation, corrections, fees and
+corporate actions) is still a P1 follow-up. Conservative full-fill accounting and
+broker-backed slicing restrictions remain.
+
+The implementation review also covered stale preflight tokens, lost POST responses,
+independent queue consumers, zero-fill cancellation release, stale observations,
+stale dismiss buttons, notification worker crashes and schema downgrade risks.
+PostgreSQL and real socket integrations now pass locally. Review also added
+post-preflight approval/signal/session expiry regressions and authenticated-stream
+readiness assertions. In-process SDK tests remain an optional restricted-environment
+aid; they do not replace TCP/WebSocket and PostgreSQL verification.

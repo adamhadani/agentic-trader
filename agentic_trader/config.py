@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.constants import (
     DEFAULT_ACTIVE_STRATEGIES,
@@ -236,6 +236,21 @@ class PositionSizingConfig(BaseModel):
 
 
 class ExecutionConfig(BaseModel):
+    journal_history_days: int = Field(default=7, ge=1, le=90)
+    journal_max_pages: int = Field(default=20, ge=1, le=100)
+    entry_preflight_lease_seconds: float = Field(default=60, gt=0, le=300)
+    entry_queue_max_age_seconds: float = Field(default=120, gt=0)
+    signal_max_age_seconds: float = Field(default=14400, gt=0)
+    entry_quote_max_age_seconds: float = Field(default=60, gt=0)
+    entry_max_price_drift_pct: float = Field(default=0.01, gt=0, le=0.1)
+    worker_interval_seconds: float = Field(default=2, gt=0, le=60)
+    worker_batch_size: int = Field(default=20, ge=1, le=100)
+    notification_delivery_timeout_seconds: float = Field(default=60, gt=0)
+    notification_lease_seconds: float = Field(default=120, gt=0)
+    notification_max_attempts: int = Field(default=8, ge=1, le=100)
+    notification_retry_seconds: float = Field(default=5, gt=0)
+    notification_max_retry_seconds: float = Field(default=900, gt=0)
+
     broker_request_timeout_seconds: float = Field(default=10, gt=0, le=60)
     stop_replace_timeout_seconds: float = Field(default=10, gt=0, le=60)
     close_cancel_timeout_seconds: float = Field(default=10, gt=0, le=60)
@@ -249,6 +264,12 @@ class ExecutionConfig(BaseModel):
     price_collar_pct: float = 0.001
     vwap_intraday_profile: list[float] = Field(default_factory=lambda: [0.25, 0.15, 0.10, 0.10, 0.15, 0.25])
 
+    @model_validator(mode="after")
+    def validate_delivery_lease(self):
+        if self.notification_delivery_timeout_seconds >= self.notification_lease_seconds:
+            raise ValueError("Notification delivery timeout must be shorter than the claim lease")
+        return self
+
 
 class OptionsConfig(BaseModel):
     enabled: bool = True
@@ -259,6 +280,13 @@ class OptionsConfig(BaseModel):
 
 
 class TelemetryConfig(BaseModel):
+    health_observation_interval_seconds: float = Field(default=10, gt=0)
+    notification_max_age_seconds: float = Field(default=1800, gt=0)
+    reconciliation_max_age_seconds: float = Field(default=180, gt=0)
+    telegram_max_age_seconds: float = Field(default=120, gt=0)
+    worker_max_age_seconds: float = Field(default=30, gt=0)
+    scan_max_age_seconds: float = Field(default=18000, gt=0)
+
     metrics_enabled: bool = True
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9108

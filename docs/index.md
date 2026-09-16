@@ -80,3 +80,8 @@ docker compose logs -f trading-copilot
 For detailed instructions, see the [Production Operations Guide](production.md).
 
 - [Alpaca contract review and integration coverage](alpaca-integration-review.md)
+
+## Durable execution operations
+
+See [entry queue, broker events, notification outbox and readiness](durable-execution.md)
+for schema 005 architecture, CLI inspection/recovery and deployment requirements.

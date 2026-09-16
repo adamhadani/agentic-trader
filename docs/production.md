@@ -40,8 +40,9 @@ production default. `--db-path` accepts a URL or SQLite path; `--db-name` explic
 selects a SQLite sandbox. There is no automatic SQLite failover. `data/signals.db`
 is historical and must not be mistaken for the current PostgreSQL database.
 
-Head migration is `004_close_requests`. `signals`, `system_state` and
-`audit_events` and `close_requests` hold trading and operational state. Construction currently checks
+Head migration is `005_execution_workflows`. `signals`, `system_state` and
+`audit_events`, `close_requests`, `work_items`, `domain_events`, `order_projections`
+and `workflow_locks` hold trading and operational state. Construction currently checks
 migrations, even for informational copilot commands. Back up PostgreSQL before
 schema or historical repairs. Do not use `db clear` to fix contamination: quarantine
 preserves original evidence and removes rows from operational queries.
@@ -123,8 +124,9 @@ not deleted. Keep broker-held protective orders in place during a daemon restart
 
 Alembic preserves logging configuration; Telegram token URLs are redacted and
 HTTP transport info logging is suppressed. Never commit credentials, raw logs,
-DB files or private incident snapshots. Audit is evidence, not a notification
-retry queue; delivery retries and freshness-based readiness are priority follow-ups.
+DB files or private incident snapshots. Operational audit is complemented by the schema 005 event journal and transactional
+notification outbox. See [durable workflows](durable-execution.md) for recovery,
+readiness, dead-letter requeue and deployment checks.
 
 ## Alternative deployment
 
@@ -251,8 +253,8 @@ default 10 seconds). GET retains the SDK retry policy; POST/PATCH/DELETE are not
 replayed automatically. An uncertain entry records `entry_submission_unknown`,
 leaves its signal `SUBMITTING`, and halts new entries. Inspect `entry_submission`
 audit for its client ID, retrieve that exact Alpaca order and reconcile its state
-before resuming. There is no automatic entry recovery command yet; do not reset a
-claim merely because a request timed out.
+before resuming. The entry worker and monitoring perform exact client-ID lookup recovery; neither
+404 nor elapsed time permits resubmission. Do not reset a claim after a timeout.
 
 Stop changes resolve the exact bracket and replacement chain, then read back the
 working price before updating storage or sending a ratchet alert. A pending/failed
@@ -262,3 +264,11 @@ replacement preserves the previous local stop and original thesis/risk. Review
 fills and minute reconciliation continue independently of Telegram response delivery.
 
 See [Alpaca contract review and integration coverage](alpaca-integration-review.md).
+
+## Schema 005 deployment and readiness
+
+Follow [durable execution operations](durable-execution.md). Commit/merge and back
+up before migration/restart. Verify `/readyz` and `copilot doctor --readiness`, plus
+existing read-only broker/Telegram verification. A running old process does not
+mean schema 005 code is deployed. The launchd watchdog still checks PID only;
+readiness should feed alerting rather than repeated blind restarts.

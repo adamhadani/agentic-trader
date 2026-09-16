@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -33,6 +33,7 @@ async def desk(alpaca_http, temp_db, app_config, request):
         send_message=AsyncMock(return_value=9),
     )
     copilot = TradingCopilot(app_config, db=db, broker=broker, notifier=notifier)
+    copilot.entry_service.macro_check = AsyncMock(return_value=None)
     sid = await db.record_signal(
         contract="SPY",
         direction="LONG",
@@ -58,8 +59,13 @@ async def track_existing(copilot, venue, sid):
 @pytest.mark.parametrize("desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
 async def test_entry_partial_full_close_and_performance_use_actual_fills(desk):
     copilot, venue, sid = desk
+    position = venue.position
+    venue.position = None
+    venue.take_profit["status"] = "held"
     success, _ = await copilot.execute_signal_by_id(sid)
     assert success
+    venue.position = position
+    venue.take_profit["status"] = "new"
     post = next(body for method, _, _, body in venue.calls if method == "POST")
     assert post["client_order_id"].startswith("entry-")
     assert post["type"] == "limit" and post["order_class"] == "bracket"
@@ -92,6 +98,7 @@ async def test_entry_partial_full_close_and_performance_use_actual_fills(desk):
         f"/v2/orders/{venue.stop['id']}",
     ]
     assert await copilot.monitor_positions() == 0
+    await copilot.outbox.drain()
     copilot.notifier.send_exit_alert.assert_awaited_once()
     audits = await copilot.db.get_audit_events()
     assert {
@@ -116,6 +123,7 @@ async def test_stop_confirmation_preserves_thesis_and_initial_risk(desk, replace
     assert row["stop_loss"] == (112.5 if replacement_status == "new" else 95)
     assert row["risk_dollars"] == 50 and row["raw_response"] == "Original thesis"
     assert [path for method, path, *_ in venue.calls if method == "PATCH"] == [f"/v2/orders/{venue.stop['id']}"]
+    await copilot.outbox.drain()
     assert copilot.notifier.send_trailing_stop_alert.await_count == count
     events = await copilot.db.get_audit_events(signal_id=sid)
     assert any(e["event_type"] == AuditEventType.STOP_REPLACEMENT and e["payload"]["phase"] == "result" for e in events)
@@ -140,6 +148,8 @@ async def test_ambiguous_entry_never_replays_and_halts_new_risk(desk, failure):
             return 504, {"code": 50410000, "message": "unknown outcome"}
 
     venue.override = fail
+    venue.position = None
+    venue.take_profit["status"] = "held"
     success, message = await copilot.execute_signal_by_id(sid)
     assert not success and "No automatic resubmission" in message
     assert len([1 for method, *_ in venue.calls if method == "POST"]) == 1
@@ -196,6 +206,7 @@ async def test_replaced_stop_fill_reconciles_by_exact_chain_once(desk):
     row = await copilot.db.get_signal_by_id(sid)
     assert row["realized_pnl"] == 15 and row["broker_exit_order_id"] == result.order_id
     assert row["exit_reason"] == "STOP_LOSS"
+    await copilot.outbox.drain()
     copilot.notifier.send_exit_alert.assert_awaited_once()
 
 
@@ -253,6 +264,7 @@ async def test_accepted_close_with_lost_ack_recovers_without_second_post(desk):
     await copilot.monitor_positions()
     assert (await copilot.db.get_signal_by_id(sid))["realized_pnl"] == 50
     assert len([1 for method, *_ in venue.calls if method == "POST"]) == 1
+    await copilot.outbox.drain()
     copilot.notifier.send_exit_alert.assert_awaited_once()
 
 
@@ -287,6 +299,7 @@ async def test_real_sdk_websocket_fill_wakes_rest_reconciliation(desk):
         await finished.wait()
 
     async def callback(event):
+        assert copilot.broker.trade_stream_connected
         await copilot.on_stream_trade_update(event)
         finished.set()
 
@@ -303,9 +316,11 @@ async def test_real_sdk_websocket_fill_wakes_rest_reconciliation(desk):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+    assert not copilot.broker.trade_stream_connected
     assert messages == ["authenticate", "listen"]
     assert (await copilot.db.get_signal_by_id(sid))["realized_pnl"] == 100
     await copilot.monitor_positions()
+    await copilot.outbox.drain()
     copilot.notifier.send_exit_alert.assert_awaited_once()
 
 
@@ -314,3 +329,78 @@ async def test_sdk_type_field_maps_protective_leg_ids(alpaca_http):
     result = await broker.submit_entry_order(OrderRequest(symbol="SPY", entry_price=100, stop_loss=95, take_profit=110))
     assert result.success
     assert result.bracket_orders == {"stop_loss_id": venue.stop["id"], "take_profit_id": venue.take_profit["id"]}
+
+
+@pytest.mark.parametrize(
+    "changed", ["closed-session", "session-ended", "stale-quote", "price-moved", "existing-position"]
+)
+async def test_entry_admission_uses_real_sdk_evidence_before_any_mutation(desk, changed):
+
+    copilot, venue, sid = desk
+    venue.take_profit["status"] = "held"
+    if changed != "existing-position":
+        venue.position = None
+    if changed == "closed-session":
+        venue.market_open = False
+    elif changed == "session-ended":
+        venue.session_closes_at = datetime.now(UTC) - timedelta(seconds=1)
+    elif changed == "stale-quote":
+        venue.quote_time -= timedelta(minutes=5)
+    elif changed == "price-moved":
+        venue.quote_price = 110
+    success, _ = await copilot.execute_signal_by_id(sid)
+    assert not success
+    assert not any(method in ("POST", "PATCH", "DELETE") for method, *_ in venue.calls)
+    assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.FAILED
+
+
+async def test_lost_entry_ack_recovers_client_id_once_through_sdk(desk, broker_order_payload):
+
+    copilot, venue, sid = desk
+    venue.position = None
+    venue.take_profit["status"] = "held"
+
+    def accept_then_lose_ack(method, path, query, body):
+        if method == "POST":
+            venue.entry = broker_order_payload(**body, status="accepted")
+            venue.orders[venue.entry["id"]] = venue.entry
+            return 504, {"code": 50410000, "message": "lost acknowledgement"}
+
+    venue.override = accept_then_lose_ack
+    assert not (await copilot.execute_signal_by_id(sid))[0]
+    assert await copilot.entry_service.recover() == 1
+    assert await copilot.entry_service.recover() == 0
+    assert (await copilot.db.get_signal_by_id(sid))["broker_order_id"] == venue.entry["id"]
+    assert len([1 for method, *_ in venue.calls if method == "POST"]) == 1
+    # Recovery deliberately preserves an explicit halt until operator review/resume.
+    assert await copilot.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
+async def test_sdk_partial_order_journal_rebuilds_without_inventing_closure(desk):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    venue.stop.update(status="partially_filled", filled_qty="3", filled_avg_price="95.00")
+    await copilot.monitor_positions()
+    await copilot.monitor_positions()
+    before = await copilot.db.workflows.order_views()
+    partial = next(o for o in before if o.order_id == venue.stop["id"])
+    assert partial.filled_quantity == "3" and partial.parent_order_id == venue.entry["id"]
+    await copilot.db.workflows.rebuild_order_views()
+    assert await copilot.db.workflows.order_views() == before
+    assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.EXECUTED
+
+
+async def test_failed_history_journal_does_not_prevent_exact_exit_reconciliation(desk):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    venue.take_profit.update(
+        status="filled", filled_qty="10", filled_avg_price="110", filled_at=datetime.now(UTC).isoformat()
+    )
+    venue.override = lambda method, path, query, body: (
+        (503, {"message": "history unavailable"}) if path == "/v2/orders" and query.get("status") == ["all"] else None
+    )
+    assert await copilot.monitor_positions() == 1
+    assert (await copilot.db.get_signal_by_id(sid))["realized_pnl"] == 100
+    health = await copilot.db.workflows.events(f"health/{copilot.readiness.run_id}/reconciliation", limit=1)
+    assert not health[0]["payload"]["success"]
+    assert "order_journal" in health[0]["payload"]["detail"]

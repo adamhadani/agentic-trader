@@ -15,14 +15,17 @@ from agentic_trader.constants import AuditEventType
 from agentic_trader.telemetry.collector import MetricsCollector
 
 
+notification_id: ContextVar[str | None] = ContextVar("notification_id", default=None)
+
+
 telegram_update_id: ContextVar[int | None] = ContextVar("telegram_update_id", default=None)
 
 
 class RetryingTelegramRequest(HTTPXRequest):
     """Retry Telegram API delivery, never the application handler producing it.
 
-    A lost response can cause duplicate Telegram messages on retry. Exactly-once
-    delivery requires an outbox and cannot be inferred from a transport timeout.
+    A lost response can cause duplicate Telegram messages on retry. The durable
+    outbox provides at-least-once delivery, not exactly-once Telegram delivery.
     getUpdates uses the separate ObservedPollingRequest and the SDK retry loop.
     """
 

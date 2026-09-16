@@ -40,3 +40,14 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   ambiguous: never retry POST/PATCH/DELETE automatically. Resolve stop replacements
   by exact IDs and confirm working price before DB updates; preserve thesis/risk.
   Review [Alpaca contracts and coverage](docs/alpaca-integration-review.md).
+
+- Entry authorization uses `EntryExecutionService` and the durable FIFO. Reserve
+  risk atomically; only a valid preflight token may commit `submitting`. Never
+  expire/replay a broker submission. Recovery looks up the original client ID.
+- Critical notification intents share the signal/exit/stop transaction. Outbox
+  retries delivery only; Telegram delivery is at least once. Preserve dead letters.
+- Order projections replay `domain_events`; do not fabricate fills or silently
+  reset signal IDs while journal/work exists. Read [durable workflows](docs/durable-execution.md).
+- `/readyz` and `doctor --readiness` are passive current-run freshness checks.
+  Keep TCP/WebSocket and PostgreSQL integration verification separate from the
+  optional in-process SDK transport used in restricted environments.

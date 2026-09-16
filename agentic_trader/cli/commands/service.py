@@ -9,9 +9,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import click
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import coro, get_copilot_and_config
+from agentic_trader.config import load_config
 from agentic_trader.constants import AuditEventType
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 from agentic_trader.runtime import runtime_identity
@@ -58,11 +60,16 @@ async def listen() -> None:
         return
     logger.info("Starting Telegram Bot listener... (press Ctrl+C to stop)")
     await copilot.notifier.start_polling()
+    workflow_task = asyncio.create_task(copilot.workflow_worker())
     try:
         while True:
             await asyncio.sleep(1)
     except KeyboardInterrupt, SystemExit, asyncio.CancelledError:
         logger.info("Stopping listener...")
+        copilot._shutdown_event.set()
+        workflow_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await workflow_task
         await copilot.notifier.stop_polling()
 
 
@@ -94,6 +101,8 @@ async def daemon(no_llm: bool) -> None:
     if copilot.metrics_server:
         await copilot.metrics_server.start()
 
+    copilot.readiness.started = True
+    workflow_task = asyncio.create_task(copilot.workflow_worker())
     lag_task = asyncio.create_task(monitor_event_loop(config.telemetry, copilot.metrics, copilot.db.record_audit))
 
     scheduler = AsyncIOScheduler(
@@ -188,6 +197,10 @@ async def daemon(no_llm: bool) -> None:
     except KeyboardInterrupt, SystemExit, asyncio.CancelledError:
         logger.info("Shutting down daemon...")
         copilot._shutdown_event.set()
+        copilot.readiness.started = False
+        workflow_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await workflow_task
         lag_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await lag_task
@@ -203,10 +216,22 @@ async def daemon(no_llm: bool) -> None:
         await copilot.notifier.stop_polling()
 
 
-@click.command("doctor", help="Run pre-flight system diagnostics and connectivity checks")
+@click.command("doctor", help="Run active diagnostics or inspect daemon freshness")
+@click.option("--readiness", is_flag=True, help="Read the daemon /readyz endpoint without active probes")
 @coro
-async def doctor() -> None:
+async def doctor(readiness: bool) -> None:
     """Run pre-flight system diagnostics and connectivity checks across all subsystems."""
+    if readiness:
+        config = load_config()
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                response = await client.get(f"http://127.0.0.1:{config.telemetry.metrics_port}/readyz")
+            click.echo(response.text)
+            if response.status_code != 200:
+                raise click.ClickException("Daemon is not ready; inspect component freshness above.")
+        except httpx.HTTPError as exc:
+            raise click.ClickException(f"Daemon readiness unavailable: {type(exc).__name__}") from exc
+        return
     _copilot, config = get_copilot_and_config()
     report = await run_diagnostics(config)
     click.echo(format_doctor_cli_output(report))

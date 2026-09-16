@@ -57,6 +57,10 @@ class MetricsCollector:
                 self._help[name] = help_text
             self._gauges[(name, lbl_tuple)] = float(value)
 
+    def get_gauge(self, name: str, labels: dict[str, str] | None = None) -> float | None:
+        with self._lock:
+            return self._gauges.get((name, tuple(sorted((labels or {}).items()))))
+
     def inc_counter(
         self,
         name: str,

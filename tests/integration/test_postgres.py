@@ -9,7 +9,9 @@ from uuid import uuid4
 import psycopg2
 import pytest
 
+from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import CloseRequestStatus
+from agentic_trader.execution.durable import WorkKind, WorkStatus
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
@@ -31,7 +33,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 2. Upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "004_close_requests"
+    assert get_current_revision(db_url) == "005_execution_workflows"
 
     # Verify tables in PostgreSQL
     with psycopg2.connect(sync_url) as conn, conn.cursor() as cur:
@@ -94,7 +96,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 5. Re-upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "004_close_requests"
+    assert get_current_revision(db_url) == "005_execution_workflows"
 
 
 @pytest.mark.asyncio
@@ -102,7 +104,7 @@ async def test_postgres_signal_database_operations(postgres_test_db: str):
     db_url = postgres_test_db
     db = SignalDatabase(db_url=db_url)
 
-    assert get_current_revision(db_url) == "004_close_requests"
+    assert get_current_revision(db_url) == "005_execution_workflows"
 
     sig_id = await db.record_signal(
         contract="NQ",
@@ -176,7 +178,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r3.returncode == 0
-    assert "004_close_requests" in r3.stdout
+    assert "005_execution_workflows" in r3.stdout
 
     # 4. Downgrade to 001_initial
     r4 = subprocess.run(
@@ -209,7 +211,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r6.returncode == 0
-    assert "004_close_requests" in r6.stdout
+    assert "005_execution_workflows" in r6.stdout
 
     # 7. History
     r7 = subprocess.run(
@@ -220,7 +222,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r7.returncode == 0
-    assert "004_close_requests" in r7.stdout
+    assert "005_execution_workflows" in r7.stdout
     assert "001_initial" in r7.stdout
 
     # 8. Clear
@@ -297,3 +299,98 @@ async def test_postgres_close_claim_is_exclusive_between_database_clients(postgr
     finally:
         await first.engine.dispose()
         await second.engine.dispose()
+
+
+async def test_postgres_entry_reservation_and_outbox_exclusivity(postgres_test_db, app_config):
+
+    app_config.portfolio.max_concurrent_positions = 1
+    first = SignalDatabase(db_url=postgres_test_db)
+    second = SignalDatabase(db_url=postgres_test_db)
+    try:
+        requests = []
+        for symbol in ("SPY", "QQQ"):
+            sid = await first.record_signal(
+                contract=symbol,
+                strategy="race",
+                direction="LONG",
+                entry_price=100,
+                stop_loss=95,
+                take_profit=110,
+                risk_dollars=50,
+                quantity=10,
+                asset_class="EQUITY",
+                notional_value=1000,
+            )
+            requests.append(
+                OrderRequest(
+                    signal_id=sid,
+                    symbol=symbol,
+                    asset_class="EQUITY",
+                    direction="LONG",
+                    quantity=10,
+                    entry_price=100,
+                    stop_loss=95,
+                    take_profit=110,
+                )
+            )
+        results = await asyncio.gather(
+            first.workflows.enqueue_entry(requests[0], app_config),
+            second.workflows.enqueue_entry(requests[1], app_config),
+        )
+        assert sum(item is not None for item, _ in results) == 1
+        claims = await asyncio.gather(
+            first.workflows.claim_entry(lease_seconds=60), second.workflows.claim_entry(lease_seconds=60)
+        )
+        assert sum(item is not None for item in claims) == 1
+        await first.workflows.enqueue_notification("one", "message", {"text": "test"})
+        notices = await asyncio.gather(
+            first.workflows.claim_notification(max_attempts=8, lease_seconds=60),
+            second.workflows.claim_notification(max_attempts=8, lease_seconds=60),
+        )
+        assert sum(item is not None for item in notices) == 1
+        assert (await first.workflows.list_work(WorkKind.NOTIFICATION))[0].status == WorkStatus.CHECKING
+    finally:
+        await first.engine.dispose()
+        await second.engine.dispose()
+
+
+async def test_postgres_workflow_upgrade_preserves_existing_trading_state(postgres_test_db):
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        signal_id = await db.record_signal(
+            contract="IWM",
+            strategy="existing",
+            direction="SHORT",
+            entry_price=200,
+            stop_loss=205,
+            take_profit=190,
+            risk_dollars=50,
+            quantity=10,
+            asset_class="EQUITY",
+        )
+        await db.update_signal_execution(signal_id, "existing-entry")
+        await db.set_state("trading_halted", "true")
+        claimed, _ = await db.claim_close_request(
+            {"id": str(uuid4()), "symbol": "IWM", "direction": "SHORT", "quantity": 10, "signal_id": signal_id}
+        )
+        assert claimed
+    finally:
+        await db.engine.dispose()
+    # Rehearse the installed schema's upgrade with existing positions, claims and audits.
+    downgrade_migrations("004_close_requests", postgres_test_db)
+
+    def snapshot():
+        with psycopg2.connect(to_sync_url(postgres_test_db)) as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 'signals', row_to_json(t)::text FROM signals t UNION ALL "
+                "SELECT 'close_requests', row_to_json(t)::text FROM close_requests t UNION ALL "
+                "SELECT 'audit_events', row_to_json(t)::text FROM audit_events t UNION ALL "
+                "SELECT 'system_state', row_to_json(t)::text FROM system_state t ORDER BY 1, 2"
+            )
+            return cursor.fetchall()
+
+    before = snapshot()
+    assert before
+    run_migrations_head(postgres_test_db)
+    assert snapshot() == before
+    assert get_current_revision(postgres_test_db) == "005_execution_workflows"
