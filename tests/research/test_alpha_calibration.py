@@ -112,6 +112,12 @@ def test_small_calibration_is_reproducible_and_never_claims_qualification():
     assert result == run_calibration(plan)
     assert result["synthetic_only"] and not result["authorizes_promotion"]
     assert result["protocol"] == plan.to_dict()
+    # Paired effects share data innovations, while resampling/assessment gets an
+    # independent child stream. Reusing a data RNG seed can bias a size study.
+    streams = result["random_streams"]
+    assert len(streams) == plan.seeds
+    assert len(set(streams[0]["seeds"].values())) == 4
+    assert streams[0]["seeds"]["panel_resampling"] == result["family_controls"][0]["test"]["seed"]
     assert result["strategy_controls"] and result["family_controls"]
     assert all(0 <= row["acceptance_rate"] <= 1 for row in result["strategy_summary"])
     assert all(

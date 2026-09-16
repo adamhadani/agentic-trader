@@ -26,7 +26,7 @@ from agentic_trader.research.alpha.promotion import assess_statistical_evidence
 from agentic_trader.research.alpha.validation import ValidationPolicy
 
 
-CALIBRATION_SCHEMA = 1
+CALIBRATION_SCHEMA = 2
 CONFIDENCE_LEVEL = 0.95
 PANEL_OBSERVATIONS = 504
 PANEL_CANDIDATES = 8
@@ -38,6 +38,7 @@ PULSE_EFFECTS = (0.0, 0.004, 0.02)
 PULSE_INTERVALS = (8, 20)
 SERIAL_DEPENDENCE = (0.0, 0.5)
 PANEL_EFFECTS = (0.0, 0.15)
+RANDOM_STREAMS = ("strategy_data", "strategy_assessment", "panel_data", "panel_resampling")
 
 
 def _integer(value, minimum, maximum):
@@ -93,6 +94,7 @@ class CalibrationPlan:
             "serial_dependence": list(SERIAL_DEPENDENCE),
             "panel_observations": PANEL_OBSERVATIONS,
             "panel_candidates": PANEL_CANDIDATES,
+            "random_streams": list(RANDOM_STREAMS),
             "validation_policy": asdict(ValidationPolicy()),
         }
 
@@ -222,11 +224,21 @@ def run_calibration(plan: CalibrationPlan) -> dict:
     catalog = AlphaCatalog([definition])
     controls = []
     family_controls = []
+    random_streams = []
     for seed in range(plan.seed, plan.seed + plan.seeds):
+        # Independent child streams avoid coupling synthetic observations with
+        # their resampling indices. Effects/rhos deliberately keep paired draws.
+        streams = {
+            name: int(child.generate_state(1)[0])
+            for name, child in zip(RANDOM_STREAMS, np.random.SeedSequence(seed).spawn(len(RANDOM_STREAMS)), strict=True)
+        }
+        random_streams.append({"replicate_seed": seed, "seeds": streams})
         for interval in PULSE_INTERVALS:
             for effect in PULSE_EFFECTS:
-                bars = synthetic_pulse_bars(seed=seed, observations=plan.observations, effect=effect, interval=interval)
-                miner = AlphaMiner(seed=seed, catalog=catalog, policy=policy)
+                bars = synthetic_pulse_bars(
+                    seed=streams["strategy_data"], observations=plan.observations, effect=effect, interval=interval
+                )
+                miner = AlphaMiner(seed=streams["strategy_assessment"], catalog=catalog, policy=policy)
                 discovered = miner.mine(bars, iterations=0, timeframe="1d", symbol="SYNTH")
                 run = miner.last_run
                 assessment = assess_statistical_evidence(
@@ -252,7 +264,7 @@ def run_calibration(plan: CalibrationPlan) -> dict:
                     }
                 )
         # Paired data across effect sizes: only one candidate receives an edge.
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(streams["panel_data"])
         innovations = 0.5 * rng.normal(size=(PANEL_OBSERVATIONS, 1)) + math.sqrt(0.75) * rng.normal(
             size=(PANEL_OBSERVATIONS, PANEL_CANDIDATES)
         )
@@ -270,7 +282,10 @@ def run_calibration(plan: CalibrationPlan) -> dict:
                     columns=[f"candidate_{i}" for i in range(PANEL_CANDIDATES)],
                 )
                 result = joint_block_max_test(
-                    frame, samples=plan.bootstrap_samples, block_length=plan.block_length, seed=seed
+                    frame,
+                    samples=plan.bootstrap_samples,
+                    block_length=plan.block_length,
+                    seed=streams["panel_resampling"],
                 )
                 family_controls.append(
                     {
@@ -315,6 +330,7 @@ def run_calibration(plan: CalibrationPlan) -> dict:
         "authorizes_promotion": False,
         "protocol": plan.to_dict(),
         "protocol_id": plan.identity,
+        "random_streams": random_streams,
         "strategy_controls": controls,
         "strategy_summary": summaries,
         "family_controls": family_controls,

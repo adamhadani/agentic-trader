@@ -28,7 +28,7 @@ also recognize controlled positive cases and quantify its statistical power.
 
 | ID | Status | Milestone / acceptance boundary |
 | --- | --- | --- |
-| A1a | In progress | Calibration instruments and permanent control/reference tests; diagnostic outputs cannot authorize promotion. |
+| A1a | Implemented — [PR #35](https://github.com/adamhadani/agentic-trader/pull/35) | Calibration instruments and permanent control/reference tests; diagnostic outputs cannot authorize promotion. [Pilot evidence](alpha-calibration-2026-09-16.md). |
 | A1b | Planned | Predeclared statistical-power/false-discovery study; review dependence and selection treatment before choosing any replacement gate. |
 | A2 | Planned; intraday promotion blocked | Session-correct fine-bar execution replay and research/live parity. |
 | A3 | Planned; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
@@ -41,6 +41,14 @@ record dependencies here instead of creating a second competing roadmap. Update 
 row with the implementing PR, reproducible evidence and any remaining activation gate.
 
 ### A1 — Calibration before more search
+
+A1a now provides `alpha calibrate`, shared pure statistical assessment, independent
+references and fail-closed invalid-evidence checks. The 32-seed pilot detected dense
+positive controls, rejected null strategy controls and exposed limited sparse-control
+power. PR review required separating data and resampling random streams; retain both
+the initial and corrected study evidence. Neither is approval of a 5% error-control
+claim. **Next: A1b**, with fresh scenarios, block-length sensitivity,
+established method comparisons and adaptive-search replay before any gate change.
 
 The September 16 campaign found zero qualifying candidates among 3,648 trials.
 Another 1,368 trials exercised 24 nested walk-forward folds. Artificial dense edges
@@ -139,5 +147,6 @@ Portfolio execution cannot bypass those ownership/protection constraints.
 ## References
 
 - [DSR, including independent-trial treatment in Appendix 3](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf).
+- [ARCH multiple-comparison studies and established SPA/StepM procedures](https://bashtage.github.io/arch/multiple-comparison/multiple-comparison_examples.html).
 - [AlphaGen: optimizing complementary collections](https://arxiv.org/abs/2306.12964).
 - [Alpaca historical bar adjustments](https://docs.alpaca.markets/us/reference/stockbars).
