@@ -130,10 +130,7 @@ async def test_copilot_execute_signal(tmp_path):
     db = SignalDatabase(str(db_file))
     await db.init_db()
 
-    config = AppConfig(
-        db_path=str(db_file),
-        execution_mode="paper",
-    )
+    config = load_config().model_copy(update={"db_path": str(db_file), "execution_mode": "paper"})
     copilot = TradingCopilot(config, db=db)
     copilot.data_fetcher = MagicMock()
     copilot.data_fetcher.fetch_latest_price.return_value = 5812.50
@@ -175,10 +172,7 @@ async def test_copilot_execute_signal_exposure_limit(tmp_path):
     db = SignalDatabase(str(db_file))
     await db.init_db()
 
-    config = AppConfig(
-        db_path=str(db_file),
-        execution_mode="paper",
-    )
+    config = load_config().model_copy(update={"db_path": str(db_file), "execution_mode": "paper"})
     # Set maximum notional exposure lower than signal notional
     config.portfolio.max_notional_exposure = 20000.0
 

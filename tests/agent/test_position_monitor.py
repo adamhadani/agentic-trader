@@ -52,11 +52,11 @@ async def test_db_active_positions_and_close(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_monitor_positions_take_profit_and_stop_loss(temp_db):
+async def test_monitor_positions_take_profit_and_stop_loss(temp_db, mock_notifier):
     config = load_config()
     config.db_path = temp_db.db_path
     config.execution_mode = "paper"
-    copilot = TradingCopilot(config)
+    copilot = TradingCopilot(config, notifier=mock_notifier)
     copilot.notifier.send_exit_alert = AsyncMock()
 
     # 1. Long position that hits Take Profit
@@ -118,15 +118,16 @@ async def test_monitor_positions_take_profit_and_stop_loss(temp_db):
     # PnL = (20000 - 20110) * 2.0 = -110 * 2 = -220.0
     assert mnq_sig["realized_pnl"] == -220.0
 
+    await copilot.outbox.drain()
     assert copilot.notifier.send_exit_alert.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_close_position_manual(temp_db):
+async def test_close_position_manual(temp_db, mock_notifier):
     config = load_config()
     config.db_path = temp_db.db_path
     config.execution_mode = "paper"
-    copilot = TradingCopilot(config)
+    copilot = TradingCopilot(config, notifier=mock_notifier)
     copilot.notifier.send_exit_alert = AsyncMock()
 
     sig_id = await temp_db.record_signal(

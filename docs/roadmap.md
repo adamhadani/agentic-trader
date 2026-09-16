@@ -28,8 +28,10 @@ HTTP/WebSocket and PostgreSQL integration coverage.
 - Isolated dry scans and test notifications; centralized runtime/audit/state vocabulary
   and configurable stream retry policy; refreshed operating/development documentation.
 
-Priority next work: atomic execution reservations and approval-time risk rechecks;
-a complete fill ledger for partial/replaced/external orders; freshness-based readiness;
+Schema 005 implements reservations/admission, a cumulative order event journal,
+transactional notifications and readiness, with real SDK transport and PostgreSQL
+integration coverage. Each deployment requires matching-run readiness verification.
+Priority next work: complete partial/external account accounting, readiness alerting;
 confirmed trailing-stop parity; nonblocking data access and timeframe/risk integration.
 
 ## Strategic Initiatives Overview

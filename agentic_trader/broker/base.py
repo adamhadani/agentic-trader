@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from agentic_trader.execution.durable import OrderObservation
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -134,6 +138,7 @@ class ReconciliationEvent(BaseModel):
                     orders strictly oppose the position direction (sell closes long, buy closes short).
     """
 
+    observation: dict[str, Any] | None = None
     signal_id: int
     symbol: str = Field(default="")
     contract: str | None = Field(default=None)
@@ -190,6 +195,30 @@ class BaseBroker(ABC):
     @abstractmethod
     async def get_positions(self) -> list[BrokerPosition]:
         """Fetch active positions currently open at the broker."""
+
+    @property
+    def trade_stream_connected(self) -> bool:
+        return False
+
+    @property
+    def supports_order_journal(self) -> bool:
+        return False
+
+    async def entry_market_context(self, request: OrderRequest) -> dict[str, Any]:
+        """Fresh admission evidence; unsupported external adapters fail closed."""
+        if self.simulated_execution:
+            return {"positions": [], "orders": [], "simulated": True}
+        raise NotImplementedError("This broker has no fresh entry-admission contract")
+
+    async def find_entry_order(self, request: OrderRequest) -> OrderResult | None:
+        """Exact client-ID lookup only; absence never authorizes another POST."""
+        raise NotImplementedError("This broker has no entry recovery contract")
+
+    async def observe_orders(self, order_ids: list[str]) -> list[OrderObservation]:
+        """Read cumulative order evidence, including partial fills and replacements."""
+        if self.simulated_execution:
+            return []
+        raise NotImplementedError("This broker has no order-journal contract")
 
     async def get_account_balance(self) -> dict[str, float]:
         """Fetch current cash balance and portfolio value if supported by broker."""

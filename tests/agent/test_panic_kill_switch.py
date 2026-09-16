@@ -10,7 +10,7 @@ from agentic_trader.broker.base import BaseBroker
 from agentic_trader.broker.paper import PaperBroker
 from agentic_trader.broker.redundant import RedundantBroker
 from agentic_trader.broker.tradovate import TradovateBroker
-from agentic_trader.config import AppConfig
+from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import ExitReason, SignalStatus
 from agentic_trader.presentation.formatters import (
     PanicReportView,
@@ -30,13 +30,16 @@ def test_db(tmp_path):
 
 @pytest.fixture
 def copilot_fixture(test_db):
-    config = AppConfig()
+    config = load_config()
+    config.sizing.max_trade_notional_cap = 40000
     config.portfolio.cash = 100_000.0
     config.portfolio.max_notional_exposure = 200_000.0
     config.execution_mode = "paper"
     metrics = MetricsCollector()
     copilot = TradingCopilot(config=config, db=test_db)
     copilot.metrics = metrics
+    copilot.notifier.is_configured = MagicMock(return_value=True)
+    copilot.notifier.send_exit_alert = AsyncMock(return_value=123)
     copilot.notifier.send_message = AsyncMock(return_value=True)  # type: ignore[method-assign]
     return copilot
 
@@ -208,6 +211,7 @@ async def test_emergency_panic_halt_and_resume_flow(copilot_fixture, test_db):
     assert copilot.metrics._gauges[("copilot_trading_halted", ())] == 1.0
 
     # Verify Telegram notification was dispatched
+    await copilot.outbox.drain()
     copilot.notifier.send_message.assert_called()
 
     # 3. Verify scan and execution are blocked while halted

@@ -51,7 +51,7 @@ def test_cli_root_help(runner: CliRunner):
         ("close", "--price"),
         ("panic", "--confirm"),
         ("resume", "--help"),
-        ("doctor", "pre-flight"),
+        ("doctor", "daemon freshness"),
         ("test-alert", "--help"),
         ("gex", "--expirations"),
         ("pairs", "--z-entry"),

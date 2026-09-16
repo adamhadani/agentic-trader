@@ -32,9 +32,18 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SignalStatus,
 )
+from agentic_trader.execution.durable import EventKind, NotificationKind
 from agentic_trader.runtime import RUN_ID, validate_test_database
 from agentic_trader.storage.migrations import run_migrations_head
-from agentic_trader.storage.models import AuditEventRecord, CloseRequestRecord, SignalRecord, SystemStateRecord
+from agentic_trader.storage.models import (
+    AuditEventRecord,
+    CloseRequestRecord,
+    DomainEventRecord,
+    SignalRecord,
+    SystemStateRecord,
+    WorkItemRecord,
+)
+from agentic_trader.storage.workflow import WorkflowStore
 
 
 logger = logging.getLogger(__name__)
@@ -98,6 +107,7 @@ class SignalDatabase:
 
         self.engine: AsyncEngine = create_async_engine(self.db_url, **engine_kwargs)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
+        self.workflows = WorkflowStore(self)
 
         # Synchronously initialize tables and perform migrations
         if self.db_path or self.db_url:
@@ -158,6 +168,22 @@ class SignalDatabase:
             detail="",
         )
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
+            submitting = await session.scalar(
+                select(SignalRecord.id)
+                .where(
+                    *self._scope(),
+                    SignalRecord.contract == values["symbol"],
+                    SignalRecord.status == SignalStatus.SUBMITTING,
+                )
+                .limit(1)
+            )
+            if submitting is not None:
+                return False, {
+                    **values,
+                    "status": CloseRequestStatus.UNKNOWN,
+                    "detail": "Entry authorization is unresolved on this symbol; reconcile it before closing.",
+                }
             session.add(record)
             session.add(
                 self._audit(
@@ -346,9 +372,11 @@ class SignalDatabase:
         status: str = SignalStatus.PENDING,
         asset_class: str = AssetClass.FUTURES,
         quantity: float = 1.0,
+        notification: dict[str, Any] | None = None,
     ) -> int:
         """Insert a new trade signal record into the database."""
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
             rec = SignalRecord(
                 environment=self.environment,
                 execution_mode=self.execution_mode,
@@ -371,6 +399,10 @@ class SignalDatabase:
             session.add(rec)
             await session.flush()
             session.add(self._audit(AuditEventType.SIGNAL_CREATED, rec.id, rec.to_dict()))
+            if notification is not None:
+                await self.workflows.add_notification(
+                    session, f"signal/{rec.id}/created", NotificationKind.SIGNAL, {**notification, "signal_id": rec.id}
+                )
             await session.commit()
             return rec.id
 
@@ -386,19 +418,16 @@ class SignalDatabase:
             await session.execute(stmt)
             await session.commit()
 
-    async def claim_signal(self, signal_id: int) -> bool:
-        """Atomically claim a pending signal before any broker submission."""
-        async with self.session_factory() as session:
+    async def dismiss_signal(self, signal_id: int) -> bool:
+        """A stale Telegram card cannot overwrite a reserved or executed trade."""
+        async with self.session_factory() as session, session.begin():
+            await self.workflows.lock(session)
             result = await session.execute(
                 update(SignalRecord)
                 .where(*self._scope(), SignalRecord.id == signal_id, SignalRecord.status == SignalStatus.PENDING)
-                .values(status=SignalStatus.SUBMITTING)
+                .values(status=SignalStatus.DISMISSED)
             )
-            claimed = bool(getattr(result, "rowcount", 0) > 0)
-            if claimed:
-                session.add(self._audit(AuditEventType.EXECUTION_CLAIMED, signal_id, {}))
-            await session.commit()
-            return claimed
+            return bool(getattr(result, "rowcount", 0))
 
     async def update_signal_status(self, signal_id: int, status: str):
         """Update signal status (e.g. SUBMITTING, EXECUTED, DISMISSED, FAILED)."""
@@ -525,10 +554,25 @@ class SignalDatabase:
         status: str | SignalStatus,
         broker_exit_order_id: str | None = None,
         exit_timestamp: datetime | None = None,
+        notification: dict[str, Any] | None = None,
     ) -> bool:
         """Close an active position and record exit metrics."""
         now_utc = datetime.now(UTC)
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
+            before = await session.scalar(select(SignalRecord).where(*self._scope(), SignalRecord.id == signal_id))
+            if notification is None and before is not None:
+                notification = {
+                    "contract": before.contract,
+                    "direction": before.direction,
+                    "exit_reason": str(exit_reason),
+                    "entry_price": before.entry_price,
+                    "exit_price": exit_price,
+                    "realized_pnl": realized_pnl,
+                    "strategy": before.strategy,
+                    "quantity": before.quantity,
+                    "asset_class": before.asset_class,
+                }
             stmt = (
                 update(SignalRecord)
                 .where(*self._scope())
@@ -548,6 +592,23 @@ class SignalDatabase:
             res = await session.execute(stmt)
             rowcount = getattr(res, "rowcount", 0)
             if rowcount > 0:
+                await self.workflows.append(
+                    session,
+                    stream=f"signal/{signal_id}",
+                    kind=EventKind.POSITION_CLOSED,
+                    key=f"signal/{signal_id}/closed",
+                    payload={
+                        "exit_price": exit_price,
+                        "exit_reason": str(exit_reason),
+                        "realized_pnl": realized_pnl,
+                        "broker_exit_order_id": broker_exit_order_id,
+                        "exit_timestamp": exit_timestamp or now_utc,
+                    },
+                )
+                if notification is not None:
+                    await self.workflows.add_notification(
+                        session, f"signal/{signal_id}/closed", NotificationKind.EXIT, notification
+                    )
                 session.add(
                     self._audit(
                         AuditEventType.POSITION_CLOSED,
@@ -564,9 +625,12 @@ class SignalDatabase:
             await session.commit()
             return bool(rowcount > 0)
 
-    async def update_position_stop(self, signal_id: int, new_stop: float, *, reason: str) -> bool:
+    async def update_position_stop(
+        self, signal_id: int, new_stop: float, *, reason: str, notification: dict[str, Any] | None = None
+    ) -> bool:
         """Persist a confirmed ratchet without overwriting the original trade thesis."""
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
             stmt = (
                 update(SignalRecord)
                 .where(*self._scope())
@@ -583,6 +647,10 @@ class SignalDatabase:
             res = await session.execute(stmt)
             changed = bool(getattr(res, "rowcount", 0) > 0)
             if changed:
+                if notification is not None:
+                    await self.workflows.add_notification(
+                        session, f"signal/{signal_id}/stop/{new_stop}", NotificationKind.STOP, notification
+                    )
                 session.add(
                     self._audit(AuditEventType.STOP_UPDATED, signal_id, {"stop_loss": new_stop, "reason": reason})
                 )
@@ -648,6 +716,7 @@ class SignalDatabase:
     async def set_state(self, key: str, value: str) -> None:
         """Insert or update system state key-value pair."""
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
             stmt = select(SystemStateRecord).where(SystemStateRecord.key == key)
             res = await session.execute(stmt)
             existing = res.scalar_one_or_none()
@@ -662,6 +731,13 @@ class SignalDatabase:
     async def clear_all_signals(self) -> int:
         """Clear all signal and position history from the database, resetting autoincrement sequence."""
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
+            if await session.scalar(select(WorkItemRecord.id).limit(1)) or await session.scalar(
+                select(DomainEventRecord.id).limit(1)
+            ):
+                raise ValueError(
+                    "Cannot reset signal identities with an execution journal or queued work; use quarantine."
+                )
             count_res = await session.execute(select(func.count()).select_from(SignalRecord))
             total_records = count_res.scalar() or 0
             await session.execute(delete(SignalRecord))

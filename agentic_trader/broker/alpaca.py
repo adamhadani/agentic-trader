@@ -4,12 +4,16 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import Any
 from uuid import uuid4
 
+from alpaca.common.enums import Sort
 from alpaca.common.exceptions import APIError
+from alpaca.data.enums import DataFeed
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestTradeRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     OrderClass as AlpacaOrderClass,
@@ -50,12 +54,13 @@ from agentic_trader.constants import (
     ExitReason,
     OrderType,
 )
+from agentic_trader.execution.durable import OrderObservation
 
 
 logger = logging.getLogger(__name__)
 
 
-class BoundedTradingClient(TradingClient):
+class BoundedTransport:
     """SDK transport boundary: bounded sockets and no automatic mutation replay.
 
     alpaca-py exposes neither timeout nor retry options on TradingClient. Keep
@@ -63,14 +68,24 @@ class BoundedTradingClient(TradingClient):
     GET retains the SDK's bounded rate-limit/server retry policy.
     """
 
+    request_timeout: float
+
+    def _one_request(self, method: str, url: str, opts: dict, retry: int) -> dict:
+        return super()._one_request(  # type: ignore[misc]
+            method, url, {**opts, "timeout": self.request_timeout}, retry if method.upper() == "GET" else 0
+        )
+
+
+class BoundedTradingClient(BoundedTransport, TradingClient):
     def __init__(self, *args: Any, request_timeout: float, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.request_timeout = request_timeout
 
-    def _one_request(self, method: str, url: str, opts: dict, retry: int) -> dict:
-        return super()._one_request(
-            method, url, {**opts, "timeout": self.request_timeout}, retry if method.upper() == "GET" else 0
-        )
+
+class BoundedStockDataClient(BoundedTransport, StockHistoricalDataClient):
+    def __init__(self, *args: Any, request_timeout: float, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.request_timeout = request_timeout
 
 
 class AlpacaBroker(BaseBroker):
@@ -80,7 +95,13 @@ class AlpacaBroker(BaseBroker):
     Works with both Alpaca Paper Trading and Live Trading accounts.
     """
 
-    def __init__(self, config: AppConfig, client: TradingClient | None = None):
+    def __init__(
+        self,
+        config: AppConfig,
+        client: TradingClient | None = None,
+        *,
+        data_client: StockHistoricalDataClient | None = None,
+    ):
         self.config = config
         self.is_paper = getattr(config, "alpaca_paper", True)
         self.api_key = getattr(config, "alpaca_api_key", None)
@@ -93,6 +114,7 @@ class AlpacaBroker(BaseBroker):
 
         if self.base_url and "paper" in self.base_url.lower():
             self.is_paper = True
+        self.data_client = data_client
         self.client: TradingClient | None = client
         self.reconciliation_evidence: list[dict[str, Any]] = []
         self._connected: bool = False
@@ -263,6 +285,184 @@ class AlpacaBroker(BaseBroker):
         except Exception as e:
             logger.exception("Exception during Alpaca order submission")
             return OrderResult(success=False, error_message=str(e), submission_uncertain=True)
+
+    @property
+    def trade_stream_connected(self) -> bool:
+        """SDK connection/authentication plus WebSocket liveness, not fill frequency."""
+        stream = self._trade_stream
+        return bool(stream and stream._running and stream._ws and not stream._ws.closed)
+
+    @property
+    def supports_order_journal(self) -> bool:
+        return True
+
+    def _observation(self, order: Any, *, parent: str | None = None, source: str = "rest") -> OrderObservation:
+        def optional(name: str) -> str | None:
+            value = self._field(order, name)
+            return str(value) if value is not None else None
+
+        return OrderObservation(
+            order_id=str(self._field(order, "id")),
+            client_order_id=str(self._field(order, "client_order_id")),
+            symbol=str(self._field(order, "symbol")),
+            side=self._enum(order, "side"),
+            status=self._enum(order, "status"),
+            quantity=str(self._field(order, "qty") or "0"),
+            filled_quantity=str(self._field(order, "filled_qty") or "0"),
+            average_fill_price=optional("filled_avg_price"),
+            limit_price=optional("limit_price"),
+            stop_price=optional("stop_price"),
+            order_type=self._enum(order, "type") or self._enum(order, "order_type"),
+            order_class=self._enum(order, "order_class"),
+            updated_at=self._field(order, "updated_at"),
+            submitted_at=self._field(order, "submitted_at"),
+            filled_at=self._field(order, "filled_at"),
+            replaces=optional("replaces"),
+            replaced_by=optional("replaced_by"),
+            parent_order_id=parent,
+            source=source,
+        )
+
+    async def entry_market_context(self, request: OrderRequest) -> dict[str, Any]:
+        if not self.client and not await self.connect():
+            raise RuntimeError("Alpaca entry preflight connection failed")
+        assert self.client is not None
+        clock = await asyncio.to_thread(self.client.get_clock)
+        if not self._field(clock, "is_open"):
+            raise ValueError("Equity entry session is closed; request a new approval during market hours")
+        if request.asset_class != AssetClass.EQUITY:
+            raise ValueError("Fresh entry admission currently supports Alpaca equities only")
+        if self.data_client is None:
+            self.data_client = BoundedStockDataClient(
+                self.api_key, self.api_secret, request_timeout=self.config.execution.broker_request_timeout_seconds
+            )
+        trades = await asyncio.to_thread(
+            self.data_client.get_stock_latest_trade,
+            StockLatestTradeRequest(symbol_or_symbols=request.symbol, feed=DataFeed(self.config.alpaca_data_feed)),
+        )
+        trade = trades[request.symbol]
+        orders = await asyncio.to_thread(
+            self.client.get_orders,
+            GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True, limit=ALPACA_MAX_ORDERS_PER_PAGE),
+        )
+        if len(orders) >= ALPACA_MAX_ORDERS_PER_PAGE:
+            raise ValueError("Open-order snapshot is truncated; entry refused")
+        positions = await self.get_positions()
+        return {
+            "positions": [p.model_dump(mode="json") for p in positions],
+            "orders": [self._observation(o).model_dump(mode="json") for o in orders],
+            "price": float(trade.price),
+            "quote_timestamp": trade.timestamp,
+            "session_closes_at": self._field(clock, "next_close"),
+            "observed_at": datetime.now(UTC),
+            "simulated": False,
+        }
+
+    async def find_entry_order(self, request: OrderRequest) -> OrderResult | None:
+        if not self.client and not await self.connect():
+            raise RuntimeError("Alpaca entry lookup connection failed")
+        assert self.client is not None
+        if not request.client_order_id:
+            raise ValueError("Entry lookup requires a persisted client ID")
+        try:
+            order = await asyncio.to_thread(self.client.get_order_by_client_id, request.client_order_id)
+        except APIError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if (
+            str(self._field(order, "client_order_id")) != request.client_order_id
+            or self._field(order, "symbol") != request.symbol
+            or self._enum(order, "side") != str(request.side).lower()
+            or not math.isclose(
+                float(self._field(order, "qty")), request.quantity, rel_tol=0, abs_tol=BROKER_QUANTITY_TOLERANCE
+            )
+        ):
+            raise ValueError("Recovered entry does not match its persisted authorization")
+        status = self._enum(order, "status")
+        failed = (
+            status
+            in {AlpacaOrderStatus.CANCELED.value, AlpacaOrderStatus.REJECTED.value, AlpacaOrderStatus.EXPIRED.value}
+            and float(self._field(order, "filled_qty") or 0) == 0
+        )
+        return OrderResult(
+            success=not failed,
+            order_id=str(self._field(order, "id")),
+            status=status,
+            fill_price=float(self._field(order, "filled_avg_price"))
+            if self._field(order, "filled_avg_price")
+            else None,
+            filled_quantity=float(self._field(order, "filled_qty") or 0),
+            fill_timestamp=self._filled_at(order),
+            error_message=f"Broker entry ended {status} without a fill" if failed else None,
+        )
+
+    async def observe_orders(self, order_ids: list[str]) -> list[OrderObservation]:
+        if not self.client and not await self.connect():
+            raise RuntimeError("Alpaca order journal connection failed")
+        assert self.client is not None
+        observations: dict[str, OrderObservation] = {}
+
+        def collect(order: Any, parent: str | None = None) -> None:
+            obs = self._observation(order, parent=parent)
+            observations[obs.order_id] = obs
+            for leg in self._field(order, "legs") or []:
+                collect(leg, obs.order_id)
+
+        after = datetime.now(UTC) - timedelta(days=self.config.execution.journal_history_days)
+        for _ in range(self.config.execution.journal_max_pages):
+            orders = await asyncio.to_thread(
+                self.client.get_orders,
+                GetOrdersRequest(
+                    status=QueryOrderStatus.ALL,
+                    nested=True,
+                    after=after,
+                    direction=Sort.ASC,
+                    limit=ALPACA_MAX_ORDERS_PER_PAGE,
+                ),
+            )
+            if not isinstance(orders, list):
+                raise TypeError("Expected typed SDK order list")
+            for order in orders:
+                collect(order)
+            if len(orders) < ALPACA_MAX_ORDERS_PER_PAGE:
+                break
+            cursor = self._field(orders[-1], "submitted_at")
+            if cursor is None or cursor <= after:
+                raise ValueError("Order history pagination did not advance; journal incomplete")
+            # Refuse a saturated timestamp rather than silently skip same-time orders.
+            if self._field(orders[0], "submitted_at") == cursor:
+                raise ValueError("Order history page has an ambiguous timestamp boundary")
+            after = cursor - timedelta(microseconds=1)
+        else:
+            raise ValueError("Order journal page limit reached; journal incomplete")
+        open_orders = await asyncio.to_thread(
+            self.client.get_orders,
+            GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True, limit=ALPACA_MAX_ORDERS_PER_PAGE),
+        )
+        if len(open_orders) >= ALPACA_MAX_ORDERS_PER_PAGE:
+            raise ValueError("Open-order journal snapshot is truncated")
+        if not isinstance(open_orders, list):
+            raise TypeError("Expected typed SDK open-order list")
+        for order in open_orders:
+            collect(order)
+        pending = list(dict.fromkeys([*order_ids, *(o.replaced_by for o in observations.values() if o.replaced_by)]))
+        seen: set[str] = set()
+        while pending:
+            order_id = pending.pop()
+            if order_id in seen:
+                continue
+            if len(seen) >= self.config.execution.journal_max_pages * ALPACA_MAX_ORDERS_PER_PAGE:
+                raise ValueError("Order reference traversal limit reached")
+            seen.add(order_id)
+            exact_order = await asyncio.to_thread(
+                self.client.get_order_by_id, order_id, GetOrderByIdRequest(nested=True)
+            )
+            collect(exact_order)
+            pending.extend(
+                obs.replaced_by for obs in observations.values() if obs.replaced_by and obs.replaced_by not in seen
+            )
+        return list(observations.values())
 
     async def close_position(
         self,
@@ -811,7 +1011,7 @@ class AlpacaBroker(BaseBroker):
             try:
                 event_type = getattr(data, "event", None) or (data.get("event") if isinstance(data, dict) else "")
                 event_str = str(event_type).lower()
-                if event_str in ("fill", "partial_fill", "tradeevent.fill", "tradeevent.partial_fill"):
+                if event_str:
                     order = getattr(data, "order", None) or (data.get("order") if isinstance(data, dict) else {})
                     symbol = str(
                         getattr(order, "symbol", "") or (order.get("symbol", "") if isinstance(order, dict) else "")
@@ -842,6 +1042,7 @@ class AlpacaBroker(BaseBroker):
 
                     event = ReconciliationEvent(
                         signal_id=0,
+                        observation=self._observation(order, source="stream").model_dump(mode="json"),
                         symbol=symbol,
                         contract=symbol,
                         direction=Direction.LONG if AlpacaOrderSide.SELL.value in order_side else Direction.SHORT,

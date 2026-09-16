@@ -7,7 +7,7 @@
 [![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
 [![Documentation](https://img.shields.io/badge/docs-local%20markdown-blue)](docs/)
 
-The **Agentic Trader** is an algorithmic trading system designed around a **"Cash-Plus" (portable alpha)** portfolio architecture ($100,000 baseline cash generating risk-free Treasury yield). The system continuously screens multi-asset markets, validates setups through an LLM agent with macro calendar awareness, and executes bracket orders across Tradovate (CME micro futures) and Alpaca (equities, ETFs, and crypto) with real-time Telegram oversight and Prometheus observability.
+The **Agentic Trader** screens multi-asset markets, evaluates setups with deterministic risk rules and optional LLM reasoning, and stages suggestions for operator approval. The current desk runs **Alpaca paper equities/ETFs** with PostgreSQL, Telegram oversight and Prometheus telemetry. Local simulation is separate. Additional broker adapters require the fresh-admission contract before using the durable entry queue. The portfolio model uses a $100,000 cash baseline and portable-alpha accounting.
 
 ---
 
@@ -48,6 +48,7 @@ The local desk uses **Alpaca paper trading with PostgreSQL** under macOS launchd
 `EXECUTION_MODE=paper` means the in-process simulator; use `EXECUTION_MODE=alpaca`
 with `ALPACA_PAPER=true` for the brokerage paper account. Run one daemon/poller.
 
+- [Durable execution queue, order journal, outbox and readiness](docs/durable-execution.md)
 - [Architecture review and priorities](docs/architecture-review.md)
 - [Development map and test isolation](docs/development-notes.md)
 - [September 15 incident and fixes](docs/incident-2026-09-15.md)

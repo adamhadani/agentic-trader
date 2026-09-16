@@ -90,8 +90,9 @@ async def test_alpaca_broker_trade_stream_stop(test_config):
 
 
 @pytest.mark.asyncio
-async def test_copilot_on_stream_trade_update_matching(test_config):
-    copilot = TradingCopilot(test_config)
+async def test_copilot_on_stream_trade_update_matching(test_config, mock_notifier):
+    copilot = TradingCopilot(test_config, notifier=mock_notifier)
+    copilot.broker.observe_orders = AsyncMock(return_value=[])
     copilot.notifier.send_exit_alert = AsyncMock(return_value=123)
     copilot.manage_trailing_stops = AsyncMock()
     client = MagicMock()
@@ -209,12 +210,14 @@ async def test_copilot_on_stream_trade_update_matching(test_config):
     assert stats["total_pnl"] == 100.0
     assert stats["win_rate"] == 100.0
 
+    await copilot.outbox.drain()
     copilot.notifier.send_exit_alert.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_copilot_process_reconciliation_event_dedup(test_config):
-    copilot = TradingCopilot(test_config)
+async def test_copilot_process_reconciliation_event_dedup(test_config, mock_notifier):
+    copilot = TradingCopilot(test_config, notifier=mock_notifier)
+    copilot.broker.observe_orders = AsyncMock(return_value=[])
     copilot.notifier.send_exit_alert = AsyncMock()
 
     sig_id = await copilot.db.record_signal(
@@ -252,6 +255,7 @@ async def test_copilot_process_reconciliation_event_dedup(test_config):
     assert second_res is False
 
     # Alert should only be sent once
+    await copilot.outbox.drain()
     assert copilot.notifier.send_exit_alert.await_count == 1
 
 
@@ -317,8 +321,9 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
 
 
 @pytest.mark.asyncio
-async def test_copilot_process_reconciliation_event_safeguards(test_config):
-    copilot = TradingCopilot(test_config)
+async def test_copilot_process_reconciliation_event_safeguards(test_config, mock_notifier):
+    copilot = TradingCopilot(test_config, notifier=mock_notifier)
+    copilot.broker.observe_orders = AsyncMock(return_value=[])
     copilot.notifier.send_exit_alert = AsyncMock()
 
     sig_id = await copilot.db.record_signal(
@@ -389,4 +394,5 @@ async def test_copilot_process_reconciliation_event_safeguards(test_config):
     res_valid = await copilot.process_reconciliation_event(ev_valid_exit)
     assert res_valid is True
     assert len(await copilot.db.get_active_positions()) == 0
+    await copilot.outbox.drain()
     copilot.notifier.send_exit_alert.assert_awaited_once()

@@ -175,3 +175,56 @@ class CloseRequestRecord(Base):
 
     def to_dict(self) -> dict[str, Any]:
         return {column.name: getattr(self, column.name) for column in self.__table__.columns}
+
+
+class WorkflowLockRecord(Base):
+    """One transaction mutex per environment/account; never held during network I/O."""
+
+    __tablename__ = "workflow_locks"
+    scope: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class DomainEventRecord(Base):
+    __tablename__ = "domain_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(String, nullable=False)
+    event_key: Mapped[str] = mapped_column(String, nullable=False)
+    stream: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UTCDatetime, nullable=False, default=lambda: datetime.now(UTC))
+    __table_args__ = (
+        Index("uq_domain_event_key", "scope", "event_key", unique=True),
+        Index("ix_domain_event_stream", "scope", "stream", "id"),
+    )
+
+
+class WorkItemRecord(Base):
+    __tablename__ = "work_items"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scope: Mapped[str] = mapped_column(String, nullable=False)
+    dedup_key: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    token: Mapped[str | None] = mapped_column(String, nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(UTCDatetime, nullable=True)
+    available_at: Mapped[datetime] = mapped_column(UTCDatetime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDatetime, nullable=False)
+    __table_args__ = (
+        Index("uq_work_dedup", "scope", "kind", "dedup_key", unique=True),
+        Index("ix_work_dispatch", "scope", "kind", "status", "sequence"),
+    )
+
+
+class OrderProjectionRecord(Base):
+    __tablename__ = "order_projections"
+    scope: Mapped[str] = mapped_column(String, primary_key=True)
+    order_id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)

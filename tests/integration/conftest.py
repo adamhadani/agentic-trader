@@ -10,9 +10,11 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest
+from requests import Response
+from requests.adapters import BaseAdapter
 from sqlalchemy.engine import make_url
 
-from agentic_trader.broker.alpaca import AlpacaBroker, BoundedTradingClient
+from agentic_trader.broker.alpaca import AlpacaBroker, BoundedStockDataClient, BoundedTradingClient
 from agentic_trader.storage.migrations import downgrade_migrations
 
 
@@ -69,7 +71,10 @@ class AlpacaHTTP:
         }
         self.calls = []
         self.override = lambda method, path, query, body: None
+        self.quote_price = 99.0
+        self.quote_time = datetime.now(UTC)
         self.market_open = True
+        self.session_closes_at = datetime.now(UTC) + timedelta(hours=6)
         self.entry_status = "accepted"
         self.close_status = "filled"
         self.replacement_status = "new"
@@ -79,9 +84,28 @@ class AlpacaHTTP:
         custom = self.override(method, path, query, body)
         if custom is not None:
             return custom
+        if path == "/v2/stocks/trades/latest":
+            return 200, {
+                "trades": {
+                    "SPY": {
+                        "t": self.quote_time.isoformat(),
+                        "p": self.quote_price,
+                        "s": 10,
+                        "x": "V",
+                        "c": [],
+                        "i": 1,
+                        "z": "A",
+                    }
+                }
+            }
         if path == "/v2/clock":
             now = datetime.now(UTC).isoformat()
-            return 200, {"timestamp": now, "is_open": self.market_open, "next_open": now, "next_close": now}
+            return 200, {
+                "timestamp": now,
+                "is_open": self.market_open,
+                "next_open": now,
+                "next_close": self.session_closes_at.isoformat(),
+            }
         if path == "/v2/positions":
             return 200, [self.position] if self.position else []
         if path == "/v2/positions/SPY":
@@ -135,7 +159,7 @@ class AlpacaHTTP:
 
 
 @pytest.fixture
-def alpaca_http(app_config):
+def alpaca_http(app_config, request):
     venue = AlpacaHTTP()
 
     class Handler(BaseHTTPRequestHandler):
@@ -160,13 +184,37 @@ def alpaca_http(app_config):
         def log_message(self, *args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
-    thread.start()
-    client = BoundedTradingClient(
-        "fake-key", "fake-secret", url_override=f"http://127.0.0.1:{server.server_port}", request_timeout=0.2
-    )
-    broker = AlpacaBroker(app_config, client=client)
+    server = None
+    thread = None
+    if request.config.getoption("--alpaca-transport") == "socket":
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_port}"
+    else:
+        base_url = "http://127.0.0.1:1"
+    client = BoundedTradingClient("fake-key", "fake-secret", url_override=base_url, request_timeout=0.2)
+    data_client = BoundedStockDataClient("fake-key", "fake-secret", url_override=base_url, request_timeout=0.2)
+    if server is None:
+
+        class VenueTransport(BaseAdapter):
+            def send(self, request, **kwargs):
+                parsed = urlparse(request.url)
+                body = json.loads(request.body) if request.body else None
+                status, payload = venue.dispatch(request.method, parsed.path, parse_qs(parsed.query), body)
+                response = Response()
+                response.status_code = status
+                response._content = json.dumps(payload).encode() if payload is not None else b""
+                response.request = request
+                response.url = request.url
+                return response
+
+            def close(self):
+                pass
+
+        client._session.mount(base_url, VenueTransport())
+        data_client._session.mount(base_url, VenueTransport())
+    broker = AlpacaBroker(app_config, client=client, data_client=data_client)
     broker._connected = True
     app_config.execution.close_cancel_poll_seconds = 0.001
     app_config.execution.close_cancel_timeout_seconds = 0.1
@@ -175,9 +223,11 @@ def alpaca_http(app_config):
     app_config.copilot_chat_enabled = False
     yield venue, broker
     client._session.close()
-    server.shutdown()
-    server.server_close()
-    thread.join(timeout=1)
+    data_client._session.close()
+    if server and thread:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
 
 
 @pytest.fixture
@@ -189,3 +239,8 @@ def postgres_test_db():
     downgrade_migrations("base", url)
     yield url
     downgrade_migrations("base", url)
+
+
+@pytest.fixture
+def broker_order_payload():
+    return order_payload

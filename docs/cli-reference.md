@@ -386,3 +386,19 @@ data dates and combined trading filters. `/regime` has been removed.
 `/explain_macro` explains the macro indicators; `copilot explain-macro` is its CLI
 counterpart. Telegram `/backtest` uses configured `backtest.lookback` when omitted.
 Conversational positions use the same broker report as `/positions` and the CLI.
+
+## Durable execution and diagnostics
+
+Entries approved through CLI or Telegram enter the same persistent FIFO and
+reserve portfolio capacity. `execute` can return queued, rejected, accepted or
+unconfirmed; accepted does not mean filled. Conditions are rechecked before POST;
+changed conditions require a new scan/approval. `resume` refuses unresolved entries.
+`listen` also runs the entry/outbox workers but does not schedule scans/reconciliation.
+
+- `copilot doctor --readiness`: passive daemon freshness report; nonzero if unready.
+- `copilot db queue`: inspect persisted entry requests/outcomes.
+- `copilot db events [--stream NAME] [--limit N]`: immutable workflow/broker events.
+- `copilot db orders [--rebuild]`: inspect/replay order views; no broker mutations.
+- `copilot db outbox [--retry JOB_ID]`: inspect delivery jobs or explicitly requeue a dead letter.
+
+See [workflow guarantees, limits and configuration](durable-execution.md).
