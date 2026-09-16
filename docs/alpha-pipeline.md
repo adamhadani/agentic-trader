@@ -225,6 +225,33 @@ variance explicitly; it never clamps invalid moments into artificial confidence.
 Statistical assessment is shared with calibration, while deployment eligibility
 still requires the exact Alpaca data contract and durable journal permissions.
 
+### Predeclared calibration studies
+
+`alpha study-plan --output NEW.json` writes a frozen default protocol. The reviewed
+A1b protocol is committed as `config/research/a1b-v1.json`; its
+[study design](alpha-study-protocol.md) defines the comparisons and acceptance bounds.
+Run it with `alpha study config/research/a1b-v1.json --output /private/path/NEW-DIRECTORY`.
+
+The study runs development before validation with disjoint 128-bit seed namespaces.
+It compares fixed-panel bootstrap/ARCH SPA methods and replays actual random/genetic
+search, freezing one winner before any holdout computation. Existing scientific
+gates and a separate sample-split comparator are evaluated without authorizing
+promotion. The latter deliberately omits some runtime gates and is research-only.
+Neither raw trial history nor cumulative production accounting is discounted.
+
+This command uses no runtime config, database, broker, provider or notifier. CPU and
+artifact work run off the event loop. Use a separate CLI process with numerical
+threads limited when running beside the paper daemon. No research scheduling changes.
+
+The private output directory is exclusive: no overwrite or implicit resume. A manifest
+records the protocol, source/dependency identity, start time and reserved budget before
+work. Every replicate retains its trial history, seeds, outcome and elapsed time in an
+atomic 0600 JSON artifact. Development computation failures leave validation untouched;
+all missing/failed jobs keep their denominators and make the summary incomplete. Duplicate
+or mismatched evidence is refused. `completion.json` separates completion from meeting
+the statistical criteria; a completed negative study exits successfully, while an
+incomplete study exits nonzero. No result grants deployment or shadow credit.
+
 ### Mining operation
 
 Mining persists one checkpoint per symbol. Per-symbol compute defaults to 300 seconds;

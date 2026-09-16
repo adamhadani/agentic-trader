@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from agentic_trader.cli.commands.alpha import download_bars
 from agentic_trader.cli.main import cli
 from agentic_trader.research.alpha.models import AlphaDefinition
+from agentic_trader.research.alpha.study import MarketScenario, PanelScenario, StudyProtocol
 
 
 @pytest.mark.parametrize("command", ["catalog", "list", "export"])
@@ -113,3 +114,41 @@ def test_calibration_cli_is_synthetic_and_cannot_construct_runtime_services(monk
     assert report["strategy_controls"] and report["family_controls"]
     assert output.stat().st_mode & 0o777 == 0o600
     assert not list(tmp_path.glob("*.db"))
+
+
+def test_study_cli_runs_actual_calculation_without_runtime_services(monkeypatch, tmp_path):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Study cannot access runtime services")
+
+    for name in ("load_config", "SignalDatabase", "AlpacaDataProvider"):
+        monkeypatch.setattr(f"agentic_trader.cli.commands.alpha.{name}", forbidden)
+    protocol = StudyProtocol(
+        seed=441,
+        development_search_replicates=1,
+        development_panel_replicates=1,
+        validation_null_search_replicates=1,
+        validation_edge_search_replicates=1,
+        validation_null_panel_replicates=1,
+        validation_edge_panel_replicates=1,
+        generated_candidates=1,
+        bootstrap_samples=99,
+        block_lengths=(20,),
+        panel_effects=(0.0,),
+        market_scenarios=(
+            MarketScenario(name="fixture", observations=600, interval=8, effect=0.0, volatility_persistence=0.0),
+        ),
+        panel_scenarios=(
+            PanelScenario(name="fixture", observations=80, serial_correlation=0.0, cross_correlation=0.25),
+        ),
+    )
+    path = tmp_path / "protocol.json"
+    path.write_text(json.dumps(protocol.document()))
+    destination = tmp_path / "run"
+    result = CliRunner().invoke(cli, ["alpha", "study", str(path), "--output", str(destination)])
+    assert result.exit_code == 0, result.output
+    summary = json.loads((destination / "completion.json").read_text())
+    assert summary["recorded_jobs"] == summary["expected_jobs"]
+    assert summary["failed_jobs"] == 0
+    assert summary["status"] == "criteria_not_met"
+    assert summary["authorizes_promotion"] is False
+    assert all(p.stat().st_mode & 0o777 == 0o600 for p in destination.rglob("*.json"))

@@ -30,6 +30,8 @@ from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.portfolio import PortfolioPolicy, PortfolioSnapshot, build_shadow_portfolio
 from agentic_trader.research.alpha.promotion import AlphaPromotionService, read_alpha_definitions
+from agentic_trader.research.alpha.study import StudyProtocol, StudyStatus
+from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.runtime import runtime_identity
@@ -55,7 +57,8 @@ def research_environment():
         "python": platform.python_version(),
         "lock_hash": hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest(),
         "packages": {
-            name: package_version(name) for name in ("numpy", "pandas", "scipy", "cvxpy", "scikit-learn", "alpaca-py")
+            name: package_version(name)
+            for name in ("numpy", "pandas", "scipy", "cvxpy", "scikit-learn", "alpaca-py", "arch")
         },
     }
 
@@ -472,3 +475,41 @@ async def alpha_calibrate_cmd(
     )
     click.echo(f"Report: {path}")
     click.echo("Diagnostic only; no promotion permission or runtime state changed.")
+
+
+@alpha_group.command("study-plan")
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New frozen protocol JSON file")
+@coro
+async def alpha_study_plan_cmd(output):
+    """Freeze the A1b protocol without evaluating any observations."""
+    protocol = StudyProtocol()
+    try:
+        await asyncio.to_thread(save_json_report, protocol.document(), output)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Protocol {protocol.identity}: {output}")
+
+
+@alpha_group.command("study")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="New private directory; existing runs are never overwritten",
+)
+@coro
+async def alpha_study_cmd(protocol_path, output):
+    """Run a frozen synthetic study, retaining every replicate and all failures."""
+    try:
+        document = json.loads(await asyncio.to_thread(protocol_path.read_text))
+        protocol = StudyProtocol.from_document(document)
+        environment = await asyncio.to_thread(research_environment)
+        click.echo(f"Starting synthetic study {protocol.identity}; output: {output}")
+        result = await asyncio.to_thread(execute_study, protocol, output, environment, progress=click.echo)
+    except (TypeError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Study {result['status']}; {result['recorded_jobs']}/{result['expected_jobs']} replicates retained.")
+    click.echo("Diagnostic only; neither study completion nor passing criteria authorizes promotion.")
+    if result["status"] == StudyStatus.INCOMPLETE:
+        raise click.ClickException("Incomplete study; inspect retained failures. Validation may remain unexamined.")

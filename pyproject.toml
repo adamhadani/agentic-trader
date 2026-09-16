@@ -31,6 +31,7 @@ dependencies = [
     "langsmith>=0.12.0",
     "cvxpy>=1.7,<2",
     "scikit-learn>=1.7,<2",
+    "arch>=8,<9",
 ]
 
 [project.optional-dependencies]

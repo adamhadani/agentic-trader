@@ -151,7 +151,7 @@ def joint_block_max_test(returns: pd.DataFrame, *, samples: int = 499, block_len
         or not 1 <= m <= 256
         or not _integer(samples, 99, 4999)
         or not _integer(block_length, 1, n // 2)
-        or not _integer(seed, 0, 2**32 - 1)
+        or not _integer(seed, 0, 2**128 - 1)
     ):
         raise ValueError("Invalid bounded resampling dimensions")
     if n * m * samples > MAX_RESAMPLED_VALUES:

@@ -29,7 +29,7 @@ also recognize controlled positive cases and quantify its statistical power.
 | ID | Status | Milestone / acceptance boundary |
 | --- | --- | --- |
 | A1a | Implemented — [PR #35](https://github.com/adamhadani/agentic-trader/pull/35) | Calibration instruments and permanent control/reference tests; diagnostic outputs cannot authorize promotion. [Pilot evidence](alpha-calibration-2026-09-16.md). |
-| A1b | Planned | Predeclared statistical-power/false-discovery study; review dependence and selection treatment before choosing any replacement gate. |
+| A1b | In progress — [frozen protocol](alpha-study-protocol.md) | Predeclared statistical-power/false-discovery study; review dependence and selection treatment before choosing any replacement gate. |
 | A2 | Planned; intraday promotion blocked | Session-correct fine-bar execution replay and research/live parity. |
 | A3 | Planned; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
 | A4 | Planned | Broader economic hypotheses and point-in-time universe/data coverage. |
