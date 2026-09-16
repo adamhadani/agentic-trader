@@ -7,7 +7,7 @@ permission to invent a flat price. No weekday calendar or price fallback is used
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,7 @@ BAR_DURATIONS = {
 }
 EXECUTION_BAR_DURATION = pd.Timedelta(minutes=1)
 SESSION_BAR_LAYOUT = "rth_open_v1"
+FIXED_BAR_LAYOUT = "fixed_duration_v1"
 OHLCV = ("open", "high", "low", "close", "volume")
 
 
@@ -31,6 +32,39 @@ def utc_timestamp(value) -> pd.Timestamp:
     if pd.isna(timestamp) or timestamp.tzinfo is None:
         raise ValueError("Explicit timezone-aware timestamp required")
     return timestamp.tz_convert("UTC")
+
+
+def fixed_bar_closes(frame: pd.DataFrame, timeframe: str) -> pd.DatetimeIndex:
+    """The fixed-duration clock used by existing alpha versions.
+
+    Unlabelled inputs retain that established contract. Explicit session/unknown
+    layouts cannot be reinterpreted through it. Naive indices retain the existing
+    UTC convention; deployment research manifests separately require aware data.
+    """
+    if frame.attrs.get("bar_layout", FIXED_BAR_LAYOUT) != FIXED_BAR_LAYOUT:
+        raise ValueError("Incompatible bar clock: fixed-duration observations required")
+    if timeframe not in BAR_DURATIONS or frame.attrs.get("timeframe", timeframe) != timeframe:
+        raise ValueError("Bar timeframe does not match the fixed-duration clock")
+    if (
+        not isinstance(frame.index, pd.DatetimeIndex)
+        or frame.index.hasnans
+        or not frame.index.is_unique
+        or not frame.index.is_monotonic_increasing
+    ):
+        raise ValueError("Unique, ordered, known observation timestamps required")
+    index = frame.index.tz_localize("UTC") if frame.index.tz is None else frame.index.tz_convert("UTC")
+    return index + BAR_DURATIONS[timeframe]
+
+
+def completed_fixed_bars(frame: pd.DataFrame, timeframe: str, *, as_of=None) -> pd.DataFrame:
+    """Select complete fixed-duration bars; this does not infer exchange closes."""
+    if frame.empty:
+        return frame
+    closes = fixed_bar_closes(frame, timeframe)
+    now = utc_timestamp(as_of if as_of is not None else datetime.now(UTC))
+    result = frame.loc[closes <= now].copy()
+    result.attrs.update(timeframe=timeframe, bar_layout=FIXED_BAR_LAYOUT)
+    return result
 
 
 @dataclass(frozen=True)

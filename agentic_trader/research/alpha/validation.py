@@ -10,7 +10,7 @@ from itertools import pairwise
 import numpy as np
 import pandas as pd
 
-from agentic_trader.market.bars import BAR_DURATIONS
+from agentic_trader.market.bars import BAR_DURATIONS, FIXED_BAR_LAYOUT, fixed_bar_closes
 
 
 RETURN_TIMELINE = "complete_observed_bars_v1"
@@ -88,6 +88,7 @@ class DatasetManifest:
     start: str
     end: str
     content_hash: str
+    bar_layout: str
 
     @classmethod
     def from_frame(
@@ -108,6 +109,7 @@ class DatasetManifest:
             str(frame.index[0]),
             str(frame.index[-1]),
             frame_digest(frame),
+            FIXED_BAR_LAYOUT,
         )
 
     def to_dict(self):
@@ -115,14 +117,9 @@ class DatasetManifest:
 
 
 def validate_sampling(frame: pd.DataFrame, timeframe: str) -> None:
+    fixed_bar_closes(frame, timeframe)
     if frame.attrs.get("timeframe") != timeframe:
         raise ValueError("Dataset timeframe must be declared and match the strategy version")
-    if (
-        not isinstance(frame.index, pd.DatetimeIndex)
-        or not frame.index.is_unique
-        or not frame.index.is_monotonic_increasing
-    ):
-        raise ValueError("Unique, sorted observation timestamps required")
     if len(frame) < 2:
         raise ValueError("Insufficient observations")
     duration = BAR_DURATIONS[timeframe]

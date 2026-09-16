@@ -63,6 +63,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
 3. **Broker evidence:** never match exits by symbol alone, infer a fill price from
    an order request, or persist a stop ratchet before exact replacement confirmation.
    Preserve original thesis/risk. POST/PATCH/DELETE are never automatically retried.
+   Keep a notice for **every** confirmed trailing-stop change (operator preference,
+   September 16). Frequent distinct ratchets are expected; correlate exact stop,
+   outbox and Telegram request evidence before diagnosing duplicates.
 4. **Reports:** CLI/Telegram positions share one broker snapshot. `/perf` separates
    reconciled account activities from tracked full-close statistics. Decimal cash,
    inventory, account binding and broker cost basis govern account totals; unknown,
@@ -151,4 +154,7 @@ uses observed calendars, complete minute coverage and the shared execution engin
 interval before I/O; it never qualifies or earns shadow credit. Historical minute
 data cannot establish point-in-time availability or actual partial fills. Next:
 version/migrate the live signal clock and verify broker execution assumptions.
+Existing fixed-duration research/screening/shadow paths share the market clock
+guard and reject explicit session/unknown layouts or ambiguous timestamps. Do not
+silently reinterpret an old alpha version as using session-derived bars.
 Preserve historical study evidence and use fresh validation after policy changes.

@@ -108,6 +108,10 @@ smoke test checks DST/early-close coverage without tuning a formula.
 Its [results](alpha-session-replay-2026-09-16.md) retain two SIP completions and two
 IEX coverage failures; neither successful replay generated an entry. No live-feed
 change or alpha qualification follows from this mechanics/data check.
+Clock-boundary hardening now rejects session-derived/unknown layouts and ambiguous
+timestamps in fixed-duration research, live screening and shadow paths. Shared
+closure logic lives in `market/bars.py`; new manifests record the fixed clock.
+This preserves existing version identities and does not complete live migration.
 
 Remaining A2b: version and install this signal-bar contract in live acquisition,
 freshness and scan timing; collect actual publication/acknowledgment/fill evidence.

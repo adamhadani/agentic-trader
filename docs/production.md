@@ -279,6 +279,28 @@ fills and minute reconciliation continue independently of Telegram response deli
 
 See [Alpaca contract review and integration coverage](alpaca-integration-review.md).
 
+### Repeated trailing-stop notices
+
+One position may generate many valid notices as its stop tightens. The monitor
+runs every minute and on broker-stream wakeups; `trail_step_ticks` controls the
+minimum proposed stop improvement. A short stop ratchets downward, a long stop
+upward. The current non-alpha implementation uses recorded initial risk distance
+for its trigger/trail calculation; the named ATR/high-water policy mismatch remains
+in the [architecture review](architecture-review.md#remaining-findings-ranked).
+
+The operator explicitly prefers **every confirmed stop-change notice**. Keep that
+cadence; do not raise the broker ratchet threshold merely to quiet Telegram.
+For suspected duplicates, correlate `stop_replacement` request/result, `stop_updated`,
+the notification work item and `telegram_request.outbox_id`. An outbox attempt alone
+does not establish one Telegram HTTP attempt; inspect transport retries/message IDs.
+
+The September 16 IWM investigation found 12 strictly tightening, broker-confirmed
+changes and 12 successful first-attempt Telegram sends, each with a distinct message
+ID. Exact Alpaca bracket retrieval agreed with the current stored stop. No duplicate
+delivery or reset loop was found, and no protective order or notification policy was
+changed for the investigation. Raw snapshots remain private. A stop price is a trigger,
+not a guaranteed realized gain; broker fills remain authoritative.
+
 ## Current schema and monitoring verification
 
 Apply head migration `008_alpha_pipeline` after the backup and controlled
