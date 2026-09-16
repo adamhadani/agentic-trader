@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import math
+from statistics import NormalDist
+
 import numpy as np
 import pandas as pd
+import pytest
 
 from agentic_trader.research.alpha.metrics import (
     calculate_cross_strategy_correlations,
@@ -81,3 +85,43 @@ def test_calculate_cross_strategy_correlations():
     assert "squeeze_breakout" in corrs
     assert corrs["trend_pullback"] > 0.60
     assert abs(corrs["squeeze_breakout"]) < 0.50
+
+
+@pytest.mark.parametrize(
+    "sr,count,variance,length,skew,kurt",
+    [
+        (0.12, 100, 0.003, 500, -0.2, 4),
+        (0.25, 7049, 0.002876, 1000, 0.3, 5),
+        (0.05, 1, 0, 252, 0, 3),
+    ],
+)
+def test_dsr_matches_independent_reference_with_multiple_trials(sr, count, variance, length, skew, kurt):
+    normal = NormalDist()
+    benchmark = (
+        math.sqrt(variance)
+        * (
+            (1 - 0.5772156649015329) * normal.inv_cdf(1 - 1 / count)
+            + 0.5772156649015329 * normal.inv_cdf(1 - 1 / (count * math.e))
+        )
+        if count > 1 and variance > 0
+        else 0
+    )
+    error = math.sqrt((1 - skew * sr + (kurt - 1) * sr**2 / 4) / (length - 1))
+    assert calculate_deflated_sharpe_ratio(sr, count, variance, length, skew, kurt) == pytest.approx(
+        normal.cdf((sr - benchmark) / error), abs=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    "count,length,skew,kurt",
+    [
+        (True, 100, 0, 3),
+        (1.5, 100, 0, 3),
+        (10, 100.5, 0, 3),
+        (10, 100, 10, 1),
+        (1, 100, 10, 1),
+    ],
+)
+def test_dsr_rejects_invalid_sampling_variance_and_fractional_budgets(count, length, skew, kurt):
+    with pytest.raises(ValueError):
+        calculate_deflated_sharpe_ratio(0.2, count, 0.003, length, skew, kurt)

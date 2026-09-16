@@ -110,3 +110,5 @@ clustering; daily decay/capacity reports; versioned portfolio rebalance plans wi
 post-rounding/partial-fill risk and protection attribution. Preserve the other
 operational priorities above. Do not enable RL or shared-position alpha execution
 merely because the new infrastructure passes regression tests.
+
+The ordered research work queue now lives in [alpha-roadmap.md](alpha-roadmap.md), including calibration before broader search. This document continues to own the operational priorities above.

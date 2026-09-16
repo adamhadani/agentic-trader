@@ -1125,3 +1125,5 @@ Expand the quantitative trading engine beyond 4-hour swing scans to ingest, calc
 | **Phase 45** | Level-2 / Order Book Microstructure Flow Streaming | **Planned** | CME top-of-book (BBO) and DOM queue imbalance streaming via Tradovate WebSocket |
 | **Phase 46** | Interactive Brokers (IBKR) Native Driver | **Planned** | Direct DMA execution via `ib_insync` or IBKR Client Portal REST API |
 | **Phase 47** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
+
+The [active alpha roadmap](alpha-roadmap.md) supersedes the historical alpha phase checklist below for future research work.

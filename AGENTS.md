@@ -71,3 +71,5 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   readiness alerts. Replay never sends notifications; preserve stale-probe fencing.
   Only redundant old healthy observations may be compacted. Retain all financial,
   incident, work/deduplication and dead-letter evidence. HTTP health is passive.
+
+- Follow the [active alpha roadmap](docs/alpha-roadmap.md) for research changes. Calibration artifacts are synthetic diagnostics, never promotion credentials; preserve attempt history and predeclare statistical acceptance criteria.

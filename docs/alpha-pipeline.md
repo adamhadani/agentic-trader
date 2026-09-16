@@ -184,6 +184,7 @@ and exercised through the existing execution services before enabling it.
 
 ```bash
 uv run copilot alpha catalog
+uv run copilot alpha calibrate --seeds 10 --bootstrap-samples 499
 uv run copilot alpha mine --universe etf32 --feed alpaca --interval 1d --lookback 5y --iterations 9 --method genetic
 uv run copilot alpha benchmark RUN_ID --method ridge --budget 5
 uv run copilot alpha benchmark RUN_ID --method boosted --budget 5
@@ -196,6 +197,35 @@ uv run copilot alpha list
 uv run copilot alpha status
 uv run copilot alpha export
 ```
+
+### Synthetic calibration
+
+`alpha calibrate` runs causal volume-pulse controls through the shared miner,
+bracket simulator and statistical assessment. It also runs a joint circular-block
+max-statistic diagnostic on fixed correlated return panels. Each JSON report records
+the protocol hash, seeds, budgets, source/dependency identity, per-gate failures,
+acceptance rates and Wilson uncertainty intervals. `--family-trials` and
+`--trial-variance` explicitly set the DSR comparison scenario; defaults are synthetic
+study parameters, not an automatic read of the research ledger.
+
+The command runs computation off the event loop and opens no runtime config,
+database, market-data provider, broker or notifier. Output defaults to the private
+research artifact directory; `--output` selects a new file. Publication is atomic,
+mode 0600, and never overwrites existing evidence. Invalid/oversized budgets fail.
+
+Synthetic reports are diagnostic only. They cannot qualify, activate, earn shadow
+credit or replace cumulative trial accounting. The fixed-panel bootstrap shares
+resampled row blocks across candidates; it does not replay adaptive discovery and
+is not a replacement promotion gate. Null rejection and planted-edge detection
+measure only the declared synthetic scenarios. See the
+[calibration milestones](alpha-roadmap.md#a1--calibration-before-more-search).
+
+Qualification rejects non-finite validation metrics and invalid Sharpe sampling
+variance explicitly; it never clamps invalid moments into artificial confidence.
+Statistical assessment is shared with calibration, while deployment eligibility
+still requires the exact Alpaca data contract and durable journal permissions.
+
+### Mining operation
 
 Mining persists one checkpoint per symbol. Per-symbol compute defaults to 300 seconds;
 completed trials are retained if that budget expires. An individual bounded trial
@@ -248,3 +278,5 @@ legacy diagnostic periods.
 `alpha test` automatically excludes its examined interval and counts its diagnostic
 trial before evaluation. It cannot be used to peek at a period and then qualify on
 that same period through another command.
+
+The [active roadmap](alpha-roadmap.md) owns future milestone order and acceptance criteria; [campaign evidence](alpha-research-2026-09-16.md) explains why calibration comes first.

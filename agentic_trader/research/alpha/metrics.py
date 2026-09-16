@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from numbers import Integral, Real
 
 import numpy as np
 import pandas as pd
@@ -72,19 +73,32 @@ def calculate_deflated_sharpe_ratio(
     guarantee under serial dependence; block-bootstrap evidence is also required.
     """
     if (
-        not all(math.isfinite(x) for x in (sharpe, variance_trials, skewness, kurtosis))
+        not all(
+            isinstance(x, Real) and not isinstance(x, bool) and math.isfinite(x)
+            for x in (sharpe, variance_trials, skewness, kurtosis)
+        )
         or variance_trials < 0
         or kurtosis < 1
     ):
         raise ValueError("Invalid Sharpe sampling moments")
-    if sample_length <= 1 or num_trials <= 0:
+    if (
+        not isinstance(num_trials, Integral)
+        or isinstance(num_trials, bool)
+        or num_trials < 1
+        or not isinstance(sample_length, Integral)
+        or isinstance(sample_length, bool)
+        or sample_length < 0
+    ):
+        raise ValueError("Integer trial and sample counts required")
+    if sample_length <= 1:
         return 0.0
+    denom = 1.0 - skewness * sharpe + ((kurtosis - 1.0) / 4.0) * sharpe**2
+    if not math.isfinite(denom) or denom <= 0:
+        raise ValueError("Invalid Sharpe sampling variance")
+    std_sr = math.sqrt(denom / (sample_length - 1))
 
     if num_trials == 1 or variance_trials <= 0.0:
         # Single trial: test against zero benchmark
-        std_sr = math.sqrt((1.0 - skewness * sharpe + ((kurtosis - 1.0) / 4.0) * (sharpe**2)) / (sample_length - 1))
-        if std_sr <= 0:
-            return 1.0 if sharpe > 0 else 0.0
         return float(stats.norm.cdf(sharpe / std_sr))
 
     # Euler-Mascheroni constant
@@ -94,10 +108,6 @@ def calculate_deflated_sharpe_ratio(
     z_inv = stats.norm.ppf(1.0 - 1.0 / num_trials) if num_trials > 1 else 0.0
     z_inv_e = stats.norm.ppf(1.0 - 1.0 / (num_trials * math.e)) if num_trials > 1 else 0.0
     expected_max_sr = math.sqrt(variance_trials) * ((1.0 - gamma_em) * z_inv + gamma_em * z_inv_e)
-
-    # Standard error of Sharpe ratio accounting for skewness & kurtosis
-    denom = 1.0 - skewness * sharpe + ((kurtosis - 1.0) / 4.0) * (sharpe**2)
-    std_sr = math.sqrt(max(1e-8, denom) / (sample_length - 1))
 
     z_stat = (sharpe - expected_max_sr) / std_sr
     dsr = float(stats.norm.cdf(z_stat))

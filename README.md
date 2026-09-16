@@ -12,6 +12,7 @@ Python **3.14** · `uv` · SQLAlchemy/Alembic · `alpaca-py` · pytest · Ruff �
 - [CLI reference](docs/cli-reference.md): commands and recovery tools.
 - [Development handoff](docs/development-notes.md) and [assistant instructions](CLAUDE.md).
 - [Architecture review and priorities](docs/architecture-review.md).
+- [Active alpha research roadmap](docs/alpha-roadmap.md).
 - [Entry queue, broker events and outbox](docs/durable-execution.md).
 - [Account activity ledger](docs/account-ledger.md).
 - [Readiness alerts and retention](docs/operational-monitoring.md).
