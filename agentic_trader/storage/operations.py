@@ -45,13 +45,12 @@ class OperationsStore:
                     failed_since=state.failed_since,
                     detail=detail,
                 )
-                if policy.notifications_enabled:
-                    state.notification_id = await self.store.add_notification(
-                        session,
-                        f"incident/{state.incident_id}/{kind}/{observed_at.isoformat()}",
-                        NotificationKind.OPERATIONAL,
-                        notice.model_dump(mode="json"),
-                    )
+                state.notification_id = await self.store.add_notification(
+                    session,
+                    f"incident/{state.incident_id}/{kind}/{observed_at.isoformat()}",
+                    NotificationKind.OPERATIONAL,
+                    notice.model_dump(mode="json"),
+                )
             if row is None:
                 row = IncidentProjectionRecord(
                     scope=self.scope, component=component, observed_at=observed_at, payload="{}"

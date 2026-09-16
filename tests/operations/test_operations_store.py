@@ -51,3 +51,23 @@ async def test_healthy_samples_do_not_grow_journal_and_alert_disable_is_explicit
         )
     assert not await store.store.list_work(WorkKind.NOTIFICATION)
     assert (await store.incidents())[0]["phase"] == "open"
+
+
+async def test_reenabling_notifications_reports_existing_open_incident(desk):
+    store, policy, now = desk
+    policy.notifications_enabled = False
+    for seconds in (0, 10):
+        await store.observe(
+            "worker", ready=False, observed_at=now + timedelta(seconds=seconds), detail="", policy=policy
+        )
+    assert not await store.store.list_work(WorkKind.NOTIFICATION)
+    policy.notifications_enabled = True
+    notice = await store.observe(
+        "worker", ready=False, observed_at=now + timedelta(seconds=11), detail="", policy=policy
+    )
+    assert notice is not None and notice.kind == "opened"
+    assert len(await store.store.list_work(WorkKind.NOTIFICATION)) == 1
+    assert (
+        await store.observe("worker", ready=False, observed_at=now + timedelta(seconds=12), detail="", policy=policy)
+        is None
+    )

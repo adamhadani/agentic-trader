@@ -49,6 +49,10 @@ only update that watermark. Missing checks never clear existing incidents.
 `db incidents --rebuild` replays lifecycle events and retains newer observation
 watermarks; it never enqueues or sends notifications.
 
+Disabling notifications suppresses new intents while preserving incident state.
+Re-enabling them reports an incident that opened while muted on the next failing
+observation; already closed incidents are not replayed.
+
 A reminder is eligible only after the previous notice is **delivered**. Pending or
 dead notices suppress further reminders. Recovery still records a separate notice.
 Notices include component, incident ID and observation time. Delivery is at least

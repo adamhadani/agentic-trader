@@ -67,6 +67,8 @@ def advance(
         and (observed_at - state.failed_since).total_seconds() >= policy.failure_seconds
     ):
         state.phase, notice = IncidentPhase.OPEN, NoticeKind.OPENED
+    elif state.phase == IncidentPhase.OPEN and state.last_notified_at is None:
+        notice = NoticeKind.OPENED
     elif (
         state.phase == IncidentPhase.OPEN
         and delivery_complete
@@ -74,6 +76,8 @@ def advance(
         and (observed_at - state.last_notified_at).total_seconds() >= policy.reminder_seconds
     ):
         notice = NoticeKind.REMINDER
+    if not policy.notifications_enabled:
+        notice = None
     if notice:
         state.last_notified_at = observed_at
     return state, notice
