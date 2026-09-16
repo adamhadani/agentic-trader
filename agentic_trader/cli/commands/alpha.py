@@ -73,6 +73,11 @@ def download_bars(symbol, lookback, interval, *, feed="yfinance", config=None):
             api_key=config.alpaca_api_key, api_secret=config.alpaca_api_secret, feed=config.market_data.alpaca_feed
         )
         frame = provider.fetch_bars(symbol, requested, period=lookback)
+        if (
+            frame.attrs.get("feed") != f"alpaca:{config.market_data.alpaca_feed}"
+            or frame.attrs.get("adjustment") != "raw"
+        ):
+            raise ValueError("Research requires the declared raw Alpaca stock feed; observations cannot be relabeled")
     else:
         frame = yf.download(symbol, period=lookback, interval=requested, auto_adjust=False, progress=False)
     if isinstance(frame.columns, pd.MultiIndex):
@@ -163,6 +168,7 @@ async def alpha_mine_cmd(
     async with alpha_repository() as repository:
         for research_symbol in symbol_universe:
             snapshot = await repository.snapshot()
+            run_id = uuid4().hex
             try:
                 frame = await asyncio.to_thread(
                     download_bars, research_symbol, lookback, interval, feed=feed, config=config
@@ -179,6 +185,12 @@ async def alpha_mine_cmd(
                 )
                 path = await asyncio.to_thread(save_dataset, frame, artifact_directory(), manifest.content_hash)
                 miner = AlphaMiner(seed=seed)
+                await repository.reserve_run(
+                    run_id,
+                    symbol=research_symbol,
+                    timeframe=interval,
+                    trials=iterations + len(miner.catalog.list_alphas()),
+                )
                 candidates = await asyncio.to_thread(
                     miner.mine,
                     frame,
@@ -190,7 +202,6 @@ async def alpha_mine_cmd(
                     method=method,
                     max_seconds=max_seconds,
                 )
-                run_id = uuid4().hex
                 await repository.record_run(
                     run_id,
                     {**miner.last_run, "environment": await asyncio.to_thread(research_environment)},
@@ -214,7 +225,7 @@ async def alpha_mine_cmd(
             except (ValueError, ArithmeticError, OSError) as exc:
                 failures += 1
                 await repository.record_failure(
-                    uuid4().hex,
+                    run_id,
                     symbol=research_symbol,
                     timeframe=interval,
                     error=f"{type(exc).__name__}: data_or_discovery_failed",
@@ -316,6 +327,15 @@ async def alpha_test_cmd(expression, symbol, lookback, interval):
     """Diagnostic expression test; cannot qualify or promote a version."""
     definition = AlphaDefinition("alpha_diagnostic", "Diagnostic", expression, timeframe=interval)
     frame = await asyncio.to_thread(download_bars, symbol, lookback, interval)
+    async with alpha_repository() as repository:
+        await repository.exclude_observed_interval(
+            symbol=symbol,
+            start=frame.index[0].isoformat(),
+            end=frame.index[-1].isoformat(),
+            trials=1,
+            reason=f"CLI diagnostic {definition.version_id} / {DatasetManifest.from_frame(frame, symbol=symbol, timeframe=interval, feed='yfinance', adjustment='raw', universe_version='diagnostic').content_hash}",
+            actor="cli_diagnostic",
+        )
     result = await asyncio.to_thread(AlphaMiner().evaluate_alpha, definition, frame)
     click.echo(json.dumps(result.to_dict() if result else {"reason": "insufficient_data"}, indent=2))
 
@@ -334,10 +354,13 @@ async def alpha_benchmark_cmd(run_id, method, budget, seed):
         if not saved:
             raise click.ClickException("Unknown source run")
         bars = await asyncio.to_thread(load_dataset, Path(saved["manifest"]["artifact"]))
+        identifier = uuid4().hex
+        await repository.reserve_run(
+            identifier, symbol=saved["manifest"]["symbol"], timeframe=saved["manifest"]["timeframe"], trials=budget
+        )
         result = await asyncio.to_thread(
             benchmark_models, bars, timeframe=saved["manifest"]["timeframe"], method=method, budget=budget, seed=seed
         )
-        identifier = uuid4().hex
         await repository.record_run(
             identifier, {**result, "environment": await asyncio.to_thread(research_environment)}, saved["manifest"]
         )

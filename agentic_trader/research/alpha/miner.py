@@ -262,6 +262,7 @@ class AlphaMiner:
         ]
         trials, evaluated = [], []
         semantic_signatures = set()
+        exhausted = False
         for trial_number in range(budget):
             if time.monotonic() >= deadline:
                 break
@@ -270,7 +271,11 @@ class AlphaMiner:
             else:
                 for _ in range(100):
                     if search:
-                        expression = search.ask()
+                        try:
+                            expression = search.ask()
+                        except ValueError:
+                            exhausted = True
+                            break
                         definition = AlphaDefinition(
                             "alpha_gp_" + hashlib.sha256(expression.encode()).hexdigest()[:16],
                             "Genetic candidate",
@@ -288,7 +293,9 @@ class AlphaMiner:
                         seen.add(definition.expression)
                         break
                 else:
-                    raise ValueError("Unique candidate budget exhausted")
+                    exhausted = True
+                if exhausted:
+                    break
             definition = replace(
                 definition, data_feed=df.attrs.get("feed", "unverified"), adjustment=df.attrs.get("adjustment", "raw")
             )
@@ -327,7 +334,7 @@ class AlphaMiner:
                 trial["candidate"] = by_version[AlphaDefinition.from_dict(trial["definition"]).version_id].to_dict()
         self.last_run = {
             "seed": self.seed,
-            "status": "completed" if len(trials) == budget else "budget_exhausted",
+            "status": "search_exhausted" if exhausted else "completed" if len(trials) == budget else "budget_exhausted",
             "max_seconds": max_seconds,
             "requested_trials": budget,
             "method": method,

@@ -25,9 +25,6 @@ if TYPE_CHECKING:
     from agentic_trader.storage.alpha import AlphaRepository
 
 
-DEFAULT_PROMOTED_ALPHAS_PATH = Path("config/promoted_alphas.yaml")
-
-
 def read_alpha_definitions(path: Path) -> list[AlphaDefinition]:
     """Explicit import only. Old YAML metrics are unverified, not qualification evidence."""
     payload = yaml.safe_load(path.read_text())

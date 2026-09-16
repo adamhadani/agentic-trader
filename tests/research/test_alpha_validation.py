@@ -85,3 +85,12 @@ def test_metrics_keep_sample_moments_for_trial_adjustment(market):
             sim["per_bar_sharpe"], 1, 0, sim["sample_length"], sim["skewness"], sim["kurtosis"]
         )
     )
+
+
+def test_unique_search_exhaustion_preserves_completed_trials(market, monkeypatch):
+    miner = AlphaMiner(seed=5)
+    definition = AlphaDefinition("alpha_identical", "Identical", "close")
+    monkeypatch.setattr(miner, "generate_candidate_expression", lambda: definition)
+    miner.mine(market, iterations=2, include_catalog=False, timeframe="1d", symbol="SPY")
+    assert miner.last_run["status"] == "search_exhausted"
+    assert miner.last_run["trial_count"] == 1

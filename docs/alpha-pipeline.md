@@ -108,7 +108,10 @@ folds, purged labels and an embargo. Feature and regression fitting uses trainin
 observations only. Search never evaluates the final holdout. Prefix/future-perturbation
 tests cover both formula and model-baseline paths.
 
-Every attempted trial, including rejection, counts. Runs persist seeds, policy,
+The CLI charges the predeclared trial budget before computation. A crash, timeout
+or exhausted search cannot erase attempts or refund the selection penalty. Completed
+trials (including rejection) retain their individual evidence; interrupted symbols
+retain the conservative reserved count. Runs persist seeds, policy,
 all candidates, data/universe hashes, package versions, lockfile hash and source
 revision. Family counts span symbols, seeds, methods and timeframes; variance remains in the
 matching per-observation timeframe units. Ridge
@@ -241,3 +244,7 @@ observed interval and trial count with `alpha exclude-period --symbol SPY --star
 future qualification on overlapping observations. It cannot erase consumption or
 qualify a strategy. The deployment runbook applies this to this review's exposed
 legacy diagnostic periods.
+
+`alpha test` automatically excludes its examined interval and counts its diagnostic
+trial before evaluation. It cannot be used to peek at a period and then qualify on
+that same period through another command.

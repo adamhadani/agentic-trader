@@ -32,14 +32,12 @@ from agentic_trader.research.alpha.orthogonalization import (
     gram_schmidt_orthogonalize,
 )
 from agentic_trader.research.alpha.promotion import (
-    DEFAULT_PROMOTED_ALPHAS_PATH,
     AlphaPromotionService,
 )
 
 
 __all__ = [
     "ALPHA_OPERATORS",
-    "DEFAULT_PROMOTED_ALPHAS_PATH",
     "INSTITUTIONAL_ALPHA_CATALOG",
     "AlphaCandidate",
     "AlphaCatalog",

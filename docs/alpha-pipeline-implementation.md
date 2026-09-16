@@ -102,3 +102,8 @@ both sides of the commit boundary; committed submissions remain lookup-only.
   execution and no Telegram delivery. Market/macro observations were read-only.
 - The installed original service remained healthy throughout isolated development;
   deployment acknowledgment requires the merged revision and new run checks.
+
+PR review added regression tests for interrupted/unique-exhausted searches: trial
+budgets are now journaled before computation and never refunded on failure; completed
+trial evidence survives graceful exhaustion. The diagnostic `alpha test` command
+automatically records/excludes its examined interval before computing performance.

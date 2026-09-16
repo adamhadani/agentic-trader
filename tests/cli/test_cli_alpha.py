@@ -1,10 +1,13 @@
 """Public commands use journal evidence, never direct unverified YAML promotion."""
 
 import json
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner
 
+from agentic_trader.cli.commands.alpha import download_bars
 from agentic_trader.cli.main import cli
 from agentic_trader.research.alpha.models import AlphaDefinition
 
@@ -46,3 +49,37 @@ def test_unattended_auto_promotion_removed():
     result = CliRunner().invoke(cli, ["alpha", "mine", "--auto-promote"])
     assert result.exit_code != 0
     assert "No such option" in result.output
+
+
+def test_diagnostic_command_records_exposure_before_a_failed_evaluation(monkeypatch):
+    frame = pd.DataFrame(
+        {"Open": [100.0] * 80, "High": [101.0] * 80, "Low": [99.0] * 80, "Close": [100.0] * 80},
+        index=pd.date_range("2025-01-01", periods=80, tz="UTC"),
+    )
+    frame.attrs["timeframe"] = "1d"
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.download_bars", lambda *a, **kw: frame)
+
+    def failed(*args):
+        raise ValueError("injected evaluation interruption")
+
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.AlphaMiner.evaluate_alpha", failed)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["alpha", "test", "close"])
+    assert result.exit_code != 0
+    status = runner.invoke(cli, ["alpha", "status"])
+    assert status.exit_code == 0, status.output
+    assert json.loads(status.output)["research_family"]["trial_count"] == 1
+
+
+def test_research_download_cannot_relabel_crypto_as_a_stock_feed(monkeypatch, config):
+    frame = pd.DataFrame(
+        {"Open": [100.0], "High": [101.0], "Low": [99.0], "Close": [100.0]},
+        index=pd.date_range("2025-01-01", periods=1, tz="UTC"),
+    )
+    frame.attrs.update(feed="alpaca:crypto", adjustment="raw", timeframe="1d")
+    monkeypatch.setattr(
+        "agentic_trader.cli.commands.alpha.AlpacaDataProvider",
+        lambda **kw: SimpleNamespace(fetch_bars=lambda *a, **kw: frame),
+    )
+    with pytest.raises(ValueError, match="feed"):
+        download_bars("BTC/USD", "1y", "1d", feed="alpaca", config=config)

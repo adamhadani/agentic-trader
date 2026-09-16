@@ -32,6 +32,13 @@ async def test_alpha_transactions_replay_and_concurrent_holdout_claim(postgres_t
     )
     try:
         await repositories[0].register(definition, actor="integration")
+        await asyncio.gather(
+            *(
+                repository.reserve_run("concurrent", symbol="SPY", timeframe="1d", trials=1)
+                for repository in repositories
+            )
+        )
+        assert (await repositories[0].get("family/all"))["trial_count"] == 1
         outcomes = await asyncio.gather(
             *(
                 repository.set_shadow(definition.version_id, actor="integration", expected_generation=0)

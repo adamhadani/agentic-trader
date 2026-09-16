@@ -259,3 +259,14 @@ async def test_external_diagnostic_evidence_is_counted_and_excluded_idempotently
     await repository.record_run("next", run, manifest)
     with pytest.raises(ValueError, match="consumed"):
         await repository.begin_holdout("next", definition.version_id)
+
+
+async def test_crashed_research_budget_cannot_disappear_from_family_count(repository):
+    await repository.reserve_run("crashed", symbol="SPY", timeframe="1d", trials=16)
+    await repository.reserve_run("crashed", symbol="SPY", timeframe="1d", trials=16)
+    assert (await repository.get("family/all"))["trial_count"] == 16
+    await repository.record_failure("crashed", symbol="SPY", timeframe="1d", error="interrupted")
+    assert (await repository.get("family/all"))["trial_count"] == 16
+    await repository.reserve_run("completed", symbol="SPY", timeframe="1d", trials=16)
+    await repository.record_run("completed", {"trial_count": 2, "trials": []}, {"symbol": "SPY", "timeframe": "1d"})
+    assert (await repository.get("family/all"))["trial_count"] == 32  # no double count or refund

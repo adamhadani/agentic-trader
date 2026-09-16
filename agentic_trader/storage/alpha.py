@@ -88,7 +88,12 @@ class AlphaRepository:
                 "research_worker",
             )
             global_family = await self._get(session, "family/all") or {"trial_count": 0}
-            global_family["trial_count"] += run["trial_count"]
+            reserved = await self._get(session, f"research/reservation/{run_id}")
+            if reserved:
+                if run["trial_count"] > reserved["trials"]:
+                    raise ValueError("Research exceeded its reserved trial budget")
+            else:
+                global_family["trial_count"] += run["trial_count"]
             await self._append(session, "family/all", global_family, EventKind.ALPHA_RESEARCH, "research_worker")
             family_key = f"family/{manifest['timeframe']}"
             family = await self._get(session, family_key) or {"trial_count": 0, "sharpes": []}
@@ -327,6 +332,7 @@ class AlphaRepository:
             "shadow": len(snapshot.shadow),
             "installed": installed,
             "latest_research": await self.get("research/latest"),
+            "research_family": await self.get("family/all"),
         }
 
     async def record_failure(self, run_id: str, *, symbol: str, timeframe: str, error: str):
@@ -375,3 +381,28 @@ class AlphaRepository:
             family = await self._get(session, "family/all") or {"trial_count": 0}
             family["trial_count"] += trials
             await self._append(session, "family/all", family, EventKind.ALPHA_RESEARCH, actor)
+
+    async def reserve_run(self, run_id: str, *, symbol: str, timeframe: str, trials: int):
+        """Charge the predeclared trial budget before CPU work; crashes get no refund."""
+        if type(trials) is not int or trials < 1:
+            raise ValueError("Positive integer research budget required")
+        payload = {"symbol": symbol, "timeframe": timeframe, "trials": trials}
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            key = f"research/reservation/{run_id}"
+            existing = await self._get(session, key)
+            if existing:
+                if existing != payload:
+                    raise ValueError("Reserved research budget is immutable")
+                return
+            await self._append(session, key, payload, EventKind.ALPHA_RESEARCH, "research_worker")
+            await self._append(
+                session,
+                "research/latest",
+                {**payload, "run_id": run_id, "status": "running", "recorded_at": datetime.now(UTC).isoformat()},
+                EventKind.ALPHA_RESEARCH,
+                "research_worker",
+            )
+            family = await self._get(session, "family/all") or {"trial_count": 0}
+            family["trial_count"] += trials
+            await self._append(session, "family/all", family, EventKind.ALPHA_RESEARCH, "research_worker")
