@@ -112,3 +112,9 @@ positions and account reconciliation. Record deployment evidence separately.
 Next priorities and accepted limits live in the [architecture review](docs/architecture-review.md).
 Corporate actions, per-signal partial allocation/protection, macro-age admission,
 live trailing-policy parity and research executor separation remain unfinished.
+
+Before alpha work, read the [alpha-stack review](docs/alpha-stack-review.md).
+Mining is random template search; research/live normalization and exits differ,
+DSR units and promotion gates have reproduced defects, and allocation weights are
+not live risk budgets. Strict xfails in `tests/research/test_alpha_review.py` record
+unfixed invariants. Do not expand automatic promotion based on current metrics.

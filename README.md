@@ -134,6 +134,9 @@ Research commands include `backtest`, `optimize`, `retune`, `stress`, `gex`, `pa
 and `alpha` mining/inspection/promotion. Research results are not live account P&L.
 Promotion writes configuration; external edits require a daemon restart. Allocation
 weights/convex optimization are not yet integrated into live sizing.
+See the [alpha-stack review](docs/alpha-stack-review.md) before relying on mining
+statistics or expanding discovery/promotion: it records reproduced validation and
+research/live parity defects, stress-test evidence and prioritized experiments.
 
 Read docs as Markdown or preview with `cd docs && bundle install && bundle exec jekyll serve`.
 Historical design notes and the reference PDF are source material, not runtime guarantees.
