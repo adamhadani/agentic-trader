@@ -235,6 +235,19 @@ class PositionSizingConfig(BaseModel):
     suggest_tiers_enabled: bool = True  # Suggest Half, Base, and Max sizing tiers in Telegram
 
 
+class AccountingConfig(BaseModel):
+    refresh_seconds: float = Field(default=60, gt=0, le=3600, allow_inf_nan=False)
+    max_age_seconds: float = Field(default=180, gt=0, allow_inf_nan=False)
+    max_pages: int = Field(default=100, ge=1, le=1000)
+    cash_tolerance: float = Field(default=0.01, ge=0, le=0.01, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_freshness(self):
+        if self.max_age_seconds <= self.refresh_seconds:
+            raise ValueError("Accounting freshness limit must exceed refresh interval")
+        return self
+
+
 class ExecutionConfig(BaseModel):
     journal_history_days: int = Field(default=7, ge=1, le=90)
     journal_max_pages: int = Field(default=20, ge=1, le=100)
@@ -405,6 +418,7 @@ class AppConfig(BaseModel):
     friction: FrictionConfig = Field(default_factory=FrictionConfig)
     redundancy: RedundancyConfig = Field(default_factory=RedundancyConfig)
     sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
+    accounting: AccountingConfig = Field(default_factory=AccountingConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     options: OptionsConfig = Field(default_factory=OptionsConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
@@ -632,6 +646,7 @@ def load_config(
         friction=FrictionConfig(**cfg_dict.get("friction", {})),
         redundancy=RedundancyConfig(**redundancy_cfg),
         sizing=PositionSizingConfig(**sizing_cfg),
+        accounting=AccountingConfig(**cfg_dict.get("accounting", {})),
         execution=ExecutionConfig(**exec_cfg),
         options=OptionsConfig(**cfg_dict.get("options", {})),
         telemetry=TelemetryConfig(**cfg_dict.get("telemetry", {})),

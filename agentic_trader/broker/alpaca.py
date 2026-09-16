@@ -34,6 +34,7 @@ from alpaca.trading.requests import (
 )
 from alpaca.trading.stream import TradingStream
 
+from agentic_trader.accounting.ledger import AccountSnapshot
 from agentic_trader.broker.base import (
     BaseBroker,
     BrokerPosition,
@@ -291,6 +292,57 @@ class AlpacaBroker(BaseBroker):
         """SDK connection/authentication plus WebSocket liveness, not fill frequency."""
         stream = self._trade_stream
         return bool(stream and stream._running and stream._ws and not stream._ws.closed)
+
+    @property
+    def supports_activity_ledger(self) -> bool:
+        return True
+
+    async def account_snapshot(self) -> AccountSnapshot:
+        if self.client is None:
+            await self.connect()
+        if self.client is None:
+            raise RuntimeError("Broker connection unavailable")
+        # Public SDK GET keeps exact wire decimals; its typed position model uses floats.
+        account = await asyncio.to_thread(self.client.get, "/account")
+        positions = await asyncio.to_thread(self.client.get, "/positions")
+        if not isinstance(account, dict) or not isinstance(positions, list):
+            raise TypeError("Invalid broker accounting response")
+        if account.get("currency") != "USD":
+            raise ValueError("Only USD account accounting is supported")
+        if len({p["symbol"] for p in positions}) != len(positions):
+            raise ValueError("Duplicate broker position symbol")
+        return AccountSnapshot.model_validate(
+            {"account_id": account["id"], "cash": account["cash"], "positions": {p["symbol"]: p for p in positions}}
+        )
+
+    async def account_activities(self, *, max_pages: int) -> list[dict[str, Any]]:
+        if self.client is None:
+            await self.connect()
+        if self.client is None:
+            raise RuntimeError("Broker connection unavailable")
+        # Full available history detects late fees and corrections, independent of
+        # transaction date. The activity ID is the API pagination token.
+        page_size = 100  # Alpaca's documented maximum, not operator policy.
+        activities: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        token = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"direction": "asc", "page_size": page_size}
+            if token is not None:
+                params["page_token"] = token
+            page = await asyncio.to_thread(self.client.get, "/account/activities", params)
+            if not isinstance(page, list):
+                raise TypeError("Invalid activity page")
+            for activity in page:
+                activity_id = activity.get("id")
+                if not isinstance(activity_id, str) or not activity_id or activity_id in seen:
+                    raise ValueError("Missing/duplicate activity ID or nonadvancing pagination")
+                seen.add(activity_id)
+                activities.append(activity)
+            if len(page) < page_size:
+                return activities
+            token = page[-1]["id"]
+        raise ValueError("Activity history exceeds accounting.max_pages; import incomplete")
 
     @property
     def supports_order_journal(self) -> bool:

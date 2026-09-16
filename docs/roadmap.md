@@ -31,7 +31,10 @@ HTTP/WebSocket and PostgreSQL integration coverage.
 Schema 005 implements reservations/admission, a cumulative order event journal,
 transactional notifications and readiness, with real SDK transport and PostgreSQL
 integration coverage. Each deployment requires matching-run readiness verification.
-Priority next work: complete partial/external account accounting, readiness alerting;
+Schema 006 adds a [reconciled account activity ledger](account-ledger.md), including
+partial/external executions, fees/income and replayable evidence. Corporate actions
+and per-signal partial allocation remain unsupported.
+Priority next work: readiness alerting and retention;
 confirmed trailing-stop parity; nonblocking data access and timeframe/risk integration.
 
 ## Strategic Initiatives Overview

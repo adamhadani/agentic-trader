@@ -100,10 +100,10 @@ reconciliation continues independently. REST reads bounded recent order history 
 exact tracked/nonterminal order IDs, including replacement chains. Saturated or
 nonadvancing pagination fails visibly. Broker-only orders are journaled without
 inventing a signal or entry cost. This is not a historical import of every account
-execution, fee, corporate action or trade correction. Partial fills are visible in
-`db orders`; `/perf` continues reporting confirmed, fully matched tracked trades
-before fees. A complete account activity/lot ledger and partial-exit allocation
-remain separate accounting work. Broker-backed sliced execution stays disabled.
+execution, fee, corporate action or trade correction. Cumulative partial fills remain visible in `db orders`. Schema 006 adds a
+[replayable account activity ledger](account-ledger.md) for individual executions,
+fees/income and broker-reconciled account P&L. `/perf` keeps tracked full closes
+separate. Per-signal partial-exit allocation and corporate actions remain work. Broker-backed sliced execution stays disabled.
 
 ## Outbox semantics
 
@@ -151,7 +151,8 @@ Manual requeue may duplicate a delivered-but-unacknowledged notification. It onl
 accepts dead letters in the selected environment/account scope. `db clear` refuses
 to reset signal identities when events or work exist; use audited quarantine.
 Never change brokerage credentials to a different account against the same DB
-scope without a reviewed migration; scope currently uses environment/account mode.
+scope without a reviewed migration; scope uses environment/account mode, and schema 006 permanently binds its
+activity ledger to the broker account UUID.
 
 ### Configuration defaults
 

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
+    from agentic_trader.accounting.ledger import AccountSnapshot
     from agentic_trader.execution.durable import OrderObservation
 
 from pydantic import BaseModel, Field, model_validator
@@ -199,6 +200,16 @@ class BaseBroker(ABC):
     @property
     def trade_stream_connected(self) -> bool:
         return False
+
+    @property
+    def supports_activity_ledger(self) -> bool:
+        return False
+
+    async def account_snapshot(self) -> AccountSnapshot:
+        raise NotImplementedError("Account activity ledger unavailable")
+
+    async def account_activities(self, *, max_pages: int) -> list[dict[str, Any]]:
+        raise NotImplementedError("Account activity ledger unavailable")
 
     @property
     def supports_order_journal(self) -> bool:

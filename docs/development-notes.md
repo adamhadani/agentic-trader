@@ -15,6 +15,7 @@ Telegram poller, or Compose stack alongside the installed service.
 | --- | --- |
 | Swing scan | Every 4 hours from startup, immediate first run; no timeframe filter |
 | Intraday scan | Every 15 minutes from startup, session gated, `timeframe="15m"` |
+| Account activity reconciliation | Every 60 seconds in an independent worker; configurable |
 | Position reconciliation | Every minute, plus broker stream wakeups |
 | Macro briefing | Weekdays 12:30 in the scheduler/system timezone |
 | Retuning | Saturday 02:00 in the scheduler/system timezone |
@@ -36,6 +37,7 @@ simple stop; unload it for a maintenance pause, then restore it afterward.
 | Data / calendars | `data/market_data.py`, `data/providers.py`, `market/session.py`, `resilience/fallback.py` |
 | Strategies | `screeners/strategies.py`, `registry.py`, `formulaic.py`, `config/promoted_alphas.yaml` |
 | Execution | `broker/`, `execution/`; current runtime uses immediate orders |
+| Account accounting | `accounting/ledger.py`, `accounting/service.py`, `storage/ledger.py`; [contracts](account-ledger.md) |
 | Persistence | `storage/db.py`, `models.py`, `migrations.py`, `alembic/versions/` |
 | Telegram / reports | `notifier/telegram_bot.py`, `presentation/formatters.py` |
 | Chat tools | `agent/copilot_graph.py`, `copilot_tools.py`; in-memory conversation history |
@@ -67,7 +69,7 @@ explicitly marked estimates. Reports preserve source and retrieval time in audit
 
 ### Storage and audit
 
-Head revision: `005_execution_workflows`. Tables:
+Head revision: `006_account_ledger`. Tables:
 
 - `signals`: lifecycle, sizing, entry/exit order IDs, execution time, environment,
   execution mode/account type, process run ID, and reversible quarantine flag.
@@ -75,6 +77,7 @@ Head revision: `005_execution_workflows`. Tables:
 - `close_requests`: durable exclusive close intents and broker request IDs.
 - `workflow_locks`, `work_items`: scoped transactional reservations, command queue and outbox.
 - `domain_events`, `order_projections`: immutable evidence and rebuildable broker order views.
+- `activity_projections`, `ledger_checkpoints`: account-bound execution evidence and reconciled reports, replayed from `domain_events`.
 - `audit_events`: append-only creation, fills, stream/reconciliation evidence,
   valuations, close submissions/completions, notification results, repairs, and
   daemon startup identity. JSON payloads avoid credentials and chat identifiers.
@@ -154,9 +157,9 @@ incident snapshots, DB files, `.envrc`, and derived calibration files out of Git
 
 ## High-priority follow-ups
 
-1. A fill ledger for partial entries/exits, replacements, cancellations, and broker
-   trades created outside the copilot; current matching deliberately defers uncertain
-   cases. Persist timeframe and original risk separately from mutable stop levels.
+1. Schema 006 now reconciles partial/external executions at account level. Next:
+   corporate actions and explicit partial per-signal allocation/protection; uncertain
+   ownership remains deferred. Persist timeframe and immutable original risk.
 2. Use `/readyz` and `doctor --readiness` for freshness; configure operational
    alerting and event retention. Daily macro-feed freshness remains a policy gap.
 3. Stop confirmation and thesis preservation are now implemented. Follow up with

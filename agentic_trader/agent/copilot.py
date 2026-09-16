@@ -12,6 +12,7 @@ from typing import Any
 
 from alpaca.trading.client import TradingClient
 
+from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
 from agentic_trader.agent.evaluator import RiskEvaluator
@@ -61,6 +62,7 @@ from agentic_trader.research.alpha import AlphaCatalog, AlphaPromotionManager
 from agentic_trader.research.retuner import AutoRetuner
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.telemetry import MetricsServer, global_metrics
 
 
@@ -84,6 +86,7 @@ class TradingCopilot:
         close_service: PositionCloseService | None = None,
         entry_service: EntryExecutionService | None = None,
         outbox: NotificationDispatcher | None = None,
+        ledger: AccountLedgerService | None = None,
     ):
         self._dry_run_directory: TemporaryDirectory[str] | None = None
         self._reconciliation_lock = asyncio.Lock()
@@ -181,11 +184,21 @@ class TradingCopilot:
         self.outbox = (
             outbox if outbox is not None else NotificationDispatcher(self.db.workflows, self.notifier, config.execution)
         )
+        self.ledger = (
+            ledger
+            if ledger is not None
+            else (
+                AccountLedgerService(self.broker, LedgerStore(self.db.workflows), config.accounting)
+                if self.broker.supports_activity_ledger
+                else None
+            )
+        )
         self.metrics = global_metrics
         self.readiness = ReadinessService(
             self.db.workflows,
             config,
             self.metrics,
+            accounting_enabled=self.ledger is not None,
             stream_connected=(lambda: self.broker.trade_stream_connected)
             if self.broker.supports_trade_stream
             else None,
@@ -1226,8 +1239,24 @@ class TradingCopilot:
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(self._run_worker(HealthComponent.WORKER, self.run_entries))
             tasks.create_task(self._run_worker(HealthComponent.DELIVERY, self.outbox.drain))
+            if self.ledger:
+                tasks.create_task(
+                    self._run_worker(
+                        HealthComponent.ACCOUNTING,
+                        self.refresh_account_ledger,
+                        interval=self.config.accounting.refresh_seconds,
+                    )
+                )
 
-    async def _run_worker(self, component: HealthComponent, action: Callable[[], Awaitable[Any]]) -> None:
+    async def refresh_account_ledger(self) -> None:
+        if self.ledger:
+            report = await self.ledger.refresh()
+            if not report.ready:
+                raise ValueError("; ".join(report.issues))
+
+    async def _run_worker(
+        self, component: HealthComponent, action: Callable[[], Awaitable[Any]], *, interval: float | None = None
+    ) -> None:
         while not self._shutdown_event.is_set():
             try:
                 await action()
@@ -1237,7 +1266,9 @@ class TradingCopilot:
                 with contextlib.suppress(Exception):
                     await self.readiness.observe(component, False, type(exc).__name__)
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._shutdown_event.wait(), self.config.execution.worker_interval_seconds)
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), interval or self.config.execution.worker_interval_seconds
+                )
 
     async def emergency_panic_halt(self, reason: str = "Manual emergency panic trigger") -> PanicReportView:
         """Institutional emergency kill switch:
@@ -1480,12 +1511,13 @@ class TradingCopilot:
             positions = await self.get_positions_report()
             active_count = positions.active_count
             active_exposure = sum(p.entry_price * p.quantity * p.multiplier for p in positions.positions)
-            source_note = "Broker-confirmed closed fills; before fees; all recorded history."
+            source_note = "Tracked full closes only; broker-confirmed fills, before fees. This subset is not added to account totals."
             if stats.get("unverified_closed_count"):
                 source_note += f" {stats['unverified_closed_count']} unverified closes excluded."
             if positions.notes:
                 source_note += " " + positions.notes
             unrealized_text = f"• <b>Broker open-position P&amp;L:</b> {positions.total_pnl_str} ({positions.as_of})"
+        ledger_report, ledger_reason = await self.ledger.current() if self.ledger else (None, "")
         await self.db.record_audit(
             AuditEventType.PERFORMANCE_REPORT,
             {
@@ -1493,9 +1525,13 @@ class TradingCopilot:
                 "closed_signal_ids": [t["id"] for t in stats.get("trades", [])],
                 "realized_pnl": stats.get("total_pnl"),
                 "unrealized": unrealized_text,
+                "account_ledger": ledger_report.model_dump(mode="json") if ledger_report else None,
+                "account_ledger_unavailable": ledger_reason,
             },
         )
         report = PerformanceSummaryReport(
+            account_ledger=ledger_report,
+            account_ledger_unavailable=ledger_reason,
             source_note=source_note,
             unrealized_pnl_text=unrealized_text,
             total_pnl=float(stats.get("total_pnl", 0.0)),

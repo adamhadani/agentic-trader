@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from agentic_trader.accounting.ledger import LedgerReport
 from agentic_trader.agent.macro import CreditStressRegime, MacroStressLevel, YieldCurveRegime
 from agentic_trader.constants import (
     APP_DISPLAY_NAME,
@@ -198,6 +199,8 @@ class PerformanceSummaryReport:
     gross_loss: float
     source_note: str = "Tracked closed trades; before fees; all recorded history."
     unrealized_pnl_text: str = ""
+    account_ledger: LedgerReport | None = None
+    account_ledger_unavailable: str = ""
     active_count: int = 0
     active_exposure: float = 0.0
     recent_closed_trades: list[dict[str, Any]] = None  # type: ignore
@@ -513,6 +516,24 @@ class TelegramHtmlFormatter:
         )
 
     @staticmethod
+    def format_account_ledger_html(report: LedgerReport | None, unavailable: str = "") -> str:
+        if report is None:
+            return f"<b>Account ledger:</b> {html.escape(unavailable)}\n\n" if unavailable else ""
+        stamp = report.observed_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        heading = f"<b>Broker account performance</b> ({stamp})\n"
+        if not report.ready:
+            return heading + "Unavailable: " + html.escape("; ".join(report.issues)) + "\n\n"
+        return (
+            heading
+            + f"• Gross realized: <code>${report.gross_realized:+,.2f}</code>\n"
+            + f"• Fees / income: <code>${report.fees:+,.2f} / ${report.income:+,.2f}</code>\n"
+            + f"• Net realized + income: <code>${report.net_realized:+,.2f}</code>\n"
+            + f"• Broker unrealized: <code>${report.unrealized:+,.2f}</code>\n"
+            + f"<i>{report.fill_count} executions; all available activities, including partial/external trades. "
+            + "Cash and quantities reconciled; broker cost basis. Not tax reporting.</i>\n\n"
+        )
+
+    @staticmethod
     def format_performance_html(report: PerformanceSummaryReport) -> str:
         pnl_sign = "+" if report.total_pnl >= 0 else "-"
         abs_pnl = abs(report.total_pnl)
@@ -533,6 +554,8 @@ class TelegramHtmlFormatter:
 
         return (
             f"📊 <b>{APP_DISPLAY_NAME.upper()}: PERFORMANCE ATTRIBUTION</b>\n\n"
+            f"{TelegramHtmlFormatter.format_account_ledger_html(report.account_ledger, report.account_ledger_unavailable)}"
+            f"<b>Tracked trade statistics</b>\n"
             f"<i>{html.escape(report.source_note)}</i>\n"
             f"{report.unrealized_pnl_text}\n"
             f"• <b>Realized P&amp;L:</b> {color_pnl} <code>{pnl_sign}${abs_pnl:,.2f}</code>\n"

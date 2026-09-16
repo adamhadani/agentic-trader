@@ -228,3 +228,19 @@ class OrderProjectionRecord(Base):
     order_id: Mapped[str] = mapped_column(String, primary_key=True)
     event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ActivityProjectionRecord(Base):
+    __tablename__ = "activity_projections"
+    scope: Mapped[str] = mapped_column(String, primary_key=True)
+    activity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class LedgerCheckpointRecord(Base):
+    __tablename__ = "ledger_checkpoints"
+    scope: Mapped[str] = mapped_column(String, primary_key=True)
+    account_id: Mapped[str] = mapped_column(String, nullable=False)
+    token: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)

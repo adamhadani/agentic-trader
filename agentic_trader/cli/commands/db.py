@@ -5,10 +5,13 @@ from dataclasses import asdict
 
 import click
 
+from agentic_trader.accounting.service import AccountLedgerService
+from agentic_trader.broker import create_broker
 from agentic_trader.cli.utils import coro
 from agentic_trader.config import load_config
 from agentic_trader.execution.durable import WorkKind
 from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
     get_alembic_config,
@@ -147,5 +150,44 @@ async def orders(rebuild: bool) -> None:
             click.echo(f"Replayed {count} observations.")
         for order in await db.workflows.order_views():
             click.echo(order.model_dump_json())
+    finally:
+        await db.engine.dispose()
+
+
+@db_group.command("ledger", help="Inspect account reconciliation; optionally refresh read-only broker evidence")
+@click.option("--sync", "sync_broker", is_flag=True, help="Import account activities; no orders or messages")
+@click.option("--rebuild", is_flag=True, help="Replay activity/checkpoint projections from the journal")
+@coro
+async def ledger(sync_broker: bool, rebuild: bool) -> None:
+
+    config = load_config()
+    db = SignalDatabase(config=config)
+    try:
+        store = LedgerStore(db.workflows)
+        if rebuild:
+            click.echo(f"Replayed {await store.rebuild()} ledger events.")
+        if sync_broker:
+            broker = create_broker(config)
+            if not broker.supports_activity_ledger:
+                raise click.ClickException("Broker does not support an activity ledger")
+            await AccountLedgerService(broker, store, config.accounting).refresh()
+        status = await store.status()
+        # Account identity and raw broker evidence remain in private DB inspection.
+        status.pop("snapshot", None)
+        click.echo(json.dumps(status, indent=2))
+        if sync_broker and (status.get("error") or status.get("report", {}).get("issues")):
+            raise click.ClickException("Account reconciliation failed; inspect the reported issues")
+    finally:
+        await db.engine.dispose()
+
+
+@db_group.command("activities", help="Inspect individual broker activities with exact execution/order IDs")
+@coro
+async def activities() -> None:
+
+    db = SignalDatabase(config=load_config())
+    try:
+        for activity in await LedgerStore(db.workflows).activities():
+            click.echo(json.dumps(activity))
     finally:
         await db.engine.dispose()
