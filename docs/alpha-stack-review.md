@@ -264,11 +264,11 @@ downloads were separate read-only Yahoo calls, with private CSVs outside Git.
 
 | Experiment | Observed result | Interpretation |
 | --- | --- | --- |
-| Causal prefixes, contract validation, research/live decisions, DSR units, cross-process IDs, CLI qualification/promotion, promotion concurrency, projection math, optimizer inputs/load | 36 cases: 14 passing controls, 22 strict expected failures | Concrete deferred defects, not 36 passing guarantees. |
+| Causal prefixes, contract validation, research/live decisions, DSR units, cross-process IDs, CLI qualification/promotion, promotion concurrency, projection math, optimizer inputs/load | 35 cases: 14 passing controls, 21 strict expected failures | Concrete deferred defects, not 36 passing guarantees. |
 | Historical daily bars, NVDA/SPY/IWM/GLD/TLT, 501 bars each through Sep 15; seven formulas, compare last 442 bars after warmup | **1,087 / 15,470 (7.03%)** threshold decisions differ between 30- and 50-bar normalization; per-symbol 6.4–7.8% | Same input and formula, different entry suggestions. This does not compare executed trades or establish strategy profitability. |
 | 10,000 independent zero-mean Gaussian return series, 150 bars, seed 20260916; single-trial confidence threshold 0.85 | **47.35%** accepted using annualized SR versus **14.67%** using per-bar SR | Isolates the units defect with normal moments. Not the entire miner's false-discovery rate and not a calibrated multi-trial significance claim. |
 | Complete miner, seeds 0–19; 504 zero-mean synthetic daily return bars, 25 templates + catalog per run, default gates | **5/20** runs returned one qualifier; roughly 0.29–0.33 s/run on this host | Small diagnostic sample, not a precise false-positive estimate. More frequent search alone is not evidence of progress. |
-| Optimizer, PSD covariance, gross/box/net/factor constraints | 3/10 assets passed; 50 assets hit iteration limit | Failure behavior is a prerequisite to integration, even when small examples pass. |
+| Optimizer, PSD covariance, gross/box/net/factor constraints | 3/10 assets passed; 50 assets hit iteration limit on this host (offline harness; numerical convergence can vary by platform) | Failure behavior is a prerequisite to integration, even when small examples pass. |
 
 Reproduce without any service credentials:
 
@@ -279,11 +279,11 @@ uv run python scripts/review_alpha_stack.py --mining-runs 20
 uv run python scripts/review_alpha_stack.py --market-directory /path/to/csvs
 ```
 
-Verification on this review branch: **665 passed, 12 PostgreSQL skips, 22 expected
+Verification on this review branch: **665 passed, 12 PostgreSQL skips, 21 expected
 failures** in the full default suite; separately **55 passed** using real SDK
 HTTP/WebSocket and a disposable PostgreSQL database (subsequently dropped).
 All pre-commit hooks passed. Running the new tests with `--runxfail` also confirmed
-that all 22 failures occurred at the documented assertions. These validate existing
+that all 21 failures occurred at the documented assertions. These validate existing
 execution protections separately from the expected research failures.
 
 Passive deployed verification at 10:27 UTC reported all readiness components green,

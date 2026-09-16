@@ -20,6 +20,7 @@ from agentic_trader.research.alpha.catalog import AlphaCatalog
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 from agentic_trader.research.alpha.metrics import calculate_deflated_sharpe_ratio
 from agentic_trader.research.alpha.miner import AlphaMiner
+from agentic_trader.research.alpha.optimizer import ConvexAlphaPortfolioOptimizer
 
 
 SEED = 20260916
@@ -46,6 +47,7 @@ def measure(market_directory: Path | None, mining_runs: int) -> dict:
         },
         "market_parity": [],
         "synthetic_mining": [],
+        "optimizer_load": [],
     }
     evaluator = AlphaExpressionEvaluator()
     if market_directory:
@@ -101,6 +103,31 @@ def measure(market_directory: Path | None, mining_runs: int) -> dict:
                 "qualified": len(candidates),
                 "seconds": round(time.monotonic() - started, 3),
                 "top_expression": candidates[0].definition.expression if candidates else None,
+            }
+        )
+    # Numerical convergence can vary with BLAS/platform. Report this stress case
+    # rather than making a platform-specific expected failure part of CI.
+    for assets in (3, 10, 50):
+        optimizer_rng = np.random.default_rng(assets)
+        basis = optimizer_rng.normal(size=(assets, 3))
+        covariance = basis @ basis.T * 0.01 + np.eye(assets) * 0.02
+        started = time.monotonic()
+        result = ConvexAlphaPortfolioOptimizer(
+            risk_aversion=1,
+            dollar_neutral=True,
+            max_factor_exposure=0.05,
+        ).optimize(optimizer_rng.normal(0, 0.02, assets), covariance, basis)
+        report["optimizer_load"].append(
+            {
+                "assets": assets,
+                "success": result.success,
+                "message": result.message,
+                "iterations": result.iterations,
+                "seconds": round(time.monotonic() - started, 3),
+                "gross": float(np.abs(result.weights).sum()),
+                "max_weight": float(np.abs(result.weights).max()),
+                "net": float(result.weights.sum()),
+                "max_factor_exposure": float(np.abs(basis.T @ result.weights).max()),
             }
         )
     return report

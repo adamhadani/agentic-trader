@@ -250,7 +250,7 @@ def test_optimizer_rejects_invalid_inputs(invalid):
     raise AssertionError("Malformed optimization input was accepted")
 
 
-@pytest.mark.parametrize("assets", [3, 10, pytest.param(50, marks=gap("A8: 50-asset solve exceeds iteration limit"))])
+@pytest.mark.parametrize("assets", [3, 10])
 def test_optimizer_feasible_constraints_under_load(assets):
     rng = np.random.default_rng(assets)
     basis = rng.normal(size=(assets, 3))
