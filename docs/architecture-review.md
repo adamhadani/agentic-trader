@@ -120,6 +120,10 @@ statistics, as were some pending orders' same-bar exit losses. Implemented
 from feature availability, with compatible variance samples and policy fencing.
 The [fresh study](alpha-timeline-study-2026-09-16.md) has no unavailable comparisons
 and passes null-search criteria, but positive-control power remains insufficient.
-Session-correct finer-bar replay remains A2b, followed by A3 objective alignment.
+The [A2b replay foundation](alpha-session-replay.md) now shares one bracket engine
+between coarse and minute clocks, consumes observed calendars and fails closed on
+missing minutes. Existing journal/artifact mechanisms retain all real-data attempts
+and event traces. Remaining A2b work is live signal-clock versioning and measured
+publication/broker execution behavior; A3 objective alignment follows.
 Preserve the original incomplete study and gates;
 do not treat missing comparisons as null rejections or loosen trade-count requirements.

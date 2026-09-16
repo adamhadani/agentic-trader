@@ -264,6 +264,7 @@ a definition without downloading data or inventing a performance result.
 uv run copilot alpha calibrate --seeds 10 --bootstrap-samples 499
 uv run copilot alpha study-plan --seed 10472909262026 --output /private/path/new-protocol.json
 uv run copilot alpha study config/research/a2a-v1.json --output /private/path/new-study-directory
+uv run copilot alpha replay 'delta(close,3)' --symbol SPY --interval 15m --start 2024-11-27 --end 2024-11-29 --output /private/path/new-replay
 uv run copilot alpha mine --symbol SPY --feed alpaca --interval 1d --lookback 5y --iterations 25 --method random
 uv run copilot alpha mine --universe etf32 --feed alpaca --method genetic --iterations 9 --max-seconds 120
 uv run copilot alpha benchmark RUN_ID --method ridge --budget 5
@@ -292,6 +293,12 @@ and the [active research roadmap](alpha-roadmap.md).
 [predeclared comparison](alpha-pipeline.md#predeclared-calibration-studies), retaining
 all replicates in a new private directory. Failed or missing replicates cannot pass
 the criteria; even a complete passing study is not a promotion credential.
+
+`replay` captures observed exchange sessions and raw minute bars, then runs the
+shared execution engine on completed regular-session observations. It charges one
+real research attempt and excludes the inspected period from fresh holdouts before
+provider access, including failed diagnostics. Results earn no qualification or
+shadow credit; intraday promotion remains blocked. See [session replay](alpha-session-replay.md).
 
 ## 5. Database Schema Migrations & Administration (`copilot db`)
 

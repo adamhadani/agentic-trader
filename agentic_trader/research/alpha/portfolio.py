@@ -12,7 +12,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from agentic_trader.research.alpha.data import BAR_DURATIONS
+from agentic_trader.market.bars import BAR_DURATIONS
 from agentic_trader.research.alpha.forecasts import CombinedForecast
 from agentic_trader.research.alpha.optimizer import ConvexAlphaPortfolioOptimizer
 

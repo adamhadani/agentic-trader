@@ -1,0 +1,16 @@
+{
+  "purpose": "Session/minute execution mechanics and feed-coverage smoke test; no alpha selection or statistical acceptance claim",
+  "expression": "delta(close,3)",
+  "symbol": "SPY",
+  "interval": "15m",
+  "decision_delay_seconds": 60,
+  "feeds": ["iex", "sip"],
+  "windows": [
+    {"name": "dst", "start": "2024-03-08", "end": "2024-03-11", "expected_minutes": 780, "expected_signal_bars": 52},
+    {"name": "thanksgiving", "start": "2024-11-27", "end": "2024-11-29", "expected_minutes": 600, "expected_signal_bars": 40}
+  ],
+  "research_attempts": 4,
+  "missing_data_policy": "Retain unavailable results; no imputation, feed fallback, reroll or threshold change",
+  "success_criteria": "Observed calendar boundaries and full minute coverage produce deterministic causal replay; unavailable coverage remains an explicit failed diagnostic",
+  "authorizes_promotion": false
+}

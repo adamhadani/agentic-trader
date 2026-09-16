@@ -377,6 +377,27 @@ class AlphaRepository:
             )
             await self._append(session, "research/latest", payload, EventKind.ALPHA_RESEARCH, "research_worker")
 
+    async def record_diagnostic(self, run_id: str, result: dict):
+        """Retain an immutable diagnostic result without adding variance or qualification evidence."""
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            reservation = await self._get(session, f"research/reservation/{run_id}")
+            if not reservation:
+                raise ValueError("Diagnostic requires a reserved research attempt")
+            key = f"diagnostic/{run_id}"
+            if await self._get(session, key):
+                raise ValueError("Diagnostic result is immutable")
+            payload = {
+                **result,
+                "run_id": run_id,
+                "symbol": reservation["symbol"],
+                "timeframe": reservation["timeframe"],
+                "trial_count": reservation["trials"],
+                "recorded_at": datetime.now(UTC).isoformat(),
+            }
+            await self._append(session, key, payload, EventKind.ALPHA_RESEARCH, "research_worker")
+            await self._append(session, "research/latest", payload, EventKind.ALPHA_RESEARCH, "research_worker")
+
     async def exclude_observed_interval(
         self, *, symbol: str, start: str, end: str, trials: int, reason: str, actor: str
     ):

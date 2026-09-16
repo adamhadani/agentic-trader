@@ -1,0 +1,153 @@
+"""Read-only provider adapter and journal/artifact orchestration for session replay."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Protocol
+from uuid import uuid4
+
+import pandas as pd
+from alpaca.trading.requests import GetCalendarRequest
+
+from agentic_trader.market.bars import (
+    SessionCoverageError,
+    SessionSchedule,
+    TradingSession,
+    build_session_bars,
+    utc_timestamp,
+)
+from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.alpha.data import save_dataset, save_json_report
+from agentic_trader.research.alpha.replay import (
+    SESSION_REPLAY_KIND,
+    ReplayPlan,
+    ReplayStatus,
+    simulate_session_strategy,
+)
+from agentic_trader.research.alpha.validation import frame_digest
+from agentic_trader.storage.alpha import AlphaRepository
+
+
+class ReplaySource(Protocol):
+    def capture(self, plan: ReplayPlan, as_of: pd.Timestamp) -> tuple[pd.DataFrame, SessionSchedule]: ...
+
+
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class AlpacaReplaySource:
+    """Injected SDK clients; only calendar and historical bars GETs are permitted."""
+
+    def __init__(self, bars_provider, calendar_client):
+        self.bars_provider = bars_provider
+        self.calendar_client = calendar_client
+
+    def capture(self, plan: ReplayPlan, as_of: pd.Timestamp) -> tuple[pd.DataFrame, SessionSchedule]:
+        items = self.calendar_client.get_calendar(GetCalendarRequest(start=plan.start, end=plan.end))
+        if not isinstance(items, list) or not items:
+            raise ValueError("No observed Alpaca sessions; calendar fallback is prohibited")
+        sessions = []
+        for item in items:
+            # alpaca-py's Calendar carries naive exchange-local datetimes.
+            opened, closed = pd.Timestamp(item.open), pd.Timestamp(item.close)
+            opened = opened.tz_localize(ET_TZ) if opened.tzinfo is None else opened
+            closed = closed.tz_localize(ET_TZ) if closed.tzinfo is None else closed
+            sessions.append(TradingSession(item.date, opened, closed))
+        schedule = SessionSchedule(plan.start, plan.end, tuple(sessions), source="alpaca_calendar")
+        bars = self.bars_provider.fetch_bars(
+            plan.symbol, "1m", start=plan.start_at.to_pydatetime(), end=min(plan.end_at, as_of).to_pydatetime()
+        )
+        if bars.attrs.get("feed") != plan.definition.data_feed or bars.attrs.get("adjustment") != "raw":
+            raise ValueError("Minute observations do not match the frozen feed/adjustment")
+        return bars, schedule
+
+
+def _compute(plan: ReplayPlan, bars: pd.DataFrame, schedule: SessionSchedule, as_of, output: Path):
+    digest = frame_digest(bars)
+    dataset = save_dataset(bars, output, digest)
+    calendar = save_json_report(schedule.document(), output / "calendar.json")
+    save_json_report(
+        {
+            "dataset": dataset.name,
+            "dataset_hash": _file_digest(dataset),
+            "calendar_hash": _file_digest(calendar),
+            "content_hash": digest,
+            "attrs": bars.attrs,
+            "captured_at": datetime.now(UTC).isoformat(),
+        },
+        output / "observations.json",
+    )
+    data = build_session_bars(bars, schedule, plan.definition.timeframe, as_of=as_of)
+    result = simulate_session_strategy(plan.definition, data, policy=plan.policy)
+    result["net_returns"] = [
+        {"bar_start": t.isoformat(), "net_return": float(v)} for t, v in result["net_returns"].items()
+    ]
+    result["signal_bars"] = [
+        {"bar_start": t.isoformat(), "closed_at": data.closed_at[i].isoformat(), **row.to_dict()}
+        for i, (t, row) in enumerate(data.signals.iterrows())
+    ]
+    return result
+
+
+class AlphaReplayService:
+    def __init__(self, repository: AlphaRepository, source: ReplaySource):
+        self.repository = repository
+        self.source = source
+
+    async def run(self, plan: ReplayPlan, output: Path, *, environment: dict, as_of=None) -> dict:
+        as_of = utc_timestamp(as_of if as_of is not None else datetime.now(UTC))
+        if as_of <= plan.start_at:
+            raise ValueError("Replay needs observed history before its as-of boundary")
+        await asyncio.to_thread(output.mkdir, parents=True, mode=0o700)
+        run_id = uuid4().hex
+        manifest = {
+            "run_id": run_id,
+            "plan_id": plan.identity,
+            "plan": plan.document(),
+            "environment": environment,
+            "as_of": as_of.isoformat(),
+        }
+        await asyncio.to_thread(save_json_report, manifest, output / "manifest.json")
+        # Both budget and exposure commit before any provider/data evaluation.
+        await self.repository.reserve_run(run_id, symbol=plan.symbol, timeframe=plan.definition.timeframe, trials=1)
+        await self.repository.exclude_observed_interval(
+            symbol=plan.symbol,
+            start=plan.start_at.isoformat(),
+            end=min(plan.end_at, as_of).isoformat(),
+            trials=0,
+            reason=f"Session replay {run_id}; frozen plan {plan.identity}",
+            actor="session_replay",
+        )
+        try:
+            bars, schedule = await asyncio.to_thread(self.source.capture, plan, as_of)
+            detail = await asyncio.to_thread(_compute, plan, bars, schedule, as_of, output)
+            result = {**detail, "status": ReplayStatus.COMPLETED}
+        except Exception as exc:
+            result = {"status": ReplayStatus.FAILED, "error_type": type(exc).__name__, "error": str(exc)}
+            if isinstance(exc, SessionCoverageError):
+                result["coverage"] = exc.coverage
+        result.update(run_id=run_id, plan_id=plan.identity, authorizes_promotion=False)
+        for name in ("manifest", "observations"):
+            artifact = output / f"{name}.json"
+            if await asyncio.to_thread(artifact.exists):
+                result[f"{name}_hash"] = await asyncio.to_thread(_file_digest, artifact)
+        path = await asyncio.to_thread(save_json_report, result, output / "result.json")
+        digest = await asyncio.to_thread(_file_digest, path)
+        await self.repository.record_diagnostic(
+            run_id,
+            {
+                "kind": SESSION_REPLAY_KIND,
+                "status": result["status"],
+                "plan": plan.document(),
+                "artifact": str(path),
+                "artifact_hash": digest,
+                "coverage": result.get("coverage"),
+                "error_type": result.get("error_type"),
+                "authorizes_promotion": False,
+            },
+        )
+        return result

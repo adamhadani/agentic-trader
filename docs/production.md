@@ -315,3 +315,10 @@ Regenerate only the miner plist with `./scripts/launchd.sh install-miner` to app
 its staggered schedule. This does not start another daemon or Telegram poller.
 Private research artifacts live in `~/.local/state/agentic-trader/research` with
 atomic writes and mode 0600. Retain them with the journal for reproducibility.
+
+`alpha replay` is a read-only Alpaca data diagnostic, but intentionally writes its
+attempt and inspected-period exclusion to the configured research journal before
+provider access. It starts no daemon/poller and submits no orders or notifications.
+Retain failed results as well as successful ones; no automatic retry, feed fallback
+or promotion is performed. See [session replay](alpha-session-replay.md) for its
+private artifact contract and remaining live-clock limitations.

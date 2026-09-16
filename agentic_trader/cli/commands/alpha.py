@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import platform
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
@@ -18,6 +18,7 @@ import click
 import pandas as pd
 import yfinance as yf
 
+from agentic_trader.broker.alpaca import BoundedStockDataClient, BoundedTradingClient
 from agentic_trader.cli.utils import coro
 from agentic_trader.config import load_config
 from agentic_trader.data.providers import AlpacaDataProvider
@@ -30,6 +31,13 @@ from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.portfolio import PortfolioPolicy, PortfolioSnapshot, build_shadow_portfolio
 from agentic_trader.research.alpha.promotion import AlphaPromotionService, read_alpha_definitions
+from agentic_trader.research.alpha.replay import (
+    MAX_DECISION_DELAY_SECONDS,
+    ReplayPlan,
+    ReplayStatus,
+    SessionReplayPolicy,
+)
+from agentic_trader.research.alpha.replay_workflow import AlpacaReplaySource, AlphaReplayService
 from agentic_trader.research.alpha.study import StudyProtocol, StudyStatus
 from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
@@ -514,3 +522,72 @@ async def alpha_study_cmd(protocol_path, output):
     click.echo("Diagnostic only; neither study completion nor passing criteria authorizes promotion.")
     if result["status"] == StudyStatus.INCOMPLETE:
         raise click.ClickException("Incomplete study; inspect retained failures. Validation may remain unexamined.")
+
+
+@contextmanager
+def replay_source(config, feed):
+    """CLI composition owns bounded SDK clients; the replay service only receives readers."""
+    with ExitStack() as clients:
+        calendar_client = BoundedTradingClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            paper=config.alpaca_paper,
+            request_timeout=config.execution.broker_request_timeout_seconds,
+        )
+        clients.callback(calendar_client._session.close)
+        data_client = BoundedStockDataClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            request_timeout=config.execution.broker_request_timeout_seconds,
+        )
+        clients.callback(data_client._session.close)
+        yield AlpacaReplaySource(AlpacaDataProvider(stock_client=data_client, feed=feed), calendar_client)
+
+
+@alpha_group.command("replay")
+@click.argument("expression")
+@click.option("--symbol", required=True)
+@click.option("--start", type=click.DateTime(formats=["%Y-%m-%d"]), required=True)
+@click.option("--end", type=click.DateTime(formats=["%Y-%m-%d"]), required=True)
+@click.option("--interval", type=click.Choice(["15m", "1h", "4h", "1d"]), default="15m")
+@click.option("--feed", type=click.Choice(["iex", "sip"]), help="Defaults to the configured Alpaca stock feed")
+@click.option(
+    "--decision-delay-seconds",
+    type=click.IntRange(0, MAX_DECISION_DELAY_SECONDS),
+    default=SessionReplayPolicy().decision_delay_seconds,
+)
+@click.option("--output", type=click.Path(path_type=Path), help="New private directory; no overwrite")
+@coro
+async def alpha_replay_cmd(expression, symbol, start, end, interval, feed, decision_delay_seconds, output):
+    """Diagnostic session/minute replay; charges one trial and consumes the inspected period."""
+    config = load_config()
+    feed = feed or config.market_data.alpaca_feed
+    try:
+        symbol = symbol.strip().upper()
+        definition = AlphaDefinition(
+            "session_replay",
+            "Session replay",
+            expression,
+            timeframe=interval,
+            eligible_symbols=(symbol,),
+            data_feed=f"alpaca:{feed}",
+        )
+        plan = ReplayPlan(symbol, start.date(), end.date(), definition, SessionReplayPolicy(decision_delay_seconds))
+        output = output or artifact_directory() / f"session-replay-{uuid4().hex}"
+        environment = await asyncio.to_thread(research_environment)
+        with replay_source(config, feed) as source:
+            async with alpha_repository() as repository:
+                result = await AlphaReplayService(repository, source).run(plan, output, environment=environment)
+    except (TypeError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Session replay {result['run_id']}: {result['status']}; artifacts: {output}")
+    click.echo(
+        "One research attempt charged; inspected period excluded from fresh holdouts. No promotion or shadow credit."
+    )
+    if result["status"] != ReplayStatus.COMPLETED:
+        raise click.ClickException(
+            f"Replay unavailable ({result.get('error_type')}); inspect retained result/coverage."
+        )
+    click.echo(
+        f"Observed minutes: {result['coverage']['observed_minutes']}; completed simulated trades: {result['total_trades']}"
+    )

@@ -15,6 +15,8 @@ Unavailable features suppress new signals; unavailable prices invalidate the run
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from enum import StrEnum
 
 import numpy as np
 import pandas as pd
@@ -23,6 +25,7 @@ from scipy import stats
 from agentic_trader.research.alpha.metrics import observed_return_values
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.strategy import (
+    AlphaExecutionPolicy,
     alpha_scores,
     bracket_prices,
     entry_directions,
@@ -101,11 +104,81 @@ def simulate_strategy(
             raise ValueError("Scores and prices must align exactly")
     if np.isinf(scores.to_numpy(dtype=float)).any():
         raise ValueError("Infinite feature scores are invalid")
+    observations = entry_intents(definition, frame, scores)
+    intents = {i: proposal for i in range(max(1, start), end) if (proposal := observations[i - 1]) is not None}
+    result = simulate_execution(frame, intents, definition.execution, start=start)
+    scored = int(scores.shift(1).iloc[start:end].notna().sum())
+    result["feature_coverage"] = {
+        "bars": len(result["net_returns"]),
+        "scored_bars": scored,
+        "unscored_bars": len(result["net_returns"]) - scored,
+        "score_fraction": scored / len(result["net_returns"]),
+    }
+    result["execution_scope"] = (
+        "daily_bar_policy" if definition.timeframe == "1d" else "diagnostic_intraday_session_unverified"
+    )
+    return result
+
+
+class SimulationEventKind(StrEnum):
+    ORDER_CREATED = "order_created"
+    ENTRY_FILLED = "entry_filled"
+    EXIT_FILLED = "exit_filled"
+    STOP_UPDATED = "stop_updated"
+
+
+@dataclass(frozen=True)
+class BracketIntent:
+    direction: int
+    limit: float
+    stop: float
+    target: float
+    signal_timestamp: str
+
+
+def entry_intents(definition: AlphaDefinition, frame: pd.DataFrame, scores: pd.Series) -> list[BracketIntent | None]:
+    """Build immutable proposals from each completed signal bar, without execution state."""
     directions = entry_directions(scores, definition)
     policy = definition.execution
     atr = strategy_atr(frame, policy)
     lows = frame.low.rolling(policy.swing_window).min()
     highs = frame.high.rolling(policy.swing_window).max()
+    proposals = []
+    for i in range(len(frame)):
+        proposal = None
+        if directions.iloc[i] and pd.notna(atr.iloc[i]):
+            direction = int(directions.iloc[i])
+            limit = entry_limit(float(frame.close.iloc[i]), policy)
+            try:
+                stop, target = bracket_prices(
+                    limit, direction, float(atr.iloc[i]), float(lows.iloc[i]), float(highs.iloc[i]), policy
+                )
+                proposal = BracketIntent(direction, limit, stop, target, str(frame.index[i]))
+            except ValueError:
+                pass
+        proposals.append(proposal)
+    return proposals
+
+
+def simulate_execution(
+    frame: pd.DataFrame, intents: dict[int, BracketIntent], policy: AlphaExecutionPolicy, *, start=0, trace=False
+) -> dict:
+    """One execution state machine for coarse validation and observed minute replay.
+
+    Event times identify OHLC bar starts, not fabricated exchange execution times.
+    A close-observed stop update affects only the following execution bar.
+    """
+    end = len(frame)
+    if not 0 <= start < end:
+        raise ValueError("Invalid execution interval")
+    values = frame[["open", "high", "low", "close"]].to_numpy(dtype=float)
+    events = []
+    order_number = 0
+
+    def emit(kind, **payload):
+        if trace:
+            events.append({"kind": kind, "bar_start": str(frame.index[i]), "order_number": order_number, **payload})
+
     cash = equity = 1.0
     quantity = 0.0
     direction = 0
@@ -119,24 +192,20 @@ def simulate_strategy(
         before = equity
         intrabar_entry = False
         o, h, low, close = values[i]
-        # Evaluate only prior complete observations; no inherited fold position.
-        if direction == 0 and pending is None and i > 0 and directions.iloc[i - 1] and pd.notna(atr.iloc[i - 1]):
-            proposed = int(directions.iloc[i - 1])
-            try:
-                next_stop, next_target = bracket_prices(
-                    entry_limit(float(frame.close.iloc[i - 1]), policy),
-                    proposed,
-                    float(atr.iloc[i - 1]),
-                    float(lows.iloc[i - 1]),
-                    float(highs.iloc[i - 1]),
-                    policy,
-                )
-            except ValueError:
-                next_stop = next_target = math.nan
-            if math.isfinite(next_stop):
-                pending = (proposed, entry_limit(float(frame.close.iloc[i - 1]), policy), next_stop, next_target)
+        # A fold starts flat; only proposals eligible on this clock may enter.
+        if direction == 0 and pending is None and i in intents:
+            pending = intents[i]
+            order_number += 1
+            emit(
+                SimulationEventKind.ORDER_CREATED,
+                signal_timestamp=pending.signal_timestamp,
+                direction=pending.direction,
+                limit=pending.limit,
+                stop=pending.stop,
+                target=pending.target,
+            )
         if pending is not None:
-            proposed, limit, next_stop, next_target = pending
+            proposed, limit, next_stop, next_target = pending.direction, pending.limit, pending.stop, pending.target
             marketable = proposed * (o - limit) <= 0
             touched = low <= limit if proposed == 1 else h >= limit
             if marketable or touched:
@@ -149,6 +218,13 @@ def simulate_strategy(
                 cash -= direction * quantity * entry + entry_fee
                 entry_timestamp = str(frame.index[i])
                 entries.append({"timestamp": entry_timestamp, "price": entry, "limit": limit, "direction": direction})
+                emit(
+                    SimulationEventKind.ENTRY_FILLED,
+                    price=entry,
+                    limit=limit,
+                    direction=direction,
+                    intrabar=intrabar_entry,
+                )
                 pending = None
         if direction:
             exit_price = None
@@ -174,24 +250,31 @@ def simulate_strategy(
                         "net_return": pnl / entry_equity,
                     }
                 )
+                emit(
+                    SimulationEventKind.EXIT_FILLED,
+                    price=exit_price,
+                    net_return=pnl / entry_equity,
+                    phase="open" if exit_price == o and not intrabar_entry else "intrabar",
+                )
                 direction, quantity = 0, 0
             else:
-                stop = trailing_price(entry, close, stop, initial_risk, direction, policy)
+                next_stop = trailing_price(entry, close, stop, initial_risk, direction, policy)
+                if next_stop != stop:
+                    emit(
+                        SimulationEventKind.STOP_UPDATED,
+                        old_stop=stop,
+                        stop=next_stop,
+                        phase="close",
+                        effective="next_execution_bar",
+                    )
+                stop = next_stop
         equity = cash + direction * quantity * close
         if equity <= 0:
             raise ValueError("Strategy exhausted research capital")
         returns.iloc[i - start] = equity / before - 1
     result = return_statistics(returns, trades)
-    scored = int(scores.shift(1).iloc[start:end].notna().sum())
-    result["feature_coverage"] = {
-        "bars": len(returns),
-        "scored_bars": scored,
-        "unscored_bars": len(returns) - scored,
-        "score_fraction": scored / len(returns),
-    }
-    result["execution_scope"] = (
-        "daily_bar_policy" if definition.timeframe == "1d" else "diagnostic_intraday_session_unverified"
-    )
+    if trace:
+        result["events"] = events
     result["open_position"] = bool(direction)
     result["pending_entry"] = pending is not None
     result["entries"] = entries

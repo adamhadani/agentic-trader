@@ -9,7 +9,8 @@ from datetime import UTC, datetime
 
 import numpy as np
 
-from agentic_trader.research.alpha.data import BAR_DURATIONS, completed_bars
+from agentic_trader.market.bars import BAR_DURATIONS
+from agentic_trader.research.alpha.data import completed_bars
 from agentic_trader.research.alpha.forecasts import AlphaForecast, ForecastCalibration, combine_forecasts
 from agentic_trader.research.alpha.strategy import TIMEFRAME_FIELDS, alpha_scores, entry_directions
 from agentic_trader.storage.workflow import encode
