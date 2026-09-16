@@ -187,7 +187,10 @@ broker-backed valuation. Backtest defaults come from loaded configuration.
 
 `scripts/verify_runtime.py` checks the clean source revision against the running
 startup audit, Alpaca paper access and exact position parity, Telegram identity,
-menu and actual daemon poll freshness. It sends no messages or orders. `/healthz`
+menu and actual daemon poll freshness. Account reconciliation is read through
+`AccountLedgerService.current()` using the daemon's fresh persisted report; the
+verifier never starts a competing activity import. Missing, stale, failed or
+unreconciled evidence fails verification. It sends no messages or orders. `/healthz`
 is liveness; successful read checks do not exercise order submission.
 
 ### Scheduler startup timing
