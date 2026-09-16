@@ -10,12 +10,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from agentic_trader.config import AppConfig, DatabaseConfig, normalize_db_url
 from agentic_trader.constants import (
+    ACTIVE_CLOSE_STATUSES,
     DEFAULT_DB_MAX_RETRIES,
     DEFAULT_DB_RETRY_DELAY,
     DEFAULT_DUPLICATE_SIGNAL_WINDOW_HOURS,
@@ -23,6 +25,8 @@ from agentic_trader.constants import (
     UNKNOWN_EXECUTION_MODE,
     AssetClass,
     AuditEventType,
+    CloseRequestStatus,
+    Direction,
     ExecutionMode,
     ExitReason,
     RuntimeEnvironment,
@@ -30,7 +34,7 @@ from agentic_trader.constants import (
 )
 from agentic_trader.runtime import RUN_ID, validate_test_database
 from agentic_trader.storage.migrations import run_migrations_head
-from agentic_trader.storage.models import AuditEventRecord, SignalRecord, SystemStateRecord
+from agentic_trader.storage.models import AuditEventRecord, CloseRequestRecord, SignalRecord, SystemStateRecord
 
 
 logger = logging.getLogger(__name__)
@@ -125,16 +129,120 @@ class SignalDatabase:
 
     async def record_exit_request(self, signal_id: int, broker_exit_order_id: str) -> None:
         async with self.session_factory() as session:
+            result = await session.execute(
+                update(SignalRecord)
+                .where(*self._scope(), SignalRecord.id == signal_id, SignalRecord.status == SignalStatus.EXECUTED)
+                .where(
+                    or_(
+                        SignalRecord.broker_exit_order_id.is_(None),
+                        SignalRecord.broker_exit_order_id != broker_exit_order_id,
+                    )
+                )
+                .values(broker_exit_order_id=broker_exit_order_id)
+            )
+            if getattr(result, "rowcount", 0):
+                session.add(
+                    self._audit(
+                        AuditEventType.EXIT_ORDER_SUBMITTED, signal_id, {"broker_exit_order_id": broker_exit_order_id}
+                    )
+                )
+            await session.commit()
+
+    async def claim_close_request(self, values: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        """A database unique index arbitrates concurrent processes before broker mutations."""
+        record = CloseRequestRecord(
+            **values,
+            environment=self.environment,
+            execution_mode=self.execution_mode,
+            status=CloseRequestStatus.CLAIMED,
+            detail="",
+        )
+        async with self.session_factory() as session:
+            session.add(record)
+            session.add(
+                self._audit(
+                    AuditEventType.CLOSE_REQUEST,
+                    values.get("signal_id"),
+                    {**values, "status": CloseRequestStatus.CLAIMED},
+                )
+            )
+            try:
+                await session.commit()
+                return True, record.to_dict()
+            except IntegrityError:
+                await session.rollback()
+                existing = (
+                    await session.execute(
+                        select(CloseRequestRecord).where(
+                            CloseRequestRecord.environment == self.environment,
+                            CloseRequestRecord.execution_mode == self.execution_mode,
+                            CloseRequestRecord.symbol == values["symbol"],
+                            CloseRequestRecord.status.in_(ACTIVE_CLOSE_STATUSES),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    raise
+                return False, existing.to_dict()
+
+    async def clear_failed_exit_request(self, signal_id: int, broker_order_id: str) -> None:
+        """Release only an exact, broker-confirmed unfilled terminal exit."""
+        async with self.session_factory() as session:
             await session.execute(
                 update(SignalRecord)
-                .where(*self._scope(), SignalRecord.id == signal_id)
-                .values(broker_exit_order_id=broker_exit_order_id)
+                .where(
+                    *self._scope(),
+                    SignalRecord.id == signal_id,
+                    SignalRecord.status == SignalStatus.EXECUTED,
+                    SignalRecord.broker_exit_order_id == broker_order_id,
+                )
+                .values(broker_exit_order_id=None)
             )
             session.add(
                 self._audit(
-                    AuditEventType.EXIT_ORDER_SUBMITTED, signal_id, {"broker_exit_order_id": broker_exit_order_id}
+                    AuditEventType.EXIT_SUBMISSION_FAILED,
+                    signal_id,
+                    {"broker_exit_order_id": broker_order_id, "phase": "unfilled_terminal"},
                 )
             )
+            await session.commit()
+
+    async def active_close_requests(self) -> list[dict[str, Any]]:
+        async with self.session_factory() as session:
+            records = (
+                await session.execute(
+                    select(CloseRequestRecord).where(
+                        CloseRequestRecord.environment == self.environment,
+                        CloseRequestRecord.execution_mode == self.execution_mode,
+                        CloseRequestRecord.status.in_(ACTIVE_CLOSE_STATUSES),
+                    )
+                )
+            ).scalars()
+            return [record.to_dict() for record in records]
+
+    async def update_close_request(
+        self,
+        request_id: str,
+        status: CloseRequestStatus,
+        detail: str,
+        broker_order_id: str | None = None,
+    ) -> None:
+        async with self.session_factory() as session:
+            values: dict[str, Any] = {"status": status, "detail": detail, "updated_at": datetime.now(UTC)}
+            if broker_order_id:
+                values["broker_order_id"] = broker_order_id
+            result = await session.execute(
+                update(CloseRequestRecord)
+                .where(
+                    CloseRequestRecord.id == request_id,
+                    CloseRequestRecord.environment == self.environment,
+                    CloseRequestRecord.execution_mode == self.execution_mode,
+                    CloseRequestRecord.status.in_(ACTIVE_CLOSE_STATUSES),
+                )
+                .values(**values)
+            )
+            if getattr(result, "rowcount", 0):
+                session.add(self._audit(AuditEventType.CLOSE_REQUEST, None, {"request_id": request_id, **values}))
             await session.commit()
 
     async def get_audit_events(
@@ -456,30 +564,30 @@ class SignalDatabase:
             await session.commit()
             return bool(rowcount > 0)
 
-    async def update_position_stop(
-        self,
-        signal_id: int,
-        new_stop: float,
-        raw_response: str | None = None,
-    ) -> bool:
-        """Update stop loss price for an active position (e.g. breakeven or trailing stop)."""
+    async def update_position_stop(self, signal_id: int, new_stop: float, *, reason: str) -> bool:
+        """Persist a confirmed ratchet without overwriting the original trade thesis."""
         async with self.session_factory() as session:
-            vals: dict[str, Any] = {"stop_loss": float(new_stop)}
-            if raw_response:
-                vals["raw_response"] = raw_response
             stmt = (
                 update(SignalRecord)
                 .where(*self._scope())
                 .where(
                     SignalRecord.id == signal_id,
                     SignalRecord.status == SignalStatus.EXECUTED,
+                    or_(
+                        and_(SignalRecord.direction == Direction.LONG, SignalRecord.stop_loss < new_stop),
+                        and_(SignalRecord.direction == Direction.SHORT, SignalRecord.stop_loss > new_stop),
+                    ),
                 )
-                .values(**vals)
+                .values(stop_loss=float(new_stop))
             )
             res = await session.execute(stmt)
+            changed = bool(getattr(res, "rowcount", 0) > 0)
+            if changed:
+                session.add(
+                    self._audit(AuditEventType.STOP_UPDATED, signal_id, {"stop_loss": new_stop, "reason": reason})
+                )
             await session.commit()
-            rowcount = getattr(res, "rowcount", 0)
-            return bool(rowcount > 0)
+            return changed
 
     async def get_closed_positions_stats(self) -> dict[str, Any]:
         """Aggregate closed trade statistics (P&L, win rate, profit factor, trade list)."""

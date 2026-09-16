@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -262,7 +263,7 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
     # Case 1: Symbol not in open positions, but closed orders only contains the entry BUY order
     broker.client.get_all_positions.return_value = []
 
-    entry_order = MagicMock(
+    entry_order = SimpleNamespace(
         id="ENTRY-ORDER-123",
         symbol="SPY",
         filled_qty="39",
@@ -294,7 +295,7 @@ async def test_alpaca_reconcile_skips_entry_order_and_requires_exit(test_config)
     assert events == []
 
     # Case 2: An actual exit SELL order has filled
-    exit_order = MagicMock(
+    exit_order = SimpleNamespace(
         id="EXIT-ORDER-456",
         symbol="SPY",
         filled_qty="39",

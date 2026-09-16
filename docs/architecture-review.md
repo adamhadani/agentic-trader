@@ -41,7 +41,7 @@ backend, not a production failover mechanism.
 | --- | --- | --- |
 | P1 | `execute_signal_by_id` reads portfolio exposure before claiming. Two different pending signals can both pass the aggregate limit. `SUBMITTING` does not reserve capacity. | Add a transactional portfolio reservation covering quantity/notional/class budgets, plus approval-time session/macro/risk revalidation. Use a deterministic broker client-order ID for ambiguous submission recovery. |
 | P1 | Complete fills work; partial entry/exit combinations, cancellations, replacements, sliced plan IDs and externally created broker trades lack a fill ledger. | Add immutable order/fill tables keyed by broker account/order/execution IDs. Reconcile idempotently; expose unmatched/partial states to operators. Keep sliced execution disabled until protective brackets and partial accounting work. |
-| P1 | `manage_trailing_stops` updates local state before broker stop replacement; it can also overwrite the thesis text. | Keep requested and acknowledged broker stops separate, preserve initial risk/thesis, and commit confirmed stop state only after broker success. |
+| Resolved Sep 16 | Stop replacement previously persisted intent as fact and overwrote the thesis. | Exact replacement-chain verification now precedes a conditional stop update; request/result audits preserve initial risk and thesis. See the Alpaca review. |
 | P1 | Watchdog and `/healthz` prove process liveness, not data, broker-stream or Telegram freshness. | Add readiness with last successful scan, quote age, broker sync, Telegram poll and reconciliation backlog; alert on staleness. Bind active diagnostic endpoints to a trusted interface or protect them. |
 | P2 | Notification happens after the close transaction. A process crash or Telegram failure can lose delivery despite a correct closed trade. | Transactional outbox with idempotent delivery, retries, message ID and visible terminal failure state. Current audit records attempts/results but is not a retry worker. |
 | P2 | `TradingCopilot` still constructs calendar, regime, strategy, graph and research services and returns transport-specific strings. | Move construction to a composition module; extract execution/reconciliation/report services with small protocols and typed results. Keep Telegram/CLI rendering at the transport boundary. |
@@ -151,3 +151,28 @@ combined filter decision, including missing-enrichment details.
 Accepted orders without a broker fill price now say “ORDER ACCEPTED / Awaiting
 broker fill”; they do not label the proposed entry or zero as a fill. Research
 provider errors reach the shared command error/audit boundary.
+
+## Coordinated closes (September 16)
+
+The new close service separates lifecycle/persistence from Alpaca transport and
+Telegram/CLI presentation. Per-symbol database exclusivity and broker client IDs
+prevent duplicate close submissions across processes. Preview and confirmation
+share the same service; the adapter verifies cancellation before a market close.
+Full-fill accounting remains separate and authoritative. `/flatten` preserves halt
+state and does not fabricate trade history for externally opened positions.
+
+Remaining boundaries: there is no atomic transaction across broker cancellation
+and replacement, so failure after cancellation can leave a position unprotected;
+responses and audits expose it. Uncertain requests block further closes until
+exact recovery/operator review. Complete partial-fill allocation, durable recovery
+of abandoned pre-submission claims, and coordination of concurrent external/new
+entry orders remain work for the broader execution ledger/reservation design.
+The live trailing implementation uses recorded risk distance rather than the
+configured mode's promised ATR/high-water mark; correcting that is a separate task.
+
+## Alpaca contract and integration follow-up
+
+The [September 16 Alpaca review](alpaca-integration-review.md) records official
+contracts, SDK transport fixes, HTTP/WebSocket/PostgreSQL coverage, and remaining
+entry reservation/fill-ledger/readiness gaps. Broker-backed slicing is now refused
+because acceptance alone cannot establish per-slice fills or protection.

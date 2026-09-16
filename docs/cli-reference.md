@@ -74,11 +74,38 @@ Manually authorizes and submits an approved signal to the configured broker (`pa
 uv run copilot execute 4
 ```
 
-### `copilot close <signal_id> [exit_price]`
-Submits a close request. Alpaca positions remain tracked until an exact full fill is confirmed; realized P&L uses broker fills. The optional exit price only applies to simulation.
+### `copilot close <signal_id> [--price PRICE] [--dry-run]`
+Close a tracked position without halting trading. Alpaca verifies the exact entry,
+position quantity/direction/cost basis, cancels symbol orders, waits for their
+terminal states and released quantity, then submits a market close with a durable
+client order ID. P&L uses confirmed fills. `--price` is optional and only affects
+simulation/manual adapters. `--dry-run` reads the position without changing orders.
+
 ```bash
-uv run copilot close 4 5845.50
+uv run copilot close 5 --dry-run
+uv run copilot close 5
 ```
+
+### `copilot flatten [--confirm] [--dry-run]`
+Preview all current broker positions by default. `--confirm` submits coordinated
+closes; `--dry-run` always takes precedence. This preserves the existing halt state:
+it neither halts trading nor clears a prior panic. Scans and recommendations continue
+subject to the existing risk/session/deduplication checks.
+
+```bash
+uv run copilot flatten --dry-run
+uv run copilot flatten --confirm
+```
+
+Telegram equivalents: `/close 5`, `/flatten`, `/flatten dry-run`, `/flatten confirm`.
+Flatten includes broker-only positions, without inventing trade-history P&L for them.
+Ambiguous tracked ownership or partial quantities are reported for reconciliation.
+Orders on position symbols are cancelled; unfilled entries in other symbols remain.
+Each position has its own result: a rejected close does not stop other closes.
+Equity closes outside regular hours are refused before protective orders are changed.
+The command supports the Alpaca authoritative-position adapter; other adapters
+continue to use their existing single-position close behavior.
+See [close operations and recovery](production.md#coordinated-close-and-flatten).
 
 ### `copilot panic [--confirm] [--reason "TEXT"]`
 Institutional emergency kill switch: cancels all resting broker orders, liquidates all active positions at market, and engages a persistent trading halt.

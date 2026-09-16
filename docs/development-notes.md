@@ -1,6 +1,6 @@
 # Development and debugging handoff
 
-Updated **2026-09-15**. Start with [CLAUDE.md](../CLAUDE.md), the
+Updated **2026-09-16**. Start with [CLAUDE.md](../CLAUDE.md), the
 [operations guide](production.md), and [incident notes](incident-2026-09-15.md).
 
 ## Runtime and ownership
@@ -67,11 +67,12 @@ explicitly marked estimates. Reports preserve source and retrieval time in audit
 
 ### Storage and audit
 
-Head revision: `003_audit_provenance`. Tables:
+Head revision: `004_close_requests`. Tables:
 
 - `signals`: lifecycle, sizing, entry/exit order IDs, execution time, environment,
   execution mode/account type, process run ID, and reversible quarantine flag.
 - `system_state`: halt flags and operational key/value state.
+- `close_requests`: durable exclusive close intents and broker request IDs.
 - `audit_events`: append-only creation, fills, stream/reconciliation evidence,
   valuations, close submissions/completions, notification results, repairs, and
   daemon startup identity. JSON payloads avoid credentials and chat identifiers.
@@ -158,8 +159,9 @@ incident snapshots, DB files, `.envrc`, and derived calibration files out of Git
    cases. Persist timeframe and original risk separately from mutable stop levels.
 3. Readiness/freshness monitoring for broker stream, Telegram poller, successful
    scan and quote age; watchdog liveness alone cannot establish trading readiness.
-4. Update local trailing stops only after confirmed broker modification. Audit
-   stop discrepancies and preserve the original thesis instead of overwriting it.
+4. Stop confirmation and thesis preservation are now implemented. Follow up with
+   a proper ATR/high-water mark policy and persistent requested-versus-acknowledged
+   order ledger for unresolved replacement outcomes.
 5. Keep heavy research off the trading executor as workload grows; verify timeframe filtering
    before cross-strategy netting. Define missing/stale macro admission policy and review drawdown
    plumbing before increasing automation or enabling live money.
@@ -236,3 +238,47 @@ reproduced a 1.5-second delay exceeding APScheduler's former one-second default.
 
 Old Telegram messages can retain removed callback names. Use `/help` or the current
 command menu for `/macro`; historical `/regime` buttons are no longer active.
+
+## September 16 close lifecycle
+
+`PositionCloseService` is injected into the copilot. It shares durable close
+coordination across CLI, Telegram and panic's tracked Alpaca closes; adapters own
+broker-specific cancellation and submission. Migration `004_close_requests` adds
+exclusive active per-symbol requests and retained terminal history. The copilot
+serializes operator close/flatten with monitoring; trailing updates skip symbols
+with active close requests. Unknown submissions are recovered by exact client ID.
+
+`tests/execution/test_position_closing.py` rehearses the SDK boundary, real temporary
+storage and public command handlers entirely offline. It covers long/short fills,
+cancellation delays/fill races/timeouts, lost acknowledgements, competing coordinators,
+partial exits, preview isolation, halt preservation, broker-only positions, menu
+registration and event-loop responsiveness. PostgreSQL integration independently
+checks migration and uniqueness between separate database clients. See operations
+for conservative recovery and after-hours behavior.
+
+Validation on September 16: the full isolated suite passed **502 tests**, including
+five disposable-PostgreSQL tests. After final cancellation-race/quantity-release
+hardening, **98 targeted broker/close/panic tests passed**, including the 36-case offline
+close rehearsal. Mypy checks 101 application modules. The two known warnings remain
+(WebSocket deprecation and the deliberate blocked-socket assertion). Pre-commit and
+GitHub CI validate the committed tree; deployment and read-only account/menu checks
+are recorded separately in startup/valuation audits and private verification output.
+
+Read-only paper-account verification reproduced Alpaca OPEN queries omitting held
+stop legs (one listed order versus two verified group orders per position). The
+adapter now resolves the exact bracket group and confirms both cancellations;
+regressions cover tracked, broker-only and unresolved-group cases.
+
+### Alpaca SDK contract tests and stop confirmation
+
+Read the [Alpaca integration review](alpaca-integration-review.md). Critical lifecycle
+coverage uses the actual SDK over loopback HTTP/WebSocket; the entry-to-realized-P&L
+path also runs on disposable PostgreSQL in CI. Do not replace these tests with
+permissive mocks when upgrading the SDK.
+
+`BoundedTradingClient` supplies a configured socket timeout and suppresses mutation
+retries. Entry client IDs are audited before POST; uncertain outcomes retain the
+claim and halt new risk pending reconciliation. Broker slicing is disabled.
+Trailing stops save only broker-confirmed prices, preserve the original thesis and
+risk, and audit `stop_replacement` / `stop_updated`. Replacement chains are followed
+by exact order ID for cancellation and realized-fill reconciliation too.

@@ -67,3 +67,32 @@ jobs:
 
       - name: Run Full Test Suite
         run: uv run pytest -v
+
+  postgres-integration:
+    name: PostgreSQL Integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: test_runner
+          POSTGRES_PASSWORD: disposable_ci_password
+          POSTGRES_DB: test_agentic_trader
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test_runner -d test_agentic_trader"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql+asyncpg://test_runner:disposable_ci_password@127.0.0.1:5432/test_agentic_trader
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --dev
+      - name: Migrations and cross-client lifecycle races
+        run: uv run pytest tests/integration --run-postgres -v

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from agentic_trader.constants import (
     AssetClass,
+    CloseRequestStatus,
     Direction,
     ExitReason,
     OrderClass,
@@ -76,6 +77,20 @@ class OrderResult(BaseModel):
     bracket_orders: dict[str, str] = Field(default_factory=dict)
     raw_response: dict[str, Any] = Field(default_factory=dict)
     status: str | None = None
+    stop_price: float | None = None
+    submission_uncertain: bool = False
+    close_status: CloseRequestStatus | None = None
+
+
+class PositionCloseRequest(BaseModel):
+    """An exact position snapshot and durable broker idempotency key."""
+
+    symbol: str
+    direction: Direction
+    quantity: float = Field(gt=0, allow_inf_nan=False)
+    client_order_id: str
+    entry_order_id: str | None = None
+    allow_queued: bool = False
 
 
 class BrokerPosition(BaseModel):
@@ -180,6 +195,16 @@ class BaseBroker(ABC):
         """Fetch current cash balance and portfolio value if supported by broker."""
         return {}
 
+    async def submit_position_close(
+        self, request: PositionCloseRequest, observe: Callable[[dict[str, Any]], Awaitable[None]]
+    ) -> OrderResult:
+        """Cancel protective orders, confirm release, then close the verified snapshot."""
+        return OrderResult(success=False, error_message="This broker does not support coordinated position closing.")
+
+    async def find_position_close(self, client_order_id: str) -> OrderResult | None:
+        """Read the exact close request after a restart or ambiguous submission."""
+        raise NotImplementedError("Close-request recovery is not supported by this broker")
+
     async def reconcile_positions(self, active_positions: list[dict[str, Any]]) -> list[ReconciliationEvent]:
         """Reconcile active positions against broker order and position states.
 
@@ -187,6 +212,11 @@ class BaseBroker(ABC):
         bracket orders or market prices to report exits.
         """
         return []
+
+    @property
+    def simulated_execution(self) -> bool:
+        """Whether fills are local simulations rather than external broker orders."""
+        return False
 
     @property
     def authoritative_positions(self) -> bool:
@@ -234,6 +264,6 @@ class BaseBroker(ABC):
     async def cancel_all_orders(self) -> int:
         """Cancel all open or resting orders at the broker.
 
-        Returns the number of orders successfully cancelled.
+        Returns the number of accepted cancellation requests; terminal state may lag.
         """
         return 0

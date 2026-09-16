@@ -42,7 +42,8 @@ The **Agentic Trader** is a multi-asset trading system designed around a $100k c
 - `uv run copilot explain-macro`: Educational tutorial & breakdown of live macro indicators via LLM.
 - `uv run copilot scan`: On-demand quantitative market scan (`--dry-run`, `--no-llm`, `--strategy`, `--strategy-mode`, `--asset-class`, `--symbols`, `--timeframe`). A dry run uses isolated temporary storage and simulated execution, with no Telegram or monitoring.
 - `uv run copilot execute <signal_id>`: Manually authorize and submit an approved signal to broker.
-- `uv run copilot close <signal_id> --price <exit_price>`: Request broker closure. Alpaca accounting waits for the confirmed broker fill; the supplied price is only for simulation/manual adapters.
+- `uv run copilot close <signal_id> [--price <exit_price>] [--dry-run]`: Request broker closure. Alpaca accounting waits for the confirmed broker fill; the supplied price is only for simulation/manual adapters.
+- `uv run copilot flatten [--confirm] [--dry-run]`: Preview or close current Alpaca positions without changing the halt state. See the close lifecycle in operations.
 - `uv run copilot panic [--confirm]`: Emergency kill switch: cancel resting orders, market liquidate active positions, halt trading.
 - `uv run copilot resume`: Clear emergency trading halt and resume autonomous scanning/execution.
 - `uv run copilot gex [symbol]`: Market maker dealer gamma exposure, pinning walls, and gamma flip.
@@ -154,7 +155,7 @@ Preserve these intended safeguards when changing logic. They are design requirem
     - **Defense-in-Depth**: Stream updates wake the same exact-parent REST reconciliation path as polling. Full fill, chronological order, quantity, side and symbol checks are required. Conditional DB closure gates alerts; partial fills remain tracked.
 
 13. **Brokerage as valuation authority**: Both CLI and Telegram positions use the same broker snapshot. Preserve source/time; show failures or mismatches, never fabricate zero P&L. Realized Alpaca performance includes confirmed closed fills with entry/exit IDs and actual average prices; it is all recorded closed-trade history before fees, not account-day return.
-14. **Audit and provenance**: Head revision is `003_audit_provenance`; every signal has environment/account mode and run identity. Quarantine preserves original values and excludes confirmed test rows from risk, deduplication, positions and performance.
+14. **Audit and provenance**: Head revision is `004_close_requests`; every signal has environment/account mode and run identity. Quarantine preserves original values and excludes confirmed test rows from risk, deduplication, positions and performance.
 
 15. **Async boundaries**: Use `asyncio.to_thread` for blocking SDK/provider calls and CPU-heavy research from async handlers. Keep related scans serialized; review shared state before adding concurrency. Telegram retries belong in `notifier/transport.py`, never around a trade handler. Preserve request/update audit IDs, poll freshness metrics, and `telemetry/event_loop.py` stall monitoring.
 
@@ -169,3 +170,22 @@ Preserve these intended safeguards when changing logic. They are design requirem
 18. **Scheduler readiness**: initialize async dependencies before registering
     immediate jobs. Use the configured misfire grace, coalescing and one instance
     per job; verify initial scan/reconciliation completion in deployment logs.
+
+19. **Coordinated closes**: `execution/closing.py` owns durable per-symbol claims,
+    preview/flatten orchestration and exact client-ID recovery. Alpaca owns bracket
+    cancellation, confirmation and position/session revalidation. Never replay an
+    uncertain submission or synthesize a fill. `/flatten` previews; `/flatten confirm`
+    submits and preserves the halt. Market-closed equity preflight keeps protection.
+
+
+## Alpaca contract maintenance
+
+Read [Alpaca integration review](docs/alpaca-integration-review.md) before changing
+broker behavior. Real SDK loopback HTTP/WebSocket tests complement isolated unit
+tests; PostgreSQL CI covers migrations, exclusive claims and the complete lifecycle.
+Never infer replacement success from a PATCH response or replay an ambiguous
+mutation. Confirm exact replacement IDs/prices before saving stop changes; preserve
+initial risk and thesis. Uncertain entries remain claimed and halt new risk pending
+reconciliation. Broker-backed multi-slice execution is disabled until a fill ledger
+and protection exist. The SDK timeout/no-mutation-retry extension is deliberately
+isolated and covered by transport tests.

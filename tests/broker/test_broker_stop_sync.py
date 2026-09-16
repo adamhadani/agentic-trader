@@ -3,10 +3,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from alpaca.common.exceptions import APIError
 
 from agentic_trader.agent.copilot import TradingCopilot
-from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.base import BaseBroker, OrderRequest, OrderResult
 from agentic_trader.broker.paper import PaperBroker
 from agentic_trader.broker.tradovate import TradovateBroker
@@ -46,36 +44,6 @@ async def test_paper_broker_modify_stop(config: AppConfig):
     res = await broker.modify_order_stop(order_id="P-123", symbol="SPY", new_stop_price=505.5)
     assert res.success is True
     assert res.order_id == "P-123"
-
-
-@pytest.mark.asyncio
-async def test_alpaca_broker_modify_stop_success(config: AppConfig):
-    mock_client = MagicMock()
-    mock_res = MagicMock()
-    mock_res.id = "new-alpaca-order-id"
-    mock_res.model_dump.return_value = {"id": "new-alpaca-order-id"}
-    mock_client.replace_order_by_id.return_value = mock_res
-
-    broker = AlpacaBroker(config, client=mock_client)
-    broker._connected = True
-
-    res = await broker.modify_order_stop(order_id="stop-order-1", symbol="SPY", new_stop_price=505.0)
-    assert res.success is True
-    assert res.order_id == "new-alpaca-order-id"
-    mock_client.replace_order_by_id.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_alpaca_broker_modify_stop_api_error(config: AppConfig):
-    mock_client = MagicMock()
-    mock_client.replace_order_by_id.side_effect = APIError("Order is already filled")
-
-    broker = AlpacaBroker(config, client=mock_client)
-    broker._connected = True
-
-    res = await broker.modify_order_stop(order_id="stop-order-1", symbol="SPY", new_stop_price=505.0)
-    assert res.success is False
-    assert "Order is already filled" in (res.error_message or "")
 
 
 @pytest.mark.asyncio

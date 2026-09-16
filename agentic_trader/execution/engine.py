@@ -52,6 +52,12 @@ class SlicedExecutionEngine:
             )
             return await broker.submit_entry_order(request)
 
+        if not broker.simulated_execution:
+            return OrderResult(
+                success=False,
+                error_message="Broker slicing is disabled until per-slice fills and protection are reconciled; use immediate execution",
+            )
+
         # Multi-slice algorithmic execution
         logger.info(
             "Starting %s algorithmic execution: %d slices for %.2f %s",

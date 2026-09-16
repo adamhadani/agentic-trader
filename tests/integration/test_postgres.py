@@ -1,13 +1,15 @@
 """Explicitly opted-in integration tests against a disposable test_ PostgreSQL database."""
 
+import asyncio
 import os
 import subprocess
 import sys
+from uuid import uuid4
 
 import psycopg2
 import pytest
-from sqlalchemy.engine import make_url
 
+from agentic_trader.constants import CloseRequestStatus
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
@@ -20,17 +22,6 @@ from agentic_trader.storage.migrations import (
 pytestmark = [pytest.mark.postgres, pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
 
 
-@pytest.fixture
-def postgres_test_db():
-    url = os.environ.get("TEST_POSTGRES_URL")
-    if not url:
-        pytest.skip("Set TEST_POSTGRES_URL to an isolated test_ database and pass --run-postgres.")
-    assert (make_url(url).database or "").startswith("test_"), "Integration database name must start with test_"
-    downgrade_migrations("base", url)
-    yield url
-    downgrade_migrations("base", url)
-
-
 def test_postgres_migrations_lifecycle(postgres_test_db: str):
     db_url = postgres_test_db
     sync_url = to_sync_url(db_url)
@@ -40,7 +31,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 2. Upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "003_audit_provenance"
+    assert get_current_revision(db_url) == "004_close_requests"
 
     # Verify tables in PostgreSQL
     with psycopg2.connect(sync_url) as conn, conn.cursor() as cur:
@@ -103,7 +94,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 5. Re-upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "003_audit_provenance"
+    assert get_current_revision(db_url) == "004_close_requests"
 
 
 @pytest.mark.asyncio
@@ -111,7 +102,7 @@ async def test_postgres_signal_database_operations(postgres_test_db: str):
     db_url = postgres_test_db
     db = SignalDatabase(db_url=db_url)
 
-    assert get_current_revision(db_url) == "003_audit_provenance"
+    assert get_current_revision(db_url) == "004_close_requests"
 
     sig_id = await db.record_signal(
         contract="NQ",
@@ -185,7 +176,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r3.returncode == 0
-    assert "003_audit_provenance" in r3.stdout
+    assert "004_close_requests" in r3.stdout
 
     # 4. Downgrade to 001_initial
     r4 = subprocess.run(
@@ -218,7 +209,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r6.returncode == 0
-    assert "003_audit_provenance" in r6.stdout
+    assert "004_close_requests" in r6.stdout
 
     # 7. History
     r7 = subprocess.run(
@@ -229,7 +220,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r7.returncode == 0
-    assert "003_audit_provenance" in r7.stdout
+    assert "004_close_requests" in r7.stdout
     assert "001_initial" in r7.stdout
 
     # 8. Clear
@@ -285,3 +276,24 @@ async def test_postgres_database_operations(postgres_test_db):
     # Clean up test signal
     await db.update_signal_status(sig_id, "DISMISSED")
     await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_postgres_close_claim_is_exclusive_between_database_clients(postgres_test_db):
+    first = SignalDatabase(db_url=postgres_test_db)
+    second = SignalDatabase(db_url=postgres_test_db)
+    try:
+
+        async def claim(db):
+            return await db.claim_close_request(
+                {"id": str(uuid4()), "symbol": "IWM", "direction": "SHORT", "quantity": 105, "signal_id": None}
+            )
+
+        results = await asyncio.gather(claim(first), claim(second))
+        assert sorted(won for won, _ in results) == [False, True]
+        request_id = next(record["id"] for won, record in results if won)
+        await first.update_close_request(request_id, CloseRequestStatus.FAILED, "Preflight rejected")
+        assert (await claim(second))[0] is True
+    finally:
+        await first.engine.dispose()
+        await second.engine.dispose()

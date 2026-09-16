@@ -12,7 +12,7 @@ import os
 import time
 import urllib.request
 
-from telegram import Bot
+from telegram import Bot, BotCommandScopeAllPrivateChats, BotCommandScopeChat
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.alpaca import AlpacaBroker
@@ -98,7 +98,18 @@ async def main() -> None:
             me = await bot.get_me()
             await bot.get_chat(config.telegram_chat_id)
             commands = {cmd.command for cmd in await bot.get_my_commands()}
-            if not {"positions", "perf", "macro", "gex"}.issubset(commands) or "regime" in commands or not me.is_bot:
+            for scope in (BotCommandScopeAllPrivateChats(), BotCommandScopeChat(chat_id=int(config.telegram_chat_id))):
+                scoped_commands = {cmd.command for cmd in await bot.get_my_commands(scope=scope)}
+                if scoped_commands != commands:
+                    raise RuntimeError("Telegram command scopes differ")
+            menu = await bot.get_chat_menu_button(chat_id=int(config.telegram_chat_id))
+            if menu.type != "commands":
+                raise RuntimeError("Telegram chat menu is not the command palette")
+            if (
+                not {"positions", "perf", "macro", "gex", "close", "flatten"}.issubset(commands)
+                or "regime" in commands
+                or not me.is_bot
+            ):
                 raise RuntimeError("Telegram identity or commands invalid")
         stats = await db.get_closed_positions_stats()
         print(

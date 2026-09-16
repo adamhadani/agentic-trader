@@ -40,8 +40,8 @@ production default. `--db-path` accepts a URL or SQLite path; `--db-name` explic
 selects a SQLite sandbox. There is no automatic SQLite failover. `data/signals.db`
 is historical and must not be mistaken for the current PostgreSQL database.
 
-Head migration is `003_audit_provenance`. `signals`, `system_state` and
-`audit_events` hold trading and operational state. Construction currently checks
+Head migration is `004_close_requests`. `signals`, `system_state` and
+`audit_events` and `close_requests` hold trading and operational state. Construction currently checks
 migrations, even for informational copilot commands. Back up PostgreSQL before
 schema or historical repairs. Do not use `db clear` to fix contamination: quarantine
 preserves original evidence and removes rows from operational queries.
@@ -185,3 +185,80 @@ reproduced a 1.5-second delay exceeding APScheduler's former one-second default.
 
 Old Telegram messages can retain removed callback names. Use `/help` or the current
 command menu for `/macro`; historical `/regime` buttons are no longer active.
+
+## Coordinated close and flatten
+
+`/close <id>` / `copilot close <id>` close one tracked position; the CLI no longer
+requires a simulated price. `/flatten` / `copilot flatten` preview all open Alpaca
+positions. Submit with `/flatten confirm` or `copilot flatten --confirm`.
+`copilot flatten --dry-run` and `copilot close <id> --dry-run` are read-only, including
+when `--confirm` is also supplied. Preview is informational; confirmation reads a
+fresh snapshot. No Telegram test message or order is needed to validate registration.
+
+Both operations preserve the existing trading halt. Flatten operates on positions
+present in the account snapshot, including broker-only positions; it cancels orders
+on those symbols only. Unfilled entries in other symbols remain active. An account
+snapshot can change during execution: inspect each result and `/positions` afterward.
+Tracking ambiguity, mismatched cost basis/quantity/direction, partial entries/exits,
+working market orders and unconfirmed cancellations block a new close. A failure
+on one symbol does not prevent attempts on the other symbols. Untracked closes do
+not create invented entries or realized P&L in `/perf`.
+
+For ordinary equity close/flatten requests the broker clock must indicate regular
+trading hours before any cancellation; after-hours requests retain protection.
+Panic explicitly retains its emergency policy: cancel orders, permit market exits
+queued for the next session, and persist the halt. A queued order is not a confirmed
+liquidation.
+
+Alpaca OPEN queries omit held bracket stops, even with nested results. The adapter
+expands exact entry/order groups and confirms every active leg. For broker-only
+brackets it resolves the working exit ID against bounded nested history; missing
+or ambiguous group identity refuses the close before cancellation. The
+workflow checks the clock again before submission; if the market closes or the
+broker fails after cancellation, protective orders may already be removed. The
+response explicitly reports that condition: inspect the account and restore
+protection or close through the broker as appropriate. No automatic restoration
+or blind close retry is attempted after an uncertain mutation.
+
+`close_requests` persists a UUID client order ID before broker mutations. A partial
+unique index allows only one active request per environment/account mode/symbol,
+including requests from another CLI process. Statuses are `claimed`, `submitted`,
+`unknown`, `completed`, `failed`; terminal history is retained. Minute monitoring
+and subsequent commands recover exact client IDs and attach broker exit IDs to
+tracked signals. Confirmed full fills drive normal trade accounting/notifications.
+Confirmed unfilled cancellation/rejection permits a later explicit request;
+partial or ambiguous outcomes retain exclusivity. A crash before submission can
+leave a `claimed` request without a matching order: it is intentionally not expired
+or replayed automatically. Review broker orders and the audit trail before an
+operator repairs that request; elapsed time alone does not prove no order exists.
+
+Audit events `close_request`, `close_broker_step`, and `flatten` record intent,
+request/order IDs, cancellation confirmation, submission, recovery and per-symbol
+failures. They complement `exit_order_submitted`, reconciliation and Telegram
+handler/delivery audits. `execution.close_cancel_timeout_seconds` (default 10) and
+`execution.close_cancel_poll_seconds` (default 0.25) control cancellation polling;
+SDK calls run off the event loop. These are not guarantees of broker HTTP latency.
+
+Deployment checks must verify `/flatten` in default, private-chat and operator-chat
+command scopes, the chat menu button, current daemon revision and poll freshness.
+`scripts/verify_runtime.py` performs these checks without messages or orders.
+
+
+### Broker transport and stop replacement
+
+Broker HTTP calls have a per-attempt timeout (`execution.broker_request_timeout_seconds`,
+default 10 seconds). GET retains the SDK retry policy; POST/PATCH/DELETE are not
+replayed automatically. An uncertain entry records `entry_submission_unknown`,
+leaves its signal `SUBMITTING`, and halts new entries. Inspect `entry_submission`
+audit for its client ID, retrieve that exact Alpaca order and reconcile its state
+before resuming. There is no automatic entry recovery command yet; do not reset a
+claim merely because a request timed out.
+
+Stop changes resolve the exact bracket and replacement chain, then read back the
+working price before updating storage or sending a ratchet alert. A pending/failed
+replacement preserves the previous local stop and original thesis/risk. Review
+`stop_replacement` request/result events and `stop_updated` for acknowledged changes.
+`execution.stop_replace_timeout_seconds` defaults to 10 seconds. Native bracket
+fills and minute reconciliation continue independently of Telegram response delivery.
+
+See [Alpaca contract review and integration coverage](alpaca-integration-review.md).

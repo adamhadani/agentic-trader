@@ -19,6 +19,7 @@ from agentic_trader.cli.commands.trade import (
     close,
     execute,
     explain_macro,
+    flatten,
     panic,
     positions,
     resume,
@@ -72,6 +73,7 @@ cli.add_command(scan)
 cli.add_command(status)
 cli.add_command(positions)
 cli.add_command(close)
+cli.add_command(flatten)
 cli.add_command(execute)
 cli.add_command(panic)
 cli.add_command(resume)
