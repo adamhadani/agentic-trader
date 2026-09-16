@@ -1,6 +1,7 @@
 """Calibration studies freeze selection, retain failures and never grant deployment."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -71,6 +72,12 @@ def test_protocol_roundtrip_freezes_identity_and_independent_phase_streams(small
     changed["contracts"]["test_level"] = 0.2
     with pytest.raises(ValueError, match="contracts"):
         StudyProtocol.from_document(changed)
+
+
+def test_original_study_cannot_be_reinterpreted_with_changed_return_clock():
+    original = Path(__file__).parents[2] / "config/research/a1b-v1.json"
+    with pytest.raises(ValueError, match="contracts"):
+        StudyProtocol.from_document(json.loads(original.read_text()))
 
 
 def test_real_panel_job_supports_full_study_seed_entropy(small_protocol):

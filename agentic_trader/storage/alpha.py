@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 import numpy as np
@@ -17,6 +18,7 @@ from sqlalchemy import delete, select
 from agentic_trader.config import AlphaPipelineConfig
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.research.alpha.models import AlphaDefinition, RegistrySnapshot
+from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.models import AlphaProjectionRecord, DomainEventRecord
 from agentic_trader.storage.workflow import WorkflowStore, encode
 
@@ -26,9 +28,19 @@ REGISTRY_KEY = "registry"
 
 
 class AlphaRepository:
-    def __init__(self, store: WorkflowStore, policy: AlphaPipelineConfig | None = None):
+    def __init__(
+        self,
+        store: WorkflowStore,
+        policy: AlphaPipelineConfig | None = None,
+        *,
+        validation_policy: ValidationPolicy | None = None,
+    ):
         self.store = store
         self.policy = policy or AlphaPipelineConfig()
+        self.validation_policy = validation_policy or ValidationPolicy()
+
+    def _variance_family_key(self, timeframe):
+        return f"family/{timeframe}/{self.validation_policy.return_timeline}"
 
     async def _get(self, session, key):
         row = await session.get(AlphaProjectionRecord, (self.store.scope, key))
@@ -64,6 +76,8 @@ class AlphaRepository:
             await self._append(session, key, {"definition": definition.to_dict()}, EventKind.ALPHA_RESEARCH, actor)
 
     async def record_run(self, run_id, run, manifest):
+        if run.get("policy") != asdict(self.validation_policy):
+            raise ValueError("Research run requires the current validation policy")
         payload = {"run": run, "manifest": manifest}
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session, resource="alpha")
@@ -95,7 +109,7 @@ class AlphaRepository:
             else:
                 global_family["trial_count"] += run["trial_count"]
             await self._append(session, "family/all", global_family, EventKind.ALPHA_RESEARCH, "research_worker")
-            family_key = f"family/{manifest['timeframe']}"
+            family_key = self._variance_family_key(manifest["timeframe"])
             family = await self._get(session, family_key) or {"trial_count": 0, "sharpes": []}
             family["trial_count"] += run["trial_count"]
             family["sharpes"].extend(
@@ -112,6 +126,8 @@ class AlphaRepository:
             run = await self._get(session, f"run/{run_id}")
             if not run or not await self._get(session, f"version/{version_id}"):
                 raise ValueError("Unknown run/version")
+            if run["run"].get("policy") != asdict(self.validation_policy):
+                raise ValueError("Research policy changed; fresh discovery required before consuming holdout")
             if version_id not in {
                 AlphaDefinition.from_dict(t["definition"]).version_id
                 for t in run["run"]["trials"]
@@ -139,13 +155,21 @@ class AlphaRepository:
                 {"start": str(start), "end": str(end), "run_id": run_id, "version_id": version_id}
             )
             await self._append(session, key, consumed, EventKind.ALPHA_RESEARCH, "research_worker")
-            family = await self._get(session, f"family/{manifest['timeframe']}")
+            family = await self._get(session, self._variance_family_key(manifest["timeframe"]))
             global_family = await self._get(session, "family/all")
+            observations = len(family["sharpes"])
+            variance = None
+            if observations > 1:
+                variance = float(np.var(family["sharpes"], ddof=1))
+            elif global_family["trial_count"] == 1:
+                variance = 0.0  # No multiple-selection variance is needed for a single attempt.
             consumption = {
                 "version_id": version_id,
                 "key": key,
                 "trial_count": global_family["trial_count"],
-                "trial_variance": float(np.var(family["sharpes"], ddof=1)) if len(family["sharpes"]) > 1 else 0,
+                "trial_variance": variance,
+                "variance_observations": observations,
+                "return_timeline": self.validation_policy.return_timeline,
             }
             await self._append(
                 session, f"consumption/{run_id}", consumption, EventKind.ALPHA_RESEARCH, "research_worker"
@@ -188,6 +212,8 @@ class AlphaRepository:
                 decision = await self._get(session, f"qualification/{version_id}")
                 if not decision or not decision.get("qualified") or decision.get("reasons"):
                     raise ValueError("Passing qualification evidence required")
+                if decision.get("policy") != asdict(self.validation_policy):
+                    raise ValueError("Qualification policy changed; fresh evidence required")
                 age = datetime.now(UTC) - datetime.fromisoformat(decision["qualified_at"])
                 if age.total_seconds() < 0 or age.days > self.policy.qualification_max_age_days:
                     raise ValueError("Qualification evidence expired")

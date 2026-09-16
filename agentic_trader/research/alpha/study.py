@@ -18,6 +18,7 @@ from scipy.stats import binomtest
 
 from agentic_trader.research.alpha.calibration import SYNTHETIC_FEED, joint_block_max_test
 from agentic_trader.research.alpha.catalog import AlphaCatalog
+from agentic_trader.research.alpha.metrics import observed_return_values
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.promotion import assess_statistical_evidence
@@ -381,7 +382,7 @@ def _compare_frozen_winner(result, candidate, bars, protocol, *, policy, bootstr
     simulation = simulate_strategy(
         winner, bars, start=run["holdout_start"] + policy.embargo_bars + policy.label_horizon
     )
-    values = simulation["net_returns"].dropna().to_numpy()
+    values = observed_return_values(simulation["net_returns"])
     if len(values) < 2 * max(protocol.block_lengths) or not np.isfinite(values).all():
         result["error"] = "Insufficient finite holdout returns"
         return result

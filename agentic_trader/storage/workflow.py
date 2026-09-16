@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ from agentic_trader.execution.durable import (
     WorkKind,
     WorkStatus,
 )
+from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.models import (
     AlphaProjectionRecord,
     CloseRequestRecord,
@@ -318,6 +320,9 @@ class WorkflowStore:
         row = await session.get(AlphaProjectionRecord, (self.scope, f"version/{signal.alpha_version}"))
         if row is None:
             return "Alpha version evidence is missing."
+        qualification = await session.get(AlphaProjectionRecord, (self.scope, f"qualification/{signal.alpha_version}"))
+        if not qualification or json.loads(qualification.payload).get("policy") != asdict(ValidationPolicy()):
+            return "Alpha qualification policy is obsolete; fresh research and qualification are required."
         definition = json.loads(row.payload)["definition"]
         if (
             signal.strategy != definition["alpha_id"]

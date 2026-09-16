@@ -6,6 +6,7 @@ choice consumes one trial. Transform fitting and model selection never see holdo
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 import numpy as np
@@ -100,6 +101,7 @@ def benchmark_models(
                 "status": "research_only_model",
                 "metrics": {k: v for k, v in metrics.items() if k not in ("net_returns", "trades", "entries")},
                 "rank_ic": ic,
+                "validation_coverage": [s["feature_coverage"] for s in simulations],
             }
         )
     variance = float(np.var([t["metrics"]["per_bar_sharpe"] for t in trials], ddof=1)) if budget > 1 else 0
@@ -114,6 +116,7 @@ def benchmark_models(
             metrics["kurtosis"],
         )
     return {
+        "policy": asdict(policy),
         "method": method,
         "seed": seed,
         "trial_count": budget,

@@ -8,6 +8,8 @@ becomes effective next bar; intrabar live trailing is an explicitly unmodelled
 execution difference. Intrabar entry cannot claim a target observed before its
 fill. Liquidity/partial fills and admission latency require shadow execution
 evidence. Open trades and unfilled orders remain censored at a fold boundary.
+Every supplied execution bar has a known equity return, including cash/warmup.
+Unavailable features suppress new signals; unavailable prices invalidate the run.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from agentic_trader.research.alpha.metrics import observed_return_values
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.strategy import (
     alpha_scores,
@@ -30,7 +33,8 @@ from agentic_trader.research.alpha.strategy import (
 
 
 def return_statistics(returns: pd.Series, trades: list[dict], annual_factor: float | None = None) -> dict:
-    valid = returns.dropna()
+    observed_return_values(returns)
+    valid = returns
     if annual_factor is None:
         if len(valid) < 2 or not isinstance(valid.index, pd.DatetimeIndex):
             annual_factor = 0.0
@@ -76,7 +80,8 @@ def simulate_strategy(
     end = len(bars) if end is None else end
     if not 0 <= start < end <= len(bars):
         raise ValueError("Invalid simulation interval")
-    frame = bars.rename(columns=str.lower)
+    # A fold cannot inspect even the validity of observations after its boundary.
+    frame = bars.iloc[:end].rename(columns=str.lower)
     required = ["open", "high", "low", "close"]
     if not set(required) <= set(frame.columns):
         raise ValueError("OHLC observations required for bracket validation")
@@ -88,9 +93,14 @@ def simulate_strategy(
         | (frame.low > frame[["open", "close", "high"]].min(axis=1))
     ).any():
         raise ValueError("Inconsistent OHLC observations")
-    scores = alpha_scores(definition, frame) if scores is None else scores
-    if not scores.index.equals(frame.index):
-        raise ValueError("Scores and prices must align exactly")
+    if scores is None:
+        scores = alpha_scores(definition, frame)
+    else:
+        scores = scores.iloc[:end]
+        if not scores.index.equals(frame.index):
+            raise ValueError("Scores and prices must align exactly")
+    if np.isinf(scores.to_numpy(dtype=float)).any():
+        raise ValueError("Infinite feature scores are invalid")
     directions = entry_directions(scores, definition)
     policy = definition.execution
     atr = strategy_atr(frame, policy)
@@ -104,10 +114,9 @@ def simulate_strategy(
     trades = []
     entries = []
     pending = None
-    returns = pd.Series(np.nan, index=frame.index[start:end], dtype=float)
+    returns = pd.Series(0.0, index=frame.index[start:end], dtype=float)
     for i in range(start, end):
         before = equity
-        had_position = bool(direction)
         intrabar_entry = False
         o, h, low, close = values[i]
         # Evaluate only prior complete observations; no inherited fold position.
@@ -171,9 +180,15 @@ def simulate_strategy(
         equity = cash + direction * quantity * close
         if equity <= 0:
             raise ValueError("Strategy exhausted research capital")
-        if i > 0 and (pd.notna(scores.iloc[i - 1]) or direction or had_position):
-            returns.iloc[i - start] = equity / before - 1
+        returns.iloc[i - start] = equity / before - 1
     result = return_statistics(returns, trades)
+    scored = int(scores.shift(1).iloc[start:end].notna().sum())
+    result["feature_coverage"] = {
+        "bars": len(returns),
+        "scored_bars": scored,
+        "unscored_bars": len(returns) - scored,
+        "score_fraction": scored / len(returns),
+    }
     result["execution_scope"] = (
         "daily_bar_policy" if definition.timeframe == "1d" else "diagnostic_intraday_session_unverified"
     )

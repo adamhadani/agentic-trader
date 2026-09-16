@@ -115,6 +115,7 @@ The ordered research work queue now lives in [alpha-roadmap.md](alpha-roadmap.md
 
 [A1b evidence](alpha-study-2026-09-16.md) additionally identifies feature-dependent
 return coverage: flat periods with undefined scores are dropped from simulation
-statistics. A2 must define the execution clock separately from feature availability
-before retesting calibration. Preserve the incomplete study and existing gates;
+statistics. [A2a](alpha-return-timeline.md) defines the execution clock separately
+from feature availability, with compatible variance samples and policy fencing.
+Session-correct finer-bar replay remains A2b. Preserve the incomplete study and gates;
 do not treat missing comparisons as null rejections or loosen trade-count requirements.
