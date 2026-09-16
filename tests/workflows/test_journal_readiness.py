@@ -172,3 +172,19 @@ async def test_accounting_readiness_requires_current_run_evidence(store, app_con
     if observation is not None:
         await service.observe(HealthComponent.ACCOUNTING, observation)
     assert (await service.report())["ready"] is (observation is True)
+
+
+@pytest.mark.parametrize("mode", ["disabled", "missing", "fresh", "previous-run", "stale", "failure"])
+async def test_forward_observer_readiness_uses_current_run_progress(store, app_config, mode):
+    app_config.alpha_pipeline.observations.enabled = mode != "disabled"
+    readiness = ReadinessService(store, app_config, MetricsCollector(), run_id="current")
+    if mode not in ("disabled", "missing"):
+        await store.record_health(
+            HealthComponent.ALPHA_OBSERVER, mode != "failure", run_id="old" if mode == "previous-run" else "current"
+        )
+    now = datetime.now(UTC) + (timedelta(hours=1) if mode == "stale" else timedelta())
+    checks = (await readiness.report(now=now))["checks"]
+    if mode == "disabled":
+        assert HealthComponent.ALPHA_OBSERVER not in checks
+    else:
+        assert checks[HealthComponent.ALPHA_OBSERVER]["ready"] == (mode == "fresh")

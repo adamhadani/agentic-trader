@@ -5,6 +5,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable
+from contextlib import ExitStack, contextmanager
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -12,8 +13,11 @@ from typing import Any
 import click
 
 from agentic_trader.agent.copilot import TradingCopilot
+from agentic_trader.broker.alpaca import BoundedStockDataClient, BoundedTradingClient
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import ExecutionMode, RuntimeEnvironment
+from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.data.sessions import AlpacaSessionSource
 
 
 def coro[F: Callable[..., Any]](f: F) -> F:
@@ -54,3 +58,29 @@ def get_copilot_and_config(*, dry_run: bool = False) -> tuple[TradingCopilot, Ap
         copilot._dry_run_directory = directory
 
     return copilot, config
+
+
+@contextmanager
+def session_source(config: AppConfig, feed: str):
+    """Composition owns dedicated bounded SDK readers; callers own async offloading."""
+
+    with ExitStack() as clients:
+        calendar_client = BoundedTradingClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            paper=config.alpaca_paper,
+            request_timeout=config.execution.broker_request_timeout_seconds,
+        )
+        clients.callback(calendar_client._session.close)
+        data_client = BoundedStockDataClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            request_timeout=config.execution.broker_request_timeout_seconds,
+        )
+        clients.callback(data_client._session.close)
+        yield AlpacaSessionSource(AlpacaDataProvider(stock_client=data_client, feed=feed), calendar_client)
+
+
+def artifact_directory() -> Path:
+    root = os.environ.get("COPILOT_TEST_ROOT")
+    return Path(root) / "research" if root else Path.home() / ".local/state/agentic-trader/research"

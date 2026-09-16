@@ -152,3 +152,8 @@ promotion still requires live-clock alignment and broker execution evidence.
 
 Read docs as Markdown or preview with `cd docs && bundle install && bundle exec jekyll serve`.
 Historical design notes and the reference PDF are source material, not runtime guarantees.
+
+The daemon's [prospective session-data observer](docs/alpha-forward-observations.md)
+records live REST availability and revisions for SPY/15m on the configured feed.
+Inspect `copilot alpha status` for capture quality; it provides no promotion credit
+and does not change strategy scans or activate mined alphas.

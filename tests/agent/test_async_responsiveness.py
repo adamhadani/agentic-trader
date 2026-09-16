@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import contextmanager
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -8,6 +9,7 @@ import pytest
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.cli.commands import service
 from agentic_trader.config import load_config
+from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 
 
@@ -88,3 +90,38 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
         task.cancel()
         await task
     copilot.notifier.stop_polling.assert_awaited_once()
+
+
+async def test_observation_worker_finishes_inflight_capture_before_closing_readers(monkeypatch, config):
+
+    config.alpha_pipeline.observations.enabled = True
+    entered, release, closed, stopped = asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @contextmanager
+    def readers(*args):
+        try:
+            yield object()
+        finally:
+            closed.set()
+
+    class Observer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_once(self):
+            entered.set()
+            await release.wait()
+            assert not closed.is_set()
+            return []
+
+    monkeypatch.setattr(service, "session_source", readers)
+    monkeypatch.setattr(service, "SessionObservationService", Observer)
+    readiness = SimpleNamespace(observe=AsyncMock())
+    task = asyncio.create_task(service.run_session_observer(config, object(), readiness, MagicMock(), stopped))
+    await asyncio.wait_for(entered.wait(), 2)
+    stopped.set()
+    assert not task.done()
+    release.set()
+    await asyncio.wait_for(task, 2)
+    assert closed.is_set()
+    assert readiness.observe.await_args.args[0] == HealthComponent.ALPHA_OBSERVER

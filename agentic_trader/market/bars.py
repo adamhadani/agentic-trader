@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from enum import StrEnum
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,12 @@ EXECUTION_BAR_DURATION = pd.Timedelta(minutes=1)
 SESSION_BAR_LAYOUT = "rth_open_v1"
 FIXED_BAR_LAYOUT = "fixed_duration_v1"
 OHLCV = ("open", "high", "low", "close", "volume")
+
+
+class ObservationStatus(StrEnum):
+    CAPTURING = "capturing"
+    COMPLETE = "complete"
+    UNAVAILABLE = "unavailable"
 
 
 def utc_timestamp(value) -> pd.Timestamp:
@@ -83,6 +90,25 @@ class TradingSession:
             or any(t != t.floor("min") for t in (self.open, self.close))
         ):
             raise ValueError("Ordered minute-aligned same-day exchange session required")
+
+
+@dataclass(frozen=True)
+class SignalBarWindow:
+    opened_at: pd.Timestamp
+    closed_at: pd.Timestamp
+
+
+def session_bar_windows(session: TradingSession, timeframe: str) -> tuple[SignalBarWindow, ...]:
+    """One canonical session-open anchored clock for replay and forward sampling."""
+    if timeframe not in BAR_DURATIONS:
+        raise ValueError("Supported signal timeframe required")
+    begin = session.open
+    windows = []
+    while begin < session.close:
+        end = min(begin + BAR_DURATIONS[timeframe], session.close)
+        windows.append(SignalBarWindow(begin, end))
+        begin = end
+    return tuple(windows)
 
 
 @dataclass(frozen=True)
@@ -150,7 +176,6 @@ def build_session_bars(minutes: pd.DataFrame, schedule: SessionSchedule, timefra
     if not isinstance(minutes.index, pd.DatetimeIndex) or minutes.index.tz is None or minutes.index.hasnans:
         raise ValueError("Timezone-aware minute observations required")
     as_of = utc_timestamp(as_of)
-    duration = BAR_DURATIONS[timeframe]
     minute = EXECUTION_BAR_DURATION
     frame = minutes.loc[minutes.index + minute <= as_of].rename(columns=str.lower).copy()
     frame.index = frame.index.tz_convert("UTC")
@@ -187,9 +212,8 @@ def build_session_bars(minutes: pd.DataFrame, schedule: SessionSchedule, timefra
         raise ValueError("Consistent execution OHLC required")
     rows, starts, closes = [], [], []
     for session in schedule.sessions:
-        begin = session.open
-        while begin < session.close:
-            end = min(begin + duration, session.close)
+        for window in session_bar_windows(session, timeframe):
+            begin, end = window.opened_at, window.closed_at
             if end > as_of:
                 break
             observed = execution.iloc[execution.index.searchsorted(begin) : execution.index.searchsorted(end)]
@@ -204,7 +228,6 @@ def build_session_bars(minutes: pd.DataFrame, schedule: SessionSchedule, timefra
             )
             starts.append(begin)
             closes.append(end)
-            begin = end
     signals = pd.DataFrame(rows, columns=OHLCV, index=pd.DatetimeIndex(starts, tz="UTC"), dtype=float)
     signals.attrs.update(minutes.attrs, timeframe=timeframe, bar_layout=SESSION_BAR_LAYOUT)
     execution.attrs.update(minutes.attrs, timeframe="1m", bar_layout=SESSION_BAR_LAYOUT)

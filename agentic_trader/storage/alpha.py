@@ -17,6 +17,7 @@ from sqlalchemy import delete, select
 
 from agentic_trader.config import AlphaPipelineConfig
 from agentic_trader.execution.durable import EventKind
+from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.research.alpha.models import AlphaDefinition, RegistrySnapshot
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.models import AlphaProjectionRecord, DomainEventRecord
@@ -358,8 +359,50 @@ class AlphaRepository:
             "shadow": len(snapshot.shadow),
             "installed": installed,
             "latest_research": await self.get("research/latest"),
+            "latest_observation": await self.get("observation/latest"),
             "research_family": await self.get("family/all"),
         }
+
+    async def _observation_latest(self, session, payload):
+        for key in ("observation/latest", f"observation/latest/{payload['symbol']}"):
+            previous = await self._get(session, key)
+            if previous is None or payload["started_at"] >= previous["started_at"]:
+                await self._append(session, key, payload, EventKind.ALPHA_RESEARCH, "session_observer")
+
+    async def begin_observation(self, identity: str, payload: dict):
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            key = f"observation/{identity}"
+            if await self._get(session, key) is not None:
+                raise ValueError("Observation identity is immutable")
+            await self._append(session, key, payload, EventKind.ALPHA_RESEARCH, "session_observer")
+            await self._observation_latest(session, payload)
+
+    async def finish_observation(self, identity: str, payload: dict):
+        """Retain receipts/corrections without granting forecast or qualification credit."""
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            key = f"observation/{identity}"
+            previous = await self._get(session, key)
+            if not previous or previous["status"] != ObservationStatus.CAPTURING:
+                raise ValueError("Only a pending observation can be completed")
+            if any(payload.get(k) != v for k, v in previous.items() if k != "status"):
+                raise ValueError("Observation capture contract is immutable")
+            if payload["status"] == ObservationStatus.COMPLETE:
+                bar = await self._get(session, payload["bar_key"])
+                received = payload["received_at"]
+                if bar is None:
+                    bar = {"first_observed_at": received, "last_observed_at": received, "versions": {}}
+                versions = bar["versions"]
+                content = payload["content_hash"]
+                versions[content] = min(versions.get(content, received), received)
+                bar["first_observed_at"] = min(bar["first_observed_at"], received)
+                if received >= bar["last_observed_at"]:
+                    bar.update(last_observed_at=received, content_hash=content, observation_id=identity)
+                bar["revision_count"] = len(versions) - 1
+                await self._append(session, payload["bar_key"], bar, EventKind.ALPHA_RESEARCH, "session_observer")
+            await self._append(session, key, payload, EventKind.ALPHA_RESEARCH, "session_observer")
+            await self._observation_latest(session, payload)
 
     async def record_failure(self, run_id: str, *, symbol: str, timeframe: str, error: str):
         payload = {

@@ -8,11 +8,12 @@ import pandas as pd
 import pytest
 
 from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.data.sessions import AlpacaSessionSource
 from agentic_trader.market.bars import SessionSchedule, build_session_bars
 from agentic_trader.research.alpha.data import load_dataset
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.replay import ReplayPlan, SessionReplayPolicy
-from agentic_trader.research.alpha.replay_workflow import AlpacaReplaySource, AlphaReplayService
+from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
@@ -44,7 +45,7 @@ async def test_sdk_calendar_pagination_and_replay_remain_read_only(alpaca_http, 
         return None
 
     venue.override = response
-    source = AlpacaReplaySource(AlpacaDataProvider(stock_client=broker.data_client, feed="iex"), broker.client)
+    source = AlpacaSessionSource(AlpacaDataProvider(stock_client=broker.data_client, feed="iex"), broker.client)
     plan = ReplayPlan(
         "SPY",
         date(2024, 11, 27),

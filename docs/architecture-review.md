@@ -127,3 +127,10 @@ and event traces. Remaining A2b work is live signal-clock versioning and measure
 publication/broker execution behavior; A3 objective alignment follows.
 Preserve the original incomplete study and gates;
 do not treat missing comparisons as null rejections or loosen trade-count requirements.
+
+The [A2b forward observer](alpha-forward-observations.md) reuses the replay adapter,
+session-window clock, journal and artifact format. It lives outside `TradingCopilot`
+and owns dedicated SDK readers, with blocking work offloaded and orderly shutdown.
+No new schema, execution queue or notification mechanism was added. It measures REST
+receipt/revision evidence only; live strategy clock versioning and execution observations
+remain unfinished, and shared research executor capacity remains a ranked concern.

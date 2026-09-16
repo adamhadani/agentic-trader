@@ -344,3 +344,15 @@ provider access. It starts no daemon/poller and submits no orders or notificatio
 Retain failed results as well as successful ones; no automatic retry, feed fallback
 or promotion is performed. See [session replay](alpha-session-replay.md) for its
 private artifact contract and remaining live-clock limitations.
+
+
+### Prospective session data observer
+
+The existing daemon now owns the [forward data observer](alpha-forward-observations.md).
+Desk YAML enables SPY/15m on the configured stock feed, sampling around observed
+session closes. It is independent of trading scans and does not emit signals or
+routine Telegram messages. `alpha status` exposes capture results; `/readyz` includes
+current-run `alpha_observer` progress. A healthy idle collector is not evidence of
+complete prices. Check capture coverage/status and metrics separately. After a
+post-close deployment, retain that no forward sample exists yet; do not backdate a
+historical fetch to pass verification. No schema change or alpha activation is needed.

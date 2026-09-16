@@ -158,3 +158,12 @@ Existing fixed-duration research/screening/shadow paths share the market clock
 guard and reject explicit session/unknown layouts or ambiguous timestamps. Do not
 silently reinterpret an old alpha version as using session-derived bars.
 Preserve historical study evidence and use fresh validation after policy changes.
+
+A2b's [prospective data observer](docs/alpha-forward-observations.md) runs in the
+existing daemon, independently of scans/halt state. The desk observes SPY/15m on
+its configured feed. Read `alpha status` for retained capture quality; `alpha_observer`
+readiness means collector progress, including idle session waits, not complete data.
+Raw receipts/revisions use the existing journal/private artifacts and earn no trial,
+shadow or promotion credit. Inspected dates are excluded before price reads. Preserve
+existing alpha identities; strategy clock migration and actual execution evidence
+remain pending. Shutdown must finish reads before closing the observer's SDK clients.

@@ -50,9 +50,9 @@ async def test_real_replay_workflow_retains_budget_and_result_on_failure(replay_
             raise OSError("fixture transport unavailable")
         return bars, schedule
 
-    result = await AlphaReplayService(repo, SimpleNamespace(capture=capture)).run(
-        plan, output, environment={"fixture": True}, as_of=pd.Timestamp("2024-11-28", tz="UTC")
-    )
+    result = await AlphaReplayService(
+        repo, SimpleNamespace(calendar=lambda *args: schedule.sessions, minutes=lambda *args: capture(*args)[0])
+    ).run(plan, output, environment={"fixture": True}, as_of=pd.Timestamp("2024-11-28", tz="UTC"))
     assert (await repo.get("family/all"))["trial_count"] == 1
     assert result["status"] == ("completed" if failure is None else "failed")
     assert not result["authorizes_promotion"]
@@ -68,7 +68,9 @@ async def test_real_replay_workflow_retains_budget_and_result_on_failure(replay_
     await repo.rebuild()
     assert await repo.get(f"diagnostic/{result['run_id']}") == diagnostic
     with pytest.raises(FileExistsError):
-        await AlphaReplayService(repo, SimpleNamespace(capture=capture)).run(plan, output, environment={})
+        await AlphaReplayService(
+            repo, SimpleNamespace(calendar=lambda *args: schedule.sessions, minutes=lambda *args: capture(*args)[0])
+        ).run(plan, output, environment={})
     assert (await repo.get("family/all"))["trial_count"] == 1
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in output.rglob("*") if p.is_file())
 
@@ -83,9 +85,9 @@ async def test_capture_is_off_loop_and_exposure_is_durable_before_io(replay_work
         return bars, schedule
 
     task = asyncio.create_task(
-        AlphaReplayService(repo, SimpleNamespace(capture=capture)).run(
-            plan, output, environment={}, as_of=pd.Timestamp("2024-11-28", tz="UTC")
-        )
+        AlphaReplayService(
+            repo, SimpleNamespace(calendar=lambda *args: schedule.sessions, minutes=lambda *args: capture(*args)[0])
+        ).run(plan, output, environment={}, as_of=pd.Timestamp("2024-11-28", tz="UTC"))
     )
     try:
         assert await asyncio.to_thread(entered.wait, 5)

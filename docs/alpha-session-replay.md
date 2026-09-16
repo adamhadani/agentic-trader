@@ -15,7 +15,8 @@ rules, so a minute-derived session bar is a distinct data contract.
 See [Alpaca bar construction](https://docs.alpaca.markets/us/docs/market-data-faq)
 and [bracket semantics](https://docs.alpaca.markets/us/docs/orders-at-alpaca).
 
-`market/bars.py` owns pure observed sessions and aggregation. The SDK adapter supplies
+`market/bars.py` owns pure observed sessions and aggregation. The shared
+`data/sessions.py` SDK adapter supplies
 calendar open/close times, interpreted in exchange time and normalized to UTC.
 It never falls back to a weekday/holiday approximation. The
 [calendar endpoint](https://alpaca.markets/sdks/python/api_reference/trading/calendar.html)
@@ -55,6 +56,10 @@ shadow records the rejection and earns no observation credit. New research manif
 record their clock, while immutable definitions and valid fixed-clock calculations
 retain their existing identity/meaning. Resampling must explicitly update timeframe
 metadata at the transformation boundary.
+
+The [prospective observer](alpha-forward-observations.md) now uses this same session
+adapter/window clock to retain actual REST receipt and revision evidence. It is
+independent of strategy scoring and does not qualify or reinterpret any definition.
 
 These guards prevent accidental reinterpretation, including session-derived daily
 bars. They do **not** install session bars into live screening. The versioned live
