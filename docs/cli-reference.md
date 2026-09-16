@@ -19,7 +19,7 @@ uv run copilot daemon
 - **Components Executed**:
   - APScheduler 4-hour swing scans and session-gated 15-minute intraday scans, relative to startup.
   - 1-minute position reconciliation and bracket take-profit / stop-loss reconciler.
-  - Sub-second Alpaca WebSocket `TradingStream` and Tradovate user-sync stream.
+  - Alpaca WebSocket `TradingStream` wakeups (no latency guarantee).
   - Interactive two-way Telegram bot listener.
   - Embedded Prometheus metrics and health check HTTP server on `0.0.0.0:9108`.
 
@@ -34,7 +34,7 @@ uv run copilot listen
 ## 2. Day-to-Day Operator Runbook
 
 ### `copilot status`
-Displays account cash balance, active notional exposure, leverage utilization, and upcoming macro calendar events.
+Displays configured risk capital, tracked notional exposure, leverage utilization and macro calendar events. It does not report broker cash.
 ```bash
 uv run copilot status
 ```
@@ -51,7 +51,7 @@ Triggers an immediate quantitative universe scan across configured assets.
 # Live scan with LLM evaluation and alerting
 uv run copilot scan
 
-# Dry-run scan (evaluates setups without saving to DB or dispatching alerts)
+# Dry-run scan (evaluates setups using temporary storage and no production writes/alerts)
 uv run copilot scan --dry-run
 
 # Run scan using deterministic rules (bypassing LLM)
@@ -69,7 +69,7 @@ uv run copilot scan --bypass-session-filter --dry-run
 ```
 
 ### `copilot execute <signal_id>`
-Manually authorizes and submits an approved signal to the configured broker (`paper`, `tradovate`, or `alpaca`).
+Authorizes a signal through the durable entry queue. Fresh admission supports Alpaca equities and local simulation; other adapters fail closed until they implement that contract.
 ```bash
 uv run copilot execute 4
 ```
@@ -98,7 +98,7 @@ uv run copilot flatten --confirm
 ```
 
 Telegram equivalents: `/close 5`, `/flatten`, `/flatten dry-run`, `/flatten confirm`.
-Flatten includes broker-only positions, without inventing trade-history P&L for them.
+Flatten includes broker-only positions without inventing tracked trade history. Actual executions still enter reconciled account-level performance.
 Ambiguous tracked ownership or partial quantities are reported for reconciliation.
 Orders on position symbols are cancelled; unfilled entries in other symbols remain.
 Each position has its own result: a rejected close does not stop other closes.
@@ -108,7 +108,7 @@ continue to use their existing single-position close behavior.
 See [close operations and recovery](production.md#coordinated-close-and-flatten).
 
 ### `copilot panic [--confirm] [--reason "TEXT"]`
-Institutional emergency kill switch: cancels all resting broker orders, liquidates all active positions at market, and engages a persistent trading halt.
+Persists a trading halt, requests order cancellation and market exits. Pending/rejected exits remain visible; acceptance is not confirmed liquidation.
 ```bash
 # Prompt for interactive confirmation
 uv run copilot panic
@@ -118,7 +118,7 @@ uv run copilot panic --confirm --reason "Extreme volatility circuit breaker"
 ```
 
 ### `copilot resume`
-Clears persistent emergency trading halt and restores automated universe scans and signal executions.
+Clears persistent emergency trading halt and restores universe scans and operator-approved entry flow, after unresolved-submission checks.
 ```bash
 uv run copilot resume
 ```
@@ -130,7 +130,7 @@ uv run copilot test-alert
 ```
 
 ### `copilot gex [symbol]`
-Analyzes market maker dealer gamma exposure (GEX), zero-crossing gamma flip, call/put pinning walls, and near-the-money gamma concentration.
+Estimates GEX and strike-based gamma flip/walls from Yahoo option chains and model assumptions. It does not observe dealer inventory.
 ```bash
 # Standard ASCII report
 uv run copilot gex SPY
@@ -168,11 +168,11 @@ Dumps a point-in-time Prometheus exposition snapshot or launches a standalone HT
 uv run copilot metrics
 
 # Launch standalone metrics server on custom port
-uv run copilot metrics --serve --port 9108
+uv run copilot metrics --serve --port 9109
 ```
 
 ### `copilot explain-macro`
-Generates an educational, executive tutorial briefing synthesizing live quantitative macroeconomic telemetry (10Y-2Y yield curve slope in bps, High Yield OAS credit spreads, VIX volatility context, 5Y/10Y TIPS inflation breakevens, and Copilot risk sizing). Powered by LLM synthesis with an exhaustive deterministic rule-based fallback.
+Generates an educational, executive tutorial briefing synthesizing latest published macroeconomic observations (10Y-2Y yield curve slope in bps, High Yield OAS credit spreads, VIX volatility context, 5Y/10Y TIPS inflation breakevens, and Copilot risk sizing). Powered by LLM synthesis with an exhaustive deterministic rule-based fallback.
 ```bash
 uv run copilot explain-macro
 ```
@@ -264,7 +264,7 @@ uv run copilot alpha catalog
 ```
 
 ### `copilot alpha list`
-Displays all currently promoted production alphas, active allocations, out-of-sample Sharpe ratios, DSR scores, eligible asset universe (`ELIGIBLE SYMBOLS`), and promotion audit metadata.
+Displays all currently promoted production alphas, configured allocation metadata, out-of-sample Sharpe ratios, DSR scores, eligible asset universe (`ELIGIBLE SYMBOLS`), and promotion audit metadata.
 ```bash
 uv run copilot alpha list
 ```
@@ -296,7 +296,7 @@ uv run copilot alpha inspect alpha_trend_expansion --symbol QQQ --interval 1d
 ```
 
 ### `copilot alpha promote <alpha_id>`
-Promotes an alpha from the catalog or mining candidates into the production paper trading portfolio, persisting configuration in `config/promoted_alphas.yaml` and registering the alpha in `StrategyRegistry`. Optionally routes execution to a designated subset of symbols via `--symbols`.
+Promotes an alpha from the catalog or mining candidates into the production paper trading portfolio, persisting configuration in `config/promoted_alphas.yaml`. The running daemon requires a restart to load external CLI/file changes. Optionally routes execution to a designated subset of symbols via `--symbols`.
 ```bash
 # Promote alpha across all supported symbols
 uv run copilot alpha promote alpha_wq_006 --allocation 0.15 --notes "Baseline institutional alpha"
@@ -326,7 +326,7 @@ uv run copilot alpha test --symbol NVDA --interval 1d -- "-1.0 * delta(ts_rank(v
 
 ## 5. Database Schema Migrations & Administration (`copilot db`)
 
-Manage SQLite schema versions and database maintenance via Alembic and administration subcommands:
+Manage PostgreSQL runtime or explicitly selected SQLite sandbox schema versions and database maintenance via Alembic and administration subcommands:
 ```bash
 # Apply all pending database migrations to latest revision
 uv run copilot db upgrade head
@@ -340,14 +340,14 @@ uv run copilot db history
 # Roll back one migration revision
 uv run copilot db downgrade -1
 
-# Purge historical test/dev signals and reset autoincrement ID (schema preserved)
+# Clear a disposable sandbox; refused when durable events/work exist
 uv run copilot db clear
 uv run copilot db clear --yes  # bypass interactive confirmation
 ```
 
 ### Global Database Override Options
 Commands interacting with storage accept options or environment variables to redirect to alternate database files:
-- `--db-name <name>`: Resolve database inside `data/<name>.db` (or `DB_NAME` env var).
+- `--db-name <name>`: Resolve a named SQLite sandbox under `data/<environment>/` (or `DB_NAME` env var).
 - `--db-path <path>`: Explicit filesystem path to database (or `DB_PATH` env var).
 
 ## Configuration, test isolation and audit
@@ -365,10 +365,10 @@ uv run copilot test-alert --send
 ```
 
 `scan --dry-run` uses an empty temporary portfolio and a simulated broker, disables
-Telegram, and skips monitoring. `/perf` reports broker open-position unrealized
-P&L and tracked confirmed closed-trade P&L before fees; these are distinct from a
-broker account-day return. `/healthz` is liveness; `doctor`/`/healthcheck` include
-active database and LLM probes. Do not launch `listen` alongside the running daemon.
+Telegram, and skips monitoring. `/perf` separates reconciled account performance
+from tracked full-close statistics; neither is account-day return. `/healthz` is
+liveness; `/readyz` is passive freshness. Active DB/LLM probes are CLI `doctor` only;
+HTTP `/healthcheck` is removed. Do not launch `listen` alongside the daemon.
 
 
 ### Options data quality
@@ -416,3 +416,15 @@ tracked full-close metrics are separate.
 
 See [account ledger](account-ledger.md) for unsupported activities, freshness and
 reconciliation rules. A failed reconciliation never becomes zero profit.
+
+## Operational incidents and maintenance
+
+- `copilot doctor --monitor`: stateful supervisor pass using the passive readiness
+  contract; persists debounced incidents, queues alerts and runs due compaction.
+  May deliver one existing outbox job when endpoint/delivery freshness fails.
+- `copilot db incidents [--rebuild]`: inspect/replay incident lifecycle; no resending.
+- `copilot db retention [--apply]`: preview by default; apply one bounded batch of
+  redundant old healthy-observation compaction. Financial events/dead letters stay.
+
+See [monitoring semantics and defaults](operational-monitoring.md). `--monitor`
+and `--readiness` are mutually exclusive. Active `doctor` probes are separate.

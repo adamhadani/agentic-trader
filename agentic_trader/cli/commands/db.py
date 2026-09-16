@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict
 
@@ -12,6 +13,7 @@ from agentic_trader.config import load_config
 from agentic_trader.execution.durable import WorkKind
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
+from agentic_trader.storage.maintenance import RetentionService
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
     get_alembic_config,
@@ -19,6 +21,7 @@ from agentic_trader.storage.migrations import (
     get_history,
     run_migrations_head,
 )
+from agentic_trader.storage.operations import OperationsStore
 from alembic import command as alembic_command
 
 
@@ -189,5 +192,33 @@ async def activities() -> None:
     try:
         for activity in await LedgerStore(db.workflows).activities():
             click.echo(json.dumps(activity))
+    finally:
+        await db.engine.dispose()
+
+
+@db_group.command("incidents", help="Inspect operational incidents or replay their lifecycle state")
+@click.option("--rebuild", is_flag=True, help="Replay state only; never resend notifications")
+@coro
+async def incidents(rebuild: bool) -> None:
+    db = await asyncio.to_thread(SignalDatabase, config=load_config())
+    try:
+        store = OperationsStore(db.workflows)
+        if rebuild:
+            click.echo(f"Replayed {await store.rebuild()} incident changes.")
+        click.echo(json.dumps(await store.incidents(), indent=2))
+    finally:
+        await db.engine.dispose()
+
+
+@db_group.command("retention", help="Preview redundant healthy-observation compaction")
+@click.option(
+    "--apply", is_flag=True, help="Compact one bounded batch; preserve failures, transitions and financial history"
+)
+@coro
+async def retention(apply: bool) -> None:
+    config = load_config()
+    db = await asyncio.to_thread(SignalDatabase, config=config)
+    try:
+        click.echo(json.dumps(await RetentionService(db.workflows, config.operations).sweep(apply=apply), indent=2))
     finally:
         await db.engine.dispose()

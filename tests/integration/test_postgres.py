@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import psycopg2
@@ -11,15 +12,18 @@ import pytest
 
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import CloseRequestStatus
+from agentic_trader.diagnostics.incidents import IncidentPhase
 from agentic_trader.execution.durable import WorkKind, WorkStatus
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
+from agentic_trader.storage.maintenance import RetentionService
 from agentic_trader.storage.migrations import (
     downgrade_migrations,
     get_current_revision,
     run_migrations_head,
     to_sync_url,
 )
+from agentic_trader.storage.operations import OperationsStore
 
 
 pytestmark = [pytest.mark.postgres, pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
@@ -34,7 +38,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 2. Upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "006_account_ledger"
+    assert get_current_revision(db_url) == "007_operational_incidents"
 
     # Verify tables in PostgreSQL
     with psycopg2.connect(sync_url) as conn, conn.cursor() as cur:
@@ -97,7 +101,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 5. Re-upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "006_account_ledger"
+    assert get_current_revision(db_url) == "007_operational_incidents"
 
 
 @pytest.mark.asyncio
@@ -105,7 +109,7 @@ async def test_postgres_signal_database_operations(postgres_test_db: str):
     db_url = postgres_test_db
     db = SignalDatabase(db_url=db_url)
 
-    assert get_current_revision(db_url) == "006_account_ledger"
+    assert get_current_revision(db_url) == "007_operational_incidents"
 
     sig_id = await db.record_signal(
         contract="NQ",
@@ -179,7 +183,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r3.returncode == 0
-    assert "006_account_ledger" in r3.stdout
+    assert "007_operational_incidents" in r3.stdout
 
     # 4. Downgrade to 001_initial
     r4 = subprocess.run(
@@ -212,7 +216,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r6.returncode == 0
-    assert "006_account_ledger" in r6.stdout
+    assert "007_operational_incidents" in r6.stdout
 
     # 7. History
     r7 = subprocess.run(
@@ -223,7 +227,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r7.returncode == 0
-    assert "006_account_ledger" in r7.stdout
+    assert "007_operational_incidents" in r7.stdout
     assert "001_initial" in r7.stdout
 
     # 8. Clear
@@ -394,7 +398,7 @@ async def test_postgres_workflow_upgrade_preserves_existing_trading_state(postgr
     assert before
     run_migrations_head(postgres_test_db)
     assert snapshot() == before
-    assert get_current_revision(postgres_test_db) == "006_account_ledger"
+    assert get_current_revision(postgres_test_db) == "007_operational_incidents"
 
 
 async def test_postgres_account_ledger_fences_independent_importers(postgres_test_db):
@@ -429,3 +433,36 @@ async def test_postgres_ledger_transaction_does_not_block_entry_admission_lock(p
                 await asyncio.wait_for(db.workflows.lock(entry_session), timeout=2)
     finally:
         await db.engine.dispose()
+
+
+async def test_postgres_incidents_and_retention_between_independent_clients(postgres_test_db, app_config):
+
+    first = SignalDatabase(db_url=postgres_test_db)
+    second = SignalDatabase(db_url=postgres_test_db)
+    try:
+        a, b = OperationsStore(first.workflows), OperationsStore(second.workflows)
+        now = datetime.now(UTC)
+        policy = app_config.operations
+        await a.observe("worker", ready=False, observed_at=now, detail="", policy=policy)
+        opened = now + timedelta(seconds=policy.failure_seconds)
+        notices = await asyncio.gather(
+            *(store.observe("worker", ready=False, observed_at=opened, detail="", policy=policy) for store in (a, b))
+        )
+        assert sum(notice is not None for notice in notices) == 1
+        assert len(await first.workflows.list_work(WorkKind.NOTIFICATION)) == 1
+        await b.rebuild()
+        assert (await a.incidents())[0]["phase"] == IncidentPhase.OPEN
+        sweeps = await asyncio.gather(
+            *(
+                RetentionService(db.workflows, policy).sweep(apply=True, now=now, only_if_due=True)
+                for db in (first, second)
+            )
+        )
+        assert sum(result["deferred"] for result in sweeps) == 1
+        async with first.session_factory() as session, session.begin():
+            await first.workflows.lock(session, resource="retention")
+            async with second.session_factory() as other, other.begin():
+                await asyncio.wait_for(second.workflows.lock(other), timeout=2)
+    finally:
+        await first.engine.dispose()
+        await second.engine.dispose()

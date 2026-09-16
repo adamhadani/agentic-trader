@@ -195,7 +195,3 @@ def calculate_cross_strategy_correlations(
         else:
             corrs[name] = 0.0
     return corrs
-
-
-# Alias for backward compatibility
-calculate_strategy_correlations = calculate_cross_strategy_correlations

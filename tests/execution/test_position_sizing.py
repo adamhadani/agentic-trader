@@ -1,14 +1,15 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.position_sizing import (
     calculate_dynamic_sizing,
-    calculate_position_size,
     compute_fractional_kelly_multiplier,
 )
 from agentic_trader.config import AppConfig, ContractConfig, PositionSizingConfig
 from agentic_trader.constants import AssetClass, Direction, StrategyType
-from agentic_trader.screeners.strategies import ScreenerCandidate
+from agentic_trader.screeners.base import ScreenerCandidate
 
 
 def _make_candidate(
@@ -57,144 +58,48 @@ def test_fractional_kelly_multiplier_bounds():
     assert mult_zero == 1.0
 
 
-def test_static_sizing_backward_compatibility():
+@pytest.mark.parametrize(
+    "mode,symbol,price,stop,multiplier,asset,risk_budget,expected_qty,expected_risk",
+    [
+        ("static", "/MES", 5000, 30, 5, AssetClass.FUTURES, 300, 1, 150),
+        ("static", "AAPL", 200, 4, 1, AssetClass.EQUITY, 250, 62, 248),
+        ("volatility_targeted", "/MES", 5000, 15, 5, AssetClass.FUTURES, 300, 1, 75),
+        ("volatility_targeted", "/MES", 5000, 60, 5, AssetClass.FUTURES, 300, 1, 300),
+        ("volatility_targeted", "/MES", 5000, 100, 5, AssetClass.FUTURES, 300, 1, 500),
+        ("volatility_targeted", "SPY", 500, 2, 1, AssetClass.EQUITY, 500, 60, 120),
+    ],
+)
+def test_sizing_uses_actual_price_and_notional_cap(
+    mode, symbol, price, stop, multiplier, asset, risk_budget, expected_qty, expected_risk
+):
     config = AppConfig(
-        sizing=PositionSizingConfig(mode="static"),
+        sizing=PositionSizingConfig(mode=mode, target_futures_risk_dollars=risk_budget, max_contracts_per_trade=4),
         contracts={
-            "/MES": ContractConfig(
-                ticker="MES=F", name="Micro ES", multiplier=5.0, tick_size=0.25, asset_class=AssetClass.FUTURES
-            ),
-            "AAPL": ContractConfig(
-                ticker="AAPL",
-                name="Apple",
-                multiplier=1.0,
+            symbol: ContractConfig(
+                ticker=symbol,
+                name=symbol,
+                multiplier=multiplier,
                 tick_size=0.01,
-                asset_class=AssetClass.EQUITY,
-                target_risk_dollars=250.0,
-            ),
-        },
-    )
-
-    # Futures static sizing: always 1.0 contract
-    cand_mes = _make_candidate(contract="/MES", price=5000.0, atr_14=20.0)
-    qty_mes, risk_mes, reward_mes = calculate_position_size(
-        candidate=cand_mes,
-        stop_distance=30.0,
-        target_distance=60.0,
-        multiplier=5.0,
-        asset_class=AssetClass.FUTURES,
-        config=config,
-    )
-    assert qty_mes == 1.0
-    assert risk_mes == 150.0  # 30 pts * $5 * 1
-    assert reward_mes == 300.0
-
-    # Equity static sizing: target $250 / stop distance $4.00 = 62 shares
-    cand_aapl = _make_candidate(contract="AAPL", price=200.0, atr_14=3.0)
-    qty_aapl, risk_aapl, reward_aapl = calculate_position_size(
-        candidate=cand_aapl,
-        stop_distance=4.0,
-        target_distance=8.0,
-        multiplier=1.0,
-        asset_class=AssetClass.EQUITY,
-        config=config,
-    )
-    assert qty_aapl == 62.0
-    assert risk_aapl == 248.0
-    assert reward_aapl == 496.0
-
-
-def test_volatility_targeted_futures_sizing():
-    config = AppConfig(
-        sizing=PositionSizingConfig(
-            mode="volatility_targeted",
-            target_futures_risk_dollars=300.0,
-            max_contracts_per_trade=4,
-            min_contracts=1,
-        ),
-        contracts={
-            "/MES": ContractConfig(
-                ticker="MES=F", name="Micro ES", multiplier=5.0, tick_size=0.25, asset_class=AssetClass.FUTURES
+                asset_class=asset,
+                target_risk_dollars=risk_budget,
             )
         },
     )
-
-    # Case A: Low/Compressed Volatility (Tight stop: 15.0 pts -> $75/contract risk)
-    # Budget $300 / $75 = 4.0 contracts (capped at 4)
-    cand_low = _make_candidate(contract="/MES", price=5000.0, atr_14=10.0)
-    qty_low, risk_low, _ = calculate_position_size(
-        candidate=cand_low,
-        stop_distance=15.0,
-        target_distance=30.0,
-        multiplier=5.0,
-        asset_class=AssetClass.FUTURES,
+    candidate = _make_candidate(contract=symbol, price=price)
+    result = calculate_dynamic_sizing(
+        entry=candidate.current_price,
+        candidate=candidate,
+        stop_distance=stop,
+        target_distance=2 * stop,
+        multiplier=multiplier,
+        asset_class=asset,
         config=config,
     )
-    assert qty_low == 4.0
-    assert risk_low == 300.0
-
-    # Case B: High Volatility (Wide stop: 60.0 pts -> $300/contract risk)
-    # Budget $300 / $300 = 1.0 contract
-    cand_high = _make_candidate(contract="/MES", price=5000.0, atr_14=40.0)
-    qty_high, risk_high, _ = calculate_position_size(
-        candidate=cand_high,
-        stop_distance=60.0,
-        target_distance=120.0,
-        multiplier=5.0,
-        asset_class=AssetClass.FUTURES,
-        config=config,
-    )
-    assert qty_high == 1.0
-    assert risk_high == 300.0
-
-    # Case C: Extreme Volatility (Extreme stop: 100.0 pts -> $500/contract risk)
-    # Budget $300 / $500 = 0.6 contract -> clamped to min 1.0
-    cand_ext = _make_candidate(contract="/MES", price=5000.0, atr_14=70.0)
-    qty_ext, risk_ext, _ = calculate_position_size(
-        candidate=cand_ext,
-        stop_distance=100.0,
-        target_distance=200.0,
-        multiplier=5.0,
-        asset_class=AssetClass.FUTURES,
-        config=config,
-    )
-    assert qty_ext == 1.0
-    assert risk_ext == 500.0
-
-
-def test_volatility_targeted_equity_sizing():
-    config = AppConfig(
-        sizing=PositionSizingConfig(
-            mode="volatility_targeted",
-            default_equity_risk_dollars=500.0,
-            max_shares_per_trade=300,
-            min_shares=1.0,
-        ),
-        contracts={
-            "SPY": ContractConfig(
-                ticker="SPY",
-                name="SPY ETF",
-                multiplier=1.0,
-                tick_size=0.01,
-                asset_class=AssetClass.EQUITY,
-                target_risk_dollars=500.0,
-            )
-        },
-    )
-
-    # Tight stop: $2.00 per share -> 500 / 2 = 250 shares
-    cand_spy = _make_candidate(contract="SPY", price=500.0, atr_14=1.5)
-    qty_spy, risk_spy, reward_spy = calculate_position_size(
-        candidate=cand_spy,
-        stop_distance=2.0,
-        target_distance=4.0,
-        multiplier=1.0,
-        asset_class=AssetClass.EQUITY,
-        config=config,
-    )
-    assert qty_spy == 250.0
-    assert risk_spy == 500.0
-    assert reward_spy == 1000.0
+    tier = result.default_tier
+    assert tier.quantity == expected_qty
+    assert tier.risk_dollars == expected_risk
+    assert tier.reward_dollars == 2 * expected_risk
+    assert tier.notional_dollars <= config.sizing.max_trade_notional_cap
 
 
 def test_fractional_kelly_evaluator_integration():
@@ -223,16 +128,13 @@ def test_fractional_kelly_evaluator_integration():
         recent_swing_low=17925.0,  # 75 pt stop
     )
 
-    (
-        stop_loss,
-        take_profit,
-        stop_dist,
-        target_dist,
-        _risk_dollars,
-        _reward_dollars,
-        notional,
-        quantity,
-    ) = evaluator.calculate_levels_deterministic(cand)
+    levels = evaluator.calculate_levels_deterministic(cand)
+    stop_loss = levels.stop_loss
+    take_profit = levels.take_profit
+    stop_dist = levels.stop_distance
+    target_dist = levels.target_distance
+    notional = levels.notional_value
+    quantity = levels.quantity
 
     assert stop_loss < 18000.0
     assert take_profit > 18000.0

@@ -2,21 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import click
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import coro, get_copilot_and_config
-from agentic_trader.config import load_config
+from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import AuditEventType
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
+from agentic_trader.diagnostics.monitor import OperationsMonitor
+from agentic_trader.diagnostics.probe import probe_readiness
+from agentic_trader.notifier.outbox import NotificationDispatcher
+from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.runtime import runtime_identity
+from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.storage.maintenance import RetentionService
+from agentic_trader.storage.operations import OperationsStore
 from agentic_trader.telemetry.event_loop import monitor_event_loop
 
 
@@ -95,7 +104,7 @@ async def daemon(no_llm: bool) -> None:
         await copilot.notifier.start_polling()
 
     stream_task: asyncio.Task[None] | None = None
-    if getattr(copilot.broker, "supports_trade_stream", False):
+    if copilot.broker.supports_trade_stream:
         stream_task = asyncio.create_task(copilot.start_trade_stream())
 
     if copilot.metrics_server:
@@ -216,22 +225,52 @@ async def daemon(no_llm: bool) -> None:
         await copilot.notifier.stop_polling()
 
 
-@click.command("doctor", help="Run active diagnostics or inspect daemon freshness")
-@click.option("--readiness", is_flag=True, help="Read the daemon /readyz endpoint without active probes")
+@click.command("doctor", help="Run active diagnostics or inspect/supervise daemon readiness")
+@click.option("--readiness", is_flag=True, help="Read daemon freshness without active probes or state changes")
+@click.option(
+    "--monitor", is_flag=True, help="Persist readiness incidents, enqueue alerts and compact old healthy observations"
+)
 @coro
-async def doctor(readiness: bool) -> None:
-    """Run pre-flight system diagnostics and connectivity checks across all subsystems."""
-    if readiness:
-        config = load_config()
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                response = await client.get(f"http://127.0.0.1:{config.telemetry.metrics_port}/readyz")
-            click.echo(response.text)
-            if response.status_code != 200:
-                raise click.ClickException("Daemon is not ready; inspect component freshness above.")
-        except httpx.HTTPError as exc:
-            raise click.ClickException(f"Daemon readiness unavailable: {type(exc).__name__}") from exc
+async def doctor(readiness: bool, monitor: bool) -> None:
+    if readiness and monitor:
+        raise click.UsageError("Choose --readiness or --monitor")
+    config = load_config()
+    if readiness or monitor:
+        async with httpx.AsyncClient() as client:
+            report = await probe_readiness(config, client)
+        if monitor:
+            await monitor_once(config, report)
+        click.echo(json.dumps(report, indent=2))
+        if not report["ready"]:
+            raise click.ClickException("Daemon is not ready; inspect component freshness above.")
         return
-    _copilot, config = get_copilot_and_config()
-    report = await run_diagnostics(config)
-    click.echo(format_doctor_cli_output(report))
+    diagnostic_report = await run_diagnostics(config)
+    click.echo(format_doctor_cli_output(diagnostic_report))
+
+
+async def monitor_once(config: AppConfig, report: dict[str, Any]) -> None:
+    """Composition boundary for an external supervisor, never a second poller."""
+    db = await asyncio.to_thread(SignalDatabase, config=config)
+    try:
+        monitor = OperationsMonitor(OperationsStore(db.workflows), config.operations)
+        await monitor.observe(report)
+        await RetentionService(db.workflows, config.operations).sweep(apply=True, only_if_due=True)
+        # Let the normal consumer deliver. If its loop/process is unavailable,
+        # this separate process may deliver one existing outbox item with the same
+        # fenced claim/retry protocol. It has no broker or execution consumer.
+        checks = report["checks"]
+        if checks.get("endpoint", {}).get("ready") is False or checks.get("delivery", {}).get("ready") is False:
+            notifier = TelegramNotifier(
+                config.telegram_bot_token,
+                config.telegram_chat_id,
+                db=db,
+                settings=config.telegram,
+                environment=config.environment,
+                execution_mode=config.execution_mode,
+            )
+            if notifier.app and notifier.is_configured():
+                async with asyncio.timeout(config.execution.notification_delivery_timeout_seconds):
+                    async with notifier.app.bot:
+                        await NotificationDispatcher(db.workflows, notifier, config.execution).dispatch_one()
+    finally:
+        await db.engine.dispose()

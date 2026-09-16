@@ -15,7 +15,7 @@ See [development notes](development-notes.md), [CLI reference](cli-reference.md)
 ## Ownership and scheduling
 
 `com.agentictrader.copilot` runs `uv run copilot daemon` from this checkout after
-its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID every
+its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID and runs the external readiness monitor every
 60 seconds; `com.agentictrader.alphaminer` runs weekly. Do not start a second daemon,
 `listen`, or Compose service while the installed poller owns the bot.
 
@@ -40,9 +40,9 @@ production default. `--db-path` accepts a URL or SQLite path; `--db-name` explic
 selects a SQLite sandbox. There is no automatic SQLite failover. `data/signals.db`
 is historical and must not be mistaken for the current PostgreSQL database.
 
-Head migration is `006_account_ledger`. `signals`, `system_state` and
+Head migration is `007_operational_incidents`. `signals`, `system_state` and
 `audit_events`, `close_requests`, `work_items`, `domain_events`, `order_projections`,
-`workflow_locks`, `activity_projections` and `ledger_checkpoints` hold trading and
+`workflow_locks`, `activity_projections`, `ledger_checkpoints` and `incident_projections` hold trading and
 operational state. Construction currently checks
 migrations, even for informational copilot commands. Back up PostgreSQL before
 schema or historical repairs. Do not use `db clear` to fix contamination: quarantine
@@ -83,8 +83,9 @@ uv run copilot db audit --limit 20
 uv run copilot positions
 ```
 
-`/healthz` proves liveness. `/healthcheck`, `copilot doctor`, and `launchd.sh health`
-perform active diagnostics, including migrations and an LLM request. A separate
+`/healthz` proves liveness; `/readyz` and `copilot doctor --readiness` assess passive
+current-run freshness. `copilot doctor` and `launchd.sh health` perform active CLI
+diagnostics, including migrations and an LLM request. HTTP `/healthcheck` is removed. A separate
 `copilot metrics` instance does not contain the running daemon's metrics.
 
 ```bash
@@ -102,11 +103,14 @@ production signals merely to check connectivity.
 ## Controlled maintenance and restart
 
 1. Finish isolated tests, type/lint checks and `uv run pre-commit run --all-files`.
-   Commit the intended source so the daemon's startup revision is identifiable.
+   Commit/merge in an isolated worktree so the daemon's startup revision is identifiable.
+   Supervisor scripts execute directly from the installed checkout every minute;
+   pause services before pulling the merged code into that checkout.
 2. For a brief ordinary restart use `./scripts/launchd.sh restart`. For a maintenance
    pause, unload the watchdog first, then the daemon. A plain `stop` is not durable
    while the watchdog is loaded. Preserve the installed plist files.
-3. Apply migrations/validated data repair. Keep original rows/snapshots; run the
+3. Update the installed checkout to the reviewed merged revision and back up PostgreSQL.
+   Apply migrations/validated data repair. Keep original rows/snapshots; run the
    incident repair tool in preview mode before `--apply`.
 4. Reload the daemon and then watchdog. The installed launch agents reside under
    `~/Library/LaunchAgents/`; use `launchctl bootout/bootstrap gui/<uid>` with their
@@ -122,7 +126,7 @@ not deleted. Keep broker-held protective orders in place during a daemon restart
 ## Logs, audit and monitoring
 
 - `data/copilot.err.log`: JSON application logs with UTC time and process run ID.
-- `data/copilot.log`: printed cards; `data/watchdog.log`: timestamped PID checks.
+- `data/copilot.log`: printed cards; `data/watchdog.log`: process checks and readiness reports; `.err.log`: probe errors.
 - `data/alphaminer.log` and `.err.log`: scheduled research output.
 - `audit_events`: signal creation, exact fill changes, stream and REST evidence,
   valuations, close submissions/completions, notification message IDs/results,
@@ -212,7 +216,8 @@ snapshot can change during execution: inspect each result and `/positions` after
 Tracking ambiguity, mismatched cost basis/quantity/direction, partial entries/exits,
 working market orders and unconfirmed cancellations block a new close. A failure
 on one symbol does not prevent attempts on the other symbols. Untracked closes do
-not create invented entries or realized P&L in `/perf`.
+not invent tracked entries or trade statistics. Their actual executions are included
+in account-level `/perf` reconciliation.
 
 For ordinary equity close/flatten requests the broker clock must indicate regular
 trading hours before any cancellation; after-hours requests retain protection.
@@ -273,18 +278,23 @@ fills and minute reconciliation continue independently of Telegram response deli
 
 See [Alpaca contract review and integration coverage](alpaca-integration-review.md).
 
-## Schema 005 deployment and readiness
+## Current schema and monitoring verification
 
-Follow [durable execution operations](durable-execution.md). Commit/merge and back
-up before migration/restart. Verify `/readyz` and `copilot doctor --readiness`, plus
-existing read-only broker/Telegram verification. A running old process does not
-mean schema 005 code is deployed. The launchd watchdog still checks PID only;
-readiness should feed alerting rather than repeated blind restarts.
+Apply head migration `007_operational_incidents` after the backup and controlled
+pause. Verify `/readyz` includes fresh successful accounting, reconciliation,
+worker/delivery and Telegram observations. `db ledger` should show no issues and
+zero quantity differences. The runtime verifier must match the clean source
+revision and current run; keep its output private.
 
-## Schema 006 account ledger deployment
+The watchdog now consumes passive readiness and persists debounced incidents,
+including dead-letter failures, through the shared journal/outbox. Inspect
+`copilot db incidents`, `copilot db outbox` and recent watchdog output. A running
+unready process is alerted, not blindly restarted. Default startup/failure grace
+is 120 seconds; recovery is 60 seconds. See [monitoring policy and recovery](operational-monitoring.md).
 
-Back up PostgreSQL before migration 006, then restart the single launchd daemon.
-Verify `/readyz` includes a fresh successful `accounting` observation, `db ledger`
-shows no issues and zero quantity differences, and the runtime verifier confirms
-activity reconciliation and current source revision. A healthy PID alone is
-insufficient. Keep verification output private. See [account ledger](account-ledger.md).
+Only redundant successful blank-detail health observations older than 30 days are
+compacted, in hourly batches of at most 1000. Failures, recovery boundaries, latest
+observations, financial/order/incident events, audit traces, work records and dead
+letters are retained. Preview with `db retention`; `--apply` compacts one batch.
+Local files and durable financial/audit history still need capacity planning,
+backups and a tested archive/log-rotation policy.

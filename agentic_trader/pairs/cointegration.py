@@ -123,10 +123,6 @@ def run_engle_granger_test(
     )
 
 
-# Backward-compatible alias
-test_engle_granger = run_engle_granger_test
-
-
 def calculate_rolling_spread_zscore(
     series_y: pd.Series,
     series_x: pd.Series,

@@ -27,7 +27,8 @@ from agentic_trader.constants import (
     StrategyType,
 )
 from agentic_trader.data.market_data import ContractMarketData, MarketDataFetcher
-from agentic_trader.screeners.strategies import ScreenerCandidate, StrategyEngine
+from agentic_trader.screeners.base import ScreenerCandidate
+from agentic_trader.screeners.strategies import StrategyEngine
 
 
 logger = logging.getLogger(__name__)
@@ -412,16 +413,12 @@ class BacktestEngine:
                         asset_class = candidate.asset_class or contract_cfg.asset_class
                         multiplier = contract_cfg.multiplier
 
-                        (
-                            stop_loss,
-                            take_profit,
-                            _stop_distance,
-                            _target_distance,
-                            risk_dollars,
-                            _reward_dollars,
-                            notional_value,
-                            quantity,
-                        ) = self.evaluator.calculate_levels_deterministic(candidate)
+                        levels = self.evaluator.calculate_levels_deterministic(candidate)
+                        stop_loss = levels.stop_loss
+                        take_profit = levels.take_profit
+                        risk_dollars = levels.risk_dollars
+                        notional_value = levels.notional_value
+                        quantity = levels.quantity
 
                         # Apply entry slippage and commission
                         entry_price = candidate.current_price

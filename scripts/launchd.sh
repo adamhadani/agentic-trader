@@ -131,8 +131,8 @@ run_watchdog_probe() {
 
     if [ -z "$status_line" ]; then
         echo "[$now] [WATCHDOG WARNING] $PLIST_NAME not found in launchd list. Reloading service..." >> "$DATA_DIR/watchdog.log"
-        launchctl load "$TARGET_PLIST" 2>&1 >> "$DATA_DIR/watchdog.log" || true
-        return
+        launchctl load "$TARGET_PLIST" >> "$DATA_DIR/watchdog.log" 2>&1 || true
+        status_line="$(launchctl list | grep "$PLIST_NAME" || true)"
     fi
 
     local pid
@@ -140,12 +140,21 @@ run_watchdog_probe() {
     local last_exit
     last_exit="$(echo "$status_line" | awk '{print $2}')"
 
-    if [ "$pid" = "-" ]; then
+    if [ -z "$status_line" ]; then
+        echo "[$now] [WATCHDOG ALERT] Service registration is still missing." >&2
+    elif [ "$pid" = "-" ]; then
         echo "[$now] [WATCHDOG ALERT] $PLIST_NAME is registered but not running (last exit code: $last_exit). Restarting..." >> "$DATA_DIR/watchdog.log"
-        launchctl kickstart -k "gui/$USER_ID/$PLIST_NAME" 2>&1 >> "$DATA_DIR/watchdog.log" || launchctl start "$PLIST_NAME"
+        launchctl kickstart -k "gui/$USER_ID/$PLIST_NAME" >> "$DATA_DIR/watchdog.log" 2>&1 || launchctl start "$PLIST_NAME"
     else
         echo "[$now] [WATCHDOG OK] $PLIST_NAME is alive (PID: $pid)." >> "$DATA_DIR/watchdog.log"
     fi
+    # Read the same passive contract as doctor/readiness. This process can record
+    # an incident even when the daemon's event loop is stalled; it never polls
+    # Telegram or executes trades. Unready means alert, not a blind restart.
+    (cd "$REPO_DIR" && "$UV_BIN" run copilot doctor --monitor) || {
+        echo "[$now] [WATCHDOG] Readiness monitoring reported a failure; inspect diagnostics above." >&2
+    }
+
 }
 
 case "${1:-status}" in

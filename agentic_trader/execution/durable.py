@@ -43,10 +43,13 @@ class EventKind(StrEnum):
     ACTIVITY_OBSERVED = "activity_observed"
     ACTIVITY_RETRACTED = "activity_retracted"
     LEDGER_CHECKPOINT = "ledger_checkpoint"
+    INCIDENT_CHANGED = "incident_changed"
+    HEALTH_COMPACTED = "health_compacted"
 
 
 class NotificationKind(StrEnum):
     MESSAGE = "message"
+    OPERATIONAL = "operational"
     EXIT = "exit"
     SIGNAL = "signal"
     STOP = "stop"

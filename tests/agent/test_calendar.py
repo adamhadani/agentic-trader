@@ -5,7 +5,6 @@ import pytest
 
 from agentic_trader.agent.calendar import (
     BaseEconomicCalendar,
-    EconomicCalendar,
     EconomicCalendarProtocol,
     ForexFactoryCalendar,
     MacroEvent,
@@ -31,7 +30,7 @@ def test_calendar_protocol_conformance():
     calendar = DummyCalendar()
     assert isinstance(calendar, EconomicCalendarProtocol)
     assert isinstance(ForexFactoryCalendar(), EconomicCalendarProtocol)
-    assert issubclass(EconomicCalendar, BaseEconomicCalendar)
+    assert issubclass(ForexFactoryCalendar, BaseEconomicCalendar)
 
 
 def test_is_tier_1_classification():

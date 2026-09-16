@@ -283,37 +283,3 @@ def calculate_dynamic_sizing(
         drawdown_factor=drawdown_factor,
         gating_reasons=gating_reasons,
     )
-
-
-def calculate_position_size(
-    candidate: ScreenerCandidate,
-    stop_distance: float,
-    target_distance: float,
-    multiplier: float,
-    asset_class: AssetClass,
-    config: AppConfig,
-    current_open_notional: float = 0.0,
-    current_drawdown_pct: float = 0.0,
-) -> tuple[float, float, float]:
-    """Calculate position quantity, dollar risk, and dollar reward.
-    Maintains full backwards compatibility with legacy callers while leveraging dynamic sizing.
-
-    Returns:
-        tuple of (quantity, risk_dollars, reward_dollars)
-    """
-    entry = candidate.entry_price if hasattr(candidate, "entry_price") else 0.0
-    if entry <= 0:
-        entry = 100.0  # Fallback baseline
-
-    result = calculate_dynamic_sizing(
-        entry=entry,
-        stop_distance=stop_distance,
-        target_distance=target_distance,
-        multiplier=multiplier,
-        asset_class=asset_class,
-        config=config,
-        candidate=candidate,
-        current_open_notional=current_open_notional,
-        current_drawdown_pct=current_drawdown_pct,
-    )
-    return result.default_tier.quantity, result.default_tier.risk_dollars, result.default_tier.reward_dollars

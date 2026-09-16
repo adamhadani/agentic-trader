@@ -9,8 +9,10 @@ from uuid import uuid4
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.constants import AuditEventType
+from agentic_trader.diagnostics.incidents import OperationalNotice
 from agentic_trader.execution.durable import NotificationKind
 from agentic_trader.notifier.transport import notification_id
+from agentic_trader.presentation.operations import format_operational_notice
 from agentic_trader.storage.workflow import WorkflowStore
 
 
@@ -66,6 +68,8 @@ class NotificationDispatcher:
         return True
 
     async def _deliver(self, kind: NotificationKind, args: dict):
+        if kind == NotificationKind.OPERATIONAL:
+            return await self.notifier.send_message(format_operational_notice(OperationalNotice.model_validate(args)))
         if kind == NotificationKind.EXIT:
             return await self.notifier.send_exit_alert(**args)
         if kind == NotificationKind.STOP:

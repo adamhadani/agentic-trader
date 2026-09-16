@@ -244,3 +244,12 @@ class LedgerCheckpointRecord(Base):
     account_id: Mapped[str] = mapped_column(String, nullable=False)
     token: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class IncidentProjectionRecord(Base):
+    __tablename__ = "incident_projections"
+    scope: Mapped[str] = mapped_column(String, primary_key=True)
+    component: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[int | None] = mapped_column(Integer)
+    observed_at: Mapped[datetime] = mapped_column(UTCDatetime, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)

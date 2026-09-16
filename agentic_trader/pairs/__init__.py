@@ -5,7 +5,6 @@ from agentic_trader.pairs.cointegration import (
     compute_half_life,
     generate_spread_signal,
     run_engle_granger_test,
-    test_engle_granger,
 )
 from agentic_trader.pairs.models import (
     CointegrationResult,
@@ -32,5 +31,4 @@ __all__ = [
     "format_pairs_telegram",
     "generate_spread_signal",
     "run_engle_granger_test",
-    "test_engle_granger",
 ]

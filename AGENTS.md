@@ -57,3 +57,10 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   Preserve account binding, fenced refreshes, revisions/retractions and replay.
   Unsupported/stale/unreconciled evidence must withhold account realized P&L;
   tracked full-close metrics are a separate subset. Never infer partial ownership.
+
+- Develop supervisor edits in an isolated worktree: launchd executes repository
+  scripts every minute. Pause watchdog then daemon before updating its checkout.
+- Reuse the [operational monitor](docs/operational-monitoring.md) and outbox for
+  readiness alerts. Replay never sends notifications; preserve stale-probe fencing.
+  Only redundant old healthy observations may be compacted. Retain all financial,
+  incident, work/deduplication and dead-letter evidence. HTTP health is passive.

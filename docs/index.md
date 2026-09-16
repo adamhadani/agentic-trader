@@ -1,87 +1,52 @@
 ---
 layout: default
-title: Home - Agentic Trader
+title: Home — Agentic Trader
 ---
 
-# 🤖 Agentic Trader
-### Autonomous Multi-Asset Quantitative Trading System
+# Agentic Trader
 
-The **Agentic Trader** is an algorithmic trading system designed around a **"Cash-Plus" (portable alpha)** portfolio architecture ($100,000 baseline cash generating risk-free Treasury yield). The system continuously screens multi-asset markets, validates setups through an LLM agent with macro calendar awareness, and executes bracket orders across Tradovate (CME micro futures) and Alpaca (equities, ETFs, and crypto) with real-time Telegram oversight.
+Quantitative screening and operator-approved trading. The current desk uses
+**Alpaca paper equities/ETFs**, PostgreSQL, one launchd daemon and Telegram.
+Local simulation and research are separate from broker account performance.
 
----
+## Operating the desk
 
-## Current runtime baseline
+- [Production operations](production.md): ownership, schedules, restart and verification.
+- [CLI reference](cli-reference.md): commands, previews and recovery.
+- [Operational monitoring](operational-monitoring.md): readiness alerts, dead letters and retention.
+- [Account ledger](account-ledger.md): broker-authoritative positions and reconciled performance.
 
-As of September 15, 2026: launchd, Alpaca paper, PostgreSQL, 4-hour/15-minute scans,
-1-minute reconciliation, brokerage-derived valuations, audit provenance, and
-isolated tests. Start with [development notes](development-notes.md) and the
-[incident report](incident-2026-09-15.md). Roadmap phases are historical milestones,
-not a guarantee that every research feature is integrated into live sizing.
+Four-hour and session-gated 15-minute scans stage suggestions for approval.
+Positions reconcile every minute and on trade-stream wakeups. Independent workers
+process approved entries, notifications and account activities. The external
+60-second watchdog checks process state and sustained readiness failures.
 
-## 🚀 Quick Navigation
+Use `/positions` for broker valuations, `/perf` for account and tracked performance,
+and `/macro` for combined market context. `/flatten` previews by default; confirmation
+requests closes without changing the trading halt. `/panic` persists a halt and
+requests emergency exits. Order acceptance is not a confirmed fill.
 
-- [**Production Operations Guide**](production.md): The single source of truth on 24/7 steady-state deployment, Docker Compose, Prometheus metrics, and operator runbooks.
-- [**CLI Command Reference**](cli-reference.md): Comprehensive reference guide covering all Click CLI subcommands (scanning, execution, research, and alpha mining).
-- [**Quantitative Strategies & Models**](strategies.md): Mathematical formulations for Trend-Pullback, Squeeze Breakout, Options GEX surface, Pairs Trading, and Formulaic Alpha DSL.
-- [**System Development Roadmap**](roadmap.md): Complete chronological record of completed phases (Phases 1 through 45) and future milestones.
+## Developing and reviewing
 
----
+- [Development handoff](development-notes.md) and [assistant guide](../CLAUDE.md).
+- [Architecture review and priorities](architecture-review.md).
+- [Durable entry queue, events and outbox](durable-execution.md).
+- [Alpaca contracts and real transport coverage](alpaca-integration-review.md).
+- [September 15 incident and remediation](incident-2026-09-15.md).
 
-## 🛡️ Core Institutional Risk Invariants
+Inspect the registered service before starting anything. Develop in an isolated
+worktree, especially supervisor edits; never start another poller/Compose stack
+alongside launchd. Tests enforce explicit temporary/disposable storage and blocked
+external network/credentials. Deployment requires its own current-run checks.
 
-1. **Instrument Universe**: Micro futures (`/MES`, `/MNQ`, `/MGC`, `/MCL`) and liquid ETFs (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`).
-2. **Fixed Margin Sizing**: Static mode defaults to one micro contract; equities use dollar-risk sizing. Total active open notional exposure across all concurrent positions must not exceed **$60,000** (0.6x effective leverage on $100k cash base).
-3. **Reward-to-Risk (R:R)**: Strictly **$\ge 2.0$**. Stop distance must be **$\ge 1.5 \times \text{ATR}(14)$** to avoid noise stop-outs.
-4. **Macro Event Lockout**: Zero entry alerts permitted within **$[-60\text{m}, +30\text{m}]$** of Tier-1 economic releases (CPI, PPI, FOMC, NFP).
-5. **Deduplication Rule**: Zero duplicate signals for the same contract + strategy within 12 hours.
-6. **Emergency Kill Switch**: Fill-confirmed liquidation requests for active positions and cancellation of resting orders with persistent DB halt state via `/panic` or `copilot panic`.
+## Research and history
 
----
+[Strategies and models](strategies.md) describes screening/research calculations.
+Allocation optimization, GEX estimates and backtest returns do not imply production
+integration or broker profit. [Historical milestones](roadmap.md), the original
+specification and reference PDF are historical design/source material. Current
+contracts and remaining limits are maintained in the guides above.
 
-## ⚡ Architecture At A Glance
-
-```
-                                  +---------------------------------------+
-                                  |         COPILOT PRODUCTION DAEMON      |
-                                  |             (`copilot daemon`)        |
-                                  +---------------------------------------+
-                                                      |
-         +--------------------+-----------------------+---------------------+--------------------+
-         |                    |                       |                     |                    |
-         v                    v                       v                     v                    v
-+-----------------+  +-----------------+     +-----------------+   +-----------------+  +-----------------+
-|   APScheduler   |  | Position Monitor|     | Real-Time WS    |   | Telegram Bot    |  | Prometheus HTTP |
-| 4-Hour Scans    |  | & Reconciler    |     | Streams         |   | Async Poller    |  | Exporter Server |
-|                 |  | (15-Min Loop)   |     | (Alpaca/Trad.)  |   | (Two-Way Comms) |  | (Port :9108)    |
-+-----------------+  +-----------------+     +-----------------+   +-----------------+  +-----------------+
-         |                    |                       |                     |                    |
-          v                    v                       v                     v                    v
-  Market Data          Broker REST &           Sub-Second Bracket    Operator Approval    Prometheus /
-  (Alpaca / YFinance / PostgreSQL 18.6 /       Fill & Cancellation   & Manual Command     Grafana & Docker
-  Finnhub Macro)       SQL + Audit             Events                Dispatch             Healthchecks
-                       (signals / state)
-```
-
----
-
-## 📦 Steady-State Production Launch
-
-```bash
-# 1. Launch production services (PostgreSQL 18.6 + Copilot Daemon) with Docker Compose
-docker compose up -d
-
-# 2. Run database migrations inside container
-docker compose exec copilot copilot db upgrade head
-
-# 3. View live logs
-docker compose logs -f trading-copilot
-```
-
-For detailed instructions, see the [Production Operations Guide](production.md).
-
-- [Alpaca contract review and integration coverage](alpaca-integration-review.md)
-
-## Durable execution operations
-
-See [entry queue, broker events, notification outbox and readiness](durable-execution.md)
-for schema 005 architecture, CLI inspection/recovery and deployment requirements.
+Read these pages directly as Markdown or preview locally with Jekyll. Alternative
+Docker deployment instructions are in the operations guide; this desk currently
+uses launchd.

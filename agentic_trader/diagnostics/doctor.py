@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import litellm
@@ -10,12 +10,11 @@ from alpaca.trading.client import TradingClient
 from pydantic import BaseModel, Field
 from telegram import Bot
 
-from agentic_trader.agent.calendar import EconomicCalendar
 from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.tradovate import TradovateBroker
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import APP_DISPLAY_NAME
-from agentic_trader.market.session import CompositeMarketCalendar
+from agentic_trader.market.session import CompositeMarketCalendar, FinnhubCalendarProvider
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -54,15 +53,15 @@ async def check_database(config: AppConfig) -> ComponentHealth:
             details={
                 "active_positions": active_count,
                 "open_notional": exposure,
-                "db_url": config.resolved_db_url,
+                "backend": "postgresql" if config.resolved_db_url.startswith("postgresql") else "sqlite",
             },
         )
     except Exception as e:
         return ComponentHealth(
             name="database",
             status="ERROR",
-            message=f"Database check failed: {e}",
-            details={"error": str(e)},
+            message=f"Database check failed: {type(e).__name__}",
+            details={"error": type(e).__name__},
         )
 
 
@@ -86,20 +85,20 @@ async def check_telegram(config: AppConfig) -> ComponentHealth:
         )
 
     try:
-        bot = Bot(token=token)
-        me = await bot.get_me()
+        async with Bot(token=token) as bot:
+            me = await bot.get_me()
         return ComponentHealth(
             name="telegram",
             status="OK",
-            message=f"Telegram bot @{me.username} verified (ID: {me.id})",
-            details={"username": me.username, "bot_id": me.id, "chat_id": chat_id},
+            message="Telegram bot identity verified",
+            details={"configured": True, "is_bot": me.is_bot},
         )
     except Exception as e:
         return ComponentHealth(
             name="telegram",
             status="ERROR",
-            message=f"Telegram bot validation failed: {e}",
-            details={"error": str(e)},
+            message=f"Telegram bot validation failed: {type(e).__name__}",
+            details={"error": type(e).__name__},
         )
 
 
@@ -136,8 +135,8 @@ async def check_alpaca(config: AppConfig) -> ComponentHealth:
         return ComponentHealth(
             name="alpaca",
             status="ERROR",
-            message=f"Alpaca authentication error: {e}",
-            details={"error": str(e)},
+            message=f"Alpaca authentication error: {type(e).__name__}",
+            details={"error": type(e).__name__},
         )
 
 
@@ -167,37 +166,39 @@ async def check_tradovate(config: AppConfig) -> ComponentHealth:
         return ComponentHealth(
             name="tradovate",
             status="ERROR",
-            message=f"Tradovate error: {e}",
-            details={"error": str(e)},
+            message=f"Tradovate error: {type(e).__name__}",
+            details={"error": type(e).__name__},
         )
 
 
 async def check_finnhub(config: AppConfig) -> ComponentHealth:
-    """Check Finnhub macroeconomic calendar API connectivity."""
+    """Check the actual Finnhub exchange-holiday provider, without fallback."""
     key = config.finnhub_api_key
     if not key or key.startswith(("your_", "YOUR_")):
         return ComponentHealth(
             name="finnhub",
             status="WARNING",
-            message="FINNHUB_API_KEY missing; fallback heuristic calendar will be used",
+            message="FINNHUB_API_KEY missing; Finnhub exchange-holiday provider unavailable",
             details={"configured": False},
         )
 
     try:
-        calendar = EconomicCalendar(finnhub_api_key=key)
-        events = await calendar.get_upcoming_tier1_events(window_hours=24)
+        calendar = FinnhubCalendarProvider(api_key=key)
+        today = datetime.now(UTC).date()
+        # Include a weekday even when diagnostics run over a weekend.
+        days = await calendar.get_calendar_range(today, today + timedelta(days=7))
         return ComponentHealth(
             name="finnhub",
             status="OK",
-            message=f"Finnhub API verified ({len(events)} Tier-1 macro events in next 24h)",
-            details={"tier1_events_24h": len(events)},
+            message="Finnhub exchange-holiday API verified",
+            details={"calendar_days": len(days), "provider": "finnhub_api"},
         )
     except Exception as e:
         return ComponentHealth(
             name="finnhub",
             status="ERROR",
-            message=f"Finnhub API call failed: {e}",
-            details={"error": str(e)},
+            message=f"Finnhub API call failed: {type(e).__name__}",
+            details={"error": type(e).__name__},
         )
 
 
@@ -226,8 +227,8 @@ async def check_llm(config: AppConfig) -> ComponentHealth:
         return ComponentHealth(
             name="llm",
             status="ERROR",
-            message=f"LLM check failed for {model}: {e}",
-            details={"model": model, "error": str(e)},
+            message=f"LLM check failed for {model}: {type(e).__name__}",
+            details={"model": model, "error": type(e).__name__},
         )
 
 
@@ -241,7 +242,7 @@ async def check_risk_limits(config: AppConfig) -> ComponentHealth:
         return ComponentHealth(
             name="risk_limits",
             status="OK",
-            message=f"Cash: ${cash:,.0f} | Notional Cap: ${ceiling:,.0f} ({lev:.1f}x max lev) | Sizing: {mode}",
+            message=f"Risk capital: ${cash:,.0f} | Notional Cap: ${ceiling:,.0f} ({lev:.1f}x max lev) | Sizing: {mode}",
             details={
                 "cash": cash,
                 "max_notional": ceiling,
@@ -255,8 +256,8 @@ async def check_risk_limits(config: AppConfig) -> ComponentHealth:
         return ComponentHealth(
             name="risk_limits",
             status="ERROR",
-            message=f"Risk limits invalid: {e}",
-            details={"error": str(e)},
+            message=f"Risk limits invalid: {type(e).__name__}",
+            details={"error": type(e).__name__},
         )
 
 
@@ -301,8 +302,8 @@ async def check_market_calendar(config: AppConfig) -> ComponentHealth:
         return ComponentHealth(
             name="market_calendar",
             status="ERROR",
-            message=f"Market calendar resolution failed: {e}",
-            details={"error": str(e)},
+            message=f"Market calendar resolution failed: {type(e).__name__}",
+            details={"error": type(e).__name__},
         )
 
 
@@ -334,8 +335,8 @@ async def run_diagnostics(config: AppConfig | None = None) -> DiagnosticReport:
             comp = ComponentHealth(
                 name=name,
                 status="ERROR",
-                message=f"Unhandled diagnostic probe error: {res}",
-                details={"exception": str(res)},
+                message=f"Unhandled diagnostic probe error: {type(res).__name__}",
+                details={"exception": type(res).__name__},
             )
         else:
             comp = res
@@ -386,7 +387,7 @@ def format_doctor_cli_output(report: DiagnosticReport) -> str:
 
     lines.append("=" * 70)
     if report.overall_status == "HEALTHY":
-        lines.append("🚀 ALL CRITICAL SYSTEMS OPERATIONAL. READY FOR DESK EXECUTION.")
+        lines.append("🚀 ACTIVE PROBES PASSED. CHECK DAEMON READINESS AND ENTRY CONDITIONS SEPARATELY.")
     elif report.overall_status == "DEGRADED":
         lines.append("⚠️ SYSTEM DEGRADED: Some optional subsystems have warnings (review above).")
     else:

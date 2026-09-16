@@ -13,7 +13,7 @@ from typing import Any
 from alpaca.trading.client import TradingClient
 
 from agentic_trader.accounting.service import AccountLedgerService
-from agentic_trader.agent.calendar import BaseEconomicCalendar, EconomicCalendar
+from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.macro_explainer import MacroExplainer
@@ -99,7 +99,7 @@ class TradingCopilot:
         )
         self.close_service = close_service if close_service is not None else PositionCloseService(self.broker, self.db)
         self.strategy_engine = StrategyEngine(config)
-        self.calendar: BaseEconomicCalendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
+        self.calendar: BaseEconomicCalendar = ForexFactoryCalendar()
         self.regime_detector = RegimeDetector(config=config.regime)
         alpaca_client = getattr(self.broker, "client", None)
         if (
@@ -208,7 +208,6 @@ class TradingCopilot:
                 host=config.telemetry.metrics_host,
                 port=config.telemetry.metrics_port,
                 collector=self.metrics,
-                config=config,
                 readiness=self.readiness.report,
             )
             if config.telemetry.metrics_enabled
@@ -1196,7 +1195,7 @@ class TradingCopilot:
             direction=direction,
             quantity=target_qty,
             fill_price=result.get("fill_price"),
-            broker_order_id=result.get("order_id"),
+            order_id=result.get("order_id"),
             notional_value=notional_value,
             risk_dollars=risk_dollars,
             stop_loss=stop_loss,
@@ -1454,18 +1453,18 @@ class TradingCopilot:
 
         return PortfolioStatusReport(
             cash_base=self.config.portfolio.cash,
-            max_notional_exposure=self.config.portfolio.max_notional_exposure,
-            active_exposure=current_exposure,
+            max_notional=self.config.portfolio.max_notional_exposure,
+            current_exposure=current_exposure,
             effective_leverage=eff_leverage,
-            active_position_count=active_count,
+            active_contract_count=active_count,
             telegram_configured=self.notifier.is_configured(),
             llm_model=self.config.llm_model,
             execution_mode=self.config.execution_mode.upper(),
-            macro_calendar_summary=macro_summary,
-            vix=regime.vix,
+            macro_summary=macro_summary,
+            vix_value=regime.vix,
             vix_regime=regime.vix_regime.value,
-            tnx=regime.tnx,
-            dxy=regime.dxy,
+            tnx_value=regime.tnx,
+            dxy_value=regime.dxy,
             breakout_allowed=regime.breakout_allowed,
             recent_signals=signals,
         )
@@ -1541,9 +1540,9 @@ class TradingCopilot:
             profit_factor=float(stats.get("profit_factor", 0.0)),
             gross_profit=float(stats.get("gross_profit", 0.0)),
             gross_loss=float(stats.get("gross_loss", 0.0)),
-            active_open_positions=active_count,
-            active_notional_exposure=active_exposure,
-            recent_trades=stats.get("trades", []),
+            active_count=active_count,
+            active_exposure=active_exposure,
+            recent_closed_trades=stats.get("trades", []),
         )
         return TelegramHtmlFormatter.format_performance_html(report)
 
