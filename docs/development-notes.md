@@ -28,9 +28,12 @@ version does not establish the installed local server version.
 | Macro briefing | Weekdays 12:30, scheduler/system timezone |
 | Retuning | Saturday 02:00, scheduler/system timezone |
 | External watchdog | Every 60 seconds: process check, readiness incidents and due compaction |
+| Session data observer | 30-second wall-clock polls; SPY/15m captures only within three minutes of observed closes; no scoring/trading |
 | Alpha miner | Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol; no promotion |
 
-Intervals are not candle-close aligned. Cron logs mentioning UTC do not change
+Trading scan intervals are not candle-close aligned. The independent
+[forward observer](alpha-forward-observations.md) samples around observed session-bar
+closes; it does not migrate the strategy clock. Cron logs mentioning UTC do not change
 the scheduler timezone. Market sessions use exchange time; DB/log timestamps use
 UTC. Configuration loads at construction and requires restart after external edits.
 The journal-backed alpha registry reloads atomically between scans. Telegram/metrics initialize before immediate jobs; scheduler

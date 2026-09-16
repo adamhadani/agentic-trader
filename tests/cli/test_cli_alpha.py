@@ -187,8 +187,8 @@ def test_session_replay_cli_persists_failed_attempt_without_broker_or_notifier(m
         raise OSError("fixture capture failed")
 
     monkeypatch.setattr(
-        "agentic_trader.cli.commands.alpha.replay_source",
-        lambda config, feed: nullcontext(SimpleNamespace(capture=fail_capture)),
+        "agentic_trader.cli.commands.alpha.session_source",
+        lambda config, feed: nullcontext(SimpleNamespace(calendar=fail_capture)),
         raising=False,
     )
     output = tmp_path / "session-run"

@@ -78,3 +78,8 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   and excludes inspected periods before provider access. Do not impute missing
   prices, conflate session-derived/native bars, or remove the intraday promotion
   gate before live-clock and execution evidence agree. Read [session replay](docs/alpha-session-replay.md).
+
+- Forward session observations share the replay adapter/clock and existing journal.
+  Preserve actual request/receipt times, raw failures/revisions and inspected-date
+  exclusions; never backdate availability or grant promotion/shadow credit. Collector
+  readiness is distinct from data completeness. See [forward observations](docs/alpha-forward-observations.md).

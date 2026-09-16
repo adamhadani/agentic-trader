@@ -61,6 +61,9 @@ class RuntimeLogFormatter(logging.Formatter):
         }
         for key in (
             "event",
+            "observation_id",
+            "artifact_hash",
+            "status",
             "signal_id",
             "broker_order_id",
             "contract",

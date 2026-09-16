@@ -113,7 +113,13 @@ timestamps in fixed-duration research, live screening and shadow paths. Shared
 closure logic lives in `market/bars.py`; new manifests record the fixed clock.
 This preserves existing version identities and does not complete live migration.
 
-Remaining A2b: version and install this signal-bar contract in live acquisition,
+The [prospective observer](alpha-forward-observations.md) now samples the configured
+feed around actual session-bar closes, retains immutable raw inputs/receipts/revisions
+through the existing journal, and excludes inspected dates before price access.
+It measures the REST data boundary without scoring, trading or promotion credit.
+The desk enables SPY/15m; actual forward evidence requires subsequent live sessions.
+
+Remaining A2b: version and install this signal-bar contract in live strategy acquisition,
 freshness and scan timing; collect actual publication/acknowledgment/fill evidence.
 Native provider bars cannot be silently treated as session-derived bars.
 Cover timezone/DST, holidays/early closes, extended-hours aggregation, closed-bar

@@ -14,14 +14,17 @@ import click
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from agentic_trader.cli.utils import coro, get_copilot_and_config
+from agentic_trader.cli.utils import artifact_directory, coro, get_copilot_and_config, session_source
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import AuditEventType
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 from agentic_trader.diagnostics.monitor import OperationsMonitor
 from agentic_trader.diagnostics.probe import probe_readiness
+from agentic_trader.diagnostics.readiness import HealthComponent
+from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
+from agentic_trader.research.alpha.observation import SessionObservationService
 from agentic_trader.runtime import runtime_identity
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.maintenance import RetentionService
@@ -82,6 +85,59 @@ async def listen() -> None:
         await copilot.notifier.stop_polling()
 
 
+async def run_session_observer(config, repository, readiness, metrics, shutdown):
+    """One read-only consumer; finish in-flight reads before closing owned clients."""
+    policy = config.alpha_pipeline.observations
+    with session_source(config, config.market_data.alpaca_feed) as source:
+        observer = SessionObservationService(
+            repository,
+            source,
+            policy,
+            feed=f"alpaca:{config.market_data.alpaca_feed}",
+            directory=artifact_directory() / "forward-observations",
+            runtime=await asyncio.to_thread(runtime_identity),
+        )
+        while not shutdown.is_set():
+            try:
+                results = await observer.run_once()
+                for result in results:
+                    labels = {"symbol": result["symbol"], "timeframe": result["timeframe"], "feed": result["feed"]}
+                    complete = result["status"] == ObservationStatus.COMPLETE
+                    metrics.set_gauge("alpha_observation_complete", float(complete), labels=labels)
+                    metrics.set_gauge(
+                        "alpha_observation_timestamp_seconds", datetime.now(UTC).timestamp(), labels=labels
+                    )
+                    if complete:
+                        metrics.set_gauge(
+                            "alpha_observation_availability_upper_bound_seconds",
+                            result["availability_upper_bound_seconds"],
+                            labels=labels,
+                        )
+                    logger.info(
+                        "Session observation retained: %s %s %s",
+                        result["symbol"],
+                        result["closed_at"],
+                        result["status"],
+                        extra={
+                            "event": "alpha_session_observation",
+                            "observation_id": result["observation_id"],
+                            "status": result["status"],
+                            "artifact_hash": result["artifact_hash"],
+                        },
+                    )
+                # This checks the collector's durable progress, not feed completeness.
+                await readiness.observe(HealthComponent.ALPHA_OBSERVER, True)
+            except Exception as exc:
+                logger.exception("Session observation worker failed")
+                await readiness.observe(HealthComponent.ALPHA_OBSERVER, False, type(exc).__name__)
+            # Align polls to the wall clock, independent of daemon startup drift.
+            # A configured offset leaves a small initial publication window.
+            offset = policy.poll_offset_seconds
+            delay = policy.poll_seconds - ((datetime.now(UTC).timestamp() - offset) % policy.poll_seconds)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(shutdown.wait(), timeout=delay)
+
+
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")
 @click.option(
     "--no-llm",
@@ -113,6 +169,20 @@ async def daemon(no_llm: bool) -> None:
     copilot.readiness.started = True
     workflow_task = asyncio.create_task(copilot.workflow_worker())
     lag_task = asyncio.create_task(monitor_event_loop(config.telemetry, copilot.metrics, copilot.db.record_audit))
+
+    observation_task = (
+        asyncio.create_task(
+            run_session_observer(
+                config,
+                copilot.alpha_repository,
+                copilot.readiness,
+                copilot.metrics,
+                copilot._shutdown_event,
+            )
+        )
+        if config.alpha_pipeline.observations.enabled
+        else None
+    )
 
     scheduler = AsyncIOScheduler(
         job_defaults={
@@ -207,6 +277,8 @@ async def daemon(no_llm: bool) -> None:
         logger.info("Shutting down daemon...")
         copilot._shutdown_event.set()
         copilot.readiness.started = False
+        if observation_task is not None:
+            await observation_task
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await workflow_task

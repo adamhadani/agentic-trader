@@ -289,3 +289,27 @@ def test_cli_optimize_export_config_parser():
     # Test flag with explicit filepath
     args_file = parser.parse_args(["optimize", "--export-config", "config/custom.yaml"])
     assert args_file.export_config == "config/custom.yaml"
+
+
+def test_alpha_observation_policy_is_loaded_from_explicit_yaml(tmp_path):
+    path = tmp_path / "alpha.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "alpha_pipeline": {
+                    "observations": {
+                        "enabled": True,
+                        "symbols": ["IWM"],
+                        "timeframe": "1h",
+                        "poll_seconds": 20,
+                    },
+                    "minimum_shadow_sessions": 25,
+                }
+            }
+        )
+    )
+    config = load_config(path, environ={"COPILOT_ENV": "test", "DB_PATH": str(tmp_path / "test.db")})
+    assert config.alpha_pipeline.observations.symbols == ["IWM"]
+    assert config.alpha_pipeline.observations.timeframe == "1h"
+    assert config.alpha_pipeline.observations.poll_seconds == 20
+    assert config.alpha_pipeline.minimum_shadow_sessions == 25

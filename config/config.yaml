@@ -263,3 +263,12 @@ database:
   echo: false
   max_retries: 5
   retry_delay: 2.0
+
+# Read-only prospective session clock evidence; no alpha activation or alerts.
+alpha_pipeline:
+  observations:
+    enabled: true
+    symbols: [SPY]
+    timeframe: "15m"
+    poll_seconds: 30
+    window_seconds: 180

@@ -56,6 +56,7 @@ from agentic_trader.constants import (
     ExecutionMode,
     RuntimeEnvironment,
 )
+from agentic_trader.market.bars import BAR_DURATIONS
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -419,7 +420,35 @@ class TelegramConfig(BaseModel):
     poll_audit_interval_seconds: float = Field(default=60, gt=0)
 
 
+class SessionObservationConfig(BaseModel):
+    """Bounded forward data diagnostics, independent of trading permissions."""
+
+    enabled: bool = False
+    symbols: list[str] = Field(default_factory=lambda: ["SPY"], min_length=1, max_length=5)
+    timeframe: str = "15m"
+    poll_seconds: int = Field(default=30, ge=10, le=60)
+    window_seconds: int = Field(default=180, ge=60, le=600)
+    poll_offset_seconds: int = Field(default=5, ge=0, lt=10)
+    calendar_refresh_seconds: int = Field(default=300, ge=30, le=3600)
+    max_age_seconds: int = Field(default=180, ge=120, le=3600)
+
+    @field_validator("symbols")
+    @classmethod
+    def stock_symbols(cls, symbols):
+        if len(set(symbols)) != len(symbols) or any(not re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", s) for s in symbols):
+            raise ValueError("Unique explicit US stock symbols required")
+        return symbols
+
+    @field_validator("timeframe")
+    @classmethod
+    def signal_timeframe(cls, value):
+        if value not in BAR_DURATIONS:
+            raise ValueError("Supported session signal timeframe required")
+        return value
+
+
 class AlphaPipelineConfig(BaseModel):
+    observations: SessionObservationConfig = Field(default_factory=SessionObservationConfig)
     minimum_shadow_sessions: int = Field(default=20, ge=1)
     minimum_shadow_decisions: int = Field(default=10, ge=1)
     qualification_max_age_days: int = Field(default=45, ge=1)
@@ -656,6 +685,7 @@ def load_config(
     strategies_config = StrategyConfig(**strat_kwargs)
 
     config = AppConfig(
+        alpha_pipeline=AlphaPipelineConfig(**cfg_dict.get("alpha_pipeline", {})),
         telegram=TelegramConfig(**cfg_dict.get("telegram", {})),
         environment=RuntimeEnvironment(environment),
         broker_stream=BrokerStreamConfig(**cfg_dict.get("broker_stream", {})),

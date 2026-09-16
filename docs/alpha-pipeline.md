@@ -333,3 +333,12 @@ trial before evaluation. It cannot be used to peek at a period and then qualify 
 that same period through another command.
 
 The [active roadmap](alpha-roadmap.md) owns future milestone order and acceptance criteria; [campaign evidence](alpha-research-2026-09-16.md) explains why calibration comes first.
+
+
+### Prospective data-clock evidence
+
+The [session observer](alpha-forward-observations.md) records actual REST receipts,
+coverage failures and distinct revisions through the existing alpha journal.
+`alpha status` reports it separately from research. Inspected dates cannot become
+fresh holdouts; observations add no formula trials or qualifying shadow sessions.
+Strategy identities, scoring and promotion gates remain unchanged.

@@ -6,20 +6,17 @@ import asyncio
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
 from uuid import uuid4
 
 import pandas as pd
-from alpaca.trading.requests import GetCalendarRequest
 
+from agentic_trader.data.sessions import SessionDataSource
 from agentic_trader.market.bars import (
     SessionCoverageError,
     SessionSchedule,
-    TradingSession,
     build_session_bars,
     utc_timestamp,
 )
-from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.data import save_dataset, save_json_report
 from agentic_trader.research.alpha.replay import (
     SESSION_REPLAY_KIND,
@@ -31,39 +28,8 @@ from agentic_trader.research.alpha.validation import frame_digest
 from agentic_trader.storage.alpha import AlphaRepository
 
 
-class ReplaySource(Protocol):
-    def capture(self, plan: ReplayPlan, as_of: pd.Timestamp) -> tuple[pd.DataFrame, SessionSchedule]: ...
-
-
 def _file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-class AlpacaReplaySource:
-    """Injected SDK clients; only calendar and historical bars GETs are permitted."""
-
-    def __init__(self, bars_provider, calendar_client):
-        self.bars_provider = bars_provider
-        self.calendar_client = calendar_client
-
-    def capture(self, plan: ReplayPlan, as_of: pd.Timestamp) -> tuple[pd.DataFrame, SessionSchedule]:
-        items = self.calendar_client.get_calendar(GetCalendarRequest(start=plan.start, end=plan.end))
-        if not isinstance(items, list) or not items:
-            raise ValueError("No observed Alpaca sessions; calendar fallback is prohibited")
-        sessions = []
-        for item in items:
-            # alpaca-py's Calendar carries naive exchange-local datetimes.
-            opened, closed = pd.Timestamp(item.open), pd.Timestamp(item.close)
-            opened = opened.tz_localize(ET_TZ) if opened.tzinfo is None else opened
-            closed = closed.tz_localize(ET_TZ) if closed.tzinfo is None else closed
-            sessions.append(TradingSession(item.date, opened, closed))
-        schedule = SessionSchedule(plan.start, plan.end, tuple(sessions), source="alpaca_calendar")
-        bars = self.bars_provider.fetch_bars(
-            plan.symbol, "1m", start=plan.start_at.to_pydatetime(), end=min(plan.end_at, as_of).to_pydatetime()
-        )
-        if bars.attrs.get("feed") != plan.definition.data_feed or bars.attrs.get("adjustment") != "raw":
-            raise ValueError("Minute observations do not match the frozen feed/adjustment")
-        return bars, schedule
 
 
 def _compute(plan: ReplayPlan, bars: pd.DataFrame, schedule: SessionSchedule, as_of, output: Path):
@@ -94,7 +60,7 @@ def _compute(plan: ReplayPlan, bars: pd.DataFrame, schedule: SessionSchedule, as
 
 
 class AlphaReplayService:
-    def __init__(self, repository: AlphaRepository, source: ReplaySource):
+    def __init__(self, repository: AlphaRepository, source: SessionDataSource):
         self.repository = repository
         self.source = source
 
@@ -123,7 +89,11 @@ class AlphaReplayService:
             actor="session_replay",
         )
         try:
-            bars, schedule = await asyncio.to_thread(self.source.capture, plan, as_of)
+            sessions = await asyncio.to_thread(self.source.calendar, plan.start, plan.end)
+            schedule = SessionSchedule(plan.start, plan.end, sessions, source="alpaca_calendar")
+            bars = await asyncio.to_thread(
+                self.source.minutes, plan.symbol, plan.start_at, min(plan.end_at, as_of), plan.definition.data_feed
+            )
             detail = await asyncio.to_thread(_compute, plan, bars, schedule, as_of, output)
             result = {**detail, "status": ReplayStatus.COMPLETED}
         except Exception as exc:
