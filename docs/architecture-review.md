@@ -13,6 +13,12 @@ repositories own transactional concurrency, and one outbox owns durable delivery
 The main structural debt is still `TradingCopilot`, which combines composition,
 orchestration, reporting and research. Avoid adding new responsibilities there.
 
+The subsequent [alpha-stack review](alpha-stack-review.md) records the mining,
+DSL, validation, promotion and portfolio-construction findings and stress tests.
+Repair its P1 research/live parity, causality, confidence-statistic and promotion
+gaps before increasing search volume or connecting optimized weights to trading.
+The previously ranked work below remains deferred, not completed or superseded.
+
 ## Boundaries and mechanisms
 
 | Concern | Mechanism and reason |
@@ -66,7 +72,7 @@ second job infrastructure is justified for the current single-destination outbox
 | P2 | `TradingCopilot` still constructs several services and returns some transport-specific strings. Constructors run migrations. | Extract composition/bootstrap and typed report/reconciliation services incrementally. Explicit migration startup needs coordinated changes to every CLI/daemon path; do not leave a compatibility fallback. |
 | P2 | Heavy research shares executor capacity with trading I/O; Telegram handlers serialize. | Add a bounded research job service with cancellation/status and separate capacity. Do not enable blanket concurrent trade handlers. |
 | P2 | Timeframe filtering follows conflict resolution; timeframe is absent from persisted signals. | Filter before netting and persist timeframe/data timestamps, with research/live parity tests. Changes alter candidate selection and require targeted replay. |
-| P2 | Promotion YAML writes lack cross-process coordination; registry versions differ from edited files; allocation weights are not in live sizing. | Make writes atomic/locked, add explicit registry reload/version, then validate allocation integration separately. |
+| P2; P1 before automated promotion | Promotion YAML writes lack cross-process coordination; registry versions differ from edited files; allocation weights are not in live sizing. | The alpha review's A6 expands this into journal-backed immutable versions and transactional activation, with YAML import/export. Validate allocation integration separately (A8–A9). |
 | P2 | Monitoring depends on the same host/DB/Telegram destination; local files and audit/financial history still grow. | Add an independent external alert destination and backup/restore/log-rotation policy. Archive durable evidence only with tested replay and deduplication preservation. |
 | P3 | Some symbol/contract aliases and dictionary/SDK shape handling remain; older tests can exercise implicit provider failure paths. | Consolidate typed boundary models when touching those services and use explicit provider fixtures. Preserve SDK transport contracts, not unnecessary internal aliases. |
 

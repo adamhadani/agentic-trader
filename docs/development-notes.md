@@ -126,6 +126,9 @@ Research/retuning outputs do not automatically change running strategy parameter
 External promotion changes require restart; `/alphas` can show file contents that
 differ from a loaded registry. Convex allocation and promotion weights are not live
 sizing. Broker slicing stays disabled pending per-slice ownership/protection.
+The [alpha-stack review](alpha-stack-review.md) documents reproduced causality,
+validation, promotion and optimization gaps, plus the experiment sequence. Its
+strict expected-failure tests are a remediation backlog, not passing guarantees.
 
 ## Verify deployment separately
 

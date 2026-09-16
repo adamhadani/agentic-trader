@@ -52,6 +52,11 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   Keep TCP/WebSocket and PostgreSQL integration verification separate from the
   optional in-process SDK transport used in restricted environments.
 
+- Read [alpha-stack review](docs/alpha-stack-review.md) before mining/promotion or
+  portfolio-allocation changes. Its strict xfails describe unresolved defects;
+  fix the invariant and remove its mark together. Current mining metrics and YAML
+  weights are not validated live portfolio guarantees.
+
 - Account performance uses the [activity ledger](docs/account-ledger.md): exact
   activity IDs, Decimal cash/inventory reconciliation and signed broker cost basis.
   Preserve account binding, fenced refreshes, revisions/retractions and replay.

@@ -255,10 +255,12 @@ uv run copilot eval
 
 ## 4. Formulaic Alpha Mining & Expression DSL (`copilot alpha`)
 
-Institutional-grade formulaic alpha generation, genetic expression search, overfitting protection (DSR, Rank IC), and strategy lifecycle promotion.
+Formula evaluation, random-template discovery, research metrics and YAML strategy promotion.
+Read the [alpha-stack review](alpha-stack-review.md) before relying on these metrics
+or promotion gates; it records reproduced defects and the remediation plan.
 
 ### `copilot alpha catalog`
-Displays the pre-cataloged library of institutional alpha formulas (WorldQuant 101, factor models).
+Displays seven catalog formulas, including adaptations whose WorldQuant labels do not all match the original numbered formulas.
 ```bash
 uv run copilot alpha catalog
 ```
@@ -270,7 +272,12 @@ uv run copilot alpha list
 ```
 
 ### `copilot alpha mine`
-Executes genetic formula generation across historical market bars, applying In-Sample / Out-of-Sample cross-validation, Deflated Sharpe Ratio (DSR) multi-testing penalties, cross-asset qualification matrices, and Gram-Schmidt signal orthogonalization against active production alphas.
+Samples random templates on the first requested symbol, then evaluates survivors
+on other requested symbols. Defaults: SPY, two years, daily bars, 15 templates plus
+the catalog, minimum Sharpe 1.0 and DSR 0.85. The 70/30 split uses its trailing
+segment for selection. DSR units, research/live parity and residual qualification
+have known defects. The optional `--auto-promote` writes YAML even in some rejected
+novelty cases; keep it disabled pending the documented fix. Launchd does not enable it.
 ```bash
 # Mine alphas across SPY using daily bars (2y lookback, 20 iterations)
 uv run copilot alpha mine --symbol SPY --lookback 2y --interval 1d --iterations 20
@@ -278,15 +285,12 @@ uv run copilot alpha mine --symbol SPY --lookback 2y --interval 1d --iterations 
 # Multi-asset mining matrix & signal orthogonalization check against active desk
 uv run copilot alpha mine --symbols NVDA,AMD,AAPL,MSFT,QQQ,SPY --iterations 15
 
-# Mine across high-beta tech with strict statistical gating
+# Change research display/filter thresholds (not proof of validation)
 uv run copilot alpha mine --symbol QQQ --min-sharpe 1.2 --min-dsr 0.90
-
-# Mine and automatically promote winning alpha to production desk
-uv run copilot alpha mine --symbol NVDA --auto-promote
 ```
 
 ### `copilot alpha inspect <alpha_id>`
-Computes and renders an institutional quantitative tearsheet for any catalog or promoted alpha across historical data.
+Renders the current research metrics for a catalog or promoted alpha. Catalog lookup takes precedence over a promoted version with the same ID, so inspect the definition/timeframe rather than assuming this reproduces the deployed variant.
 ```bash
 # Evaluate WorldQuant Alpha 006 on SPY
 uv run copilot alpha inspect alpha_wq_006 --symbol SPY --interval 1d
@@ -296,7 +300,7 @@ uv run copilot alpha inspect alpha_trend_expansion --symbol QQQ --interval 1d
 ```
 
 ### `copilot alpha promote <alpha_id>`
-Promotes an alpha from the catalog or mining candidates into the production paper trading portfolio, persisting configuration in `config/promoted_alphas.yaml`. The running daemon requires a restart to load external CLI/file changes. Optionally routes execution to a designated subset of symbols via `--symbols`.
+Promotes a catalog or existing stored definition for paper-desk screening, persisting `config/promoted_alphas.yaml`. This path does not require validated research evidence; allocation is metadata, not a live risk budget. The running daemon requires a restart to load external CLI/file changes. Optionally routes execution to a designated subset of symbols via `--symbols`.
 ```bash
 # Promote alpha across all supported symbols
 uv run copilot alpha promote alpha_wq_006 --allocation 0.15 --notes "Baseline institutional alpha"
@@ -306,7 +310,7 @@ uv run copilot alpha promote alpha_wq_053 --allocation 0.15 --symbols NVDA,AMD -
 ```
 
 ### `copilot alpha demote <alpha_id>`
-Demotes and retires an active alpha from the production trading desk with zombie position safeguards.
+Marks an alpha demoted in YAML and reports attributed open positions. External changes require restart to affect scans; existing positions retain their monitoring. Optional liquidation uses the shared close service and is subject to broker/session/ownership checks.
 ```bash
 # Standard demotion: leaves attributed positions open under orphan status (managed by trailing stops)
 uv run copilot alpha demote alpha_wq_006 --reason "Performance decay"

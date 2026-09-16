@@ -116,76 +116,66 @@ as a trading admission rule.
 
 ---
 
-## 5. Strategy E: Formulaic Alpha DSL & Promoted Strategy Screener
+## 5. Formulaic alpha screeners and research
 
-### Objective
-Provide a flexible domain-specific language (DSL) for formulaic alpha modeling (inspired by WorldQuant 101 Alphas and academic factor literature), dynamic genetic mining, statistical overfitting validation, and production trade execution.
+Read the [alpha-stack review](alpha-stack-review.md) for reproduced defects,
+measurement results and the hardening/experiment plan. Current statistics and
+promotion records do not establish a validated live strategy.
 
-### DSL Formulation & Safe AST Parsing
-The alpha DSL uses a safe Abstract Syntax Tree (AST) evaluator without `eval()` or code generation risks:
-1. **Mathematical & Transform Operators**:
-   - $\text{sign}(x)$, $\text{abs}(x)$, $\log(x)$, $\text{scale}(x)$ (sum-normalized absolute weights), $\text{rank}(x)$, $\text{zscore}(x)$.
-2. **Time-Series Operators**:
-   - $\Delta(x, d) = x_t - x_{t-d}$
-   - $\text{SMA}(x, d)$: Simple moving average over window $d$.
-   - $\text{TS\_Rank}(x, d)$: Rolling percentile rank of the current value within the last $d$ bars.
-   - $\text{TS\_Corr}(x, y, d)$: Rolling Pearson correlation between series $x$ and $y$ over $d$ bars.
-   - $\text{TS\_Std}(x, d)$: Rolling sample standard deviation.
-   - $\text{TS\_Argmax}(x, d)$: Number of bars since maximum value was achieved over lookback $d$.
-   - $\text{Decay\_Linear}(x, d)$: Linearly weighted moving average assigning weight $w_i = d - i$.
+### DSL and discovery
 
-### Production Execution (`FormulaicAlphaStrategy`)
-Promoted alphas persisted in `config/promoted_alphas.yaml` are loaded into `StrategyRegistry`:
-1. **Rolling Normalization**:
-   Raw formula scores are standardized using a rolling 30-bar Z-score:
-   $$Z_t = \frac{\alpha_t - \mu_{\alpha, 30}}{\sigma_{\alpha, 30}}$$
-2. **Threshold Triggers**:
-   - **Long**: $Z_t \ge \theta_{\text{entry}}$
-   - **Short**: $Z_t \le -\theta_{\text{entry}}$
-3. **Dynamic ATR Risk Management**:
-   Every generated candidate is stamped with an immutable strategy ID (e.g. `alpha_wq_006`) and paired with dynamic ATR(14) brackets:
-   - **Stop Loss**: $1.5 \times \text{ATR}(14)$ beyond entry.
-   - **Take Profit**: $\ge 2.0 \times \text{Risk Distance}$ ($R:R \ge 2.0$).
+The AST evaluator supports OHLCV/derived fields, arithmetic, comparisons and
+registered rolling operators. It uses no Python `eval()`. However, validation lacks
+operator type/arity/lag/resource contracts. Global `rank`/`scale` read the full
+series, negative lags expose future bars, and missing observations may become zero.
+`ts_argmax` returns the normalized position of the maximum in the window, not bars
+since the maximum. These contracts must be repaired before expanding the grammar.
 
-### Statistical Overfitting Gating (DSR & Rank IC)
-To penalize multiple testing and measure out-of-sample association (without eliminating overfitting):
-1. **Spearman Rank Information Coefficient**:
-   $$\text{Rank IC} = \text{corr}_{\text{rank}}(\alpha_t, R_{t+1})$$
-   $$\text{IC\_IR} = \frac{\mu_{\text{IC}}}{\sigma_{\text{IC}}}$$
-2. **Deflated Sharpe Ratio (DSR)**:
-   Accounts for the number of tested trials $N$, sample length $T$, skewness $\gamma_3$, and kurtosis $\gamma_4$:
-   $$\text{DSR} = \Phi\left(\frac{(\widehat{\text{SR}} - \text{SR}^*) \sqrt{T-1}}{\sqrt{1 - \widehat{\gamma}_3 \widehat{\text{SR}} + \frac{\widehat{\gamma}_4 - 1}{4}\widehat{\text{SR}}^2}}\right)$$
-   The mining DSR threshold defaults to 0.85 and is configurable. CLI auto-promotion
-   is explicit; the scheduled miner does not enable it. These thresholds do not
-   establish future profitability.
+`AlphaMiner` samples six randomized templates and a seven-formula catalog. It is
+not an evolutionary/genetic algorithm. Some catalog WorldQuant names refer to
+adaptations rather than the corresponding published expressions. The CLI mines on
+the first requested symbol and evaluates survivors on the others. Defaults are two
+years of daily bars and 15 random candidates; launchd requests 25 each Saturday.
+Generated definitions still specify 4h. The scheduled job does not auto-promote.
 
-### Signal Orthogonalization Pipeline
-The mining report checks residual association against the incumbent signal
-subspace using a pseudoinverse projection. It is not a universal promotion gate:
-$$\alpha_{\text{ortho}} = \alpha_{\text{cand}} - A A^+ \alpha_{\text{cand}}$$
-1. **Linear Independence**: Projects away the supplied incumbent subspace within numerical precision;
-   this is a sample calculation, not a guarantee of future independence.
-2. **Residual Predictive Power**: Evaluates whether the orthogonal residual maintains incremental alpha against forward returns $r$:
-   $$\text{IC}(\alpha_{\text{ortho}}) = \frac{\langle \alpha_{\text{ortho}}, r \rangle}{\|\alpha_{\text{ortho}}\| \|r\|}$$
-   The report uses a default residual-IC threshold of 0.015 to label novelty;
-   inspect the CLI qualification and promotion path before treating that label as a gate.
-3. **Factor Annihilator Operator ($M_X$)**:
-   Multi-factor projection operator neutralizing market beta and sector risk:
-   $$M_X = I_N - X(X^T W X)^{-1} X^T W, \quad X^T M_X = 0$$
+### Live decisions and lifecycle
 
-### Convex Alpha Portfolio Optimizer
-Optimal portfolio weights across promoted alphas and asset universes are solved via convex quadratic/nonlinear programming (`scipy.optimize.minimize(method='SLSQP')`):
-$$\max_{w} \quad w^T \mu - \frac{\lambda}{2} w^T \Sigma w - \gamma \sum_{i=1}^N \sqrt{(w_i - w_{0,i})^2 + \epsilon^2}$$
-Subject to:
-- Gross leverage: $\sum_{i=1}^N |w_i| \le L_{\max}$
-- Box limits: $w_{\min} \le w_i \le w_{\max}$
-- Factor bounds: $b_{\text{lower}} \le X^T w \le b_{\text{upper}}$
-Smoothed turnover uses $\epsilon = 10^{-6}$ in the research optimizer. Solver
-convergence and useful allocations require validation; these weights are not used
-by the live sizing path.
+`FormulaicAlphaStrategy` evaluates promoted definitions from the loaded registry.
+It standardizes scores over 30 bars (minimum five) and emits LONG/SHORT candidates
+at the configured entry threshold. It may substitute another timeframe when data
+is missing, a documented defect. Research uses a different 50-bar normalization
+and score-decay exits. Live execution instead follows evaluator sizing, configured
+brackets, approval, entry admission and position monitoring; the definition's
+`exit_threshold` is not an active live score-exit policy.
 
-### Multi-Asset Universe Routing (`eligible_symbols`)
-Each formulaic alpha can be targeted to specific market universes where its factor dynamics are statistically validated:
-- `eligible_symbols: null` $\rightarrow$ Eligible screening across configured contracts, still subject to approval/risk.
-- `eligible_symbols: ["NVDA", "AMD"]` $\rightarrow$ Eligible screening restricted to high-beta semiconductor equities.
-- `eligible_symbols: ["QQQ", "SPY"]` $\rightarrow$ Broad index ETF regime momentum.
+Candidates carry a logical strategy ID. Definitions can currently be overwritten
+under that ID, so it is not an immutable strategy-version reference. External
+YAML changes require restart; CLI and Telegram file reports can differ from the
+running registry. `eligible_symbols: null` permits screening across configured
+instruments; an explicit list restricts routing but does not prove validation.
+Promotion weights are metadata and do not determine live capital allocation.
+
+### Validation, orthogonality and optimization
+
+Research reports rolling forward Rank IC, simulated returns and DSR. The 70/30
+split's trailing segment is used for selection, so it is not an untouched test.
+DSR currently receives annualized Sharpe with an observation-count formula; trial
+accounting and some metric labels also need correction. Do not interpret displayed
+DSR as the probability of a profitable live strategy.
+
+The CLI uses pseudoinverse projection `candidate - A @ pinv(A) @ candidate` to
+measure residual association with formulaic incumbents. It fits the whole sample
+and currently compares to contemporaneous rather than forward returns. Rejected
+or failed novelty evidence can still reach auto-promotion. This is an unresolved
+admission gap, not a reliable orthogonality guarantee.
+
+For weighted residualization, `M = I - X(X'WX)^+ X'W` satisfies `X' W M = 0`;
+it generally is neither symmetric nor neutral under the unweighted `X' M` test.
+Neutral residual scores do not imply neutral executed portfolio weights.
+
+`ConvexAlphaPortfolioOptimizer` is a research-only SLSQP mean-variance/turnover
+optimizer. It has gross, box, optional net-neutrality and factor bounds. It does
+not maximize Sharpe, enforce a fully invested budget or automatically choose an
+inverse-volatility fallback. Input validation, label alignment and independent
+feasibility checks are incomplete. No CLI command or live sizing path applies its
+weights. Existing execution risk caps continue to govern individual entries.

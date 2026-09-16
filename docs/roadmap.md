@@ -15,6 +15,9 @@ incident remediation below. The [Alpaca integration review](alpaca-integration-r
 supersedes historical close/stop claims: broker slicing is blocked, exact stop
 replacement confirmation precedes persistence, and critical paths have actual-SDK
 HTTP/WebSocket and PostgreSQL integration coverage.
+The [alpha-stack review](alpha-stack-review.md) supersedes the original Phase 41–43
+research claims: discovery is random-template search, validation/promotion defects
+remain, and portfolio optimization is research-only.
 
 ## Phase 45: Test isolation, broker fill authority and operational audit
 
@@ -82,7 +85,7 @@ the future-horizon table below is historical planning, not the active work queue
 | **Phase 38** | Live Alpaca Paper Trade Execution, Reconciler Safety & Codebase Simplification | **Completed** | Strict directional opposing side rules, dynamic unit sizing on exit cards, pruning unused shims |
 | **Phase 39** | Conversational Trading Copilot & Agentic Tool Calling via LangGraph, LiteLLM & LangSmith | **Completed** | Stateful ReAct copilot in Telegram with LangGraph, tool palette, LiteLLM provider support, and LangSmith tracing |
 | **Phase 40** | Multi-Asset Macro Intelligence, Yield Curve & Credit Regime Filter | **Completed** | US Treasury curve (3M-30Y), public FRED OAS/Breakevens, compound macro stress index, Telegram `/macro`, morning briefing |
-| **Phase 42** | Signal Orthogonalization Pipeline & Convex Optimization Allocation | **Completed** | Gram-Schmidt signal orthogonalization, residual IC testing, SLSQP Sharpe maximization, universe matrix |
+| **Phase 42** | Signal Orthogonalization Pipeline & Convex Optimization Allocation | **Completed** | Gram-Schmidt signal orthogonalization, residual IC testing, research-only SLSQP mean-variance/turnover solve, universe matrix |
 | **Phase 43** | Consolidated Production Review, Macro Explainer & Operational Resilience | **Completed** | Paper reset, universe visibility, educational macro tutorial briefing, scheduled alpha miner, rollover safety |
 | **Phase 44** | Intraday Real-Time Signal Engine & High-Throughput PostgreSQL 18.6 Backend | **Completed** | 15m/1h intraday market data & scanning, PostgreSQL 18.6 (`postgres:18.6-alpine`) backend with asyncpg & Alembic migrations |
 
@@ -1057,58 +1060,24 @@ Expand macro regime detection beyond single-point VIX and 10Y yield metrics to i
 
 ---
 
-## Phase 41: Formulaic Alpha Mining, Expression DSL & VectorBT Research Harness (**Completed**)
+## Phase 41: Formulaic alpha DSL and research scaffold (**Implemented; validation gaps**)
 
-### Objective
-Build a research-grade alpha generation and exploration engine inspired by quantitative institutional workflows (e.g. WorldQuant 101 Alphas), enabling programmatic discovery and validation of novel trading signals.
+Delivered an AST evaluator, seven catalog formulas, random-template generation,
+chronological split metrics, YAML promotion, formulaic screeners, CLI/Telegram/chat
+interfaces and unit coverage. This was not genetic evolution, a full cross-sectional
+engine or a research/live-equivalent execution simulator. The September 16 review
+reproduces causality, DSR units, timeframe/exit parity, identity/provenance and
+promotion defects. See [findings A1–A6](alpha-stack-review.md#findings-and-acceptance-criteria).
 
-### Key Deliverables & Implementation Summary
-1. **Domain-Specific Expression Language (DSL) & Safe AST Parser**:
-   - Implemented vectorized math, time-series, and cross-sectional operators without `eval()`:
-     - Time-series: `ts_rank(x, d)`, `ts_corr(x, y, d)`, `ts_std(x, d)`, `decay_linear(x, d)`, `ts_argmax(x, d)`, `delta(x, d)`, `sma(x, d)`.
-     - Cross-sectional & scaling: `rank(x)`, `zscore(x)`, `scale(x)`, `sign(x)`, `log(x)`, `abs(x)`.
-   - AST expression evaluator safely binds OHLCV market features with clean syntax tree validation in `agentic_trader/research/alpha/dsl.py` and `operators.py`.
-2. **Institutional Alpha Catalog & Genetic Search Engine**:
-   - Pre-cataloged institutional WorldQuant 101 and factor library alphas (`alpha_wq_001`, `alpha_wq_006`, `alpha_wq_012`, `alpha_wq_028`, `alpha_wq_053`, `alpha_vol_reversal`, `alpha_trend_expansion`).
-   - Exploration engine (`AlphaMiner`) performing combinatorial and genetic formula generation, In-Sample / Out-of-Sample splitting, and composite ranking.
-3. **Statistical Overfitting Protection & Deflated Sharpe Ratio (DSR)**:
-   - Implemented Bailey & López de Prado Deflated Sharpe Ratio (`calculate_deflated_sharpe_ratio`) correcting for non-normality (skewness, kurtosis) and multiple testing trials ($N$).
-   - Spearman Rank Information Coefficient (`calculate_rank_ic`) with Information Ratio (IR).
-   - Cross-strategy correlation gating against live desk returns to reject redundant signals.
-4. **Auto-Promotion Pipeline & Production Execution Integration**:
-   - Atomic YAML persistence (`AlphaPromotionManager`) managing lifecycle states (`promoted`, `demoted`, `candidate`) in `config/promoted_alphas.yaml`.
-   - `FormulaicAlphaStrategy(BaseStrategy)` dynamically registered in `StrategyRegistry`. Every trade and candidate is stamped with its immutable logical strategy ID (e.g., `alpha_wq_006`), ensuring 100% auditability across screener, risk evaluator, and order execution.
-5. **Operator Interfaces & Copilot Architecture**:
-   - CLI commands: `copilot alpha catalog`, `list`, `mine`, `inspect <id>`, `promote <id>`, `demote <id>`, `test <id>`.
-   - Telegram `/alphas` command, autocomplete registration, and interactive HTML dashboard.
-   - LangGraph Copilot tools: `get_alpha_catalog`, `promote_alpha`, `demote_alpha` allowing autonomous and conversational alpha management from Telegram chat.
-6. **Test Coverage & Verification**:
-   - 100% pre-commit compliance across all 19 hooks (ruff, mypy, pytest).
-   - Dedicated unit test suite across DSL (`test_alpha_dsl.py`), metrics (`test_alpha_metrics.py`), miner (`test_alpha_miner.py`), promotion (`test_alpha_promotion.py`), formulaic strategy (`test_formulaic_strategy.py`), CLI (`test_cli_alpha.py`), Telegram (`test_telegram_alphas.py`), and copilot tools (`test_copilot_alpha_tools.py`, `test_copilot_tools.py`).
+## Phase 42: Residualization and allocation library (**Research-only; integration pending**)
 
----
-
-## Phase 42: Signal Orthogonalization Pipeline & Convex Optimization Allocation (**Completed**)
-
-### Objective
-Incorporate institutional quant shop methodology for signal decorrelation and portfolio weighting: orthogonalize candidate signals against active incumbents using modified Gram-Schmidt projection, filter redundant alphas based on residual predictive power (Residual IC), and optimize multi-alpha capital allocations via convex quadratic programming.
-
-### Key Deliverables & Implementation Summary
-1. **Gram-Schmidt Signal Orthogonalization Engine (`agentic_trader/research/alpha/orthogonalization.py`)**:
-   - Modified Gram-Schmidt projection removing shared linear variance from candidate signals against active incumbents.
-   - Residual information coefficient evaluation (`evaluate_residual_predictive_power`) ensuring novel incremental alpha ($IC_{residual} > 0.015$).
-   - Rejection gating for redundant signals ($R^2 > 0.65$ or $IC_{residual} \le 0$).
-2. **Convex Portfolio Optimization Engine (`agentic_trader/research/alpha/optimizer.py`)**:
-   - Quadratic programming / SLSQP portfolio optimizer maximizing portfolio Sharpe ratio while penalizing pairwise correlation and diversification entropy.
-   - Strict budget constraints: $\sum w_i = 1$, $0 \le w_i \le w_{max}$ (default 0.40).
-   - Automated weight normalization and fallback to inverse volatility or equal weighting under rank deficiency.
-3. **Multi-Asset Universe Qualification Matrix (`copilot alpha mine`)**:
-   - Evaluates alpha expressions across multi-symbol universes (e.g., `NVDA,AMD,AAPL,MSFT,QQQ,SPY`).
-   - Stored eligible target symbols per alpha in `PromotedAlphaRecord.eligible_symbols`.
-4. **Symbol-Constrained Production Execution (`FormulaicScreenerStrategy`)**:
-   - Strategy routing respects `eligible_symbols`, screening only verified assets for that alpha.
-5. **CLI & Interactive Optimization**:
-   - Planned CLI integration is not implemented: use the `ConvexAlphaPortfolioOptimizer` Python library. There is no `alpha optimize` command or automatic live weight application.
+Delivered pseudoinverse residualization, residual-correlation diagnostics, weighted
+factor projection, a multi-symbol qualification display and an SLSQP mean-variance/
+turnover optimizer. No live optimizer integration or `alpha optimize` CLI exists.
+The solver supports gross/box and optional net/factor constraints; it does not
+maximize Sharpe, enforce sum-of-weights one, or fall back to inverse volatility.
+Qualification, weighted-projection documentation and solver validation need the
+hardening described in [findings A5–A9](alpha-stack-review.md#findings-and-acceptance-criteria).
 
 ---
 
@@ -1131,7 +1100,7 @@ Perform end-to-end operational consolidation of the entire production stack, est
    - Powered by LLM synthesis (`litellm.acompletion`) with an exhaustive 5-section deterministic fallback.
    - Available via CLI (`copilot explain-macro`) and Telegram (`/explain_macro`).
 5. **Decoupled Scheduled Offline Alpha Mining Daemon (`com.agentictrader.alphaminer`)**:
-   - Scheduled Saturday 02:00 AM weekly offline mining job via macOS `launchd`, running genetic mining across 10 core symbols without impacting live trading loop latency.
+   - Scheduled Saturday 02:00 AM weekly offline mining job via macOS `launchd`, running random-template mining on the first of 10 requested symbols, then evaluating survivors on the others; host/provider capacity is still shared.
    - Managed via `./scripts/launchd.sh install-miner`, `uninstall-miner`, `run-miner`, and `miner-logs`.
 6. **Zombie Position Rollover & Demotion Safeguard**:
    - Enhanced `copilot alpha demote <alpha_id>` with orphan position detection.
