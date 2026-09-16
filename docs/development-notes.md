@@ -1,6 +1,6 @@
 # Development and debugging handoff
 
-Updated **2026-09-15**. Start with [CLAUDE.md](../CLAUDE.md), the
+Updated **2026-09-16**. Start with [CLAUDE.md](../CLAUDE.md), the
 [operations guide](production.md), and [incident notes](incident-2026-09-15.md).
 
 ## Runtime and ownership
@@ -67,11 +67,12 @@ explicitly marked estimates. Reports preserve source and retrieval time in audit
 
 ### Storage and audit
 
-Head revision: `003_audit_provenance`. Tables:
+Head revision: `004_close_requests`. Tables:
 
 - `signals`: lifecycle, sizing, entry/exit order IDs, execution time, environment,
   execution mode/account type, process run ID, and reversible quarantine flag.
 - `system_state`: halt flags and operational key/value state.
+- `close_requests`: durable exclusive close intents and broker request IDs.
 - `audit_events`: append-only creation, fills, stream/reconciliation evidence,
   valuations, close submissions/completions, notification results, repairs, and
   daemon startup identity. JSON payloads avoid credentials and chat identifiers.
@@ -236,3 +237,28 @@ reproduced a 1.5-second delay exceeding APScheduler's former one-second default.
 
 Old Telegram messages can retain removed callback names. Use `/help` or the current
 command menu for `/macro`; historical `/regime` buttons are no longer active.
+
+## September 16 close lifecycle
+
+`PositionCloseService` is injected into the copilot. It shares durable close
+coordination across CLI, Telegram and panic's tracked Alpaca closes; adapters own
+broker-specific cancellation and submission. Migration `004_close_requests` adds
+exclusive active per-symbol requests and retained terminal history. The copilot
+serializes operator close/flatten with monitoring; trailing updates skip symbols
+with active close requests. Unknown submissions are recovered by exact client ID.
+
+`tests/execution/test_position_closing.py` rehearses the SDK boundary, real temporary
+storage and public command handlers entirely offline. It covers long/short fills,
+cancellation delays/fill races/timeouts, lost acknowledgements, competing coordinators,
+partial exits, preview isolation, halt preservation, broker-only positions, menu
+registration and event-loop responsiveness. PostgreSQL integration independently
+checks migration and uniqueness between separate database clients. See operations
+for conservative recovery and after-hours behavior.
+
+Validation on September 16: the full isolated suite passed **502 tests**, including
+five disposable-PostgreSQL tests. After final cancellation-race/quantity-release
+hardening, **68 targeted broker/close tests passed**, including the 31-case offline
+close rehearsal. Mypy checks 101 application modules. The two known warnings remain
+(WebSocket deprecation and the deliberate blocked-socket assertion). Pre-commit and
+GitHub CI validate the committed tree; deployment and read-only account/menu checks
+are recorded separately in startup/valuation audits and private verification output.

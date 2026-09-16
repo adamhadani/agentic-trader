@@ -22,9 +22,8 @@ from agentic_trader.storage.models import SignalRecord
 @pytest.fixture
 def incident(app_config, temp_db):
     app_config.execution_mode = "alpaca"
-    copilot = TradingCopilot(app_config, db=temp_db)
     client = MagicMock()
-    copilot.broker = AlpacaBroker(app_config, client=client)
+    copilot = TradingCopilot(app_config, db=temp_db, broker=AlpacaBroker(app_config, client=client))
     copilot.broker._connected = True
     copilot.notifier = MagicMock(send_exit_alert=AsyncMock(return_value=987))
     copilot.manage_trailing_stops = AsyncMock()
@@ -236,10 +235,15 @@ async def test_quarantine_preserves_evidence_but_excludes_operational_queries(te
 async def test_manual_close_pending_or_rejected_never_fabricates_profit(incident):
     copilot, _ = incident
     sid = await add_position(copilot.db)
-    copilot.broker.close_position = AsyncMock(return_value=OrderResult(success=False, error_message="rejected"))
+    copilot.broker.get_positions = AsyncMock(
+        return_value=[BrokerPosition(symbol="IWM", direction="SHORT", quantity=105)]
+    )
+    copilot.broker.get_entry_execution = AsyncMock(return_value=None)
+    copilot.broker.reconcile_positions = AsyncMock(return_value=[])
+    copilot.broker.submit_position_close = AsyncMock(return_value=OrderResult(success=False, error_message="rejected"))
     assert "rejected" in await copilot.close_position_manual(sid, exit_price=1)
     assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.EXECUTED
-    copilot.broker.close_position.return_value = OrderResult(success=True, order_id="manual-exit")
+    copilot.broker.submit_position_close.return_value = OrderResult(success=True, order_id="manual-exit")
     copilot.broker.get_entry_execution = AsyncMock(return_value=None)
     copilot.broker.reconcile_positions = AsyncMock(return_value=[])
     assert "awaiting" in await copilot.close_position_manual(sid, exit_price=1)

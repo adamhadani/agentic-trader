@@ -328,6 +328,9 @@ class SystemStateKey(StrEnum):
 
 
 class AuditEventType(StrEnum):
+    CLOSE_REQUEST = "close_request"
+    CLOSE_BROKER_STEP = "close_broker_step"
+    FLATTEN = "flatten"
     SIGNAL_CREATED = "signal_created"
     SIGNAL_QUARANTINED = "signal_quarantined"
     ENTRY_EXECUTION_UPDATED = "entry_execution_updated"
@@ -354,6 +357,18 @@ class AuditEventType(StrEnum):
 
 
 UNKNOWN_EXECUTION_MODE = "unknown"
+
+
+class CloseRequestStatus(StrEnum):
+    CLAIMED = "claimed"
+    SUBMITTED = "submitted"
+    UNKNOWN = "unknown"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+ACTIVE_CLOSE_STATUSES = (CloseRequestStatus.CLAIMED, CloseRequestStatus.SUBMITTED, CloseRequestStatus.UNKNOWN)
+ALPACA_MAX_ORDERS_PER_PAGE = 500
 BROKER_QUANTITY_TOLERANCE = 1e-6
 BROKER_PRICE_TOLERANCE = 1e-8
 DEFAULT_STREAM_RECONNECT_INITIAL_SECONDS = 2.0

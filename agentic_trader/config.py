@@ -236,6 +236,8 @@ class PositionSizingConfig(BaseModel):
 
 
 class ExecutionConfig(BaseModel):
+    close_cancel_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    close_cancel_poll_seconds: float = Field(default=0.25, gt=0, le=5)
     algorithm: str = "immediate"  # "immediate", "twap", "vwap"
     min_slice_quantity_futures: float = 2.0
     min_slice_quantity_equity: float = 100.0

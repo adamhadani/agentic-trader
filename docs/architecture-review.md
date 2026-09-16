@@ -151,3 +151,21 @@ combined filter decision, including missing-enrichment details.
 Accepted orders without a broker fill price now say “ORDER ACCEPTED / Awaiting
 broker fill”; they do not label the proposed entry or zero as a fill. Research
 provider errors reach the shared command error/audit boundary.
+
+## Coordinated closes (September 16)
+
+The new close service separates lifecycle/persistence from Alpaca transport and
+Telegram/CLI presentation. Per-symbol database exclusivity and broker client IDs
+prevent duplicate close submissions across processes. Preview and confirmation
+share the same service; the adapter verifies cancellation before a market close.
+Full-fill accounting remains separate and authoritative. `/flatten` preserves halt
+state and does not fabricate trade history for externally opened positions.
+
+Remaining boundaries: there is no atomic transaction across broker cancellation
+and replacement, so failure after cancellation can leave a position unprotected;
+responses and audits expose it. Uncertain requests block further closes until
+exact recovery/operator review. Complete partial-fill allocation, durable recovery
+of abandoned pre-submission claims, and coordination of concurrent external/new
+entry orders remain work for the broader execution ledger/reservation design.
+The live trailing implementation uses recorded risk distance rather than the
+configured mode's promised ATR/high-water mark; correcting that is a separate task.

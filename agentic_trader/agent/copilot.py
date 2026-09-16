@@ -33,6 +33,7 @@ from agentic_trader.constants import (
 )
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.execution import SlicedExecutionEngine
+from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.market.session import CompositeMarketSessionProvider
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
@@ -72,6 +73,7 @@ class TradingCopilot:
         broker: BaseBroker | None = None,
         data_fetcher: MarketDataFetcher | None = None,
         notifier: TelegramNotifier | None = None,
+        close_service: PositionCloseService | None = None,
     ):
         self._dry_run_directory: TemporaryDirectory[str] | None = None
         self._reconciliation_lock = asyncio.Lock()
@@ -81,6 +83,7 @@ class TradingCopilot:
         self.broker: BaseBroker = (
             broker if broker is not None else create_broker(config=config, data_fetcher=self.data_fetcher)
         )
+        self.close_service = close_service if close_service is not None else PositionCloseService(self.broker, self.db)
         self.strategy_engine = StrategyEngine(config)
         self.calendar: BaseEconomicCalendar = EconomicCalendar(finnhub_api_key=config.finnhub_api_key)
         self.regime_detector = RegimeDetector(config=config.regime)
@@ -142,6 +145,7 @@ class TradingCopilot:
                 scan_runner=self.run_scan_summary_html,
                 positions_provider=self.get_positions_summary_html,
                 close_handler=self.close_position_manual,
+                flatten_handler=self.flatten_positions,
                 execute_handler=self.execute_signal_by_id,
                 perf_provider=self.get_performance_summary_html,
                 macro_provider=self.get_macro_summary_html,
@@ -648,6 +652,8 @@ class TradingCopilot:
         Detects server-side bracket order fills or simulated price threshold hits,
         records exits in database, and emits Telegram alerts.
         """
+        if self.broker.authoritative_positions:
+            await self.close_service.recover()
         active_positions = await self.sync_entry_executions(await self.db.get_active_positions())
         # Update telemetry metrics
         self.metrics.set_gauge(
@@ -760,8 +766,11 @@ class TradingCopilot:
         if not ts_config or not ts_config.enabled:
             return 0
 
+        closing_symbols = {request["symbol"] for request in await self.db.active_close_requests()}
         updates_count = 0
         for pos in active_positions:
+            if pos["contract"].strip("/").upper() in closing_symbols:
+                continue
             if self.broker.authoritative_positions and not pos.get("executed_at"):
                 continue
             try:
@@ -1094,6 +1103,16 @@ class TradingCopilot:
         report = await self.get_positions_report()
         return TelegramHtmlFormatter.format_positions_html(report)
 
+    async def flatten_positions(self, confirm: bool = False) -> str:
+        if not confirm:
+            return html.escape(await self.close_service.preview())
+        async with self._reconciliation_lock:
+            response = await self.close_service.flatten()
+            positions = await self.sync_entry_executions(await self.db.get_active_positions())
+            for event in await self.broker.reconcile_positions(positions):
+                await self.process_reconciliation_event(event, positions)
+            return html.escape(response)
+
     async def close_position_manual(self, signal_id: int, exit_price: float | None = None) -> str:
         """Manually close a position (via Telegram /close or CLI)."""
         pos = await self.db.get_signal_by_id(signal_id)
@@ -1123,36 +1142,24 @@ class TradingCopilot:
             )
 
         if self.broker.authoritative_positions:
-            if not pos.get("broker_exit_order_id"):
-                try:
-                    result = await self.broker.close_position(symbol=pos["contract"], quantity=float(pos["quantity"]))
-                except Exception as exc:
-                    await self.db.record_audit(
-                        AuditEventType.EXIT_SUBMISSION_FAILED, {"error_type": type(exc).__name__}, signal_id
+            async with self._reconciliation_lock:
+                response = await self.close_service.close_signal(signal_id)
+                positions = await self.sync_entry_executions(await self.db.get_active_positions())
+                for event in await self.broker.reconcile_positions(positions):
+                    await self.process_reconciliation_event(event, positions)
+                updated = await self.db.get_signal_by_id(signal_id)
+                if updated and updated["status"] in (SignalStatus.CLOSED_WIN, SignalStatus.CLOSED_LOSS):
+                    return TelegramHtmlFormatter.format_manual_close_html(
+                        ManualCloseResultView(
+                            signal_id=signal_id,
+                            contract=updated["contract"],
+                            direction=updated["direction"],
+                            exit_price=updated["exit_price"],
+                            realized_pnl=updated["realized_pnl"],
+                            success=True,
+                        )
                     )
-                    return f"❌ Close failed for signal #{signal_id}; position remains tracked."
-                if not result.success or not result.order_id:
-                    await self.db.record_audit(
-                        AuditEventType.EXIT_SUBMISSION_FAILED, {"error": result.error_message}, signal_id
-                    )
-                    return f"❌ Close rejected for signal #{signal_id}; position remains tracked."
-                await self.db.record_exit_request(signal_id, result.order_id)
-            positions = await self.sync_entry_executions(await self.db.get_active_positions())
-            for event in await self.broker.reconcile_positions(positions):
-                await self.process_reconciliation_event(event, positions)
-            updated = await self.db.get_signal_by_id(signal_id)
-            if updated and updated["status"] != SignalStatus.EXECUTED:
-                return TelegramHtmlFormatter.format_manual_close_html(
-                    ManualCloseResultView(
-                        signal_id=signal_id,
-                        contract=updated["contract"],
-                        direction=updated["direction"],
-                        exit_price=updated["exit_price"],
-                        realized_pnl=updated["realized_pnl"],
-                        success=True,
-                    )
-                )
-            return f"⏳ Close order submitted for signal #{signal_id}; awaiting a confirmed broker fill."
+                return html.escape(response)
 
         contract = pos["contract"]
         direction = pos["direction"].upper()

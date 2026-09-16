@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -144,3 +144,34 @@ class SystemStateRecord(Base):
                 self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else str(self.updated_at)
             ),
         }
+
+
+class CloseRequestRecord(Base):
+    """Durable, exclusive close intent; terminal requests remain as history."""
+
+    __tablename__ = "close_requests"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    environment: Mapped[str] = mapped_column(String, nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String, nullable=False)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    direction: Mapped[str] = mapped_column(String, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    signal_id: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    broker_order_id: Mapped[str | None] = mapped_column(String)
+    detail: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDatetime, default=lambda: datetime.now(UTC), nullable=False)
+    __table_args__ = (
+        Index(
+            "uq_active_close_symbol",
+            "environment",
+            "execution_mode",
+            "symbol",
+            unique=True,
+            postgresql_where=text("status IN ('claimed', 'submitted', 'unknown')"),
+            sqlite_where=text("status IN ('claimed', 'submitted', 'unknown')"),
+        ),
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {column.name: getattr(self, column.name) for column in self.__table__.columns}

@@ -9,7 +9,7 @@ from agentic_trader.cli.utils import coro, get_copilot_and_config
 from agentic_trader.config import load_config
 from agentic_trader.constants import RuntimeEnvironment
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
-from agentic_trader.presentation.formatters import TerminalFormatter
+from agentic_trader.presentation.formatters import TelegramHtmlFormatter, TerminalFormatter
 
 
 @click.command("status", help="Show open positions, broker connection status, cash balance")
@@ -30,22 +30,39 @@ async def positions() -> None:
     await copilot.show_positions()
 
 
-@click.command("close", help="Close an active position manually with an exit price")
+@click.command("close", help="Close a position without halting trading; Alpaca confirms actual fills")
 @click.argument("signal_id", type=int)
 @click.option(
     "--price",
     type=float,
-    required=True,
-    help="Exit price for the trade closure",
+    default=None,
+    help="Simulation/manual adapter exit price (ignored for brokerage accounting)",
 )
+@click.option("--dry-run", is_flag=True, help="Read-only preview; preserve all broker orders")
 @coro
-async def close(signal_id: int, price: float) -> None:
-    """Close an active position manually with an exit price."""
+async def close(signal_id: int, price: float | None, dry_run: bool) -> None:
+    """Request a verified close or show a read-only broker preview."""
     copilot, _config = get_copilot_and_config()
     await copilot.broker.connect()
-    res = await copilot.close_position_manual(signal_id, price)
-    clean_text = res.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
-    click.echo(clean_text)
+    res = (
+        await copilot.close_service.preview(signal_id)
+        if dry_run
+        else await copilot.close_position_manual(signal_id, price)
+    )
+    click.echo(res if dry_run else TelegramHtmlFormatter.strip_html(res))
+
+
+@click.command("flatten", help="Close all current broker positions without changing the trading halt")
+@click.option("--confirm", is_flag=True, help="Submit closes for the current broker snapshot")
+@click.option("--dry-run", is_flag=True, help="Read-only preview; never cancel or submit orders")
+@coro
+async def flatten(confirm: bool, dry_run: bool) -> None:
+    copilot, _config = get_copilot_and_config()
+    await copilot.broker.connect()
+    response = await copilot.flatten_positions(confirm=confirm and not dry_run)
+    click.echo(TelegramHtmlFormatter.strip_html(response))
+    if not confirm or dry_run:
+        click.echo("To submit closes: copilot flatten --confirm")
 
 
 @click.command("execute", help="Execute a staged signal manually by signal_id")

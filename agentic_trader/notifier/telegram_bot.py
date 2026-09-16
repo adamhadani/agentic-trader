@@ -335,6 +335,7 @@ class TelegramNotifier:
         scan_runner: Callable[[], Awaitable[str]] | None = None,
         positions_provider: Callable[[], Awaitable[str]] | None = None,
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
+        flatten_handler: Callable[[bool], Awaitable[str]] | None = None,
         execute_handler: Callable[..., Awaitable[tuple[bool, str]]] | None = None,
         perf_provider: Callable[[], Awaitable[str]] | None = None,
         macro_provider: Callable[[], Awaitable[str]] | None = None,
@@ -367,6 +368,7 @@ class TelegramNotifier:
         self.scan_runner = scan_runner
         self.positions_provider = positions_provider
         self.close_handler = close_handler
+        self.flatten_handler = flatten_handler
         self.execute_handler = execute_handler
         self.perf_provider = perf_provider
         self.macro_provider = macro_provider
@@ -503,7 +505,8 @@ class TelegramNotifier:
                 BotCommand("gex", "Option-chain gamma estimates and concentration levels"),
                 BotCommand("backtest", "Offline backtest simulation"),
                 BotCommand("scan", "Trigger on-demand quantitative universe scan"),
-                BotCommand("close", "Manually close a tracked trade"),
+                BotCommand("close", "Close one position without halting trading"),
+                BotCommand("flatten", "Preview or close all positions without a trading halt"),
                 BotCommand("panic", "EMERGENCY: cancel all orders, liquidate positions & halt"),
                 BotCommand("resume", "Resume trading operations after panic halt"),
                 BotCommand("help", "Command overview and risk invariants"),
@@ -560,6 +563,7 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("scan", self._observe_handler(self.handle_scan_command)))
             self.app.add_handler(CommandHandler("positions", self._observe_handler(self.handle_positions_command)))
             self.app.add_handler(CommandHandler("close", self._observe_handler(self.handle_close_command)))
+            self.app.add_handler(CommandHandler("flatten", self._observe_handler(self.handle_flatten_command)))
             self.app.add_handler(CommandHandler("perf", self._observe_handler(self.handle_perf_command)))
             self.app.add_handler(CommandHandler("macro", self._observe_handler(self.handle_macro_command)))
             self.app.add_handler(
@@ -652,6 +656,7 @@ class TelegramNotifier:
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
             "• /close &lt;id&gt; - Request broker closure; accounting waits for fills\n"
             "• /scan - Trigger an on-demand quantitative scan across universe\n"
+            "• /flatten [confirm] - Preview/close all broker positions; halt state unchanged\n"
             "• /panic [confirm] - 🔴 Emergency kill switch: cancel orders, liquidate &amp; halt\n"
             "• /resume - 🟢 Clear emergency halt and restore normal operations\n"
             "• /help - Display this command overview\n\n"
@@ -787,6 +792,22 @@ class TelegramNotifier:
             await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Close handler not attached.")
+
+    async def handle_flatten_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.message:
+            return
+        args = context.args or []
+        if args not in ([], ["confirm"], ["dry-run"]):
+            await update.message.reply_text("Usage: /flatten [confirm|dry-run]")
+            return
+        if self.flatten_handler is None:
+            await update.message.reply_text("Flatten handler is unavailable.")
+            return
+        confirm = args == ["confirm"]
+        response = await self.flatten_handler(confirm)
+        if not confirm:
+            response += "\nTo submit closes for the current positions, send <code>/flatten confirm</code>."
+        await self.safe_reply_text(update.message, response)
 
     async def handle_panic_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:

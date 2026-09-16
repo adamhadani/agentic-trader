@@ -34,7 +34,7 @@ not a guarantee that every research feature is integrated into live sizing.
 3. **Reward-to-Risk (R:R)**: Strictly **$\ge 2.0$**. Stop distance must be **$\ge 1.5 \times \text{ATR}(14)$** to avoid noise stop-outs.
 4. **Macro Event Lockout**: Zero entry alerts permitted within **$[-60\text{m}, +30\text{m}]$** of Tier-1 economic releases (CPI, PPI, FOMC, NFP).
 5. **Deduplication Rule**: Zero duplicate signals for the same contract + strategy within 12 hours.
-6. **Emergency Kill Switch**: Instant liquidation of all active positions and cancellation of resting orders with persistent DB halt state via `/panic` or `copilot panic`.
+6. **Emergency Kill Switch**: Fill-confirmed liquidation requests for active positions and cancellation of resting orders with persistent DB halt state via `/panic` or `copilot panic`.
 
 ---
 

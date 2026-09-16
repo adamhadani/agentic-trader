@@ -394,11 +394,17 @@ async def test_alpaca_broker_bracket_order_and_positions():
     assert positions[0].quantity == 10.0
     assert positions[0].unrealized_pnl == 45.00
 
-    # Close position
+    # Close uses bracket-aware submission; simulation prices cannot become broker fills.
+    mock_pos.qty_available = "10"
+    mock_client.get_open_position.return_value = mock_pos
+    mock_client.get_clock.return_value.is_open = True
+    mock_client.get_orders.return_value = []
+    mock_client.submit_order.return_value = {"id": "alp-close-101", "status": "accepted", "filled_qty": "0"}
     close_res = await broker.close_position(symbol="AAPL", exit_reason="TAKE_PROFIT", exit_price=160.00)
     assert close_res.success is True
     assert close_res.order_id == "alp-close-101"
-    mock_client.close_position.assert_called_once()
+    assert close_res.fill_price is None
+    mock_client.close_position.assert_not_called()
 
     await broker.disconnect()
 

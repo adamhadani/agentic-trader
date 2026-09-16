@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
 import logging
 import math
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
@@ -11,11 +14,11 @@ from alpaca.trading.enums import (
     OrderClass as AlpacaOrderClass,
     OrderSide as AlpacaOrderSide,
     OrderStatus as AlpacaOrderStatus,
+    OrderType as AlpacaOrderType,
     QueryOrderStatus,
     TimeInForce as AlpacaTimeInForce,
 )
 from alpaca.trading.requests import (
-    ClosePositionRequest,
     GetOrderByIdRequest,
     GetOrdersRequest,
     LimitOrderRequest,
@@ -31,10 +34,19 @@ from agentic_trader.broker.base import (
     BrokerPosition,
     OrderRequest,
     OrderResult,
+    PositionCloseRequest,
     ReconciliationEvent,
 )
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import BROKER_QUANTITY_TOLERANCE, AssetClass, Direction, ExitReason
+from agentic_trader.constants import (
+    ALPACA_MAX_ORDERS_PER_PAGE,
+    BROKER_PRICE_TOLERANCE,
+    BROKER_QUANTITY_TOLERANCE,
+    AssetClass,
+    CloseRequestStatus,
+    Direction,
+    ExitReason,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -234,39 +246,242 @@ class AlpacaBroker(BaseBroker):
         quantity: float | None = None,
         contract: str | None = None,
     ) -> OrderResult:
-        """Close an open position at Alpaca via client.close_position."""
-        if not self._connected or not self.client:
-            connected = await self.connect()
-            if not connected or not self.client:
-                return OrderResult(success=False, error_message="Not connected to Alpaca API.")
-
+        """Use the same bracket-aware workflow as coordinated operator closes."""
+        positions = await self.get_positions()
         clean_symbol = (symbol or contract or "").strip("/").upper()
+        position = next((p for p in positions if p.symbol == clean_symbol), None)
+        if position is None:
+            return OrderResult(success=False, error_message="Broker position is no longer open.")
+
+        async def observe(payload: dict[str, Any]) -> None:
+            logger.info("Position close: %s", payload)
+
+        return await self.submit_position_close(
+            PositionCloseRequest(
+                symbol=clean_symbol,
+                direction=Direction(position.direction),
+                quantity=quantity if quantity is not None else position.quantity,
+                client_order_id=f"close-{uuid4().hex}",
+            ),
+            observe,
+        )
+
+    def _close_result(self, order: Any) -> OrderResult:
+        order_id = self._field(order, "id")
+        if not order_id:
+            raise ValueError("Broker close response has no order ID")
+        status = self._enum(order, "status")
+        qty = float(self._field(order, "filled_qty", 0) or 0)
+        terminal_failure = status in {
+            AlpacaOrderStatus.CANCELED.value,
+            AlpacaOrderStatus.EXPIRED.value,
+            AlpacaOrderStatus.REJECTED.value,
+        }
+        close_status = CloseRequestStatus.SUBMITTED
+        if status == AlpacaOrderStatus.FILLED.value:
+            close_status = CloseRequestStatus.COMPLETED
+        elif terminal_failure:
+            close_status = CloseRequestStatus.UNKNOWN if qty else CloseRequestStatus.FAILED
+        return OrderResult(
+            success=not terminal_failure,
+            order_id=str(order_id),
+            fill_price=float(self._field(order, "filled_avg_price"))
+            if self._field(order, "filled_avg_price")
+            else None,
+            fill_timestamp=self._filled_at(order),
+            filled_quantity=qty,
+            status=status,
+            close_status=close_status,
+            error_message="Close order ended with a partial fill; reconcile before another close."
+            if terminal_failure and qty
+            else (f"Broker close order {status}." if terminal_failure else None),
+        )
+
+    async def find_position_close(self, client_order_id: str) -> OrderResult | None:
+        if not self.client and not await self.connect():
+            raise RuntimeError("Broker connection failed")
+        assert self.client is not None
         try:
-            logger.info(
-                "Liquidating Alpaca position for %s (Reason: %s) via SDK...",
-                clean_symbol,
-                exit_reason,
-                extra={"symbol": clean_symbol, "exit_reason": exit_reason, "broker": "AlpacaBroker"},
+            order = await asyncio.to_thread(self.client.get_order_by_client_id, client_order_id)
+        except APIError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        return self._close_result(order)
+
+    async def submit_position_close(
+        self,
+        request: PositionCloseRequest,
+        observe: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> OrderResult:
+        """Verify identity, cancel symbol orders, await terminal states, recheck, submit once.
+
+        Market-closed preflight deliberately leaves protective orders intact. A lost
+        submission response is recovered only by client_order_id, never by replay.
+        """
+        if not self.client and not await self.connect():
+            return OrderResult(success=False, error_message="Broker connection failed")
+        assert self.client is not None
+        client = self.client
+        submitting = False
+        cancelled: list[str] = []
+        terminal = {
+            AlpacaOrderStatus.CANCELED.value,
+            AlpacaOrderStatus.EXPIRED.value,
+            AlpacaOrderStatus.REJECTED.value,
+            AlpacaOrderStatus.FILLED.value,
+        }
+
+        async def check_position() -> Any:
+            position = await asyncio.to_thread(client.get_open_position, request.symbol)
+            direction = Direction.LONG if self._enum(position, "side") == "long" else Direction.SHORT
+            if direction != request.direction or not math.isclose(
+                abs(float(self._field(position, "qty"))),
+                request.quantity,
+                rel_tol=0,
+                abs_tol=BROKER_QUANTITY_TOLERANCE,
+            ):
+                raise ValueError(
+                    "Broker position changed; refresh positions before closing (partial fills require review)."
+                )
+            return position
+
+        async def check_session(position: Any) -> None:
+            if self._enum(position, "asset_class") == "us_equity":
+                clock = await asyncio.to_thread(client.get_clock)
+                if not self._field(clock, "is_open", False):
+                    raise ValueError(
+                        f"Regular market is closed; no close submitted. Next open: {self._field(clock, 'next_open')}."
+                    )
+
+        async def open_orders() -> list[Any]:
+            orders = await asyncio.to_thread(
+                client.get_orders,
+                GetOrdersRequest(
+                    status=QueryOrderStatus.OPEN,
+                    symbols=[request.symbol],
+                    nested=False,
+                    limit=ALPACA_MAX_ORDERS_PER_PAGE,
+                ),
             )
-            close_opts = ClosePositionRequest(qty=str(quantity)) if quantity else None
-            res = await asyncio.to_thread(self.client.close_position, clean_symbol, close_opts)
-            order_id = str(getattr(res, "id", f"ALP-EXIT-{int(datetime.now(UTC).timestamp())}"))
-            raw_resp: dict[str, Any] = res.model_dump() if hasattr(res, "model_dump") else {"id": order_id}
-            return OrderResult(
-                success=True,
-                order_id=order_id,
-                fill_price=float(self._field(res, "filled_avg_price"))
-                if self._field(res, "filled_avg_price")
-                else None,
-                fill_timestamp=self._filled_at(res),
-                raw_response=raw_resp,
+            if not isinstance(orders, list):
+                raise TypeError("Expected typed broker order list")
+            if len(orders) >= ALPACA_MAX_ORDERS_PER_PAGE:
+                raise ValueError("Open-order list may be truncated; refusing incomplete cancellation.")
+            return orders
+
+        try:
+            position = await check_position()
+            await check_session(position)
+            if request.entry_order_id:
+                entry = await self._entry_order(
+                    {
+                        "broker_order_id": request.entry_order_id,
+                        "contract": request.symbol,
+                        "direction": request.direction,
+                    }
+                )
+                if self._enum(entry, "status") != AlpacaOrderStatus.FILLED.value or not math.isclose(
+                    float(self._field(entry, "filled_qty", 0) or 0),
+                    request.quantity,
+                    rel_tol=0,
+                    abs_tol=BROKER_QUANTITY_TOLERANCE,
+                ):
+                    raise ValueError("Tracked entry must be fully filled and match the broker position quantity.")
+                if any(
+                    float(self._field(leg, "filled_qty", 0) or 0) > 0 for leg in self._field(entry, "legs", []) or []
+                ):
+                    raise ValueError("Tracked bracket already has exit fills; reconcile before another close.")
+                if not math.isclose(
+                    float(self._field(entry, "filled_avg_price")),
+                    float(self._field(position, "avg_entry_price")),
+                    rel_tol=0,
+                    abs_tol=BROKER_PRICE_TOLERANCE,
+                ):
+                    raise ValueError("Broker cost basis differs from the tracked entry; reconcile before closing.")
+            orders = await open_orders()
+            if any(
+                self._enum(order, "type") == AlpacaOrderType.MARKET.value
+                or self._enum(order, "order_type") == AlpacaOrderType.MARKET.value
+                for order in orders
+            ):
+                raise ValueError("A market order is already working for this symbol; wait for reconciliation.")
+            await observe(
+                {
+                    "phase": "preflight",
+                    "symbol": request.symbol,
+                    "quantity": request.quantity,
+                    "cancel_order_ids": [str(self._field(order, "id")) for order in orders],
+                }
             )
-        except APIError as e:
-            logger.error("Alpaca API error closing position for %s: %s", clean_symbol, e)
-            return OrderResult(success=False, error_message=str(e))
-        except Exception as e:
-            logger.exception("Failed to close position at Alpaca")
-            return OrderResult(success=False, error_message=str(e))
+            for order in orders:
+                order_id = str(self._field(order, "id"))
+                current = await asyncio.to_thread(client.get_order_by_id, order_id)
+                if self._enum(current, "status") not in terminal:
+                    # OCO sibling cancellation may race; terminal-state polling decides.
+                    with contextlib.suppress(APIError):
+                        await asyncio.to_thread(client.cancel_order_by_id, order_id)
+                    cancelled.append(order_id)
+            deadline = time.monotonic() + self.config.execution.close_cancel_timeout_seconds
+            while True:
+                pending = []
+                for order in orders:
+                    current = await asyncio.to_thread(client.get_order_by_id, str(self._field(order, "id")))
+                    if (
+                        self._enum(current, "status") == AlpacaOrderStatus.FILLED.value
+                        or float(self._field(current, "filled_qty", 0) or 0) > 0
+                    ):
+                        raise ValueError("An order filled during cancellation; reconcile before closing.")
+                    if self._enum(current, "status") not in terminal:
+                        pending.append(str(self._field(current, "id")))
+                if not pending:
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Order cancellations were not confirmed; no close order submitted.")
+                await asyncio.sleep(self.config.execution.close_cancel_poll_seconds)
+            await observe({"phase": "cancellations_confirmed", "order_ids": cancelled})
+            while True:
+                if await open_orders():
+                    raise ValueError("New or remaining orders appeared during cancellation; no close submitted.")
+                position = await check_position()
+                if (
+                    abs(float(self._field(position, "qty_available", 0) or 0)) + BROKER_QUANTITY_TOLERANCE
+                    >= request.quantity
+                ):
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Broker quantity remains reserved; no close order submitted.")
+                await asyncio.sleep(self.config.execution.close_cancel_poll_seconds)
+            await check_session(position)
+            side = AlpacaOrderSide.SELL if request.direction == Direction.LONG else AlpacaOrderSide.BUY
+            order_request = MarketOrderRequest(
+                symbol=request.symbol,
+                qty=request.quantity,
+                side=side,
+                time_in_force=AlpacaTimeInForce.GTC
+                if self._enum(position, "asset_class") == "crypto"
+                else AlpacaTimeInForce.DAY,
+                client_order_id=request.client_order_id,
+            )
+            await observe({"phase": "submitting", "client_order_id": request.client_order_id})
+            submitting = True
+            order = await asyncio.to_thread(client.submit_order, order_request)
+            return self._close_result(order)
+        except Exception as exc:
+            # Even an HTTP error after submit may be an ambiguous acknowledgement.
+            # The durable request stays exclusive until an exact broker lookup resolves it.
+            detail = str(exc)
+            if cancelled:
+                detail += " Protective orders may have been cancelled; inspect this position at the broker."
+            await observe(
+                {
+                    "phase": "failed",
+                    "error_type": type(exc).__name__,
+                    "detail": detail,
+                    "submission_uncertain": submitting,
+                }
+            )
+            return OrderResult(success=False, error_message=detail, submission_uncertain=submitting)
 
     async def get_positions(self) -> list[BrokerPosition]:
         """Fetch open positions from Alpaca via SDK."""

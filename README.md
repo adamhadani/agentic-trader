@@ -89,11 +89,11 @@ copilot daemon
 3. **Sub-Second WebSocket Streams**:
    - **Alpaca `TradingStream`**: Sub-second synchronization for bracket order fills, stops, targets, and cancellations.
    - **Tradovate WebSocket**: Account, position, and CME order state synchronization.
-4. **Two-Way Telegram Interactive Bot**: Continuous async polling listener processing operator commands (`/status`, `/positions`, `/perf`, `/macro`, `/gex`, `/pairs`, `/scan`, `/close`) and inline action buttons (`[ 🚀 Execute ]` / `[ ❌ Dismiss ]`).
+4. **Two-Way Telegram Interactive Bot**: Continuous async polling listener processing operator commands (`/status`, `/positions`, `/perf`, `/macro`, `/gex`, `/pairs`, `/scan`, `/close`, `/flatten`) and inline action buttons (`[ 🚀 Execute ]` / `[ ❌ Dismiss ]`).
 5. **Native Prometheus Exporter**: Lightweight async HTTP server running on `0.0.0.0:9108` serving `GET /metrics` and container health probe at `GET /healthz`.
-6. **Dynamic Trailing Stop & Broker Sync**: Evaluates active positions for Chandelier ATR high-water mark trailing stops and amends resting bracket stop orders directly on exchange brokers (Alpaca and Tradovate) with graceful degradation.
+6. **Dynamic Trailing Stop & Broker Sync**: Evaluates active positions for risk-distance trailing stops (the live implementation is not yet a true Chandelier ATR high-water mark calculation) and amends resting bracket stop orders directly on exchange brokers (Alpaca and Tradovate) with graceful degradation.
 7. **Resilient Multi-Tier Market Data**: Dual-feed market data engine (`RunnableWithFallbacks`) querying Alpaca historical bars with automatic failover to Yahoo Finance.
-8. **Institutional Emergency Kill Switch**: Persistent database halt state (`system_state`) with instant order cancellation and position liquidation across all active brokers via `/panic` or `copilot panic`.
+8. **Institutional Emergency Kill Switch**: Persistent database halt state (`system_state`) with order cancellation and fill-confirmed position liquidation across all active brokers via `/panic` or `copilot panic`.
 9. **Native Telegram Command Autocomplete**: On startup, synchronizes commands with Telegram servers via `set_my_commands` to render interactive autocomplete menus in operator chat clients.
 10. **Resilient Third-Party Market Calendar Delegation**: Multi-tier calendar engine (`RunnableWithFallbacks`) querying authoritative exchange calendars from Alpaca (`GET /v2/calendar`) and Finnhub (`/stock/market-holiday`) with fallback to deterministic exchange calculation, synchronizing cash equity and CME index futures sessions.
 11. **Alpaca Execution & Multi-Strategy Framework**: Seamless paper-to-live execution on Alpaca utilizing liquid ETF proxies (`SPY`, `QQQ`, `IWM`, `GLD`, `USO`) with exchange-held server-side bracket orders, plus an institutional Multi-Strategy framework supporting switchable `single` vs. `parallel` execution modes, dynamic risk budgeting, and signal conflict resolution (netting / conviction policies).
@@ -154,7 +154,10 @@ uv run copilot positions           # View active tracked positions, stops, targe
 uv run copilot explain-macro       # Educational tutorial & breakdown of live macro indicators via LLM
 uv run copilot scan                # Trigger on-demand market scan (--dry-run, --strategy, --strategy-mode, --asset-class)
 uv run copilot execute <id> [--qty <N>] # Authorize signal with optional custom tiered quantity override
-uv run copilot close <id> [price]  # Liquidate an open position, record realized P&L, release exposure
+uv run copilot close <id>          # Bracket-aware close; accounting waits for actual broker fills
+uv run copilot close <id> --dry-run # Read-only position preview
+uv run copilot flatten --dry-run    # Preview all current broker positions
+uv run copilot flatten --confirm    # Close positions without changing the trading halt
 uv run copilot panic [--confirm]    # Emergency kill switch: cancel all resting orders, liquidate positions, halt trading
 uv run copilot resume               # Clear emergency trading halt and resume autonomous trading operations
 uv run copilot gex [symbol]        # View options dealer gamma exposure, call/put walls, and gamma flip
@@ -212,6 +215,7 @@ When the daemon is running, operators can query and command the trading desk dir
 | `/backtest [sym] [lookback]` | Trigger on-demand offline backtest simulation from mobile | `/backtest SPY 1y` |
 | `/scan` | Trigger an immediate quantitative scan across the universe | `/scan` |
 | `/close <id> [price]` | Request broker closure; accounting waits for the confirmed fill | `/close 3` |
+| `/flatten [confirm\|dry-run]` | Preview by default; close current broker positions without changing the halt | `/flatten` |
 | `/panic [confirm]` | Emergency kill switch: cancel orders, market liquidate, halt trading | `/panic` |
 | `/resume` | Clear emergency trading halt and resume scanning and operator-approved execution | `/resume` |
 | `/help` | Display commands and the configured trading workflow | `/help` |
