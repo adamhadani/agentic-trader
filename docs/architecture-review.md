@@ -15,7 +15,9 @@ orchestration, reporting and research. Avoid adding new responsibilities there.
 
 The subsequent [alpha-stack review](alpha-stack-review.md) records the mining,
 DSL, validation, promotion and portfolio-construction findings and stress tests.
-Repair its P1 research/live parity, causality, confidence-statistic and promotion
+The [alpha pipeline](alpha-pipeline.md) implements its causal, shared-policy, journal and
+qualification foundations. Remaining empirical/portfolio gates are tracked there.
+The historical priority was to repair research/live parity, causality, confidence-statistic and promotion
 gaps before increasing search volume or connecting optimized weights to trading.
 The previously ranked work below remains deferred, not completed or superseded.
 
@@ -71,8 +73,8 @@ second job infrastructure is justified for the current single-destination outbox
 | P1 | Live trailing uses recorded risk distance, while research supports ATR/high-water marks; replacement uncertainty has limited durable requested/acknowledged modeling. | Unify policy inputs and persistent stop intent, retaining exact broker confirmation and thesis/risk. Avoid changing existing protective orders during an incidental refactor. |
 | P2 | `TradingCopilot` still constructs several services and returns some transport-specific strings. Constructors run migrations. | Extract composition/bootstrap and typed report/reconciliation services incrementally. Explicit migration startup needs coordinated changes to every CLI/daemon path; do not leave a compatibility fallback. |
 | P2 | Heavy research shares executor capacity with trading I/O; Telegram handlers serialize. | Add a bounded research job service with cancellation/status and separate capacity. Do not enable blanket concurrent trade handlers. |
-| P2 | Timeframe filtering follows conflict resolution; timeframe is absent from persisted signals. | Filter before netting and persist timeframe/data timestamps, with research/live parity tests. Changes alter candidate selection and require targeted replay. |
-| P2; P1 before automated promotion | Promotion YAML writes lack cross-process coordination; registry versions differ from edited files; allocation weights are not in live sizing. | The alpha review's A6 expands this into journal-backed immutable versions and transactional activation, with YAML import/export. Validate allocation integration separately (A8–A9). |
+| Resolved in alpha pipeline | Timeframe filtering formerly followed conflict resolution and signal rows lacked timeframe/version. | Filtering now precedes arbitration; schema 008 persists optional timeframe/version/policy/provenance. Historical rows remain unknown. Regression and replay evidence live in [alpha implementation](alpha-pipeline-implementation.md). |
+| Resolved foundation; portfolio execution gated | Schema 008 replaces YAML ownership with journal-backed immutable versions and CAS activation, installed between scans. | Forecast combination and constrained portfolios stay shadow-only until partial-fill attribution, plan revalidation and protection ownership are implemented. |
 | P2 | Monitoring depends on the same host/DB/Telegram destination; local files and audit/financial history still grow. | Add an independent external alert destination and backup/restore/log-rotation policy. Archive durable evidence only with tested replay and deduplication preservation. |
 | P3 | Some symbol/contract aliases and dictionary/SDK shape handling remain; older tests can exercise implicit provider failure paths. | Consolidate typed boundary models when touching those services and use explicit provider fixtures. Preserve SDK transport contracts, not unnecessary internal aliases. |
 
@@ -90,3 +92,21 @@ Source tests do not prove deployed broker or Telegram freshness. Use the current
 run/revision verifier, `/readyz`, account reconciliation and actual poll metrics
 following a controlled single-daemon restart. See [operations](production.md),
 [monitoring](operational-monitoring.md) and [Alpaca coverage](alpaca-integration-review.md).
+
+
+## Alpha pipeline architecture follow-up
+
+The implementation reuses application services, pure domain functions, the existing
+journal, transactional projections and execution FIFO. No second notification bus,
+order queue or runtime YAML fallback was added. Scientific runs/qualification and
+operational registry acknowledgments are distinct evidence. New DSL/config contracts
+are validated; simulation assumptions are explicit and fail-closed gates cover
+missing, stale, mismatched and reused data.
+
+Next priorities: session-correct fine-bar intraday execution replay (intraday
+promotion is blocked meanwhile); deployment-feed shadow/forward evidence and paper fill review;
+point-in-time eligibility and leave-cohort-out validation; semantic expression
+clustering; daily decay/capacity reports; versioned portfolio rebalance plans with
+post-rounding/partial-fill risk and protection attribution. Preserve the other
+operational priorities above. Do not enable RL or shared-position alpha execution
+merely because the new infrastructure passes regression tests.

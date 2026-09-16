@@ -1,7 +1,7 @@
 """Passive readiness of this daemon run, separate from active doctor probes."""
 
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -33,11 +33,13 @@ class ReadinessService:
         run_id: str = RUN_ID,
         stream_connected: Callable[[], bool] | None = None,
         accounting_enabled: bool = False,
+        alpha_registry_report: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     ):
         self.store, self.config, self.metrics, self.run_id = store, config, metrics, run_id
         self.started = False
         self.started_at = datetime.now(UTC)
         self.accounting_enabled = accounting_enabled
+        self.alpha_registry_report = alpha_registry_report
         self.stream_connected = stream_connected
         self._last_observation: dict[str, tuple[float, bool, str]] = {}
 
@@ -74,6 +76,8 @@ class ReadinessService:
             limits[HealthComponent.ACCOUNTING] = self.config.accounting.max_age_seconds
         checks: dict[str, Any] = {"daemon_started": {"ready": self.started}}
         try:
+            if self.alpha_registry_report is not None:
+                checks["alpha_registry"] = await self.alpha_registry_report()
             for component, age_limit in limits.items():
                 rows = await self.store.events(f"health/{self.run_id}/{component}", limit=1)
                 observation = rows[0] if rows else None

@@ -67,7 +67,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    reconciled account activities from tracked full-close statistics. Decimal cash,
    inventory, account binding and broker cost basis govern account totals; unknown,
    failed or stale evidence withholds realized P&L. Never infer partial signal ownership.
-5. **Persistence:** schema head is `007_operational_incidents`; Alembic exclusively
+5. **Persistence:** schema head is `008_alpha_pipeline`; Alembic exclusively
    owns migrations. Financial/order/work/incident events and dead letters are retained.
    Only redundant old healthy observations may be compacted by the documented policy.
 6. **Delivery:** critical business transitions and notification intents share a
@@ -113,8 +113,13 @@ Next priorities and accepted limits live in the [architecture review](docs/archi
 Corporate actions, per-signal partial allocation/protection, macro-age admission,
 live trailing-policy parity and research executor separation remain unfinished.
 
-Before alpha work, read the [alpha-stack review](docs/alpha-stack-review.md).
-Mining is random template search; research/live normalization and exits differ,
-DSR units and promotion gates have reproduced defects, and allocation weights are
-not live risk budgets. Strict xfails in `tests/research/test_alpha_review.py` record
-unfixed invariants. Do not expand automatic promotion based on current metrics.
+Read the [alpha pipeline](docs/alpha-pipeline.md) before research, promotion or portfolio changes.
+The DSL rejects lookahead and invalid contracts; research/live share scores and
+versioned bracket policy. All trials and one-use holdout intervals are journaled.
+The registry is transactional and loaded between scans; historical YAML imports
+are unqualified shadow-only. No automatic promotion or combined-portfolio execution.
+Use actual deployment-feed evidence, 20 shadow dates/10 decisions by default,
+and exact immutable versions. Keep historical position protection and broker authority.
+Schema 008 adds alpha projections and optional signal attribution. The original
+[alpha-stack review](docs/alpha-stack-review.md) remains historical evidence;
+its strict expected failures have become passing regression tests.

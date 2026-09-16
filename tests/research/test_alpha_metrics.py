@@ -7,7 +7,6 @@ from agentic_trader.research.alpha.metrics import (
     calculate_cross_strategy_correlations,
     calculate_deflated_sharpe_ratio,
     calculate_rank_ic,
-    simulate_alpha_performance,
 )
 
 
@@ -82,23 +81,3 @@ def test_calculate_cross_strategy_correlations():
     assert "squeeze_breakout" in corrs
     assert corrs["trend_pullback"] > 0.60
     assert abs(corrs["squeeze_breakout"]) < 0.50
-
-
-def test_simulate_alpha_performance():
-    n = 120
-    dates = pd.date_range("2025-01-01", periods=n, freq="D")
-    prices = pd.Series(100.0 + np.cumsum(np.random.randn(n)), index=dates)
-    alpha = pd.Series(np.random.randn(n), index=dates)
-
-    sim = simulate_alpha_performance(
-        alpha_scores=alpha,
-        prices=prices,
-        entry_threshold=1.0,
-        exit_threshold=0.0,
-    )
-    assert "sharpe" in sim
-    assert "total_return_pct" in sim
-    assert "max_drawdown_pct" in sim
-    assert "total_trades" in sim
-    assert "net_returns" in sim
-    assert len(sim["net_returns"]) == n

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from agentic_trader.constants import AssetClass, Direction
+from agentic_trader.research.alpha.data import BAR_DURATIONS, completed_bars
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
+from agentic_trader.research.alpha.strategy import TIMEFRAME_FIELDS, alpha_scores, entry_directions, strategy_atr
 from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
-from agentic_trader.screeners.indicators import calculate_atr, calculate_ema, calculate_rsi
+from agentic_trader.screeners.indicators import calculate_ema, calculate_rsi
 
 
 if TYPE_CHECKING:
@@ -62,35 +65,30 @@ class FormulaicAlphaStrategy(BaseStrategy):
             if not any(s and s in target_syms for s in (contract_clean, ticker_clean, symbol_clean)):
                 return []
 
-        # Select target timeframe data
-        tf = self.default_timeframe.lower()
-        df: pd.DataFrame
-        if tf in ("15m", "15min", "fifteen_minute"):
-            df = (
-                data.fifteen_minute
-                if hasattr(data, "fifteen_minute") and len(data.fifteen_minute) >= 15
-                else (data.hourly if hasattr(data, "hourly") and len(data.hourly) >= 15 else data.four_hour)
-            )
-        elif tf in ("1h", "hourly", "60m"):
-            df = (
-                data.hourly
-                if hasattr(data, "hourly") and len(data.hourly) >= 15
-                else (data.four_hour if hasattr(data, "four_hour") and len(data.four_hour) >= 15 else data.daily)
-            )
-        elif tf in ("4h", "four_hour", "240m"):
-            df = data.four_hour if hasattr(data, "four_hour") and len(data.four_hour) >= 15 else data.daily
-        elif tf in ("1d", "daily"):
-            df = data.daily
-        else:
-            df = data.four_hour if hasattr(data, "four_hour") and len(data.four_hour) >= 15 else data.daily
+        # A strategy version never substitutes another sampling frequency.
+        df: pd.DataFrame = getattr(data, TIMEFRAME_FIELDS[self.definition.timeframe])
 
-        if df is None or len(df) < 15:
+        if self.definition.data_feed != "unverified" and (
+            df.attrs.get("feed") != self.definition.data_feed
+            or df.attrs.get("adjustment") != self.definition.adjustment
+        ):
+            logger.warning("Alpha %s rejected mismatched data feed/adjustment", self.strategy_id)
+            return []
+        df = completed_bars(df, self.definition.timeframe)
+        if self.definition.data_feed != "unverified" and not df.empty:
+            timestamp = pd.Timestamp(df.index[-1])
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.tz_localize("UTC")
+            if datetime.now(UTC) - timestamp > 2 * BAR_DURATIONS[self.definition.timeframe]:
+                logger.warning("Alpha %s rejected stale closed bar", self.strategy_id)
+                return []
+        if len(df) < 15:
             return []
 
         try:
-            raw_scores = self.evaluator.evaluate(self.definition.expression, df)
+            z_scores = alpha_scores(self.definition, df, self.evaluator)
         except Exception as e:
-            logger.debug(
+            logger.warning(
                 "Failed evaluating formulaic alpha '%s' on %s: %s",
                 self.strategy_id,
                 getattr(data, "contract", "unknown"),
@@ -98,24 +96,10 @@ class FormulaicAlphaStrategy(BaseStrategy):
             )
             return []
 
-        if len(raw_scores) < 2:
-            return []
-
-        # Standardize score via rolling z-score if needed
-        roll_mean = raw_scores.rolling(min(30, len(raw_scores)), min_periods=5).mean()
-        roll_std = raw_scores.rolling(min(30, len(raw_scores)), min_periods=5).std().replace(0.0, 1e-6)
-        z_scores = ((raw_scores - roll_mean) / roll_std).fillna(0.0)
-
-        # Evaluate latest bar
         latest_z = float(z_scores.iloc[-1])
         entry_thresh = self.definition.entry_threshold
-        direction_pref = self.definition.direction.lower()
-
-        signal_direction: Direction | None = None
-        if latest_z >= entry_thresh and direction_pref in ("long", "bi_directional"):
-            signal_direction = Direction.LONG
-        elif latest_z <= -entry_thresh and direction_pref in ("short", "bi_directional"):
-            signal_direction = Direction.SHORT
+        direction = int(entry_directions(z_scores, self.definition).iloc[-1])
+        signal_direction = Direction.LONG if direction == 1 else Direction.SHORT if direction == -1 else None
 
         if signal_direction is None:
             return []
@@ -136,10 +120,10 @@ class FormulaicAlphaStrategy(BaseStrategy):
             ema_200_s = calculate_ema(close_series, 200)
 
         rsi_14_s = df["RSI_14"] if "RSI_14" in df else calculate_rsi(close_series, 14)
-        atr_14_s = df["ATR_14"] if "ATR_14" in df else calculate_atr(high_series, low_series, close_series, 14)
+        atr_14_s = strategy_atr(df, self.definition.execution)
 
-        recent_swing_low = float(low_series.tail(10).min())
-        recent_swing_high = float(high_series.tail(10).max())
+        recent_swing_low = float(low_series.tail(self.definition.execution.swing_window).min())
+        recent_swing_high = float(high_series.tail(self.definition.execution.swing_window).max())
         candle_ts = str(df.index[-1])
 
         detail = (
@@ -164,6 +148,9 @@ class FormulaicAlphaStrategy(BaseStrategy):
             recent_swing_low=recent_swing_low,
             recent_swing_high=recent_swing_high,
             trigger_detail=detail,
+            alpha_version=self.definition.version_id,
+            alpha_score=latest_z,
+            alpha_policy=self.definition.execution.to_dict(),
         )
 
         return [candidate]

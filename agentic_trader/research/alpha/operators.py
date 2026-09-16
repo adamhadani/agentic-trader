@@ -1,229 +1,170 @@
+"""Causal series operators. Undefined observations remain NaN throughout the DSL."""
+
 from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 
-def _to_series(val: float | pd.Series | np.ndarray, index: pd.Index | None = None) -> pd.Series:
-    """Ensure value is a pandas Series with appropriate index."""
-    if isinstance(val, pd.Series):
-        return val
-    if isinstance(val, np.ndarray):
-        return pd.Series(val, index=index)
-    if index is not None:
-        return pd.Series(float(val), index=index)
-    return pd.Series([float(val)])
+MAX_LOOKBACK = 2520
 
 
 def ts_rank(x: pd.Series, d: int) -> pd.Series:
-    """
-    Rolling percentile rank of x over window d, normalized to [0.0, 1.0].
-    +1.0 means current value is the highest in the window, 0.0 means lowest.
-    """
-    if d <= 1:
-        return pd.Series(0.5, index=x.index)
+    def last_rank(w):
+        return 0.5 if d == 1 else float(((w < w[-1]).sum() + ((w == w[-1]).sum() - 1) / 2) / (d - 1))
 
-    def _rank_last(window: np.ndarray) -> float:
-        actual_d = len(window)
-        if actual_d <= 1:
-            return 0.5
-        val = window[-1]
-        count_less = (window < val).sum()
-        count_equal = (window == val).sum() - 1
-        pct = (count_less + 0.5 * count_equal) / (actual_d - 1)
-        return float(pct)
-
-    res = x.rolling(d, min_periods=1).apply(_rank_last, raw=True)
-    return res.fillna(0.5)
+    return x.rolling(d, min_periods=d).apply(last_rank, raw=True)
 
 
 def ts_corr(x: pd.Series, y: pd.Series, d: int) -> pd.Series:
-    """Rolling Pearson correlation between x and y over window d."""
-    if d <= 2:
-        return pd.Series(0.0, index=x.index)
-    res = x.rolling(d, min_periods=max(3, d // 2)).corr(y)
-    return res.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    return x.rolling(d, min_periods=d).corr(y).clip(-1, 1)
 
 
 def ts_std(x: pd.Series, d: int) -> pd.Series:
-    """Rolling standard deviation of x over window d."""
-    if d <= 1:
-        return pd.Series(0.0, index=x.index)
-    res = x.rolling(d, min_periods=max(2, d // 2)).std()
-    return res.fillna(0.0)
+    return x.rolling(d, min_periods=d).std()
 
 
 def ts_mean(x: pd.Series, d: int) -> pd.Series:
-    """Rolling simple moving average of x over window d."""
-    if d <= 1:
-        return x
-    return x.rolling(d, min_periods=1).mean()
+    return x.rolling(d, min_periods=d).mean()
 
 
-def sma(x: pd.Series, d: int) -> pd.Series:
-    """Alias for ts_mean."""
-    return ts_mean(x, d)
+sma = ts_mean
 
 
 def ema(x: pd.Series, d: int) -> pd.Series:
-    """Exponential moving average of x with span d."""
-    if d <= 1:
-        return x
-    return x.ewm(span=d, adjust=False).mean()
+    return x.ewm(span=d, min_periods=d, adjust=False, ignore_na=False).mean().where(x.notna())
 
 
 def ts_max(x: pd.Series, d: int) -> pd.Series:
-    """Rolling maximum of x over window d."""
-    return x.rolling(d, min_periods=1).max()
+    return x.rolling(d, min_periods=d).max()
 
 
 def ts_min(x: pd.Series, d: int) -> pd.Series:
-    """Rolling minimum of x over window d."""
-    return x.rolling(d, min_periods=1).min()
+    return x.rolling(d, min_periods=d).min()
 
 
 def ts_argmax(x: pd.Series, d: int) -> pd.Series:
-    """
-    Relative position of the maximum value in window d, normalized to [0.0, 1.0].
-    1.0 means the maximum occurred on the most recent bar; 0.0 means at the start.
-    """
-    if d <= 1:
-        return pd.Series(1.0, index=x.index)
-
-    def _argmax(w: np.ndarray) -> float:
-        return float(np.argmax(w)) / float(len(w) - 1 if len(w) > 1 else 1)
-
-    res = x.rolling(d, min_periods=max(2, d // 2)).apply(_argmax, raw=True)
-    return res.fillna(0.5)
+    return x.rolling(d, min_periods=d).apply(lambda w: np.argmax(w) / max(1, d - 1), raw=True)
 
 
 def ts_argmin(x: pd.Series, d: int) -> pd.Series:
-    """
-    Relative position of the minimum value in window d, normalized to [0.0, 1.0].
-    1.0 means the minimum occurred on the most recent bar; 0.0 means at the start.
-    """
-    if d <= 1:
-        return pd.Series(1.0, index=x.index)
-
-    def _argmin(w: np.ndarray) -> float:
-        return float(np.argmin(w)) / float(len(w) - 1 if len(w) > 1 else 1)
-
-    res = x.rolling(d, min_periods=max(2, d // 2)).apply(_argmin, raw=True)
-    return res.fillna(0.5)
+    return x.rolling(d, min_periods=d).apply(lambda w: np.argmin(w) / max(1, d - 1), raw=True)
 
 
 def delta(x: pd.Series, d: int = 1) -> pd.Series:
-    """Difference: x_t - x_{t-d}."""
-    return x.diff(d).fillna(0.0)
+    return x.diff(d)
 
 
 def delay(x: pd.Series, d: int = 1) -> pd.Series:
-    """Lagged series: x_{t-d}."""
-    return x.shift(d).bfill().fillna(0.0)
+    return x.shift(d)
 
 
 def decay_linear(x: pd.Series, d: int) -> pd.Series:
-    """
-    Linearly weighted moving average over past d periods with weights d, d-1, ..., 1.
-    """
-    if d <= 1:
-        return x
-
     weights = np.arange(1, d + 1, dtype=float)
-    weights_sum = weights.sum()
-
-    def _weighted_avg(w: np.ndarray) -> float:
-        actual_len = len(w)
-        if actual_len == d:
-            return float(np.dot(w, weights) / weights_sum)
-        sub_weights = weights[-actual_len:]
-        return float(np.dot(w, sub_weights) / sub_weights.sum())
-
-    res = x.rolling(d, min_periods=1).apply(_weighted_avg, raw=True)
-    return res.fillna(x)
-
-
-def rank(x: pd.Series) -> pd.Series:
-    """Percentile rank normalized to [0.0, 1.0]."""
-    if len(x) <= 1:
-        return pd.Series(0.5, index=x.index)
-    return x.rank(pct=True).fillna(0.5)
+    return x.rolling(d, min_periods=d).apply(lambda w: np.dot(w, weights) / weights.sum(), raw=True)
 
 
 def zscore(x: pd.Series, d: int = 20) -> pd.Series:
-    """Rolling z-score (standardized score) clipped to [-3.0, 3.0]."""
-    mean = x.rolling(d, min_periods=max(2, d // 2)).mean()
-    std = x.rolling(d, min_periods=max(2, d // 2)).std().replace(0.0, 1e-6)
-    res = (x - mean) / std
-    return res.fillna(0.0).clip(-3.0, 3.0)
+    return safe_div(x - ts_mean(x, d), ts_std(x, d)).clip(-3, 3)
 
 
-def scale(x: pd.Series, a: float = 1.0) -> pd.Series:
-    """Scale series so sum of absolute values equals a."""
-    denom = np.abs(x).sum()
-    if denom == 0 or np.isnan(denom):
-        return x
-    return x * (a / denom)
+def sign(x):
+    return np.sign(x)
 
 
-def sign(x: pd.Series | float) -> pd.Series:
-    """Sign of elements: +1.0, 0.0, or -1.0."""
-    if isinstance(x, (float, int)):
-        return pd.Series(float(np.sign(x)))
-    return np.sign(x).fillna(0.0)
+def safe_div(x, y):
+    if isinstance(y, pd.Series):
+        return x / y.where(y != 0)
+    return x / y if y != 0 else x * np.nan
 
 
-def safe_div(x: pd.Series, y: pd.Series | float) -> pd.Series:
-    """Element-wise division handling zero denominators safely by returning 0.0."""
-    if isinstance(y, (float, int)):
-        if y == 0:
-            return pd.Series(0.0, index=x.index)
-        return x / y
-    res = x / y.replace(0.0, np.nan)
-    return res.fillna(0.0).replace([np.inf, -np.inf], 0.0)
+def safe_log(x):
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.log(np.where(x > 0, x, np.nan))
 
 
-def safe_log(x: pd.Series) -> pd.Series:
-    """Element-wise natural logarithm safe for non-positive values."""
-    return np.log(np.maximum(x, 1e-8)).fillna(0.0)
+def safe_sqrt(x):
+    with np.errstate(invalid="ignore"):
+        return np.sqrt(np.where(x >= 0, x, np.nan))
 
 
-def safe_sqrt(x: pd.Series) -> pd.Series:
-    """Element-wise square root safe for non-positive values."""
-    return np.sqrt(np.maximum(x, 0.0)).fillna(0.0)
+def cond(test, true_val, false_val):
+    return np.where(pd.isna(test), np.nan, np.where(test > 0, true_val, false_val))
 
 
-def cond(test: pd.Series, true_val: pd.Series | float, false_val: pd.Series | float) -> pd.Series:
-    """Conditional selection: where test > 0 return true_val else false_val."""
-    t_ser = _to_series(true_val, index=test.index)
-    f_ser = _to_series(false_val, index=test.index)
-    return pd.Series(np.where(test > 0, t_ser, f_ser), index=test.index)
+@dataclass(frozen=True)
+class OperatorSpec:
+    function: Callable
+    minimum_args: int
+    maximum_args: int
+    window_argument: int | None = None
+    # dimensional result: preserve first argument, dimensionless, or branch units
+    result_units: str = "preserve"
 
 
-# Registry of known functions callable within alpha DSL expressions
-ALPHA_OPERATORS = {
-    "ts_rank": ts_rank,
-    "ts_corr": ts_corr,
-    "ts_std": ts_std,
-    "ts_mean": ts_mean,
-    "sma": sma,
-    "ema": ema,
-    "ts_max": ts_max,
-    "ts_min": ts_min,
-    "ts_argmax": ts_argmax,
-    "ts_argmin": ts_argmin,
-    "delta": delta,
-    "delay": delay,
-    "decay_linear": decay_linear,
-    "rank": rank,
-    "zscore": zscore,
-    "scale": scale,
-    "sign": sign,
-    "abs": np.abs,
-    "log": safe_log,
-    "sqrt": safe_sqrt,
-    "cond": cond,
-    "if_else": cond,
-    "min": lambda a, b: np.minimum(a, b),
-    "max": lambda a, b: np.maximum(a, b),
+OPERATOR_SPECS = {
+    "ts_rank": OperatorSpec(ts_rank, 2, 2, 1, "dimensionless"),
+    "ts_corr": OperatorSpec(ts_corr, 3, 3, 2, "dimensionless"),
+    "ts_std": OperatorSpec(ts_std, 2, 2, 1),
+    "ts_mean": OperatorSpec(ts_mean, 2, 2, 1),
+    "sma": OperatorSpec(sma, 2, 2, 1),
+    "ema": OperatorSpec(ema, 2, 2, 1),
+    "ts_max": OperatorSpec(ts_max, 2, 2, 1),
+    "ts_min": OperatorSpec(ts_min, 2, 2, 1),
+    "ts_argmax": OperatorSpec(ts_argmax, 2, 2, 1, "dimensionless"),
+    "ts_argmin": OperatorSpec(ts_argmin, 2, 2, 1, "dimensionless"),
+    "delta": OperatorSpec(delta, 1, 2, 1),
+    "delay": OperatorSpec(delay, 1, 2, 1),
+    "decay_linear": OperatorSpec(decay_linear, 2, 2, 1),
+    "zscore": OperatorSpec(zscore, 1, 2, 1, "dimensionless"),
+    "sign": OperatorSpec(sign, 1, 1, result_units="dimensionless"),
+    "abs": OperatorSpec(np.abs, 1, 1),
+    "log": OperatorSpec(safe_log, 1, 1, result_units="dimensionless"),
+    "sqrt": OperatorSpec(safe_sqrt, 1, 1, result_units="sqrt"),
+    "cond": OperatorSpec(cond, 3, 3, result_units="branches"),
+    "if_else": OperatorSpec(cond, 3, 3, result_units="branches"),
+    "min": OperatorSpec(np.minimum, 2, 2, result_units="matching"),
+    "max": OperatorSpec(np.maximum, 2, 2, result_units="matching"),
 }
+
+
+def roc(x: pd.Series, d: int) -> pd.Series:
+    return safe_div(x, x.shift(d)) - 1
+
+
+def ts_slope(x: pd.Series, d: int) -> pd.Series:
+    t = np.arange(d, dtype=float)
+    t -= t.mean()
+    denominator = t @ t
+    return x.rolling(d, min_periods=d).apply(
+        lambda w: float(t @ w / denominator) if denominator > 0 else np.nan, raw=True
+    )
+
+
+def ts_residual(x: pd.Series, d: int) -> pd.Series:
+    return x - ts_mean(x, d) - ts_slope(x, d) * (d - 1) / 2
+
+
+def ts_mad(x: pd.Series, d: int) -> pd.Series:
+    return x.rolling(d, min_periods=d).apply(lambda w: np.median(abs(w - np.median(w))), raw=True)
+
+
+def ts_sum(x: pd.Series, d: int) -> pd.Series:
+    return x.rolling(d, min_periods=d).sum()
+
+
+OPERATOR_SPECS.update(
+    {
+        "roc": OperatorSpec(roc, 2, 2, 1, "dimensionless"),
+        "realized_vol": OperatorSpec(ts_std, 2, 2, 1),
+        "ts_slope": OperatorSpec(ts_slope, 2, 2, 1),
+        "ts_residual": OperatorSpec(ts_residual, 2, 2, 1),
+        "ts_mad": OperatorSpec(ts_mad, 2, 2, 1),
+        "ts_sum": OperatorSpec(ts_sum, 2, 2, 1),
+        "clip": OperatorSpec(np.clip, 3, 3, result_units="clip"),
+    }
+)
+ALPHA_OPERATORS = {name: spec.function for name, spec in OPERATOR_SPECS.items()}

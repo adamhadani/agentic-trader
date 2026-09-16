@@ -146,7 +146,8 @@ class EntryExecutionService:
             await self.store.resolve_entry(
                 item,
                 OrderResult(
-                    success=False, error_message="Admission claim expired or a halt intervened. No order submitted."
+                    success=False,
+                    error_message="Admission claim expired, trading halted, or active alpha authorization changed. No order submitted.",
                 ),
             )
             return True

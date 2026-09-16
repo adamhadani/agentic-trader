@@ -5,6 +5,12 @@ title: Alpha mining review and experiment plan
 
 # Alpha mining review — September 16, 2026
 
+> Historical review at revision a864e27. The implementation and current contracts
+> are in [alpha-pipeline.md](alpha-pipeline.md), with measured follow-up evidence in
+> [alpha-pipeline-implementation.md](alpha-pipeline-implementation.md). Defect counts,
+> strict xfails and runtime descriptions below record the pre-fix baseline.
+
+
 Reviewed source baseline: `641e433` (PR #32). This is an assessment and executable
 diagnostic suite, **not a change to active alphas, risk limits, universe or schedules**.
 The earlier corporate-action, macro freshness, trailing-stop, composition and

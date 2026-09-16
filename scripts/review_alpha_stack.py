@@ -1,7 +1,6 @@
 """Offline alpha review diagnostics; no config, database, broker or network access.
 
-Optional CSV inputs must have Date/Open/High/Low/Close/Volume columns. This is a
-measurement harness for documented defects, not an alpha-selection backtest.
+Optional CSV inputs must have Date/Open/High/Low/Close/Volume columns. This checks causal entry parity and optimizer safety; it is not promotion evidence.
 """
 
 from __future__ import annotations
@@ -9,18 +8,21 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import random
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from agentic_trader.constants import AssetClass
+from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.research.alpha.catalog import AlphaCatalog
-from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 from agentic_trader.research.alpha.metrics import calculate_deflated_sharpe_ratio
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.optimizer import ConvexAlphaPortfolioOptimizer
+from agentic_trader.research.alpha.strategy import alpha_scores, entry_directions
+from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 
 
 SEED = 20260916
@@ -49,25 +51,20 @@ def measure(market_directory: Path | None, mining_runs: int) -> dict:
         "synthetic_mining": [],
         "optimizer_load": [],
     }
-    evaluator = AlphaExpressionEvaluator()
     if market_directory:
         for path in sorted(market_directory.glob("*.csv")):
             frame = pd.read_csv(path, index_col=0, parse_dates=True)
             for definition in AlphaCatalog().list_alphas():
-                raw = evaluator.evaluate(definition.expression, frame)
-                signals = []
-                for window, minimum in ((30, 5), (50, 10)):
-                    scores = (
-                        (raw - raw.rolling(window, min_periods=minimum).mean())
-                        / raw.rolling(window, min_periods=minimum).std()
-                    ).iloc[59:]
-                    signals.append(
-                        np.where(
-                            scores >= definition.entry_threshold,
-                            1,
-                            np.where((scores <= -definition.entry_threshold) & (definition.direction != "long"), -1, 0),
-                        )
+                definition = replace(definition, timeframe="1d")
+                expected = entry_directions(alpha_scores(definition, frame), definition).iloc[59:]
+                strategy = FormulaicAlphaStrategy(definition)
+                actual = []
+                for end in range(60, len(frame) + 1):
+                    candidates = strategy.evaluate(
+                        ContractMarketData(symbol=path.stem, daily=frame.iloc[:end]), AssetClass.EQUITY
                     )
+                    actual.append(1 if candidates and candidates[0].direction == "LONG" else -1 if candidates else 0)
+                signals = [expected.to_numpy(), np.array(actual)]
                 report["market_parity"].append(
                     {
                         "symbol": path.stem,
@@ -86,15 +83,15 @@ def measure(market_directory: Path | None, mining_runs: int) -> dict:
             {
                 "Close": close,
                 "Open": np.r_[100, close[:-1]],
-                "High": close * 1.02,
-                "Low": close * 0.98,
+                "High": np.maximum(close, np.r_[100, close[:-1]]) * 1.02,
+                "Low": np.minimum(close, np.r_[100, close[:-1]]) * 0.98,
                 "Volume": data_rng.integers(1000, 10000, len(close)),
             },
             index=pd.date_range("2020-01-01", periods=len(close), freq="D"),
         )
-        random.seed(seed)  # Current miner uses the process-global RNG.
+        frame.attrs["timeframe"] = "1d"
         started = time.monotonic()
-        candidates = AlphaMiner().mine(frame, iterations=25)
+        candidates = AlphaMiner(seed=seed).mine(frame, iterations=25)
         report["synthetic_mining"].append(
             {
                 "seed": seed,
@@ -107,7 +104,7 @@ def measure(market_directory: Path | None, mining_runs: int) -> dict:
         )
     # Numerical convergence can vary with BLAS/platform. Report this stress case
     # rather than making a platform-specific expected failure part of CI.
-    for assets in (3, 10, 50):
+    for assets in (3, 10, 50, 100):
         optimizer_rng = np.random.default_rng(assets)
         basis = optimizer_rng.normal(size=(assets, 3))
         covariance = basis @ basis.T * 0.01 + np.eye(assets) * 0.02
@@ -124,10 +121,12 @@ def measure(market_directory: Path | None, mining_runs: int) -> dict:
                 "message": result.message,
                 "iterations": result.iterations,
                 "seconds": round(time.monotonic() - started, 3),
-                "gross": float(np.abs(result.weights).sum()),
-                "max_weight": float(np.abs(result.weights).max()),
-                "net": float(result.weights.sum()),
-                "max_factor_exposure": float(np.abs(basis.T @ result.weights).max()),
+                "gross": float(np.abs(result.weights).sum()) if result.weights is not None else None,
+                "max_weight": float(np.abs(result.weights).max()) if result.weights is not None else None,
+                "net": float(result.weights.sum()) if result.weights is not None else None,
+                "max_factor_exposure": float(np.abs(basis.T @ result.weights).max())
+                if result.weights is not None
+                else None,
             }
         )
     return report

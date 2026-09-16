@@ -31,6 +31,7 @@ from agentic_trader.execution.durable import (
     WorkStatus,
 )
 from agentic_trader.storage.models import (
+    AlphaProjectionRecord,
     CloseRequestRecord,
     DomainEventRecord,
     OrderProjectionRecord,
@@ -224,6 +225,8 @@ class WorkflowStore:
             )
             if not signal or signal.status != SignalStatus.PENDING:
                 return None, "Signal is not pending."
+            if reason := await self._alpha_entry_rejection(session, signal):
+                return None, reason
             rows = list(
                 (
                     await session.scalars(
@@ -299,6 +302,33 @@ class WorkflowStore:
             await session.flush()
             return work_item(row)
 
+    async def _alpha_entry_rejection(self, session: AsyncSession, signal: SignalRecord) -> str | None:
+        if not signal.alpha_version and not signal.strategy.lower().startswith("alpha_"):
+            return None
+        # Consistent lock order: trading admission, then alpha registry. Registry
+        # changes use the alpha lock, so demotion cannot race submission commit.
+        await self.lock(session, resource="alpha")
+        registry = await session.get(AlphaProjectionRecord, (self.scope, "registry"))
+        if (
+            not signal.alpha_version
+            or not registry
+            or signal.alpha_version not in json.loads(registry.payload)["active"]
+        ):
+            return "Alpha version is not active/qualified; request a fresh scan after qualification."
+        row = await session.get(AlphaProjectionRecord, (self.scope, f"version/{signal.alpha_version}"))
+        if row is None:
+            return "Alpha version evidence is missing."
+        definition = json.loads(row.payload)["definition"]
+        if (
+            signal.strategy != definition["alpha_id"]
+            or signal.timeframe != definition["timeframe"]
+            or signal.contract.upper() not in (definition.get("eligible_symbols") or ())
+            or not signal.alpha_policy
+            or json.loads(signal.alpha_policy) != definition["execution"]
+        ):
+            return "Alpha signal differs from its immutable strategy contract."
+        return None
+
     async def begin_submission(self, item: WorkItem) -> bool:
         async with self.db.session_factory() as session, session.begin():
             await self.lock(session)
@@ -315,6 +345,11 @@ class WorkflowStore:
                 )
             )
             if not row:
+                return False
+            signal = await session.scalar(
+                select(SignalRecord).where(*self.db._scope(), SignalRecord.id == item.payload["signal_id"])
+            )
+            if signal is None or await self._alpha_entry_rejection(session, signal):
                 return False
             row.status, row.lease_until = WorkStatus.SUBMITTING, None
             await self.append(session, stream=f"entry/{row.id}", kind=EventKind.ENTRY_SUBMITTING, payload=item.payload)

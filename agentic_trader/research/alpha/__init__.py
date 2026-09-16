@@ -12,7 +12,6 @@ from agentic_trader.research.alpha.metrics import (
     calculate_cross_strategy_correlations,
     calculate_deflated_sharpe_ratio,
     calculate_rank_ic,
-    simulate_alpha_performance,
 )
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import (
@@ -20,8 +19,6 @@ from agentic_trader.research.alpha.models import (
     AlphaDefinition,
     AlphaEvaluationMetrics,
     AlphaOrigin,
-    AlphaStatus,
-    PromotedAlphaRecord,
 )
 from agentic_trader.research.alpha.operators import ALPHA_OPERATORS
 from agentic_trader.research.alpha.optimizer import (
@@ -35,14 +32,12 @@ from agentic_trader.research.alpha.orthogonalization import (
     gram_schmidt_orthogonalize,
 )
 from agentic_trader.research.alpha.promotion import (
-    DEFAULT_PROMOTED_ALPHAS_PATH,
-    AlphaPromotionManager,
+    AlphaPromotionService,
 )
 
 
 __all__ = [
     "ALPHA_OPERATORS",
-    "DEFAULT_PROMOTED_ALPHAS_PATH",
     "INSTITUTIONAL_ALPHA_CATALOG",
     "AlphaCandidate",
     "AlphaCatalog",
@@ -52,11 +47,9 @@ __all__ = [
     "AlphaExpressionEvaluator",
     "AlphaMiner",
     "AlphaOrigin",
-    "AlphaPromotionManager",
-    "AlphaStatus",
+    "AlphaPromotionService",
     "ConvexAlphaPortfolioOptimizer",
     "PortfolioOptimizationResult",
-    "PromotedAlphaRecord",
     "build_factor_annihilator",
     "calculate_cross_strategy_correlations",
     "calculate_deflated_sharpe_ratio",
@@ -64,5 +57,4 @@ __all__ = [
     "evaluate_residual_predictive_power",
     "factor_neutralize",
     "gram_schmidt_orthogonalize",
-    "simulate_alpha_performance",
 ]

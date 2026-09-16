@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agentic_trader.constants import ConflictResolutionMode, Direction, StrategyMode
-from agentic_trader.research.alpha.promotion import AlphaPromotionManager
+from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
 from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 
@@ -35,11 +34,11 @@ class ConflictResolver:
             return []
 
         # 1. Deduplicate identical setups (same symbol, direction, and strategy)
-        seen_keys: set[tuple[str, str, str]] = set()
+        seen_keys: set[tuple[str, str, str, str, str | None]] = set()
         deduped: list[ScreenerCandidate] = []
         for c in candidates:
             sym = c.symbol or c.contract
-            key = (sym.upper(), c.direction.upper(), c.strategy.upper())
+            key = (sym.upper(), c.direction.upper(), c.strategy.upper(), c.timeframe, c.alpha_version)
             if key not in seen_keys:
                 seen_keys.add(key)
                 deduped.append(c)
@@ -92,9 +91,16 @@ class ConflictResolver:
                     # Default fallback: netting
                     continue
 
-            # Same direction across multiple strategies (e.g. both Trend-Pullback and Squeeze signaled LONG)
-            # Retain both or deduplicate to the one with highest detail
-            resolved.extend(sym_candidates)
+            # One owner per instrument. This deterministic arbitration is not an
+            # alpha combination model; calibrated combinations remain shadow-only.
+            winner = min(
+                sym_candidates,
+                key=lambda candidate: (candidate.strategy, candidate.timeframe, candidate.alpha_version or ""),
+            )
+            contributors = tuple(
+                sorted({f"{c.strategy}/{c.timeframe}/{c.alpha_version or 'builtin'}" for c in sym_candidates})
+            )
+            resolved.append(winner.model_copy(update={"contributors": contributors}))
 
         return resolved
 
@@ -102,42 +108,17 @@ class ConflictResolver:
 class StrategyRegistry:
     """Central registry and lifecycle manager for all quantitative trading strategies."""
 
-    def __init__(
-        self,
-        auto_load_promoted: bool = False,
-        promoted_alphas_path: Path | str | None = None,
-    ) -> None:
+    def __init__(self) -> None:
         self._strategies: dict[str, BaseStrategy] = {}
-        if auto_load_promoted:
-            self.load_promoted_alphas(config_path=promoted_alphas_path)
 
-    def load_promoted_alphas(self, config_path: Path | str | None = None) -> int:
-        """Load all active promoted formulaic alphas from configuration."""
-        try:
-            mgr = AlphaPromotionManager(config_path)
-            active = mgr.list_active_alphas()
-            active_ids = {rec.alpha_id.lower() for rec in active}
-
-            # Remove previously registered formulaic alphas that are no longer active
-            to_remove = [
-                sid
-                for sid, s in self._strategies.items()
-                if isinstance(s, FormulaicAlphaStrategy) and sid not in active_ids
-            ]
-            for sid in to_remove:
-                self.unregister(sid)
-
-            loaded = 0
-            for rec in active:
-                strat = FormulaicAlphaStrategy(definition=rec.definition)
-                self.register(strat)
-                loaded += 1
-            if loaded > 0:
-                logger.debug("Loaded %d active promoted formulaic alphas into registry", loaded)
-            return loaded
-        except Exception as e:
-            logger.warning("Could not load promoted alphas into registry: %s", e)
-            return 0
+    def install_alphas(self, definitions: tuple[AlphaDefinition, ...]) -> int:
+        """Build then atomically swap one complete registry snapshot between scans."""
+        strategies = {sid: s for sid, s in self._strategies.items() if not isinstance(s, FormulaicAlphaStrategy)}
+        for definition in definitions:
+            strategy = FormulaicAlphaStrategy(definition)
+            strategies[strategy.strategy_id] = strategy
+        self._strategies = strategies
+        return len(definitions)
 
     def register(self, strategy: BaseStrategy) -> None:
         """Register a strategy instance into the registry."""

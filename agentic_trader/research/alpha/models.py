@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import ast
+import hashlib
+import json
+import math
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
+
+from agentic_trader.research.alpha.dsl import compile_expression
+from agentic_trader.research.alpha.strategy import NORMALIZATION_WINDOW, TIMEFRAME_FIELDS, AlphaExecutionPolicy
 
 
 class AlphaOrigin(StrEnum):
@@ -15,16 +21,7 @@ class AlphaOrigin(StrEnum):
     FACTOR_LIBRARY = "factor_library"
 
 
-class AlphaStatus(StrEnum):
-    """Lifecycle status of a formulaic alpha."""
-
-    CANDIDATE = "candidate"
-    PROMOTED = "promoted"
-    DEMOTED = "demoted"
-    RETIRED = "retired"
-
-
-@dataclass
+@dataclass(frozen=True)
 class AlphaDefinition:
     """Core definition and hyperparameters of a formulaic alpha expression."""
 
@@ -34,10 +31,42 @@ class AlphaDefinition:
     description: str = ""
     direction: str = "bi_directional"  # "long", "short", "bi_directional"
     entry_threshold: float = 1.5  # z-score or normalized trigger value
-    exit_threshold: float = 0.0  # signal decay exit point
     timeframe: str = "4h"
     origin: str = AlphaOrigin.MINED
-    eligible_symbols: list[str] | None = None
+    eligible_symbols: tuple[str, ...] | None = None
+    normalization_window: int = NORMALIZATION_WINDOW
+    execution: AlphaExecutionPolicy = field(default_factory=AlphaExecutionPolicy)
+    semantics_version: int = 2
+    data_feed: str = "unverified"
+    adjustment: str = "raw"
+
+    def __post_init__(self):
+        compile_expression(self.expression)
+        object.__setattr__(self, "entry_threshold", float(self.entry_threshold))
+        if self.timeframe not in TIMEFRAME_FIELDS or self.direction not in ("long", "short", "bi_directional"):
+            raise ValueError("Unsupported timeframe/direction")
+        if not math.isfinite(self.entry_threshold) or self.entry_threshold <= 0:
+            raise ValueError("Invalid alpha thresholds")
+        if (
+            type(self.normalization_window) is not int
+            or not 2 <= self.normalization_window <= 252
+            or self.semantics_version != 2
+        ):
+            raise ValueError("Invalid normalization or semantics version")
+        if self.eligible_symbols is not None:
+            object.__setattr__(
+                self, "eligible_symbols", tuple(sorted({s.strip().upper() for s in self.eligible_symbols if s.strip()}))
+            )
+
+    @property
+    def version_id(self) -> str:
+        payload = self.to_dict()
+        payload["expression"] = ast.dump(compile_expression(self.expression).tree, include_attributes=False)
+        for descriptive in ("name", "description", "origin"):
+            payload.pop(descriptive)
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -48,7 +77,7 @@ class AlphaDefinition:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AlphaDefinition:
         symbols_raw = data.get("eligible_symbols")
-        eligible_symbols = [str(s).upper() for s in symbols_raw] if symbols_raw else None
+        eligible_symbols = tuple(str(s).upper() for s in symbols_raw) if symbols_raw else None
         return cls(
             alpha_id=str(data["alpha_id"]),
             name=str(data.get("name", data["alpha_id"])),
@@ -56,10 +85,14 @@ class AlphaDefinition:
             description=str(data.get("description", "")),
             direction=str(data.get("direction", "bi_directional")),
             entry_threshold=float(data.get("entry_threshold", 1.5)),
-            exit_threshold=float(data.get("exit_threshold", 0.0)),
             timeframe=str(data.get("timeframe", "4h")),
             origin=str(data.get("origin", AlphaOrigin.MINED)),
             eligible_symbols=eligible_symbols,
+            normalization_window=data.get("normalization_window", NORMALIZATION_WINDOW),
+            execution=AlphaExecutionPolicy(**data.get("execution", {})),
+            semantics_version=int(data.get("semantics_version", 2)),
+            data_feed=str(data.get("data_feed", "unverified")),
+            adjustment=str(data.get("adjustment", "raw")),
         )
 
 
@@ -74,10 +107,14 @@ class AlphaEvaluationMetrics:
     sharpe_oos: float = 0.0
     dsr: float = 0.0  # Deflated Sharpe Ratio (0.0 to 1.0)
     win_rate: float = 0.0
-    profit_factor: float = 0.0
+    profit_factor: float | None = None
     max_drawdown_pct: float = 0.0
     total_trades: int = 0
     annualized_return_pct: float = 0.0
+    per_bar_sharpe: float = 0.0
+    sample_length: int = 0
+    skewness: float = 0.0
+    kurtosis: float = 3.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -92,10 +129,14 @@ class AlphaEvaluationMetrics:
             sharpe_oos=float(data.get("sharpe_oos", 0.0)),
             dsr=float(data.get("dsr", 0.0)),
             win_rate=float(data.get("win_rate", 0.0)),
-            profit_factor=float(data.get("profit_factor", 0.0)),
+            profit_factor=float(data["profit_factor"]) if data.get("profit_factor") is not None else None,
             max_drawdown_pct=float(data.get("max_drawdown_pct", 0.0)),
             total_trades=int(data.get("total_trades", 0)),
             annualized_return_pct=float(data.get("annualized_return_pct", 0.0)),
+            per_bar_sharpe=float(data.get("per_bar_sharpe", 0)),
+            sample_length=int(data.get("sample_length", 0)),
+            skewness=float(data.get("skewness", 0)),
+            kurtosis=float(data.get("kurtosis", 3)),
         )
 
 
@@ -106,63 +147,19 @@ class AlphaCandidate:
     definition: AlphaDefinition
     metrics: AlphaEvaluationMetrics
     correlations: dict[str, float] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "definition": self.definition.to_dict(),
             "metrics": self.metrics.to_dict(),
             "correlations": dict(self.correlations),
+            "evidence": self.evidence,
         }
 
 
-@dataclass
-class PromotedAlphaRecord:
-    """Audit record for a formulaic alpha promoted to production desk execution."""
-
-    alpha_id: str
-    definition: AlphaDefinition
-    metrics: AlphaEvaluationMetrics | None = None
-    promoted_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    promoted_by: str = "cli_operator"
-    allocation_weight: float = 0.10
-    status: str = AlphaStatus.PROMOTED
-    notes: str = ""
-    eligible_symbols: list[str] | None = None
-
-    def __post_init__(self) -> None:
-        if self.eligible_symbols and not self.definition.eligible_symbols:
-            self.definition.eligible_symbols = list(self.eligible_symbols)
-        elif self.definition.eligible_symbols and not self.eligible_symbols:
-            self.eligible_symbols = list(self.definition.eligible_symbols)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "alpha_id": self.alpha_id,
-            "definition": self.definition.to_dict(),
-            "metrics": self.metrics.to_dict() if self.metrics else None,
-            "promoted_at": self.promoted_at,
-            "promoted_by": self.promoted_by,
-            "allocation_weight": self.allocation_weight,
-            "status": str(self.status.value if hasattr(self.status, "value") else self.status),
-            "notes": self.notes,
-            "eligible_symbols": list(self.eligible_symbols) if self.eligible_symbols else None,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PromotedAlphaRecord:
-        metrics_raw = data.get("metrics")
-        metrics = AlphaEvaluationMetrics.from_dict(metrics_raw) if metrics_raw else None
-        defn = AlphaDefinition.from_dict(data["definition"])
-        symbols_raw = data.get("eligible_symbols") or defn.eligible_symbols
-        eligible_symbols = [str(s).upper() for s in symbols_raw] if symbols_raw else None
-        return cls(
-            alpha_id=str(data["alpha_id"]),
-            definition=defn,
-            metrics=metrics,
-            promoted_at=str(data.get("promoted_at", datetime.now(UTC).isoformat())),
-            promoted_by=str(data.get("promoted_by", "cli_operator")),
-            allocation_weight=float(data.get("allocation_weight", 0.10)),
-            status=str(data.get("status", AlphaStatus.PROMOTED)),
-            notes=str(data.get("notes", "")),
-            eligible_symbols=eligible_symbols,
-        )
+@dataclass(frozen=True)
+class RegistrySnapshot:
+    generation: int
+    active: tuple[AlphaDefinition, ...]
+    shadow: tuple[AlphaDefinition, ...]

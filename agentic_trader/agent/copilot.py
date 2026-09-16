@@ -58,9 +58,13 @@ from agentic_trader.presentation.formatters import (
     TelegramHtmlFormatter,
     TerminalFormatter,
 )
-from agentic_trader.research.alpha import AlphaCatalog, AlphaPromotionManager
+from agentic_trader.research.alpha import AlphaCatalog
+from agentic_trader.research.alpha.shadow import AlphaShadowService
+from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, trailing_price
 from agentic_trader.research.retuner import AutoRetuner
+from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.strategies import StrategyEngine
+from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.telemetry import MetricsServer, global_metrics
@@ -87,6 +91,7 @@ class TradingCopilot:
         entry_service: EntryExecutionService | None = None,
         outbox: NotificationDispatcher | None = None,
         ledger: AccountLedgerService | None = None,
+        alpha_repository: AlphaRepository | None = None,
     ):
         self._dry_run_directory: TemporaryDirectory[str] | None = None
         self._reconciliation_lock = asyncio.Lock()
@@ -98,6 +103,12 @@ class TradingCopilot:
             broker if broker is not None else create_broker(config=config, data_fetcher=self.data_fetcher)
         )
         self.close_service = close_service if close_service is not None else PositionCloseService(self.broker, self.db)
+        self.alpha_repository = (
+            alpha_repository
+            if alpha_repository is not None
+            else AlphaRepository(self.db.workflows, policy=self.config.alpha_pipeline)
+        )
+        self.alpha_shadow = AlphaShadowService(self.alpha_repository)
         self.strategy_engine = StrategyEngine(config)
         self.calendar: BaseEconomicCalendar = ForexFactoryCalendar()
         self.regime_detector = RegimeDetector(config=config.regime)
@@ -199,6 +210,7 @@ class TradingCopilot:
             config,
             self.metrics,
             accounting_enabled=self.ledger is not None,
+            alpha_registry_report=lambda: self.alpha_repository.status(run_id=RUN_ID),
             stream_connected=(lambda: self.broker.trade_stream_connected)
             if self.broker.supports_trade_stream
             else None,
@@ -264,6 +276,10 @@ class TradingCopilot:
         timeframe: str | None = None,
     ):
         async with self._scan_lock:
+            alpha_snapshot = await self.alpha_repository.snapshot()
+            self.strategy_engine.registry.install_alphas(alpha_snapshot.active)
+            if not dry_run:
+                await self.alpha_repository.acknowledge(alpha_snapshot, run_id=RUN_ID)
             await self.check_halt_state()
             if self.is_halted:
                 logger.warning(
@@ -337,6 +353,8 @@ class TradingCopilot:
                 logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
                 try:
                     data = await asyncio.to_thread(self.data_fetcher.fetch_data, contract, info.ticker)
+                    if not dry_run:
+                        await self.alpha_shadow.observe(alpha_snapshot, data)
                     if data.daily.empty or data.four_hour.empty:
                         logger.warning(f"Insufficient data for {contract}, skipping.")
                         continue
@@ -347,6 +365,7 @@ class TradingCopilot:
                         asset_class=inst_class,
                         override_strategy=strategy,
                         override_mode=strategy_mode,
+                        timeframe=timeframe,
                     )
                     if timeframe:
                         tf_norm = timeframe.strip().lower()
@@ -381,6 +400,8 @@ class TradingCopilot:
                             candidate.contract,
                             candidate.strategy,
                             hours=dedup_hours,
+                            timeframe=candidate.timeframe,
+                            alpha_version=candidate.alpha_version,
                         )
                         if is_dup:
                             logger.info(
@@ -430,6 +451,14 @@ class TradingCopilot:
 
                         # Record to database
                         sig_id = await self.db.record_signal(
+                            timeframe=candidate.timeframe,
+                            alpha_version=candidate.alpha_version,
+                            alpha_policy=candidate.alpha_policy,
+                            decision_provenance={
+                                "candle_timestamp": candidate.candle_timestamp,
+                                "alpha_score": candidate.alpha_score,
+                                "contributors": candidate.contributors,
+                            },
                             contract=eval_res.contract,
                             strategy=candidate.strategy,
                             direction=eval_res.direction,
@@ -801,6 +830,11 @@ class TradingCopilot:
                     trail = current - sign * max(risk, risk * policy.trail_atr_multiple)
                     if sign * (trail - target) > info.tick_size * policy.trail_step_ticks:
                         target, reason = trail, StopAdjustmentReason.TRAILING_STOP
+                if pos.get("alpha_policy"):
+                    target = trailing_price(
+                        entry, current, old_stop, risk, sign, AlphaExecutionPolicy(**pos["alpha_policy"])
+                    )
+                    reason = StopAdjustmentReason.TRAILING_STOP
                 if target == old_stop:
                     continue
                 # One broker update per cycle; never advertise an unconfirmed local stop.
@@ -1572,10 +1606,11 @@ class TradingCopilot:
 
     async def get_alphas_summary_html(self) -> str:
         """Format HTML formulaic alpha intelligence dashboard for Telegram /alphas."""
-        mgr = AlphaPromotionManager()
-        catalog = AlphaCatalog()
-        promoted = mgr.list_active_alphas()
-        return TelegramHtmlFormatter.format_alphas_dashboard_html(promoted, catalog_count=len(catalog.list_alphas()))
+
+        snapshot = await self.alpha_repository.snapshot()
+        return TelegramHtmlFormatter.format_alphas_dashboard_html(
+            snapshot, catalog_count=len(AlphaCatalog().list_alphas())
+        )
 
     async def broadcast_macro_briefing(self) -> None:
         """Broadcast morning macro intelligence card to Telegram."""

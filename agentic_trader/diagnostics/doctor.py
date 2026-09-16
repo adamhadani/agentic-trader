@@ -15,6 +15,7 @@ from agentic_trader.broker.tradovate import TradovateBroker
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import APP_DISPLAY_NAME
 from agentic_trader.market.session import CompositeMarketCalendar, FinnhubCalendarProvider
+from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -44,6 +45,7 @@ async def check_database(config: AppConfig) -> ComponentHealth:
         try:
             active_count = await db.get_active_position_count()
             exposure = await db.get_active_notional_exposure()
+            alpha = await AlphaRepository(db.workflows, config.alpha_pipeline).status()
         finally:
             await db.engine.dispose()
         return ComponentHealth(
@@ -52,6 +54,7 @@ async def check_database(config: AppConfig) -> ComponentHealth:
             message="Database connection verified; schema migrated to head",
             details={
                 "active_positions": active_count,
+                "alpha_pipeline": alpha,
                 "open_notional": exposure,
                 "backend": "postgresql" if config.resolved_db_url.startswith("postgresql") else "sqlite",
             },

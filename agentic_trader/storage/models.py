@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -42,6 +43,10 @@ class SignalRecord(Base):
     timestamp: Mapped[datetime] = mapped_column(UTCDatetime, default=lambda: datetime.now(UTC), nullable=False)
     contract: Mapped[str] = mapped_column(String, nullable=False)
     strategy: Mapped[str] = mapped_column(String, nullable=False)
+    timeframe: Mapped[str | None] = mapped_column(Text, nullable=True)
+    alpha_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    alpha_policy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_provenance: Mapped[str | None] = mapped_column(Text, nullable=True)
     direction: Mapped[str] = mapped_column(String, nullable=False)
     entry_price: Mapped[float] = mapped_column(Float, nullable=False)
     stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
@@ -85,6 +90,10 @@ class SignalRecord(Base):
             "timestamp": ts,
             "contract": self.contract,
             "strategy": self.strategy,
+            "timeframe": self.timeframe,
+            "alpha_version": self.alpha_version,
+            "alpha_policy": json.loads(self.alpha_policy) if self.alpha_policy else None,
+            "decision_provenance": json.loads(self.decision_provenance) if self.decision_provenance else None,
             "direction": self.direction,
             "entry_price": float(self.entry_price),
             "stop_loss": float(self.stop_loss),
@@ -252,4 +261,14 @@ class IncidentProjectionRecord(Base):
     component: Mapped[str] = mapped_column(String, primary_key=True)
     event_id: Mapped[int | None] = mapped_column(Integer)
     observed_at: Mapped[datetime] = mapped_column(UTCDatetime, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AlphaProjectionRecord(Base):
+    """Rebuildable research and registry aggregates; domain_events is authoritative."""
+
+    __tablename__ = "alpha_projections"
+    scope: Mapped[str] = mapped_column(String, primary_key=True)
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     payload: Mapped[str] = mapped_column(Text, nullable=False)
