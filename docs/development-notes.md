@@ -129,7 +129,9 @@ The [active alpha roadmap](alpha-roadmap.md) owns research priorities. The
 [A1b study](alpha-study-2026-09-16.md) retained 1,952 synthetic replicates, including
 22 unavailable comparisons; it does not authorize new gates or promotion.
 [A2a](alpha-return-timeline.md) corrects execution return coverage with a versioned
-validation policy and fresh calibration. A2b finer-bar/session replay follows.
+validation policy. Its [fresh calibration](alpha-timeline-study-2026-09-16.md)
+completed 1,952 jobs without unavailable comparisons; power remains insufficient
+and gates stay unchanged. A2b finer-bar/session replay follows.
 CLI, chat and Telegram inspect the same version registry; activation/demotion is
 visible between scans. Imported historical definitions remain unqualified shadow
 versions. `/alphas` shows generation/versions, not fabricated performance or allocation.

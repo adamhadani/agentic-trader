@@ -1,6 +1,7 @@
 # Alpha execution return timeline
 
-This is A2a of the [alpha roadmap](alpha-roadmap.md). It corrects the observation
+This is implemented A2a of the [alpha roadmap](alpha-roadmap.md), delivered in
+[PR #37](https://github.com/adamhadani/agentic-trader/pull/37). It corrects the observation
 defect found by the [A1b study](alpha-study-2026-09-16.md); session-correct finer-bar
 replay remains A2b. No qualification threshold, signal rule or fill rule is relaxed.
 
@@ -72,7 +73,8 @@ backend, migration, compatibility calculation or automatic registry mutation.
 ## TDD and integration boundary
 
 Regressions cover all-cash warmup/intermittent features; long/short pending entry,
-marking and exit after feature loss; invalid prices/scores; strict return consumers;
+marking and exit after feature loss, including a same-bar fill/stop and both fees;
+invalid prices/scores; strict return consumers;
 future perturbations; actual miner coverage; policy rejection before holdout
 consumption; lifetime counts with compatible variance; replay; and entry fencing.
 The PostgreSQL suite exercises independent clients changing alpha authorization
@@ -83,7 +85,7 @@ synthetic study likewise cannot qualify an alpha or earn shadow dates/decisions.
 
 ## Frozen follow-up study
 
-Before evaluating new observations, commit `config/research/a2a-v1.json` generated
+Before evaluating new observations, `config/research/a2a-v1.json` was committed
 with root seed **10472909262026** and the current contracts. Protocol identity:
 `1038e35b873a6ca8c8d9e6e1f77df5ccf6a266a5ff42c16d64043e6bf3d670d6`.
 
@@ -107,6 +109,10 @@ Run in an isolated process with numerical threads limited and reduced priority.
 No runtime DB/provider/broker/notifier is constructed. The historical A1b JSON is
 intentionally refused by current code because its frozen scientific contracts
 differ; reproduce it only in an isolated checkout of its recorded source revision.
+
+The [completed study](alpha-timeline-study-2026-09-16.md) retains all 1,952 jobs with
+zero unavailable comparisons. Null-search criteria passed; positive-control power
+remains insufficient. No statistical gate changes are justified.
 
 After this measurement, prioritize execution realism and forecast/strategy
 alignment before expanding search. Promotable candidates still need untouched

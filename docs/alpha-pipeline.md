@@ -265,7 +265,9 @@ the statistical criteria; a completed negative study exits successfully, while a
 incomplete study exits nonzero. No result grants deployment or shadow credit.
 The [September 16 study](alpha-study-2026-09-16.md) retained all 1,952 records but
 has 22 unavailable comparisons. A2a corrects execution return coverage and versions
-the validation contract for fresh calibration; thresholds remain unchanged. Unexpected post-mining
+the validation contract. Its [fresh study](alpha-timeline-study-2026-09-16.md)
+completed 1,952 jobs without unavailable comparisons. Null-search criteria passed;
+positive-control power remains insufficient and thresholds remain unchanged. Unexpected post-mining
 comparison errors retain completed search history. Hard interruption mid-replicate
 retains the manifest/prior records, not every in-memory trial.
 

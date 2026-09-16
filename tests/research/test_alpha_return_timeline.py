@@ -1,6 +1,6 @@
 """Execution returns describe portfolio equity, independently of feature availability."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import numpy as np
 import pandas as pd
@@ -159,3 +159,31 @@ def test_real_miner_preserves_cash_clock_and_reports_feature_coverage(flat_bars,
     assert candidate["metrics"]["sample_length"] == sum(f.validation_end - f.validation_start for f in folds)
     assert all(c["score_fraction"] == 0 for c in candidate["evidence"]["validation_coverage"])
     assert miner.last_run["policy"] == asdict(ValidationPolicy())
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_pending_fill_and_same_bar_stop_preserve_loss_and_both_fees(flat_bars, definition, direction):
+    bars = flat_bars.iloc[:6].copy()
+    bars.iloc[2:5, :4] = [
+        100 + direction,
+        101.5 if direction == 1 else 99.5,
+        100.5 if direction == 1 else 98.5,
+        100 + direction,
+    ]
+    bars.iloc[5, :4] = [
+        100 + direction * 0.5,
+        101 if direction == 1 else 103,
+        97 if direction == 1 else 99,
+        100,
+    ]
+    scores = pd.Series(np.nan, index=bars.index)
+    scores.iloc[1] = direction * 2
+    definition = replace(definition, execution=replace(definition.execution, friction_per_side=0.001))
+    result = simulate_strategy(definition, bars, scores=scores, start=2)
+    expected_loss = -0.02 - 0.001 - 0.001 * (1 - direction * 0.02)
+    assert result["total_trades"] == 1
+    trade = result["trades"][0]
+    assert trade["entry_timestamp"] == trade["exit_timestamp"] == str(bars.index[-1])
+    assert trade["net_return"] == pytest.approx(expected_loss)
+    assert result["net_returns"].tolist() == pytest.approx([0, 0, 0, expected_loss])
+    assert result["total_return_pct"] == pytest.approx(expected_loss * 100)
