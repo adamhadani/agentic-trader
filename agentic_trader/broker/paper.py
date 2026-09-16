@@ -31,6 +31,10 @@ class PaperBroker(BaseBroker):
         self._connected: bool = False
         self._realized_pnl: float = 0.0
 
+    @property
+    def simulated_execution(self) -> bool:
+        return True
+
     async def connect(self) -> bool:
         self._connected = True
         logger.info(

@@ -165,6 +165,8 @@ sizing:
   suggest_tiers_enabled: true # suggest Half, Base, and Max tiers in Telegram
 
 execution:
+  broker_request_timeout_seconds: 10.0
+  stop_replace_timeout_seconds: 10.0
   close_cancel_timeout_seconds: 10.0
   close_cancel_poll_seconds: 0.25
   algorithm: "immediate" # "immediate", "twap", "vwap"

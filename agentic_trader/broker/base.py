@@ -77,6 +77,7 @@ class OrderResult(BaseModel):
     bracket_orders: dict[str, str] = Field(default_factory=dict)
     raw_response: dict[str, Any] = Field(default_factory=dict)
     status: str | None = None
+    stop_price: float | None = None
     submission_uncertain: bool = False
     close_status: CloseRequestStatus | None = None
 
@@ -213,6 +214,11 @@ class BaseBroker(ABC):
         return []
 
     @property
+    def simulated_execution(self) -> bool:
+        """Whether fills are local simulations rather than external broker orders."""
+        return False
+
+    @property
     def authoritative_positions(self) -> bool:
         """Whether broker positions carry authoritative account cost basis and valuation."""
         return False
@@ -258,6 +264,6 @@ class BaseBroker(ABC):
     async def cancel_all_orders(self) -> int:
         """Cancel all open or resting orders at the broker.
 
-        Returns the number of orders successfully cancelled.
+        Returns the number of accepted cancellation requests; terminal state may lag.
         """
         return 0

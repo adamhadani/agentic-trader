@@ -10,6 +10,10 @@ from agentic_trader.execution.slicer import OrderSlicer
 
 
 class DummyBroker(BaseBroker):
+    @property
+    def simulated_execution(self) -> bool:
+        return True
+
     def __init__(self):
         self.submitted_orders: list[OrderRequest] = []
         self.simulated_fill_price: float | None = None
@@ -227,3 +231,20 @@ async def test_sliced_execution_engine_price_collar_rejection():
     assert res.success is False
     assert "skipped by collar" in (res.error_message or "").lower()
     assert len(broker.submitted_orders) == 0
+
+
+@pytest.mark.parametrize("simulated", [False, True])
+async def test_multi_slice_requires_explicit_simulated_execution(config, simulated):
+    class TestBroker(DummyBroker):
+        @property
+        def simulated_execution(self):
+            return simulated
+
+    config.execution.algorithm = "twap"
+    config.execution.twap_interval_seconds = 0
+    broker = TestBroker()
+    result = await SlicedExecutionEngine(config).execute_order(
+        OrderRequest(symbol="SPY", asset_class=AssetClass.EQUITY, quantity=200, entry_price=100), broker
+    )
+    assert result.success is simulated
+    assert bool(broker.submitted_orders) is simulated

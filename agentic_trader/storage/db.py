@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -26,6 +26,7 @@ from agentic_trader.constants import (
     AssetClass,
     AuditEventType,
     CloseRequestStatus,
+    Direction,
     ExecutionMode,
     ExitReason,
     RuntimeEnvironment,
@@ -563,30 +564,30 @@ class SignalDatabase:
             await session.commit()
             return bool(rowcount > 0)
 
-    async def update_position_stop(
-        self,
-        signal_id: int,
-        new_stop: float,
-        raw_response: str | None = None,
-    ) -> bool:
-        """Update stop loss price for an active position (e.g. breakeven or trailing stop)."""
+    async def update_position_stop(self, signal_id: int, new_stop: float, *, reason: str) -> bool:
+        """Persist a confirmed ratchet without overwriting the original trade thesis."""
         async with self.session_factory() as session:
-            vals: dict[str, Any] = {"stop_loss": float(new_stop)}
-            if raw_response:
-                vals["raw_response"] = raw_response
             stmt = (
                 update(SignalRecord)
                 .where(*self._scope())
                 .where(
                     SignalRecord.id == signal_id,
                     SignalRecord.status == SignalStatus.EXECUTED,
+                    or_(
+                        and_(SignalRecord.direction == Direction.LONG, SignalRecord.stop_loss < new_stop),
+                        and_(SignalRecord.direction == Direction.SHORT, SignalRecord.stop_loss > new_stop),
+                    ),
                 )
-                .values(**vals)
+                .values(stop_loss=float(new_stop))
             )
             res = await session.execute(stmt)
+            changed = bool(getattr(res, "rowcount", 0) > 0)
+            if changed:
+                session.add(
+                    self._audit(AuditEventType.STOP_UPDATED, signal_id, {"stop_loss": new_stop, "reason": reason})
+                )
             await session.commit()
-            rowcount = getattr(res, "rowcount", 0)
-            return bool(rowcount > 0)
+            return changed
 
     async def get_closed_positions_stats(self) -> dict[str, Any]:
         """Aggregate closed trade statistics (P&L, win rate, profit factor, trade list)."""

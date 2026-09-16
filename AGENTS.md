@@ -35,3 +35,8 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   once with its client ID. Recover uncertain outcomes by lookup, never replay.
   `/flatten` previews by default and does not change the trading halt. Dry-run
   commands must not cancel/submit orders or send synthetic production messages.
+
+- Preserve real SDK HTTP/WebSocket integration coverage. Mutation responses can be
+  ambiguous: never retry POST/PATCH/DELETE automatically. Resolve stop replacements
+  by exact IDs and confirm working price before DB updates; preserve thesis/risk.
+  Review [Alpaca contracts and coverage](docs/alpaca-integration-review.md).

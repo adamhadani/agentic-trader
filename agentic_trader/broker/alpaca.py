@@ -5,6 +5,7 @@ import math
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Any
 from uuid import uuid4
 
@@ -40,22 +41,42 @@ from agentic_trader.broker.base import (
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import (
     ALPACA_MAX_ORDERS_PER_PAGE,
+    ALPACA_MAX_REPLACEMENT_CHAIN,
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
     AssetClass,
     CloseRequestStatus,
     Direction,
     ExitReason,
+    OrderType,
 )
 
 
 logger = logging.getLogger(__name__)
 
 
+class BoundedTradingClient(TradingClient):
+    """SDK transport boundary: bounded sockets and no automatic mutation replay.
+
+    alpaca-py exposes neither timeout nor retry options on TradingClient. Keep
+    this single SDK extension covered by real HTTP contract tests when upgrading.
+    GET retains the SDK's bounded rate-limit/server retry policy.
+    """
+
+    def __init__(self, *args: Any, request_timeout: float, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.request_timeout = request_timeout
+
+    def _one_request(self, method: str, url: str, opts: dict, retry: int) -> dict:
+        return super()._one_request(
+            method, url, {**opts, "timeout": self.request_timeout}, retry if method.upper() == "GET" else 0
+        )
+
+
 class AlpacaBroker(BaseBroker):
     """
     Alpaca Trading API Integration using the official alpaca-py SDK.
-    Supports automated execution for Equities and Crypto with bracket orders.
+    Supports equities with native brackets and simple crypto orders.
     Works with both Alpaca Paper Trading and Live Trading accounts.
     """
 
@@ -93,7 +114,8 @@ class AlpacaBroker(BaseBroker):
         """Verify Alpaca credentials and account connectivity via TradingClient."""
         self._validate_credentials()
         if self.client is None:
-            self.client = TradingClient(
+            self.client = BoundedTradingClient(
+                request_timeout=self.config.execution.broker_request_timeout_seconds,
                 api_key=self.api_key,
                 secret_key=self.api_secret,
                 paper=self.is_paper,
@@ -152,43 +174,43 @@ class AlpacaBroker(BaseBroker):
                     error_message="Not connected to Alpaca API. Please verify credentials.",
                 )
 
-        side = (
-            AlpacaOrderSide.BUY
-            if str(request.direction).upper() in ("LONG", str(Direction.LONG))
-            else AlpacaOrderSide.SELL
-        )
-        symbol = request.symbol.strip("/").upper()
-
-        time_in_force = AlpacaTimeInForce.GTC
-        if str(request.time_in_force).upper() == "DAY":
-            time_in_force = AlpacaTimeInForce.DAY
-
-        take_profit = (
-            TakeProfitRequest(limit_price=round(request.take_profit, 2)) if request.take_profit is not None else None
-        )
-        stop_loss = StopLossRequest(stop_price=round(request.stop_loss, 2)) if request.stop_loss is not None else None
-
-        order_class = AlpacaOrderClass.SIMPLE
-        if request.is_bracket and take_profit and stop_loss:
-            order_class = AlpacaOrderClass.BRACKET
-
-        req_args: dict[str, Any] = {
-            "symbol": symbol,
-            "qty": request.quantity,
-            "side": side,
-            "time_in_force": time_in_force,
-            "order_class": order_class,
-        }
-        if order_class == AlpacaOrderClass.BRACKET:
-            req_args["take_profit"] = take_profit
-            req_args["stop_loss"] = stop_loss
-
-        is_limit = str(request.order_type).upper() == "LIMIT" and request.entry_price is not None
-        if is_limit and request.entry_price is not None:
-            req_args["limit_price"] = round(request.entry_price, 2)
-            alpaca_order_req: MarketOrderRequest | LimitOrderRequest = LimitOrderRequest(**req_args)
-        else:
-            alpaca_order_req = MarketOrderRequest(**req_args)
+        try:
+            side = AlpacaOrderSide(str(request.side).lower())
+            expected_side = AlpacaOrderSide.BUY if request.direction == Direction.LONG else AlpacaOrderSide.SELL
+            if side != expected_side:
+                raise ValueError("Entry side and direction disagree")
+            symbol = request.symbol.strip("/").upper()
+            time_in_force = AlpacaTimeInForce(str(request.time_in_force).lower())
+            order_type = OrderType(str(request.order_type).upper())
+            if order_type not in (OrderType.MARKET, OrderType.LIMIT):
+                raise ValueError("Alpaca entry supports market or limit orders only")
+            if order_type == OrderType.LIMIT and request.entry_price is None:
+                raise ValueError("Limit entry requires an entry price")
+            if (request.stop_loss is None) != (request.take_profit is None):
+                raise ValueError("Entry protection requires both stop-loss and take-profit")
+            if request.is_bracket and (request.asset_class == AssetClass.CRYPTO or "/" in symbol):
+                raise ValueError("Alpaca crypto bracket orders are unsupported")
+            if request.is_bracket and time_in_force not in (AlpacaTimeInForce.DAY, AlpacaTimeInForce.GTC):
+                raise ValueError("Alpaca brackets require DAY or GTC")
+            order_class = AlpacaOrderClass.BRACKET if request.is_bracket else AlpacaOrderClass.SIMPLE
+            req_args: dict[str, Any] = {
+                "symbol": symbol,
+                "qty": request.quantity,
+                "side": side,
+                "time_in_force": time_in_force,
+                "order_class": order_class,
+                "client_order_id": request.client_order_id,
+            }
+            if request.is_bracket:
+                req_args["take_profit"] = TakeProfitRequest(limit_price=self._price(request.take_profit))
+                req_args["stop_loss"] = StopLossRequest(stop_price=self._price(request.stop_loss))
+            if order_type == OrderType.LIMIT:
+                req_args["limit_price"] = self._price(request.entry_price)
+                alpaca_order_req: MarketOrderRequest | LimitOrderRequest = LimitOrderRequest(**req_args)
+            else:
+                alpaca_order_req = MarketOrderRequest(**req_args)
+        except (ValueError, TypeError) as exc:
+            return OrderResult(success=False, error_message=str(exc))
 
         try:
             logger.info(
@@ -214,7 +236,7 @@ class AlpacaBroker(BaseBroker):
             legs = getattr(order, "legs", None)
             if legs:
                 for leg in legs:
-                    leg_type = str(getattr(leg, "order_type", getattr(leg, "type", "")))
+                    leg_type = self._enum(leg, "type") or self._enum(leg, "order_type")
                     leg_id = str(getattr(leg, "id", ""))
                     if "stop" in leg_type.lower():
                         bracket_orders["stop_loss_id"] = leg_id
@@ -233,10 +255,14 @@ class AlpacaBroker(BaseBroker):
             )
         except APIError as e:
             logger.error("Alpaca API error during order submission: %s", e)
-            return OrderResult(success=False, error_message=str(e))
+            return OrderResult(
+                success=False,
+                error_message=str(e),
+                submission_uncertain=not (e.status_code and 400 <= e.status_code < 500),
+            )
         except Exception as e:
             logger.exception("Exception during Alpaca order submission")
-            return OrderResult(success=False, error_message=str(e))
+            return OrderResult(success=False, error_message=str(e), submission_uncertain=True)
 
     async def close_position(
         self,
@@ -330,6 +356,7 @@ class AlpacaBroker(BaseBroker):
                 self.client.get_order_by_id, request.entry_order_id, GetOrderByIdRequest(nested=True)
             )
             for leg in self._field(entry, "legs", []) or []:
+                leg = await self._current_order(leg)
                 if self._field(leg, "symbol") != request.symbol:
                     raise ValueError("Bracket leg symbol mismatch; no orders changed.")
                 if self._enum(leg, "status") not in terminal:
@@ -346,7 +373,7 @@ class AlpacaBroker(BaseBroker):
             order_id = str(self._field(order, "id"))
             parent_id = (request.entry_order_id or order_id) if order_class != AlpacaOrderClass.OCO.value else order_id
             parent = await asyncio.to_thread(self.client.get_order_by_id, parent_id, GetOrderByIdRequest(nested=True))
-            legs = list(self._field(parent, "legs", []) or [])
+            legs = [await self._current_order(leg) for leg in self._field(parent, "legs", []) or []]
             if not legs:
                 if history is None:
                     response = await asyncio.to_thread(
@@ -369,7 +396,7 @@ class AlpacaBroker(BaseBroker):
                 if len(matches) != 1:
                     raise ValueError("Cannot identify the exact bracket group, including held legs; no orders changed.")
                 parent = matches[0]
-                legs = list(self._field(parent, "legs", []) or [])
+                legs = [await self._current_order(leg) for leg in self._field(parent, "legs", []) or []]
             group_ids = {str(self._field(parent, "id")), *(str(self._field(leg, "id")) for leg in legs)}
             if order_id not in group_ids:
                 raise ValueError("Working order does not belong to the verified bracket group; no orders changed.")
@@ -617,7 +644,7 @@ class AlpacaBroker(BaseBroker):
 
     @classmethod
     def _enum(cls, order: Any, name: str) -> str:
-        return str(cls._field(order, name, "")).lower().split(".")[-1]
+        return str(cls._field(order, name, "") or "").lower().split(".")[-1]
 
     @classmethod
     def _filled_at(cls, order: Any) -> datetime | None:
@@ -709,6 +736,7 @@ class AlpacaBroker(BaseBroker):
                     else AlpacaOrderSide.BUY.value
                 )
                 for order in candidates:
+                    order = await self._current_order(order)
                     if self._enum(order, "status") != AlpacaOrderStatus.FILLED.value:
                         continue
                     exit_time = self._filled_at(order)
@@ -853,6 +881,44 @@ class AlpacaBroker(BaseBroker):
     def supports_order_modification(self) -> bool:
         return True
 
+    @staticmethod
+    def _price(value: float | None) -> float:
+        if value is None or not math.isfinite(value) or value <= 0:
+            raise ValueError("Order price must be positive and finite")
+        # Alpaca equities accept cents above $1 and four decimals below $1.
+        return round(value, 2 if value >= 1 else 4)
+
+    async def _current_order(self, order: Any) -> Any:
+        """Follow exact broker replacement links; verify ownership at every hop."""
+        assert self.client
+        seen: set[str] = set()
+        identity_fields = ("symbol", "side", "type")
+        expected = tuple(self._enum(order, field) for field in identity_fields)
+        for _ in range(ALPACA_MAX_REPLACEMENT_CHAIN):
+            identity = str(self._field(order, "id"))
+            if identity in seen:
+                raise ValueError("Cyclic broker replacement chain")
+            seen.add(identity)
+            if tuple(self._enum(order, field) for field in identity_fields) != expected:
+                raise ValueError("Replacement identity does not match the tracked order")
+            next_id = self._field(order, "replaced_by")
+            if not next_id:
+                return order
+            order = await asyncio.to_thread(self.client.get_order_by_id, str(next_id))
+            if str(self._field(order, "id")) != str(next_id):
+                raise ValueError("Broker replacement ID mismatch")
+        raise ValueError("Broker replacement chain exceeds verification limit")
+
+    async def _current_stop(self, order: Any, symbol: str, side: str) -> Any:
+        order = await self._current_order(order)
+        if (
+            self._field(order, "symbol") != symbol
+            or self._enum(order, "side") != side
+            or self._enum(order, "type") not in (AlpacaOrderType.STOP, AlpacaOrderType.STOP_LIMIT)
+        ):
+            raise ValueError("Stop identity does not match the tracked bracket")
+        return order
+
     async def modify_order_stop(
         self,
         order_id: str | None = None,
@@ -860,76 +926,73 @@ class AlpacaBroker(BaseBroker):
         new_stop_price: float = 0.0,
         client_order_id: str | None = None,
     ) -> OrderResult:
-        """
-        Replace resting stop order at Alpaca with updated stop price.
-        Gracefully resolves stop leg order ID from parent order or open orders.
-        """
-        if not self._connected or not self.client:
-            connected = await self.connect()
-            if not connected or not self.client:
-                return OrderResult(success=False, error_message="Not connected to Alpaca API.")
+        """Resolve exact bracket ownership and confirm the resting replacement.
 
-        clean_symbol = (symbol or "").strip("/").upper()
-        target_stop_id = order_id
-
-        # 1. Resolve stop order ID if target_stop_id is a parent bracket or missing
+        Never search by symbol or PATCH on failed lookup. A successful PATCH is
+        only an acknowledgement; pending/rejected replacements cannot update DB.
+        """
+        if not self.client or not order_id or not symbol:
+            return OrderResult(success=False, error_message="An exact broker order ID and symbol are required")
         try:
-            if target_stop_id:
-                try:
-                    ord_obj = await asyncio.to_thread(self.client.get_order_by_id, target_stop_id)
-                    legs = getattr(ord_obj, "legs", None)
-                    if legs:
-                        for leg in legs:
-                            leg_type = str(getattr(leg, "order_type", getattr(leg, "type", "")))
-                            if "stop" in leg_type.lower():
-                                target_stop_id = str(getattr(leg, "id", ""))
-                                break
-                except Exception:
-                    pass  # target_stop_id is likely already the stop order ID
-
-            if not target_stop_id and clean_symbol:
-                open_orders = await asyncio.to_thread(
-                    self.client.get_orders,
-                    GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[clean_symbol]),
+            price = self._price(new_stop_price)
+            clean_symbol = symbol.strip("/").upper()
+            parent = await asyncio.to_thread(self.client.get_order_by_id, order_id, GetOrderByIdRequest(nested=True))
+            if self._field(parent, "symbol") != clean_symbol:
+                raise ValueError("Broker order symbol mismatch")
+            if self._enum(parent, "type") in (AlpacaOrderType.STOP, AlpacaOrderType.STOP_LIMIT):
+                stop = parent
+                side = self._enum(stop, "side")
+            else:
+                if self._enum(parent, "status") != AlpacaOrderStatus.FILLED:
+                    raise ValueError("Bracket entry is not fully filled")
+                side = (
+                    AlpacaOrderSide.SELL if self._enum(parent, "side") == AlpacaOrderSide.BUY else AlpacaOrderSide.BUY
                 )
-                for o in open_orders:
-                    order_type = str(getattr(o, "order_type", getattr(o, "type", "")))
-                    if "stop" in order_type.lower():
-                        target_stop_id = str(getattr(o, "id", ""))
+                stops = [
+                    leg
+                    for leg in self._field(parent, "legs", []) or []
+                    if self._enum(leg, "type") in (AlpacaOrderType.STOP, AlpacaOrderType.STOP_LIMIT)
+                ]
+                if len(stops) != 1:
+                    raise ValueError("Exact bracket has no unique stop leg")
+                stop = stops[0]
+            stop = await self._current_stop(stop, clean_symbol, side)
+            working = (AlpacaOrderStatus.NEW, AlpacaOrderStatus.HELD)
+            if self._enum(stop, "status") not in working or float(self._field(stop, "filled_qty", 0) or 0):
+                raise ValueError("Stop is not replaceable or has a partial fill; awaiting reconciliation")
+            current = float(self._field(stop, "stop_price"))
+            tighter = price > current if side == AlpacaOrderSide.SELL else price < current
+            if tighter:
+                replacement = ReplaceOrderRequest(stop_price=price, client_order_id=client_order_id)
+                stop = await asyncio.to_thread(
+                    self.client.replace_order_by_id, str(self._field(stop, "id")), replacement
+                )
+                deadline = time.monotonic() + self.config.execution.stop_replace_timeout_seconds
+                # Always read back, even when the POST/PATCH response claims a working state.
+                while True:
+                    stop = await asyncio.to_thread(self.client.get_order_by_id, str(self._field(stop, "id")))
+                    stop = await self._current_stop(stop, clean_symbol, side)
+                    status = self._enum(stop, "status")
+                    if status in working and math.isclose(
+                        float(self._field(stop, "stop_price")), price, abs_tol=BROKER_PRICE_TOLERANCE
+                    ):
                         break
-        except Exception as lookup_err:
-            logger.debug("Alpaca open stop order lookup failed for %s: %s", clean_symbol, lookup_err)
-
-        if not target_stop_id:
+                    if status in (
+                        AlpacaOrderStatus.FILLED,
+                        AlpacaOrderStatus.CANCELED,
+                        AlpacaOrderStatus.REJECTED,
+                        AlpacaOrderStatus.EXPIRED,
+                    ):
+                        raise ValueError(f"Stop replacement ended in {status}")
+                    if time.monotonic() >= deadline:
+                        raise ValueError("Stop replacement remains unconfirmed; local stop unchanged")
+                    await asyncio.sleep(self.config.execution.close_cancel_poll_seconds)
             return OrderResult(
-                success=False,
-                error_message=f"No active stop-loss order found for {clean_symbol or order_id}",
+                success=True, order_id=str(self._field(stop, "id")), stop_price=float(self._field(stop, "stop_price"))
             )
-
-        replace_req = ReplaceOrderRequest(stop_price=round(new_stop_price, 2))
-        try:
-            logger.info(
-                "Alpaca: Replacing resting stop order %s for %s with new stop %.2f...",
-                target_stop_id,
-                clean_symbol,
-                new_stop_price,
-                extra={
-                    "event": "alpaca_replace_stop",
-                    "order_id": target_stop_id,
-                    "symbol": clean_symbol,
-                    "new_stop": new_stop_price,
-                },
-            )
-            res = await asyncio.to_thread(self.client.replace_order_by_id, target_stop_id, replace_req)
-            new_id = str(getattr(res, "id", target_stop_id))
-            raw_resp = res.model_dump() if hasattr(res, "model_dump") else {"id": new_id, "new_stop": new_stop_price}
-            return OrderResult(success=True, order_id=new_id, raw_response=raw_resp)
-        except APIError as e:
-            logger.warning("Alpaca APIError modifying stop order: %s", e)
-            return OrderResult(success=False, error_message=str(e))
-        except Exception as e:
-            logger.exception("Exception modifying Alpaca stop order")
-            return OrderResult(success=False, error_message=str(e))
+        except Exception as exc:
+            logger.warning("Alpaca stop replacement unconfirmed for %s: %s", order_id, exc)
+            return OrderResult(success=False, error_message=str(exc))
 
     async def cancel_all_orders(self) -> int:
         """Cancel all open orders at Alpaca via client.cancel_orders()."""
@@ -937,9 +1000,18 @@ class AlpacaBroker(BaseBroker):
             return 0
         try:
             res = await asyncio.to_thread(self.client.cancel_orders)
-            cancelled_count = len(res) if isinstance(res, list) else 0
+            cancelled_count = sum(
+                HTTPStatus.OK <= int(self._field(item, "status", 0)) < HTTPStatus.MULTIPLE_CHOICES for item in res
+            )
+            failures = [
+                {"id": str(self._field(item, "id")), "status": self._field(item, "status")}
+                for item in res
+                if not HTTPStatus.OK <= int(self._field(item, "status", 0)) < HTTPStatus.MULTIPLE_CHOICES
+            ]
+            if failures:
+                logger.error("Alpaca cancel requests rejected: %s", failures)
             logger.info(
-                "Alpaca: Cancelled %d open orders",
+                "Alpaca: Cancellation requested for %d open orders",
                 cancelled_count,
                 extra={"event": "alpaca_cancel_all_orders", "count": cancelled_count, "broker": "AlpacaBroker"},
             )

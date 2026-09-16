@@ -262,7 +262,7 @@ def test_panic_formatters():
     # Terminal report
     term = TerminalFormatter.format_panic_report(view)
     assert "EMERGENCY KILL SWITCH: LIQUIDATION & TRADING HALT REPORT" in term
-    assert "Orders Cancelled:     3" in term
+    assert "Cancel Requests Accepted:     3" in term
     assert "Positions Liquidated: 2" in term
     assert "-$150.50" in term
     assert "/MES" in term

@@ -7,6 +7,7 @@ import math
 from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
 from typing import Any
+from uuid import uuid4
 
 from alpaca.trading.client import TradingClient
 
@@ -28,6 +29,7 @@ from agentic_trader.constants import (
     Direction,
     ExitReason,
     SignalStatus,
+    StopAdjustmentReason,
     SystemStateKey,
     normalize_asset_class,
 )
@@ -694,294 +696,93 @@ class TradingCopilot:
 
         return closed_count
 
-    async def _sync_broker_stop(
-        self,
-        signal_id: int,
-        contract: str,
-        new_stop: float,
-        broker_order_id: str | None,
-    ) -> bool:
-        """Attempt to amend resting stop order on the broker exchange with graceful degradation."""
-        if not getattr(self.broker, "supports_order_modification", False):
-            return False
-
-        try:
-            mod_res = await self.broker.modify_order_stop(
-                order_id=broker_order_id,
-                symbol=contract,
-                new_stop_price=new_stop,
-            )
-            if mod_res.success:
-                logger.info(
-                    "Broker resting stop modified for #%d (%s) -> %.2f (order: %s)",
-                    signal_id,
-                    contract,
-                    new_stop,
-                    mod_res.order_id,
-                    extra={
-                        "event": "broker_stop_synced",
-                        "signal_id": signal_id,
-                        "contract": contract,
-                        "new_stop": new_stop,
-                        "broker_order_id": mod_res.order_id,
-                    },
-                )
-                return True
-            else:
-                logger.warning(
-                    "Broker stop modification degraded for #%d (%s): %s",
-                    signal_id,
-                    contract,
-                    mod_res.error_message,
-                    extra={
-                        "event": "broker_stop_sync_degraded",
-                        "signal_id": signal_id,
-                        "contract": contract,
-                        "error": mod_res.error_message,
-                    },
-                )
-                return False
-        except Exception as broker_err:
-            logger.warning(
-                "Exception during broker stop sync for #%d (%s): %s",
-                signal_id,
-                contract,
-                broker_err,
-                extra={
-                    "event": "broker_stop_sync_exception",
-                    "signal_id": signal_id,
-                    "error": str(broker_err),
-                },
-            )
-            return False
-
     async def manage_trailing_stops(self, active_positions: list[dict[str, Any]]) -> int:
-        """Evaluate active open positions for Breakeven and Dynamic Trailing Stop ratchets.
-
-        Configured via config.trailing_stop:
-        - breakeven_trigger_r: moves stop to entry + buffer once price advances by +1.0R
-        - trail_trigger_r: moves stop to trail behind price by trail_atr_multiple * ATR
-        """
-        ts_config = getattr(self.config, "trailing_stop", None)
-        if not ts_config or not ts_config.enabled:
+        """Ratchet from initial risk, saving only acknowledged broker stop prices."""
+        policy = self.config.trailing_stop
+        if not policy.enabled:
             return 0
-
         closing_symbols = {request["symbol"] for request in await self.db.active_close_requests()}
-        updates_count = 0
+        updated = 0
         for pos in active_positions:
-            if pos["contract"].strip("/").upper() in closing_symbols:
+            contract = pos["contract"]
+            if contract.strip("/").upper() in closing_symbols:
                 continue
             if self.broker.authoritative_positions and not pos.get("executed_at"):
                 continue
             try:
-                sig_id = pos["id"]
-                contract = pos["contract"]
-                direction = pos["direction"].upper()
-                entry = float(pos["entry_price"])
-                current_stop = float(pos["stop_loss"])
-
-                # Determine quote ticker
-                contract_info = self.config.contracts.get(contract)
-                ticker = (
-                    contract_info.ticker
-                    if contract_info
-                    else (f"{contract.strip('/').upper()}=F" if contract.startswith("/") else contract)
-                )
-
-                current_price = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
-                if current_price is None or current_price <= 0:
+                info = self.config.contracts.get(contract)
+                if not info:
+                    logger.warning("No instrument policy for trailing stop #%s (%s)", pos["id"], contract)
                     continue
-
-                mult = contract_info.multiplier if contract_info else (5.0 if contract.startswith("/") else 1.0)
-                qty = float(pos.get("quantity") or 1.0)
-                denom = mult * qty
-                risk_dollars = float(pos.get("risk_dollars") or 0.0)
-                initial_risk = risk_dollars / denom if risk_dollars > 0 and denom > 0 else abs(entry - current_stop)
-
-                if initial_risk <= 0:
+                current = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, info.ticker)
+                if current is None or not math.isfinite(current) or current <= 0:
                     continue
-
-                # Buffer in price units
-                tick_size = contract_info.tick_size if contract_info else 0.25
-                min_step = tick_size * ts_config.trail_step_ticks
-                buffer_pts = (ts_config.breakeven_buffer_dollars / mult) if mult > 0 else 0.5
-
-                if direction == Direction.LONG:
-                    favorable_dist = current_price - entry
-                    r_multiple = favorable_dist / initial_risk
-
-                    # 1. Breakeven Trigger (opt-in if breakeven_trigger_r is configured)
-                    if ts_config.breakeven_trigger_r is not None and r_multiple >= ts_config.breakeven_trigger_r:
-                        target_be_stop = entry + buffer_pts
-                        if current_stop < target_be_stop:
-                            logger.info(
-                                "Position #%d (%s LONG) hit Breakeven (+%.2fR): Moving stop from %.2f to %.2f",
-                                sig_id,
-                                contract,
-                                r_multiple,
-                                current_stop,
-                                target_be_stop,
-                                extra={
-                                    "event": "breakeven_ratchet",
-                                    "contract": contract,
-                                    "direction": direction,
-                                    "signal_id": sig_id,
-                                    "r_multiple": round(r_multiple, 2),
-                                    "old_stop": current_stop,
-                                    "new_stop": target_be_stop,
-                                    "current_price": current_price,
-                                },
-                            )
-                            await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
-                            synced = await self._sync_broker_stop(
-                                sig_id, contract, target_be_stop, pos.get("broker_order_id")
-                            )
-                            await self.notifier.send_trailing_stop_alert(
-                                signal_id=sig_id,
-                                contract=contract,
-                                direction=direction,
-                                old_stop=current_stop,
-                                new_stop=target_be_stop,
-                                current_price=current_price,
-                                reason="BREAKEVEN",
-                                broker_synced=synced,
-                            )
-                            current_stop = target_be_stop
-                            updates_count += 1
-
-                    # 2. Dynamic Trailing Stop Trigger (Chandelier ATR / ATR distance)
-                    if r_multiple >= ts_config.trail_trigger_r:
-                        trail_dist = max(initial_risk, initial_risk * ts_config.trail_atr_multiple)
-                        proposed_trail_stop = current_price - trail_dist
-                        if proposed_trail_stop > current_stop + min_step:
-                            logger.info(
-                                "Position #%d (%s LONG) hit Trailing Stop trigger (+%.2fR): Ratcheting stop from %.2f to %.2f",
-                                sig_id,
-                                contract,
-                                r_multiple,
-                                current_stop,
-                                proposed_trail_stop,
-                                extra={
-                                    "event": "trailing_stop_ratchet",
-                                    "contract": contract,
-                                    "direction": direction,
-                                    "signal_id": sig_id,
-                                    "r_multiple": round(r_multiple, 2),
-                                    "old_stop": current_stop,
-                                    "new_stop": proposed_trail_stop,
-                                    "current_price": current_price,
-                                },
-                            )
-                            await self.db.update_position_stop(
-                                sig_id, proposed_trail_stop, raw_response="TRAILING_STOP"
-                            )
-                            synced = await self._sync_broker_stop(
-                                sig_id, contract, proposed_trail_stop, pos.get("broker_order_id")
-                            )
-                            await self.notifier.send_trailing_stop_alert(
-                                signal_id=sig_id,
-                                contract=contract,
-                                direction=direction,
-                                old_stop=current_stop,
-                                new_stop=proposed_trail_stop,
-                                current_price=current_price,
-                                reason="TRAILING_STOP",
-                                broker_synced=synced,
-                            )
-                            updates_count += 1
-
-                elif direction in (Direction.SHORT, "SELL"):
-                    favorable_dist = entry - current_price
-                    r_multiple = favorable_dist / initial_risk
-
-                    # 1. Breakeven Trigger (opt-in if breakeven_trigger_r is configured)
-                    if ts_config.breakeven_trigger_r is not None and r_multiple >= ts_config.breakeven_trigger_r:
-                        target_be_stop = entry - buffer_pts
-                        if current_stop > target_be_stop:
-                            logger.info(
-                                "Position #%d (%s SHORT) hit Breakeven (+%.2fR): Moving stop from %.2f to %.2f",
-                                sig_id,
-                                contract,
-                                r_multiple,
-                                current_stop,
-                                target_be_stop,
-                                extra={
-                                    "event": "breakeven_ratchet",
-                                    "contract": contract,
-                                    "direction": direction,
-                                    "signal_id": sig_id,
-                                    "r_multiple": round(r_multiple, 2),
-                                    "old_stop": current_stop,
-                                    "new_stop": target_be_stop,
-                                    "current_price": current_price,
-                                },
-                            )
-                            await self.db.update_position_stop(sig_id, target_be_stop, raw_response="BREAKEVEN")
-                            synced = await self._sync_broker_stop(
-                                sig_id, contract, target_be_stop, pos.get("broker_order_id")
-                            )
-                            await self.notifier.send_trailing_stop_alert(
-                                signal_id=sig_id,
-                                contract=contract,
-                                direction=direction,
-                                old_stop=current_stop,
-                                new_stop=target_be_stop,
-                                current_price=current_price,
-                                reason="BREAKEVEN",
-                                broker_synced=synced,
-                            )
-                            current_stop = target_be_stop
-                            updates_count += 1
-
-                    # 2. Dynamic Trailing Stop Trigger (Chandelier ATR / ATR distance)
-                    if r_multiple >= ts_config.trail_trigger_r:
-                        trail_dist = max(initial_risk, initial_risk * ts_config.trail_atr_multiple)
-                        proposed_trail_stop = current_price + trail_dist
-                        if proposed_trail_stop < current_stop - min_step:
-                            logger.info(
-                                "Position #%d (%s SHORT) hit Trailing Stop trigger (+%.2fR): Ratcheting stop from %.2f to %.2f",
-                                sig_id,
-                                contract,
-                                r_multiple,
-                                current_stop,
-                                proposed_trail_stop,
-                                extra={
-                                    "event": "trailing_stop_ratchet",
-                                    "contract": contract,
-                                    "direction": direction,
-                                    "signal_id": sig_id,
-                                    "r_multiple": round(r_multiple, 2),
-                                    "old_stop": current_stop,
-                                    "new_stop": proposed_trail_stop,
-                                    "current_price": current_price,
-                                },
-                            )
-                            await self.db.update_position_stop(
-                                sig_id, proposed_trail_stop, raw_response="TRAILING_STOP"
-                            )
-                            synced = await self._sync_broker_stop(
-                                sig_id, contract, proposed_trail_stop, pos.get("broker_order_id")
-                            )
-                            await self.notifier.send_trailing_stop_alert(
-                                signal_id=sig_id,
-                                contract=contract,
-                                direction=direction,
-                                old_stop=current_stop,
-                                new_stop=proposed_trail_stop,
-                                current_price=current_price,
-                                reason="TRAILING_STOP",
-                                broker_synced=synced,
-                            )
-                            updates_count += 1
-            except Exception as e:
-                logger.warning(
-                    "Error evaluating trailing stop for position #%s: %s",
-                    pos.get("id"),
-                    e,
-                    extra={"signal_id": pos.get("id"), "error": str(e)},
+                entry, old_stop = float(pos["entry_price"]), float(pos["stop_loss"])
+                sign = 1 if pos["direction"] == Direction.LONG else -1
+                quantity = float(pos["quantity"])
+                risk = float(pos.get("risk_dollars") or 0) / (info.multiplier * quantity)
+                if risk <= 0:
+                    continue
+                multiple = sign * (current - entry) / risk
+                target, reason = old_stop, StopAdjustmentReason.TRAILING_STOP
+                if policy.breakeven_trigger_r is not None and multiple >= policy.breakeven_trigger_r:
+                    breakeven = entry + sign * policy.breakeven_buffer_dollars / info.multiplier
+                    if sign * (breakeven - target) > 0:
+                        target, reason = breakeven, StopAdjustmentReason.BREAKEVEN
+                if multiple >= policy.trail_trigger_r:
+                    trail = current - sign * max(risk, risk * policy.trail_atr_multiple)
+                    if sign * (trail - target) > info.tick_size * policy.trail_step_ticks:
+                        target, reason = trail, StopAdjustmentReason.TRAILING_STOP
+                if target == old_stop:
+                    continue
+                # One broker update per cycle; never advertise an unconfirmed local stop.
+                await self.db.record_audit(
+                    AuditEventType.STOP_REPLACEMENT,
+                    {
+                        "phase": "requested",
+                        "entry_order_id": pos.get("broker_order_id"),
+                        "old_stop": old_stop,
+                        "requested_stop": target,
+                        "reason": reason,
+                    },
+                    signal_id=pos["id"],
                 )
-
-        return updates_count
+                result = await self.broker.modify_order_stop(
+                    order_id=pos.get("broker_order_id"),
+                    symbol=contract,
+                    new_stop_price=target,
+                )
+                confirmed = result.stop_price if result.stop_price is not None else target
+                await self.db.record_audit(
+                    AuditEventType.STOP_REPLACEMENT,
+                    {
+                        "phase": "result",
+                        "success": result.success,
+                        "order_id": result.order_id,
+                        "requested_stop": target,
+                        "confirmed_stop": confirmed if result.success else None,
+                        "error": result.error_message,
+                    },
+                    signal_id=pos["id"],
+                )
+                if not result.success or (self.broker.authoritative_positions and result.stop_price is None):
+                    continue
+                if not await self.db.update_position_stop(pos["id"], confirmed, reason=reason):
+                    continue
+                updated += 1
+                await self.notifier.send_trailing_stop_alert(
+                    signal_id=pos["id"],
+                    contract=contract,
+                    direction=pos["direction"],
+                    old_stop=old_stop,
+                    new_stop=confirmed,
+                    current_price=current,
+                    reason=reason,
+                    broker_synced=True,
+                )
+            except Exception:
+                logger.exception("Trailing stop update failed for #%s", pos.get("id"))
+        return updated
 
     async def get_positions_report(self) -> PositionsReport:
         """Value the account using a single broker snapshot, preserving source and differences."""
@@ -1339,6 +1140,12 @@ class TradingCopilot:
             stop_loss=stop_loss,
             take_profit=take_profit,
             quantity=target_qty,
+            client_order_id=f"entry-{uuid4().hex}",
+        )
+        await self.db.record_audit(
+            AuditEventType.ENTRY_SUBMISSION,
+            {"client_order_id": req.client_order_id, "quantity": target_qty},
+            signal_id=signal_id,
         )
 
         try:
@@ -1349,8 +1156,7 @@ class TradingCopilot:
                 signal_id,
                 extra={"signal_id": signal_id, "error": str(e)},
             )
-            await self.db.update_signal_status(signal_id, SignalStatus.FAILED)
-            return False, f"❌ <b>Broker Submission Error:</b> {e}"
+            return await self._unknown_entry(signal_id, req.client_order_id, str(e))
 
         if order_result.success:
             fill_price = order_result.fill_price
@@ -1392,6 +1198,10 @@ class TradingCopilot:
             )
             return True, TelegramHtmlFormatter.format_execution_html(view)
         else:
+            if order_result.submission_uncertain:
+                return await self._unknown_entry(
+                    signal_id, req.client_order_id, order_result.error_message or "Unknown broker outcome"
+                )
             await self.db.update_signal_status(signal_id, SignalStatus.FAILED)
             err = order_result.error_message or "Unknown broker rejection"
             logger.warning(
@@ -1422,6 +1232,22 @@ class TradingCopilot:
                 error_message=err,
             )
             return False, TelegramHtmlFormatter.format_execution_html(view)
+
+    async def _unknown_entry(self, signal_id: int, client_order_id: str | None, error: str) -> tuple[bool, str]:
+        """Reserve the claimed signal and halt new risk after an ambiguous POST."""
+        reason = f"Unconfirmed broker entry for signal #{signal_id}; reconcile client order {client_order_id} before resuming"
+        await self.db.set_state(SystemStateKey.TRADING_HALTED, "true")
+        await self.db.set_state(SystemStateKey.TRADING_HALT_REASON, reason)
+        self.is_halted, self.halt_reason = True, reason
+        await self.db.record_audit(
+            AuditEventType.ENTRY_SUBMISSION_UNKNOWN,
+            {
+                "client_order_id": client_order_id,
+                "error": error,
+            },
+            signal_id=signal_id,
+        )
+        return False, f"⚠️ {html.escape(reason)}. No automatic resubmission."
 
     async def emergency_panic_halt(self, reason: str = "Manual emergency panic trigger") -> PanicReportView:
         """Institutional emergency kill switch:

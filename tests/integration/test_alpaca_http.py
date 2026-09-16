@@ -1,0 +1,316 @@
+"""Contract and lifecycle tests through alpaca-py, loopback HTTP and real storage."""
+
+import asyncio
+import contextlib
+import json
+import time
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from websockets.asyncio.server import serve
+
+from agentic_trader.agent.copilot import TradingCopilot
+from agentic_trader.broker.base import OrderRequest
+from agentic_trader.constants import AuditEventType, SignalStatus, SystemStateKey
+from agentic_trader.storage.db import SignalDatabase
+
+
+pytestmark = [pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1"])]
+
+
+@pytest.fixture
+async def desk(alpaca_http, temp_db, app_config, request):
+    db = (
+        SignalDatabase(db_url=request.getfixturevalue("postgres_test_db"))
+        if getattr(request, "param", "sqlite") == "postgres"
+        else temp_db
+    )
+    venue, broker = alpaca_http
+    notifier = MagicMock(
+        send_exit_alert=AsyncMock(return_value=7),
+        send_trailing_stop_alert=AsyncMock(return_value=8),
+        send_message=AsyncMock(return_value=9),
+    )
+    copilot = TradingCopilot(app_config, db=db, broker=broker, notifier=notifier)
+    sid = await db.record_signal(
+        contract="SPY",
+        direction="LONG",
+        quantity=10,
+        entry_price=99,
+        stop_loss=95,
+        take_profit=110,
+        risk_dollars=40,
+        strategy="integration",
+        asset_class="EQUITY",
+        status=SignalStatus.PENDING,
+        raw_response="Original thesis",
+    )
+    yield copilot, venue, sid
+    await db.engine.dispose()
+
+
+async def track_existing(copilot, venue, sid):
+    await copilot.db.update_signal_execution(sid, venue.entry["id"], status=SignalStatus.EXECUTED)
+    await copilot.sync_entry_executions(await copilot.db.get_active_positions())
+
+
+@pytest.mark.parametrize("desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_entry_partial_full_close_and_performance_use_actual_fills(desk):
+    copilot, venue, sid = desk
+    success, _ = await copilot.execute_signal_by_id(sid)
+    assert success
+    post = next(body for method, _, _, body in venue.calls if method == "POST")
+    assert post["client_order_id"].startswith("entry-")
+    assert post["type"] == "limit" and post["order_class"] == "bracket"
+    assert post["take_profit"] == {"limit_price": 110.0}
+    assert post["stop_loss"] == {"stop_price": 95.0}
+    assert (await copilot.db.get_signal_by_id(sid))["executed_at"] is None
+
+    venue.entry.update(
+        status="partially_filled", filled_qty="3", filled_avg_price="100", filled_at=datetime.now(UTC).isoformat()
+    )
+    assert await copilot.monitor_positions() == 0
+    row = await copilot.db.get_signal_by_id(sid)
+    assert row["quantity"] == 10 and row["executed_at"] is None
+    venue.entry.update(status="filled", filled_qty="10")
+    await copilot.monitor_positions()
+    row = await copilot.db.get_signal_by_id(sid)
+    assert row["entry_price"] == 100 and row["executed_at"]
+    report = await copilot.get_positions_report()
+    assert report.positions[0].unrealized_pnl == 50
+
+    preview = await copilot.flatten_positions()
+    assert "DRY RUN" in preview
+    assert not any(method == "DELETE" for method, *_ in venue.calls)
+    await copilot.close_position_manual(sid, exit_price=1)
+    row = await copilot.db.get_signal_by_id(sid)
+    assert row["exit_price"] == 105 and row["realized_pnl"] == 50
+    assert (await copilot.db.get_closed_positions_stats())["total_pnl"] == 50
+    assert [path for method, path, *_ in venue.calls if method == "DELETE"] == [
+        f"/v2/orders/{venue.take_profit['id']}",
+        f"/v2/orders/{venue.stop['id']}",
+    ]
+    assert await copilot.monitor_positions() == 0
+    copilot.notifier.send_exit_alert.assert_awaited_once()
+    audits = await copilot.db.get_audit_events()
+    assert {
+        AuditEventType.CLOSE_REQUEST,
+        AuditEventType.CLOSE_BROKER_STEP,
+        AuditEventType.POSITION_CLOSED,
+        AuditEventType.EXIT_NOTIFICATION,
+    } <= {event["event_type"] for event in audits}
+
+
+@pytest.mark.parametrize("replacement_status", ["new", "pending_replace", "rejected"])
+async def test_stop_confirmation_preserves_thesis_and_initial_risk(desk, replacement_status):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    copilot.config.trailing_stop.enabled = True
+    copilot.config.trailing_stop.breakeven_trigger_r = None
+    copilot.data_fetcher = MagicMock(fetch_latest_price=MagicMock(return_value=120))
+    venue.replacement_status = replacement_status
+    count = await copilot.manage_trailing_stops(await copilot.db.get_active_positions())
+    row = await copilot.db.get_signal_by_id(sid)
+    assert count == (1 if replacement_status == "new" else 0)
+    assert row["stop_loss"] == (112.5 if replacement_status == "new" else 95)
+    assert row["risk_dollars"] == 50 and row["raw_response"] == "Original thesis"
+    assert [path for method, path, *_ in venue.calls if method == "PATCH"] == [f"/v2/orders/{venue.stop['id']}"]
+    assert copilot.notifier.send_trailing_stop_alert.await_count == count
+    events = await copilot.db.get_audit_events(signal_id=sid)
+    assert any(e["event_type"] == AuditEventType.STOP_REPLACEMENT and e["payload"]["phase"] == "result" for e in events)
+
+
+async def test_stop_lookup_failure_never_patches_or_searches_by_symbol(alpaca_http):
+    venue, broker = alpaca_http
+    venue.override = lambda method, path, query, body: (503, {"message": "unavailable"})
+    result = await broker.modify_order_stop(order_id=venue.entry["id"], symbol="SPY", new_stop_price=98)
+    assert not result.success
+    assert [method for method, *_ in venue.calls] == ["GET"]
+
+
+@pytest.mark.parametrize("failure", ["gateway-timeout", "socket-timeout"])
+async def test_ambiguous_entry_never_replays_and_halts_new_risk(desk, failure):
+    copilot, venue, sid = desk
+
+    def fail(method, path, query, body):
+        if method == "POST":
+            if failure == "socket-timeout":
+                time.sleep(0.3)
+            return 504, {"code": 50410000, "message": "unknown outcome"}
+
+    venue.override = fail
+    success, message = await copilot.execute_signal_by_id(sid)
+    assert not success and "No automatic resubmission" in message
+    assert len([1 for method, *_ in venue.calls if method == "POST"]) == 1
+    assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.SUBMITTING
+    assert await copilot.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert any(
+        event["event_type"] == AuditEventType.ENTRY_SUBMISSION_UNKNOWN for event in await copilot.db.get_audit_events()
+    )
+    await copilot.execute_signal_by_id(sid)
+    assert len([1 for method, *_ in venue.calls if method == "POST"]) == 1
+
+
+async def test_bulk_cancel_counts_individual_acceptances(alpaca_http):
+    _, broker = alpaca_http
+    assert await broker.cancel_all_orders() == 1
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"order_type": "STOP"},
+        {"entry_price": None},
+        {"side": "SELL"},
+        {"time_in_force": "IOC", "stop_loss": 95, "take_profit": 110},
+        {"symbol": "BTC/USD", "asset_class": "CRYPTO", "stop_loss": 95, "take_profit": 110},
+    ],
+)
+async def test_unsupported_entry_contracts_do_not_silently_change_order_type(alpaca_http, changes):
+    venue, broker = alpaca_http
+    result = await broker.submit_entry_order(OrderRequest(**{"symbol": "SPY", "entry_price": 100, **changes}))
+    assert not result.success and not venue.calls
+
+
+async def test_sdk_calls_do_not_block_event_loop(alpaca_http):
+    venue, broker = alpaca_http
+    venue.override = lambda *args: time.sleep(0.05) or (200, [venue.position])
+    task = asyncio.create_task(broker.get_positions())
+    await asyncio.sleep(0.01)
+    assert not task.done()
+    assert len(await task) == 1
+
+
+async def test_replaced_stop_fill_reconciles_by_exact_chain_once(desk):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    result = await copilot.broker.modify_order_stop(order_id=venue.entry["id"], symbol="SPY", new_stop_price=102)
+    assert result.success
+    replacement = venue.orders[result.order_id]
+    replacement.update(
+        status="filled", filled_qty="10", filled_avg_price="101.5", filled_at=datetime.now(UTC).isoformat()
+    )
+    venue.position = None
+    await asyncio.gather(copilot.monitor_positions(), copilot.monitor_positions())
+    row = await copilot.db.get_signal_by_id(sid)
+    assert row["realized_pnl"] == 15 and row["broker_exit_order_id"] == result.order_id
+    assert row["exit_reason"] == "STOP_LOSS"
+    copilot.notifier.send_exit_alert.assert_awaited_once()
+
+
+async def test_close_after_stop_replacement_cancels_current_leg(desk):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    result = await copilot.broker.modify_order_stop(order_id=venue.entry["id"], symbol="SPY", new_stop_price=102)
+    assert result.success
+    await copilot.close_position_manual(sid)
+    row = await copilot.db.get_signal_by_id(sid)
+    assert row["realized_pnl"] == 50
+    deleted = [path for method, path, *_ in venue.calls if method == "DELETE"]
+    assert f"/v2/orders/{result.order_id}" in deleted
+    assert f"/v2/orders/{venue.stop['id']}" not in deleted
+
+
+@pytest.mark.parametrize("operation", ["flatten", "panic"])
+async def test_closed_session_preserves_protection_except_explicit_emergency(desk, operation):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    venue.market_open = False
+    venue.close_status = "accepted"
+    if operation == "panic":
+        # Return no bulk cancellations here: per-position workflow must still verify legs.
+        venue.override = lambda method, path, query, body: (
+            (207, []) if method == "DELETE" and path == "/v2/orders" else None
+        )
+        report = await copilot.emergency_panic_halt()
+        assert report.is_halted
+        assert any(method == "POST" for method, *_ in venue.calls)
+    else:
+        await copilot.flatten_positions(confirm=True)
+        assert not any(method in ("POST", "DELETE") for method, *_ in venue.calls)
+        assert await copilot.db.get_state(SystemStateKey.TRADING_HALTED) is None
+    assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.EXECUTED
+    copilot.notifier.send_exit_alert.assert_not_awaited()
+
+
+async def test_accepted_close_with_lost_ack_recovers_without_second_post(desk):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    dispatch = venue.dispatch
+    lost = False
+
+    def lose_ack(method, path, query, body):
+        nonlocal lost
+        result = dispatch(method, path, query, body)
+        if method == "POST" and not lost:
+            lost = True
+            return 504, {"code": 50410000, "message": "response lost after fill"}
+        return result
+
+    venue.dispatch = lose_ack
+    await copilot.close_position_manual(sid)
+    await copilot.monitor_positions()
+    assert (await copilot.db.get_signal_by_id(sid))["realized_pnl"] == 50
+    assert len([1 for method, *_ in venue.calls if method == "POST"]) == 1
+    copilot.notifier.send_exit_alert.assert_awaited_once()
+
+
+async def test_real_sdk_websocket_fill_wakes_rest_reconciliation(desk):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    venue.take_profit.update(
+        status="filled", filled_qty="10", filled_avg_price="110", filled_at=datetime.now(UTC).isoformat()
+    )
+    venue.position = None
+    finished = asyncio.Event()
+    messages = []
+
+    async def stream(socket):
+        messages.append(json.loads(await socket.recv())["action"])
+        await socket.send(json.dumps({"stream": "authorization", "data": {"status": "authorized"}}))
+        messages.append(json.loads(await socket.recv())["action"])
+        payload = {
+            "stream": "trade_updates",
+            "data": {
+                "event": "fill",
+                "order": venue.take_profit,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "price": "1",
+                "qty": "10",
+                "position_qty": "0",
+            },
+        }
+        # Paper streaming uses binary frames; stream price is deliberately wrong:
+        # the exact REST order fill must govern accounting.
+        await socket.send(json.dumps(payload).encode())
+        await finished.wait()
+
+    async def callback(event):
+        await copilot.on_stream_trade_update(event)
+        finished.set()
+
+    async with serve(stream, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        copilot.broker.api_key, copilot.broker.api_secret = "fake-key", "fake-secret"
+        copilot.broker.base_url = f"ws://127.0.0.1:{port}"
+        task = asyncio.create_task(copilot.broker.start_trade_stream(callback))
+        try:
+            await asyncio.wait_for(finished.wait(), timeout=3)
+        finally:
+            finished.set()
+            await copilot.broker.stop_trade_stream()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    assert messages == ["authenticate", "listen"]
+    assert (await copilot.db.get_signal_by_id(sid))["realized_pnl"] == 100
+    await copilot.monitor_positions()
+    copilot.notifier.send_exit_alert.assert_awaited_once()
+
+
+async def test_sdk_type_field_maps_protective_leg_ids(alpaca_http):
+    venue, broker = alpaca_http
+    result = await broker.submit_entry_order(OrderRequest(symbol="SPY", entry_price=100, stop_loss=95, take_profit=110))
+    assert result.success
+    assert result.bracket_orders == {"stop_loss_id": venue.stop["id"], "take_profit_id": venue.take_profit["id"]}

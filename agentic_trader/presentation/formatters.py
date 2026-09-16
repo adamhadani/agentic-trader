@@ -318,7 +318,7 @@ class TerminalFormatter:
             sep,
             f"Status:               {'HALTED (Trading Disabled)' if view.is_halted else 'ACTIVE'}",
             f"Reason:               {view.halt_reason}",
-            f"Orders Cancelled:     {view.cancelled_orders_count}",
+            f"Cancel Requests Accepted:     {view.cancelled_orders_count}",
             f"Positions Liquidated: {view.liquidated_positions_count}",
             f"Total Realized P&L:   {pnl_str}",
             sub_sep,
@@ -590,7 +590,7 @@ class TelegramHtmlFormatter:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "• <b>Status:</b> 🛑 <b>TRADING HALTED</b>",
             f"• <b>Reason:</b> <i>{html.escape(view.halt_reason)}</i>",
-            f"• <b>Orders Cancelled:</b> <code>{view.cancelled_orders_count}</code>",
+            f"• <b>Cancel Requests Accepted:</b> <code>{view.cancelled_orders_count}</code>",
             f"• <b>Positions Liquidated:</b> <code>{view.liquidated_positions_count}</code>",
             f"• <b>Total Realized P&L:</b> {pnl_color} <code>{pnl_str}</code>",
         ]

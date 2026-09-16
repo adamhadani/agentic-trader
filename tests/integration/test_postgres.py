@@ -8,7 +8,6 @@ from uuid import uuid4
 
 import psycopg2
 import pytest
-from sqlalchemy.engine import make_url
 
 from agentic_trader.constants import CloseRequestStatus
 from agentic_trader.storage.db import SignalDatabase
@@ -21,17 +20,6 @@ from agentic_trader.storage.migrations import (
 
 
 pytestmark = [pytest.mark.postgres, pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
-
-
-@pytest.fixture
-def postgres_test_db():
-    url = os.environ.get("TEST_POSTGRES_URL")
-    if not url:
-        pytest.skip("Set TEST_POSTGRES_URL to an isolated test_ database and pass --run-postgres.")
-    assert (make_url(url).database or "").startswith("test_"), "Integration database name must start with test_"
-    downgrade_migrations("base", url)
-    yield url
-    downgrade_migrations("base", url)
 
 
 def test_postgres_migrations_lifecycle(postgres_test_db: str):

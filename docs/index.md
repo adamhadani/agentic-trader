@@ -78,3 +78,5 @@ docker compose logs -f trading-copilot
 ```
 
 For detailed instructions, see the [Production Operations Guide](production.md).
+
+- [Alpaca contract review and integration coverage](alpaca-integration-review.md)

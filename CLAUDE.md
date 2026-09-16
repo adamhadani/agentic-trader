@@ -176,3 +176,16 @@ Preserve these intended safeguards when changing logic. They are design requirem
     cancellation, confirmation and position/session revalidation. Never replay an
     uncertain submission or synthesize a fill. `/flatten` previews; `/flatten confirm`
     submits and preserves the halt. Market-closed equity preflight keeps protection.
+
+
+## Alpaca contract maintenance
+
+Read [Alpaca integration review](docs/alpaca-integration-review.md) before changing
+broker behavior. Real SDK loopback HTTP/WebSocket tests complement isolated unit
+tests; PostgreSQL CI covers migrations, exclusive claims and the complete lifecycle.
+Never infer replacement success from a PATCH response or replay an ambiguous
+mutation. Confirm exact replacement IDs/prices before saving stop changes; preserve
+initial risk and thesis. Uncertain entries remain claimed and halt new risk pending
+reconciliation. Broker-backed multi-slice execution is disabled until a fill ledger
+and protection exist. The SDK timeout/no-mutation-retry extension is deliberately
+isolated and covered by transport tests.

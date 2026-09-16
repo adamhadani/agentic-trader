@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -334,8 +335,8 @@ async def test_alpaca_broker_bracket_order_and_positions():
     mock_order.id = "alp-order-101"
     mock_order.status = "new"
     mock_order.filled_avg_price = 150.50
-    mock_leg_sl = MagicMock(id="alp-sl-101", order_type="stop")
-    mock_leg_tp = MagicMock(id="alp-tp-101", order_type="limit")
+    mock_leg_sl = SimpleNamespace(id="alp-sl-101", order_type=None, type="stop")
+    mock_leg_tp = SimpleNamespace(id="alp-tp-101", order_type=None, type="limit")
     mock_order.legs = [mock_leg_sl, mock_leg_tp]
     mock_order.model_dump.return_value = {"id": "alp-order-101"}
     mock_client.submit_order.return_value = mock_order
@@ -473,7 +474,7 @@ async def test_alpaca_broker_reconcile_positions():
     mock_client.get_all_positions.return_value = [mock_pos_msft]
 
     # Closed orders for AAPL: stop-loss order filled at 144.50
-    mock_closed_order = MagicMock()
+    mock_closed_order = SimpleNamespace()
     mock_closed_order.id = "alp-sl-filled-99"
     mock_closed_order.status = "filled"
     mock_closed_order.order_type = "stop"

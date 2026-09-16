@@ -242,3 +242,23 @@ SDK calls run off the event loop. These are not guarantees of broker HTTP latenc
 Deployment checks must verify `/flatten` in default, private-chat and operator-chat
 command scopes, the chat menu button, current daemon revision and poll freshness.
 `scripts/verify_runtime.py` performs these checks without messages or orders.
+
+
+### Broker transport and stop replacement
+
+Broker HTTP calls have a per-attempt timeout (`execution.broker_request_timeout_seconds`,
+default 10 seconds). GET retains the SDK retry policy; POST/PATCH/DELETE are not
+replayed automatically. An uncertain entry records `entry_submission_unknown`,
+leaves its signal `SUBMITTING`, and halts new entries. Inspect `entry_submission`
+audit for its client ID, retrieve that exact Alpaca order and reconcile its state
+before resuming. There is no automatic entry recovery command yet; do not reset a
+claim merely because a request timed out.
+
+Stop changes resolve the exact bracket and replacement chain, then read back the
+working price before updating storage or sending a ratchet alert. A pending/failed
+replacement preserves the previous local stop and original thesis/risk. Review
+`stop_replacement` request/result events and `stop_updated` for acknowledged changes.
+`execution.stop_replace_timeout_seconds` defaults to 10 seconds. Native bracket
+fills and minute reconciliation continue independently of Telegram response delivery.
+
+See [Alpaca contract review and integration coverage](alpaca-integration-review.md).

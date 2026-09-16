@@ -159,8 +159,9 @@ incident snapshots, DB files, `.envrc`, and derived calibration files out of Git
    cases. Persist timeframe and original risk separately from mutable stop levels.
 3. Readiness/freshness monitoring for broker stream, Telegram poller, successful
    scan and quote age; watchdog liveness alone cannot establish trading readiness.
-4. Update local trailing stops only after confirmed broker modification. Audit
-   stop discrepancies and preserve the original thesis instead of overwriting it.
+4. Stop confirmation and thesis preservation are now implemented. Follow up with
+   a proper ATR/high-water mark policy and persistent requested-versus-acknowledged
+   order ledger for unresolved replacement outcomes.
 5. Keep heavy research off the trading executor as workload grows; verify timeframe filtering
    before cross-strategy netting. Define missing/stale macro admission policy and review drawdown
    plumbing before increasing automation or enabling live money.
@@ -267,3 +268,17 @@ Read-only paper-account verification reproduced Alpaca OPEN queries omitting hel
 stop legs (one listed order versus two verified group orders per position). The
 adapter now resolves the exact bracket group and confirms both cancellations;
 regressions cover tracked, broker-only and unresolved-group cases.
+
+### Alpaca SDK contract tests and stop confirmation
+
+Read the [Alpaca integration review](alpaca-integration-review.md). Critical lifecycle
+coverage uses the actual SDK over loopback HTTP/WebSocket; the entry-to-realized-P&L
+path also runs on disposable PostgreSQL in CI. Do not replace these tests with
+permissive mocks when upgrading the SDK.
+
+`BoundedTradingClient` supplies a configured socket timeout and suppresses mutation
+retries. Entry client IDs are audited before POST; uncertain outcomes retain the
+claim and halt new risk pending reconciliation. Broker slicing is disabled.
+Trailing stops save only broker-confirmed prices, preserve the original thesis and
+risk, and audit `stop_replacement` / `stop_updated`. Replacement chains are followed
+by exact order ID for cancellation and realized-fill reconciliation too.

@@ -4,14 +4,17 @@ This document tracks the prioritized strategic initiatives for the **Agentic Tra
 
 ---
 
-## Current operational status — September 15, 2026
+## Current operational status — September 16, 2026
 
 The historical phases below describe development milestones and intended features.
 The [development notes](development-notes.md) describe verified runtime behavior
 and remaining integration limits. In particular: no automatic alpha reload, no
 `alpha optimize` CLI/live allocation integration, and no candle-aligned interval
 scheduler. Phase 36's original isolation was incomplete and is superseded by the
-incident remediation below.
+incident remediation below. The [Alpaca integration review](alpaca-integration-review.md)
+supersedes historical close/stop claims: broker slicing is blocked, exact stop
+replacement confirmation precedes persistence, and critical paths have actual-SDK
+HTTP/WebSocket and PostgreSQL integration coverage.
 
 ## Phase 45: Test isolation, broker fill authority and operational audit
 
@@ -50,7 +53,7 @@ confirmed trailing-stop parity; nonblocking data access and timeframe/risk integ
 | **Phase 15** | Tradovate WebSocket Stream & Broker Redundancy | **Completed** | Real-time WebSocket connection to Tradovate order socket with circuit-breaker failover |
 | **Phase 16** | Cross-Asset Factor & Regime Attribution | **Completed** | Factor decomposition (Momentum, Volatility, Carry) and Sharpe attribution across market regimes |
 | **Phase 17** | Dynamic Volatility-Targeted Position Sizing | **Completed** | Continuous ATR / Kelly risk scaling adapting contract and equity size to real-time volatility |
-| **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **Completed** | Algorithmic execution slicing for larger equity and multi-contract orders to minimize market impact |
+| **Phase 18** | Execution Microstructure & Adaptive TWAP/VWAP Slicing | **Simulation only** | External broker slicing blocked pending per-slice fill/protection accounting |
 | **Phase 19** | Portfolio Stress Testing & Historical Macro Crisis Replay | **Completed** | Historical crisis scenario replay (2008 GFC, 2020 COVID Crash, 2022 Inflation Shock) |
 | **Phase 20** | Options Implied Volatility Surface & GEX Tracking | **Completed** | Market maker gamma exposure (GEX), Call/Put walls, Gamma Flip, Put/Call ratios, and Telegram `/gex` |
 | **Phase 21** | Prometheus Telemetry Exporter & Modular CLI Hierarchy | **Completed** | Production metrics endpoints, Grafana-ready telemetry, Click modular command hierarchy |
@@ -795,7 +798,7 @@ Ensure that when internal trailing stops ratchet higher, the resting bracket sto
    - `TradovateBroker`: Amends resting stops via `POST /order/modifyorder` with graceful offline fallback.
    - `PaperBroker`: Simulates resting stop replacement in memory.
 3. **TradingCopilot Integration**:
-   - Trailing stop evaluation ratchets broker stops simultaneously with SQLite records and alerts Telegram.
+   - Trailing stop evaluation confirms broker changes before conditionally updating runtime storage and notifying Telegram; initial risk and thesis are preserved.
 
 ---
 
