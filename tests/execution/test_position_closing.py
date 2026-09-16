@@ -31,6 +31,8 @@ class FakeTradingClient:
         self.lose_submit_response = False
         self.fill_close = False
         self.read_delay = 0
+        self.omit_held_stops = False
+        self.omit_history = False
         self.submissions = []
         self.cancelled = []
         self.add_position("IWM", "short", 105, 285.4)
@@ -83,11 +85,18 @@ class FakeTradingClient:
         return SimpleNamespace(is_open=self.market_open, next_open="next session")
 
     def get_orders(self, request):
+        if request.status.value == "all":
+            return (
+                []
+                if self.omit_history
+                else [o for o in self.orders.values() if o["symbol"] in request.symbols and o.get("legs")]
+            )
         return [
             o
             for o in self.orders.values()
             if o["symbol"] in request.symbols
             and o["status"] in ("new", "held", "pending_cancel", "accepted", "partially_filled")
+            and not (self.omit_held_stops and o["status"] == "held")
         ]
 
     def get_order_by_id(self, order_id, *args):
@@ -146,7 +155,7 @@ class FakeTradingClient:
 @pytest.fixture
 def desk(app_config, temp_db):
     client = FakeTradingClient()
-    app_config.execution.close_cancel_timeout_seconds = 0.03
+    app_config.execution.close_cancel_timeout_seconds = 0.5
     app_config.execution.close_cancel_poll_seconds = 0.001
     app_config.copilot_chat_enabled = False
     broker = AlpacaBroker(app_config, client=client)
@@ -219,6 +228,7 @@ async def test_no_close_when_preconditions_or_cancellation_fail(desk, scenario, 
     if scenario == "market_closed":
         client.market_open = False
     elif scenario == "cancel_timeout":
+        copilot.config.execution.close_cancel_timeout_seconds = 0.03
         client.never_cancel = True
     elif scenario == "filled_during_cancel":
         client.fill_during_cancel = True
@@ -421,4 +431,60 @@ async def test_waits_for_broker_reserved_quantity_to_release(desk):
     response = await copilot.close_position_manual(sid)
     assert "awaiting" in response
     assert reads >= 4
+    assert len(client.submissions) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracked", [True, False])
+async def test_held_stop_omitted_by_open_query_is_resolved_and_confirmed(desk, tracked):
+    copilot, client = desk
+    sid = await seed(copilot) if tracked else None
+    client.omit_held_stops = True
+    client.orders["IWM-limit"]["order_class"] = "bracket"
+    client.orders["IWM-stop"].update(status="held", order_class="bracket")
+    if tracked:
+        await copilot.close_position_manual(sid)
+    else:
+        await copilot.flatten_positions(confirm=True)
+    assert "IWM-stop" in client.cancelled
+    assert client.orders["IWM-stop"]["status"] == "canceled"
+    assert any(request.symbol == "IWM" for request in client.submissions)
+
+
+@pytest.mark.asyncio
+async def test_unresolved_broker_only_bracket_keeps_protection(desk):
+    copilot, client = desk
+    client.omit_held_stops = client.omit_history = True
+    client.orders["IWM-limit"]["order_class"] = "bracket"
+    client.orders["IWM-stop"].update(status="held", order_class="bracket")
+    response = await copilot.flatten_positions(confirm=True)
+    assert "Cannot identify the exact bracket" in response
+    assert not any(order_id.startswith("IWM") for order_id in client.cancelled)
+    assert [request.symbol for request in client.submissions] == ["AMD"]
+
+
+@pytest.mark.asyncio
+async def test_empty_open_list_does_not_hide_tracked_held_stop(desk):
+    copilot, client = desk
+    sid = await seed(copilot)
+    client.omit_held_stops = True
+    client.orders["IWM-limit"]["status"] = "canceled"
+    client.orders["IWM-stop"].update(status="held", order_class="bracket")
+    await copilot.close_position_manual(sid)
+    assert client.cancelled == ["IWM-stop"]
+    assert len(client.submissions) == 1
+
+
+@pytest.mark.asyncio
+async def test_emergency_close_can_queue_after_hours_while_manual_close_preserves_protection(desk):
+    copilot, client = desk
+    sid = await seed(copilot)
+    client.market_open = False
+    assert "market is closed" in await copilot.close_position_manual(sid)
+    assert not client.cancelled
+    copilot.broker.cancel_all_orders = AsyncMock(return_value=0)
+    copilot.notifier.send_message = AsyncMock(return_value=True)
+    report = await copilot.emergency_panic_halt("Offline emergency queue rehearsal")
+    assert report.is_halted and report.liquidated_positions_count == 0
+    assert await copilot.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
     assert len(client.submissions) == 1

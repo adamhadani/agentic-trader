@@ -92,7 +92,9 @@ class PositionCloseService:
                     record["signal_id"],
                 )
 
-    async def close(self, position: BrokerPosition, signal: dict[str, Any] | None = None) -> str:
+    async def close(
+        self, position: BrokerPosition, signal: dict[str, Any] | None = None, *, allow_queued: bool = False
+    ) -> str:
         claimed, record = await self.db.claim_close_request(
             {
                 "id": f"close-{uuid4().hex}",
@@ -110,6 +112,7 @@ class PositionCloseService:
             quantity=position.quantity,
             client_order_id=record["id"],
             entry_order_id=signal.get("broker_order_id") if signal else None,
+            allow_queued=allow_queued,
         )
 
         async def observe(payload: dict[str, Any]) -> None:
@@ -127,7 +130,7 @@ class PositionCloseService:
             )
         return await self._save_result(record, result)
 
-    async def close_signal(self, signal_id: int) -> str:
+    async def close_signal(self, signal_id: int, *, allow_queued: bool = False) -> str:
         await self.recover()
         signal = await self.db.get_signal_by_id(signal_id)
         if not signal or signal["status"] != SignalStatus.EXECUTED:
@@ -142,7 +145,7 @@ class PositionCloseService:
         tracked = [p for p in await self.db.get_active_positions() if p["contract"].strip("/").upper() == symbol]
         if len(tracked) != 1 or not self.matches(signal, position):
             return "Tracked quantity/direction is ambiguous or differs from the broker; no orders changed."
-        return await self.close(position, signal)
+        return await self.close(position, signal, allow_queued=allow_queued)
 
     @staticmethod
     def matches(signal: dict[str, Any], position: BrokerPosition) -> bool:

@@ -262,6 +262,7 @@ class AlpacaBroker(BaseBroker):
                 direction=Direction(position.direction),
                 quantity=quantity if quantity is not None else position.quantity,
                 client_order_id=f"close-{uuid4().hex}",
+                allow_queued=exit_reason == ExitReason.EMERGENCY_EXIT,
             ),
             observe,
         )
@@ -309,6 +310,76 @@ class AlpacaBroker(BaseBroker):
             raise
         return self._close_result(order)
 
+    async def _expand_close_orders(self, orders: list[Any], request: PositionCloseRequest) -> list[Any]:
+        """Alpaca omits HELD bracket stops from OPEN queries, even with nested=True.
+
+        Resolve groups by exact order/leg IDs, then explicitly verify every active leg.
+        An untracked bracket can be resolved from bounded nested history; incomplete
+        or ambiguous evidence refuses the close instead of guessing by symbol.
+        """
+        assert self.client is not None
+        expanded = {str(self._field(order, "id")): order for order in orders}
+        terminal = {
+            AlpacaOrderStatus.FILLED.value,
+            AlpacaOrderStatus.CANCELED.value,
+            AlpacaOrderStatus.REJECTED.value,
+            AlpacaOrderStatus.EXPIRED.value,
+        }
+        if request.entry_order_id:
+            entry = await asyncio.to_thread(
+                self.client.get_order_by_id, request.entry_order_id, GetOrderByIdRequest(nested=True)
+            )
+            for leg in self._field(entry, "legs", []) or []:
+                if self._field(leg, "symbol") != request.symbol:
+                    raise ValueError("Bracket leg symbol mismatch; no orders changed.")
+                if self._enum(leg, "status") not in terminal:
+                    expanded[str(self._field(leg, "id"))] = leg
+        history: list[Any] | None = None
+        for order in list(expanded.values()):
+            order_class = self._enum(order, "order_class")
+            if order_class not in {
+                AlpacaOrderClass.BRACKET.value,
+                AlpacaOrderClass.OCO.value,
+                AlpacaOrderClass.OTO.value,
+            }:
+                continue
+            order_id = str(self._field(order, "id"))
+            parent_id = (request.entry_order_id or order_id) if order_class != AlpacaOrderClass.OCO.value else order_id
+            parent = await asyncio.to_thread(self.client.get_order_by_id, parent_id, GetOrderByIdRequest(nested=True))
+            legs = list(self._field(parent, "legs", []) or [])
+            if not legs:
+                if history is None:
+                    response = await asyncio.to_thread(
+                        self.client.get_orders,
+                        GetOrdersRequest(
+                            status=QueryOrderStatus.ALL,
+                            symbols=[request.symbol],
+                            nested=True,
+                            limit=ALPACA_MAX_ORDERS_PER_PAGE,
+                        ),
+                    )
+                    if not isinstance(response, list):
+                        raise TypeError("Expected typed broker order history")
+                    history = response
+                matches = [
+                    candidate
+                    for candidate in history
+                    if order_id in {str(self._field(leg, "id")) for leg in self._field(candidate, "legs", []) or []}
+                ]
+                if len(matches) != 1:
+                    raise ValueError("Cannot identify the exact bracket group, including held legs; no orders changed.")
+                parent = matches[0]
+                legs = list(self._field(parent, "legs", []) or [])
+            group_ids = {str(self._field(parent, "id")), *(str(self._field(leg, "id")) for leg in legs)}
+            if order_id not in group_ids:
+                raise ValueError("Working order does not belong to the verified bracket group; no orders changed.")
+            for leg in legs:
+                if self._field(leg, "symbol") != request.symbol:
+                    raise ValueError("Bracket leg symbol mismatch; no orders changed.")
+                if self._enum(leg, "status") not in terminal:
+                    expanded[str(self._field(leg, "id"))] = leg
+        return list(expanded.values())
+
     async def submit_position_close(
         self,
         request: PositionCloseRequest,
@@ -349,7 +420,7 @@ class AlpacaBroker(BaseBroker):
         async def check_session(position: Any) -> None:
             if self._enum(position, "asset_class") == "us_equity":
                 clock = await asyncio.to_thread(client.get_clock)
-                if not self._field(clock, "is_open", False):
+                if not self._field(clock, "is_open", False) and not request.allow_queued:
                     raise ValueError(
                         f"Regular market is closed; no close submitted. Next open: {self._field(clock, 'next_open')}."
                     )
@@ -399,7 +470,7 @@ class AlpacaBroker(BaseBroker):
                     abs_tol=BROKER_PRICE_TOLERANCE,
                 ):
                     raise ValueError("Broker cost basis differs from the tracked entry; reconcile before closing.")
-            orders = await open_orders()
+            orders = await self._expand_close_orders(await open_orders(), request)
             if any(
                 self._enum(order, "type") == AlpacaOrderType.MARKET.value
                 or self._enum(order, "order_type") == AlpacaOrderType.MARKET.value

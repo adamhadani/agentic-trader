@@ -204,8 +204,16 @@ working market orders and unconfirmed cancellations block a new close. A failure
 on one symbol does not prevent attempts on the other symbols. Untracked closes do
 not create invented entries or realized P&L in `/perf`.
 
-For equities the broker clock must indicate regular trading hours before any
-cancellation. After-hours requests are refused, leaving protection intact. The
+For ordinary equity close/flatten requests the broker clock must indicate regular
+trading hours before any cancellation; after-hours requests retain protection.
+Panic explicitly retains its emergency policy: cancel orders, permit market exits
+queued for the next session, and persist the halt. A queued order is not a confirmed
+liquidation.
+
+Alpaca OPEN queries omit held bracket stops, even with nested results. The adapter
+expands exact entry/order groups and confirms every active leg. For broker-only
+brackets it resolves the working exit ID against bounded nested history; missing
+or ambiguous group identity refuses the close before cancellation. The
 workflow checks the clock again before submission; if the market closes or the
 broker fails after cancellation, protective orders may already be removed. The
 response explicitly reports that condition: inspect the account and restore

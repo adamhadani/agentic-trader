@@ -1113,7 +1113,9 @@ class TradingCopilot:
                 await self.process_reconciliation_event(event, positions)
             return html.escape(response)
 
-    async def close_position_manual(self, signal_id: int, exit_price: float | None = None) -> str:
+    async def close_position_manual(
+        self, signal_id: int, exit_price: float | None = None, *, allow_queued: bool = False
+    ) -> str:
         """Manually close a position (via Telegram /close or CLI)."""
         pos = await self.db.get_signal_by_id(signal_id)
         if not pos:
@@ -1143,7 +1145,7 @@ class TradingCopilot:
 
         if self.broker.authoritative_positions:
             async with self._reconciliation_lock:
-                response = await self.close_service.close_signal(signal_id)
+                response = await self.close_service.close_signal(signal_id, allow_queued=allow_queued)
                 positions = await self.sync_entry_executions(await self.db.get_active_positions())
                 for event in await self.broker.reconcile_positions(positions):
                     await self.process_reconciliation_event(event, positions)
@@ -1453,7 +1455,7 @@ class TradingCopilot:
 
         for pos in active_positions:
             if self.broker.authoritative_positions:
-                await self.close_position_manual(pos["id"])
+                await self.close_position_manual(pos["id"], allow_queued=True)
                 confirmed = await self.db.get_signal_by_id(pos["id"])
                 if confirmed and confirmed["status"] in (SignalStatus.CLOSED_WIN, SignalStatus.CLOSED_LOSS):
                     liquidated_count += 1

@@ -257,8 +257,13 @@ for conservative recovery and after-hours behavior.
 
 Validation on September 16: the full isolated suite passed **502 tests**, including
 five disposable-PostgreSQL tests. After final cancellation-race/quantity-release
-hardening, **68 targeted broker/close tests passed**, including the 31-case offline
+hardening, **98 targeted broker/close/panic tests passed**, including the 36-case offline
 close rehearsal. Mypy checks 101 application modules. The two known warnings remain
 (WebSocket deprecation and the deliberate blocked-socket assertion). Pre-commit and
 GitHub CI validate the committed tree; deployment and read-only account/menu checks
 are recorded separately in startup/valuation audits and private verification output.
+
+Read-only paper-account verification reproduced Alpaca OPEN queries omitting held
+stop legs (one listed order versus two verified group orders per position). The
+adapter now resolves the exact bracket group and confirms both cancellations;
+regressions cover tracked, broker-only and unresolved-group cases.

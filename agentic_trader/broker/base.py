@@ -89,6 +89,7 @@ class PositionCloseRequest(BaseModel):
     quantity: float = Field(gt=0, allow_inf_nan=False)
     client_order_id: str
     entry_order_id: str | None = None
+    allow_queued: bool = False
 
 
 class BrokerPosition(BaseModel):
