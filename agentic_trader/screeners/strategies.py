@@ -310,7 +310,7 @@ class StrategyEngine:
         conflict_resolver: ConflictResolver | None = None,
     ):
         self.config = config or load_config()
-        self.registry = registry or StrategyRegistry(auto_load_promoted=True)
+        self.registry = registry or StrategyRegistry()
         self.conflict_resolver = conflict_resolver or ConflictResolver()
 
         # Instantiate and register default strategies
@@ -342,6 +342,7 @@ class StrategyEngine:
         asset_class: AssetClass = AssetClass.FUTURES,
         override_strategy: str | None = None,
         override_mode: str | None = None,
+        timeframe: str | None = None,
     ) -> list[ScreenerCandidate]:
         """Scan contract data across active strategies according to configured mode
 
@@ -358,7 +359,7 @@ class StrategyEngine:
             if not strat.can_handle(asset_class):
                 continue
             candidates = strat.evaluate(data, asset_class=asset_class)
-            raw_candidates.extend(candidates)
+            raw_candidates.extend(c for c in candidates if timeframe is None or c.timeframe == timeframe)
 
         conflict_mode = getattr(
             self.config.strategies,

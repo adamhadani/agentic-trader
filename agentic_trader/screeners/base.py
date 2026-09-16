@@ -32,6 +32,10 @@ class ScreenerCandidate(BaseModel):
     recent_swing_low: float
     recent_swing_high: float
     trigger_detail: str
+    alpha_version: str | None = None
+    alpha_score: float | None = None
+    alpha_policy: dict[str, Any] | None = None
+    contributors: tuple[str, ...] = ()
 
     def model_post_init(self, context: Any, /) -> None:
         if not self.symbol:

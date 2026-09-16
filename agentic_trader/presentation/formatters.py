@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from agentic_trader.agent.macro import MacroIntelligenceReport
     from agentic_trader.agent.regime import RegimeSnapshot
     from agentic_trader.backtest.models import BacktestResult
-    from agentic_trader.research.alpha.models import AlphaCandidate, PromotedAlphaRecord
+    from agentic_trader.research.alpha.models import AlphaCandidate, RegistrySnapshot
 
 
 def format_price(value: float | None) -> str:
@@ -555,50 +555,27 @@ class TelegramHtmlFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def format_alphas_dashboard_html(
-        promoted: list[PromotedAlphaRecord],
-        catalog_count: int = 0,
-    ) -> str:
-        """Render active promoted formulaic alphas as an institutional Telegram HTML card."""
+    def format_alphas_dashboard_html(snapshot: RegistrySnapshot, catalog_count: int = 0) -> str:
+        """Report the authoritative registry, with no invented allocation/performance."""
         lines = [
             "🧪 <b>FORMULAIC ALPHA INTELLIGENCE</b>",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            f"• <b>Active Promoted Alphas:</b> <code>{len(promoted)}</code>",
-            f"• <b>Catalog Library Size:</b> <code>{catalog_count}</code> institutional formulas",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"Registry generation: <code>{snapshot.generation}</code>",
+            f"Active: {len(snapshot.active)} · Shadow: {len(snapshot.shadow)} · Catalog: {catalog_count}",
         ]
-
-        if not promoted:
-            lines.append("<i>No formulaic alphas currently active in production desk.</i>")
-            lines.append("👉 Run <code>copilot alpha mine --auto-promote</code> to discover candidates.")
-        else:
-            lines.append("<b>Active Production Alphas:</b>")
-            for a in promoted:
-                defn = a.definition
-                m = a.metrics
-                aid = html.escape(a.alpha_id)
-                name = html.escape(defn.name)
-                expr = html.escape(defn.expression)
-                weight_pct = a.allocation_weight * 100.0
-
-                sharpe_str = f"{m.sharpe_oos:.2f}" if m else "N/A"
-                dsr_str = f"{m.dsr:.2f}" if m else "N/A"
-                ic_str = f"{m.rank_ic_mean:+.3f}" if m else "N/A"
-
-                universe_str = ", ".join(a.eligible_symbols) if a.eligible_symbols else "ALL (Global)"
-                tf_str = getattr(defn, "timeframe", "4h").upper()
-                lines.append(
-                    f"• <b><code>{aid}</code></b> ({name}) [Alloc: <code>{weight_pct:.0f}%</code> | TF: <code>{tf_str}</code>]"
+        for mode, definitions in (("Active", snapshot.active), ("Shadow", snapshot.shadow)):
+            for definition in definitions:
+                universe = ", ".join(definition.eligible_symbols or ()) or "Unqualified universe"
+                lines.extend(
+                    [
+                        f"{mode}: <code>{html.escape(definition.alpha_id)}</code> · {definition.timeframe} · {definition.version_id[:12]}",
+                        f"Universe: {html.escape(universe)}",
+                        f"Expression: <code>{html.escape(definition.expression)}</code>",
+                    ]
                 )
-                lines.append(f"  <i>Universe:</i> <code>{universe_str}</code>")
-                lines.append(f"  <i>Expr:</i> <code>{expr}</code>")
-                lines.append(
-                    f"  <i>OOS Sharpe:</i> <code>{sharpe_str}</code> | <i>DSR:</i> <code>{dsr_str}</code> | <i>IC:</i> <code>{ic_str}</code>"
-                )
-                lines.append("")
-
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("💡 <i>Use /alphas for status or 'copilot alpha' in CLI.</i>")
+        lines.append(
+            "Shadow observations do not place orders. Promotion requires recorded qualification and shadow evidence."
+        )
+        lines.append("Use <code>copilot alpha list</code> or <code>copilot alpha inspect VERSION</code> for evidence.")
         return "\n".join(lines)
 
     VALID_TELEGRAM_TAGS: ClassVar[set[str]] = {
@@ -791,7 +768,7 @@ def format_alpha_inspection_report(candidate: AlphaCandidate) -> str:
         f"Expression:       {d.expression}",
         f"Description:      {d.description}",
         f"Origin:           {d.origin} | Direction: {d.direction} | Timeframe: {d.timeframe}",
-        f"Thresholds:       Entry Z >= {d.entry_threshold:.2f} | Exit Z <= {d.exit_threshold:.2f}",
+        f"Entry threshold:  |Z| >= {d.entry_threshold:.2f} | exits: structural/ATR bracket, RR {d.execution.reward_risk:.2f}",
         "-" * 78,
         "STATISTICAL & OVERFITTING METRICS (Out-of-Sample):",
         f"• Out-of-Sample Sharpe Ratio:     {m.sharpe_oos:+.2f}",
@@ -801,7 +778,7 @@ def format_alpha_inspection_report(candidate: AlphaCandidate) -> str:
         f"• Rank IC Information Ratio (IR): {m.rank_ic_ir:+.2f}",
         f"• Annualized Strategy Return:     {m.annualized_return_pct:+.2f}%",
         f"• Maximum Drawdown:               {m.max_drawdown_pct:.2f}%",
-        f"• Profit Factor:                  {m.profit_factor:.2f}",
+        f"• Profit Factor:                  {m.profit_factor if m.profit_factor is not None else 'N/A (no losing completed trades)'}",
         f"• Win Rate:                       {m.win_rate * 100:.1f}% ({m.total_trades} trades)",
     ]
 

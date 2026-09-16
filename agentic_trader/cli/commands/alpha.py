@@ -1,432 +1,403 @@
+"""Journal-backed alpha research, qualification and version lifecycle commands."""
+
 from __future__ import annotations
 
 import asyncio
-import functools
-import logging
+import hashlib
+import json
+import os
+import platform
+from contextlib import asynccontextmanager
+from dataclasses import asdict
+from datetime import UTC, datetime
+from importlib.metadata import version as package_version
+from pathlib import Path
+from uuid import uuid4
 
 import click
-import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from agentic_trader.cli.utils import coro, get_copilot_and_config
-from agentic_trader.presentation.formatters import (
-    format_alpha_inspection_report,
-    format_mined_alphas_table,
-)
-from agentic_trader.research.alpha import (
-    AlphaCatalog,
-    AlphaDefinition,
-    AlphaExpressionEvaluator,
-    AlphaMiner,
-    AlphaPromotionManager,
-)
-from agentic_trader.research.alpha.orthogonalization import (
-    evaluate_residual_predictive_power,
-    gram_schmidt_orthogonalize,
-)
+from agentic_trader.cli.utils import coro
+from agentic_trader.config import load_config
+from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.research.alpha.baselines import benchmark_models
+from agentic_trader.research.alpha.catalog import AlphaCatalog
+from agentic_trader.research.alpha.data import completed_bars, load_dataset, save_dataset
+from agentic_trader.research.alpha.forecasts import CombinedForecast
+from agentic_trader.research.alpha.miner import AlphaMiner
+from agentic_trader.research.alpha.models import AlphaDefinition
+from agentic_trader.research.alpha.portfolio import PortfolioPolicy, PortfolioSnapshot, build_shadow_portfolio
+from agentic_trader.research.alpha.promotion import AlphaPromotionService, read_alpha_definitions
+from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
+from agentic_trader.research.alpha.validation import DatasetManifest
+from agentic_trader.runtime import runtime_identity
+from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.db import SignalDatabase
 
 
-logger = logging.getLogger("copilot")
+@asynccontextmanager
+async def alpha_repository():
+    config = load_config()
+    db = SignalDatabase(db_url=config.resolved_db_url, config=config)
+    try:
+        await db.init_db()
+        yield AlphaRepository(db.workflows, policy=config.alpha_pipeline)
+    finally:
+        await db.engine.dispose()
 
 
-@click.group("alpha", help="Formulaic Alpha Mining, Expression DSL & Auto-Promotion Engine")
-def alpha_group() -> None:
-    """Quantitative formulaic alpha mining and research command suite."""
+def research_environment():
+    root = Path(__file__).resolve().parents[3]
+    return {
+        "runtime": runtime_identity(),
+        "python": platform.python_version(),
+        "lock_hash": hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest(),
+        "packages": {
+            name: package_version(name) for name in ("numpy", "pandas", "scipy", "cvxpy", "scikit-learn", "alpaca-py")
+        },
+    }
 
 
-@alpha_group.command("catalog", help="List pre-cataloged institutional alphas (WorldQuant 101, etc.)")
-def alpha_catalog_cmd() -> None:
-    """Display the pre-cataloged institutional alpha library."""
-    catalog = AlphaCatalog()
-    alphas = catalog.list_alphas()
-
-    click.echo("\n" + "=" * 95)
-    click.echo(f"🏛️  INSTITUTIONAL FORMULAIC ALPHA CATALOG ({len(alphas)} Formulas)")
-    click.echo("=" * 95)
-    click.echo(f"{'ALPHA ID':<22} | {'ORIGIN':<15} | {'DIR':<6} | {'EXPRESSION'}")
-    click.echo("-" * 95)
-    for a in alphas:
-        click.echo(f"{a.alpha_id:<22} | {a.origin:<15} | {a.direction[:5]:<6} | {a.expression}")
-    click.echo("=" * 95 + "\n")
+def artifact_directory() -> Path:
+    root = os.environ.get("COPILOT_TEST_ROOT")
+    return Path(root) / "research" if root else Path.home() / ".local/state/agentic-trader/research"
 
 
-@alpha_group.command("list", help="List all production-promoted and candidate alphas")
-def alpha_list_cmd() -> None:
-    """Display promoted production alphas and their status."""
-    mgr = AlphaPromotionManager()
-    records = mgr.load_records()
-
-    click.echo("\n" + "=" * 115)
-    click.echo(f"🚀 PRODUCTION PROMOTED ALPHAS ({len(records)} Records)")
-    click.echo("=" * 115)
-    if not records:
-        click.echo("No promoted alphas found in configuration.")
-        click.echo("Use 'copilot alpha mine --auto-promote' or 'copilot alpha promote <id>' to promote alphas.")
-        click.echo("=" * 115 + "\n")
-        return
-
-    click.echo(
-        f"{'ALPHA ID':<20} | {'STATUS':<10} | {'TF':<5} | {'ALLOC':<6} | {'OOS SR':<7} | {'DSR':<6} | {'ELIGIBLE SYMBOLS':<18} | {'PROMOTED BY':<14} | {'PROMOTED AT'}"
-    )
-    click.echo("-" * 122)
-    for r in records:
-        m = r.metrics
-        sr_str = f"{m.sharpe_oos:.2f}" if m else "N/A"
-        dsr_str = f"{m.dsr:.2f}" if m else "N/A"
-        alloc_pct = f"{r.allocation_weight * 100:.0f}%"
-        prom_ts = r.promoted_at[:19].replace("T", " ")
-        syms_str = ", ".join(r.eligible_symbols) if r.eligible_symbols else "ALL"
-        tf_str = getattr(r.definition, "timeframe", "4h").upper()
-        click.echo(
-            f"{r.alpha_id:<20} | {r.status:<10} | {tf_str:<5} | {alloc_pct:<6} | {sr_str:>7} | {dsr_str:>6} | {syms_str:<18} | {r.promoted_by[:14]:<14} | {prom_ts}"
+def download_bars(symbol, lookback, interval, *, feed="yfinance", config=None):
+    requested = "1h" if interval == "4h" else interval
+    if feed == "alpaca":
+        if config is None:
+            raise ValueError("Explicit Alpaca research configuration required")
+        provider = AlpacaDataProvider(
+            api_key=config.alpaca_api_key, api_secret=config.alpaca_api_secret, feed=config.market_data.alpaca_feed
         )
-    click.echo("=" * 122 + "\n")
+        frame = provider.fetch_bars(symbol, requested, period=lookback)
+    else:
+        frame = yf.download(symbol, period=lookback, interval=requested, auto_adjust=False, progress=False)
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    frame = frame[[c for c in frame.columns if c.lower() in ("open", "high", "low", "close", "volume")]].astype(float)
+    if frame.empty:
+        raise ValueError(f"No observations for {symbol}")
+    if frame.index.tz is None:
+        frame.index = frame.index.tz_localize("UTC")
+    else:
+        frame.index = frame.index.tz_convert("UTC")
+    frame = completed_bars(frame, requested)
+    if interval == "4h":
+        frame = (
+            frame.resample("4h")
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+            .dropna()
+        )
+    frame.attrs.update(
+        feed="yfinance" if feed == "yfinance" else f"alpaca:{config.market_data.alpaca_feed}", adjustment="raw"
+    )
+    return completed_bars(frame, interval)
 
 
-@alpha_group.command("mine", help="Mine and discover formulaic alphas with DSR overfitting control")
-@click.option("--symbol", type=str, default="SPY", help="Symbol to mine across (default: SPY)")
+@click.group("alpha", help="Causal formula research and journal-backed promotion")
+def alpha_group():
+    pass
+
+
+@alpha_group.command("catalog")
+def alpha_catalog_cmd():
+    click.echo("FORMULAIC ALPHA CATALOG (research hypotheses; validation required)")
+    for definition in AlphaCatalog().list_alphas():
+        click.echo(f"{definition.alpha_id}: {definition.name} | {definition.expression}")
+
+
+@alpha_group.command("list")
+@coro
+async def alpha_list_cmd():
+    async with alpha_repository() as repository:
+        snapshot = await repository.snapshot()
+        active = {d.version_id for d in snapshot.active}
+        shadow = {d.version_id for d in snapshot.shadow}
+        click.echo(f"ALPHA REGISTRY — generation {snapshot.generation}")
+        for definition in await repository.versions():
+            status = (
+                "active"
+                if definition.version_id in active
+                else "shadow"
+                if definition.version_id in shadow
+                else "inactive"
+            )
+            click.echo(
+                f"{definition.alpha_id} {definition.version_id} | {status} | {definition.timeframe} | {','.join(definition.eligible_symbols or ()) or 'unqualified universe'}"
+            )
+
+
+@alpha_group.command("mine")
+@click.option("--symbol", default="SPY")
+@click.option("--symbols", default="")
+@click.option("--lookback", default="5y")
+@click.option("--interval", type=click.Choice(["1d", "4h", "1h", "15m"]), default="1d")
+@click.option("--iterations", type=click.IntRange(0, 10000), default=25)
+@click.option("--seed", type=int, default=20260916)
+@click.option("--method", type=click.Choice(["random", "genetic"]), default="random")
+@click.option("--universe", type=click.Choice(["explicit", "etf32"]), default="explicit")
+@click.option("--feed", type=click.Choice(["yfinance", "alpaca"]), default="yfinance")
 @click.option(
-    "--symbols",
-    type=str,
-    default="",
-    help="Comma-separated symbols for multi-asset matrix & orthogonalization check (e.g. NVDA,AMD,AAPL,MSFT,QQQ,SPY)",
+    "--max-seconds",
+    type=click.FloatRange(min=1),
+    default=300,
+    help="Per-symbol compute deadline; completed trials are checkpointed",
 )
-@click.option("--lookback", type=str, default="2y", help="Historical lookback (e.g. 6m, 1y, 2y; default: 2y)")
-@click.option("--interval", type=str, default="1d", help="Bar interval (e.g. 1h, 1d; default: 1d)")
-@click.option("--iterations", type=int, default=15, help="Number of genetic search iterations (default: 15)")
-@click.option("--min-sharpe", type=float, default=1.0, help="Minimum OOS Sharpe threshold (default: 1.0)")
-@click.option("--min-dsr", type=float, default=0.85, help="Minimum Deflated Sharpe Ratio (default: 0.85)")
-@click.option(
-    "--auto-promote", is_flag=True, default=False, help="Automatically promote top qualifying alpha to production"
-)
+@click.option("--min-sharpe", type=float, default=1.0)
+@click.option("--min-dsr", type=click.FloatRange(0, 1), default=0.95)
 @coro
 async def alpha_mine_cmd(
-    symbol: str,
-    symbols: str,
-    lookback: str,
-    interval: str,
-    iterations: int,
-    min_sharpe: float,
-    min_dsr: float,
-    auto_promote: bool,
-) -> None:
-    """Execute formulaic alpha mining on market data."""
-    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] if symbols else [symbol.strip().upper()]
-    primary_sym = symbol_list[0]
-
-    click.echo(
-        f"\n🔍 Fetching historical data for {', '.join(symbol_list)} (lookback: {lookback}, interval: {interval})..."
+    symbol, symbols, lookback, interval, iterations, seed, min_sharpe, min_dsr, method, universe, feed, max_seconds
+):
+    """Persist every trial. Mining never consumes holdout or promotes an alpha."""
+    symbol_universe = (
+        ETF_RESEARCH_UNIVERSE.symbols
+        if universe == "etf32"
+        else tuple(sorted({s.strip().upper() for s in (symbols or symbol).split(",") if s.strip()}))
     )
-
-    # Ingest data via yfinance
-    loop = asyncio.get_running_loop()
-    dfs: dict[str, pd.DataFrame] = {}
-    for sym in symbol_list:
-        download_func = functools.partial(yf.download, sym, period=lookback, interval=interval, progress=False)
-        df: pd.DataFrame = await loop.run_in_executor(None, download_func)
-        if not df.empty and len(df) >= 50:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            dfs[sym] = df
-
-    if primary_sym not in dfs:
-        click.echo(f"⚠️  Insufficient data retrieved for primary symbol {primary_sym}. Mining aborted.")
-        return
-
-    primary_df = dfs[primary_sym]
-    click.echo(
-        f"🧠 Mining alpha expressions across {len(primary_df)} bars on {primary_sym} ({iterations} iterations + institutional catalog)..."
-    )
-    miner = AlphaMiner()
-    candidates = await loop.run_in_executor(
-        None,
-        lambda: miner.mine(
-            df=primary_df,
-            iterations=iterations,
-            include_catalog=True,
-            min_sharpe=min_sharpe,
-            min_dsr=min_dsr,
-        ),
-    )
-
-    if not candidates:
-        click.echo("\nNo alpha candidates met the minimum statistical gating filters.")
-        click.echo("💡 Tip: Try relaxing --min-sharpe or increasing --iterations.\n")
-        return
-
-    click.echo("\n" + format_mined_alphas_table(candidates))
-
-    # Cross-Asset Qualification & Orthogonalization Check
-    mgr = AlphaPromotionManager()
-    active_alphas = mgr.list_active_alphas()
-    evaluator = AlphaExpressionEvaluator()
-
-    primary_returns = primary_df["Close"].pct_change().dropna().to_numpy()
-    incumbent_signals: list[np.ndarray] = []
-    if active_alphas:
-        for act in active_alphas:
+    config = load_config()
+    failures = 0
+    async with alpha_repository() as repository:
+        for research_symbol in symbol_universe:
+            snapshot = await repository.snapshot()
             try:
-                sig = evaluator.evaluate(act.definition.expression, primary_df)
-                aligned = sig.iloc[1:].fillna(0.0).to_numpy()
-                if len(aligned) == len(primary_returns):
-                    incumbent_signals.append(aligned)
-            except Exception:
-                pass
-
-    candidate_qualified_syms: dict[str, list[str]] = {}
-
-    if len(symbol_list) > 1 or active_alphas:
-        click.echo("\n" + "=" * 118)
-        click.echo("🌐 MULTI-ASSET QUALIFICATION & SIGNAL ORTHOGONALIZATION MATRIX")
-        click.echo("=" * 118)
-        click.echo(
-            f"{'ALPHA ID':<20} | {'SYMBOL':<6} | {'OOS SR':<7} | {'DSR':<6} | {'RANK IC':<8} | {'RESIDUAL IC':<11} | {'ORTHO STATUS':<16} | {'QUALIFIED?'}"
-        )
-        click.echo("-" * 118)
-
-        for c in candidates:
-            c_defn = c.definition
-            candidate_qualified_syms[c_defn.alpha_id] = []
-
-            # Orthogonalization check on primary dataset
-            residual_ic_str = "N/A"
-            ortho_status = "BASELINE"
-            if incumbent_signals:
-                try:
-                    c_sig = evaluator.evaluate(c_defn.expression, primary_df)
-                    c_aligned = c_sig.iloc[1:].fillna(0.0).to_numpy()
-                    if len(c_aligned) == len(primary_returns):
-                        c_ortho, _, _ = gram_schmidt_orthogonalize(c_aligned, incumbent_signals)
-                        is_novel, res_ic, _ = evaluate_residual_predictive_power(c_ortho, primary_returns)
-                        residual_ic_str = f"{res_ic:+.3f}"
-                        ortho_status = "✅ ORTHOGONAL" if is_novel else "⚠️ REDUNDANT"
-                except Exception as e:
-                    logger.debug("Orthogonalization failed: %s", e)
-                    ortho_status = "ERROR"
-            elif not active_alphas:
-                ortho_status = "✅ PIONEER"
-
-            for sym in symbol_list:
-                sym_df = dfs.get(sym)
-                if sym_df is None:
-                    continue
-                eval_func = functools.partial(miner.evaluate_alpha, c_defn, sym_df)
-                sym_cand = await loop.run_in_executor(None, eval_func)
-                if sym_cand:
-                    m = sym_cand.metrics
-                    qual = m.sharpe_oos >= min_sharpe and m.dsr >= min_dsr
-                    if qual and "REDUNDANT" not in ortho_status:
-                        candidate_qualified_syms[c_defn.alpha_id].append(sym)
-                    qual_str = "✅ YES" if qual else "❌ NO"
+                frame = await asyncio.to_thread(
+                    download_bars, research_symbol, lookback, interval, feed=feed, config=config
+                )
+                manifest = DatasetManifest.from_frame(
+                    frame,
+                    symbol=research_symbol,
+                    timeframe=interval,
+                    feed="yfinance" if feed == "yfinance" else f"alpaca:{config.market_data.alpaca_feed}",
+                    adjustment="raw",
+                    universe_version=ETF_RESEARCH_UNIVERSE.version_id
+                    if universe == "etf32"
+                    else "explicit:" + ",".join(symbol_universe),
+                )
+                path = await asyncio.to_thread(save_dataset, frame, artifact_directory(), manifest.content_hash)
+                miner = AlphaMiner(seed=seed)
+                candidates = await asyncio.to_thread(
+                    miner.mine,
+                    frame,
+                    iterations=iterations,
+                    timeframe=interval,
+                    symbol=research_symbol,
+                    min_sharpe=min_sharpe,
+                    min_dsr=min_dsr,
+                    method=method,
+                    max_seconds=max_seconds,
+                )
+                run_id = uuid4().hex
+                await repository.record_run(
+                    run_id,
+                    {**miner.last_run, "environment": await asyncio.to_thread(research_environment)},
+                    {
+                        **manifest.to_dict(),
+                        "artifact": str(path),
+                        "holdout_start": str(frame.index[miner.last_run["holdout_start"]]),
+                        "incumbents": [d.to_dict() for d in snapshot.active],
+                    },
+                )
+                for trial in miner.last_run["trials"]:
+                    await repository.register(AlphaDefinition.from_dict(trial["definition"]), actor="research_worker")
+                click.echo(
+                    f"{research_symbol}: run {run_id}; {miner.last_run['trial_count']} trials, {len(candidates)} discovery finalists; holdout untouched"
+                )
+                for candidate in candidates[:10]:
                     click.echo(
-                        f"{c_defn.alpha_id:<20} | {sym:<6} | {m.sharpe_oos:>7.2f} | {m.dsr:>6.2f} | {m.rank_ic_mean:>+8.3f} | {residual_ic_str:>11} | {ortho_status:<16} | {qual_str}"
+                        f"  {candidate.definition.version_id} {candidate.definition.expression} | validation SR {candidate.metrics.sharpe_oos:.3f} DSR {candidate.metrics.dsr:.4f}"
                     )
-        click.echo("=" * 118 + "\n")
-
-    if candidates and auto_promote:
-        top_candidate = candidates[0]
-        top_id = top_candidate.definition.alpha_id
-        eligible_for_top = candidate_qualified_syms.get(top_id) or ([primary_sym] if primary_sym in dfs else None)
-        rec = mgr.promote(
-            alpha=top_candidate,
-            promoted_by="auto_pipeline",
-            allocation_weight=0.10,
-            notes=f"Auto-promoted from {primary_sym} mining (OOS SR: {top_candidate.metrics.sharpe_oos:.2f}, DSR: {top_candidate.metrics.dsr:.2f})",
-            eligible_symbols=eligible_for_top,
-        )
-        syms_display = ", ".join(rec.eligible_symbols) if rec.eligible_symbols else "ALL"
-        click.echo(
-            f"\n✅ AUTO-PROMOTED: '{rec.alpha_id}' registered into production desk (Alloc: {rec.allocation_weight * 100:.0f}%, Universe: {syms_display})\n"
-        )
+                click.echo("Discovery only; promotion requires frozen holdout qualification and shadow evidence.")
+            except (ValueError, ArithmeticError, OSError) as exc:
+                failures += 1
+                await repository.record_failure(
+                    uuid4().hex,
+                    symbol=research_symbol,
+                    timeframe=interval,
+                    error=f"{type(exc).__name__}: data_or_discovery_failed",
+                )
+                click.echo(f"{research_symbol}: failed ({type(exc).__name__}); rejection persisted", err=True)
+    if failures:
+        raise click.ClickException(f"{failures} symbol runs failed; completed symbol checkpoints retained")
 
 
-@alpha_group.command("inspect", help="Display detailed quantitative tearsheet for an alpha")
-@click.argument("alpha_id", type=str)
-@click.option("--symbol", type=str, default="SPY", help="Benchmark symbol (default: SPY)")
-@click.option("--lookback", type=str, default="2y", help="Historical lookback (default: 2y)")
-@click.option("--interval", type=str, default="1d", help="Bar interval (e.g. 1h, 1d; default: 1d)")
+@alpha_group.command("qualify")
+@click.argument("run_id")
+@click.argument("version_id")
 @coro
-async def alpha_inspect_cmd(alpha_id: str, symbol: str, lookback: str, interval: str) -> None:
-    """Inspect and evaluate an alpha expression in detail."""
-    # Check catalog first, then promoted records
-    catalog = AlphaCatalog()
-    definition = catalog.get(alpha_id)
+async def alpha_qualify_cmd(run_id, version_id):
+    """Consume a frozen finalist's holdout once and persist pass/fail reasons."""
+    async with alpha_repository() as repository:
+        run = await repository.get(f"run/{run_id}")
+        if not run:
+            raise click.ClickException("Unknown run")
+        bars = await asyncio.to_thread(load_dataset, Path(run["manifest"]["artifact"]))
+        decision = await AlphaPromotionService(repository).qualify(run_id, version_id, bars)
+        click.echo(json.dumps(decision, indent=2))
+
+
+@alpha_group.command("import")
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
+@coro
+async def alpha_import_cmd(path):
+    """Import historical YAML as unqualified shadow versions; never activate orders."""
+    definitions = await asyncio.to_thread(read_alpha_definitions, path)
+    async with alpha_repository() as repository:
+        for definition in definitions:
+            await repository.register(definition, actor="yaml_import")
+            snapshot = await repository.snapshot()
+            if definition in snapshot.active or definition in snapshot.shadow:
+                continue
+            await repository.set_shadow(
+                definition.version_id, actor="yaml_import", expected_generation=snapshot.generation
+            )
+        click.echo(f"Imported {len(definitions)} unqualified shadow versions. Existing positions unchanged.")
+
+
+@alpha_group.command("export")
+@coro
+async def alpha_export_cmd():
+    async with alpha_repository() as repository:
+        click.echo(json.dumps(asdict(await repository.snapshot()), indent=2, default=str))
+
+
+def lifecycle_command(name):
+    @alpha_group.command(name)
+    @click.argument("version_id")
+    @click.option(
+        "--generation", type=int, required=True, help="Observed registry generation; stale changes are rejected"
+    )
+    @coro
+    async def command(version_id, generation):
+        async with alpha_repository() as repository:
+            operation = {"promote": repository.promote, "shadow": repository.set_shadow, "demote": repository.demote}[
+                name
+            ]
+            updated = await operation(version_id, actor="cli_operator", expected_generation=generation)
+            click.echo(
+                f"{name}: {version_id}; registry generation {updated}. Effective next scan; existing positions retain protection."
+            )
+
+    return command
+
+
+for _name in ("promote", "shadow", "demote"):
+    lifecycle_command(_name)
+
+
+@alpha_group.command("inspect")
+@click.argument("identity")
+@coro
+async def alpha_inspect_cmd(identity):
+    """Inspect exact persisted evidence, or a catalog hypothesis without recomputing it."""
+    async with alpha_repository() as repository:
+        row = await repository.get(f"version/{identity}")
+        if row:
+            click.echo(
+                json.dumps({**row, "qualification": await repository.get(f"qualification/{identity}")}, indent=2)
+            )
+            return
+    definition = AlphaCatalog().get(identity)
     if not definition:
-        mgr = AlphaPromotionManager()
-        rec = mgr.get_record(alpha_id)
-        if rec:
-            definition = rec.definition
-
-    if not definition:
-        click.echo(f"❌ Alpha '{alpha_id}' not found in catalog or promoted records.")
-        return
-
-    click.echo(
-        f"\n🔬 Evaluating {definition.alpha_id} across {symbol} historical bars ({lookback}, interval: {interval})..."
-    )
-    loop = asyncio.get_running_loop()
-    df: pd.DataFrame = await loop.run_in_executor(
-        None, lambda: yf.download(symbol, period=lookback, interval=interval, progress=False)
-    )
-
-    if df.empty or len(df) < 50:
-        click.echo("⚠️  Insufficient data retrieved.")
-        return
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    miner = AlphaMiner()
-    candidate = await loop.run_in_executor(None, lambda: miner.evaluate_alpha(definition, df))
-
-    if not candidate:
-        click.echo("❌ Evaluation failed on the given market dataset.")
-        return
-
-    click.echo("\n" + format_alpha_inspection_report(candidate) + "\n")
+        raise click.ClickException("Unknown version or catalog ID")
+    click.echo(json.dumps(definition.to_dict(), indent=2))
 
 
-@alpha_group.command("promote", help="Manually promote an alpha to production paper trading")
-@click.argument("alpha_id", type=str)
-@click.option("--allocation", type=float, default=0.10, help="Portfolio risk allocation weight (default: 0.10)")
-@click.option(
-    "--symbols",
-    type=str,
-    default="",
-    help="Comma-separated eligible symbols (e.g. NVDA,AMD; default: all)",
-)
-@click.option(
-    "--timeframe",
-    type=str,
-    default=None,
-    help="Candle timeframe override (e.g. '15m', '1h', '4h', '1d')",
-)
-@click.option("--notes", type=str, default="", help="Operational audit notes")
-def alpha_promote_cmd(alpha_id: str, allocation: float, symbols: str, timeframe: str | None, notes: str) -> None:
-    """Promote an alpha by ID to production."""
-    catalog = AlphaCatalog()
-    defn = catalog.get(alpha_id)
-    if not defn:
-        mgr = AlphaPromotionManager()
-        rec = mgr.get_record(alpha_id)
-        if rec:
-            defn = rec.definition
-
-    if not defn:
-        click.echo(f"❌ Alpha '{alpha_id}' not found. Cannot promote.")
-        return
-
-    if timeframe:
-        defn.timeframe = timeframe.strip().lower()
-
-    symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] if symbols else None
-
-    mgr = AlphaPromotionManager()
-    rec = mgr.promote(
-        alpha=defn,
-        promoted_by="cli_operator",
-        allocation_weight=allocation,
-        notes=notes or "Manually promoted via CLI",
-        eligible_symbols=symbols_list,
-    )
-    click.echo(f"\n✅ SUCCESS: Promoted '{rec.alpha_id}' to production desk.")
-    click.echo(f"Allocation Weight: {rec.allocation_weight * 100:.1f}%")
-    syms_display = ", ".join(rec.eligible_symbols) if rec.eligible_symbols else "ALL"
-    click.echo(f"Eligible Symbols:  {syms_display}")
-    click.echo(f"Stored in: {mgr.config_path}\n")
-
-
-@alpha_group.command("demote", help="Demote/retire an active production alpha")
-@click.argument("alpha_id", type=str)
-@click.option("--reason", type=str, default="", help="Reason for demotion")
-@click.option(
-    "--liquidate-positions",
-    is_flag=True,
-    default=False,
-    help="Immediately liquidate any active positions attributed to this alpha",
-)
+@alpha_group.command("test")
+@click.argument("expression")
+@click.option("--symbol", default="SPY")
+@click.option("--lookback", default="5y")
+@click.option("--interval", type=click.Choice(["1d", "4h", "1h", "15m"]), default="1d")
 @coro
-async def alpha_demote_cmd(alpha_id: str, reason: str, liquidate_positions: bool) -> None:
-    """Demote an active alpha and safeguard against zombie positions."""
-    mgr = AlphaPromotionManager()
-    success = mgr.demote(alpha_id, reason=reason)
-    if not success:
-        click.echo(f"\n❌ Alpha '{alpha_id}' not found in promoted records.\n")
-        return
-
-    click.echo(f"\n🛑 SUCCESS: Demoted '{alpha_id}' from production desk.")
-
-    # Check for active positions attributed to this alpha
-    try:
-        copilot, _config = get_copilot_and_config()
-        active_positions = await copilot.db.get_active_positions()
-        matched_positions = [p for p in active_positions if (p.get("strategy") or "").lower() == alpha_id.lower()]
-
-        if matched_positions:
-            click.echo(f"\n⚠️  FOUND {len(matched_positions)} ACTIVE POSITION(S) ATTRIBUTED TO '{alpha_id}':")
-            for p in matched_positions:
-                click.echo(
-                    f"   • Signal #{p['id']}: {p['symbol']} ({p['direction']}, {p.get('quantity', 1)} units @ ${p['entry_price']:.2f})"
-                )
-
-            if liquidate_positions:
-                click.echo("\n⚡ --liquidate-positions specified: Closing positions immediately...")
-                await copilot.broker.connect()
-                for p in matched_positions:
-                    res = await copilot.close_position_manual(p["id"])
-                    clean_res = res.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
-                    click.echo(f"   {clean_res}")
-                click.echo("✅ All attributed positions have been closed.\n")
-            else:
-                click.echo(
-                    "\n🛡️  ACTION NOTICE: Positions remain open under orphan status. Existing stop losses and trailing stops"
-                )
-                click.echo(
-                    "   will manage trade risk until natural exit. To liquidate immediately, rerun with '--liquidate-positions'"
-                )
-                click.echo("   or use 'copilot close <signal_id> --price <price>'.\n")
-        else:
-            click.echo(f"ℹ️  No active positions are currently attributed to '{alpha_id}'. Clean retirement.\n")
-    except Exception as e:
-        click.echo(f"⚠️  Could not inspect active positions: {e}\n")
+async def alpha_test_cmd(expression, symbol, lookback, interval):
+    """Diagnostic expression test; cannot qualify or promote a version."""
+    definition = AlphaDefinition("alpha_diagnostic", "Diagnostic", expression, timeframe=interval)
+    frame = await asyncio.to_thread(download_bars, symbol, lookback, interval)
+    result = await asyncio.to_thread(AlphaMiner().evaluate_alpha, definition, frame)
+    click.echo(json.dumps(result.to_dict() if result else {"reason": "insufficient_data"}, indent=2))
 
 
-@alpha_group.command("test", help="Test an ad-hoc formulaic alpha expression")
-@click.argument("expression", type=str)
-@click.option("--symbol", type=str, default="SPY", help="Benchmark symbol (default: SPY)")
-@click.option("--lookback", type=str, default="2y", help="Historical lookback (default: 2y)")
-@click.option("--interval", type=str, default="1d", help="Bar interval (e.g. 1h, 1d; default: 1d)")
+@alpha_group.command("benchmark")
+@click.argument("run_id")
+@click.option("--method", type=click.Choice(["ridge", "boosted"]), required=True)
+@click.option("--budget", type=click.IntRange(1, 100), default=5)
+@click.option("--seed", type=int, default=20260916)
 @coro
-async def alpha_test_cmd(expression: str, symbol: str, lookback: str, interval: str) -> None:
-    """Validate and test an ad-hoc expression."""
-    evaluator = AlphaExpressionEvaluator()
-    if not evaluator.validate(expression):
-        click.echo(f"❌ Invalid expression syntax: '{expression}'")
-        return
+async def alpha_benchmark_cmd(run_id, method, budget, seed):
+    """Compare ML baselines against a saved dataset without reading its holdout."""
 
-    click.echo(f"\n🧪 Testing expression across {symbol} ({lookback}, interval: {interval})...")
-    loop = asyncio.get_running_loop()
-    df: pd.DataFrame = await loop.run_in_executor(
-        None, lambda: yf.download(symbol, period=lookback, interval=interval, progress=False)
+    async with alpha_repository() as repository:
+        saved = await repository.get(f"run/{run_id}")
+        if not saved:
+            raise click.ClickException("Unknown source run")
+        bars = await asyncio.to_thread(load_dataset, Path(saved["manifest"]["artifact"]))
+        result = await asyncio.to_thread(
+            benchmark_models, bars, timeframe=saved["manifest"]["timeframe"], method=method, budget=budget, seed=seed
+        )
+        identifier = uuid4().hex
+        await repository.record_run(
+            identifier, {**result, "environment": await asyncio.to_thread(research_environment)}, saved["manifest"]
+        )
+        click.echo(json.dumps({"run_id": identifier, **result}, indent=2))
+
+
+@alpha_group.command("portfolio")
+@click.argument("snapshot_path", type=click.Path(exists=True, path_type=Path))
+@coro
+async def alpha_portfolio_cmd(snapshot_path):
+    """Validate/solve a shadow portfolio from an explicit JSON evidence snapshot.
+
+    Input contains snapshot, forecasts, returns (pandas split orient), and optional
+    policy. It must cover all broker holdings and pending reservations. No orders
+    are available through this command.
+    """
+    payload = await asyncio.to_thread(lambda: json.loads(snapshot_path.read_text()))
+    snapshot_data = payload["snapshot"]
+    snapshot_data["as_of"] = datetime.fromisoformat(snapshot_data["as_of"])
+    for key in ("locked_symbols", "shortable", "tradable"):
+        snapshot_data[key] = frozenset(snapshot_data[key])
+    snapshot = PortfolioSnapshot(**snapshot_data)
+    forecasts = tuple(
+        CombinedForecast(
+            **{**f, "observed_at": datetime.fromisoformat(f["observed_at"]), "contributors": tuple(f["contributors"])}
+        )
+        for f in payload["forecasts"]
     )
-
-    if df.empty or len(df) < 50:
-        click.echo("⚠️  Insufficient data.")
-        return
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    defn = AlphaDefinition(
-        alpha_id="alpha_custom_test",
-        name="Custom Ad-Hoc Expression",
-        expression=expression,
+    returns = pd.DataFrame(**payload["returns"])
+    returns.index = pd.to_datetime(returns.index, utc=True)
+    result = await asyncio.to_thread(
+        build_shadow_portfolio,
+        forecasts,
+        returns,
+        snapshot,
+        now=datetime.now(UTC),
+        policy=PortfolioPolicy(**payload.get("policy", {})),
     )
-    miner = AlphaMiner()
-    candidate = await loop.run_in_executor(None, lambda: miner.evaluate_alpha(defn, df))
+    click.echo(json.dumps(result, indent=2))
 
-    if candidate:
-        click.echo("\n" + format_alpha_inspection_report(candidate) + "\n")
-    else:
-        click.echo("❌ Evaluation returned empty results.")
+
+@alpha_group.command("status")
+@coro
+async def alpha_status_cmd():
+    """Show installed registry acknowledgment and latest research observation."""
+    async with alpha_repository() as repository:
+        click.echo(json.dumps(await repository.status(), indent=2))
+
+
+@alpha_group.command("exclude-period")
+@click.option("--symbol", required=True)
+@click.option("--start", required=True, help="Timezone-aware timestamp")
+@click.option("--end", required=True, help="Timezone-aware timestamp")
+@click.option("--trials", type=click.IntRange(min=0), required=True)
+@click.option("--reason", required=True)
+@coro
+async def alpha_exclude_period_cmd(symbol, start, end, trials, reason):
+    """Record external diagnostic trials and prevent reusing their observed period."""
+    async with alpha_repository() as repository:
+        await repository.exclude_observed_interval(
+            symbol=symbol, start=start, end=end, trials=trials, reason=reason, actor="cli_operator"
+        )
+        click.echo("Observed interval excluded from future holdout qualification; trials retained.")

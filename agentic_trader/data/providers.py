@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 import yfinance as yf
+from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
 from alpaca.data.requests import (
     CryptoBarsRequest,
@@ -78,8 +79,10 @@ class AlpacaDataProvider:
         api_secret: str | None = None,
         stock_client: StockHistoricalDataClient | None = None,
         crypto_client: CryptoHistoricalDataClient | None = None,
+        feed: str = "sip",
     ):
         self._name = "alpaca"
+        self.feed = DataFeed(feed)
         self.api_key = api_key
         self.api_secret = api_secret
 
@@ -165,7 +168,14 @@ class AlpacaDataProvider:
             crypto_req = CryptoBarsRequest(symbol_or_symbols=clean_sym, timeframe=tf, start=start, end=end)
             bars = self.crypto_client.get_crypto_bars(crypto_req)
         elif self.stock_client:
-            stock_req = StockBarsRequest(symbol_or_symbols=clean_sym, timeframe=tf, start=start, end=end)
+            stock_req = StockBarsRequest(
+                symbol_or_symbols=clean_sym,
+                timeframe=tf,
+                start=start,
+                end=end,
+                feed=self.feed,
+                adjustment=Adjustment.RAW,
+            )
             bars = self.stock_client.get_stock_bars(stock_req)
         else:
             raise UnsupportedSymbolError("No Alpaca client available")
@@ -188,6 +198,9 @@ class AlpacaDataProvider:
         df = df.rename(columns=rename_map)
         cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
         df = df[cols].dropna()
+        df.attrs.update(
+            feed="alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}", adjustment="raw", timeframe=timeframe
+        )
         return df
 
     def fetch_latest_price(self, symbol: str) -> float | None:
@@ -268,16 +281,17 @@ class YFinanceDataProvider:
             interval = "15m"
 
         if start is not None:
-            raw = yf.download(clean_sym, start=start, end=end, interval=interval, progress=False)
+            raw = yf.download(clean_sym, start=start, end=end, interval=interval, auto_adjust=True, progress=False)
         else:
             default_period = period or (
                 DEFAULT_DAILY_LOOKBACK_PERIOD if interval == "1d" else DEFAULT_INTRADAY_LOOKBACK_PERIOD
             )
-            raw = yf.download(clean_sym, period=default_period, interval=interval, progress=False)
+            raw = yf.download(clean_sym, period=default_period, interval=interval, auto_adjust=True, progress=False)
 
         clean = self._clean_df(raw)
         if clean.empty:
             raise ValueError(f"Yahoo Finance returned empty bars for '{clean_sym}'")
+        clean.attrs.update(feed="yfinance", adjustment="yfinance_auto_adjust", timeframe=timeframe)
         return clean
 
     def fetch_latest_price(self, symbol: str) -> float | None:

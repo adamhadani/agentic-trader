@@ -23,12 +23,12 @@ version does not establish the installed local server version.
 | Macro briefing | Weekdays 12:30, scheduler/system timezone |
 | Retuning | Saturday 02:00, scheduler/system timezone |
 | External watchdog | Every 60 seconds: process check, readiness incidents and due compaction |
-| Alpha miner | Saturday 02:00 local launchd time, 25 iterations; no automatic promotion |
+| Alpha miner | Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol; no promotion |
 
 Intervals are not candle-close aligned. Cron logs mentioning UTC do not change
 the scheduler timezone. Market sessions use exchange time; DB/log timestamps use
-UTC. Configuration and strategy registry load at construction and require restart
-after external edits. Telegram/metrics initialize before immediate jobs; scheduler
+UTC. Configuration loads at construction and requires restart after external edits.
+The journal-backed alpha registry reloads atomically between scans. Telegram/metrics initialize before immediate jobs; scheduler
 jobs coalesce delays and allow one instance each.
 
 Never start another daemon, `listen` or Compose stack alongside the installed bot.
@@ -75,7 +75,7 @@ separate test token/chat and creates no signal. Nonproduction messages are label
 
 ## State and evidence
 
-Schema head: `007_operational_incidents`.
+Schema head: `008_alpha_pipeline`.
 
 | Storage | Responsibility |
 | --- | --- |
@@ -123,12 +123,14 @@ can leave volatility-only policy. Daily-feed admission age remains a gap.
 GEX is an option-chain/model estimate with quality notes and a required real spot.
 
 Research/retuning outputs do not automatically change running strategy parameters.
-External promotion changes require restart; `/alphas` can show file contents that
-differ from a loaded registry. Convex allocation and promotion weights are not live
-sizing. Broker slicing stays disabled pending per-slice ownership/protection.
-The [alpha-stack review](alpha-stack-review.md) documents reproduced causality,
-validation, promotion and optimization gaps, plus the experiment sequence. Its
-strict expected-failure tests are a remediation backlog, not passing guarantees.
+Alpha state now uses the [journal-backed pipeline](alpha-pipeline.md), schema 008.
+CLI, chat and Telegram inspect the same version registry; activation/demotion is
+visible between scans. Imported historical definitions remain unqualified shadow
+versions. `/alphas` shows generation/versions, not fabricated performance or allocation.
+Combined forecast/optimizer targets are shadow-only. Readiness checks current-run
+registry acknowledgment; `alpha status` exposes latest research separately.
+The [historical review](alpha-stack-review.md) and [implementation evidence](alpha-pipeline-implementation.md)
+record the defect reproductions, fixes, tests and remaining empirical gates.
 
 ## Verify deployment separately
 

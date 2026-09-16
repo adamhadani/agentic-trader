@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
+import time
+from dataclasses import asdict, replace
 
 import numpy as np
 import pandas as pd
 
 from agentic_trader.research.alpha.catalog import AlphaCatalog
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
+from agentic_trader.research.alpha.forecasts import ForecastCalibration
 from agentic_trader.research.alpha.metrics import (
     calculate_cross_strategy_correlations,
     calculate_deflated_sharpe_ratio,
     calculate_rank_ic,
-    simulate_alpha_performance,
 )
 from agentic_trader.research.alpha.models import (
     AlphaCandidate,
@@ -20,6 +23,10 @@ from agentic_trader.research.alpha.models import (
     AlphaEvaluationMetrics,
     AlphaOrigin,
 )
+from agentic_trader.research.alpha.search import TypedGeneticSearch
+from agentic_trader.research.alpha.simulation import return_statistics, simulate_strategy
+from agentic_trader.research.alpha.strategy import alpha_scores
+from agentic_trader.research.alpha.validation import ValidationPolicy, frame_digest, purged_folds, validate_sampling
 
 
 logger = logging.getLogger(__name__)
@@ -36,23 +43,28 @@ class AlphaMiner:
         self,
         evaluator: AlphaExpressionEvaluator | None = None,
         catalog: AlphaCatalog | None = None,
+        seed: int = 20260916,
+        policy: ValidationPolicy | None = None,
     ) -> None:
+        self.seed = seed
+        self.rng = random.Random(seed)
+        self.policy = policy or ValidationPolicy()
+        self.last_run: dict = {}
         self.evaluator = evaluator or AlphaExpressionEvaluator()
         self.catalog = catalog or AlphaCatalog()
 
     def generate_candidate_expression(self, seed: int | None = None) -> AlphaDefinition:
         """Generate a syntactically valid randomized formulaic alpha expression."""
-        if seed is not None:
-            random.seed(seed)
+        rng = random.Random(seed) if seed is not None else self.rng
 
         fields = ["close", "volume", "open", "high", "low", "returns"]
         lookbacks = [3, 5, 8, 10, 14, 20, 30]
 
-        f1 = random.choice(fields)
-        f2 = random.choice(fields)
-        d1 = random.choice(lookbacks)
-        d2 = random.choice(lookbacks)
-        d3 = random.choice(lookbacks)
+        f1 = rng.choice(fields)
+        f2 = rng.choice(fields)
+        d1 = rng.choice(lookbacks)
+        d2 = rng.choice(lookbacks)
+        d3 = rng.choice(lookbacks)
 
         templates = [
             # Price-volume momentum synchronization
@@ -99,9 +111,8 @@ class AlphaMiner:
             ),
         ]
 
-        expr, desc, direction, thresh = random.choice(templates)
-        alpha_hash = abs(hash(expr)) % 1000000
-        alpha_id = f"alpha_m_{alpha_hash:06d}"
+        expr, desc, direction, thresh = rng.choice(templates)
+        alpha_id = "alpha_m_" + hashlib.sha256(expr.encode()).hexdigest()[:16]
 
         return AlphaDefinition(
             alpha_id=alpha_id,
@@ -110,185 +121,236 @@ class AlphaMiner:
             description=desc,
             direction=direction,
             entry_threshold=thresh,
-            exit_threshold=0.0,
             timeframe="4h",
             origin=AlphaOrigin.MINED,
         )
+
+    def _candidate(self, definition, df, validation, training, *, total_trials=1, trial_variance=0):
+        scores = alpha_scores(definition, df, self.evaluator)
+        simulations = [simulate_strategy(definition, df, start=a, end=b, scores=scores) for a, b in validation]
+        returns = pd.concat([s["net_returns"] for s in simulations])
+        sim = return_statistics(returns, [t for s in simulations for t in s["trades"]])
+        train = simulate_strategy(definition, df, start=0, end=training, scores=scores)
+        close = df.rename(columns=str.lower).close
+        # The last label in each fold is unknown inside that fold, so exclude it.
+        labels = close.shift(-self.policy.label_horizon) / close - 1
+        indices = np.concatenate([np.arange(a, max(a, b - self.policy.label_horizon)) for a, b in validation])
+        ic, std, ir = calculate_rank_ic(scores.iloc[indices], labels.iloc[indices], window=20)
+        metrics = AlphaEvaluationMetrics(
+            rank_ic_mean=ic,
+            rank_ic_std=std,
+            rank_ic_ir=ir,
+            sharpe_is=train["sharpe"],
+            sharpe_oos=sim["sharpe"],
+            dsr=calculate_deflated_sharpe_ratio(
+                sim["per_bar_sharpe"],
+                total_trials,
+                trial_variance,
+                sim["sample_length"],
+                sim["skewness"],
+                sim["kurtosis"],
+            ),
+            win_rate=sim["win_rate"],
+            profit_factor=sim["profit_factor"],
+            max_drawdown_pct=sim["max_drawdown_pct"],
+            total_trades=sim["total_trades"],
+            annualized_return_pct=sim["annualized_return_pct"],
+            per_bar_sharpe=sim["per_bar_sharpe"],
+            sample_length=sim["sample_length"],
+            skewness=sim["skewness"],
+            kurtosis=sim["kurtosis"],
+        )
+        calibration = None
+        try:
+            calibrated = ForecastCalibration.fit(
+                scores.iloc[: training - self.policy.label_horizon],
+                labels.iloc[: training - self.policy.label_horizon],
+                trained_until=str(df.index[training - 1]),
+            )
+            calibration = asdict(calibrated)
+        except ValueError:
+            pass
+        candidate = AlphaCandidate(
+            definition,
+            metrics,
+            evidence={
+                "version_id": definition.version_id,
+                "validation_intervals": validation,
+                "fold_sharpes": [s["sharpe"] for s in simulations],
+                "trial_count": total_trials,
+                "holdout_evaluated": False,
+                "calibration": calibration,
+                "execution_model": "gtc_limit_conservative_brackets_v2",
+            },
+        )
+        return candidate, returns
 
     def evaluate_alpha(
         self,
         definition: AlphaDefinition,
         df: pd.DataFrame,
-        train_ratio: float = 0.70,
+        train_ratio: float = 0.7,
         benchmark_returns: dict[str, pd.Series] | None = None,
         total_trials: int = 1,
-        trial_variance: float = 0.5,
+        trial_variance: float = 0,
     ) -> AlphaCandidate | None:
-        """
-        Evaluate an alpha expression across In-Sample and Out-of-Sample splits.
-        Computes Sharpe, Rank IC, Deflated Sharpe Ratio, and cross-strategy correlations.
-        """
-        try:
-            alpha_series = self.evaluator.evaluate(definition.expression, df)
-            close = df["Close"] if "Close" in df else df["close"]
-        except Exception as e:
-            logger.debug("Failed evaluating alpha %s (%s): %s", definition.alpha_id, definition.expression, e)
+        """Diagnostic split evaluation; this alone never authorizes promotion."""
+        validate_sampling(df, definition.timeframe)
+        if not 0.2 <= train_ratio <= 0.9:
+            raise ValueError("Invalid training split")
+        if len(df) < 50:
             return None
-
-        n = len(df)
-        if n < 50:
-            return None
-
-        split_idx = int(n * train_ratio)
-        is_alpha, oos_alpha = alpha_series.iloc[:split_idx], alpha_series.iloc[split_idx:]
-        is_close, oos_close = close.iloc[:split_idx], close.iloc[split_idx:]
-
-        # Simulate In-Sample
-        is_sim = simulate_alpha_performance(
-            is_alpha,
-            is_close,
-            entry_threshold=definition.entry_threshold,
-            exit_threshold=definition.exit_threshold,
-            direction=definition.direction,
+        split = int(len(df) * train_ratio)
+        candidate, returns = self._candidate(
+            definition, df, [(split, len(df))], split, total_trials=total_trials, trial_variance=trial_variance
         )
-
-        # Simulate Out-of-Sample
-        oos_sim = simulate_alpha_performance(
-            oos_alpha,
-            oos_close,
-            entry_threshold=definition.entry_threshold,
-            exit_threshold=definition.exit_threshold,
-            direction=definition.direction,
-        )
-
-        # Compute Out-of-Sample Rank IC (1-bar and 5-bar forward return)
-        fwd_returns_1 = oos_close.pct_change(1).shift(-1).fillna(0.0)
-        ic_mean, ic_std, ic_ir = calculate_rank_ic(oos_alpha, fwd_returns_1, window=min(30, len(oos_alpha) // 2))
-
-        # Deflated Sharpe Ratio
-        dsr = calculate_deflated_sharpe_ratio(
-            sharpe=oos_sim["sharpe"],
-            num_trials=max(1, total_trials),
-            variance_trials=max(0.1, trial_variance),
-            sample_length=oos_sim["sample_length"],
-            skewness=oos_sim["skewness"],
-            kurtosis=oos_sim["kurtosis"],
-        )
-
-        # Correlations with active desk strategies
-        correlations: dict[str, float] = {}
         if benchmark_returns:
-            correlations = calculate_cross_strategy_correlations(
-                candidate_returns=oos_sim["net_returns"],
-                benchmark_returns=benchmark_returns,
-            )
-
-        metrics = AlphaEvaluationMetrics(
-            rank_ic_mean=ic_mean,
-            rank_ic_std=ic_std,
-            rank_ic_ir=ic_ir,
-            sharpe_is=is_sim["sharpe"],
-            sharpe_oos=oos_sim["sharpe"],
-            dsr=dsr,
-            win_rate=oos_sim["win_rate"],
-            profit_factor=oos_sim["profit_factor"],
-            max_drawdown_pct=oos_sim["max_drawdown_pct"],
-            total_trades=oos_sim["total_trades"],
-            annualized_return_pct=oos_sim["total_return_pct"],
-        )
-
-        return AlphaCandidate(
-            definition=definition,
-            metrics=metrics,
-            correlations=correlations,
-        )
+            candidate.correlations = calculate_cross_strategy_correlations(returns, benchmark_returns)
+        return candidate
 
     def mine(
         self,
         df: pd.DataFrame,
         iterations: int = 20,
         include_catalog: bool = True,
-        train_ratio: float = 0.70,
-        min_sharpe: float = 1.0,
-        min_dsr: float = 0.85,
+        min_sharpe: float = 1,
+        min_dsr: float = 0.95,
         min_ic: float = 0.01,
-        max_correlation: float = 0.50,
+        max_correlation: float = 0.5,
         benchmark_returns: dict[str, pd.Series] | None = None,
+        *,
+        timeframe: str = "1d",
+        symbol: str | None = None,
+        method: str = "random",
+        max_seconds: float = 300,
     ) -> list[AlphaCandidate]:
-        """
-        Execute exploration search combining pre-cataloged alphas and genetic formula generation.
-        Returns ranked alpha candidates passing minimum quantitative gating filters.
-        """
-        candidates_to_test: list[AlphaDefinition] = []
+        """Seeded discovery over purged validation folds; never inspect the holdout.
 
-        if include_catalog:
-            candidates_to_test.extend(self.catalog.list_alphas())
-
-        # Generate unique formula expressions
-        seen_exprs = {c.expression for c in candidates_to_test}
-        attempts = 0
-        while len(candidates_to_test) < (len(self.catalog.list_alphas()) if include_catalog else 0) + iterations:
-            attempts += 1
-            if attempts > iterations * 5:
+        All trials, including failures, are retained in last_run for journal persistence.
+        Relaxing display gates changes discovery output, never promotion policy.
+        """
+        validate_sampling(df, timeframe)
+        if method not in ("random", "genetic"):
+            raise ValueError("Unknown discovery method")
+        if not np.isfinite(max_seconds) or max_seconds <= 0:
+            raise ValueError("Positive finite compute budget required")
+        deadline = time.monotonic() + max_seconds
+        search = TypedGeneticSearch(self.seed) if method == "genetic" else None
+        if not 0 <= iterations <= 10000:
+            raise ValueError("Trial budget must be between zero and 10000")
+        folds = purged_folds(len(df), self.policy)
+        holdout_start = int(len(df) * (1 - self.policy.holdout_fraction))
+        discovery = df.iloc[:holdout_start]
+        definitions = (
+            [
+                replace(
+                    d,
+                    timeframe=timeframe,
+                    eligible_symbols=(symbol,) if symbol else None,
+                    data_feed=df.attrs.get("feed", "unverified"),
+                )
+                for d in self.catalog.list_alphas()
+            ]
+            if include_catalog
+            else []
+        )
+        seen = {d.expression for d in definitions}
+        budget = len(definitions) + iterations
+        definitions = [
+            replace(d, data_feed=df.attrs.get("feed", "unverified"), adjustment=df.attrs.get("adjustment", "raw"))
+            for d in definitions
+        ]
+        trials, evaluated = [], []
+        semantic_signatures = set()
+        for trial_number in range(budget):
+            if time.monotonic() >= deadline:
                 break
-            cand_def = self.generate_candidate_expression()
-            if cand_def.expression not in seen_exprs and self.evaluator.validate(cand_def.expression):
-                seen_exprs.add(cand_def.expression)
-                candidates_to_test.append(cand_def)
-
-        total_tested = len(candidates_to_test)
-
-        # Preliminary pass to gauge Sharpe variance across all tested trials
-        raw_candidates: list[AlphaCandidate] = []
-        trial_sharpes: list[float] = []
-
-        for c_def in candidates_to_test:
-            evaluated = self.evaluate_alpha(
-                definition=c_def,
-                df=df,
-                train_ratio=train_ratio,
-                benchmark_returns=benchmark_returns,
-                total_trials=total_tested,
-                trial_variance=0.5,  # initial placeholder
+            if trial_number < len(definitions):
+                definition = definitions[trial_number]
+            else:
+                for _ in range(100):
+                    if search:
+                        expression = search.ask()
+                        definition = AlphaDefinition(
+                            "alpha_gp_" + hashlib.sha256(expression.encode()).hexdigest()[:16],
+                            "Genetic candidate",
+                            expression,
+                            timeframe=timeframe,
+                            eligible_symbols=(symbol,) if symbol else None,
+                        )
+                    else:
+                        definition = replace(
+                            self.generate_candidate_expression(),
+                            timeframe=timeframe,
+                            eligible_symbols=(symbol,) if symbol else None,
+                        )
+                    if definition.expression not in seen:
+                        seen.add(definition.expression)
+                        break
+                else:
+                    raise ValueError("Unique candidate budget exhausted")
+            definition = replace(
+                definition, data_feed=df.attrs.get("feed", "unverified"), adjustment=df.attrs.get("adjustment", "raw")
             )
-            if evaluated:
-                raw_candidates.append(evaluated)
-                trial_sharpes.append(evaluated.metrics.sharpe_oos)
-
-        if not raw_candidates:
-            return []
-
-        # Recalculate true empirical variance of trials for DSR precision
-        empirical_variance = float(np.var(trial_sharpes)) if len(trial_sharpes) > 1 else 0.5
-        for c in raw_candidates:
-            c.metrics.dsr = calculate_deflated_sharpe_ratio(
-                sharpe=c.metrics.sharpe_oos,
-                num_trials=total_tested,
-                variance_trials=max(0.1, empirical_variance),
-                sample_length=int(len(df) * (1.0 - train_ratio)),
+            try:
+                scores = alpha_scores(definition, discovery).round(10)
+                signature = hashlib.sha256(pd.util.hash_pandas_object(scores, index=True).values.tobytes()).hexdigest()
+                semantic_key = (signature, definition.entry_threshold, definition.direction)
+                if semantic_key in semantic_signatures:
+                    raise ValueError("Duplicate normalized score behavior in discovery observations")
+                semantic_signatures.add(semantic_key)
+                candidate, returns = self._candidate(
+                    definition, discovery, [(f.validation_start, f.validation_end) for f in folds], folds[0].train_end
+                )
+                if benchmark_returns:
+                    candidate.correlations = calculate_cross_strategy_correlations(returns, benchmark_returns)
+                if search:
+                    search.tell(definition.expression, candidate.metrics.sharpe_oos - 0.01 * len(definition.expression))
+                evaluated.append(candidate)
+                trials.append(
+                    {"definition": definition.to_dict(), "status": "evaluated", "candidate": candidate.to_dict()}
+                )
+            except (ValueError, ArithmeticError) as exc:
+                trials.append({"definition": definition.to_dict(), "status": "rejected", "reason": str(exc)})
+        variance = float(np.var([c.metrics.per_bar_sharpe for c in evaluated], ddof=1)) if len(evaluated) > 1 else 0
+        for c in evaluated:
+            m = c.metrics
+            m.dsr = calculate_deflated_sharpe_ratio(
+                m.per_bar_sharpe, len(trials), variance, m.sample_length, m.skewness, m.kurtosis
             )
-
-        # Apply gating criteria
-        qualified: list[AlphaCandidate] = []
-        for c in raw_candidates:
-            if c.metrics.sharpe_oos < min_sharpe:
-                continue
-            if c.metrics.dsr < min_dsr:
-                continue
-            if c.metrics.rank_ic_mean < min_ic:
-                continue
-            # Correlation check
-            if c.correlations:
-                max_observed_corr = max(abs(v) for v in c.correlations.values())
-                if max_observed_corr > max_correlation:
-                    continue
-            qualified.append(c)
-
-        # Rank candidates by composite score: 0.5 * Sharpe + 0.3 * DSR + 0.2 * IC_IR
-        def _score(cand: AlphaCandidate) -> float:
-            m = cand.metrics
-            ic_part = max(0.0, min(2.0, m.rank_ic_ir))
-            return float(0.5 * m.sharpe_oos + 0.3 * m.dsr + 0.2 * ic_part)
-
-        qualified.sort(key=_score, reverse=True)
+            c.evidence["trial_count"] = len(trials)
+            c.evidence["trial_variance"] = variance
+        # Capture updated trial metrics, not stale pre-adjustment dictionaries.
+        by_version = {c.definition.version_id: c for c in evaluated}
+        for trial in trials:
+            if trial["status"] == "evaluated":
+                trial["candidate"] = by_version[AlphaDefinition.from_dict(trial["definition"]).version_id].to_dict()
+        self.last_run = {
+            "seed": self.seed,
+            "status": "completed" if len(trials) == budget else "budget_exhausted",
+            "max_seconds": max_seconds,
+            "requested_trials": budget,
+            "method": method,
+            "policy": asdict(self.policy),
+            "timeframe": timeframe,
+            "discovery_hash": frame_digest(discovery),
+            "holdout_start": holdout_start,
+            "trial_count": len(trials),
+            "trials": trials,
+        }
+        qualified = [
+            c
+            for c in evaluated
+            if c.metrics.sharpe_oos >= min_sharpe
+            and c.metrics.dsr >= min_dsr
+            and c.metrics.rank_ic_mean >= min_ic
+            and all(abs(v) <= max_correlation for v in c.correlations.values())
+            and c.metrics.sample_length > 0
+        ]
+        qualified.sort(
+            key=lambda c: (
+                -(0.5 * c.metrics.sharpe_oos + 0.3 * c.metrics.dsr + 0.2 * max(0, min(2, c.metrics.rank_ic_ir))),
+                c.definition.version_id,
+            )
+        )
         return qualified

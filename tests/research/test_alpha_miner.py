@@ -21,7 +21,7 @@ def synthetic_ohlcv() -> pd.DataFrame:
     open_p = (high + low) / 2.0
     volume = np.random.uniform(500, 2000, size=n)
 
-    return pd.DataFrame(
+    frame = pd.DataFrame(
         {
             "open": open_p,
             "high": high,
@@ -31,6 +31,8 @@ def synthetic_ohlcv() -> pd.DataFrame:
         },
         index=dates,
     )
+    frame.attrs["timeframe"] = "4h"
+    return frame
 
 
 def test_generate_candidate_expression():
@@ -50,7 +52,6 @@ def test_evaluate_alpha(synthetic_ohlcv: pd.DataFrame):
         expression="delta(close, 3)",
         direction="bi_directional",
         entry_threshold=0.5,
-        exit_threshold=0.0,
     )
     candidate = miner.evaluate_alpha(defn, synthetic_ohlcv, total_trials=5)
     assert candidate is not None
@@ -66,6 +67,7 @@ def test_mine_with_relaxed_gates(synthetic_ohlcv: pd.DataFrame):
     # Relaxed gating criteria to ensure some candidates pass on synthetic data
     candidates = miner.mine(
         synthetic_ohlcv,
+        timeframe="4h",
         iterations=5,
         include_catalog=True,
         min_sharpe=-2.0,

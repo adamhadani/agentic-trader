@@ -12,7 +12,7 @@ from agentic_trader.presentation.formatters import (
     TelegramHtmlFormatter,
     TerminalFormatter,
 )
-from agentic_trader.research.alpha.models import AlphaDefinition, PromotedAlphaRecord
+from agentic_trader.research.alpha.models import AlphaDefinition, RegistrySnapshot
 
 
 def test_terminal_formatter_positions():
@@ -261,33 +261,15 @@ def test_presentation_error_and_edge_branches():
 
 
 def test_format_alphas_dashboard_html_universe():
-    rec_targeted = PromotedAlphaRecord(
-        alpha_id="alpha_wq_053",
-        definition=AlphaDefinition(
-            alpha_id="alpha_wq_053",
-            name="WQ 53",
-            expression="delta(close, 5)",
-            eligible_symbols=["NVDA", "AMD"],
-        ),
-        allocation_weight=0.15,
-        eligible_symbols=["NVDA", "AMD"],
+    targeted = AlphaDefinition("alpha_targeted", "Targeted", "close", eligible_symbols=("NVDA", "AMD"))
+    global_definition = AlphaDefinition("alpha_global", "Global", "close")
+    card = TelegramHtmlFormatter.format_alphas_dashboard_html(
+        RegistrySnapshot(3, (), (targeted, global_definition)), catalog_count=10
     )
-    rec_global = PromotedAlphaRecord(
-        alpha_id="alpha_wq_006",
-        definition=AlphaDefinition(
-            alpha_id="alpha_wq_006",
-            name="WQ 6",
-            expression="ts_corr(open, volume, 10)",
-            eligible_symbols=None,
-        ),
-        allocation_weight=0.10,
-        eligible_symbols=None,
-    )
-
-    card = TelegramHtmlFormatter.format_alphas_dashboard_html([rec_targeted, rec_global], catalog_count=10)
-    assert "NVDA, AMD" in card
-    assert "ALL (Global)" in card
-    assert "FORMULAIC ALPHA INTELLIGENCE" in card
+    assert "AMD, NVDA" in card
+    assert "Unqualified universe" in card
+    assert "Shadow: 2" in card
+    assert "--auto-promote" not in card
 
 
 def test_telegram_html_sanitizer():

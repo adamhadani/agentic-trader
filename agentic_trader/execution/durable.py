@@ -45,6 +45,9 @@ class EventKind(StrEnum):
     LEDGER_CHECKPOINT = "ledger_checkpoint"
     INCIDENT_CHANGED = "incident_changed"
     HEALTH_COMPACTED = "health_compacted"
+    ALPHA_RESEARCH = "alpha_research"
+    ALPHA_REGISTRY = "alpha_registry"
+    ALPHA_FORECAST = "alpha_forecast"
 
 
 class NotificationKind(StrEnum):

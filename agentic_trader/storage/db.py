@@ -339,6 +339,8 @@ class SignalDatabase:
         contract: str,
         strategy: str,
         hours: int = DEFAULT_DUPLICATE_SIGNAL_WINDOW_HOURS,
+        timeframe: str | None = None,
+        alpha_version: str | None = None,
     ) -> bool:
         """Check if an active or recent signal was emitted for this contract and strategy within `hours`."""
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
@@ -354,6 +356,10 @@ class SignalDatabase:
                 .order_by(SignalRecord.timestamp.desc())
                 .limit(1)
             )
+            if timeframe is not None:
+                stmt = stmt.where(SignalRecord.timeframe == timeframe)
+            if alpha_version is not None:
+                stmt = stmt.where(SignalRecord.alpha_version == alpha_version)
             res = await session.execute(stmt)
             return res.scalar_one_or_none() is not None
 
@@ -373,6 +379,10 @@ class SignalDatabase:
         asset_class: str = AssetClass.FUTURES,
         quantity: float = 1.0,
         notification: dict[str, Any] | None = None,
+        timeframe: str | None = None,
+        alpha_version: str | None = None,
+        alpha_policy: dict[str, Any] | None = None,
+        decision_provenance: dict[str, Any] | None = None,
     ) -> int:
         """Insert a new trade signal record into the database."""
         async with self.session_factory() as session:
@@ -384,6 +394,10 @@ class SignalDatabase:
                 timestamp=datetime.now(UTC),
                 contract=contract,
                 strategy=strategy,
+                timeframe=timeframe,
+                alpha_version=alpha_version,
+                alpha_policy=json.dumps(alpha_policy, allow_nan=False) if alpha_policy else None,
+                decision_provenance=json.dumps(decision_provenance, allow_nan=False) if decision_provenance else None,
                 direction=str(direction),
                 entry_price=float(entry_price),
                 stop_loss=float(stop_loss),

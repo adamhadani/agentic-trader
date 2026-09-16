@@ -6,13 +6,17 @@ import pytest
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import AssetClass
+from agentic_trader.research.alpha.models import RegistrySnapshot
 from agentic_trader.screeners.base import ScreenerCandidate
 
 
 @pytest.fixture
 def mock_copilot():
     cfg = AppConfig()
-    copilot = TradingCopilot(config=cfg, db=AsyncMock())
+
+    repository = AsyncMock()
+    repository.snapshot.return_value = RegistrySnapshot(0, (), ())
+    copilot = TradingCopilot(config=cfg, db=AsyncMock(), alpha_repository=repository)
     copilot.db = AsyncMock()
     copilot.db.get_state.return_value = None
     copilot.db.get_active_notional_exposure.return_value = 0.0

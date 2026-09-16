@@ -25,6 +25,7 @@ from agentic_trader.constants import (
     StrategyType,
 )
 from agentic_trader.market.session import MarketSessionProtocol
+from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, bracket_prices, entry_limit
 from agentic_trader.screeners.base import ScreenerCandidate
 
 
@@ -125,7 +126,11 @@ class RiskEvaluator:
             multiplier = contract_info.multiplier if contract_info else 5.0
             tick_size = contract_info.tick_size if contract_info else 0.25
 
-        entry = candidate.current_price
+        entry = (
+            entry_limit(candidate.current_price, AlphaExecutionPolicy(**candidate.alpha_policy))
+            if candidate.alpha_policy
+            else candidate.current_price
+        )
         min_stop_distance = self.config.risk.min_stop_atr_multiple * candidate.atr_14
 
         if str(candidate.direction).upper() in ("LONG", str(Direction.LONG)):
@@ -149,6 +154,20 @@ class RiskEvaluator:
             target_distance = round(stop_distance * self.config.risk.min_risk_reward_ratio, 2)
             take_profit = round(round((entry - target_distance) / tick_size) * tick_size, 2)
             target_distance = round(entry - take_profit, 2)
+
+        if candidate.alpha_policy is not None:
+            policy = AlphaExecutionPolicy(**candidate.alpha_policy)
+            if abs(policy.tick_size - tick_size) > 1e-9:
+                raise ValueError("Alpha execution tick differs from instrument policy; revalidate this version")
+            stop_loss, take_profit = bracket_prices(
+                entry,
+                1 if candidate.direction == Direction.LONG else -1,
+                candidate.atr_14,
+                candidate.recent_swing_low,
+                candidate.recent_swing_high,
+                policy,
+            )
+            stop_distance, target_distance = abs(entry - stop_loss), abs(take_profit - entry)
 
         # Position sizing: dynamic calculation supporting static, volatility-targeted, and fractional Kelly modes
         sizing_result = calculate_dynamic_sizing(
@@ -212,7 +231,11 @@ class RiskEvaluator:
         sizing_tiers = levels.sizing_tiers
         gating_reasons = levels.gating_reasons
 
-        entry = candidate.current_price
+        entry = (
+            entry_limit(candidate.current_price, AlphaExecutionPolicy(**candidate.alpha_policy))
+            if candidate.alpha_policy
+            else candidate.current_price
+        )
         contract_info = self.config.contracts.get(candidate.contract)
         asset_class = (
             getattr(candidate, "asset_class", None)
@@ -586,11 +609,15 @@ class RiskEvaluator:
                 llm_target_dist = target_distance
                 rr = round(target_distance / stop_distance, 2)
 
+            if candidate.alpha_policy is not None:
+                llm_stop, llm_target = stop_loss, take_profit
+                llm_stop_dist, llm_target_dist = stop_distance, target_distance
+                rr = target_distance / stop_distance
             data["stop_loss"] = llm_stop
             data["take_profit"] = llm_target
             data["stop_distance_points"] = round(llm_stop_dist, 2)
             data["target_distance_points"] = round(llm_target_dist, 2)
-            data["risk_reward_ratio"] = max(min_required_rr, rr)
+            data["risk_reward_ratio"] = rr
             data["risk_dollars"] = round(llm_stop_dist * multiplier * quantity, 2)
             data["reward_dollars"] = round(llm_target_dist * multiplier * quantity, 2)
             data["sizing_tiers"] = sizing_tiers

@@ -116,66 +116,21 @@ as a trading admission rule.
 
 ---
 
-## 5. Formulaic alpha screeners and research
+## 5. Formulaic alphas and portfolio research
 
-Read the [alpha-stack review](alpha-stack-review.md) for reproduced defects,
-measurement results and the hardening/experiment plan. Current statistics and
-promotion records do not establish a validated live strategy.
+The [alpha pipeline](alpha-pipeline.md) defines causal DSL semantics, shared
+research/live scoring and brackets, purged validation, one-use holdouts, statistical
+limits, immutable promotion and shadow evidence. Imported historical hypotheses
+cannot create new formulaic risk until qualified. Existing positions retain protection.
 
-### DSL and discovery
+Multiple formulaic versions can be active for disjoint eligible instruments. A scan
+uses one registry snapshot; timeframe filtering precedes conflict resolution and
+same-symbol proposals have one deterministic owner. The durable FIFO continues to
+reserve/revalidate actual execution capacity. Calibrated combination and constrained
+CVXPY/Clarabel targets are shadow-only pending portfolio fill/protection attribution.
 
-The AST evaluator supports OHLCV/derived fields, arithmetic, comparisons and
-registered rolling operators. It uses no Python `eval()`. However, validation lacks
-operator type/arity/lag/resource contracts. Global `rank`/`scale` read the full
-series, negative lags expose future bars, and missing observations may become zero.
-`ts_argmax` returns the normalized position of the maximum in the window, not bars
-since the maximum. These contracts must be repaired before expanding the grammar.
-
-`AlphaMiner` samples six randomized templates and a seven-formula catalog. It is
-not an evolutionary/genetic algorithm. Some catalog WorldQuant names refer to
-adaptations rather than the corresponding published expressions. The CLI mines on
-the first requested symbol and evaluates survivors on the others. Defaults are two
-years of daily bars and 15 random candidates; launchd requests 25 each Saturday.
-Generated definitions still specify 4h. The scheduled job does not auto-promote.
-
-### Live decisions and lifecycle
-
-`FormulaicAlphaStrategy` evaluates promoted definitions from the loaded registry.
-It standardizes scores over 30 bars (minimum five) and emits LONG/SHORT candidates
-at the configured entry threshold. It may substitute another timeframe when data
-is missing, a documented defect. Research uses a different 50-bar normalization
-and score-decay exits. Live execution instead follows evaluator sizing, configured
-brackets, approval, entry admission and position monitoring; the definition's
-`exit_threshold` is not an active live score-exit policy.
-
-Candidates carry a logical strategy ID. Definitions can currently be overwritten
-under that ID, so it is not an immutable strategy-version reference. External
-YAML changes require restart; CLI and Telegram file reports can differ from the
-running registry. `eligible_symbols: null` permits screening across configured
-instruments; an explicit list restricts routing but does not prove validation.
-Promotion weights are metadata and do not determine live capital allocation.
-
-### Validation, orthogonality and optimization
-
-Research reports rolling forward Rank IC, simulated returns and DSR. The 70/30
-split's trailing segment is used for selection, so it is not an untouched test.
-DSR currently receives annualized Sharpe with an observation-count formula; trial
-accounting and some metric labels also need correction. Do not interpret displayed
-DSR as the probability of a profitable live strategy.
-
-The CLI uses pseudoinverse projection `candidate - A @ pinv(A) @ candidate` to
-measure residual association with formulaic incumbents. It fits the whole sample
-and currently compares to contemporaneous rather than forward returns. Rejected
-or failed novelty evidence can still reach auto-promotion. This is an unresolved
-admission gap, not a reliable orthogonality guarantee.
-
-For weighted residualization, `M = I - X(X'WX)^+ X'W` satisfies `X' W M = 0`;
-it generally is neither symmetric nor neutral under the unweighted `X' M` test.
-Neutral residual scores do not imply neutral executed portfolio weights.
-
-`ConvexAlphaPortfolioOptimizer` is a research-only SLSQP mean-variance/turnover
-optimizer. It has gross, box, optional net-neutrality and factor bounds. It does
-not maximize Sharpe, enforce a fully invested budget or automatically choose an
-inverse-volatility fallback. Input validation, label alignment and independent
-feasibility checks are incomplete. No CLI command or live sizing path applies its
-weights. Existing execution risk caps continue to govern individual entries.
+Weighted residualization uses `M = I - X(X'WX)^+ X'W`, satisfying `X' W M = 0`.
+Residual scores do not establish neutral executed weights or independent profits.
+Incremental predictive validation fits loadings on training data and tests subsequent
+forward labels. Paper admission is still conditional on broker, session, macro,
+operator approval, liquidity and risk observations outside the formula itself.

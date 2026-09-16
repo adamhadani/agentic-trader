@@ -100,14 +100,14 @@ generate_alphaminer_plist() {
         <string>/bin/zsh</string>
         <string>-l</string>
         <string>-c</string>
-        <string>cd "$REPO_DIR" &amp;&amp; if [ -f .envrc ]; then set -a; source .envrc; set +a; fi &amp;&amp; exec "$UV_BIN" run copilot alpha mine --symbols NVDA,AMD,AAPL,MSFT,QQQ,SPY,GOOGL,AMZN,META,TSLA --iterations 25</string>
+        <string>cd "$REPO_DIR" &amp;&amp; if [ -f .envrc ]; then set -a; source .envrc; set +a; fi &amp;&amp; exec "$UV_BIN" run copilot alpha mine --universe etf32 --feed alpaca --interval 1d --lookback 5y --iterations 9 --method genetic --max-seconds 120</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Weekday</key>
         <integer>6</integer>
         <key>Hour</key>
-        <integer>2</integer>
+        <integer>3</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>
@@ -192,7 +192,7 @@ case "${1:-status}" in
         ;;
     run-miner)
         echo "Triggering offline alpha mining run..."
-        cd "$REPO_DIR" && if [ -f .envrc ]; then set -a; source .envrc; set +a; fi && "$UV_BIN" run copilot alpha mine --symbols NVDA,AMD,AAPL,MSFT,QQQ,SPY,GOOGL,AMZN,META,TSLA --iterations 25
+        cd "$REPO_DIR" && if [ -f .envrc ]; then set -a; source .envrc; set +a; fi && "$UV_BIN" run copilot alpha mine --universe etf32 --feed alpaca --interval 1d --lookback 5y --iterations 9 --method genetic --max-seconds 120
         ;;
     start)
         launchctl start "$PLIST_NAME"

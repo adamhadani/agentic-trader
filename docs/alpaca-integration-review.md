@@ -95,12 +95,13 @@ No runtime DB guard is disabled.
    remaining reconciliation/report responsibilities and move remaining
    construction into a composition root. Keep small typed service results separate
    from HTML. The shared close coordinator and broker transport are useful boundaries.
-5. **Remaining async/config work:** synchronous YAML promotion reads/writes remain
-   in chat tools; moving writes to workers requires cross-process locking first.
-   Research shares the executor with trading I/O. The macro tutorial still has
-   explanatory threshold literals, and live trailing still uses initial risk
-   distance despite its historical ATR mode name. Consolidate these policies in
-   their domain modules rather than performing a mechanical string replacement.
+5. **Alpha research integration:** schema 008 removes runtime YAML reads/writes.
+   Historical bars use explicit feed/raw adjustment, with actual-SDK pagination
+   coverage. GTC limit simulation and live share bracket policy; partial fills,
+   queue priority and execution timing still require forward broker evidence.
+   Intraday promotion is blocked because mixed-session bars cannot establish
+   regular-session bracket fills; a finer execution timeline is required.
+   See [alpha pipeline](alpha-pipeline.md).
 
 See the broader [architecture review](architecture-review.md) and
 [operations](production.md) for deployment checks and recovery boundaries.

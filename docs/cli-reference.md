@@ -253,80 +253,32 @@ uv run copilot eval
 
 ---
 
-## 4. Formulaic Alpha Mining & Expression DSL (`copilot alpha`)
+## 4. Alpha discovery and promotion (`copilot alpha`)
 
-Formula evaluation, random-template discovery, research metrics and YAML strategy promotion.
-Read the [alpha-stack review](alpha-stack-review.md) before relying on these metrics
-or promotion gates; it records reproduced defects and the remediation plan.
+The [alpha pipeline guide](alpha-pipeline.md#commands-and-cadence) is the canonical
+command and contract reference. `catalog` lists hypotheses; `list`, `status`,
+`inspect VERSION_ID` and `export` read journal state. `inspect CATALOG_ID` displays
+a definition without downloading data or inventing a performance result.
 
-### `copilot alpha catalog`
-Displays seven catalog formulas, including adaptations whose WorldQuant labels do not all match the original numbered formulas.
 ```bash
-uv run copilot alpha catalog
+uv run copilot alpha mine --symbol SPY --feed alpaca --interval 1d --lookback 5y --iterations 25 --method random
+uv run copilot alpha mine --universe etf32 --feed alpaca --method genetic --iterations 9 --max-seconds 120
+uv run copilot alpha benchmark RUN_ID --method ridge --budget 5
+uv run copilot alpha qualify RUN_ID VERSION_ID
+uv run copilot alpha shadow VERSION_ID --generation N
+uv run copilot alpha promote VERSION_ID --generation N
+uv run copilot alpha demote VERSION_ID --generation N
+uv run copilot alpha portfolio /private/path/observed-snapshot.json
+uv run copilot alpha import config/promoted_alphas.yaml
+uv run copilot alpha test --symbol NVDA --interval 1d -- '-1.0 * delta(ts_rank(volume, 10), 5)'
 ```
 
-### `copilot alpha list`
-Displays all currently promoted production alphas, configured allocation metadata, out-of-sample Sharpe ratios, DSR scores, eligible asset universe (`ELIGIBLE SYMBOLS`), and promotion audit metadata.
-```bash
-uv run copilot alpha list
-```
-
-### `copilot alpha mine`
-Samples random templates on the first requested symbol, then evaluates survivors
-on other requested symbols. Defaults: SPY, two years, daily bars, 15 templates plus
-the catalog, minimum Sharpe 1.0 and DSR 0.85. The 70/30 split uses its trailing
-segment for selection. DSR units, research/live parity and residual qualification
-have known defects. The optional `--auto-promote` writes YAML even in some rejected
-novelty cases; keep it disabled pending the documented fix. Launchd does not enable it.
-```bash
-# Mine alphas across SPY using daily bars (2y lookback, 20 iterations)
-uv run copilot alpha mine --symbol SPY --lookback 2y --interval 1d --iterations 20
-
-# Multi-asset mining matrix & signal orthogonalization check against active desk
-uv run copilot alpha mine --symbols NVDA,AMD,AAPL,MSFT,QQQ,SPY --iterations 15
-
-# Change research display/filter thresholds (not proof of validation)
-uv run copilot alpha mine --symbol QQQ --min-sharpe 1.2 --min-dsr 0.90
-```
-
-### `copilot alpha inspect <alpha_id>`
-Renders the current research metrics for a catalog or promoted alpha. Catalog lookup takes precedence over a promoted version with the same ID, so inspect the definition/timeframe rather than assuming this reproduces the deployed variant.
-```bash
-# Evaluate WorldQuant Alpha 006 on SPY
-uv run copilot alpha inspect alpha_wq_006 --symbol SPY --interval 1d
-
-# Evaluate trend expansion alpha on QQQ
-uv run copilot alpha inspect alpha_trend_expansion --symbol QQQ --interval 1d
-```
-
-### `copilot alpha promote <alpha_id>`
-Promotes a catalog or existing stored definition for paper-desk screening, persisting `config/promoted_alphas.yaml`. This path does not require validated research evidence; allocation is metadata, not a live risk budget. The running daemon requires a restart to load external CLI/file changes. Optionally routes execution to a designated subset of symbols via `--symbols`.
-```bash
-# Promote alpha across all supported symbols
-uv run copilot alpha promote alpha_wq_006 --allocation 0.15 --notes "Baseline institutional alpha"
-
-# Promote alpha restricted to high-beta semiconductor universe
-uv run copilot alpha promote alpha_wq_053 --allocation 0.15 --symbols NVDA,AMD --notes "Semiconductor momentum factor"
-```
-
-### `copilot alpha demote <alpha_id>`
-Marks an alpha demoted in YAML and reports attributed open positions. External changes require restart to affect scans; existing positions retain their monitoring. Optional liquidation uses the shared close service and is subject to broker/session/ownership checks.
-```bash
-# Standard demotion: leaves attributed positions open under orphan status (managed by trailing stops)
-uv run copilot alpha demote alpha_wq_006 --reason "Performance decay"
-
-# Demote and immediately close/liquidate any open positions attributed to this alpha
-uv run copilot alpha demote alpha_wq_006 --reason "Risk override" --liquidate-positions
-```
-
-### `copilot alpha test <expression>`
-Tests an ad-hoc formulaic DSL expression directly against market data and generates an instant quantitative tearsheet.
-```bash
-# Note: Use '--' before expressions starting with negative numbers to avoid Click option parsing collisions
-uv run copilot alpha test --symbol NVDA --interval 1d -- "-1.0 * delta(ts_rank(volume, 10), 5)"
-```
-
----
+`mine` persists all trials and leaves holdout untouched. `qualify` consumes the
+frozen holdout once. Promotion requires exact version, generation, passing evidence,
+deployment data contract and observed shadow history. Import is shadow-only;
+`--auto-promote`, allocation metadata and symbol/timeframe-changing promotion flags
+are removed. Demotion changes future screening only; use the shared close/flatten
+commands separately when liquidation is intended. Portfolio solving is shadow-only.
 
 ## 5. Database Schema Migrations & Administration (`copilot db`)
 

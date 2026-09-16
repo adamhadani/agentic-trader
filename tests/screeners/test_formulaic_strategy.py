@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
 from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.research.alpha.models import (
-    AlphaCandidate,
     AlphaDefinition,
-    AlphaEvaluationMetrics,
     AlphaOrigin,
 )
-from agentic_trader.research.alpha.promotion import AlphaPromotionManager
 from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 from agentic_trader.screeners.registry import StrategyRegistry
 
@@ -59,7 +53,6 @@ def test_formulaic_strategy_evaluation():
         origin=AlphaOrigin.WORLDQUANT_101,
         direction="bi_directional",
         entry_threshold=0.1,
-        exit_threshold=0.0,
         timeframe="4h",
     )
 
@@ -82,57 +75,16 @@ def test_formulaic_strategy_evaluation():
     assert "Alpha alpha_wq_006 triggered" in cand.trigger_detail
 
 
-def test_registry_promoted_alphas_lifecycle():
-    with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as tf:
-        cfg_path = Path(tf.name)
-
-    try:
-        promo_mgr = AlphaPromotionManager(config_path=cfg_path)
-        registry = StrategyRegistry(auto_load_promoted=False)
-
-        # Baseline: no formulaic alphas registered yet
-        assert len(registry.list_strategies()) == 0
-
-        # Promote an alpha
-        defn = AlphaDefinition(
-            alpha_id="alpha_custom_trend",
-            name="Custom Trend Alpha",
-            expression="delta(close, 3)",
-            direction="long",
-            entry_threshold=0.1,
-            timeframe="4h",
-        )
-        metrics = AlphaEvaluationMetrics(
-            rank_ic_mean=0.05,
-            rank_ic_std=0.01,
-            rank_ic_ir=5.0,
-            sharpe_is=2.0,
-            sharpe_oos=1.8,
-            dsr=0.95,
-        )
-        promo_mgr.promote(AlphaCandidate(definition=defn, metrics=metrics), promoted_by="unit_test")
-
-        # Load into registry
-        loaded = registry.load_promoted_alphas(config_path=cfg_path)
-        assert loaded == 1
-        assert "alpha_custom_trend" in registry.list_registered_strategies()
-
-        # Evaluate market data through retrieved strategy
-        strat = registry.get("alpha_custom_trend")
-        assert strat is not None
-        md = create_mock_market_data(n_candles=60, trend=2.0)
-        results = strat.evaluate(md, asset_class=AssetClass.CRYPTO)
-        assert len(results) >= 1
-        assert results[0].strategy == "alpha_custom_trend"
-
-        # Demote and re-sync
-        promo_mgr.demote("alpha_custom_trend", reason="Retiring test alpha")
-        loaded_after = registry.load_promoted_alphas(config_path=cfg_path)
-        assert loaded_after == 0
-        assert "alpha_custom_trend" not in registry.list_registered_strategies()
-    finally:
-        if cfg_path.exists():
-            cfg_path.unlink()
+def test_registry_snapshot_replacement():
+    definition = AlphaDefinition(
+        "alpha_custom_trend", "Custom", "delta(close,3)", entry_threshold=0.1, direction="long"
+    )
+    registry = StrategyRegistry()
+    assert registry.install_alphas((definition,)) == 1
+    strategy = registry.get(definition.alpha_id)
+    assert strategy.definition.version_id == definition.version_id
+    assert registry.install_alphas(()) == 0
+    assert registry.list_strategies() == []
 
 
 def test_formulaic_strategy_eligible_symbols_filtering():

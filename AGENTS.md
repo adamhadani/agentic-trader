@@ -52,10 +52,12 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   Keep TCP/WebSocket and PostgreSQL integration verification separate from the
   optional in-process SDK transport used in restricted environments.
 
-- Read [alpha-stack review](docs/alpha-stack-review.md) before mining/promotion or
-  portfolio-allocation changes. Its strict xfails describe unresolved defects;
-  fix the invariant and remove its mark together. Current mining metrics and YAML
-  weights are not validated live portfolio guarantees.
+- Read [alpha pipeline](docs/alpha-pipeline.md) before mining/promotion or portfolio
+  changes. Keep shared causal scoring/brackets and exact timeframe/feed semantics.
+  Persist every trial; consume holdout intervals before evaluation. Activation uses
+  immutable versions, fresh qualification/shadow evidence and registry CAS; import
+  historical YAML as shadow only. Combined portfolio targets cannot submit orders.
+  Preserve current single-owner execution until fill attribution/protection supports more.
 
 - Account performance uses the [activity ledger](docs/account-ledger.md): exact
   activity IDs, Decimal cash/inventory reconciliation and signed broker cost basis.

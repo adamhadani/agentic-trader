@@ -38,7 +38,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 2. Upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "007_operational_incidents"
+    assert get_current_revision(db_url) == "008_alpha_pipeline"
 
     # Verify tables in PostgreSQL
     with psycopg2.connect(sync_url) as conn, conn.cursor() as cur:
@@ -101,7 +101,7 @@ def test_postgres_migrations_lifecycle(postgres_test_db: str):
 
     # 5. Re-upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "007_operational_incidents"
+    assert get_current_revision(db_url) == "008_alpha_pipeline"
 
 
 @pytest.mark.asyncio
@@ -109,7 +109,7 @@ async def test_postgres_signal_database_operations(postgres_test_db: str):
     db_url = postgres_test_db
     db = SignalDatabase(db_url=db_url)
 
-    assert get_current_revision(db_url) == "007_operational_incidents"
+    assert get_current_revision(db_url) == "008_alpha_pipeline"
 
     sig_id = await db.record_signal(
         contract="NQ",
@@ -183,7 +183,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r3.returncode == 0
-    assert "007_operational_incidents" in r3.stdout
+    assert "008_alpha_pipeline" in r3.stdout
 
     # 4. Downgrade to 001_initial
     r4 = subprocess.run(
@@ -216,7 +216,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r6.returncode == 0
-    assert "007_operational_incidents" in r6.stdout
+    assert "008_alpha_pipeline" in r6.stdout
 
     # 7. History
     r7 = subprocess.run(
@@ -227,7 +227,7 @@ def test_postgres_cli_db_commands(postgres_test_db: str):
         check=False,
     )
     assert r7.returncode == 0
-    assert "007_operational_incidents" in r7.stdout
+    assert "008_alpha_pipeline" in r7.stdout
     assert "001_initial" in r7.stdout
 
     # 8. Clear
@@ -387,7 +387,7 @@ async def test_postgres_workflow_upgrade_preserves_existing_trading_state(postgr
     def snapshot():
         with psycopg2.connect(to_sync_url(postgres_test_db)) as conn, conn.cursor() as cursor:
             cursor.execute(
-                "SELECT 'signals', row_to_json(t)::text FROM signals t UNION ALL "
+                "SELECT 'signals', (to_jsonb(t) - ARRAY['timeframe','alpha_version','alpha_policy','decision_provenance'])::text FROM signals t UNION ALL "
                 "SELECT 'close_requests', row_to_json(t)::text FROM close_requests t UNION ALL "
                 "SELECT 'audit_events', row_to_json(t)::text FROM audit_events t UNION ALL "
                 "SELECT 'system_state', row_to_json(t)::text FROM system_state t ORDER BY 1, 2"
@@ -398,7 +398,7 @@ async def test_postgres_workflow_upgrade_preserves_existing_trading_state(postgr
     assert before
     run_migrations_head(postgres_test_db)
     assert snapshot() == before
-    assert get_current_revision(postgres_test_db) == "007_operational_incidents"
+    assert get_current_revision(postgres_test_db) == "008_alpha_pipeline"
 
 
 async def test_postgres_account_ledger_fences_independent_importers(postgres_test_db):

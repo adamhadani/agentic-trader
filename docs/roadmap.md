@@ -8,16 +8,17 @@ This document tracks the prioritized strategic initiatives for the **Agentic Tra
 
 The historical phases below describe development milestones and intended features.
 The [development notes](development-notes.md) describe verified runtime behavior
-and remaining integration limits. In particular: no automatic alpha reload, no
-`alpha optimize` CLI/live allocation integration, and no candle-aligned interval
+and remaining integration limits. The alpha registry now reloads between scans, and `alpha portfolio` provides shadow
+targets. There is no combined live allocation integration or candle-aligned interval
 scheduler. Phase 36's original isolation was incomplete and is superseded by the
 incident remediation below. The [Alpaca integration review](alpaca-integration-review.md)
 supersedes historical close/stop claims: broker slicing is blocked, exact stop
 replacement confirmation precedes persistence, and critical paths have actual-SDK
 HTTP/WebSocket and PostgreSQL integration coverage.
 The [alpha-stack review](alpha-stack-review.md) supersedes the original Phase 41–43
-research claims: discovery is random-template search, validation/promotion defects
-remain, and portfolio optimization is research-only.
+research claims; its engineering corrections are documented in the
+[alpha pipeline](alpha-pipeline.md). Random/genetic/model-baseline discovery shares
+purged validation. Portfolio optimization remains shadow-only.
 
 ## Phase 45: Test isolation, broker fill authority and operational audit
 
@@ -38,6 +39,7 @@ Schema 006 adds a [reconciled account activity ledger](account-ledger.md), inclu
 partial/external executions, fees/income and replayable evidence. Corporate actions
 and per-signal partial allocation remain unsupported.
 Schema 007 adds [operational incidents and bounded health compaction](operational-monitoring.md).
+Schema 008 adds the [causal alpha pipeline and journal-backed promotion](alpha-pipeline.md).
 Current priorities are maintained in the [architecture review](architecture-review.md);
 the future-horizon table below is historical planning, not the active work queue.
 
@@ -85,7 +87,7 @@ the future-horizon table below is historical planning, not the active work queue
 | **Phase 38** | Live Alpaca Paper Trade Execution, Reconciler Safety & Codebase Simplification | **Completed** | Strict directional opposing side rules, dynamic unit sizing on exit cards, pruning unused shims |
 | **Phase 39** | Conversational Trading Copilot & Agentic Tool Calling via LangGraph, LiteLLM & LangSmith | **Completed** | Stateful ReAct copilot in Telegram with LangGraph, tool palette, LiteLLM provider support, and LangSmith tracing |
 | **Phase 40** | Multi-Asset Macro Intelligence, Yield Curve & Credit Regime Filter | **Completed** | US Treasury curve (3M-30Y), public FRED OAS/Breakevens, compound macro stress index, Telegram `/macro`, morning briefing |
-| **Phase 42** | Signal Orthogonalization Pipeline & Convex Optimization Allocation | **Completed** | Gram-Schmidt signal orthogonalization, residual IC testing, research-only SLSQP mean-variance/turnover solve, universe matrix |
+| **Phase 42** | Signal Orthogonalization Pipeline & Convex Optimization Allocation | **Completed** | Gram-Schmidt signal orthogonalization, residual IC testing, now-superseded SLSQP research solve; see schema 008, universe matrix |
 | **Phase 43** | Consolidated Production Review, Macro Explainer & Operational Resilience | **Completed** | Paper reset, universe visibility, educational macro tutorial briefing, scheduled alpha miner, rollover safety |
 | **Phase 44** | Intraday Real-Time Signal Engine & High-Throughput PostgreSQL 18.6 Backend | **Completed** | 15m/1h intraday market data & scanning, PostgreSQL 18.6 (`postgres:18.6-alpine`) backend with asyncpg & Alembic migrations |
 
@@ -1060,26 +1062,13 @@ Expand macro regime detection beyond single-point VIX and 10Y yield metrics to i
 
 ---
 
-## Phase 41: Formulaic alpha DSL and research scaffold (**Implemented; validation gaps**)
+## Phases 41–42: Alpha research and portfolio foundations (superseded)
 
-Delivered an AST evaluator, seven catalog formulas, random-template generation,
-chronological split metrics, YAML promotion, formulaic screeners, CLI/Telegram/chat
-interfaces and unit coverage. This was not genetic evolution, a full cross-sectional
-engine or a research/live-equivalent execution simulator. The September 16 review
-reproduces causality, DSR units, timeframe/exit parity, identity/provenance and
-promotion defects. See [findings A1–A6](alpha-stack-review.md#findings-and-acceptance-criteria).
-
-## Phase 42: Residualization and allocation library (**Research-only; integration pending**)
-
-Delivered pseudoinverse residualization, residual-correlation diagnostics, weighted
-factor projection, a multi-symbol qualification display and an SLSQP mean-variance/
-turnover optimizer. No live optimizer integration or `alpha optimize` CLI exists.
-The solver supports gross/box and optional net/factor constraints; it does not
-maximize Sharpe, enforce sum-of-weights one, or fall back to inverse volatility.
-Qualification, weighted-projection documentation and solver validation need the
-hardening described in [findings A5–A9](alpha-stack-review.md#findings-and-acceptance-criteria).
-
----
+The original scaffold is superseded by schema 008 and the [alpha pipeline](alpha-pipeline.md).
+Causality, common execution policy, purged validation, per-observation statistics,
+immutable journaled promotion and constrained shadow targets replace the former
+YAML/SLSQP design. See [implementation evidence](alpha-pipeline-implementation.md).
+Portfolio execution and empirical strategy qualification remain gated.
 
 ## Phase 43: Consolidated Production Review, Macro Explainer & Operational Resilience (**Completed**)
 

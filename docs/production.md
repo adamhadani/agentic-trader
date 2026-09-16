@@ -24,10 +24,11 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 - Position monitor: every minute, with additional broker stream wakeups.
 - Macro briefing: weekdays 12:30; retuning: Saturday 02:00. These cron schedules
   inherit scheduler/system timezone. Intervals are not candle-close aligned.
-- Alpha miner: Saturday 02:00 local launchd time, 25 iterations; no auto-promotion.
+- Alpha miner: Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol,
+  5y daily Alpaca data, 120s compute/symbol; no automatic qualification or promotion.
 
-Scans stage suggestions; an operator approves entry orders. Configuration and the
-strategy registry load at construction. External file changes require a restart.
+Scans stage suggestions; an operator approves entry orders. Configuration loads at construction. The journal-backed alpha registry reloads
+atomically between scans; external config edits still require restart.
 
 ## Configuration and state
 
@@ -40,9 +41,9 @@ production default. `--db-path` accepts a URL or SQLite path; `--db-name` explic
 selects a SQLite sandbox. There is no automatic SQLite failover. `data/signals.db`
 is historical and must not be mistaken for the current PostgreSQL database.
 
-Head migration is `007_operational_incidents`. `signals`, `system_state` and
+Head migration is `008_alpha_pipeline`. `signals`, `system_state` and
 `audit_events`, `close_requests`, `work_items`, `domain_events`, `order_projections`,
-`workflow_locks`, `activity_projections`, `ledger_checkpoints` and `incident_projections` hold trading and
+`workflow_locks`, `activity_projections`, `ledger_checkpoints`, `incident_projections` and `alpha_projections` hold trading and
 operational state. Construction currently checks
 migrations, even for informational copilot commands. Back up PostgreSQL before
 schema or historical repairs. Do not use `db clear` to fix contamination: quarantine
@@ -280,7 +281,7 @@ See [Alpaca contract review and integration coverage](alpaca-integration-review.
 
 ## Current schema and monitoring verification
 
-Apply head migration `007_operational_incidents` after the backup and controlled
+Apply head migration `008_alpha_pipeline` after the backup and controlled
 pause. Verify `/readyz` includes fresh successful accounting, reconciliation,
 worker/delivery and Telegram observations. `db ledger` should show no issues and
 zero quantity differences. The runtime verifier must match the clean source
@@ -298,3 +299,19 @@ observations, financial/order/incident events, audit traces, work records and de
 letters are retained. Preview with `db retention`; `--apply` compacts one batch.
 Local files and durable financial/audit history still need capacity planning,
 backups and a tested archive/log-rotation policy.
+
+
+## Alpha pipeline deployment
+
+Back up PostgreSQL, apply schema `008_alpha_pipeline`, and explicitly import
+`config/promoted_alphas.yaml` using `copilot alpha import` once. This retains four
+historical hypotheses in shadow, discarding their unverified promotion claims.
+Existing positions remain monitored with their original protection. No new alpha
+is activated by the migration/import. Confirm `alpha list`, `alpha status` and the
+`alpha_registry` readiness component after the first scan. `/alphas` uses the same
+registry. See [pipeline contracts](alpha-pipeline.md) before any qualification.
+
+Regenerate only the miner plist with `./scripts/launchd.sh install-miner` to apply
+its staggered schedule. This does not start another daemon or Telegram poller.
+Private research artifacts live in `~/.local/state/agentic-trader/research` with
+atomic writes and mode 0600. Retain them with the journal for reproducibility.

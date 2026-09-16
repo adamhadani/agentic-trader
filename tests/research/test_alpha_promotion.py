@@ -1,127 +1,47 @@
-from __future__ import annotations
+from dataclasses import asdict
 
-import tempfile
-from pathlib import Path
-
+import numpy as np
+import pandas as pd
 import pytest
 
-from agentic_trader.research.alpha.models import (
-    AlphaCandidate,
-    AlphaDefinition,
-    AlphaEvaluationMetrics,
-    AlphaStatus,
-)
-from agentic_trader.research.alpha.promotion import AlphaPromotionManager
+from agentic_trader.research.alpha.models import AlphaDefinition
+from agentic_trader.research.alpha.promotion import AlphaPromotionService, block_bootstrap_mean, read_alpha_definitions
+from agentic_trader.research.alpha.validation import ValidationPolicy
 
 
-@pytest.fixture
-def temp_promo_yaml() -> Path:
-    with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as tf:
-        path = Path(tf.name)
-    yield path
-    if path.exists():
-        path.unlink()
-
-
-def test_promotion_manager_lifecycle(temp_promo_yaml: Path):
-    mgr = AlphaPromotionManager(config_path=temp_promo_yaml)
-    assert mgr.load_records() == []
-    assert mgr.list_active_alphas() == []
-
-    defn = AlphaDefinition(
-        alpha_id="alpha_test_001",
-        name="Test Momentum Alpha",
-        expression="delta(close, 5)",
-        description="Testing delta close",
-        origin="unit_test",
-        direction="long",
-        entry_threshold=1.5,
-        exit_threshold=0.0,
-        timeframe="4h",
+def test_yaml_import_is_definition_only(tmp_path):
+    path = tmp_path / "import.yaml"
+    path.write_text(
+        "promoted_alphas:\n- metrics: {dsr: 0.99, sharpe_oos: 9}\n  definition:\n    alpha_id: alpha_test\n    expression: close\n    eligible_symbols: [spy, qqq]\n"
     )
-    metrics = AlphaEvaluationMetrics(
-        rank_ic_mean=0.065,
-        rank_ic_std=0.02,
-        rank_ic_ir=3.25,
-        sharpe_is=2.1,
-        sharpe_oos=1.85,
-        dsr=0.96,
-        win_rate=0.58,
-        profit_factor=1.92,
-        max_drawdown_pct=6.5,
-        annualized_return_pct=18.4,
-        total_trades=42,
+    definitions = read_alpha_definitions(path)
+    assert definitions[0].eligible_symbols == ("QQQ", "SPY")
+    assert not hasattr(definitions[0], "metrics")
+
+
+def test_bootstrap_is_reproducible_and_respects_blocks():
+    returns = pd.Series(np.tile([-0.02, -0.02, 0.03, 0.03], 100))
+    first = block_bootstrap_mean(returns, seed=10)
+    assert first == block_bootstrap_mean(returns, seed=10)
+    assert first[0] < returns.mean() < first[1]
+    with pytest.raises(ValueError, match="Insufficient"):
+        block_bootstrap_mean(returns.iloc[:10], seed=10)
+
+
+@pytest.mark.parametrize("timeframe", ["15m", "1h", "4h"])
+def test_intraday_data_cannot_claim_session_correct_bracket_execution(timeframe):
+    definition = AlphaDefinition(
+        "alpha_session", "Session", "close", timeframe=timeframe, eligible_symbols=("SPY",), data_feed="alpaca:sip"
     )
-    candidate = AlphaCandidate(definition=defn, metrics=metrics)
-
-    # 1. Promote
-    rec = mgr.promote(
-        alpha=candidate,
-        promoted_by="test_suite",
-        allocation_weight=0.15,
-        notes="High DSR alpha",
+    bars = pd.DataFrame(
+        {"open": [100.0] * 100, "high": [101.0] * 100, "low": [99.0] * 100, "close": [100.0] * 100},
+        index=pd.date_range("2025-01-01", periods=100, freq="h", tz="UTC"),
     )
-    assert rec.alpha_id == "alpha_test_001"
-    assert rec.status == AlphaStatus.PROMOTED
-    assert rec.allocation_weight == 0.15
-
-    # Verify persistent reload
-    reloaded = mgr.load_records()
-    assert len(reloaded) == 1
-    assert reloaded[0].alpha_id == "alpha_test_001"
-    assert reloaded[0].metrics is not None
-    assert reloaded[0].metrics.sharpe_oos == 1.85
-    assert reloaded[0].metrics.dsr == 0.96
-
-    # 2. Duplicate promotion updates record in place
-    rec2 = mgr.promote(
-        alpha=candidate,
-        promoted_by="re_promoter",
-        allocation_weight=0.25,
-        notes="Increased allocation",
+    policy = ValidationPolicy()
+    run = {"policy": asdict(policy), "trials": [{"definition": definition.to_dict()}], "holdout_start": 80, "seed": 1}
+    manifest = {"feed": "alpaca:sip", "adjustment": "raw", "incumbents": []}
+    decision = AlphaPromotionService(None, policy)._evaluate(
+        definition, bars, run, manifest, {"trial_count": 1, "trial_variance": 0}
     )
-    assert rec2.allocation_weight == 0.25
-    reloaded2 = mgr.load_records()
-    assert len(reloaded2) == 1
-    assert reloaded2[0].allocation_weight == 0.25
-    assert reloaded2[0].promoted_by == "re_promoter"
-
-    # 3. Demote
-    demoted = mgr.demote(alpha_id="alpha_test_001", demoted_by="test_suite", reason="Retired")
-    assert demoted is not None
-    assert demoted.status == AlphaStatus.DEMOTED
-
-    reloaded_active = mgr.list_active_alphas()
-    assert len(reloaded_active) == 0
-
-    all_recs = mgr.load_records()
-    assert len(all_recs) == 1
-    assert all_recs[0].status == AlphaStatus.DEMOTED
-
-
-def test_promotion_manager_eligible_symbols(temp_promo_yaml: Path):
-    """Verify that eligible_symbols is stored, serialized, and reloaded accurately."""
-    mgr = AlphaPromotionManager(config_path=temp_promo_yaml)
-
-    defn = AlphaDefinition(
-        alpha_id="alpha_wq_053",
-        name="WorldQuant #53",
-        expression="-1.0 * delta(((close - low) - (high - close)) / (close - low + 0.0001), 9)",
-        origin="worldquant_101",
-    )
-
-    rec = mgr.promote(
-        alpha=defn,
-        promoted_by="quant_ops",
-        allocation_weight=0.15,
-        eligible_symbols=["NVDA", "AMD"],
-        notes="High-beta semiconductor alpha",
-    )
-    assert rec.eligible_symbols == ["NVDA", "AMD"]
-    assert rec.definition.eligible_symbols == ["NVDA", "AMD"]
-
-    # Verify reloading from YAML disk
-    reloaded = mgr.load_records()
-    assert len(reloaded) == 1
-    assert reloaded[0].eligible_symbols == ["NVDA", "AMD"]
-    assert reloaded[0].definition.eligible_symbols == ["NVDA", "AMD"]
+    assert not decision["qualified"]
+    assert "intraday_session_execution_unverified" in decision["reasons"]

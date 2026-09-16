@@ -40,7 +40,7 @@ def test_migrations_fresh_lifecycle(tmp_path: Path):
 
     # Upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "007_operational_incidents"
+    assert get_current_revision(db_url) == "008_alpha_pipeline"
 
     # Verify SQLite schema inspection
     with sqlite3.connect(db_file) as conn:
@@ -93,7 +93,7 @@ def test_migrations_fresh_lifecycle(tmp_path: Path):
 
     # Re-upgrade to head
     run_migrations_head(db_url)
-    assert get_current_revision(db_url) == "007_operational_incidents"
+    assert get_current_revision(db_url) == "008_alpha_pipeline"
 
 
 def test_get_history(tmp_path: Path):
@@ -112,7 +112,7 @@ async def test_signal_database_auto_migration(tmp_path: Path):
     db = SignalDatabase(db_path=str(db_file))
 
     # Verify migration stamped
-    assert get_current_revision(db.db_url) == "007_operational_incidents"
+    assert get_current_revision(db.db_url) == "008_alpha_pipeline"
 
     # Verify write and read operations
     sig_id = await db.record_signal(

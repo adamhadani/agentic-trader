@@ -383,6 +383,7 @@ class TrailingStopConfig(BaseModel):
 
 
 class MarketDataConfig(BaseModel):
+    alpaca_feed: str = Field(default="sip", pattern="^(sip|iex)$")
     primary_equities_provider: str = DEFAULT_PRIMARY_EQUITIES_PROVIDER  # ExecutionMode.ALPACA, "yfinance"
     fallback_providers: list[str] = Field(default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS))
     timeout_seconds: float = DEFAULT_DATA_TIMEOUT_SECONDS
@@ -418,7 +419,14 @@ class TelegramConfig(BaseModel):
     poll_audit_interval_seconds: float = Field(default=60, gt=0)
 
 
+class AlphaPipelineConfig(BaseModel):
+    minimum_shadow_sessions: int = Field(default=20, ge=1)
+    minimum_shadow_decisions: int = Field(default=10, ge=1)
+    qualification_max_age_days: int = Field(default=45, ge=1)
+
+
 class AppConfig(BaseModel):
+    alpha_pipeline: AlphaPipelineConfig = Field(default_factory=AlphaPipelineConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     broker_stream: BrokerStreamConfig = Field(default_factory=BrokerStreamConfig)
     environment: RuntimeEnvironment = RuntimeEnvironment.DEVELOPMENT

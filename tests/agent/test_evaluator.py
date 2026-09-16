@@ -1,5 +1,7 @@
 import asyncio
+import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -9,6 +11,7 @@ from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.constants import AssetClass, StrategyType, VolatilityRegime
 from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
+from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
 from agentic_trader.screeners.base import ScreenerCandidate
 
 
@@ -342,3 +345,36 @@ async def test_macro_stress_risk_budget_scaling(evaluator_factory):
     assert eval_high.approved is True
     assert eval_high.quantity < eval_norm.quantity
     assert eval_high.risk_dollars < eval_norm.risk_dollars
+
+
+async def test_llm_cannot_rewrite_versioned_alpha_protection(evaluator_factory, monkeypatch):
+    evaluator = evaluator_factory()
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    candidate = create_candidate()
+    policy = AlphaExecutionPolicy(tick_size=0.25)
+    candidate = candidate.model_copy(update={"alpha_policy": policy.to_dict(), "alpha_version": "frozen-version"})
+    baseline = await evaluator.evaluate_candidate(candidate, use_llm=False)
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "approved": True,
+                            "stop_loss": 5600,
+                            "take_profit": 6500,
+                            "macro_clearance": True,
+                            "thesis_summary": "fixture: try to change policy",
+                        }
+                    )
+                )
+            )
+        ]
+    )
+    completion = AsyncMock(return_value=response)
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", completion)
+    result = await evaluator.evaluate_candidate(candidate, use_llm=True)
+    completion.assert_awaited_once()
+    assert result.stop_loss == baseline.stop_loss
+    assert result.take_profit == baseline.take_profit
+    assert result.thesis_summary == "fixture: try to change policy"

@@ -67,7 +67,9 @@ class MarketDataFetcher:
             self.provider = provider
         else:
             cfg = config or load_config()
-            alpaca_prov = AlpacaDataProvider(api_key=cfg.alpaca_api_key, api_secret=cfg.alpaca_api_secret)
+            alpaca_prov = AlpacaDataProvider(
+                api_key=cfg.alpaca_api_key, api_secret=cfg.alpaca_api_secret, feed=cfg.market_data.alpaca_feed
+            )
             yf_prov = YFinanceDataProvider()
 
             md_cfg = getattr(cfg, "market_data", None)
@@ -108,6 +110,8 @@ class MarketDataFetcher:
             )
             .dropna()
         )
+        resampled.attrs.update(df_1h.attrs)
+        resampled.attrs["timeframe"] = "4h"
         return resampled
 
     def compute_daily_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
