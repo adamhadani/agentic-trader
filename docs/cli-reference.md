@@ -262,6 +262,8 @@ a definition without downloading data or inventing a performance result.
 
 ```bash
 uv run copilot alpha calibrate --seeds 10 --bootstrap-samples 499
+uv run copilot alpha study-plan --output /private/path/new-protocol.json
+uv run copilot alpha study config/research/a1b-v1.json --output /private/path/new-study-directory
 uv run copilot alpha mine --symbol SPY --feed alpaca --interval 1d --lookback 5y --iterations 25 --method random
 uv run copilot alpha mine --universe etf32 --feed alpaca --method genetic --iterations 9 --max-seconds 120
 uv run copilot alpha benchmark RUN_ID --method ridge --budget 5
@@ -285,6 +287,11 @@ commands separately when liquidation is intended. Portfolio solving is shadow-on
 a private report, never promotion evidence. Explicit family count/variance parameters
 define the comparison scenario. See [calibration contracts](alpha-pipeline.md#synthetic-calibration)
 and the [active research roadmap](alpha-roadmap.md).
+
+`study-plan` freezes settings without evaluating observations. `study` runs the
+[predeclared comparison](alpha-pipeline.md#predeclared-calibration-studies), retaining
+all replicates in a new private directory. Failed or missing replicates cannot pass
+the criteria; even a complete passing study is not a promotion credential.
 
 ## 5. Database Schema Migrations & Administration (`copilot db`)
 

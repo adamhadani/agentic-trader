@@ -112,3 +112,9 @@ operational priorities above. Do not enable RL or shared-position alpha executio
 merely because the new infrastructure passes regression tests.
 
 The ordered research work queue now lives in [alpha-roadmap.md](alpha-roadmap.md), including calibration before broader search. This document continues to own the operational priorities above.
+
+[A1b evidence](alpha-study-2026-09-16.md) additionally identifies feature-dependent
+return coverage: flat periods with undefined scores are dropped from simulation
+statistics. A2 must define the execution clock separately from feature availability
+before retesting calibration. Preserve the incomplete study and existing gates;
+do not treat missing comparisons as null rejections or loosen trade-count requirements.

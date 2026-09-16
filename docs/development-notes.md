@@ -125,6 +125,10 @@ GEX is an option-chain/model estimate with quality notes and a required real spo
 
 Research/retuning outputs do not automatically change running strategy parameters.
 Alpha state now uses the [journal-backed pipeline](alpha-pipeline.md), schema 008.
+The [active alpha roadmap](alpha-roadmap.md) owns research priorities. The
+[A1b study](alpha-study-2026-09-16.md) retained 1,952 synthetic replicates, including
+22 unavailable comparisons; it does not authorize new gates or promotion. A2 starts
+with execution return coverage before fine-bar/session replay.
 CLI, chat and Telegram inspect the same version registry; activation/demotion is
 visible between scans. Imported historical definitions remain unqualified shadow
 versions. `/alphas` shows generation/versions, not fabricated performance or allocation.

@@ -130,3 +130,13 @@ The [active alpha roadmap](docs/alpha-roadmap.md) owns the ordered long-horizon 
 no promotion or shadow credit. Keep the shared statistical assessment separate from
 deployment permissions. Its fixed-panel bootstrap does not replay adaptive search;
 never use its output to discount cumulative trials or relax gates retroactively.
+
+A1b uses the [predeclared study protocol](docs/alpha-study-protocol.md) and
+`config/research/a1b-v1.json`. `alpha study` persists its manifest before computation
+and every replicate afterward; development failures preserve unexamined validation.
+Keep development/validation seed namespaces separate, freeze the winner before
+holdout, retain incomplete denominators, and never tune gates on validation results.
+The [A1b result](docs/alpha-study-2026-09-16.md) retains all 1,952 jobs but is
+scientifically incomplete (22 unavailable comparisons). No gate change is justified.
+Next is A2: start with cash-return/undefined-feature clock semantics, then session
+replay. Preserve this evidence and use fresh validation after policy changes.
