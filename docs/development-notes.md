@@ -87,11 +87,12 @@ Schema head: `008_alpha_pipeline`.
 | `order_projections` | Exact cumulative order views |
 | `activity_projections`, `ledger_checkpoints` | Account-bound activity evidence and reconciled reports |
 | `incident_projections` | Replayable incident lifecycle plus latest observation watermarks |
+| `alpha_projections` | Replayable research, qualification, registry and forecast aggregates |
 | `audit_events` | Operational command, fill, valuation, delivery and startup traces |
 
 Queries exclude quarantined and other-environment rows. Historical unknown-mode
-signals remain visible until reviewed. Signals use `contract`; timeframe is not
-persisted. Construction currently checks migrations, including many informational
+signals remain visible until reviewed. Signals use `contract`; new signals persist nullable timeframe, alpha version,
+execution policy and decision provenance. Historical rows are not backfilled with inferred metadata. Construction currently checks migrations, including many informational
 CLI paths—explicit bootstrap is a documented refactor, not silently assumed done.
 
 `SUBMITTING` precedes broker POST. `EXECUTED` means tracked/accepted; confirmed

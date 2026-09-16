@@ -70,6 +70,13 @@ remain outside Git.
   All four completed and left their final holdout untouched. Best validation SRs
   were approximately 1.12, 1.12, 0.76 and 0.50 respectively. This single-symbol,
   single-seed exercise validates the harness; it does not rank discovery methods.
+- A larger predeclared comparison completed **2,000 trials without errors**: five
+  ETFs (SPY, QQQ, IWM, GLD, TLT), five seeds, 20 trials per method/symbol/seed.
+  Median best validation SR across those runs was random 1.63, genetic 1.35,
+  Ridge 0.76 and boosted trees 1.86. These are selected validation maxima, not
+  unbiased method rankings or forward returns; deterministic baseline repeats
+  are not independent evidence. Final holdouts were not evaluated. All attempted
+  trials and observed discovery intervals are recorded during deployment.
 - The frozen original five-symbol/7-formula prefix harness produced **0 / 15,470**
   entry-direction disagreements (pre-fix baseline: 1,087). This is signal parity,
   not execution/P&L parity.
@@ -83,7 +90,7 @@ remain outside Git.
 Engineering tests, CI and operational verification are recorded independently.
 The installed daemon remains at its previous revision until the reviewed merge,
 PostgreSQL backup/migration and controlled restart. Final deployment evidence is
-appended after those steps; process liveness alone is insufficient.
+recorded on the merged PR after those steps; process liveness alone is insufficient.
 
 A final admission review reproduced four lifecycle defects: demoted, unversioned or
 policy-mismatched alpha suggestions could reserve risk, and demotion during preflight
