@@ -83,6 +83,12 @@ sufficient. Those simulations are explicitly diagnostic. The current promotion
 path supports daily hypotheses. See Alpaca's [bar construction rules](https://docs.alpaca.markets/us/docs/market-data-faq)
 and [bracket restrictions](https://docs.alpaca.markets/us/docs/orders-at-alpaca).
 
+The [session/minute replay](alpha-session-replay.md) implements the diagnostic clock
+using observed calendars and complete raw minute coverage. It shares bracket
+execution with the coarse simulator and retains decision/order event traces.
+It does not yet change live signal aggregation or authorize intraday qualification;
+its session-derived/native-bar and broker execution differences remain explicit.
+
 
 A closed-bar signal creates a GTC limit at the tick-rounded observed close, eligible
 from the next bar. An adverse open cannot fill beyond the limit. Unfilled orders
@@ -294,7 +300,8 @@ policy and observed liquidity/borrow/feed coverage.
 ## Experiment gates and remaining work
 
 1. Add a session-correct fine-bar execution timeline for intraday qualification;
-   current intraday results are diagnostic and fail promotion. Collect real deployment-feed shadow decisions and review execution assumptions,
+   the diagnostic replay clock is implemented, while live-clock migration and broker
+   execution evidence remain. Current intraday results fail promotion. Collect real deployment-feed shadow decisions and review execution assumptions,
    realized costs and sufficient paper fills before activating/scaling any new alpha.
 2. Compare seeded random/templates, typed genetic search, Ridge and histogram-gradient
    boosting with matched total trial budgets across seeds/universes. ML models are

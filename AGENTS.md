@@ -73,3 +73,8 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   incident, work/deduplication and dead-letter evidence. HTTP health is passive.
 
 - Follow the [active alpha roadmap](docs/alpha-roadmap.md) for research changes. Calibration artifacts are synthetic diagnostics, never promotion credentials; preserve attempt history and predeclare statistical acceptance criteria.
+- Session replay uses observed exchange calendars and complete raw minute coverage,
+  with the shared bracket engine. `alpha replay` journals a real research attempt
+  and excludes inspected periods before provider access. Do not impute missing
+  prices, conflate session-derived/native bars, or remove the intraday promotion
+  gate before live-clock and execution evidence agree. Read [session replay](docs/alpha-session-replay.md).

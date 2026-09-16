@@ -131,7 +131,10 @@ The [active alpha roadmap](alpha-roadmap.md) owns research priorities. The
 [A2a](alpha-return-timeline.md) corrects execution return coverage with a versioned
 validation policy. Its [fresh calibration](alpha-timeline-study-2026-09-16.md)
 completed 1,952 jobs without unavailable comparisons; power remains insufficient
-and gates stay unchanged. A2b finer-bar/session replay follows.
+and gates stay unchanged. [A2b session replay](alpha-session-replay.md) now provides
+observed-calendar/minute diagnostics and durable input/decision/event artifacts.
+Live signal-clock migration and broker execution evidence remain before intraday
+qualification. Replay is a charged research diagnostic, not synthetic calibration.
 CLI, chat and Telegram inspect the same version registry; activation/demotion is
 visible between scans. Imported historical definitions remain unqualified shadow
 versions. `/alphas` shows generation/versions, not fabricated performance or allocation.

@@ -12,13 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-BAR_DURATIONS = {
-    "15m": pd.Timedelta(minutes=15),
-    "1h": pd.Timedelta(hours=1),
-    "4h": pd.Timedelta(hours=4),
-    "1d": pd.Timedelta(days=1),
-}
+from agentic_trader.market.bars import BAR_DURATIONS
 
 
 def completed_bars(frame: pd.DataFrame, timeframe: str, *, as_of: datetime | None = None) -> pd.DataFrame:

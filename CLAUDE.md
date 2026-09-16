@@ -33,7 +33,7 @@ starting map; the linked domain guides own detailed contracts.
 | CLI composition and lifecycle | `cli/main.py`, `cli/utils.py`, `cli/commands/` |
 | Application orchestration | `agent/copilot.py:TradingCopilot` |
 | Signal evaluation and risk | `agent/evaluator.py`, `position_sizing.py`, `regime.py`, `macro.py`, `calendar.py` |
-| Market data and sessions | `data/`, `market/session.py`, `resilience/fallback.py` |
+| Market data and sessions | `data/`, `market/session.py`, `market/bars.py`, `resilience/fallback.py` |
 | Strategies | `screeners/base.py`, `strategies.py`, `registry.py`, `formulaic.py` |
 | Entry/close application services | `execution/entries.py`, `admission.py`, `closing.py` |
 | Broker adapters and transport | `broker/base.py`, `alpaca.py`, `paper.py`, `tradovate.py` |
@@ -145,5 +145,10 @@ Lifetime trial counts persist; variance uses comparable current-clock samples.
 The [fresh study](docs/alpha-timeline-study-2026-09-16.md), using
 `config/research/a2a-v1.json`, completed 1,952 jobs without unavailable comparisons.
 Null-search criteria passed; positive-control power is still insufficient. Keep
-the gates unchanged. Next is A2b session replay;
-preserve historical study evidence and use fresh validation after policy changes.
+the gates unchanged. A2b's [session replay groundwork](docs/alpha-session-replay.md)
+uses observed calendars, complete minute coverage and the shared execution engine.
+`alpha replay` charges one real-data research attempt and excludes the inspected
+interval before I/O; it never qualifies or earns shadow credit. Historical minute
+data cannot establish point-in-time availability or actual partial fills. Next:
+version/migrate the live signal clock and verify broker execution assumptions.
+Preserve historical study evidence and use fresh validation after policy changes.

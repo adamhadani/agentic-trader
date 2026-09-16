@@ -1,6 +1,7 @@
 """Public commands use journal evidence, never direct unverified YAML promotion."""
 
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pandas as pd
@@ -162,3 +163,37 @@ def test_study_cli_runs_actual_calculation_without_runtime_services(monkeypatch,
     assert summary["status"] == "criteria_not_met"
     assert summary["authorizes_promotion"] is False
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in destination.rglob("*.json"))
+
+
+def test_session_replay_cli_persists_failed_attempt_without_broker_or_notifier(monkeypatch, tmp_path):
+    def fail_capture(*args):
+        raise OSError("fixture capture failed")
+
+    monkeypatch.setattr(
+        "agentic_trader.cli.commands.alpha.replay_source",
+        lambda config, feed: nullcontext(SimpleNamespace(capture=fail_capture)),
+        raising=False,
+    )
+    output = tmp_path / "session-run"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "alpha",
+            "replay",
+            "close",
+            "--symbol",
+            "SPY",
+            "--start",
+            "2024-11-27",
+            "--end",
+            "2024-11-29",
+            "--output",
+            str(output),
+        ],
+    )
+    assert result.exit_code != 0
+    assert (output / "manifest.json").exists(), result.output
+    report = json.loads((output / "result.json").read_text())
+    assert report["status"] == "failed" and not report["authorizes_promotion"]
+    status = CliRunner().invoke(cli, ["alpha", "status"])
+    assert json.loads(status.output)["research_family"]["trial_count"] == 1

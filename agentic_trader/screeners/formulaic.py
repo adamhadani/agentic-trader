@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from agentic_trader.constants import AssetClass, Direction
-from agentic_trader.research.alpha.data import BAR_DURATIONS, completed_bars
+from agentic_trader.market.bars import BAR_DURATIONS
+from agentic_trader.research.alpha.data import completed_bars
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 from agentic_trader.research.alpha.strategy import TIMEFRAME_FIELDS, alpha_scores, entry_directions, strategy_atr
 from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
