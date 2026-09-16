@@ -83,3 +83,33 @@ def test_research_download_cannot_relabel_crypto_as_a_stock_feed(monkeypatch, co
     )
     with pytest.raises(ValueError, match="feed"):
         download_bars("BTC/USD", "1y", "1d", feed="alpaca", config=config)
+
+
+def test_calibration_cli_is_synthetic_and_cannot_construct_runtime_services(monkeypatch, tmp_path):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Calibration cannot access runtime config, database or market provider")
+
+    for name in ("load_config", "SignalDatabase", "AlpacaDataProvider"):
+        monkeypatch.setattr(f"agentic_trader.cli.commands.alpha.{name}", forbidden)
+    output = tmp_path / "calibration.json"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "alpha",
+            "calibrate",
+            "--seeds",
+            "1",
+            "--observations",
+            "600",
+            "--bootstrap-samples",
+            "99",
+            "--output",
+            str(output),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(output.read_text())
+    assert report["synthetic_only"] and not report["authorizes_promotion"]
+    assert report["strategy_controls"] and report["family_controls"]
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob("*.db"))

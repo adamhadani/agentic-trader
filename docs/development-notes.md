@@ -152,3 +152,5 @@ Keep UTC/run-correlated logs and private verification artifacts separate from Gi
 Test results/CI establish source behavior; startup and observation audits establish
 deployment evidence. Consult [ranked remaining work](architecture-review.md#remaining-findings-ranked)
 instead of appending duplicate historical status reports to this handoff.
+
+The [active alpha roadmap](alpha-roadmap.md) is the canonical long-horizon research queue. Keep its acceptance criteria and progress current; the [September 16 campaign](alpha-research-2026-09-16.md) records the baseline rejection and control evidence.

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import math
 from dataclasses import asdict, replace
+from numbers import Real
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -68,41 +70,54 @@ class AlphaPromotionService:
             raise ValueError("Finalist requires an explicitly validated symbol universe")
         # Freeze and consume before any holdout computation. Failure stays consumed.
         family = await self.repository.begin_holdout(run_id, version_id)
-        decision = await asyncio.to_thread(self._evaluate, definition, bars, run, manifest, family)
+        decision = await asyncio.to_thread(
+            assess_qualification, definition, bars, run, manifest, family, policy=self.policy
+        )
         await self.repository.record_qualification(run_id, version_id, decision)
         return decision
 
-    def _evaluate(self, definition, bars, run, manifest, family):
-        policy = self.policy
-        reasons = []
-        if definition.timeframe != "1d":
-            reasons.append("intraday_session_execution_unverified")
-        if run.get("policy") != asdict(policy):
-            reasons.append("qualification_policy_differs_from_frozen_run")
-        # Recursive EMA depends on its initialization history. It remains a valid
-        # research operator but cannot deploy until shared state is persisted.
-        if any(
-            isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id.lower() == "ema"
-            for node in ast.walk(compile_expression(definition.expression).tree)
-        ):
-            reasons.append("recursive_feature_requires_shared_initialization")
-        trial = next(
-            t for t in run["trials"] if AlphaDefinition.from_dict(t["definition"]).version_id == definition.version_id
-        )
-        metrics = trial.get("candidate", {}).get("metrics", {})
-        evidence = trial.get("candidate", {}).get("evidence", {})
-        for key, minimum in (
-            ("sharpe_oos", policy.min_sharpe),
-            ("dsr", policy.min_dsr),
-            ("rank_ic_mean", policy.min_ic),
-            ("total_trades", policy.minimum_trades),
-        ):
-            if metrics.get(key, float("-inf")) < minimum:
-                reasons.append(f"validation_{key}")
-        if len(evidence.get("fold_sharpes", [])) < policy.folds or any(
-            s <= 0 for s in evidence.get("fold_sharpes", [])
-        ):
-            reasons.append("unstable_validation_folds")
+
+def _finite(value):
+    return isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def assess_statistical_evidence(definition, bars, run, manifest, family, *, policy: ValidationPolicy):
+    """Pure scientific assessment. A pass is not a deployment credential.
+
+    Synthetic calibration uses this same computation without claiming a broker feed,
+    opening storage or acquiring a registry/holdout permission.
+    """
+    reasons = []
+    if definition.timeframe != "1d":
+        reasons.append("intraday_session_execution_unverified")
+    if run.get("policy") != asdict(policy):
+        reasons.append("qualification_policy_differs_from_frozen_run")
+    # Recursive EMA depends on its initialization history. It remains a valid
+    # research operator but cannot deploy until shared state is persisted.
+    if any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id.lower() == "ema"
+        for node in ast.walk(compile_expression(definition.expression).tree)
+    ):
+        reasons.append("recursive_feature_requires_shared_initialization")
+    trial = next(
+        t for t in run["trials"] if AlphaDefinition.from_dict(t["definition"]).version_id == definition.version_id
+    )
+    metrics = trial.get("candidate", {}).get("metrics", {})
+    evidence = trial.get("candidate", {}).get("evidence", {})
+    for key, minimum in (
+        ("sharpe_oos", policy.min_sharpe),
+        ("dsr", policy.min_dsr),
+        ("rank_ic_mean", policy.min_ic),
+        ("total_trades", policy.minimum_trades),
+    ):
+        if not _finite(metrics.get(key)) or metrics[key] < minimum:
+            reasons.append(f"validation_{key}")
+    if len(evidence.get("fold_sharpes", [])) < policy.folds or any(
+        not _finite(s) or s <= 0 for s in evidence.get("fold_sharpes", [])
+    ):
+        reasons.append("unstable_validation_folds")
+    family_dsr = None
+    try:
         family_dsr = calculate_deflated_sharpe_ratio(
             metrics.get("per_bar_sharpe", 0),
             family["trial_count"],
@@ -111,97 +126,106 @@ class AlphaPromotionService:
             metrics.get("skewness", 0),
             metrics.get("kurtosis", 3),
         )
-        if family_dsr < policy.min_dsr:
-            reasons.append("family_adjusted_validation_dsr")
-        start = run["holdout_start"] + policy.embargo_bars + policy.label_horizon
+    except ValueError, TypeError:
+        reasons.append("invalid_validation_sharpe_evidence")
+    if family_dsr is None or family_dsr < policy.min_dsr:
+        reasons.append("family_adjusted_validation_dsr")
+    start = run["holdout_start"] + policy.embargo_bars + policy.label_horizon
+    try:
+        result = simulate_strategy(definition, bars, start=start)
+        stress = simulate_strategy(
+            replace(
+                definition,
+                execution=replace(definition.execution, friction_per_side=definition.execution.friction_per_side * 2),
+            ),
+            bars,
+            start=start,
+        )
+        # Conservative family adjustment persists across symbol/seed runs.
+        dsr = calculate_deflated_sharpe_ratio(
+            result["per_bar_sharpe"],
+            family["trial_count"],
+            family["trial_variance"],
+            result["sample_length"],
+            result["skewness"],
+            result["kurtosis"],
+        )
+        confidence = block_bootstrap_mean(result["net_returns"], seed=run["seed"])
+        if result["sharpe"] < policy.min_sharpe:
+            reasons.append("holdout_sharpe")
+        if result["total_trades"] < policy.minimum_trades:
+            reasons.append("holdout_trade_count")
+        if dsr < policy.min_dsr:
+            reasons.append("holdout_dsr")
+        if result["max_drawdown_pct"] > policy.max_drawdown_pct:
+            reasons.append("holdout_drawdown")
+        if stress["total_return_pct"] <= 0:
+            reasons.append("cost_stress")
+        if confidence[0] <= 0:
+            reasons.append("bootstrap_uncertainty")
+        summary = {k: v for k, v in result.items() if k not in ("net_returns", "trades", "entries")}
+        summary.update(dsr=dsr, bootstrap_mean_interval=confidence, stressed_return_pct=stress["total_return_pct"])
+    except (ValueError, ArithmeticError) as exc:
+        reasons.append(f"holdout_unavailable:{exc}")
+        summary = {}
+    novelty = {"status": "no_incumbents"}
+    if "incumbents" not in manifest:
+        reasons.append("missing_frozen_incumbent_snapshot")
+    elif manifest["incumbents"]:
         try:
-            result = simulate_strategy(definition, bars, start=start)
-            stress = simulate_strategy(
-                replace(
-                    definition,
-                    execution=replace(
-                        definition.execution, friction_per_side=definition.execution.friction_per_side * 2
-                    ),
-                ),
-                bars,
-                start=start,
-            )
-            # Conservative family adjustment persists across symbol/seed runs.
-            dsr = calculate_deflated_sharpe_ratio(
-                result["per_bar_sharpe"],
-                family["trial_count"],
-                family["trial_variance"],
-                result["sample_length"],
-                result["skewness"],
-                result["kurtosis"],
-            )
-            confidence = block_bootstrap_mean(result["net_returns"], seed=run["seed"])
-            if result["sharpe"] < policy.min_sharpe:
-                reasons.append("holdout_sharpe")
-            if result["total_trades"] < policy.minimum_trades:
-                reasons.append("holdout_trade_count")
-            if dsr < policy.min_dsr:
-                reasons.append("holdout_dsr")
-            if result["max_drawdown_pct"] > policy.max_drawdown_pct:
-                reasons.append("holdout_drawdown")
-            if stress["total_return_pct"] <= 0:
-                reasons.append("cost_stress")
-            if confidence[0] <= 0:
-                reasons.append("bootstrap_uncertainty")
-            summary = {k: v for k, v in result.items() if k not in ("net_returns", "trades", "entries")}
-            summary.update(dsr=dsr, bootstrap_mean_interval=confidence, stressed_return_pct=stress["total_return_pct"])
+            incumbents = [AlphaDefinition.from_dict(item) for item in manifest["incumbents"]]
+            relevant = [
+                d
+                for d in incumbents
+                if (not d.eligible_symbols or manifest["symbol"] in d.eligible_symbols)
+                and d.version_id != definition.version_id
+            ]
+            if any(d.timeframe != definition.timeframe for d in relevant):
+                raise ValueError("Incremental evidence needs matching incumbent horizons")
+            if relevant:
+                candidate_scores = alpha_scores(definition, bars)
+                basis = pd.DataFrame({d.version_id: alpha_scores(d, bars) for d in relevant})
+                close = bars.rename(columns=str.lower).close
+                forward = close.shift(-policy.label_horizon) / close - 1
+                training = (
+                    int(run["holdout_start"] * policy.initial_train_fraction)
+                    - policy.label_horizon
+                    - policy.embargo_bars
+                )
+                novelty = residual_validation(
+                    candidate_scores, basis, forward, train_end=training, validation_start=start
+                )
+                if not novelty["novel"]:
+                    reasons.append("no_incremental_predictive_evidence")
         except (ValueError, ArithmeticError) as exc:
-            reasons.append(f"holdout_unavailable:{exc}")
-            summary = {}
-        novelty = {"status": "no_incumbents"}
-        if "incumbents" not in manifest:
-            reasons.append("missing_frozen_incumbent_snapshot")
-        elif manifest["incumbents"]:
-            try:
-                incumbents = [AlphaDefinition.from_dict(item) for item in manifest["incumbents"]]
-                relevant = [
-                    d
-                    for d in incumbents
-                    if (not d.eligible_symbols or manifest["symbol"] in d.eligible_symbols)
-                    and d.version_id != definition.version_id
-                ]
-                if any(d.timeframe != definition.timeframe for d in relevant):
-                    raise ValueError("Incremental evidence needs matching incumbent horizons")
-                if relevant:
-                    candidate_scores = alpha_scores(definition, bars)
-                    basis = pd.DataFrame({d.version_id: alpha_scores(d, bars) for d in relevant})
-                    close = bars.rename(columns=str.lower).close
-                    forward = close.shift(-policy.label_horizon) / close - 1
-                    training = (
-                        int(run["holdout_start"] * policy.initial_train_fraction)
-                        - policy.label_horizon
-                        - policy.embargo_bars
-                    )
-                    novelty = residual_validation(
-                        candidate_scores, basis, forward, train_end=training, validation_start=start
-                    )
-                    if not novelty["novel"]:
-                        reasons.append("no_incremental_predictive_evidence")
-            except (ValueError, ArithmeticError) as exc:
-                novelty = {"status": "unavailable", "reason": str(exc)}
-                reasons.append("incremental_evidence_unavailable")
-        # Feed equivalence is mandatory for execution eligibility. Yfinance runs are
-        # discovery evidence and require revalidation on the deployment feed.
-        if (
-            manifest["feed"] not in ("alpaca:iex", "alpaca:sip")
-            or manifest["adjustment"] != "raw"
-            or definition.data_feed != manifest["feed"]
-            or definition.adjustment != manifest["adjustment"]
-        ):
-            reasons.append("deployment_data_contract_mismatch")
-        return {
-            "qualified": not reasons,
-            "reasons": reasons,
-            "policy": asdict(policy),
-            "holdout": summary,
-            "eligible_symbols": list(definition.eligible_symbols or ()),
-            "manifest": manifest,
-            "family": family,
-            "novelty": novelty,
-            "calibration": evidence.get("calibration"),
-        }
+            novelty = {"status": "unavailable", "reason": str(exc)}
+            reasons.append("incremental_evidence_unavailable")
+    return {
+        "passed": not reasons,
+        "reasons": reasons,
+        "policy": asdict(policy),
+        "holdout": summary,
+        "eligible_symbols": list(definition.eligible_symbols or ()),
+        "manifest": manifest,
+        "family": family,
+        "family_validation_dsr": family_dsr,
+        "novelty": novelty,
+        "calibration": evidence.get("calibration"),
+    }
+
+
+def assess_qualification(definition, bars, run, manifest, family, *, policy: ValidationPolicy):
+    """Combine scientific evidence with the required deployment data contract."""
+    result = assess_statistical_evidence(definition, bars, run, manifest, family, policy=policy)
+    reasons = result["reasons"]
+    # Feed equivalence is mandatory for execution eligibility. Yfinance runs are
+    # discovery evidence and require revalidation on the deployment feed.
+    if (
+        manifest["feed"] not in ("alpaca:iex", "alpaca:sip")
+        or manifest["adjustment"] != "raw"
+        or definition.data_feed != manifest["feed"]
+        or definition.adjustment != manifest["adjustment"]
+    ):
+        reasons.append("deployment_data_contract_mismatch")
+    result.pop("passed")
+    return {**result, "qualified": not reasons}

@@ -1,9 +1,10 @@
+import json
 from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
 
-from agentic_trader.research.alpha.data import completed_bars, load_dataset, save_dataset
+from agentic_trader.research.alpha.data import completed_bars, load_dataset, save_dataset, save_json_report
 from agentic_trader.research.alpha.validation import frame_digest
 
 
@@ -26,3 +27,22 @@ def test_dataset_round_trip_retains_exact_observations(tmp_path):
     restored = load_dataset(saved)
     assert frame_digest(restored) == digest
     assert restored.attrs == frame.attrs
+
+
+def test_diagnostic_report_is_private_and_never_overwrites_evidence(tmp_path):
+    path = tmp_path / "research" / "report.json"
+    save_json_report({"result": "original"}, path)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+    with pytest.raises(FileExistsError):
+        save_json_report({"result": "replacement"}, path)
+    assert json.loads(path.read_text()) == {"result": "original"}
+    assert list(path.parent.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), object()])
+def test_invalid_report_is_not_published(tmp_path, invalid):
+    path = tmp_path / "research" / "report.json"
+    with pytest.raises((TypeError, ValueError)):
+        save_json_report({"value": invalid}, path)
+    assert not path.parent.exists()

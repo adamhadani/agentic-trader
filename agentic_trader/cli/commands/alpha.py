@@ -22,8 +22,9 @@ from agentic_trader.cli.utils import coro
 from agentic_trader.config import load_config
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.research.alpha.baselines import benchmark_models
+from agentic_trader.research.alpha.calibration import CalibrationPlan, run_calibration
 from agentic_trader.research.alpha.catalog import AlphaCatalog
-from agentic_trader.research.alpha.data import completed_bars, load_dataset, save_dataset
+from agentic_trader.research.alpha.data import completed_bars, load_dataset, save_dataset, save_json_report
 from agentic_trader.research.alpha.forecasts import CombinedForecast
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
@@ -424,3 +425,50 @@ async def alpha_exclude_period_cmd(symbol, start, end, trials, reason):
             symbol=symbol, start=start, end=end, trials=trials, reason=reason, actor="cli_operator"
         )
         click.echo("Observed interval excluded from future holdout qualification; trials retained.")
+
+
+@alpha_group.command("calibrate")
+@click.option("--seeds", type=click.IntRange(1, 256), default=10)
+@click.option("--observations", type=click.IntRange(600, 10000), default=2500)
+@click.option("--seed", type=click.IntRange(0, 2**32 - 256), default=20260916)
+@click.option("--family-trials", type=click.IntRange(1, 100_000_000), default=100)
+@click.option(
+    "--trial-variance", type=click.FloatRange(min=0), default=0.003, help="Per-observation trial Sharpe variance"
+)
+@click.option("--bootstrap-samples", type=click.IntRange(99, 4999), default=499)
+@click.option("--block-length", type=click.IntRange(2, 40), default=10)
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="New private JSON artifact; existing files are preserved",
+)
+@coro
+async def alpha_calibrate_cmd(
+    seeds, observations, seed, family_trials, trial_variance, bootstrap_samples, block_length, output
+):
+    """Synthetic calibration only; no runtime config, DB, market data or activation."""
+    try:
+        plan = CalibrationPlan(
+            seeds=seeds,
+            observations=observations,
+            seed=seed,
+            family_trials=family_trials,
+            trial_variance=trial_variance,
+            bootstrap_samples=bootstrap_samples,
+            block_length=block_length,
+        )
+        path = output or artifact_directory() / f"calibration-{plan.identity[:16]}-{uuid4().hex}.json"
+        if path.exists():
+            raise click.ClickException("Output already exists; choose a new artifact path")
+        click.echo(f"Starting synthetic protocol {plan.identity}: {json.dumps(plan.to_dict(), sort_keys=True)}")
+        report = await asyncio.to_thread(run_calibration, plan)
+        report["environment"] = await asyncio.to_thread(research_environment)
+        await asyncio.to_thread(save_json_report, report, path)
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Synthetic calibration {plan.identity}; {len(report['strategy_controls'])} strategy controls, {len(report['family_controls'])} fixed-panel controls"
+    )
+    click.echo(f"Report: {path}")
+    click.echo("Diagnostic only; no promotion permission or runtime state changed.")

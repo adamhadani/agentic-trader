@@ -30,6 +30,7 @@ requests emergency exits. Order acceptance is not a confirmed fill.
 
 - [Development handoff](development-notes.md) and [assistant guide](../CLAUDE.md).
 - [Architecture review and priorities](architecture-review.md).
+- [Active alpha research roadmap](alpha-roadmap.md).
 - [Durable entry queue, events and outbox](durable-execution.md).
 - [Alpaca contracts and real transport coverage](alpaca-integration-review.md).
 - [September 15 incident and remediation](incident-2026-09-15.md).

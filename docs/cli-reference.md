@@ -261,6 +261,7 @@ command and contract reference. `catalog` lists hypotheses; `list`, `status`,
 a definition without downloading data or inventing a performance result.
 
 ```bash
+uv run copilot alpha calibrate --seeds 10 --bootstrap-samples 499
 uv run copilot alpha mine --symbol SPY --feed alpaca --interval 1d --lookback 5y --iterations 25 --method random
 uv run copilot alpha mine --universe etf32 --feed alpaca --method genetic --iterations 9 --max-seconds 120
 uv run copilot alpha benchmark RUN_ID --method ridge --budget 5
@@ -279,6 +280,11 @@ deployment data contract and observed shadow history. Import is shadow-only;
 `--auto-promote`, allocation metadata and symbol/timeframe-changing promotion flags
 are removed. Demotion changes future screening only; use the shared close/flatten
 commands separately when liquidation is intended. Portfolio solving is shadow-only.
+
+`calibrate` is synthetic-only, with no runtime config, DB or network access. It writes
+a private report, never promotion evidence. Explicit family count/variance parameters
+define the comparison scenario. See [calibration contracts](alpha-pipeline.md#synthetic-calibration)
+and the [active research roadmap](alpha-roadmap.md).
 
 ## 5. Database Schema Migrations & Administration (`copilot db`)
 
