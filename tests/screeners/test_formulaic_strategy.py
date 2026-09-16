@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.data.market_data import ContractMarketData
@@ -73,6 +74,17 @@ def test_formulaic_strategy_evaluation():
     assert cand.rsi_14 > 0
     assert cand.atr_14 > 0
     assert "Alpha alpha_wq_006 triggered" in cand.trigger_detail
+
+
+@pytest.mark.parametrize("defect", ["bar_layout", "unknown_timestamp", "timeframe"])
+def test_formulaic_screening_rejects_incompatible_clock_without_fallback(defect):
+    definition = AlphaDefinition("clock", "Clock", "close", timeframe="4h", entry_threshold=0.1)
+    data = create_mock_market_data()
+    if defect == "unknown_timestamp":
+        data.four_hour.index = pd.DatetimeIndex([pd.NaT, *data.four_hour.index[1:]])
+    else:
+        data.four_hour.attrs[defect] = "rth_open_v1" if defect == "bar_layout" else "1h"
+    assert FormulaicAlphaStrategy(definition).evaluate(data) == []
 
 
 def test_registry_snapshot_replacement():

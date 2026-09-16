@@ -87,6 +87,23 @@ def test_research_download_cannot_relabel_crypto_as_a_stock_feed(monkeypatch, co
         download_bars("BTC/USD", "1y", "1d", feed="alpaca", config=config)
 
 
+def test_research_resampling_explicitly_changes_its_clock_timeframe(monkeypatch, config):
+    frame = pd.DataFrame(
+        {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 10.0},
+        index=pd.date_range("2024-01-01", periods=8, freq="h", tz="UTC"),
+    )
+    frame.attrs.update(feed=f"alpaca:{config.market_data.alpaca_feed}", adjustment="raw", timeframe="1h")
+    monkeypatch.setattr(
+        "agentic_trader.cli.commands.alpha.AlpacaDataProvider",
+        lambda **kw: SimpleNamespace(fetch_bars=lambda *a, **kw: frame),
+    )
+    sampled = download_bars("SPY", "1y", "4h", feed="alpaca", config=config)
+    assert len(sampled) == 2
+    assert sampled.attrs["timeframe"] == "4h"
+    assert sampled.attrs["bar_layout"] == "fixed_duration_v1"
+    assert list(sampled.Volume) == [40, 40]
+
+
 def test_calibration_cli_is_synthetic_and_cannot_construct_runtime_services(monkeypatch, tmp_path):
     def forbidden(*args, **kwargs):
         raise AssertionError("Calibration cannot access runtime config, database or market provider")

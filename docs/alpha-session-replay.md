@@ -39,6 +39,29 @@ provides early-close boundaries as well as trading dates.
 
 ## One strategy/execution mechanism
 
+### Clock isolation before live migration
+
+Existing alpha versions use the `fixed_duration_v1` clock: a start-labelled bar
+closes after its declared duration, with the established UTC convention for naive
+inputs. Research manifests still require timezone-aware observations. Daily closure
+on this clock is start plus 24 hours, not an inferred exchange-session close.
+`market/bars.py` now owns `fixed_bar_closes` and `completed_fixed_bars` for research,
+live screening and shadow observations; there is no research-module import shim.
+
+Explicit `rth_open_v1` or unknown layouts cannot pass through that clock. Unknown,
+duplicate or unordered timestamps and conflicting timeframe metadata also fail.
+Research validation rejects incompatible input; live screening emits no candidate;
+shadow records the rejection and earns no observation credit. New research manifests
+record their clock, while immutable definitions and valid fixed-clock calculations
+retain their existing identity/meaning. Resampling must explicitly update timeframe
+metadata at the transformation boundary.
+
+These guards prevent accidental reinterpretation, including session-derived daily
+bars. They do **not** install session bars into live screening. The versioned live
+acquisition, availability and scheduling migration below remains required.
+
+### Shared execution state
+
 Both the existing coarse simulator and session replay use the same immutable
 `BracketIntent` construction and `simulate_execution` state machine. The new clock
 maps completed observations to execution eligibility; it does not duplicate fills,

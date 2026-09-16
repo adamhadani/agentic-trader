@@ -1,15 +1,19 @@
 """Actual SDK HTTP calendar + paginated minute data feed the replay workflow."""
 
 import asyncio
+import json
 from datetime import date
 
 import pandas as pd
 import pytest
 
 from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.market.bars import SessionSchedule, build_session_bars
+from agentic_trader.research.alpha.data import load_dataset
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.replay import ReplayPlan, SessionReplayPolicy
 from agentic_trader.research.alpha.replay_workflow import AlpacaReplaySource, AlphaReplayService
+from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 
@@ -70,6 +74,26 @@ async def test_sdk_calendar_pagination_and_replay_remain_read_only(alpaca_http, 
             assert result["sample_length"] == 600
             assert len(result["signal_bars"]) == 11
             assert result["signal_bars"][-1]["closed_at"] == "2024-11-29T18:00:00+00:00"
+            # Real SDK → retained artifact → session clock cannot be re-labelled
+            # as existing fixed-duration qualification evidence.
+            directory = tmp_path / "run"
+            observations = json.loads((directory / "observations.json").read_text())
+            schedule = SessionSchedule.from_document(json.loads((directory / "calendar.json").read_text()))
+            session_bars = build_session_bars(
+                load_dataset(directory / observations["dataset"]),
+                schedule,
+                "1h",
+                as_of=pd.Timestamp("2024-11-30", tz="UTC"),
+            )
+            with pytest.raises(ValueError, match="clock"):
+                DatasetManifest.from_frame(
+                    session_bars.signals,
+                    symbol="SPY",
+                    timeframe="1h",
+                    feed="alpaca:iex",
+                    adjustment="raw",
+                    universe_version="fixture",
+                )
     finally:
         await temp_db.engine.dispose()
 

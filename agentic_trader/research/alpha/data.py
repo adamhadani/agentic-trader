@@ -6,30 +6,10 @@ import hashlib
 import json
 import os
 import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-from agentic_trader.market.bars import BAR_DURATIONS
-
-
-def completed_bars(frame: pd.DataFrame, timeframe: str, *, as_of: datetime | None = None) -> pd.DataFrame:
-    """Conservative start-labelled bar closure; never include the forming bar.
-
-    Daily bars become eligible the next UTC day. This deliberately does not guess
-    holiday/early-close completion without a session-calendar observation.
-    """
-    if frame.empty:
-        return frame
-    if not isinstance(frame.index, pd.DatetimeIndex):
-        raise TypeError("Datetime observations required")
-    now = pd.Timestamp(as_of or datetime.now(UTC))
-    index = frame.index.tz_localize("UTC") if frame.index.tz is None else frame.index.tz_convert("UTC")
-    result = frame.loc[index + BAR_DURATIONS[timeframe] <= now].copy()
-    result.attrs["timeframe"] = timeframe
-    return result
 
 
 def save_dataset(frame: pd.DataFrame, directory: Path, digest: str) -> Path:

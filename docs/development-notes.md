@@ -5,6 +5,11 @@ and the [architecture review](architecture-review.md). Detailed workflow contrac
 live in [durable execution](durable-execution.md), [accounting](account-ledger.md)
 and [operational monitoring](operational-monitoring.md).
 
+Alpha closure/clock checks now live in `market/bars.py`, shared by research,
+screening and shadow. Fixed-duration versions reject explicit session/unknown
+layouts and ambiguous timestamps; session-clock live migration is still pending.
+See [replay contracts](alpha-session-replay.md#clock-isolation-before-live-migration).
+
 ## Runtime ownership
 
 The installed checkout runs `com.agentictrader.copilot` under launchd. Its shell

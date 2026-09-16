@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 import pandas as pd
 import pytest
 
-from agentic_trader.research.alpha.data import completed_bars, load_dataset, save_dataset, save_json_report
-from agentic_trader.research.alpha.validation import frame_digest
+from agentic_trader.market.bars import completed_fixed_bars
+from agentic_trader.research.alpha.data import load_dataset, save_dataset, save_json_report
+from agentic_trader.research.alpha.validation import frame_digest, validate_sampling
 
 
 @pytest.mark.parametrize(("timeframe", "periods", "expected"), [("15m", 5, 4), ("1h", 5, 1), ("4h", 5, 0)])
@@ -13,7 +14,31 @@ def test_forming_bar_is_excluded(timeframe, periods, expected):
     frame = pd.DataFrame(
         {"close": range(periods)}, index=pd.date_range("2026-09-16T10:00Z", periods=periods, freq="15min")
     )
-    assert len(completed_bars(frame, timeframe, as_of=datetime(2026, 9, 16, 11, tzinfo=UTC))) == expected
+    assert len(completed_fixed_bars(frame, timeframe, as_of=datetime(2026, 9, 16, 11, tzinfo=UTC))) == expected
+
+
+@pytest.mark.parametrize("consumer", [completed_fixed_bars, validate_sampling])
+@pytest.mark.parametrize("layout", ["rth_open_v1", "unknown_clock"])
+def test_fixed_duration_consumers_reject_other_bar_clocks(consumer, layout):
+    frame = pd.DataFrame({"close": [100, 101]}, index=pd.date_range("2024-01-01", periods=2, tz="UTC"))
+    frame.attrs.update(timeframe="1d", bar_layout=layout)
+    with pytest.raises(ValueError, match="clock"):
+        consumer(frame, "1d")
+
+
+@pytest.mark.parametrize("defect", ["unknown_timestamp", "duplicate", "unsorted", "timeframe"])
+def test_fixed_duration_closure_refuses_ambiguous_observations(defect):
+    frame = pd.DataFrame({"close": [100, 101]}, index=pd.date_range("2024-01-01", periods=2, tz="UTC"))
+    if defect == "unknown_timestamp":
+        frame.index = pd.DatetimeIndex([frame.index[0], pd.NaT])
+    elif defect == "duplicate":
+        frame.index = pd.DatetimeIndex([frame.index[0], frame.index[0]])
+    elif defect == "unsorted":
+        frame = frame.iloc[::-1]
+    else:
+        frame.attrs["timeframe"] = "15m"
+    with pytest.raises(ValueError):
+        completed_fixed_bars(frame, "1d")
 
 
 def test_dataset_round_trip_retains_exact_observations(tmp_path):

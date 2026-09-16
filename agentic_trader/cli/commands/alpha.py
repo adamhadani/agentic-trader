@@ -22,10 +22,11 @@ from agentic_trader.broker.alpaca import BoundedStockDataClient, BoundedTradingC
 from agentic_trader.cli.utils import coro
 from agentic_trader.config import load_config
 from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.market.bars import completed_fixed_bars
 from agentic_trader.research.alpha.baselines import benchmark_models
 from agentic_trader.research.alpha.calibration import CalibrationPlan, run_calibration
 from agentic_trader.research.alpha.catalog import AlphaCatalog
-from agentic_trader.research.alpha.data import completed_bars, load_dataset, save_dataset, save_json_report
+from agentic_trader.research.alpha.data import load_dataset, save_dataset, save_json_report
 from agentic_trader.research.alpha.forecasts import CombinedForecast
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
@@ -101,17 +102,18 @@ def download_bars(symbol, lookback, interval, *, feed="yfinance", config=None):
         frame.index = frame.index.tz_localize("UTC")
     else:
         frame.index = frame.index.tz_convert("UTC")
-    frame = completed_bars(frame, requested)
+    frame = completed_fixed_bars(frame, requested)
     if interval == "4h":
         frame = (
             frame.resample("4h")
             .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
             .dropna()
         )
+        frame.attrs["timeframe"] = interval
     frame.attrs.update(
         feed="yfinance" if feed == "yfinance" else f"alpaca:{config.market_data.alpaca_feed}", adjustment="raw"
     )
-    return completed_bars(frame, interval)
+    return completed_fixed_bars(frame, interval)
 
 
 @click.group("alpha", help="Causal formula research and journal-backed promotion")
