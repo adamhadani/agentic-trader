@@ -1,0 +1,15 @@
+{
+  "campaign_id": "prospective-equity-300-v1",
+  "exchanges": [
+    "AMEX",
+    "NASDAQ",
+    "NYSE"
+  ],
+  "max_metadata_age_days": 7,
+  "price_reads": false,
+  "sampling": "sha256_seed_asset_id",
+  "seed": "equity-cohort-v1",
+  "target_size": 300,
+  "trial_count": 1,
+  "version": "prospective_equity_candidates_v1"
+}
