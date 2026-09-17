@@ -26,6 +26,28 @@ EXECUTION_BAR_DURATION = pd.Timedelta(minutes=1)
 SESSION_BAR_LAYOUT = "rth_open_v1"
 FIXED_BAR_LAYOUT = "fixed_duration_v1"
 OHLCV = ("open", "high", "low", "close", "volume")
+MAX_DECISION_SECONDS = 86400
+
+
+@dataclass(frozen=True)
+class SessionClockPolicy:
+    """Immutable eligibility window for a new session-bar decision, not an order TTL."""
+
+    decision_delay_seconds: int = 60
+    max_lateness_seconds: int = 120
+    bar_layout: str = SESSION_BAR_LAYOUT
+
+    def __post_init__(self):
+        if self.bar_layout != SESSION_BAR_LAYOUT:
+            raise ValueError("Unsupported session clock layout")
+        for name, minimum in (("decision_delay_seconds", 0), ("max_lateness_seconds", 1)):
+            value = getattr(self, name)
+            if type(value) is not int or not minimum <= value <= MAX_DECISION_SECONDS:
+                raise ValueError(f"{name} requires bounded integer seconds")
+
+    def windows(self, closes: pd.DatetimeIndex) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
+        available = closes + pd.Timedelta(seconds=self.decision_delay_seconds)
+        return available, available + pd.Timedelta(seconds=self.max_lateness_seconds)
 
 
 class ObservationStatus(StrEnum):
@@ -155,12 +177,93 @@ class SessionCoverageError(ValueError):
         super().__init__(f"Unknown execution prices: {coverage['missing_minutes']} missing regular-session minutes")
 
 
+def session_execution_minutes(schedule: SessionSchedule, *, as_of) -> pd.DatetimeIndex:
+    """Expected complete minute starts from the observed calendar, without imputation."""
+    as_of = utc_timestamp(as_of).floor("min")
+    expected = pd.DatetimeIndex([], tz="UTC")
+    for session in schedule.sessions:
+        end = min(session.close, as_of)
+        if end > session.open:
+            expected = expected.append(pd.date_range(session.open, end, freq="min", inclusive="left"))
+    return expected
+
+
 @dataclass(frozen=True)
 class SessionBars:
     execution: pd.DataFrame
     signals: pd.DataFrame
     closed_at: pd.DatetimeIndex
     coverage: dict
+    schedule: SessionSchedule
+
+    def validate(self, timeframe: str) -> None:
+        """Reject mismatched clocks even when a caller constructs a container directly."""
+        if (
+            timeframe not in BAR_DURATIONS
+            or self.signals.attrs.get("bar_layout") != SESSION_BAR_LAYOUT
+            or self.signals.attrs.get("timeframe") != timeframe
+        ):
+            raise ValueError("Session signal clock/layout does not match the definition")
+        for index in (self.signals.index, self.execution.index, self.closed_at):
+            if (
+                not isinstance(index, pd.DatetimeIndex)
+                or index.tz is None
+                or index.hasnans
+                or not index.is_unique
+                or not index.is_monotonic_increasing
+            ):
+                raise ValueError("Unique ordered aware session clock required")
+        if len(self.signals) != len(self.closed_at) or (self.closed_at <= self.signals.index).any():
+            raise ValueError("Signal starts and session closes must align")
+        if (self.closed_at - self.signals.index > BAR_DURATIONS[timeframe]).any():
+            raise ValueError("Session signal duration exceeds its timeframe")
+        if len(self.signals) > 1 and (self.closed_at[:-1] > self.signals.index[1:]).any():
+            raise ValueError("Overlapping session signal intervals")
+        if (
+            self.execution.empty
+            or self.execution.attrs.get("bar_layout") != SESSION_BAR_LAYOUT
+            or self.execution.attrs.get("timeframe") != "1m"
+        ):
+            raise ValueError("Observed session execution clock required")
+        for field in ("feed", "adjustment"):
+            if self.execution.attrs.get(field) != self.signals.attrs.get(field):
+                raise ValueError("Inconsistent session data contracts")
+        end = self.execution.index[-1] + EXECUTION_BAR_DURATION
+        if not self.execution.index.equals(session_execution_minutes(self.schedule, as_of=end)):
+            raise ValueError("Incomplete or out-of-session execution clock")
+        windows = [
+            w
+            for session in self.schedule.sessions
+            for w in session_bar_windows(session, timeframe)
+            if w.closed_at <= end
+        ]
+        starts = pd.DatetimeIndex([w.opened_at for w in windows], tz="UTC")
+        closes = pd.DatetimeIndex([w.closed_at for w in windows], tz="UTC")
+        if not starts.equals(self.signals.index) or not closes.equals(self.closed_at):
+            raise ValueError("Signal intervals disagree with the observed session calendar")
+
+
+@dataclass(frozen=True)
+class SessionSnapshot:
+    """A live read's actual transport receipt, separate from historical bar closure."""
+
+    bars: SessionBars
+    requested_at: pd.Timestamp
+    received_at: pd.Timestamp
+    symbol: str
+
+    def __post_init__(self):
+        if not self.symbol or self.symbol != self.symbol.strip().upper():
+            raise ValueError("Explicit normalized snapshot symbol required")
+        for name in ("requested_at", "received_at"):
+            object.__setattr__(self, name, utc_timestamp(getattr(self, name)))
+        self.bars.validate(self.bars.signals.attrs.get("timeframe"))
+        if (
+            self.requested_at > self.received_at
+            or (self.bars.closed_at > self.received_at).any()
+            or (self.bars.execution.index + EXECUTION_BAR_DURATION > self.received_at).any()
+        ):
+            raise ValueError("Snapshot receipt must follow request and every completed observation")
 
 
 def build_session_bars(minutes: pd.DataFrame, schedule: SessionSchedule, timeframe: str, *, as_of) -> SessionBars:
@@ -183,11 +286,7 @@ def build_session_bars(minutes: pd.DataFrame, schedule: SessionSchedule, timefra
         raise ValueError("Unique ordered minute observations required")
     if not set(OHLCV) <= set(frame.columns):
         raise ValueError("OHLCV observations required")
-    expected = pd.DatetimeIndex([], tz="UTC")
-    for session in schedule.sessions:
-        end = min(session.close, as_of.floor("min"))
-        if end > session.open:
-            expected = expected.append(pd.date_range(session.open, end, freq="min", inclusive="left"))
+    expected = session_execution_minutes(schedule, as_of=as_of)
     if expected.empty:
         raise ValueError("No completed execution session minutes")
     present = frame.index.intersection(expected)
@@ -231,4 +330,4 @@ def build_session_bars(minutes: pd.DataFrame, schedule: SessionSchedule, timefra
     signals = pd.DataFrame(rows, columns=OHLCV, index=pd.DatetimeIndex(starts, tz="UTC"), dtype=float)
     signals.attrs.update(minutes.attrs, timeframe=timeframe, bar_layout=SESSION_BAR_LAYOUT)
     execution.attrs.update(minutes.attrs, timeframe="1m", bar_layout=SESSION_BAR_LAYOUT)
-    return SessionBars(execution, signals, pd.DatetimeIndex(closes, tz="UTC"), coverage)
+    return SessionBars(execution, signals, pd.DatetimeIndex(closes, tz="UTC"), coverage, schedule)

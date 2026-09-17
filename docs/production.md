@@ -359,3 +359,19 @@ current-run `alpha_observer` progress. A healthy idle collector is not evidence 
 complete prices. Check capture coverage/status and metrics separately. After a
 post-close deployment, retain that no forward sample exists yet; do not backdate a
 historical fetch to pass verification. No schema change or alpha activation is needed.
+
+### Sleep and wake
+
+launchd supervises process exits; it does not keep this Mac awake. During sleep,
+scans, reconciliation, notifications and collection pause; dark wakes can generate
+transport failures and scheduler misfires. After a full wake, inspect current-run
+`/readyz`, watchdog progress and `scripts/verify_runtime.py`. The same healthy process
+may resume and reconnect without a restart. Restart only if recovery fails, preserving
+evidence and the single-poller rule. Broker-held protection remains at Alpaca while
+the host sleeps, but local trailing/monitoring cannot run. Continuous paper operation
+requires an awake host or an always-on deployment.
+
+New session alpha versions use [explicit decision windows](alpha-session-decisions.md)
+but remain blocked from activation and entry admission. The native scan schedule and
+forward collector are unchanged; a healthy collector is not evidence of deployed
+session strategies or of complete forward samples.

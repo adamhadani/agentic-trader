@@ -404,3 +404,8 @@ reconciliation rules. A failed reconciliation never becomes zero profit.
 
 See [monitoring semantics and defaults](operational-monitoring.md). `--monitor`
 and `--readiness` are mutually exclusive. Active `doctor` probes are separate.
+
+`alpha replay` creates a new session-clock version with `--decision-delay-seconds`
+(default 60) and `--max-lateness-seconds` (default 120). Expired proposals cannot
+become new orders at a later session; already-submitted GTC orders persist. See
+[session decision contracts](alpha-session-decisions.md) and their diagnostic-only limits.

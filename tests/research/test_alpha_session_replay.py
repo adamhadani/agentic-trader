@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from agentic_trader.market.bars import build_session_bars
+from agentic_trader.market.bars import SessionClockPolicy, build_session_bars
 from agentic_trader.research.alpha.models import AlphaDefinition
-from agentic_trader.research.alpha.replay import SessionReplayPolicy, simulate_session_strategy
+from agentic_trader.research.alpha.replay import simulate_session_strategy
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
 
 
@@ -16,10 +16,14 @@ from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
 def replay_input(schedule_for, minute_bars):
     schedule = schedule_for(("2024-11-27", "16:00"), ("2024-11-29", "13:00"))
     bars = minute_bars(schedule)
+    bars.attrs["feed"] = "alpaca:sip"
     definition = AlphaDefinition(
         "session",
         "Session",
         "close",
+        semantics_version=3,
+        clock=SessionClockPolicy(),
+        data_feed="alpaca:sip",
         timeframe="15m",
         normalization_window=2,
         execution=AlphaExecutionPolicy(
@@ -47,7 +51,7 @@ def test_signal_cannot_trade_before_its_close_and_declared_delay(replay_input, d
     definition, data, scores = prepared(replay_input)
     scores.iloc[1] = 2  # 09:45 bar closes at 10:00 ET.
     result = simulate_session_strategy(
-        definition, data, policy=SessionReplayPolicy(decision_delay_seconds=delay), scores=scores
+        replace(definition, clock=SessionClockPolicy(decision_delay_seconds=delay)), data, scores=scores
     )
     eligible = pd.Timestamp("2024-11-27 15:00", tz="UTC") + pd.Timedelta(minutes=(delay + 59) // 60)
     assert result["entries"][0]["timestamp"] == str(eligible)
@@ -76,7 +80,7 @@ def test_pending_order_crosses_holiday_and_fills_only_in_next_session(replay_inp
     bars = pd.concat([bars, extra]).sort_index()
     definition, data, scores = prepared((definition, schedule, bars))
     scores.iloc[1] = 2 * direction
-    result = simulate_session_strategy(definition, data, policy=SessionReplayPolicy(), scores=scores)
+    result = simulate_session_strategy(definition, data, scores=scores)
     assert len(result["entries"]) == 1
     assert result["entries"][0]["timestamp"] == str(friday)
     assert result["entries"][0]["price"] == 100
@@ -89,7 +93,7 @@ def test_closed_signal_is_not_replayed_after_a_fold_starts_flat(replay_input):
     definition, data, scores = prepared(replay_input)
     scores.iloc[1] = 2
     start = pd.Timestamp("2024-11-27 16:00", tz="UTC")
-    result = simulate_session_strategy(definition, data, policy=SessionReplayPolicy(), scores=scores, start=start)
+    result = simulate_session_strategy(definition, data, scores=scores, start=start)
     assert not result["entries"] and not result["pending_entry"]
     assert result["net_returns"].index[0] == start
 
@@ -102,7 +106,7 @@ def test_trailing_observation_cannot_change_protection_earlier_in_same_minute(re
     bars.loc[pd.Timestamp("2024-11-27 15:03Z"), ["open", "high", "low", "close"]] = [103, 103, 99, 100]
     definition, data, scores = prepared((definition, schedule, bars))
     scores.iloc[1] = 2
-    result = simulate_session_strategy(definition, data, policy=SessionReplayPolicy(), scores=scores)
+    result = simulate_session_strategy(definition, data, scores=scores)
     assert result["trades"][0]["exit_timestamp"] == str(pd.Timestamp("2024-11-27 15:03Z"))
     assert result["trades"][0]["exit_price"] == pytest.approx(100.1)
     assert any(e["kind"] == "stop_updated" for e in result["events"])
@@ -111,21 +115,20 @@ def test_trailing_observation_cannot_change_protection_earlier_in_same_minute(re
 @pytest.mark.parametrize("value", [-1, True, 0.5, 86401])
 def test_latency_policy_requires_bounded_integer_seconds(value):
     with pytest.raises(ValueError):
-        SessionReplayPolicy(decision_delay_seconds=value)
+        SessionClockPolicy(decision_delay_seconds=value)
 
 
 @pytest.mark.parametrize("latest_score", [float("nan"), 0, 2])
-def test_delayed_observations_use_latest_decision_at_next_session_open(replay_input, latest_score):
+def test_delayed_observations_expire_before_next_session_open(replay_input, latest_score):
     definition, data, scores = prepared(replay_input)
     scores.iloc[24] = 2
     scores.iloc[25] = latest_score
     result = simulate_session_strategy(
-        definition, data, policy=SessionReplayPolicy(decision_delay_seconds=3600), scores=scores
+        replace(definition, clock=SessionClockPolicy(decision_delay_seconds=3600)), data, scores=scores
     )
-    assert len(result["entries"]) == (1 if latest_score == 2 else 0)
-    assert result["decisions"][24]["superseded_before_eligibility"]
-    if result["entries"]:
-        assert result["entries"][0]["timestamp"] == str(pd.Timestamp("2024-11-29 14:30Z"))
+    assert not result["entries"]
+    assert result["decisions"][24]["expired_before_eligibility"]
+    assert result["decisions"][25]["expired_before_eligibility"]
 
 
 def test_held_bracket_cannot_fill_on_extended_hours_spike(replay_input):
@@ -136,6 +139,31 @@ def test_held_bracket_cannot_fill_on_extended_hours_spike(replay_input):
     bars = pd.concat([bars, extra]).sort_index()
     definition, data, scores = prepared((definition, schedule, bars))
     scores.iloc[1] = 2
-    result = simulate_session_strategy(definition, data, policy=SessionReplayPolicy(), scores=scores)
+    result = simulate_session_strategy(definition, data, scores=scores)
     assert result["open_position"] and not result["trades"]
     assert result["coverage"]["excluded_minutes"] == 1
+
+
+@pytest.mark.parametrize("latest_score", [float("nan"), 0, 2])
+def test_unexpired_delayed_decisions_supersede_at_next_open(replay_input, schedule_for, minute_bars, latest_score):
+    definition, _, _ = replay_input
+    definition = replace(definition, clock=SessionClockPolicy(decision_delay_seconds=3600, max_lateness_seconds=86400))
+    schedule = schedule_for(("2024-11-26", "16:00"), ("2024-11-27", "16:00"))
+    bars = minute_bars(schedule)
+    bars.attrs["feed"] = "alpaca:sip"
+    definition, data, scores = prepared((definition, schedule, bars))
+    scores.iloc[24] = 2
+    scores.iloc[25] = latest_score
+    result = simulate_session_strategy(definition, data, scores=scores)
+    assert len(result["entries"]) == (1 if latest_score == 2 else 0)
+    assert result["decisions"][24]["superseded_before_eligibility"]
+    assert result["decisions"][25]["eligible_bar"] == str(pd.Timestamp("2024-11-27 14:30Z"))
+
+
+def test_dataset_end_censors_an_unobserved_eligibility_minute(replay_input):
+    definition, data, scores = prepared(replay_input)
+    scores.iloc[-1] = 2
+    result = simulate_session_strategy(definition, data, scores=scores)
+    assert result["decisions"][-1]["eligible_bar"] is None
+    assert not result["decisions"][-1]["expired_before_eligibility"]
+    assert not result["entries"]

@@ -62,8 +62,10 @@ adapter/window clock to retain actual REST receipt and revision evidence. It is
 independent of strategy scoring and does not qualify or reinterpret any definition.
 
 These guards prevent accidental reinterpretation, including session-derived daily
-bars. They do **not** install session bars into live screening. The versioned live
-acquisition, availability and scheduling migration below remains required.
+bars. New version-3 definitions now accept explicit receipt-stamped session snapshots
+through [shared screening/shadow decision selection](alpha-session-decisions.md).
+Normal scans do not yet acquire those snapshots or schedule durable session decisions;
+activation remains blocked until that migration and execution evidence are complete.
 
 ### Shared execution state
 
@@ -72,12 +74,15 @@ Both the existing coarse simulator and session replay use the same immutable
 maps completed observations to execution eligibility; it does not duplicate fills,
 fees, pending-order lifecycle or bracket calculations in a second simulator.
 
-`SessionReplayPolicy.decision_delay_seconds` defaults to 60 and explicitly represents
+`SessionClockPolicy.decision_delay_seconds` defaults to 60 and explicitly represents
 an assumed publication/decision delay. Eligibility is the first regular-session
 minute starting at or after signal close plus that delay. Zero models idealized
 instant availability, not measured operational latency. Several delayed observations
 mapping to the same minute use the latest decision, including a latest no-signal.
 An observation is evaluated once; a stale coarse score cannot re-enter every minute.
+New v2 replay artifacts also expire unsubmitted decisions outside their versioned
+window (default 120 seconds after eligibility). Already-submitted GTC orders persist.
+See [versioned decisions](alpha-session-decisions.md) for historical v1 differences.
 
 Accepted GTC limits remain pending across closed sessions, independently of later
 feature availability. Folds can start flat without inheriting an old order or replaying
@@ -148,8 +153,8 @@ completions and both IEX coverage failures, with no simulated entries or promoti
 
 This increment is **A2b groundwork**, not authorization to activate intraday alphas:
 
-1. Version the session-derived signal contract in research **and live** data acquisition,
-   closed-bar freshness and scan/decision timing. Native provider bars remain different;
+1. Complete live acquisition and durable scan/decision timing for the now-versioned
+   session-derived signal and freshness contract. Native provider bars remain different;
    new replay results cannot be silently substituted for existing qualifications.
 2. Quantify publication/revision and operator/broker acknowledgment delays with actual
    forward observations. Historical corrected bars cannot establish point-in-time

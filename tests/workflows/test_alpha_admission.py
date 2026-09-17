@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.execution.durable import EventKind, WorkStatus
+from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.alpha import AlphaRepository
@@ -14,9 +15,15 @@ from agentic_trader.storage.models import SignalRecord
 
 
 @pytest.fixture
-async def alpha_entry(store):
+async def alpha_entry(store, request):
     definition = AlphaDefinition(
-        "alpha_admission", "Admission", "close", timeframe="1d", eligible_symbols=("SPY",), data_feed="alpaca:sip"
+        "alpha_admission",
+        "Admission",
+        "close",
+        timeframe="1d",
+        eligible_symbols=("SPY",),
+        data_feed="alpaca:sip",
+        **getattr(request, "param", {}),
     )
     repository = AlphaRepository(store)
     await repository.register(definition, actor="fixture")
@@ -111,3 +118,11 @@ async def test_alpha_change_during_preflight_blocks_submission_commit(store, app
             )
     assert not await store.begin_submission(claim)
     assert (await store.get_work(item.id)).status == WorkStatus.CHECKING
+
+
+@pytest.mark.parametrize("alpha_entry", [{"semantics_version": 3, "clock": SessionClockPolicy()}], indirect=True)
+async def test_session_clock_cannot_reserve_risk_even_with_corrupt_active_projection(store, app_config, alpha_entry):
+    _, _, request = alpha_entry
+    item, reason = await store.enqueue_entry(request, app_config)
+    assert item is None
+    assert "session" in reason.lower()

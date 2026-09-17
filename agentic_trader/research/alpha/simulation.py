@@ -80,6 +80,8 @@ def simulate_strategy(
     end: int | None = None,
     scores: pd.Series | None = None,
 ) -> dict:
+    if definition.clock is not None:
+        raise ValueError("Versioned session strategies require session/minute replay")
     end = len(bars) if end is None else end
     if not 0 <= start < end <= len(bars):
         raise ValueError("Invalid simulation interval")

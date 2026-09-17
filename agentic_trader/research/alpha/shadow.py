@@ -9,7 +9,8 @@ from datetime import UTC, datetime
 
 import numpy as np
 
-from agentic_trader.market.bars import BAR_DURATIONS, FIXED_BAR_LAYOUT, completed_fixed_bars, fixed_bar_closes
+from agentic_trader.market.bars import FIXED_BAR_LAYOUT
+from agentic_trader.research.alpha.clock import AlphaClockRejection, closed_alpha_bars
 from agentic_trader.research.alpha.forecasts import AlphaForecast, ForecastCalibration, combine_forecasts
 from agentic_trader.research.alpha.strategy import TIMEFRAME_FIELDS, alpha_scores, entry_directions
 from agentic_trader.storage.workflow import encode
@@ -26,32 +27,35 @@ def observe_definition(definition, data, as_of):
         "timeframe": definition.timeframe,
         "observed_at": as_of.isoformat(),
         "valid": False,
-        "bar_layout": source.attrs.get("bar_layout", FIXED_BAR_LAYOUT),
+        "bar_layout": definition.clock.bar_layout
+        if definition.clock
+        else source.attrs.get("bar_layout", FIXED_BAR_LAYOUT),
     }
+    if definition.clock is not None and (snapshot := data.session_bars.get(definition.timeframe)) is not None:
+        payload.update(requested_at=snapshot.requested_at.isoformat(), received_at=snapshot.received_at.isoformat())
     try:
-        frame = completed_fixed_bars(source, definition.timeframe, as_of=as_of)
-        if frame.empty:
-            return {**payload, "reason": "missing_timeframe"}
+        frame, completed_at = closed_alpha_bars(definition, data, as_of=as_of, require_verified=True)
         timestamp = frame.index[-1]
         if timestamp.tzinfo is None:
             timestamp = timestamp.tz_localize("UTC")
-        completed_at = fixed_bar_closes(frame, definition.timeframe)[-1]
         payload.update(candle_timestamp=timestamp.isoformat(), completed_at=completed_at.isoformat())
-        if frame.attrs.get("feed") != definition.data_feed or frame.attrs.get("adjustment") != definition.adjustment:
-            raise ValueError("deployment_data_contract_mismatch")
         scores = alpha_scores(definition, frame)
         score = float(scores.iloc[-1])
         if not np.isfinite(score):
             raise ValueError("missing_score_or_warmup")
-        if as_of - completed_at > BAR_DURATIONS[definition.timeframe]:
-            raise ValueError("stale_closed_bar")
         payload.update(
             valid=True,
             score=score,
             decision=int(entry_directions(scores, definition).iloc[-1]),
             close=float(frame.iloc[-1]["Close"] if "Close" in frame else frame.iloc[-1]["close"]),
         )
+        if definition.clock is not None:
+            # Scores are diagnostic until the session acquisition/decision worker
+            # and actual execution evidence meet the roadmap's acceptance gates.
+            payload.update(valid=False, reason="session_clock_diagnostic")
     except (TypeError, ValueError) as exc:
+        if isinstance(exc, AlphaClockRejection):
+            payload.update(exc.observation)
         payload["reason"] = str(exc)
     return payload
 

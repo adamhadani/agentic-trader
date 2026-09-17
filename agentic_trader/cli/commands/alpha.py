@@ -20,7 +20,7 @@ import yfinance as yf
 from agentic_trader.cli.utils import artifact_directory, coro, session_source
 from agentic_trader.config import load_config
 from agentic_trader.data.providers import AlpacaDataProvider
-from agentic_trader.market.bars import completed_fixed_bars
+from agentic_trader.market.bars import MAX_DECISION_SECONDS, SessionClockPolicy, completed_fixed_bars
 from agentic_trader.research.alpha.baselines import benchmark_models
 from agentic_trader.research.alpha.calibration import CalibrationPlan, run_calibration
 from agentic_trader.research.alpha.catalog import AlphaCatalog
@@ -31,10 +31,8 @@ from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.portfolio import PortfolioPolicy, PortfolioSnapshot, build_shadow_portfolio
 from agentic_trader.research.alpha.promotion import AlphaPromotionService, read_alpha_definitions
 from agentic_trader.research.alpha.replay import (
-    MAX_DECISION_DELAY_SECONDS,
     ReplayPlan,
     ReplayStatus,
-    SessionReplayPolicy,
 )
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
 from agentic_trader.research.alpha.study import StudyProtocol, StudyStatus
@@ -528,12 +526,20 @@ async def alpha_study_cmd(protocol_path, output):
 @click.option("--feed", type=click.Choice(["iex", "sip"]), help="Defaults to the configured Alpaca stock feed")
 @click.option(
     "--decision-delay-seconds",
-    type=click.IntRange(0, MAX_DECISION_DELAY_SECONDS),
-    default=SessionReplayPolicy().decision_delay_seconds,
+    type=click.IntRange(0, MAX_DECISION_SECONDS),
+    default=SessionClockPolicy().decision_delay_seconds,
+)
+@click.option(
+    "--max-lateness-seconds",
+    type=click.IntRange(1, MAX_DECISION_SECONDS),
+    default=SessionClockPolicy().max_lateness_seconds,
+    help="Expire an unsubmitted decision after this window; accepted GTC orders persist",
 )
 @click.option("--output", type=click.Path(path_type=Path), help="New private directory; no overwrite")
 @coro
-async def alpha_replay_cmd(expression, symbol, start, end, interval, feed, decision_delay_seconds, output):
+async def alpha_replay_cmd(
+    expression, symbol, start, end, interval, feed, decision_delay_seconds, max_lateness_seconds, output
+):
     """Diagnostic session/minute replay; charges one trial and consumes the inspected period."""
     config = load_config()
     feed = feed or config.market_data.alpaca_feed
@@ -543,11 +549,13 @@ async def alpha_replay_cmd(expression, symbol, start, end, interval, feed, decis
             "session_replay",
             "Session replay",
             expression,
+            semantics_version=3,
+            clock=SessionClockPolicy(decision_delay_seconds, max_lateness_seconds),
             timeframe=interval,
             eligible_symbols=(symbol,),
             data_feed=f"alpaca:{feed}",
         )
-        plan = ReplayPlan(symbol, start.date(), end.date(), definition, SessionReplayPolicy(decision_delay_seconds))
+        plan = ReplayPlan(symbol, start.date(), end.date(), definition)
         output = output or artifact_directory() / f"session-replay-{uuid4().hex}"
         environment = await asyncio.to_thread(research_environment)
         with session_source(config, feed) as source:

@@ -124,8 +124,9 @@ and passes null-search criteria, but positive-control power remains insufficient
 The [A2b replay foundation](alpha-session-replay.md) now shares one bracket engine
 between coarse and minute clocks, consumes observed calendars and fails closed on
 missing minutes. Existing journal/artifact mechanisms retain all real-data attempts
-and event traces. Remaining A2b work is live signal-clock versioning and measured
-publication/broker execution behavior; A3 objective alignment follows.
+and event traces. New [session decision versions](alpha-session-decisions.md) now share receipt-aware
+screening/shadow and replay delay/expiry. Remaining A2b work is bounded live acquisition,
+durable session decision scheduling and measured publication/broker execution behavior; A3 objective alignment follows.
 Preserve the original incomplete study and gates;
 do not treat missing comparisons as null rejections or loosen trade-count requirements.
 
@@ -133,5 +134,5 @@ The [A2b forward observer](alpha-forward-observations.md) reuses the replay adap
 session-window clock, journal and artifact format. It lives outside `TradingCopilot`
 and owns dedicated SDK readers, with blocking work offloaded and orderly shutdown.
 No new schema, execution queue or notification mechanism was added. It measures REST
-receipt/revision evidence only; live strategy clock versioning and execution observations
+receipt/revision evidence only; live strategy acquisition/scheduling and execution observations
 remain unfinished, and shared research executor capacity remains a ranked concern.

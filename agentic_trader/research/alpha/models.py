@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.research.alpha.dsl import compile_expression
 from agentic_trader.research.alpha.strategy import NORMALIZATION_WINDOW, TIMEFRAME_FIELDS, AlphaExecutionPolicy
 
@@ -39,6 +40,7 @@ class AlphaDefinition:
     semantics_version: int = 2
     data_feed: str = "unverified"
     adjustment: str = "raw"
+    clock: SessionClockPolicy | None = None
 
     def __post_init__(self):
         compile_expression(self.expression)
@@ -50,9 +52,19 @@ class AlphaDefinition:
         if (
             type(self.normalization_window) is not int
             or not 2 <= self.normalization_window <= 252
-            or self.semantics_version != 2
+            or type(self.semantics_version) is not int
+            or self.semantics_version not in (2, 3)
         ):
             raise ValueError("Invalid normalization or semantics version")
+        if (self.semantics_version == 2 and self.clock is not None) or (
+            self.semantics_version == 3
+            and (
+                not isinstance(self.clock, SessionClockPolicy)
+                or self.data_feed not in ("alpaca:iex", "alpaca:sip")
+                or self.adjustment != "raw"
+            )
+        ):
+            raise ValueError("Version 3 requires an explicit raw Alpaca session clock; version 2 is fixed-duration")
         if self.eligible_symbols is not None:
             object.__setattr__(
                 self, "eligible_symbols", tuple(sorted({s.strip().upper() for s in self.eligible_symbols if s.strip()}))
@@ -72,6 +84,9 @@ class AlphaDefinition:
         d = asdict(self)
         d["origin"] = str(self.origin.value if hasattr(self.origin, "value") else self.origin)
         d["eligible_symbols"] = list(self.eligible_symbols) if self.eligible_symbols else None
+        # Version 2's persisted document and hash are immutable financial identity.
+        if self.semantics_version == 2:
+            d.pop("clock")
         return d
 
     @classmethod
@@ -90,9 +105,10 @@ class AlphaDefinition:
             eligible_symbols=eligible_symbols,
             normalization_window=data.get("normalization_window", NORMALIZATION_WINDOW),
             execution=AlphaExecutionPolicy(**data.get("execution", {})),
-            semantics_version=int(data.get("semantics_version", 2)),
+            semantics_version=data.get("semantics_version", 2),
             data_feed=str(data.get("data_feed", "unverified")),
             adjustment=str(data.get("adjustment", "raw")),
+            clock=SessionClockPolicy(**data["clock"]) if data.get("clock") is not None else None,
         )
 
 

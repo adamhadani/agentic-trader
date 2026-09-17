@@ -65,6 +65,8 @@ class AlphaPromotionService:
         if not definition_row:
             raise ValueError("Unknown finalist version")
         definition = AlphaDefinition.from_dict(definition_row["definition"])
+        if definition.clock is not None:
+            raise ValueError("Session-clock qualification requires live acquisition and execution evidence")
         validate_sampling(bars, definition.timeframe)
         if definition.eligible_symbols != (manifest["symbol"],):
             raise ValueError("Finalist requires an explicitly validated symbol universe")

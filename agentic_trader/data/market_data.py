@@ -16,6 +16,7 @@ from agentic_trader.data.providers import (
     MarketDataProvider,
     YFinanceDataProvider,
 )
+from agentic_trader.market.bars import SessionSnapshot
 from agentic_trader.resilience.fallback import RetryPolicy
 from agentic_trader.screeners.indicators import (
     calculate_atr,
@@ -41,6 +42,7 @@ class ContractMarketData:
     fifteen_minute: pd.DataFrame = field(default_factory=pd.DataFrame)
     symbol: str = ""
     one_hour: pd.DataFrame = field(default_factory=pd.DataFrame)
+    session_bars: dict[str, SessionSnapshot] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.contract and self.symbol:

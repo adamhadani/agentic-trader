@@ -154,7 +154,8 @@ uses observed calendars, complete minute coverage and the shared execution engin
 `alpha replay` charges one real-data research attempt and excludes the inspected
 interval before I/O; it never qualifies or earns shadow credit. Historical minute
 data cannot establish point-in-time availability or actual partial fills. Next:
-version/migrate the live signal clock and verify broker execution assumptions.
+complete acquisition/durable scheduling for the now-versioned session clock and
+verify broker execution assumptions.
 Existing fixed-duration research/screening/shadow paths share the market clock
 guard and reject explicit session/unknown layouts or ambiguous timestamps. Do not
 silently reinterpret an old alpha version as using session-derived bars.
@@ -168,3 +169,9 @@ Raw receipts/revisions use the existing journal/private artifacts and earn no tr
 shadow or promotion credit. Inspected dates are excluded before price reads. Preserve
 existing alpha identities; strategy clock migration and actual execution evidence
 remain pending. Shutdown must finish reads before closing the observer's SDK clients.
+
+New [session alpha definitions](docs/alpha-session-decisions.md) use semantics version 3
+and an explicit clock inside their immutable identity. Replay and screening/shadow
+share delay/expiry; live snapshots require actual request/receipt times. Old version-2
+hashes remain exact. Session versions cannot qualify, activate or reserve entry risk;
+normal scan acquisition and durable session decision scheduling remain pending.

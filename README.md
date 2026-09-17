@@ -157,3 +157,7 @@ The daemon's [prospective session-data observer](docs/alpha-forward-observations
 records live REST availability and revisions for SPY/15m on the configured feed.
 Inspect `copilot alpha status` for capture quality; it provides no promotion credit
 and does not change strategy scans or activate mined alphas.
+
+Session alpha research now uses [versioned receipt/delay/expiry contracts](docs/alpha-session-decisions.md).
+New session versions remain diagnostic-only while live acquisition, durable decision
+scheduling and execution evidence are completed; existing alpha identities are preserved.

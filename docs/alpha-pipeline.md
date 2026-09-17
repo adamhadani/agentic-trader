@@ -42,7 +42,9 @@ latest recorded research status separately from operational readiness.
 
 An alpha version hashes its expression AST, logical ID, direction, entry threshold,
 normalization window, timeframe, symbol universe, feed/adjustment and execution
-policy. Display names/descriptions do not change its identity. No field can mutate
+policy. Display names/descriptions do not change its identity. New session definitions additionally hash their explicit decision delay/expiry
+and layout under semantics version 3; version-2 documents and hashes are unchanged.
+See [session decisions](alpha-session-decisions.md). No field can mutate
 a deployed definition. Changing any trading semantics requires a new version and
 new evidence. Historical signals retain their original metadata; missing historical
 versions are not invented.
@@ -86,7 +88,8 @@ and [bracket restrictions](https://docs.alpaca.markets/us/docs/orders-at-alpaca)
 The [session/minute replay](alpha-session-replay.md) implements the diagnostic clock
 using observed calendars and complete raw minute coverage. It shares bracket
 execution with the coarse simulator and retains decision/order event traces.
-It does not yet change live signal aggregation or authorize intraday qualification;
+Explicit session snapshots now share versioned screening/shadow timing, but normal
+scans do not yet acquire/schedule them. This does not authorize intraday qualification;
 its session-derived/native-bar and broker execution differences remain explicit.
 
 
