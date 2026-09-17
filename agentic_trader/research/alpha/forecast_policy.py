@@ -10,6 +10,7 @@ from numbers import Real
 import numpy as np
 import pandas as pd
 
+from agentic_trader.research.alpha.diagnostics import policy_diagnostics
 from agentic_trader.research.alpha.simulation import return_statistics
 from agentic_trader.research.alpha.validation import frame_digest, validate_sampling
 
@@ -63,6 +64,7 @@ class PolicyScenario:
             "folds": self.folds,
             "missing_forecasts": self.missing_forecasts,
             "observation_hash": frame_digest(self.observations),
+            "diagnostics": policy_diagnostics(self.observations),
             "authorizes_promotion": False,
         }
 
@@ -142,6 +144,7 @@ def evaluate_daily_policy(
                     "benchmark_metrics": _statistics(observations.benchmark_return, eligible),
                     "mean_excess_return": float((observations.net_return - observations.benchmark_return).mean()),
                     "missing_forecasts": unavailable,
+                    "diagnostics": policy_diagnostics(observations),
                 }
             )
             missing += unavailable
