@@ -130,6 +130,13 @@ its strict expected failures have become passing regression tests.
 
 The [active alpha roadmap](docs/alpha-roadmap.md) owns the ordered long-horizon plan: calibration, session-correct replay, forecast/strategy separation, broader data, and forward observation. Update its milestones and evidence when completing work.
 
+The [forecast-to-fill review](docs/forecast-to-fill-review.md) distinguishes production
+candidate arbitration from shadow joint allocation. It reproduces a participation
+cap on holdings instead of trades and legacy retuner P&L double counting; forecast
+horizons/uncertainty and target-to-order plans remain incomplete. Address the roadmap's
+recent-SIP entitlement, transport-deadline and retuner prerequisites before relying on
+new forward/retuning evidence. Do not connect shadow weights directly to broker orders.
+
 `alpha calibrate` is a bounded synthetic diagnostic: no runtime config/DB/provider,
 no promotion or shadow credit. Keep the shared statistical assessment separate from
 deployment permissions. Its fixed-panel bootstrap does not replay adaptive search;

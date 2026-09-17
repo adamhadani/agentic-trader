@@ -375,11 +375,48 @@ hypotheses have negative mean IC and lose before costs. No detected arithmetic/c
 bug explains the outcome; no threshold or direction was changed. Latest lifetime
 attempts: **7,312**; registry generation 10, active 0/shadow 10, no new qualification.
 
-**Next ordered increment:** lossless raw-provider/normalization provenance and the
-retained SPY-minute postmortem. Then freeze a small economically different, slower-
-turnover relative/residual ETF experiment with explicit total-return/borrow assumptions;
+**Next ordered increment:** resolve the recent-SIP/deadline prerequisites and contain
+the divergent legacy retuner identified in the [forecast-to-fill follow-up](#forecast-to-fill-follow-up).
+Then add lossless raw-provider/normalization provenance and complete the retained
+SPY-minute postmortem. Freeze a small economically different, slower-turnover
+relative/residual ETF experiment with explicit total-return/borrow assumptions;
 charge every horizon/buffer/cohort comparison before acquisition. No post-hoc rerun
 belongs to the failed protocol and no best-of-failures candidate gains forward or
 paper-trading credit. Continue actual receipts and independent quote/fill cost evidence.
 Corporate actions, temporal availability, legacy miner metric migration/calibration,
 multi-owner protection and worker checkpoints remain explicit dependencies.
+
+### Forecast-to-fill follow-up
+
+The [tutorial comparison and reproduced findings](forecast-to-fill-review.md) refine
+A2/A3 without authorizing optimized portfolio execution or changing promotion gates.
+Production still arbitrates individual candidates; the convex allocator is shadow-only.
+
+1. **Operational prerequisites / legacy research containment.** PR #52 verification
+   found recent SIP denied by the current entitlement, while delayed SIP works.
+   Expose this through feed-aware doctor/freshness policy; never change feed identity
+   silently. Consolidate bounded read transport and correct sync/async timeout handling.
+   Separately, the scheduled legacy retuner's NumPy simulator overcounts unrealized
+   P&L (a $150 synthetic profit becomes $250). Contain misleading reports and migrate
+   useful retuning to shared accounting/execution/trial evidence before trusting it.
+   The recent alpha studies do not use that simulator.
+2. **Data provenance.** Preserve lossless provider rows and normalization outcomes;
+   finish the SPY-minute postmortem. Preserve all frozen failed studies.
+3. **A3 allocation contracts.** Reuse explicit forecast targets across calibration,
+   pooling and risk/cost snapshots. Distinguish return volatility from forecast-mean
+   error. Fix participation bounds on trades rather than holdings; keep actual
+   inventory separate from pending-risk envelopes. Persist solver input hashes,
+   objective components and validation diagnostics. Targets remain non-executable.
+4. **A3/A4 persistent-book experiment.** Predeclare a bounded slower-turnover ETF
+   study with full costs, total-return/borrow assumptions, terminal inventory and
+   causal dependence-aware blending. Compare fixed baskets with persistent holdings,
+   including null/planted-edge and duplicate/complementary controls. No forced alpha
+   promotion quota and no post-hoc discount of the failed study's costs.
+5. **A3 execution gate.** Version target/plan identity, rounding, stale-snapshot
+   rejection, partial-fill attribution and protection before any paper execution.
+   Reuse entry FIFO, close services, journal and outbox. Verify intermediate exposure
+   and actual fills through SDK HTTP/WebSocket plus disposable PostgreSQL tests.
+
+Defer MPC, advanced impact scheduling, CVaR/robust-mean extensions and new asset classes
+until these contracts and a credible economic case exist. The tutorial's optimization
+methods are useful tools, not evidence that our current hypotheses have an edge.
