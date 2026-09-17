@@ -338,7 +338,8 @@ and 10 triggered decisions; elapsed wall time or a healthy collector is insuffic
 
 ### Next delivery after the continuous campaign
 
-1. Pair causal ETF-panel alignment and relative/residual hypotheses with the
+1. The [sector-panel implementation and frozen study](alpha-sector-panel.md) now
+   pair causal alignment and relative/beta-adjusted hypotheses with the
    [IC measurement contract](alpha-information-coefficient.md). Existing rolling
    single-symbol ICIR is unannualized and overlaps; it cannot use cross-sectional
    or IID t-stat rules directly. Define/test units, coverage, fold boundaries and
@@ -355,3 +356,19 @@ passes; 0 qualifications/promotions; 7,280 lifetime attempts; registry generatio
 with 0 active/10 shadow versions. Three QQQ momentum variants pass the primary
 economic screens but all fail cost stress. This supports testing a different
 information/turnover structure instead of another search over the same formulas.
+
+### Sector-panel delivery
+
+The frozen `sector-panel-v1` study expands from two single-ETF entry policies to
+nine sector ETFs ranked cross-sectionally, using SPY only as a beta reference.
+Four fixed hypotheses × two annual development folds × IC/three cost scenarios
+charge 32 comparisons. Native daily acquisition, five-session nonoverlapping basket
+proxies and explicit rank/uncertainty contracts test different information and turnover
+patterns. Preserve the distinction between a contextual 0.03 IC research screen,
+conditional inference, formal qualification and actual portfolio execution.
+
+After results: independently audit failed/positive outcomes; freeze any lead before
+further data access. A pass still needs independent confirmation and an execution
+contract. Keep raw-provider provenance, corporate actions/borrow, temporal availability,
+legacy miner metric migration, statistical calibration and worker checkpoints on the
+queue. No parameter/window/symbol retry belongs to this frozen study.

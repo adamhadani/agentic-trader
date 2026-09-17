@@ -69,7 +69,15 @@ Spearman correlation; that is also not a date-level cross-sectional IC series. T
 continuous ETF campaign reports execution returns and frozen economic screens, not
 IC significance. Imported historical example metrics remain unqualified shadows.
 
-## Next implementation, with TDD before use
+## Panel implementation and remaining migration
+
+The [sector-panel path](alpha-sector-panel.md) now implements cross-sectional
+observations, explicit target/clock/units, per-fold sample variance and HAC uncertainty,
+missing/tie handling and journal-backed diagnostics. The legacy miner described above
+is unchanged; migrating its validation/ranking evidence requires a separate versioned
+change and calibration. The frozen sector study is the first actual-data application.
+
+## Measurement requirements, with TDD before use
 
 1. Define a typed/versioned IC report with axis (time series/cross section), horizon,
    fold/date boundaries, observation frequency, sample sizes, coverage, missing reasons

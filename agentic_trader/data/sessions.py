@@ -103,3 +103,27 @@ class AlpacaSessionSource:
         combined = pd.concat(chunks)
         combined.attrs = {**chunks[0].attrs, "acquisition": receipts}
         return combined
+
+    def daily(self, symbol: str, start: date, end: date, feed: str) -> pd.DataFrame:
+        """Read native daily history for panel diagnostics; no auction-fill claim.
+
+        The application bounds the historical plan. Calendar alignment/coverage
+        remain pure research validation; provider rows are never imputed here.
+        """
+        if start > end:
+            raise ValueError("Ordered daily acquisition bounds required")
+        opened = pd.Timestamp(start, tz=ET_TZ)
+        closed = pd.Timestamp(end + timedelta(days=1), tz=ET_TZ)
+        bars = self.bars_provider.fetch_bars(
+            symbol,
+            "1d",
+            start=opened.to_pydatetime(),
+            end=closed.to_pydatetime() - timedelta(microseconds=1),
+        )
+        if (
+            bars.attrs.get("feed") != feed
+            or bars.attrs.get("adjustment") != "raw"
+            or bars.attrs.get("timeframe") != "1d"
+        ):
+            raise ValueError("Daily observations do not match the frozen feed/adjustment/timeframe")
+        return bars

@@ -219,5 +219,12 @@ The [continuous timed ETF campaign](docs/alpha-continuous-campaign.md) pairs the
 The [completed continuous study](docs/alpha-continuous-campaign-2026-09-17.md)
 retains 36 complete runs and 12 SPY coverage failures. QQQ momentum has 415 closes
 and positive primary-cost returns, but fails cost stress; zero alphas promoted.
-Next: causal ETF panels with explicit [Rank IC/ICIR contracts](docs/alpha-information-coefficient.md).
+The sector-panel path adds explicit [Rank IC/ICIR contracts](docs/alpha-information-coefficient.md).
 Existing miner ICIR is overlapping, single-symbol and unannualized.
+
+`copilot alpha panel-study PROTOCOL --output NEW_PRIVATE_DIRECTORY` runs the
+[frozen sector-panel research path](docs/alpha-sector-panel.md): observed-calendar
+native daily inputs, causal relative features, cross-sectional IC/HAC and five-session
+basket/cost diagnostics. All 32 declared comparisons and every member's inspected
+interval are journaled before provider access. It sends no orders or notifications,
+grants no qualification/registry credit and leaves weekly mining unchanged.
