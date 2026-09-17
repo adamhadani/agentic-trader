@@ -397,8 +397,11 @@ Production still arbitrates individual candidates; the convex allocator is shado
    The divergent retuner, scheduler/config-export path and optional VectorBT engine
    are removed. Recent-SIP permission still requires an operator entitlement/feed
    decision; success of a process or empty request is not freshness evidence.
-2. **Next: data provenance.** Preserve lossless provider rows and normalization outcomes;
-   finish the SPY-minute postmortem. Preserve all frozen failed studies.
+2. **Next: automated data provenance.** The [SPY-minute postmortem](alpha-spy-minute-postmortem-2026-09-17.md)
+   found all four gaps already absent from two fresh raw SIP responses, with no cleaning
+   loss or revisions in 16,654 shared rows. Original failed evidence remains immutable.
+   Automate lossless raw-row/normalization retention at the shared data boundary,
+   including failed parsing/interrupted pagination; forensic capture alone is insufficient.
 3. **Implemented: A3 allocation contract corrections.** Explicit target/feed/price/clock/
    currency contracts, causal calibration cutoffs, forecast-mean HAC error, duplicate
    family fences, conservative uncertainty penalties and trade participation bounds.

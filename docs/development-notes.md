@@ -235,3 +235,9 @@ See [implementation boundaries and residual risks](forecast-contract-hardening.m
 The retuner, optional VectorBT engine and uncalibrated Kelly mode are retired.
 Regression tests reproduce timeout, participation, future-label, incompatible-target,
 duplicate-family and zero-capacity sizing defects before their fixes.
+
+Source verification for the contract fixes: all-file pre-commit passed; full CI suite
+**1,429 passed, 53 skipped**; actual SDK TCP/WebSocket and disposable PostgreSQL suite
+**151 passed**. See [SPY forensic evidence](alpha-spy-minute-postmortem-2026-09-17.md)
+for the subsequent read-only investigation. Live verification belongs in the delivery
+PR and private runtime evidence, separately from these source-test results.

@@ -90,7 +90,8 @@ See [Alpaca access semantics](https://docs.alpaca.markets/us/docs/market-data-fa
 
 ## Remaining priorities
 
-1. Lossless raw-provider/normalization evidence and the SPY missing-minute postmortem.
+1. Automated lossless provider/normalization evidence. The [SPY postmortem](alpha-spy-minute-postmortem-2026-09-17.md)
+   found the same four minutes absent from fresh raw responses; routine capture remains open.
 2. Resolve current recent-SIP access without silently changing feed identity.
 3. Frozen persistent-book, slower-turnover ETF research with full costs and causal
    dependence controls. Preserve the failed campaign, trial charges and promotion gates.

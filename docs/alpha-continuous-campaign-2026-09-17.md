@@ -122,3 +122,10 @@ SDK tests cover pending/held state across chunks and DST, half-open endpoint bou
 failed acquisition receipts and unchanged trial accounting. Live research made only
 market-data/calendar reads and intentional research journal writes; no bot messages
 or broker orders. Deployed verification is recorded separately on the delivery PR.
+
+## Subsequent raw-data investigation
+
+The [September 17 postmortem](alpha-spy-minute-postmortem-2026-09-17.md) retained
+two fresh raw responses. Both omit the same four minutes before cleaning; all 16,654
+common chunk rows match the frozen dataset. This strengthens an upstream explanation
+without reconstructing the original raw response or changing any campaign outcome.
