@@ -117,7 +117,9 @@ current-run `alpha_decisions` progress; it means the worker progresses, includin
 and unavailable results, not that prices are complete or a strategy is qualified.
 `alpha_session_decisions_total` uses bounded symbol/timeframe/feed/status labels;
 structured logs include the durable decision ID and artifact hash. Inspect all outcomes,
-not only the latest success. No routine Telegram messages are emitted.
+not only the latest success. `copilot alpha forward --days 7` and `/alphas` share the
+[bounded evidence report](alpha-forward-evidence.md): recorded outcomes, missing/gap
+warnings, receipt timing and diagnostic score directions. No routine Telegram messages are emitted.
 
 ## Evidence and next acceptance boundary
 

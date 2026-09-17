@@ -6,6 +6,7 @@ an immutable snapshot. Historical versions and rejected research remain intact.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import asdict
@@ -13,7 +14,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from agentic_trader.config import AlphaPipelineConfig
 from agentic_trader.execution.durable import EventKind
@@ -26,6 +27,15 @@ from agentic_trader.storage.workflow import WorkflowStore, encode
 
 ALPHA_EVENT_KINDS = (EventKind.ALPHA_RESEARCH, EventKind.ALPHA_REGISTRY, EventKind.ALPHA_FORECAST)
 REGISTRY_KEY = "registry"
+SESSION_DECISION_KEY_LENGTH = len("session-decision/") + len(hashlib.sha256().hexdigest())
+
+
+def _forward_payloads(decisions, cursors, truncated):
+    return {
+        "decisions": [json.loads(payload) for payload in decisions],
+        "cursors": {key: json.loads(payload) for key, payload in cursors},
+        "truncated": truncated,
+    }
 
 
 class AlphaRepository:
@@ -66,6 +76,38 @@ class AlphaRepository:
     async def get(self, key):
         async with self.store.db.session_factory() as session:
             return await self._get(session, key)
+
+    async def forward_records(self, *, since, limit, cursor_keys):
+        """Bounded current projections; aliases and late forensic results are excluded.
+
+        A candle cannot be recorded before its close. Event time is an efficient
+        lower bound; the report additionally filters exact candle timestamps.
+        One SELECT keeps decision outcomes mutually consistent during completion.
+        """
+        async with self.store.db.session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(AlphaProjectionRecord)
+                    .join(DomainEventRecord, DomainEventRecord.id == AlphaProjectionRecord.event_id)
+                    .where(
+                        AlphaProjectionRecord.scope == self.store.scope,
+                        AlphaProjectionRecord.key.like("session-decision/%"),
+                        func.length(AlphaProjectionRecord.key) == SESSION_DECISION_KEY_LENGTH,
+                        DomainEventRecord.recorded_at >= since,
+                    )
+                    .order_by(AlphaProjectionRecord.event_id.desc())
+                    .limit(limit + 1)
+                )
+            )
+            cursors = await session.scalars(
+                select(AlphaProjectionRecord).where(
+                    AlphaProjectionRecord.scope == self.store.scope,
+                    AlphaProjectionRecord.key.in_(cursor_keys),
+                )
+            )
+            decisions = [row.payload for row in rows[:limit]]
+            cursor_payloads = [(row.key, row.payload) for row in cursors]
+        return await asyncio.to_thread(_forward_payloads, decisions, cursor_payloads, len(rows) > limit)
 
     async def register(self, definition: AlphaDefinition, *, actor: str):
         async with self.store.db.session_factory() as session, session.begin():

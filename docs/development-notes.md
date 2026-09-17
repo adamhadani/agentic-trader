@@ -31,6 +31,7 @@ version does not establish the installed local server version.
 | Macro briefing | Weekdays 12:30, scheduler/system timezone |
 | Retuning | Saturday 02:00, scheduler/system timezone |
 | External watchdog | Every 60 seconds: process check, readiness incidents and due compaction |
+| Session candidate decisions | 30-second wall-clock polls; fixed SPY/QQQ diagnostic controls, durable per-candle claims; no promotion credit |
 | Session data observer | 30-second wall-clock polls; SPY/15m captures only within three minutes of observed closes; no scoring/trading |
 | Alpha miner | Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol; no promotion |
 

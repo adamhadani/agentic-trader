@@ -108,3 +108,5 @@ diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-ben
   triage passes. Its six predeclared SPY/QQQ hypotheses are diagnostic controls, not
   active/qualified alphas. Preserve the frozen protocol, trial history and rejection
   reasons; entry/holding lifetime changes require a new shared execution contract.
+
+- Forward evidence reporting reuses canonical alpha projections and the [shared report builder](docs/alpha-forward-evidence.md). Exclude aliases/late results; preserve missing counts, truncation and cursor gaps. Receipt lag includes polling/delay, and diagnostic score directions are never fills or qualified shadow credit.

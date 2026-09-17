@@ -207,3 +207,5 @@ only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for dia
 forward observation, not activation or qualifying shadow credit. Preserve the failed
 triage result; next priorities are measured forward/lifecycle evidence, explicit
 order/holding lifetimes and a longer frozen study before causal panel expansion.
+
+Inspect `copilot alpha forward --days 7` or `/alphas` for the [shared forward evidence report](docs/alpha-forward-evidence.md). It counts canonical outcomes and measured receipts, exposes gaps/truncation, and grants no qualification credit. Recorded-score fractions are not complete calendar coverage; readiness remains a separate freshness check.
