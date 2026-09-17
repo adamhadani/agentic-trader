@@ -264,7 +264,9 @@ def test_format_alphas_dashboard_html_universe():
     targeted = AlphaDefinition("alpha_targeted", "Targeted", "close", eligible_symbols=("NVDA", "AMD"))
     global_definition = AlphaDefinition("alpha_global", "Global", "close")
     card = TelegramHtmlFormatter.format_alphas_dashboard_html(
-        RegistrySnapshot(3, (), (targeted, global_definition)), catalog_count=10
+        RegistrySnapshot(3, (), (targeted, global_definition)),
+        catalog_count=10,
+        evidence={"days": 7, "truncated": False, "candidates": []},
     )
     assert "AMD, NVDA" in card
     assert "Unqualified universe" in card

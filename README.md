@@ -155,6 +155,8 @@ Historical design notes and the reference PDF are source material, not runtime g
 
 The daemon's [prospective session-data observer](docs/alpha-forward-observations.md)
 records live REST availability and revisions for SPY/15m on the configured feed.
+Use `copilot alpha forward --days 7` or Telegram `/alphas` for [recorded candidate outcomes and receipt timing](docs/alpha-forward-evidence.md); missing/truncated history stays explicit.
+
 Inspect `copilot alpha status` for capture quality; it provides no promotion credit
 and does not change strategy scans or activate mined alphas.
 

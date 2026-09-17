@@ -181,3 +181,9 @@ measured forward delay/completeness; causal panel alignment; portfolio attributi
 correlated alphas. Snapshot batching for the bounded diagnostic worker is justified
 only if measured latency requires it. Research executor/checkpoint and artifact/log
 capacity planning remain open. See the [ordered roadmap](alpha-roadmap.md#next-work-after-the-etf-session-campaign).
+
+## Forward evidence reporting boundary — September 17
+
+The [CLI/Telegram report](alpha-forward-evidence.md) shares one injected application query and pure builder over existing projections. SQL is bounded; decoding/statistics run off the event loop. Registry generation fencing rejects mixed cohorts. Readiness retains its lightweight query. No schema, queue, broker client, compatibility shim or business-event write was added.
+
+Accepted limit: the denominator is recorded decisions. Current cursor gaps are visible, but this is not an exhaustive historical expected-window census or historical as-of reconstruction. Add calendar/enrollment interval reconstruction if operator decisions require full coverage accounting; never relabel the present fraction as that metric. Actual forward sampling and the versioned execution-horizon contract remain next on the roadmap.

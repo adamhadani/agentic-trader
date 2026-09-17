@@ -286,3 +286,12 @@ def test_forecast_benchmark_cli_retains_success_and_failure(tmp_path, missing):
     assert not document["authorizes_promotion"]
     status = CliRunner().invoke(cli, ["alpha", "status"])
     assert json.loads(status.output)["research_family"]["trial_count"] == 6
+
+
+@pytest.mark.parametrize("options", [[], ["--days", "1", "--limit", "1"]])
+def test_forward_evidence_cli_uses_isolated_storage(options):
+    result = CliRunner().invoke(cli, ["alpha", "forward", *options])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["candidates"] == [] and not report["authorizes_promotion"]
+    assert report["coverage_basis"] == "recorded_decisions" and not report["truncated"]

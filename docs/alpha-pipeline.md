@@ -220,6 +220,7 @@ uv run copilot alpha promote VERSION_ID --generation N
 uv run copilot alpha demote VERSION_ID --generation N
 uv run copilot alpha list
 uv run copilot alpha status
+uv run copilot alpha forward --days 7  # recorded diagnostic outcomes; no trading/qualification credit
 uv run copilot alpha export
 ```
 

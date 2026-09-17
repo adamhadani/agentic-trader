@@ -31,6 +31,13 @@ from agentic_trader.research.alpha.benchmark_workflow import AlphaBenchmarkServi
 from agentic_trader.research.alpha.calibration import CalibrationPlan, run_calibration
 from agentic_trader.research.alpha.catalog import AlphaCatalog
 from agentic_trader.research.alpha.data import load_dataset, save_dataset, save_json_report
+from agentic_trader.research.alpha.evidence import (
+    DEFAULT_FORWARD_DAYS,
+    DEFAULT_FORWARD_LIMIT,
+    MAX_FORWARD_DAYS,
+    MAX_FORWARD_LIMIT,
+    load_forward_evidence,
+)
 from agentic_trader.research.alpha.forecast_policy import MAX_SIDE_COST_BPS, DailyLongFlatPolicy
 from agentic_trader.research.alpha.forecasts import CombinedForecast
 from agentic_trader.research.alpha.miner import AlphaMiner
@@ -446,6 +453,17 @@ async def alpha_status_cmd():
     """Show installed registry acknowledgment and latest research observation."""
     async with alpha_repository() as repository:
         click.echo(json.dumps(await repository.status(), indent=2))
+
+
+@alpha_group.command("forward")
+@click.option("--days", default=DEFAULT_FORWARD_DAYS, type=click.IntRange(1, MAX_FORWARD_DAYS), show_default=True)
+@click.option("--limit", default=DEFAULT_FORWARD_LIMIT, type=click.IntRange(1, MAX_FORWARD_LIMIT), show_default=True)
+@coro
+async def alpha_forward_cmd(days, limit):
+    """Read recorded forward decisions, failures and measured receipt timing."""
+    async with alpha_repository() as repository:
+        _, report = await load_forward_evidence(repository, days=days, limit=limit)
+        click.echo(json.dumps(report, indent=2, allow_nan=False))
 
 
 @alpha_group.command("exclude-period")

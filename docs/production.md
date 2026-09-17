@@ -391,6 +391,11 @@ no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-po
 
 ### Durable candidate decisions
 
+Use `uv run copilot alpha forward --days 7` (JSON) or Telegram `/alphas` for the
+[read-only cohort report](alpha-forward-evidence.md). Missing/truncated history is
+explicit; measured receipt lag includes configured delay and polling. `/readyz`
+continues to measure worker freshness separately from successful data/scoring.
+
 The daemon also owns the [receipt-aware diagnostic evaluator](alpha-session-decisions.md#durable-diagnostic-worker).
 `alpha_pipeline.decisions` bounds its universe/history/work; `alpha_decisions` readiness
 is separate from capture quality. Immutable claims/cursors/results use the existing

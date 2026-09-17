@@ -555,7 +555,7 @@ class TelegramHtmlFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def format_alphas_dashboard_html(snapshot: RegistrySnapshot, catalog_count: int = 0) -> str:
+    def format_alphas_dashboard_html(snapshot: RegistrySnapshot, catalog_count: int = 0, *, evidence: dict) -> str:
         """Report the authoritative registry, with no invented allocation/performance."""
         lines = [
             "🧪 <b>FORMULAIC ALPHA INTELLIGENCE</b>",
@@ -575,7 +575,36 @@ class TelegramHtmlFormatter:
         lines.append(
             "Shadow observations do not place orders. Promotion requires recorded qualification and shadow evidence."
         )
-        lines.append("Use <code>copilot alpha list</code> or <code>copilot alpha inspect VERSION</code> for evidence.")
+        lines.append(f"\n<b>Forward diagnostics · {evidence['days']} days</b>")
+        if evidence["truncated"]:
+            lines.append("⚠ History limit reached: counts below are lower bounds; statistics use the loaded subset.")
+        for row in evidence["candidates"]:
+            counts = row["counts"]
+            lines.append(
+                f"<code>{html.escape(row['alpha_id'])}</code> / {html.escape(row['symbol'])} · {row['version_id'][:12]}: "
+                f"{counts['scored']}/{row['recorded_decisions']} recorded decisions scored · "
+                f"unavailable {counts['unavailable']} · missed {counts['missed']} · "
+                f"interrupted {counts['interrupted']} · superseded {counts['superseded']} · "
+                f"pending {counts['claimed']} ({row['overdue_pending']} overdue)"
+            )
+            lag = row["receipt_lag_seconds"]
+            lines.append(
+                f"Receipt lag p95: {lag['p95']:.1f}s ({lag['count']} measured)"
+                if lag["count"]
+                else "No measured receipts in this window."
+            )
+            if row["coverage_warnings"]:
+                lines.append("⚠ " + html.escape(", ".join(row["coverage_warnings"]).replace("_", " ")))
+        if not evidence["candidates"]:
+            lines.append("No session candidates in the current registry.")
+        lines.extend(
+            [
+                "Recorded decisions only; absent windows may be unknown. Receipt lag includes delay/polling.",
+                "Diagnostic scores are not orders, P&amp;L or qualifying shadow credit.",
+                f"Full counts, directions and timing: <code>copilot alpha forward --days {evidence['days']}</code>.",
+                "Definitions: <code>copilot alpha list</code> or <code>copilot alpha inspect VERSION</code>.",
+            ]
+        )
         return "\n".join(lines)
 
     VALID_TELEGRAM_TAGS: ClassVar[set[str]] = {

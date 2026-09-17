@@ -10,6 +10,7 @@ from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
 from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.research.alpha.decisions import SessionDecisionService
+from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
@@ -97,9 +98,14 @@ async def test_concurrent_real_sdk_session_decisions_consume_once_and_replay(
         assert requests[0][2]["feed"] == ["iex"] and requests[0][2]["timeframe"] == ["1Min"]
         assert requests[0][2]["adjustment"] == ["raw"]
         assert all(method == "GET" for method, *_ in venue.calls)
+        _, before = await load_forward_evidence(repos[0], now=now[0])
+        assert before["candidates"][0]["counts"]["scored"] == 1
+        assert before["candidates"][0]["receipt_lag_seconds"]["count"] == 1
         revision[0] = 0.1
         assert await services[1].run_once() == []
         await repos[1].rebuild()
+        _, after = await load_forward_evidence(repos[1], now=now[0])
+        assert after == before
         assert await repos[0].get(f"session-decision/{first['decision_id']}") == first
         assert await repos[0].get(f"shadow/{definition.version_id}") is None
         assert not (await repos[0].status())["pending_session_decisions"]

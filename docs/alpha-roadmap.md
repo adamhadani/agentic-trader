@@ -290,7 +290,10 @@ observation. No session alpha is activated by these increments.
 ### Next work after the ETF session campaign
 
 1. Accumulate actual receipts/scores and unavailable/missed-window rates for the fixed
-   six-version SPY/QQQ forward cohort; healthy idle periods earn no evidence.
+   six-version SPY/QQQ forward cohort; healthy idle periods earn no evidence. The
+   [shared CLI/Telegram evidence report](alpha-forward-evidence.md) now exposes
+   canonical counts, receipt timing, cursor gaps and truncation. Real sessions
+   must still accumulate; recorded-score fractions are not a full window census.
 2. Resolve execution-horizon semantics before increasing mining volume. Momentum
    produced 9–12 completed trades over three sampled blocks, sometimes held for days;
    GTC entries could fill days after submission. Specify immutable resting-order
