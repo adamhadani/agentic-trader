@@ -102,3 +102,9 @@ no promotion or broker-fill claim; see [timing/cost contracts](docs/alpha-foreca
 Benchmark reports now expose fold stability, signed error influence, forecast/action
 distributions, cost attribution and fitted-model evidence. These are descriptive
 diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-benchmarks.md#automatic-diagnosis-before-lead-selection).
+
+
+- The [ETF session campaign](docs/alpha-session-campaign-2026-09-17.md) has no complete
+  triage passes. Its six predeclared SPY/QQQ hypotheses are diagnostic controls, not
+  active/qualified alphas. Preserve the frozen protocol, trial history and rejection
+  reasons; entry/holding lifetime changes require a new shared execution contract.

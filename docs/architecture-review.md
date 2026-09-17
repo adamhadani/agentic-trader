@@ -125,8 +125,9 @@ The [A2b replay foundation](alpha-session-replay.md) now shares one bracket engi
 between coarse and minute clocks, consumes observed calendars and fails closed on
 missing minutes. Existing journal/artifact mechanisms retain all real-data attempts
 and event traces. New [session decision versions](alpha-session-decisions.md) now share receipt-aware
-screening/shadow and replay delay/expiry. Remaining A2b work is bounded live acquisition,
-durable session decision scheduling and measured publication/broker execution behavior; A3 objective alignment follows.
+screening/shadow and replay delay/expiry. Bounded acquisition and durable session
+decisions now run through the same journal; measured publication/broker execution
+evidence remains. A3 objective alignment continues.
 Preserve the original incomplete study and gates;
 do not treat missing comparisons as null rejections or loosen trade-count requirements.
 
@@ -134,8 +135,9 @@ The [A2b forward observer](alpha-forward-observations.md) reuses the replay adap
 session-window clock, journal and artifact format. It lives outside `TradingCopilot`
 and owns dedicated SDK readers, with blocking work offloaded and orderly shutdown.
 No new schema, execution queue or notification mechanism was added. It measures REST
-receipt/revision evidence only; live strategy acquisition/scheduling and execution observations
-remain unfinished, and shared research executor capacity remains a ranked concern.
+receipt/revision evidence only; the dedicated diagnostic decision worker now adds
+receipt-aware scoring and durable cursors. Execution observations and research executor
+capacity remain concerns.
 
 ## Alpha research boundary update — September 17
 
@@ -151,10 +153,31 @@ The [forecast timing/cost screen](alpha-forecast-policy.md) extends the same ben
 service with explicit outcome endpoints and a pure stateless daily payoff evaluator.
 It does not replace the shared bracket execution engine or broker services. New
 policy variants are charged and arrays remain private. Actual auction/quote execution
-coverage and the A2b durable worker remain roadmap prerequisites.
+coverage remains a roadmap prerequisite; the A2b durable worker is implemented.
 
 The [frozen open-gap follow-up](alpha-open-gap-policy-2026-09-17.md) completed all
 20 attempts but failed its trading criterion. Prediction accuracy alone did not
-justify an executable strategy. The next alpha priority remains A2b acquisition
-and durable decisions, followed by aligned panel hypotheses; no additional search
-engine or qualification bypass is justified by these results.
+justify an executable strategy. The following increments added durable decisions and a bounded ETF campaign; actual
+forward evidence, lifecycle semantics and aligned panels remain. No qualification bypass
+is justified by these results.
+
+
+## Session worker and campaign architecture review — September 17
+
+The decision worker injects repository, read-only source, policy and clock, reusing
+shared bar/score contracts and the alpha journal. Cursor CAS, immutable claims and
+late-result fencing add no execution bus/schema. The daemon shares polling/lifecycle
+configuration and drains SDK reads on shutdown. Native scans do not duplicate session
+candidate diagnostics. No compatibility fallback or credentialed test path was added.
+
+The [ETF campaign](alpha-session-campaign-2026-09-17.md) uses a bounded research runner
+composed over `AlphaReplayService`, with one frozen snapshot per cohort. It does not
+introduce another engine, registry, qualification rule or service/poller. Independent
+fill/fee arithmetic matched every run. Tests include actual SDK/TCP/PostgreSQL replay.
+
+Remaining high-value issues: explicit versioned GTC entry lifetime/holding horizon
+with equivalent broker cancellation/recovery; adequate continuous sample length;
+measured forward delay/completeness; causal panel alignment; portfolio attribution for
+correlated alphas. Snapshot batching for the bounded diagnostic worker is justified
+only if measured latency requires it. Research executor/checkpoint and artifact/log
+capacity planning remain open. See the [ordered roadmap](alpha-roadmap.md#next-work-after-the-etf-session-campaign).

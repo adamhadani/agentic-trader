@@ -279,8 +279,31 @@ then continue the next. Success is candidates worth prospective observation, not
 required number of promotions. Real forward sessions cannot be fabricated or backdated.
 
 
-September 17 delivery status: increment 1 merged/deployed as PR #46. Increment 2 is
-implemented with receipt-aware acquisition, CAS claims/cursors, explicit missed/gap/
-interrupted outcomes and real SDK/PostgreSQL tests; deployment verification is retained
-separately. Increment 3 follows after its CI/deployment: a frozen bounded ETF campaign.
-No new session alpha is activated by either infrastructure increment.
+September 17 delivery status: increment 1 merged/deployed as PR #46. Increment 2 merged/deployed as
+[PR #47](https://github.com/adamhadani/agentic-trader/pull/47), verified with 16 readiness
+checks and real SDK/PostgreSQL evidence. Increment 3's [frozen ETF campaign](alpha-session-campaign.md)
+completed all 81 attempts; its [results](alpha-session-campaign-2026-09-17.md) retain zero
+complete triage passes. Six fixed SPY/QQQ controls are designated for diagnostic forward
+observation. No session alpha is activated by these increments.
+
+
+### Next work after the ETF session campaign
+
+1. Accumulate actual receipts/scores and unavailable/missed-window rates for the fixed
+   six-version SPY/QQQ forward cohort; healthy idle periods earn no evidence.
+2. Resolve execution-horizon semantics before increasing mining volume. Momentum
+   produced 9–12 completed trades over three sampled blocks, sometimes held for days;
+   GTC entries could fill days after submission. Specify immutable resting-order
+   lifetime/holding intent, preserve uncertain-cancel recovery, and compare broker
+   lifecycle observations. Do not bolt a research-only timeout onto the simulator.
+3. Predeclare a longer continuous or explicitly stitched momentum study with enough
+   independent trade evidence and untouched confirmation. The 30-trade failure stays
+   failed; do not lower it or select new windows after seeing these results. Calendar/
+   data partitioning must not silently reset a live position or pending GTC order.
+4. Add causal aligned ETF panels for relative/residual hypotheses, retaining benchmark
+   and joint-risk comparisons. Momentum variants and SPY/QQQ returns were highly
+   correlated in the inspected sample; separate formulas are not independent risk.
+
+Keep execution/qualification gates, weekly bounded discovery and existing single-owner
+admission. Research job checkpoints/resource isolation and longer-term artifact
+retention remain architectural dependencies; no new search engine is justified yet.

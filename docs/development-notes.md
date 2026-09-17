@@ -188,3 +188,11 @@ no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-po
 Benchmark reports now expose fold stability, signed error influence, forecast/action
 distributions, cost attribution and fitted-model evidence. These are descriptive
 diagnostics, not promotion gates; see [report contracts](alpha-forecast-benchmarks.md#automatic-diagnosis-before-lead-selection).
+
+
+The [frozen ETF session campaign](alpha-session-campaign-2026-09-17.md) completed all 81 attempts with full execution
+coverage. None passed every rule: QQQ momentum's positive cost-stressed returns had
+only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for diagnostic
+forward observation, not activation or qualifying shadow credit. Preserve the failed
+triage result; next priorities are measured forward/lifecycle evidence, explicit
+order/holding lifetimes and a longer frozen study before causal panel expansion.
