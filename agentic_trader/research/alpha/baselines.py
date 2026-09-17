@@ -19,6 +19,7 @@ from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from agentic_trader.research.alpha.diagnostics import forecast_diagnostics
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator, compile_expression
 from agentic_trader.research.alpha.forecast_policy import DailyLongFlatPolicy, PolicyScenario, evaluate_daily_policy
 from agentic_trader.research.alpha.targets import ForecastTarget, forecast_labels
@@ -101,6 +102,18 @@ class ForecastTrial:
     metrics: dict
     execution: list[PolicyScenario] = field(default_factory=list)
 
+    @property
+    def diagnostics(self):
+        return {
+            **forecast_diagnostics(self.predictions),
+            "total_folds": len(self.folds),
+            "positive_skill_folds": sum(
+                f["metrics"]["skill_vs_training_mean"] is not None and f["metrics"]["skill_vs_training_mean"] > 0
+                for f in self.folds
+            ),
+            "unavailable_skill_folds": sum(f["metrics"]["skill_vs_training_mean"] is None for f in self.folds),
+        }
+
     def document(self):
         return {
             "trial": self.trial,
@@ -108,6 +121,7 @@ class ForecastTrial:
             "folds": self.folds,
             "metrics": self.metrics,
             "prediction_hash": frame_digest(self.predictions),
+            "diagnostics": self.diagnostics,
             "execution": [scenario.document() for scenario in self.execution],
         }
 
@@ -182,6 +196,26 @@ def _estimator(plan: ForecastBenchmarkPlan, parameters: dict):
     )
 
 
+def _fitted_evidence(estimator, method: str, training: pd.DataFrame, target: pd.Series):
+    fitted = estimator if method == "boosted" else estimator[-1]
+    result = {
+        "features": list(training.columns),
+        "training_input_hash": frame_digest(training.assign(__forecast_target=target)),
+        "estimator_class": type(fitted).__name__,
+        "estimator_parameters": fitted.get_params(deep=False),
+        "reconstruction": "frozen_plan_training_prefix_and_recorded_environment",
+    }
+    if method != "boosted":
+        scaler = estimator[0]
+        coefficients = fitted.coef_ / scaler.scale_
+        result["linear_original_units"] = {
+            "coefficients": coefficients.tolist(),
+            "intercept": float(fitted.intercept_ - np.dot(coefficients, scaler.mean_)),
+        }
+        result["standardization"] = {"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()}
+    return result
+
+
 def benchmark_models(bars: pd.DataFrame, plan: ForecastBenchmarkPlan) -> ForecastBenchmark:
     validate_sampling(bars, plan.target.timeframe)
     horizon = plan.target.horizon_bars
@@ -231,6 +265,8 @@ def benchmark_models(bars: pd.DataFrame, plan: ForecastBenchmarkPlan) -> Forecas
                 {
                     **asdict(fold),
                     "training_observations": int(mask.sum()),
+                    "fitted_model": _fitted_evidence(estimator, plan.method, train.loc[mask], target.loc[mask]),
+                    "diagnostics": {**forecast_diagnostics(observations), "fold": fold_number},
                     "last_training_feature_position": last_training,
                     "last_training_label_position": last_training + horizon,
                     "last_scored_label_position": int(fold.validation_start + scored[-1] + horizon)

@@ -99,12 +99,17 @@ async def test_sdk_forecast_evidence_is_replayable_and_not_promotable(alpaca_htt
     for trial in result["trials"]:
         predictions = load_dataset(tmp_path / "forecast" / trial["predictions_artifact"])
         assert predictions.index.max() < bars.index[480]
+        assert trial["diagnostics"]["total_folds"] == 3
+        assert not trial["diagnostics"]["authorizes_promotion"]
+        assert all(len(f["fitted_model"]["training_input_hash"]) == 64 for f in trial["folds"])
         assert len(trial["execution"]) == 2
         for scenario in trial["execution"]:
             evidence = load_dataset(tmp_path / "forecast" / scenario["observations_artifact"])
             assert len(evidence) == sum(f["metrics"]["sample_length"] for f in scenario["folds"])
             assert evidence.index.max() < bars.index[480]
             assert not scenario["authorizes_promotion"]
+            assert scenario["diagnostics"]["observations"] == len(evidence)
+            assert not scenario["diagnostics"]["authorizes_promotion"]
         assert set(predictions.columns) == {"prediction", "target", "training_mean", "fold"}
     assert len([c for c in venue.calls if c[1] == "/v2/stocks/bars"]) == 2
     assert all(method == "GET" for method, *_ in venue.calls)

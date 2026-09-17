@@ -191,12 +191,13 @@ and simpler baselines are established.
    froze next-open targets, QQQ transfer, four cost scenarios and triage criteria.
    [All 20 attempts completed](alpha-open-gap-policy-2026-09-17.md); SPY failed the
    every-fold net/excess-return criterion. Pause this standalone policy; no promotion
-   or gate change. Forecast skill survives, but this trading rule is unstable/cost-sensitive.
+   or gate change. Pooled forecast error improves, but the evidence is concentrated
+   and this trading rule is unstable/cost-sensitive.
    The [failure postmortem](alpha-open-gap-postmortem-2026-09-17.md) found no numeric
    discrepancy, but unstable selection, concentrated error gains and a loss/action
-   mismatch. Before selecting another lead, extend the existing report with fold
-   stability, influence, entered/skipped returns, turnover/cost and fitted-model
-   evidence. Predeclare the economic use of each forecast; do not retune this result.
+   mismatch. Automatic fold/influence/action and fitted-model diagnostics are now
+   implemented in the existing report (validation/deployment in progress). Predeclare
+   the economic use of each forecast; do not retune this result.
 2. **Complete A2b live acquisition and durable decisions (next implementation priority).** Measure publication delay
    before choosing production timing; collect prospective forecasts and actual paper
    acknowledgments/fills. More historic search cannot substitute for this evidence.
@@ -254,3 +255,24 @@ Portfolio execution cannot bypass those ownership/protection constraints.
 - [ARCH multiple-comparison studies and established SPA/StepM procedures](https://bashtage.github.io/arch/multiple-comparison/multiple-comparison_examples.html).
 - [AlphaGen: optimizing complementary collections](https://arxiv.org/abs/2306.12964).
 - [Alpaca historical bar adjustments](https://docs.alpaca.markets/us/reference/stockbars).
+
+
+## Authorized delivery sequence — September 17
+
+The operator approved the following three increments after the postmortem:
+
+1. Automatic benchmark diagnostics and reproducible fitted-model evidence. Reuse
+   the existing benchmark/report/journal; retain the failed open-gap example as a
+   descriptive attribution check. No new promotion gates.
+2. Durable, receipt-aware session candidate evaluation in the existing daemon.
+   Test restart, revisions, missed windows, competing workers and slow reads; reuse
+   the journal and session clock. Remain diagnostic until execution/qualification
+   evidence permits promotion. Healthy idle operation is not a forward sample.
+3. A bounded, predeclared ETF hypothesis campaign. Freeze information timing,
+   target, action, costs, comparators and budget before results. Prefer aligned
+   relative/session hypotheses; any panel adapter needs causal alignment tests.
+   Retain every outcome and keep final holdouts untouched until a strategy is frozen.
+
+Finish each increment with review, affected integration/CI and deployment verification;
+then continue the next. Success is candidates worth prospective observation, not a
+required number of promotions. Real forward sessions cannot be fabricated or backdated.

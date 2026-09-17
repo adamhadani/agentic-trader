@@ -170,3 +170,7 @@ compares causal predictions on saved discovery data. See the
 `alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
 `--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
 no promotion or broker-fill claim; see [timing/cost contracts](docs/alpha-forecast-policy.md).
+
+Benchmark reports now expose fold stability, signed error influence, forecast/action
+distributions, cost attribution and fitted-model evidence. These are descriptive
+diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-benchmarks.md#automatic-diagnosis-before-lead-selection).

@@ -101,3 +101,49 @@ combination and nested selection, uncertainty/decay evidence, and an explicit ex
 policy suited to the chosen forecast horizon. A2b acquisition/durable scheduling and
 actual broker execution observations remain prerequisites for session-clock admission.
 The [roadmap](alpha-roadmap.md) owns these dependencies and the wider search programme.
+
+
+## Automatic diagnosis before lead selection
+
+New benchmark output includes `forecast_diagnostics_v1` in each trial and fold.
+This is additive descriptive evidence; forecast target/plan identity, model fitting,
+trial charges, decisions and qualification gates are unchanged. Historical reports
+remain intact. The [open-gap postmortem](alpha-open-gap-postmortem-2026-09-17.md)
+motivated these summaries:
+
+- Complete row/paired counts and separate unavailable prediction/target/baseline
+  counts. Distribution summaries share identical finite paired support.
+- Prediction, target and training-mean distributions (mean, population standard
+  deviation, 5th/50th/95th percentiles); positive-versus-nonpositive directional
+  accuracy alongside the always-positive reference. Zero is explicitly nonpositive.
+- Signed squared-error reduction, positive/negative contributions, and the five
+  largest positive/negative contributors with **decision** timestamps. The target's
+  maturity time remains governed by its horizon; a timestamp is not an execution time.
+- Largest/top-five contribution shares are relative to *net* error reduction and
+  may exceed 100% when other observations offset gains. They are unavailable when
+  net improvement is nonpositive. Removing a contribution from the displayed sum
+  is attribution only, never a refit or deletion from evaluation.
+- Total folds, folds with positive skill and folds with unavailable skill. These
+  descriptive counts do not create a new acceptance threshold or significance test.
+
+Each fitted fold retains feature order, a hash of its exact finite training features
+and labels, estimator class/parameters, and a reconstruction reference to the frozen
+plan, source prefix and recorded software environment. Single/Ridge models also
+retain standardization and coefficients/intercept in original feature units.
+Boosted models use the reproducible reconstruction recipe; no unsafe pickle or
+second model registry is introduced.
+
+Every optional payoff scenario/fold reports eligible/entered/skipped counts,
+exposure fraction, mean net returns on entered days and the comparator's skipped
+days, full-clock mean excess return, turnover legs, gross/net compounded return,
+cost drag in **percentage points**, and net/gross terminal-wealth ratio. Missing
+values remain unavailable; policy timelines must remain complete and finite.
+Cash-only periods stay in the denominator. Skipped comparator returns are not
+fabricated model trades. These summaries are included in the existing CLI JSON and
+private result artifact; existing journal hashes and replay remain authoritative.
+
+Tests include one-observation-concentrated and broadly distributed planted examples,
+undefined/negative evidence, independent cost attribution, reconstruction of linear
+predictions, future/holdout invariance, and real SDK -> SQLite/PostgreSQL artifact and
+journal replay. A read-only attribution run against the original four open-gap
+outputs reproduced the postmortem; it neither refitted models nor charged new trials.

@@ -194,3 +194,7 @@ The [open-gap postmortem](docs/alpha-open-gap-postmortem-2026-09-17.md) reproduc
 calculations but found outlier-concentrated forecast gains and unstable selection.
 Add fold/influence/action diagnostics before selecting further leads; a rejected
 experiment alone is not evidence of a calibrated or bug-free pipeline.
+
+Benchmark reports now expose fold stability, signed error influence, forecast/action
+distributions, cost attribution and fitted-model evidence. These are descriptive
+diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-benchmarks.md#automatic-diagnosis-before-lead-selection).
