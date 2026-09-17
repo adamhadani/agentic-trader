@@ -36,6 +36,11 @@ def _compute(manifest: dict, plan: ForecastBenchmarkPlan, holdout: int, output: 
     for trial, detail in zip(result.trials, document["trials"], strict=True):
         path = save_dataset(trial.predictions, output, frame_digest(trial.predictions))
         detail.update(predictions_artifact=path.name, artifact_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        for scenario, evidence in zip(trial.execution, detail["execution"], strict=True):
+            path = save_dataset(scenario.observations, output, frame_digest(scenario.observations))
+            evidence.update(
+                observations_artifact=path.name, artifact_hash=hashlib.sha256(path.read_bytes()).hexdigest()
+            )
     return document
 
 
@@ -71,7 +76,7 @@ class AlphaBenchmarkService:
             run_id,
             symbol=manifest["symbol"],
             timeframe=manifest["timeframe"],
-            trials=plan.budget,
+            trials=plan.trial_count,
         )
         # A later run cannot reuse inspected discovery as fresh qualification data.
         # Hashing/loading the full immutable artifact is integrity verification;

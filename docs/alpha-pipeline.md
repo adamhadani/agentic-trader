@@ -352,3 +352,7 @@ coverage failures and distinct revisions through the existing alpha journal.
 `alpha status` reports it separately from research. Inspected dates cannot become
 fresh holdouts; observations add no formula trials or qualifying shadow sessions.
 Strategy identities, scoring and promotion gates remain unchanged.
+
+`alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
+`--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
+no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-policy.md).

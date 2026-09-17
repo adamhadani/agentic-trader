@@ -11,9 +11,11 @@ import pytest
 from sqlalchemy import delete
 
 from agentic_trader.data.providers import AlpacaDataProvider
-from agentic_trader.research.alpha.baselines import ForecastBenchmarkPlan, ForecastTarget
+from agentic_trader.research.alpha.baselines import ForecastBenchmarkPlan
 from agentic_trader.research.alpha.benchmark_workflow import AlphaBenchmarkService
 from agentic_trader.research.alpha.data import load_dataset, save_dataset
+from agentic_trader.research.alpha.forecast_policy import DailyLongFlatPolicy
+from agentic_trader.research.alpha.targets import ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.validation import DatasetManifest, ValidationPolicy
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
@@ -75,13 +77,17 @@ async def test_sdk_forecast_evidence_is_replayable_and_not_promotable(alpaca_htt
     )
     result = await AlphaBenchmarkService(repo).run(
         "sdk-source",
-        ForecastBenchmarkPlan(ForecastTarget("1d", 5), budget=2),
+        ForecastBenchmarkPlan(
+            ForecastTarget("1d", label=ForecastLabel.NEXT_OPEN_TO_CLOSE),
+            budget=2,
+            execution=DailyLongFlatPolicy((0.0, 5.0)),
+        ),
         tmp_path / "forecast",
         environment={"test": "sdk"},
     )
     assert result["status"] == "completed", result
     assert not result["authorizes_promotion"]
-    assert (await repo.get("family/all"))["trial_count"] == 2
+    assert (await repo.get("family/all"))["trial_count"] == 6
     assert (await repo.snapshot()).active == ()
     assert await repo.get(f"run/{result['run_id']}") is None
     assert not (await repo.get(repo._variance_family_key("1d")))["sharpes"]
@@ -93,6 +99,12 @@ async def test_sdk_forecast_evidence_is_replayable_and_not_promotable(alpaca_htt
     for trial in result["trials"]:
         predictions = load_dataset(tmp_path / "forecast" / trial["predictions_artifact"])
         assert predictions.index.max() < bars.index[480]
+        assert len(trial["execution"]) == 2
+        for scenario in trial["execution"]:
+            evidence = load_dataset(tmp_path / "forecast" / scenario["observations_artifact"])
+            assert len(evidence) == sum(f["metrics"]["sample_length"] for f in scenario["folds"])
+            assert evidence.index.max() < bars.index[480]
+            assert not scenario["authorizes_promotion"]
         assert set(predictions.columns) == {"prediction", "target", "training_mean", "fold"}
     assert len([c for c in venue.calls if c[1] == "/v2/stocks/bars"]) == 2
     assert all(method == "GET" for method, *_ in venue.calls)

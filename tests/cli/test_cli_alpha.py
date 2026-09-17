@@ -265,6 +265,16 @@ def test_forecast_benchmark_cli_retains_success_and_failure(tmp_path, missing):
             "--budget",
             "2",
             "--horizon",
+            "1",
+            "--label",
+            "next_open_to_close",
+            "--feature",
+            "open_gap",
+            "--feature",
+            "roc(close,5)",
+            "--cost-bps",
+            "0",
+            "--cost-bps",
             "5",
             "--output",
             str(output),
@@ -275,4 +285,4 @@ def test_forecast_benchmark_cli_retains_success_and_failure(tmp_path, missing):
     assert document["status"] == ("failed" if missing else "completed")
     assert not document["authorizes_promotion"]
     status = CliRunner().invoke(cli, ["alpha", "status"])
-    assert json.loads(status.output)["research_family"]["trial_count"] == 2
+    assert json.loads(status.output)["research_family"]["trial_count"] == 6

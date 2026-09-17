@@ -413,3 +413,7 @@ become new orders at a later session; already-submitted GTC orders persist. See
 
 Alpha benchmarks are [forecast diagnostics](alpha-forecast-benchmarks.md) with private
 artifacts and charged trials; they do not simulate orders or authorize promotion.
+
+`alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
+`--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
+no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-policy.md).

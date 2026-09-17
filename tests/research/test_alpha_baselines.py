@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from agentic_trader.research.alpha.baselines import ForecastBenchmarkPlan, ForecastTarget, benchmark_models
+from agentic_trader.research.alpha.baselines import ForecastBenchmarkPlan, benchmark_models
 from agentic_trader.research.alpha.miner import AlphaMiner
+from agentic_trader.research.alpha.targets import ForecastTarget
 
 
 @pytest.fixture

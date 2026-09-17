@@ -179,3 +179,7 @@ The [active alpha roadmap](alpha-roadmap.md) is the canonical long-horizon resea
 trading-policy P&L. It retains charged diagnostic artifacts, never promotes, and does
 not add forecast statistics to the strategy-Sharpe variance sample. See the
 [forecast benchmark contract](alpha-forecast-benchmarks.md) and canonical alpha roadmap.
+
+`alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
+`--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
+no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-policy.md).

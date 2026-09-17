@@ -31,7 +31,7 @@ also recognize controlled positive cases and quantify its statistical power.
 | A1a | Implemented — [PR #35](https://github.com/adamhadani/agentic-trader/pull/35) | Calibration instruments and permanent control/reference tests; diagnostic outputs cannot authorize promotion. [Pilot evidence](alpha-calibration-2026-09-16.md). |
 | A1b | Implemented — [PR #36](https://github.com/adamhadani/agentic-trader/pull/36), [study results](alpha-study-2026-09-16.md) | All 1,952 jobs retained; scientific status incomplete (22 unavailable comparisons). No replacement gate accepted. |
 | A2 | A2a implemented — [PR #37](https://github.com/adamhadani/agentic-trader/pull/37); A2b replay groundwork — [PR #38](https://github.com/adamhadani/agentic-trader/pull/38) | [Replay contract](alpha-session-replay.md) and [four-run evidence](alpha-session-replay-2026-09-16.md): SIP coverage complete, IEX incomplete in both windows. Live signal-clock migration and broker execution observations remain; intraday promotion stays blocked. |
-| A3 | Forecast benchmark prerequisite implemented and 78-trial comparison complete; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
+| A3 | Forecast benchmark prerequisite — [PR #43](https://github.com/adamhadani/agentic-trader/pull/43); [PR #44](https://github.com/adamhadani/agentic-trader/pull/44) timing/cost screen complete; standalone open-gap policy paused; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
 | A4 | Planned | Broader economic hypotheses and point-in-time universe/data coverage. |
 | A5 | Planned | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
 
@@ -184,12 +184,15 @@ and simpler baselines are established.
 
 ## Funnel expansion: ranked experiments (September 17 review)
 
-1. **Forecast objective and simple baselines (current increment).** The frozen
+1. **Forecast objective and simple baselines (completed bounded follow-up).** The frozen
    78-trial ETF comparison is [complete](alpha-forecast-comparison-2026-09-17.md).
    Three one-bar single-feature leads improved every discovery fold; none is qualified.
-   Next predeclare SPY open-gap target/execution matching (including next-open costs),
-   with QQQ transfer and null/positive controls, before examining fresh evidence. Keep all existing statistical gates unchanged.
-2. **Complete A2b live acquisition and durable decisions.** Measure publication delay
+   The [open-gap timing/cost protocol](alpha-forecast-policy.md#predeclared-open-gap-follow-up)
+   froze next-open targets, QQQ transfer, four cost scenarios and triage criteria.
+   [All 20 attempts completed](alpha-open-gap-policy-2026-09-17.md); SPY failed the
+   every-fold net/excess-return criterion. Pause this standalone policy; no promotion
+   or gate change. Forecast skill survives, but this trading rule is unstable/cost-sensitive.
+2. **Complete A2b live acquisition and durable decisions (next priority).** Measure publication delay
    before choosing production timing; collect prospective forecasts and actual paper
    acknowledgments/fills. More historic search cannot substitute for this evidence.
 3. **Aligned panel/relative hypotheses (A3/A4).** Add sector-relative residual momentum,

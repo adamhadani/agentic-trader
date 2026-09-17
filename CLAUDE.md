@@ -180,3 +180,12 @@ normal scan acquisition and durable session decision scheduling remain pending.
 trading-policy P&L. It retains charged diagnostic artifacts, never promotes, and does
 not add forecast statistics to the strategy-Sharpe variance sample. See the
 [forecast benchmark contract](docs/alpha-forecast-benchmarks.md) and canonical alpha roadmap.
+
+`alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
+`--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
+no promotion or broker-fill claim; see [timing/cost contracts](docs/alpha-forecast-policy.md).
+
+The [open-gap timing/cost follow-up](docs/alpha-open-gap-policy-2026-09-17.md)
+completed 20 attempts and failed its frozen trading criterion. Keep this standalone
+long/cash policy paused. Next alpha priority: A2b live acquisition/durable decisions,
+then aligned panel hypotheses; zero active alphas remains an intentional outcome.

@@ -1,15 +1,16 @@
 # Forecast-component benchmarks
 
 Implemented September 17, 2026, as an A3 prerequisite while A2b collects forward
-session evidence. This is the current contract of `alpha benchmark`; old benchmark
+session evidence. This describes the forecast-only core of `alpha benchmark`; old benchmark
 artifacts retain their old bracket-simulation meaning and are not reinterpreted.
 
 ## Purpose
 
 The calibration study exposed a mismatch: a next-observation predictor may be
 useful even when an unrelated limit-entry/bracket policy rarely trades it.
-`alpha benchmark` now measures prediction quality separately. It does not simulate
-orders, report strategy P&L/Sharpe/DSR, register a tradable definition, consume a
+`alpha benchmark` measures prediction quality separately. An explicit optional
+[timing/cost screen](alpha-forecast-policy.md) adds diagnostic payoff statistics.
+Neither path simulates broker orders, registers a tradable definition, consumes a
 qualification holdout, earn shadow credit or authorize promotion.
 
 ```bash
@@ -25,11 +26,11 @@ is refused. A failed calculation exits nonzero and retains its charged attempt.
 ## Scientific contract
 
 - `ForecastTarget` identifies the input timeframe, horizon in **observed bars** and
-  `observed_close_to_close_v1` label: `close[t+h] / close[t] - 1`. This is an endpoint
+  explicit endpoints. The default `observed_close_to_close_v1` label is: `close[t+h] / close[t] - 1`. This is an endpoint
   prediction target, not an executable same-close fill or a total-return series.
   Raw stock splits/dividends and session gaps need separate economic treatment.
-- `forecast_components_v1` freezes the feature library, method, seed, parameter
-  budget and validation policy in a hashed plan before loading prices. Changing
+- `forecast_components_v2` freezes the feature library, method, seed, parameter
+  budget, selected DSL features, optional cost policy and validation policy in a hashed plan before loading prices. Changing
   horizon/method/parameters is another charged experiment.
 - Only the source discovery prefix is evaluated. The full artifact is loaded/hashed
   for integrity; holdout values never enter features, labels, fitting or metrics.
@@ -38,7 +39,7 @@ is refused. A failed calculation exits nonzero and retains its charged attempt.
   validation with the configured embargo. Each model and scaler is fitted anew on
   preceding complete observations. Validation labels mature inside their own fold.
 - `single` calibrates one economic DSL feature at a time with ordinary least squares
-  (budget up to seven, in the documented library order). Ridge fits standardized
+  (budget bounded by the selected feature count; default seven-feature library). Ridge fits standardized
   combinations. Boosted trees test nonlinear interactions with early stopping disabled.
   The fixed library is in `research/alpha/baselines.py`; no new DSL operator is required.
 - Each fold compares predictions with its training-label mean on identical finite
@@ -51,7 +52,9 @@ is refused. A failed calculation exits nonzero and retains its charged attempt.
 
 ## Architecture and evidence
 
-Pure typed plans/results and numerical evaluation live in `research/alpha/baselines.py`.
+Pure typed plans/results and numerical evaluation live in `research/alpha/baselines.py`;
+`targets.py` owns outcome endpoints and `forecast_policy.py` owns the optional stateless
+daily payoff screen.
 `AlphaBenchmarkService` owns application orchestration, injects the existing
 `AlphaRepository`, and offloads loading/fitting/artifact I/O. CLI only composes these.
 No schema, queue, registry or compatibility alias is added.

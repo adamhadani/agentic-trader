@@ -23,15 +23,15 @@ from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.market.bars import MAX_DECISION_SECONDS, SessionClockPolicy, completed_fixed_bars
 from agentic_trader.research.alpha.baselines import (
     BENCHMARK_METHODS,
+    ECONOMIC_FEATURES,
     MAX_BENCHMARK_TRIALS,
-    MAX_FORECAST_HORIZON,
     ForecastBenchmarkPlan,
-    ForecastTarget,
 )
 from agentic_trader.research.alpha.benchmark_workflow import AlphaBenchmarkService
 from agentic_trader.research.alpha.calibration import CalibrationPlan, run_calibration
 from agentic_trader.research.alpha.catalog import AlphaCatalog
 from agentic_trader.research.alpha.data import load_dataset, save_dataset, save_json_report
+from agentic_trader.research.alpha.forecast_policy import MAX_SIDE_COST_BPS, DailyLongFlatPolicy
 from agentic_trader.research.alpha.forecasts import CombinedForecast
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
@@ -44,6 +44,7 @@ from agentic_trader.research.alpha.replay import (
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
 from agentic_trader.research.alpha.study import StudyProtocol, StudyStatus
 from agentic_trader.research.alpha.study_artifacts import execute_study
+from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.runtime import runtime_identity
@@ -360,20 +361,35 @@ async def alpha_test_cmd(expression, symbol, lookback, interval):
 @click.option(
     "--horizon", type=click.IntRange(1, MAX_FORECAST_HORIZON), default=1, help="Forecast horizon in observed bars"
 )
+@click.option(
+    "--label",
+    type=click.Choice([label.value for label in ForecastLabel]),
+    default=ForecastLabel.CLOSE_TO_CLOSE.value,
+    help="Forecast return endpoints",
+)
+@click.option("--feature", multiple=True, help="Repeat for a frozen DSL feature set; defaults to the economic library")
+@click.option(
+    "--cost-bps",
+    multiple=True,
+    type=click.FloatRange(0, MAX_SIDE_COST_BPS),
+    help="Per-side cost scenarios for a daily next-open/close payoff screen; repeat in increasing order",
+)
 @click.option("--output", type=click.Path(path_type=Path), help="New private artifact directory")
 @coro
-async def alpha_benchmark_cmd(run_id, method, budget, seed, horizon, output):
-    """Benchmark forecast components on frozen discovery; no trading-policy P&L or promotion."""
+async def alpha_benchmark_cmd(run_id, method, budget, seed, horizon, label, feature, cost_bps, output):
+    """Benchmark forecasts and optional cost scenarios; diagnostic evidence cannot promote."""
     async with alpha_repository() as repository:
         saved = await repository.get(f"run/{run_id}")
         if not saved:
             raise click.ClickException("Unknown source run")
         try:
             plan = ForecastBenchmarkPlan(
-                ForecastTarget(saved["manifest"]["timeframe"], horizon),
+                ForecastTarget(saved["manifest"]["timeframe"], horizon, ForecastLabel(label)),
                 method=method,
                 budget=budget,
                 seed=seed,
+                features=feature or ECONOMIC_FEATURES,
+                execution=DailyLongFlatPolicy(cost_bps) if cost_bps else None,
             )
             output = output or artifact_directory() / f"forecast-benchmark-{uuid4().hex}"
             result = await AlphaBenchmarkService(repository).run(
