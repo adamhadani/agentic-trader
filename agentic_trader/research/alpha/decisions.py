@@ -108,15 +108,12 @@ class SessionDecisionService:
         source: SessionDataSource,
         policy: SessionDecisionConfig,
         *,
-        feed: str,
         directory: Path,
         runtime: dict,
         clock=None,
     ):
-        if feed not in ("alpaca:iex", "alpaca:sip"):
-            raise ValueError("Explicit deployment stock feed required")
         self.repository, self.source, self.policy = repository, source, policy.model_copy(deep=True)
-        self.feed, self.directory, self.runtime = feed, directory, runtime
+        self.feed, self.directory, self.runtime = self.policy.feed, directory, runtime
         self.clock = clock or (lambda: datetime.now(UTC))
         self._lock = asyncio.Lock()
 
@@ -125,14 +122,14 @@ class SessionDecisionService:
             now = utc_timestamp(self.clock())
             results = await self.repository.expire_session_decisions(now)
             registry = await self.repository.snapshot()
-            definitions = [d for d in (*registry.active, *registry.shadow) if d.clock is not None]
+            definitions = [
+                d for d in (*registry.active, *registry.shadow) if d.clock is not None and d.data_feed == self.feed
+            ]
             if len(definitions) > self.policy.max_candidates:
                 raise ValueError("Session candidate budget exceeded; no candidates silently omitted")
             pairs = [(d, s) for d in definitions for s in self.policy.symbols if s in (d.eligible_symbols or ())]
             if not pairs:
                 return results
-            if any(d.data_feed != self.feed for d, _ in pairs):
-                raise ValueError("Session candidate deployment feed mismatch")
             day = now.tz_convert(ET_TZ).date()
             start = day - timedelta(days=self.policy.history_days - 1)
             sessions = await asyncio.to_thread(self.source.calendar, start, day)

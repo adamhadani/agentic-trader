@@ -144,3 +144,7 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
   adjustment/clock and training evidence. Preserve past-only fitting and exact profile
   identity; no SIP conversion factor, automatic live threshold change or intraday
   reuse without seasonality. Both real-data and synthetic diagnostics grant no promotion.
+
+- Research worker feed comes from its injected policy, never the trading feed. Filter
+  session candidates by exact feed before enrollment/budgeting; retain/report other-feed
+  evidence. New-feed controls need new immutable identities. See [IEX forward](docs/alpha-iex-forward.md).

@@ -1,6 +1,7 @@
 """A forward window is consumed once, including failed or interrupted reads."""
 
 import asyncio
+from dataclasses import replace
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -14,6 +15,7 @@ from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.data.sessions import SessionAcquisitionError
 from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.research.alpha.decisions import SessionDecisionService
+from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.storage.alpha import AlphaRepository
@@ -48,7 +50,7 @@ async def forward_case(temp_db, tmp_path, schedule_for, minute_bars):
         calendar=Mock(side_effect=lambda start, end: tuple(s for s in schedule.sessions if start <= s.date <= end)),
         minutes=Mock(return_value=minutes),
     )
-    kwargs = {"feed": "alpaca:sip", "directory": tmp_path, "clock": lambda: now[0], "runtime": {"run_id": "fixture"}}
+    kwargs = {"directory": tmp_path, "clock": lambda: now[0], "runtime": {"run_id": "fixture"}}
     policy = SessionDecisionConfig(enabled=True, history_days=7)
     service = SessionDecisionService(repo, source, policy, **kwargs)
     case = SimpleNamespace(
@@ -186,6 +188,24 @@ async def test_idle_worker_does_not_fetch_without_eligible_candidates(forward_ca
     assert await c.service.run_once() == []
     c.source.calendar.assert_not_called()
     c.source.minutes.assert_not_called()
+
+
+async def test_mixed_feed_registry_only_enrolls_configured_feed_and_reports_other_feed(forward_case):
+    c = forward_case
+    other = replace(c.definition, alpha_id="other-feed", data_feed="alpaca:iex")
+    await c.repo.register(other, actor="fixture")
+    await c.repo.set_shadow(other.version_id, actor="fixture", expected_generation=1)
+    c.service.policy.max_candidates = 1  # Bound applies to this worker's feed.
+    assert await c.service.run_once() == []
+    c.now[0] = pd.Timestamp("2024-11-27 20:01Z")
+    (result,) = await c.service.run_once()
+    assert result["status"] == "scored" and result["version_id"] == c.definition.version_id
+    c.source.minutes.assert_called_once()
+    assert await c.repo.get(f"session-cursor/{other.version_id}/SPY") is None
+    _, report = await load_forward_evidence(c.repo, now=c.now[0])
+    row = next(r for r in report["candidates"] if r["version_id"] == other.version_id)
+    assert "feed_not_configured" in row["coverage_warnings"]
+    assert row["recorded_decisions"] == 0
 
 
 async def test_native_scans_leave_session_diagnostics_to_the_dedicated_worker(forward_case):

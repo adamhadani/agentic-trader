@@ -1,11 +1,12 @@
 """Real SDK HTTP -> receipt-aware scoring -> journal/replay, across independent clients."""
 
 import asyncio
+from dataclasses import replace
 
 import pandas as pd
 import pytest
 
-from agentic_trader.config import MarketDataEvidenceConfig, SessionDecisionConfig
+from agentic_trader.config import AlphaPipelineConfig, MarketDataEvidenceConfig, SessionDecisionConfig
 from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
@@ -60,7 +61,8 @@ async def test_concurrent_real_sdk_session_decisions_consume_once_and_replay(
     else:
         await temp_db.init_db()
         databases = [temp_db, temp_db]
-    repos = [AlphaRepository(db.workflows) for db in databases]
+    policy = SessionDecisionConfig(enabled=True, feed="alpaca:iex", max_candidates=1)
+    repos = [AlphaRepository(db.workflows, policy=AlphaPipelineConfig(decisions=policy)) for db in databases]
     definition = AlphaDefinition(
         "sdk-forward",
         "SDK forward",
@@ -84,8 +86,7 @@ async def test_concurrent_real_sdk_session_decisions_consume_once_and_replay(
         SessionDecisionService(
             repo,
             source,
-            SessionDecisionConfig(enabled=True),
-            feed="alpaca:iex",
+            policy,
             directory=tmp_path / str(i),
             clock=lambda: now[0],
             runtime={"run_id": str(i)},
@@ -95,6 +96,9 @@ async def test_concurrent_real_sdk_session_decisions_consume_once_and_replay(
     try:
         await repos[0].register(definition, actor="fixture")
         await repos[0].set_shadow(definition.version_id, actor="fixture", expected_generation=0)
+        other = replace(definition, alpha_id="sip-control", data_feed="alpaca:sip")
+        await repos[0].register(other, actor="fixture")
+        await repos[0].set_shadow(other.version_id, actor="fixture", expected_generation=1)
         await asyncio.gather(*(service.run_once() for service in services))
         now[0] = pd.Timestamp("2024-11-27 20:01Z")
         results = await asyncio.gather(*(service.run_once() for service in services))
@@ -107,8 +111,12 @@ async def test_concurrent_real_sdk_session_decisions_consume_once_and_replay(
         assert requests[0][2]["adjustment"] == ["raw"]
         assert all(method == "GET" for method, *_ in venue.calls)
         _, before = await load_forward_evidence(repos[0], now=now[0])
-        assert before["candidates"][0]["counts"]["scored"] == 1
-        assert before["candidates"][0]["receipt_lag_seconds"]["count"] == 1
+        own = next(r for r in before["candidates"] if r["feed"] == policy.feed)
+        foreign = next(r for r in before["candidates"] if r["feed"] != policy.feed)
+        assert own["counts"]["scored"] == 1 and own["receipt_lag_seconds"]["count"] == 1
+        assert not own["coverage_warnings"]
+        assert "feed_not_configured" in foreign["coverage_warnings"]
+        assert foreign["enrolled_at"] is None
         revision[0] = 0.1
         assert await services[1].run_once() == []
         await repos[1].rebuild()

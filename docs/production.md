@@ -485,3 +485,11 @@ Source-specific [volume calibration](alpha-volume-calibration.md) uses the share
 daily study harness with frozen training/forward intervals and exact feed identity.
 `alpha volume-study` is research-only. `/alphas` now provides a compact explanation
 and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.
+
+### Separate prospective IEX feed
+
+Desk `alpha_pipeline.observations.feed` and `alpha_pipeline.decisions.feed` select
+`alpaca:iex` for SPY/QQQ independently from the SIP trading data setting. The
+[fixed IEX controls](alpha-iex-forward.md) use new identities; SIP failures remain
+retained and are reported as an uncollected feed. Import is explicit after deployment.
+Verify actual coverage and scores separately from worker readiness.

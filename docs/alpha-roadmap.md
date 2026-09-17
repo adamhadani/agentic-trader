@@ -504,8 +504,9 @@ attempts, registry unchanged at generation 10 / active 0 / shadow 10. Annual and
 per-symbol event-rate drift persists. Read-only operational review found **78/78 session captures unavailable**, all with
 retained HTTP 403 evidence; this is consistent with the separately probed recent-SIP
 entitlement refusal. Collector readiness is not successful observation evidence.
-**Immediate next priority:** separately bound prospective IEX acquisition, without
-changing original SIP alpha identities or falling back silently. Test actual receipt,
-coverage and decision latency; daily volume calibration does not authorize intraday
-reuse. Prepare item 2's dated individual-equity universe alongside this data work,
-then run the bounded stock/ETF forecast campaign.
+**In verification:** [separately configured prospective IEX workers](alpha-iex-forward.md)
+and six predeclared IEX diagnostic controls preserve original SIP identities/failures.
+Actual receipt, coverage and scoring evidence remains a separate deployment check;
+daily volume calibration does not authorize intraday reuse. Item 2's dated 300-name
+individual-equity candidate universe is proceeding alongside this data work, followed
+by the bounded stock/ETF forecast campaign.
