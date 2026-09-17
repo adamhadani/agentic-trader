@@ -1,6 +1,6 @@
 # Alpaca bar acquisition evidence
 
-Routine Alpaca bar reads now retain decoded JSON pages **before** SDK pagination
+Routine `AlpacaDataProvider` bar reads now retain decoded JSON pages **before** SDK pagination
 aggregation, typed bar parsing and OHLCV cleaning. This applies to native live
 scans, research downloads, session replay, panels and the forward collectors.
 The [SPY-minute postmortem](alpha-spy-minute-postmortem-2026-09-17.md) motivated
@@ -69,7 +69,7 @@ Capture is lossless for decoded valid JSON pages, not byte-for-byte HTTP packets
 HTTP error bodies, invalid JSON, and SDK GET retry attempts are not retained as raw
 pages; the final typed failure and already received pages remain. Requests that
 fail before receiving any page have a manifest and failure result. Latest quotes,
-calendars, broker account/order responses and Yahoo Finance are outside this bar
+calendars, active doctor access probes, broker account/order responses and Yahoo Finance are outside this bar
 capture scope. The normalization fingerprint is versioned with Pandas; original
 JSON files and SHA-256 hashes are the portable retained evidence.
 
@@ -85,3 +85,13 @@ limits and failed completion writes. Research integration tests follow reference
 through SQLite/PostgreSQL journal replay and preserve trial/registry semantics.
 Deployment verification and the bounded actual-SIP acquisition check are recorded
 separately in the delivery PR; source tests do not establish live feed entitlement.
+
+Actual historical SIP verification retained one narrow page and two full-chunk pages
+with 16,654 bars and zero normalization differences; see the [frozen verification
+evidence](alpha-spy-minute-postmortem-2026-09-17.md#automatic-capture-follow-up).
+This historical request does not resolve recent-SIP entitlement.
+
+Native scan signal records do not yet pin all input-frame references individually;
+capture UUIDs, timestamps and request manifests support investigation. Carrying exact
+source/calibration references into executable target/signal identity remains part
+of the roadmap execution gate.
