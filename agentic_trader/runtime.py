@@ -19,6 +19,14 @@ from agentic_trader.constants import RuntimeEnvironment
 RUN_ID = str(uuid4())
 
 
+def state_directory() -> Path:
+    """Private application artifacts; tests stay within their isolated root."""
+    root = os.environ.get("COPILOT_TEST_ROOT")
+    if os.environ.get("COPILOT_ENV") == RuntimeEnvironment.TEST and not root:
+        raise ValueError("Test artifact access requires COPILOT_TEST_ROOT.")
+    return Path(root) if root else Path.home() / ".local/state/agentic-trader"
+
+
 def validate_test_database(url: str, *, root: Path | None = None, postgres_url: str | None = None) -> None:
     """Fail before connecting unless the target belongs to this isolated test run."""
     if root is None:

@@ -6,6 +6,8 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from agentic_trader.config import MarketDataEvidenceConfig
+from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
 from agentic_trader.market.bars import SessionClockPolicy
@@ -89,7 +91,14 @@ async def test_continuous_sdk_replay_never_resets_at_acquisition_boundaries(
     db = SignalDatabase(db_url=request.getfixturevalue("postgres_test_db")) if backend == "postgres" else temp_db
     await db.init_db()
     repository = AlphaRepository(db.workflows)
-    source = AlpacaSessionSource(AlpacaDataProvider(stock_client=broker.data_client, feed="iex"), broker.client)
+    source = AlpacaSessionSource(
+        AlpacaDataProvider(
+            stock_client=broker.data_client,
+            feed="iex",
+            evidence=BarEvidenceStore(tmp_path / "raw", MarketDataEvidenceConfig()),
+        ),
+        broker.client,
+    )
     try:
         result = await AlphaReplayService(repository, source).run(
             plan, tmp_path / "run", environment={"fixture": True}, as_of=pd.Timestamp("2024-12-01", tz="UTC")
@@ -100,7 +109,8 @@ async def test_continuous_sdk_replay_never_resets_at_acquisition_boundaries(
         assert all(c[0] == "GET" for c in venue.calls)
         if mode == "failed_chunk":
             assert result["status"] == "failed"
-            assert len(result["acquisition"]) == 2 and result["acquisition"][-1]["error_type"] == "APIError"
+            assert len(result["acquisition"]) == 2 and result["acquisition"][-1]["error_type"] == "BarAcquisitionError"
+            assert all(r["evidence"]["sha256"] for r in result["acquisition"])
             assert not (tmp_path / "run" / "observations.json").exists()
         else:
             assert result["status"] == "completed"

@@ -5,8 +5,9 @@ import pandas as pd
 import pytest
 
 from agentic_trader.market.bars import completed_fixed_bars
-from agentic_trader.research.alpha.data import load_dataset, save_dataset, save_json_report
+from agentic_trader.research.alpha.data import load_dataset, save_dataset
 from agentic_trader.research.alpha.validation import frame_digest, validate_sampling
+from agentic_trader.storage.artifacts import save_json_report
 
 
 @pytest.mark.parametrize(("timeframe", "periods", "expected"), [("15m", 5, 4), ("1h", 5, 1), ("4h", 5, 0)])

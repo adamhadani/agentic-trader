@@ -11,9 +11,10 @@ from uuid import uuid4
 import pandas as pd
 
 from agentic_trader.research.alpha.baselines import FORECAST_BENCHMARK_VERSION, ForecastBenchmarkPlan, benchmark_models
-from agentic_trader.research.alpha.data import load_dataset, save_dataset, save_json_report
+from agentic_trader.research.alpha.data import load_dataset, save_dataset
 from agentic_trader.research.alpha.validation import DatasetManifest, frame_digest
 from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.artifacts import save_json_report
 
 
 def _compute(manifest: dict, plan: ForecastBenchmarkPlan, holdout: int, output: Path):

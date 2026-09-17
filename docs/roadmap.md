@@ -4,7 +4,7 @@ This document tracks the prioritized strategic initiatives for the **Agentic Tra
 
 ---
 
-## Current operational status — September 16, 2026
+## Current operational status — September 17, 2026
 
 The historical phases below describe development milestones and intended features.
 The [development notes](development-notes.md) describe verified runtime behavior
@@ -19,6 +19,11 @@ The [alpha-stack review](alpha-stack-review.md) supersedes the original Phase 41
 research claims; its engineering corrections are documented in the
 [alpha pipeline](alpha-pipeline.md). Random/genetic/model-baseline discovery shares
 purged validation. Portfolio optimization remains shadow-only.
+Legacy `optimize`/`retune`, VectorBT and uncalibrated Kelly sizing were subsequently
+retired by [contract hardening](forecast-contract-hardening.md); historical phase
+entries below do not describe available commands. [Raw bar evidence](market-data-evidence.md)
+now covers routine Alpaca acquisitions. The [alpha roadmap](alpha-roadmap.md) owns
+the active research sequence.
 
 ## Phase 45: Test isolation, broker fill authority and operational audit
 

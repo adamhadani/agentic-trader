@@ -457,7 +457,7 @@ The [completed sector-panel study](alpha-sector-panel-2026-09-17.md) retains
 32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
 gains. All formulas remain research-only; active alphas remain zero. The next
-priority is lossless raw-provider provenance before a newly frozen turnover-aware study.
+priority is a newly frozen turnover-aware study. [Automatic Alpaca bar evidence](market-data-evidence.md) now retains raw pages and normalization outcomes.
 
 ## Provider read and forecast hardening
 
@@ -465,3 +465,11 @@ See [forecast contract hardening](forecast-contract-hardening.md). Active `docto
 a recent request against the exact configured Alpaca feed; HTTP permission and actual
 bar freshness are distinct. Read fallbacks share bounded executor capacity and Alpaca
 socket timeouts. Unfinished reads are never replayed by the fallback wrapper.
+
+## Raw bar evidence operations
+
+The daemon and research compositions now retain [Alpaca bar evidence](market-data-evidence.md)
+in the private state directory. Budget failures reject the Alpaca acquisition and
+retain a failure receipt; no evidence is automatically deleted. Monitor disk growth
+and back up referenced pages with research journals. Capture success, worker readiness
+and recent-feed entitlement remain separate checks.

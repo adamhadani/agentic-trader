@@ -61,12 +61,29 @@ Raw prices, scripts, receipts and journal IDs stay outside Git.
 | Original-chunk raw rows | `a2388c3397958e6b0c903d9f9641abc4a4e02bb54edc26226f0bc78fad0994cd` |
 | Offline comparison | `bc2be475268bdcb2b1ef6d2f41c5e64cbfedd71d4daa5420853dae38d1386338` |
 
-## Next work
+## Automatic capture follow-up
 
-Automate raw-row capture and normalization outcomes at the shared data boundary,
-including failed parsing and interrupted pagination, with bounded storage/retention
-and references in existing acquisition receipts. This forensic capture does **not**
-mean that routine research/live acquisitions already retain every raw response.
-Preserve strict minute completeness until a separately tested missing-data execution
-contract exists. Continue toward the frozen slower-turnover ETF study; do not change
-cost or promotion thresholds to rescue the earlier campaign.
+[Routine Alpaca bar capture](market-data-evidence.md) now retains decoded pages before
+SDK parsing and cleaning, including earlier pages when pagination fails. It does not
+retroactively reconstruct the original campaign response.
+
+The frozen `raw_evidence_verification_v1` check exercised the production composition
+at source `816c04d` against actual historical SIP. The narrow window retained five
+rows in one page; the original chunk retained **16,654 rows in two pages**. Both had
+zero null/cleaner losses, zero changed/added/removed timestamps or OHLCV rows against
+the frozen original, and the same four target minutes absent from raw pages.
+No coverage rule, failed study or promotion threshold changed.
+
+Two conservatively charged engineering comparisons increased lifetime attempts
+**7,315 → 7,317**. They test acquisition provenance, not economic hypotheses, and
+provide no qualification or shadow credit. Private protocol, script, pages, receipts
+and results live under `research/raw-evidence-verification-20260917` and `market-data`.
+
+| Verification artifact | SHA-256 |
+| --- | --- |
+| Frozen protocol | `225c62fe6f348e92a90c9543573514b916b7c91b547665d86f4bdd8a8d5504aa` |
+| Narrow result | `ce3d4c45c9bbbb6ebcc43a7e17760c2025662a957aad6c648ed3b6f90e501bf6` |
+| Original-chunk result | `d8c2285dd755cf6cc7c3a892e89584b917ba27e83275bdb8736dc04a2be8a8ea` |
+
+Continue toward the frozen slower-turnover ETF study. Preserve strict minute
+completeness until a separately tested missing-data execution contract exists.

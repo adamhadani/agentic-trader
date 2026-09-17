@@ -5,7 +5,8 @@ import asyncio
 import pandas as pd
 import pytest
 
-from agentic_trader.config import SessionDecisionConfig
+from agentic_trader.config import MarketDataEvidenceConfig, SessionDecisionConfig
+from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
 from agentic_trader.market.bars import SessionClockPolicy
@@ -71,7 +72,14 @@ async def test_concurrent_real_sdk_session_decisions_consume_once_and_replay(
         semantics_version=3,
         clock=SessionClockPolicy(),
     )
-    source = AlpacaSessionSource(AlpacaDataProvider(stock_client=broker.data_client, feed="iex"), broker.client)
+    source = AlpacaSessionSource(
+        AlpacaDataProvider(
+            stock_client=broker.data_client,
+            feed="iex",
+            evidence=BarEvidenceStore(tmp_path / "raw", MarketDataEvidenceConfig()),
+        ),
+        broker.client,
+    )
     services = [
         SessionDecisionService(
             repo,

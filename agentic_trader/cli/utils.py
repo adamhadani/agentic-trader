@@ -15,8 +15,10 @@ import click
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import ExecutionMode, RuntimeEnvironment
+from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
+from agentic_trader.runtime import state_directory
 from agentic_trader.transport.alpaca import BoundedStockDataClient, BoundedTradingClient
 
 
@@ -78,9 +80,15 @@ def session_source(config: AppConfig, feed: str):
             request_timeout=config.market_data.timeout_seconds,
         )
         clients.callback(data_client._session.close)
-        yield AlpacaSessionSource(AlpacaDataProvider(stock_client=data_client, feed=feed), calendar_client)
+        yield AlpacaSessionSource(
+            AlpacaDataProvider(
+                stock_client=data_client,
+                feed=feed,
+                evidence=BarEvidenceStore(state_directory() / "market-data", config.market_data.evidence),
+            ),
+            calendar_client,
+        )
 
 
 def artifact_directory() -> Path:
-    root = os.environ.get("COPILOT_TEST_ROOT")
-    return Path(root) / "research" if root else Path.home() / ".local/state/agentic-trader/research"
+    return state_directory() / "research"

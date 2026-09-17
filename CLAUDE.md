@@ -139,7 +139,7 @@ now bound traded notional, reject pending inventory, require matching forecast/r
 units, enforce calibration outcome availability and persist solver evidence. Legacy
 retuning/config exports and uncalibrated Kelly sizing are removed. Provider reads use
 bounded shared capacity and socket deadlines; doctor separates feed access from freshness.
-Recent-SIP entitlement, raw normalization evidence, dependence-aware experiments and
+Recent-SIP entitlement, dependence-aware experiments and
 executable target plans remain priorities. Never connect shadow weights directly to orders.
 
 `alpha calibrate` is a bounded synthetic diagnostic: no runtime config/DB/provider,
@@ -244,4 +244,4 @@ The [completed sector-panel study](docs/alpha-sector-panel-2026-09-17.md) retain
 32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
 gains. All formulas remain research-only; active alphas remain zero. The next
-priority is lossless raw-provider provenance before a newly frozen turnover-aware study.
+priority is a newly frozen turnover-aware study. [Automatic Alpaca bar evidence](docs/market-data-evidence.md) now retains raw pages and normalization outcomes.

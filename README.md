@@ -209,7 +209,7 @@ The [completed sector-panel study](docs/alpha-sector-panel-2026-09-17.md) retain
 32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
 gains. All formulas remain research-only; active alphas remain zero. The next
-priority is lossless raw-provider provenance before a newly frozen turnover-aware study.
+priority is a newly frozen turnover-aware study. [Automatic Alpaca bar evidence](docs/market-data-evidence.md) now retains raw pages and normalization outcomes.
 
 The [forecast contract hardening](docs/forecast-contract-hardening.md) records causal calibration,
 trade participation bounds, forecast-error penalties and bounded provider reads. The

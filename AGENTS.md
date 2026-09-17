@@ -128,3 +128,8 @@ diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-ben
 - Read fallback deadlines never replay unfinished reads; shared worker capacity is
   bounded, while transport adapters still require real socket deadlines. See
   [forecast contract hardening](docs/forecast-contract-hardening.md).
+
+- Alpaca bar reads retain [raw page evidence](docs/market-data-evidence.md) before SDK
+  parsing/cleaning. Inject the shared evidence store in production composition; keep
+  per-request context isolation, immutable page hashes and failure references. Never
+  treat successful capture as complete/fresh market coverage or prune evidence silently.

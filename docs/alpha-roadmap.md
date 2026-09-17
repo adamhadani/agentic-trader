@@ -372,13 +372,13 @@ The [completed independent audit](alpha-sector-panel-2026-09-17.md) retains 32/3
 comparisons, complete daily coverage and zero passes. Volatility-scaled momentum has
 mean IC 0.0136, +3.63% at 1 bp, −4.27% at 5 bp and 84.78% gain concentration. Other
 hypotheses have negative mean IC and lose before costs. No detected arithmetic/coverage
-bug explains the outcome; no threshold or direction was changed. Latest lifetime
+bug explains the outcome; no threshold or direction was changed. At study completion, lifetime
 attempts: **7,312**; registry generation 10, active 0/shadow 10, no new qualification.
 
-**Next ordered increment:** resolve the recent-SIP/deadline prerequisites and contain
-the divergent legacy retuner identified in the [forecast-to-fill follow-up](#forecast-to-fill-follow-up).
-Then add lossless raw-provider/normalization provenance and complete the retained
-SPY-minute postmortem. Freeze a small economically different, slower-turnover
+**Next ordered increment:** the deadline/retuner safeguards and SPY postmortem are
+complete. [Automatic raw-provider evidence](market-data-evidence.md) now retains
+pages before SDK parsing and preserves acquisition failures. Recent-SIP permission
+still requires an operator entitlement/feed decision. Freeze a small economically different, slower-turnover
 relative/residual ETF experiment with explicit total-return/borrow assumptions;
 charge every horizon/buffer/cohort comparison before acquisition. No post-hoc rerun
 belongs to the failed protocol and no best-of-failures candidate gains forward or
@@ -397,11 +397,12 @@ Production still arbitrates individual candidates; the convex allocator is shado
    The divergent retuner, scheduler/config-export path and optional VectorBT engine
    are removed. Recent-SIP permission still requires an operator entitlement/feed
    decision; success of a process or empty request is not freshness evidence.
-2. **Next: automated data provenance.** The [SPY-minute postmortem](alpha-spy-minute-postmortem-2026-09-17.md)
+2. **Implemented: automated data provenance.** The [SPY-minute postmortem](alpha-spy-minute-postmortem-2026-09-17.md)
    found all four gaps already absent from two fresh raw SIP responses, with no cleaning
    loss or revisions in 16,654 shared rows. Original failed evidence remains immutable.
-   Automate lossless raw-row/normalization retention at the shared data boundary,
-   including failed parsing/interrupted pagination; forensic capture alone is insufficient.
+   [Automatic raw-row/normalization retention](market-data-evidence.md) now covers
+   the shared Alpaca bar boundary, including typed parsing failures and interrupted
+   pagination. Original failed studies remain immutable; data capture grants no promotion credit.
 3. **Implemented: A3 allocation contract corrections.** Explicit target/feed/price/clock/
    currency contracts, causal calibration cutoffs, forecast-mean HAC error, duplicate
    family fences, conservative uncertainty penalties and trade participation bounds.
@@ -413,7 +414,8 @@ Production still arbitrates individual candidates; the convex allocator is shado
    causal dependence-aware blending. Compare fixed baskets with persistent holdings,
    including null/planted-edge and duplicate/complementary controls. No forced alpha
    promotion quota and no post-hoc discount of the failed study's costs.
-5. **A3 execution gate.** Version target/plan identity, rounding, stale-snapshot
+5. **A3 execution gate.** Pin exact source/calibration references to native signals
+   and target plans. Version target/plan identity, rounding, stale-snapshot
    rejection, partial-fill attribution and protection before any paper execution.
    Reuse entry FIFO, close services, journal and outbox. Verify intermediate exposure
    and actual fills through SDK HTTP/WebSocket plus disposable PostgreSQL tests.
@@ -421,3 +423,9 @@ Production still arbitrates individual candidates; the convex allocator is shado
 Defer MPC, advanced impact scheduling, CVaR and new asset classes
 until these contracts and a credible economic case exist. The tutorial's optimization
 methods are useful tools, not evidence that our current hypotheses have an edge.
+
+Automatic data-capture verification retained 16,654 actual SIP bars over two SDK
+pages with no normalization loss/revision and reproduced the known raw gap. The two
+engineering checks were conservatively charged (**7,317** lifetime attempts); they
+are not new alpha hypotheses. See [evidence](alpha-spy-minute-postmortem-2026-09-17.md#automatic-capture-follow-up).
+Private evidence archival/capacity monitoring remains required; no automatic pruning.

@@ -35,7 +35,6 @@ version does not establish the installed local server version.
 | Account activity reconciliation | Independent worker, default 60 seconds |
 | Entry / notification workers | Independent loops, default 2 seconds |
 | Macro briefing | Weekdays 12:30, scheduler/system timezone |
-| Retuning | Saturday 02:00, scheduler/system timezone |
 | External watchdog | Every 60 seconds: process check, readiness incidents and due compaction |
 | Session candidate decisions | 30-second wall-clock polls; fixed SPY/QQQ diagnostic controls, durable per-candle claims; no promotion credit |
 | Session data observer | 30-second wall-clock polls; SPY/15m captures only within three minutes of observed closes; no scoring/trading |
@@ -227,7 +226,7 @@ The [completed sector-panel study](alpha-sector-panel-2026-09-17.md) retains
 32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
 gains. All formulas remain research-only; active alphas remain zero. The next
-priority is lossless raw-provider provenance before a newly frozen turnover-aware study.
+priority is a newly frozen turnover-aware study. [Automatic Alpaca bar evidence](market-data-evidence.md) now retains raw pages and normalization outcomes.
 
 ## September 17 contract fixes
 
@@ -241,3 +240,11 @@ Source verification for the contract fixes: all-file pre-commit passed; full CI 
 **151 passed**. See [SPY forensic evidence](alpha-spy-minute-postmortem-2026-09-17.md)
 for the subsequent read-only investigation. Live verification belongs in the delivery
 PR and private runtime evidence, separately from these source-test results.
+
+## Automatic market-data evidence
+
+See [capture contracts and limits](market-data-evidence.md). The shared SDK response
+observer records pages before typed parsing; production adapters inject a private
+evidence store. Preserve context isolation and error references through the existing
+journal. `save_json_report` now belongs to `storage.artifacts`; no research-layer
+compatibility import remains. Source validation and deployed verification stay separate.

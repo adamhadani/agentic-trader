@@ -17,7 +17,7 @@ from agentic_trader.market.bars import (
     build_session_bars,
     utc_timestamp,
 )
-from agentic_trader.research.alpha.data import save_dataset, save_json_report
+from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.replay import (
     SESSION_REPLAY_KIND,
     ReplayPlan,
@@ -26,6 +26,7 @@ from agentic_trader.research.alpha.replay import (
 )
 from agentic_trader.research.alpha.validation import frame_digest
 from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.artifacts import save_json_report
 
 
 def _file_digest(path: Path) -> str:

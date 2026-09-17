@@ -10,6 +10,7 @@ from agentic_trader.constants import (
     DEFAULT_DATA_TIMEOUT_SECONDS,
     DEFAULT_MARKET_DATA_CACHE_TTL_SECONDS,
 )
+from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import (
     AlpacaDataProvider,
     CompositeMarketDataProvider,
@@ -18,6 +19,7 @@ from agentic_trader.data.providers import (
 )
 from agentic_trader.market.bars import SessionSnapshot
 from agentic_trader.resilience.fallback import RetryPolicy
+from agentic_trader.runtime import state_directory
 from agentic_trader.screeners.indicators import (
     calculate_atr,
     calculate_bollinger_bands,
@@ -74,6 +76,7 @@ class MarketDataFetcher:
                 api_secret=cfg.alpaca_api_secret,
                 feed=cfg.market_data.alpaca_feed,
                 request_timeout=cfg.market_data.timeout_seconds,
+                evidence=BarEvidenceStore(state_directory() / "market-data", cfg.market_data.evidence),
             )
             yf_prov = YFinanceDataProvider()
 

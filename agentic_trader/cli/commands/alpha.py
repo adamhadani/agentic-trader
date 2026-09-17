@@ -19,6 +19,7 @@ import yfinance as yf
 
 from agentic_trader.cli.utils import artifact_directory, coro, session_source
 from agentic_trader.config import load_config
+from agentic_trader.data.evidence import BarAcquisitionError, BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.execution.lifetime_policy import MAX_TRADE_LIFETIME_SECONDS, TradeLifetimePolicy
 from agentic_trader.market.bars import MAX_DECISION_SECONDS, SessionClockPolicy, completed_fixed_bars
@@ -31,7 +32,7 @@ from agentic_trader.research.alpha.baselines import (
 from agentic_trader.research.alpha.benchmark_workflow import AlphaBenchmarkService
 from agentic_trader.research.alpha.calibration import CalibrationPlan, run_calibration
 from agentic_trader.research.alpha.catalog import AlphaCatalog
-from agentic_trader.research.alpha.data import load_dataset, save_dataset, save_json_report
+from agentic_trader.research.alpha.data import load_dataset, save_dataset
 from agentic_trader.research.alpha.evidence import (
     DEFAULT_FORWARD_DAYS,
     DEFAULT_FORWARD_LIMIT,
@@ -63,8 +64,9 @@ from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 from agentic_trader.research.alpha.validation import DatasetManifest
-from agentic_trader.runtime import runtime_identity
+from agentic_trader.runtime import runtime_identity, state_directory
 from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.artifacts import save_json_report
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -102,6 +104,7 @@ def download_bars(symbol, lookback, interval, *, feed="yfinance", config=None):
             api_secret=config.alpaca_api_secret,
             feed=config.market_data.alpaca_feed,
             request_timeout=config.market_data.timeout_seconds,
+            evidence=BarEvidenceStore(state_directory() / "market-data", config.market_data.evidence),
         )
         frame = provider.fetch_bars(symbol, requested, period=lookback)
         if (
@@ -261,6 +264,7 @@ async def alpha_mine_cmd(
                     symbol=research_symbol,
                     timeframe=interval,
                     error=f"{type(exc).__name__}: data_or_discovery_failed",
+                    evidence=exc.evidence if isinstance(exc, BarAcquisitionError) else None,
                 )
                 click.echo(f"{research_symbol}: failed ({type(exc).__name__}); rejection persisted", err=True)
     if failures:

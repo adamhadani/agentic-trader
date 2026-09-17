@@ -11,6 +11,7 @@ import pytest
 
 from agentic_trader.config import SessionDecisionConfig
 from agentic_trader.data.market_data import ContractMarketData
+from agentic_trader.data.sessions import SessionAcquisitionError
 from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.models import AlphaDefinition
@@ -235,3 +236,17 @@ async def test_blocking_price_read_leaves_event_loop_responsive(forward_case):
         release.set()
         results = await task
     assert results[0]["status"] == "scored"
+
+
+async def test_failed_acquisition_pages_survive_decision_journal_replay(forward_case):
+
+    c = forward_case
+    await c.service.run_once()
+    c.now[0] = pd.Timestamp("2024-11-27 20:01Z")
+    receipts = [{"error_type": "BarAcquisitionError", "evidence": {"artifact": "fixture", "sha256": "abc"}}]
+    c.source.minutes.side_effect = SessionAcquisitionError(receipts)
+    (result,) = await c.service.run_once()
+    assert result["acquisition"] == receipts
+    await c.repo.rebuild()
+    assert (await c.repo.get(f"session-decision/{result['decision_id']}"))["acquisition"] == receipts
+    assert await c.service.run_once() == []

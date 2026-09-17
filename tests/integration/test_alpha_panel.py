@@ -2,12 +2,15 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import select
 
+from agentic_trader.config import MarketDataEvidenceConfig
+from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
 from agentic_trader.research.alpha.information import ICPolicy
@@ -85,7 +88,14 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
         return None
 
     venue.override = response
-    source = AlpacaSessionSource(AlpacaDataProvider(stock_client=broker.data_client, feed="sip"), broker.client)
+    source = AlpacaSessionSource(
+        AlpacaDataProvider(
+            stock_client=broker.data_client,
+            feed="sip",
+            evidence=BarEvidenceStore(tmp_path / "raw", MarketDataEvidenceConfig()),
+        ),
+        broker.client,
+    )
     output = tmp_path / "panel"
     result = await AlphaPanelService(repo, source).run(
         plan, output, environment={"fixture": True}, as_of=pd.Timestamp("2023-01-01T00:00Z")
@@ -102,7 +112,9 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
     inputs = json.loads((output / "inputs.json").read_text())
     assert all(r["requested_at"] <= r["received_at"] for r in inputs["receipts"])
     if fault == "provider":
-        assert inputs["receipts"][-1]["error_type"] == "APIError"
+        assert inputs["receipts"][-1]["error_type"] == "BarAcquisitionError"
+        raw = inputs["receipts"][-1]["evidence"]
+        assert json.loads(Path(raw["artifact"]).read_text())["error_type"] == "APIError"
     else:
         assert len(requests) == 10 and len(inputs["datasets"]) == 5
     assert all(c[0] == "GET" for c in venue.calls)
