@@ -420,16 +420,13 @@ class TelegramConfig(BaseModel):
     poll_audit_interval_seconds: float = Field(default=60, gt=0)
 
 
-class SessionObservationConfig(BaseModel):
-    """Bounded forward data diagnostics, independent of trading permissions."""
+class SessionWorkerConfig(BaseModel):
+    """Bounded polling and explicit observation universe, separate from trading permissions."""
 
     enabled: bool = False
     symbols: list[str] = Field(default_factory=lambda: ["SPY"], min_length=1, max_length=5)
-    timeframe: str = "15m"
     poll_seconds: int = Field(default=30, ge=10, le=60)
-    window_seconds: int = Field(default=180, ge=60, le=600)
     poll_offset_seconds: int = Field(default=5, ge=0, lt=10)
-    calendar_refresh_seconds: int = Field(default=300, ge=30, le=3600)
     max_age_seconds: int = Field(default=180, ge=120, le=3600)
 
     @field_validator("symbols")
@@ -439,6 +436,12 @@ class SessionObservationConfig(BaseModel):
             raise ValueError("Unique explicit US stock symbols required")
         return symbols
 
+
+class SessionObservationConfig(SessionWorkerConfig):
+    timeframe: str = "15m"
+    window_seconds: int = Field(default=180, ge=60, le=600)
+    calendar_refresh_seconds: int = Field(default=300, ge=30, le=3600)
+
     @field_validator("timeframe")
     @classmethod
     def signal_timeframe(cls, value):
@@ -447,8 +450,17 @@ class SessionObservationConfig(BaseModel):
         return value
 
 
+class SessionDecisionConfig(SessionWorkerConfig):
+    """Prospective diagnostic decisions, independently bounded from trading scans."""
+
+    history_days: int = Field(default=14, ge=2, le=31)
+    max_candidates: int = Field(default=12, ge=1, le=32)
+    max_decisions_per_poll: int = Field(default=128, ge=1, le=512)
+
+
 class AlphaPipelineConfig(BaseModel):
     observations: SessionObservationConfig = Field(default_factory=SessionObservationConfig)
+    decisions: SessionDecisionConfig = Field(default_factory=SessionDecisionConfig)
     minimum_shadow_sessions: int = Field(default=20, ge=1)
     minimum_shadow_decisions: int = Field(default=10, ge=1)
     qualification_max_age_days: int = Field(default=45, ge=1)

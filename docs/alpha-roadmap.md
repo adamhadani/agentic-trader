@@ -124,8 +124,9 @@ identities, gives new session versions shared receipt/delay/expiry screening and
 shadow semantics, and prevents expired replay proposals from crossing closed sessions.
 New versions remain diagnostic-only, including session-derived daily definitions.
 
-Remaining A2b: install session acquisition and a durable, session-aligned decision
-worker (including restart/revision/missed-window handling); collect actual publication/acknowledgment/fill evidence.
+The durable session worker now covers receipt-aware acquisition, restart/revision/missed
+windows, cursor/registry CAS and interrupted/late completions in the shared journal.
+Remaining A2b: collect actual publication/acknowledgment/fill evidence.
 Native provider bars cannot be silently treated as session-derived bars.
 Cover timezone/DST, holidays/early closes, extended-hours aggregation, closed-bar
 availability, GTC pending entries, conservative same-bar paths, gap/partial fills,
@@ -142,7 +143,7 @@ The [forecast benchmark](alpha-forecast-benchmarks.md) now separates explicit
 close-return horizons from bracket-policy P&L, compares single-feature/Ridge/boosted
 predictions on purged walk-forward folds, and retains all attempts/artifacts in the
 existing journal. This is a bounded A3 prerequisite while A2b forward data accumulates;
-it does not supersede the unfinished A2b acquisition/decision worker or enable trading.
+it does not supersede A2b forward/execution evidence or enable trading.
 
 
 A useful next-day predictor need not be profitable under an unrelated bracket/holding
@@ -196,9 +197,9 @@ and simpler baselines are established.
    The [failure postmortem](alpha-open-gap-postmortem-2026-09-17.md) found no numeric
    discrepancy, but unstable selection, concentrated error gains and a loss/action
    mismatch. Automatic fold/influence/action and fitted-model diagnostics are now
-   implemented in the existing report (validation/deployment in progress). Predeclare
+   implemented and deployed in [PR #46](https://github.com/adamhadani/agentic-trader/pull/46). Predeclare
    the economic use of each forecast; do not retune this result.
-2. **Complete A2b live acquisition and durable decisions (next implementation priority).** Measure publication delay
+2. **A2b acquisition and durable decisions implemented; forward evidence remains.** Measure publication delay
    before choosing production timing; collect prospective forecasts and actual paper
    acknowledgments/fills. More historic search cannot substitute for this evidence.
 3. **Aligned panel/relative hypotheses (A3/A4).** Add sector-relative residual momentum,
@@ -276,3 +277,10 @@ The operator approved the following three increments after the postmortem:
 Finish each increment with review, affected integration/CI and deployment verification;
 then continue the next. Success is candidates worth prospective observation, not a
 required number of promotions. Real forward sessions cannot be fabricated or backdated.
+
+
+September 17 delivery status: increment 1 merged/deployed as PR #46. Increment 2 is
+implemented with receipt-aware acquisition, CAS claims/cursors, explicit missed/gap/
+interrupted outcomes and real SDK/PostgreSQL tests; deployment verification is retained
+separately. Increment 3 follows after its CI/deployment: a frozen bounded ETF campaign.
+No new session alpha is activated by either infrastructure increment.

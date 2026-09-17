@@ -64,8 +64,9 @@ independent of strategy scoring and does not qualify or reinterpret any definiti
 These guards prevent accidental reinterpretation, including session-derived daily
 bars. New version-3 definitions now accept explicit receipt-stamped session snapshots
 through [shared screening/shadow decision selection](alpha-session-decisions.md).
-Normal scans do not yet acquire those snapshots or schedule durable session decisions;
-activation remains blocked until that migration and execution evidence are complete.
+A dedicated diagnostic worker now acquires those snapshots and schedules durable
+session decisions; normal trading scans retain native data. Activation remains blocked
+until forward execution and qualification evidence are complete.
 
 ### Shared execution state
 
@@ -153,8 +154,8 @@ completions and both IEX coverage failures, with no simulated entries or promoti
 
 This increment is **A2b groundwork**, not authorization to activate intraday alphas:
 
-1. Complete live acquisition and durable scan/decision timing for the now-versioned
-   session-derived signal and freshness contract. Native provider bars remain different;
+1. Verify the now-implemented durable worker against actual forward sessions for the
+   versioned session-derived signal and freshness contract. Native provider bars remain different;
    new replay results cannot be silently substituted for existing qualifications.
 2. Quantify publication/revision and operator/broker acknowledgment delays with actual
    forward observations. Historical corrected bars cannot establish point-in-time

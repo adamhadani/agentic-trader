@@ -8,8 +8,9 @@ and [operational monitoring](operational-monitoring.md).
 Alpha closure/clock checks now live in `market/bars.py`, shared by research,
 screening and shadow. Fixed-duration versions reject explicit session/unknown
 layouts and ambiguous timestamps. [New session versions](alpha-session-decisions.md)
-share receipt/delay/expiry selection between replay, screening and shadow; normal
-scan acquisition and durable session decision scheduling are still pending.
+share receipt/delay/expiry selection between replay, screening and shadow. The dedicated
+forward worker now acquires raw minutes and persists decisions through the same journal;
+native scans remain separate and execution/qualification evidence is still required.
 See [replay contracts](alpha-session-replay.md#clock-isolation-before-live-migration).
 
 ## Runtime ownership

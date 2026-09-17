@@ -310,8 +310,8 @@ policy and observed liquidity/borrow/feed coverage.
 ## Experiment gates and remaining work
 
 1. Add a session-correct fine-bar execution timeline for intraday qualification;
-   the diagnostic replay clock is implemented, while live-clock migration and broker
-   execution evidence remain. Current intraday results fail promotion. Collect real deployment-feed shadow decisions and review execution assumptions,
+   the diagnostic replay clock and receipt-aware forward worker are implemented, while
+   actual forward and broker execution evidence remain. Current intraday results fail promotion. Collect real deployment-feed shadow decisions and review execution assumptions,
    realized costs and sufficient paper fills before activating/scaling any new alpha.
 2. Compare seeded random/templates, typed genetic search, Ridge and histogram-gradient
    boosting with matched total trial budgets across seeds/universes. ML models are
@@ -356,3 +356,13 @@ Strategy identities, scoring and promotion gates remain unchanged.
 `alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
 `--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
 no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-policy.md).
+
+
+### Durable candidate decisions
+
+The daemon also owns the [receipt-aware diagnostic evaluator](alpha-session-decisions.md#durable-diagnostic-worker).
+`alpha_pipeline.decisions` bounds its universe/history/work; `alpha_decisions` readiness
+is separate from capture quality. Immutable claims/cursors/results use the existing
+journal and private `forward-decisions` artifacts. A healthy worker with no eligible
+version-3 candidates is idle, not evidence of a forward score. No promotion, orders,
+qualified shadow credit or synthetic Telegram messages follow from these diagnostics.

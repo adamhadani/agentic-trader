@@ -118,3 +118,13 @@ session forecasts toward the existing execution boundaries.
 Actual operator/broker acknowledgment, partial fills, protection and corporate-action
 semantics remain separate required evidence. No intraday qualification follows from
 this collector alone. Continue the [ordered roadmap](alpha-roadmap.md).
+
+
+### Durable candidate decisions
+
+The daemon also owns the [receipt-aware diagnostic evaluator](alpha-session-decisions.md#durable-diagnostic-worker).
+`alpha_pipeline.decisions` bounds its universe/history/work; `alpha_decisions` readiness
+is separate from capture quality. Immutable claims/cursors/results use the existing
+journal and private `forward-decisions` artifacts. A healthy worker with no eligible
+version-3 candidates is idle, not evidence of a forward score. No promotion, orders,
+qualified shadow credit or synthetic Telegram messages follow from these diagnostics.

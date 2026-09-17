@@ -272,3 +272,10 @@ alpha_pipeline:
     timeframe: "15m"
     poll_seconds: 30
     window_seconds: 180
+  decisions:
+    enabled: true
+    symbols: [SPY, QQQ]
+    history_days: 14
+    poll_seconds: 30
+    max_candidates: 12
+    max_decisions_per_poll: 128

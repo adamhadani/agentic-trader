@@ -92,7 +92,14 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
     copilot.notifier.stop_polling.assert_awaited_once()
 
 
-async def test_observation_worker_finishes_inflight_capture_before_closing_readers(monkeypatch, config):
+@pytest.mark.parametrize(
+    ("component", "factory"),
+    [
+        (HealthComponent.ALPHA_OBSERVER, "SessionObservationService"),
+        (HealthComponent.ALPHA_DECISIONS, "SessionDecisionService"),
+    ],
+)
+async def test_session_worker_finishes_inflight_capture_before_closing_readers(monkeypatch, config, component, factory):
 
     config.alpha_pipeline.observations.enabled = True
     entered, release, closed, stopped = asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -115,13 +122,15 @@ async def test_observation_worker_finishes_inflight_capture_before_closing_reade
             return []
 
     monkeypatch.setattr(service, "session_source", readers)
-    monkeypatch.setattr(service, "SessionObservationService", Observer)
+    monkeypatch.setattr(service, factory, Observer)
     readiness = SimpleNamespace(observe=AsyncMock())
-    task = asyncio.create_task(service.run_session_observer(config, object(), readiness, MagicMock(), stopped))
+    task = asyncio.create_task(
+        service.run_session_worker(config, object(), readiness, MagicMock(), stopped, component=component)
+    )
     await asyncio.wait_for(entered.wait(), 2)
     stopped.set()
     assert not task.done()
     release.set()
     await asyncio.wait_for(task, 2)
     assert closed.is_set()
-    assert readiness.observe.await_args.args[0] == HealthComponent.ALPHA_OBSERVER
+    assert readiness.observe.await_args.args[0] == component

@@ -18,7 +18,7 @@ from sqlalchemy import delete, select
 from agentic_trader.config import AlphaPipelineConfig
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.bars import ObservationStatus
-from agentic_trader.research.alpha.models import AlphaDefinition, RegistrySnapshot
+from agentic_trader.research.alpha.models import AlphaDefinition, DecisionStatus, RegistrySnapshot
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.models import AlphaProjectionRecord, DomainEventRecord
 from agentic_trader.storage.workflow import WorkflowStore, encode
@@ -362,8 +362,110 @@ class AlphaRepository:
             "installed": installed,
             "latest_research": await self.get("research/latest"),
             "latest_observation": await self.get("observation/latest"),
+            "latest_session_decision": await self.get("session-decision/latest"),
+            "pending_session_decisions": await self.get("session-decision/pending") or {},
             "research_family": await self.get("family/all"),
         }
+
+    async def _session_decision(self, session, payload):
+        await self._append(
+            session,
+            f"session-decision/{payload['decision_id']}",
+            payload,
+            EventKind.ALPHA_FORECAST,
+            "session_decisions",
+        )
+        await self._append(session, "session-decision/latest", payload, EventKind.ALPHA_FORECAST, "session_decisions")
+
+    async def plan_session_decisions(self, key, previous, cursor, claims):
+        """CAS the cursor and consume windows in the same journal transaction."""
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            registry = await self._get(session, REGISTRY_KEY)
+            if not registry or registry["generation"] != cursor["generation"]:
+                raise ValueError("Registry changed during session planning")
+            if await self._get(session, key) != previous:
+                return []
+            pending = await self._get(session, "session-decision/pending") or {}
+            accepted = []
+            for claim in claims:
+                if await self._get(session, f"session-decision/{claim['decision_id']}") is not None:
+                    continue
+                await self._session_decision(session, claim)
+                if claim["status"] == DecisionStatus.CLAIMED:
+                    pending[claim["decision_id"]] = claim["expires_at"]
+                accepted.append(claim)
+            if accepted:
+                await self._append(
+                    session, "session-decision/pending", pending, EventKind.ALPHA_FORECAST, "session_decisions"
+                )
+            # Avoid a new event every idle poll: advance only enrollment/calendar/window boundaries.
+            if (
+                previous is None
+                or claims
+                or any(cursor.get(k) != previous.get(k) for k in ("generation", "calendar", "gap"))
+            ):
+                await self._append(session, key, cursor, EventKind.ALPHA_FORECAST, "session_decisions")
+            return accepted
+
+    async def expire_session_decisions(self, now):
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            pending = await self._get(session, "session-decision/pending") or {}
+            expired = [key for key, expiry in pending.items() if pd.Timestamp(expiry) <= now]
+            results = []
+            for identity in expired:
+                claim = await self._get(session, f"session-decision/{identity}")
+                result = {
+                    **claim,
+                    "status": DecisionStatus.INTERRUPTED,
+                    "finished_at": now.isoformat(),
+                    "reason": "claim_expired_without_completion",
+                }
+                await self._session_decision(session, result)
+                del pending[identity]
+                results.append(result)
+            if expired:
+                await self._append(
+                    session, "session-decision/pending", pending, EventKind.ALPHA_FORECAST, "session_decisions"
+                )
+            return results
+
+    async def finish_session_decision(self, claim, evidence, *, clock):
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            previous = await self._get(session, f"session-decision/{claim['decision_id']}")
+            if not previous or previous["claim_id"] != claim["claim_id"]:
+                raise ValueError("Session decision requires its original claim")
+            if evidence.get("status") not in (DecisionStatus.SCORED, DecisionStatus.UNAVAILABLE):
+                raise ValueError("Invalid session decision outcome")
+            if evidence.get("forecast", {}).get("valid"):
+                raise ValueError("Session decisions cannot grant shadow credit")
+            if previous["status"] != DecisionStatus.CLAIMED:
+                # Late work is forensic evidence, never an overwrite of the original outcome.
+                key = f"session-decision-late/{claim['decision_id']}"
+                if await self._get(session, key) is None:
+                    await self._append(session, key, evidence, EventKind.ALPHA_FORECAST, "session_decisions")
+                return previous
+            if any(k in evidence and evidence[k] != v for k, v in claim.items() if k != "status"):
+                raise ValueError("Session claim identity is immutable")
+            now = pd.Timestamp(clock())
+            if now.tzinfo is None or pd.isna(now):
+                raise ValueError("Aware commit clock required")
+            result = {**claim, **evidence}
+            registry = await self._get(session, REGISTRY_KEY)
+            if registry["generation"] != claim["registry_generation"]:
+                result.update(status=DecisionStatus.UNAVAILABLE, reason="registry_changed_during_capture")
+            if not pd.Timestamp(claim["claimed_at"]) <= now < pd.Timestamp(claim["expires_at"]):
+                result.update(status=DecisionStatus.UNAVAILABLE, reason="decision_expired_before_commit")
+            result["committed_at"] = now.isoformat()
+            await self._session_decision(session, result)
+            pending = await self._get(session, "session-decision/pending") or {}
+            pending.pop(claim["decision_id"], None)
+            await self._append(
+                session, "session-decision/pending", pending, EventKind.ALPHA_FORECAST, "session_decisions"
+            )
+            return result
 
     async def _observation_latest(self, session, payload):
         for key in ("observation/latest", f"observation/latest/{payload['symbol']}"):
