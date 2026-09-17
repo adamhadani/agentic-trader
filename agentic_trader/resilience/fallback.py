@@ -14,6 +14,13 @@ from agentic_trader.constants import (
     DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
     DEFAULT_DATA_TIMEOUT_SECONDS,
 )
+from agentic_trader.resilience.reads import (
+    BoundedReadExecutor,
+    ReadCapacityExceeded,
+    ReadDeadlineExceeded,
+    discard_late_read,
+    provider_reads,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -58,11 +65,13 @@ class RunnableWithFallbacks[T, R]:
         retry_policy: RetryPolicy | None = None,
         primary_name: str = "primary",
         fallback_names: list[str] | None = None,
+        read_executor: BoundedReadExecutor | None = None,
     ):
         self.primary = primary
         self.fallbacks = list(fallbacks) if fallbacks else []
         self.retry_policy = retry_policy or RetryPolicy()
         self.primary_name = primary_name
+        self.read_executor = read_executor if read_executor is not None else provider_reads
 
         if fallback_names and len(fallback_names) == len(self.fallbacks):
             self.fallback_names = fallback_names
@@ -74,28 +83,42 @@ class RunnableWithFallbacks[T, R]:
         if timeout <= 0:
             return func(*args, **kwargs)  # type: ignore[no-any-return]
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(func, *args, **kwargs)
-            try:
-                return future.result(timeout=timeout)  # type: ignore[no-any-return]
-            except concurrent.futures.TimeoutError as err:
-                raise TimeoutError(f"Execution timed out after {timeout}s") from err
+        future = self.read_executor.submit(func, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout)  # type: ignore[no-any-return]
+        except concurrent.futures.TimeoutError as err:
+            if future.done():
+                raise
+            discard_late_read(future)
+            raise ReadDeadlineExceeded(f"Read exceeded {timeout}s; late result discarded") from err
 
     async def _execute_async_with_timeout(self, func: Callable[..., R | Awaitable[R]], *args: Any, **kwargs: Any) -> R:
         timeout = self.retry_policy.timeout_seconds
-        coro: Any
-        if inspect.iscoroutinefunction(func):
-            coro = func(*args, **kwargs)
-        else:
-            res = func(*args, **kwargs)
-            if inspect.isawaitable(res):
-                coro = res
-            else:
-                return res  # type: ignore[return-value]
+        future = None
 
-        if timeout <= 0:
-            return await coro  # type: ignore[misc,no-any-return]
-        return await asyncio.wait_for(coro, timeout=timeout)  # type: ignore[misc,no-any-return]
+        async def execute():
+            nonlocal future
+            if inspect.iscoroutinefunction(func):
+                result = func(*args, **kwargs)
+            else:
+                future = self.read_executor.submit(func, *args, **kwargs)
+                result = await asyncio.wrap_future(future)
+            return await result if inspect.isawaitable(result) else result
+
+        deadline = asyncio.timeout(timeout if timeout > 0 else None)
+        try:
+            async with deadline:
+                return await execute()  # type: ignore[no-any-return]
+        except asyncio.CancelledError:
+            if future is not None:
+                discard_late_read(future)
+            raise
+        except TimeoutError:
+            if deadline.expired():
+                if future is not None:
+                    discard_late_read(future)
+                raise ReadDeadlineExceeded(f"Read exceeded {timeout}s; late result discarded") from None
+            raise
 
     def invoke(self, *args: Any, **kwargs: Any) -> R:
         """Synchronously execute primary with fallback cascade."""
@@ -108,7 +131,9 @@ class RunnableWithFallbacks[T, R]:
                     return self._execute_sync_with_timeout(runner, *args, **kwargs)
                 except self.retry_policy.exceptions_to_retry as e:
                     errors.append(e)
-                    is_last_attempt = attempt == self.retry_policy.max_retries
+                    is_last_attempt = attempt == self.retry_policy.max_retries or isinstance(
+                        e, (ReadDeadlineExceeded, ReadCapacityExceeded)
+                    )
                     next_target = all_runners[idx + 1][0] if idx + 1 < len(all_runners) else "none (all exhausted)"
 
                     if not is_last_attempt:
@@ -142,6 +167,7 @@ class RunnableWithFallbacks[T, R]:
                                 "error": str(e),
                             },
                         )
+                        break
 
         raise AllFallbacksExhaustedError(
             f"All providers ({[name for name, _ in all_runners]}) exhausted. Errors: {[str(e) for e in errors]}",
@@ -159,7 +185,9 @@ class RunnableWithFallbacks[T, R]:
                     return await self._execute_async_with_timeout(runner, *args, **kwargs)
                 except self.retry_policy.exceptions_to_retry as e:
                     errors.append(e)
-                    is_last_attempt = attempt == self.retry_policy.max_retries
+                    is_last_attempt = attempt == self.retry_policy.max_retries or isinstance(
+                        e, (ReadDeadlineExceeded, ReadCapacityExceeded)
+                    )
                     next_target = all_runners[idx + 1][0] if idx + 1 < len(all_runners) else "none (all exhausted)"
 
                     if not is_last_attempt:
@@ -193,6 +221,7 @@ class RunnableWithFallbacks[T, R]:
                                 "error": str(e),
                             },
                         )
+                        break
 
         raise AllFallbacksExhaustedError(
             f"All providers ({[name for name, _ in all_runners]}) exhausted. Errors: {[str(e) for e in errors]}",

@@ -103,7 +103,8 @@ async def test_notional_limit_rejection(evaluator_factory):
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=35000.0, use_llm=False)
 
     assert eval_res.approved is False
-    assert "Exposure limit exceeded" in eval_res.rejection_reason
+    assert "Sizing blocked" in eval_res.rejection_reason
+    assert eval_res.quantity == 0
 
 
 @pytest.mark.asyncio
@@ -378,3 +379,17 @@ async def test_llm_cannot_rewrite_versioned_alpha_protection(evaluator_factory, 
     assert result.stop_loss == baseline.stop_loss
     assert result.take_profit == baseline.take_profit
     assert result.thesis_summary == "fixture: try to change policy"
+
+
+@pytest.mark.parametrize("drawdown,notional", [(0, 60000), (0.07, 0)])
+async def test_blocked_sizing_cannot_reach_llm_approval(evaluator_factory, monkeypatch, drawdown, notional):
+    evaluator = evaluator_factory()
+    completion = AsyncMock(side_effect=AssertionError("A blocked size must not reach the LLM"))
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", completion)
+    result = await evaluator.evaluate_candidate(
+        create_candidate(), current_open_notional=notional, current_drawdown_pct=drawdown, use_llm=True
+    )
+    assert not result.approved
+    assert result.quantity == 0
+    assert result.gating_reasons
+    completion.assert_not_called()

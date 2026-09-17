@@ -51,7 +51,6 @@ async def test_blocking_dependencies_leave_event_loop_responsive(operation, monk
 @pytest.mark.asyncio
 async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch, config):
     config.scheduler.intraday_scan_enabled = False
-    config.scheduler.retune_enabled = False
     config.scheduler.macro_briefing_enabled = False
     scan_ran, monitor_ran, initialized = asyncio.Event(), asyncio.Event(), asyncio.Event()
     copilot = MagicMock()

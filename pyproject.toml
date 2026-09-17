@@ -34,12 +34,6 @@ dependencies = [
     "arch>=8,<9",
 ]
 
-[project.optional-dependencies]
-research = [
-    "vectorbt>=1.1.0",
-    "plotly>=5.24.0,<6.0.0",
-]
-
 [project.scripts]
 copilot = "agentic_trader.main:main"
 

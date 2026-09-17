@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from agentic_trader.market.bars import SessionSchedule, TradingSession
+from agentic_trader.market.bars import FIXED_BAR_LAYOUT, SessionSchedule, TradingSession
+from agentic_trader.research.alpha.forecasts import ForecastContract
 from agentic_trader.research.alpha.information import ICPolicy
 from agentic_trader.research.alpha.panel_study import PanelFold, PanelHypothesis, PanelStudyPlan
 from agentic_trader.research.alpha.targets import ForecastLabel, ForecastTarget
@@ -105,3 +106,8 @@ def panel_study_input():
         ic=ICPolicy(min_assets=4, min_observations=10, hac_lags=5, observations_per_year=252),
     )
     return frames, clock, plan
+
+
+@pytest.fixture
+def forecast_contract():
+    return ForecastContract(ForecastTarget("1h", 1), "alpaca:sip", "raw", FIXED_BAR_LAYOUT, "USD")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +12,7 @@ from agentic_trader.resilience.fallback import (
     RetryPolicy,
     RunnableWithFallbacks,
 )
+from agentic_trader.resilience.reads import BoundedReadExecutor, ReadCapacityExceeded
 
 
 def test_primary_succeeds_immediately():
@@ -129,3 +132,75 @@ async def test_async_timeout_triggers_fallback():
 
     result = await runner.ainvoke()
     assert result == "fast_result"
+
+
+@pytest.mark.parametrize("async_call", [False, True])
+async def test_timed_out_sync_read_returns_promptly_without_replaying_work(async_call):
+    release = threading.Event()
+    finished = threading.Event()
+    calls = []
+
+    def blocked_read():
+        calls.append(1)
+        try:
+            release.wait(0.5)
+            return "late-result"
+        finally:
+            finished.set()
+
+    runner = RunnableWithFallbacks(
+        primary=blocked_read,
+        fallbacks=[lambda: "fallback"],
+        retry_policy=RetryPolicy(max_retries=2, backoff_factor=0, timeout_seconds=0.02),
+    )
+    start = time.monotonic()
+    try:
+        result = await runner.ainvoke() if async_call else runner.invoke()
+        assert time.monotonic() - start < 0.3
+        assert result == "fallback"
+        assert len(calls) == 1
+    finally:
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 1)
+
+
+async def test_sync_callable_runs_off_loop_and_can_return_an_awaitable():
+    loop_thread = threading.get_ident()
+    observed = []
+
+    def read():
+        observed.append(threading.get_ident())
+
+        async def result():
+            return "ok"
+
+        return result()
+
+    assert await RunnableWithFallbacks(read).ainvoke() == "ok"
+    assert observed != [loop_thread]
+
+
+async def test_timed_out_work_keeps_capacity_until_finished():
+
+    pool = BoundedReadExecutor(workers=1)
+    release = threading.Event()
+    finished = threading.Event()
+
+    def blocked():
+        try:
+            release.wait(1)
+        finally:
+            finished.set()
+
+    runner = RunnableWithFallbacks(
+        blocked, retry_policy=RetryPolicy(max_retries=0, timeout_seconds=0.01), read_executor=pool
+    )
+    try:
+        with pytest.raises(AllFallbacksExhaustedError):
+            await runner.ainvoke()
+        with pytest.raises(ReadCapacityExceeded):
+            pool.submit(lambda: None)
+    finally:
+        release.set()
+        await asyncio.to_thread(pool.shutdown)
+    assert finished.is_set()

@@ -1,4 +1,4 @@
-"""Pure shadow portfolio construction: all holdings/reservations enter one vector.
+"""Pure shadow portfolio construction: filled holdings and compatible forecast/risk contracts.
 
 No broker mutations are available here. Portfolio execution is deliberately gated
 until plans, partial-fill attribution and protection can use the existing FIFO.
@@ -6,14 +6,13 @@ until plans, partial-fill attribution and protection can use the existing FIFO.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 
-from agentic_trader.market.bars import BAR_DURATIONS
-from agentic_trader.research.alpha.forecasts import CombinedForecast
+from agentic_trader.research.alpha.forecasts import CombinedForecast, ForecastContract, validate_forecast
 from agentic_trader.research.alpha.optimizer import ConvexAlphaPortfolioOptimizer
 
 
@@ -24,6 +23,8 @@ class PortfolioPolicy:
     turnover_limit: float = 0.2
     max_positions: int = 4
     risk_aversion: float = 5
+    uncertainty_aversion: float = 1
+    max_risk_age_seconds: float = 259200  # Three calendar days; explicit freshness policy
     cost_per_side: float = 0.0005
     covariance_shrinkage: float = 0.25
     min_observations: int = 60
@@ -35,6 +36,10 @@ class PortfolioPolicy:
         for name in ("gross_limit", "per_name_limit", "turnover_limit", "risk_aversion", "max_snapshot_age_seconds"):
             if not np.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
                 raise ValueError(f"Invalid portfolio policy {name}")
+        if not np.isfinite(self.uncertainty_aversion) or self.uncertainty_aversion < 0:
+            raise ValueError("Invalid uncertainty aversion")
+        if not np.isfinite(self.max_risk_age_seconds) or self.max_risk_age_seconds <= 0:
+            raise ValueError("Invalid risk-history freshness policy")
         if self.max_factor_exposure is not None and (
             not np.isfinite(self.max_factor_exposure) or self.max_factor_exposure < 0
         ):
@@ -74,6 +79,7 @@ def build_shadow_portfolio(
     snapshot: PortfolioSnapshot,
     *,
     now: datetime,
+    risk_contract: ForecastContract,
     policy: PortfolioPolicy | None = None,
 ):
     policy = policy or PortfolioPolicy()
@@ -86,29 +92,34 @@ def build_shadow_portfolio(
         raise ValueError("Stale/unversioned portfolio snapshot")
     if not np.isfinite(snapshot.equity) or snapshot.equity <= 0:
         raise ValueError("Invalid broker equity")
-    if not forecasts or len({f.timeframe for f in forecasts}) != 1:
-        raise ValueError("One calibrated forecast horizon required")
+    if not forecasts or len({f.contract for f in forecasts}) != 1:
+        raise ValueError("One calibrated forecast contract required")
+    if forecasts[0].contract != risk_contract or risk_contract.currency != "USD":
+        raise ValueError("Risk and forecast contracts must match the USD account")
     if len({f.symbol for f in forecasts}) != len(forecasts):
         raise ValueError("One combined forecast per instrument required")
+    if len({f.observed_at for f in forecasts}) != 1:
+        raise ValueError("Portfolio forecast observations must align")
     for forecast in forecasts:
-        if (
-            forecast.timeframe not in BAR_DURATIONS
-            or not 0
-            <= (now - forecast.observed_at).total_seconds()
-            <= BAR_DURATIONS[forecast.timeframe].total_seconds()
-        ):
-            raise ValueError("Stale/future portfolio forecast")
-    if any(snapshot.holdings.get(s, 0) * amount < 0 for s, amount in snapshot.reservations.items()):
-        raise ValueError("Opposing pending orders require explicit worst-case risk, not netting")
+        validate_forecast(forecast, now)
+    if any(amount != 0 for amount in snapshot.reservations.values()):
+        raise ValueError("Unfilled pending orders require a reachable-risk envelope; shadow allocation blocked")
     symbols = sorted(set(snapshot.holdings) | set(snapshot.reservations) | {f.symbol for f in forecasts})
     if set(returns.columns) != set(symbols) or not returns.index.is_unique or not returns.index.is_monotonic_increasing:
         raise ValueError("Covariance must cover every holding, reservation and forecast exactly")
-    observed = returns.loc[returns.index <= snapshot.as_of, symbols]
+    if (
+        not isinstance(returns.index, pd.DatetimeIndex)
+        or returns.index.tz is None
+        or returns.empty
+        or returns.index.hasnans
+        or (returns.index > snapshot.as_of).any()
+        or (snapshot.as_of - returns.index[-1]).total_seconds() > policy.max_risk_age_seconds
+    ):
+        raise ValueError("Stale, future or ambiguous risk-history availability")
+    observed = returns.loc[:, symbols]
     if len(observed) < policy.min_observations or not np.isfinite(observed.to_numpy()).all():
         raise ValueError("Insufficient complete covariance history")
-    current = np.array(
-        [(snapshot.holdings.get(s, 0) + snapshot.reservations.get(s, 0)) / snapshot.equity for s in symbols]
-    )
+    current = np.array([snapshot.holdings.get(s, 0) / snapshot.equity for s in symbols])
     if not np.isfinite(current).all():
         raise ValueError("Invalid portfolio observations")
     expected = {f.symbol: f.expected_return for f in forecasts}
@@ -127,7 +138,7 @@ def build_shadow_portfolio(
     for symbol, weight in zip(symbols, current, strict=True):
         if symbol not in snapshot.liquidity_caps or symbol not in snapshot.groups:
             raise ValueError("Missing instrument liquidity/class observations")
-        capacity = min(policy.per_name_limit, snapshot.liquidity_caps[symbol] / snapshot.equity)
+        capacity = snapshot.liquidity_caps[symbol] / snapshot.equity
         if not np.isfinite(capacity) or capacity < 0:
             raise ValueError("Invalid liquidity capacity")
         if symbol in snapshot.locked_symbols or symbol not in snapshot.tradable:
@@ -137,8 +148,11 @@ def build_shadow_portfolio(
             lower.append(0)
             upper.append(0)
         else:
-            lower.append(-capacity if symbol in snapshot.shortable else min(0, weight))
-            upper.append(capacity)
+            minimum = max(-policy.per_name_limit, weight - capacity)
+            if symbol not in snapshot.shortable:
+                minimum = max(minimum, min(0, weight))
+            lower.append(minimum)
+            upper.append(min(policy.per_name_limit, weight + capacity))
     memberships: dict[str, tuple[str, ...]] = {}
     for symbol in symbols:
         membership = snapshot.groups[symbol]
@@ -165,6 +179,7 @@ def build_shadow_portfolio(
         factor_matrix = np.array([[exposures[s][factor] for factor in factors] for s in symbols])
     optimizer = ConvexAlphaPortfolioOptimizer(
         risk_aversion=policy.risk_aversion,
+        uncertainty_aversion=policy.uncertainty_aversion,
         transaction_cost_rate=policy.cost_per_side,
         gross_leverage_limit=policy.gross_limit,
         max_position_weight=policy.per_name_limit,
@@ -175,6 +190,7 @@ def build_shadow_portfolio(
     result = optimizer.optimize(
         alpha,
         covariance,
+        alpha_standard_error=[next((f.standard_error for f in forecasts if f.symbol == s), 0) for s in symbols],
         factor_matrix=factor_matrix,
         current_weights=current,
         lower_bounds=lower,
@@ -190,5 +206,9 @@ def build_shadow_portfolio(
         "config_version": snapshot.config_version,
         "as_of": snapshot.as_of.isoformat(),
         "selected": sorted(selected),
+        "selection_method": "preserve_holdings_then_absolute_forecast_heuristic",
+        "contract": asdict(risk_contract),
+        "risk_observed_until": observed.index[-1].isoformat(),
+        "policy": asdict(policy),
         "result": result.to_dict(),
     }

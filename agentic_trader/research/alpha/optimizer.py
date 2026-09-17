@@ -6,9 +6,10 @@ weights. These targets are research/shadow artifacts and cannot submit orders.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import clarabel
 import cvxpy as cp
 import numpy as np
 import pandas as pd
@@ -29,6 +30,11 @@ class PortfolioOptimizationResult:
     gross_leverage: float = 0
     iterations: int = 0
     message: str = ""
+    risk_penalty: float = 0
+    transaction_cost: float = 0
+    uncertainty_penalty: float = 0
+    objective: float = 0
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -49,7 +55,9 @@ class ConvexAlphaPortfolioOptimizer:
         max_factor_exposure: float | None = None,
         max_turnover: float | None = None,
         solver_seconds: float = 5,
+        uncertainty_aversion: float = 0,
     ):
+        self.uncertainty_aversion = uncertainty_aversion
         self.risk_aversion = risk_aversion
         self.transaction_cost_rate = transaction_cost_rate
         self.gross_leverage_limit = gross_leverage_limit
@@ -70,7 +78,7 @@ class ConvexAlphaPortfolioOptimizer:
             raise ValueError("Invalid optimizer policy")
         if any(
             value is not None and (not np.isfinite(value) or value < 0)
-            for value in (transaction_cost_rate, max_factor_exposure, max_turnover)
+            for value in (transaction_cost_rate, max_factor_exposure, max_turnover, uncertainty_aversion)
         ):
             raise ValueError("Invalid cost/exposure constraint")
 
@@ -85,6 +93,7 @@ class ConvexAlphaPortfolioOptimizer:
         upper_bounds=None,
         group_matrix=None,
         group_caps=None,
+        alpha_standard_error=None,
     ) -> PortfolioOptimizationResult:
         a = np.asarray(alpha, dtype=float)
         if a.ndim != 1 or not len(a) or not np.isfinite(a).all():
@@ -110,7 +119,14 @@ class ConvexAlphaPortfolioOptimizer:
                 or not covariance.columns.equals(alpha.index)
             ):
                 raise ValueError("Covariance asset labels must align exactly")
-            for data in (factor_matrix, current_weights, lower_bounds, upper_bounds, group_matrix):
+            for data in (
+                factor_matrix,
+                current_weights,
+                lower_bounds,
+                upper_bounds,
+                group_matrix,
+                alpha_standard_error,
+            ):
                 if data is not None and (
                     not isinstance(data, (pd.Series, pd.DataFrame)) or not data.index.equals(alpha.index)
                 ):
@@ -122,6 +138,11 @@ class ConvexAlphaPortfolioOptimizer:
                 raise ValueError("Portfolio vector shape/nonfinite mismatch")
             return v
 
+        if self.uncertainty_aversion > 0 and alpha_standard_error is None:
+            raise ValueError("Forecast standard errors required for uncertainty penalty")
+        errors = vector(alpha_standard_error, 0)
+        if (errors < 0).any():
+            raise ValueError("Forecast standard errors must be nonnegative")
         current = vector(current_weights, 0)
         lower = vector(lower_bounds, self.min_position_weight)
         upper = vector(upper_bounds, self.max_position_weight)
@@ -157,18 +178,24 @@ class ConvexAlphaPortfolioOptimizer:
             raise ValueError("Invalid group constraints")
         weights = cp.Variable(n)
         constraints = [weights >= lower, weights <= upper, cp.norm1(weights) <= self.gross_leverage_limit]
+        constraint_names = ["lower_bounds", "upper_bounds", "gross_leverage"]
         if self.dollar_neutral:
+            constraint_names.append("dollar_neutral")
             constraints.append(cp.sum(weights) == 0)
         if factors is not None and self.max_factor_exposure is not None:
+            constraint_names.append("factor_exposure")
             constraints.append(cp.abs(factors.T @ weights) <= self.max_factor_exposure)
         if self.max_turnover is not None:
+            constraint_names.append("turnover")
             constraints.append(cp.norm1(weights - current) <= self.max_turnover)
         if groups is not None:
+            constraint_names.append("group_exposure")
             constraints.append(groups.T @ cp.abs(weights) <= caps)
         objective = cp.Maximize(
             a @ weights
             - 0.5 * self.risk_aversion * cp.quad_form(weights, cp.psd_wrap(sigma))
             - self.transaction_cost_rate * cp.norm1(weights - current)
+            - self.uncertainty_aversion * (errors @ cp.abs(weights))
         )
         problem = cp.Problem(objective, constraints)
         try:
@@ -204,16 +231,52 @@ class ConvexAlphaPortfolioOptimizer:
         if not feasible:
             return PortfolioOptimizationResult(False, None, message="post_solve_constraint_violation")
         variance = float(target @ sigma @ target)
+        risk_penalty = 0.5 * self.risk_aversion * variance
+        transaction_cost = self.transaction_cost_rate * float(abs(target - current).sum())
+        uncertainty_penalty = self.uncertainty_aversion * float(errors @ abs(target))
+        eigenvalues = np.linalg.eigvalsh(sigma)
+        margins = {
+            "lower_bounds": target - lower,
+            "upper_bounds": upper - target,
+            "gross_leverage": self.gross_leverage_limit - abs(target).sum(),
+        }
+        if self.dollar_neutral:
+            margins["dollar_neutral"] = -abs(target.sum())
+        if factors is not None and self.max_factor_exposure is not None:
+            margins["factor_exposure"] = self.max_factor_exposure - abs(factors.T @ target)
+        if self.max_turnover is not None:
+            margins["turnover"] = self.max_turnover - abs(target - current).sum()
+        if groups is not None:
+            margins["group_exposure"] = caps - groups.T @ abs(target)
+        diagnostics = {
+            "solver": str(cp.CLARABEL),
+            "solver_version": clarabel.__version__,
+            "cvxpy_version": cp.__version__,
+            "solve_seconds": problem.solver_stats.solve_time,
+            "solver_tolerance": 1e-10,
+            "primal_tolerance": FEASIBILITY_TOLERANCE,
+            "covariance_eigenvalues": eigenvalues.tolist(),
+            "constraint_margins": {name: np.asarray(value).tolist() for name, value in margins.items()},
+            "constraint_duals": {
+                name: np.asarray(c.dual_value).tolist() for name, c in zip(constraint_names, constraints, strict=True)
+            },
+            "certificate": "strict_optimal_with_independent_primal_check",
+        }
         target.setflags(write=False)
         return PortfolioOptimizationResult(
-            True,
-            target,
-            float(a @ target),
-            variance,
-            float(np.sqrt(max(0, variance))),
-            float(abs(target - current).sum()),
-            float(target.sum()),
-            float(abs(target).sum()),
-            int(problem.solver_stats.num_iters or 0),
-            str(problem.status),
+            success=True,
+            weights=target,
+            alpha_capture=float(a @ target),
+            portfolio_variance=variance,
+            portfolio_volatility=float(np.sqrt(max(0, variance))),
+            turnover=float(abs(target - current).sum()),
+            net_exposure=float(target.sum()),
+            gross_leverage=float(abs(target).sum()),
+            iterations=int(problem.solver_stats.num_iters or 0),
+            message=str(problem.status),
+            risk_penalty=risk_penalty,
+            transaction_cost=transaction_cost,
+            uncertainty_penalty=uncertainty_penalty,
+            objective=float(a @ target) - risk_penalty - transaction_cost - uncertainty_penalty,
+            diagnostics=diagnostics,
         )

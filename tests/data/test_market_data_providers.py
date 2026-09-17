@@ -44,6 +44,13 @@ def test_alpaca_provider_supports_symbol():
     assert provider.supports_symbol("ES=F") is False
 
 
+@pytest.mark.parametrize("attribute", ["stock_client", "crypto_client"])
+def test_default_alpaca_readers_have_transport_deadlines(attribute):
+    provider = AlpacaDataProvider(api_key="fake-key", api_secret="fake-secret", request_timeout=0.25)
+    client = getattr(provider, attribute)
+    assert client.request_timeout == 0.25
+
+
 def test_alpaca_provider_unsupported_symbol_raises():
     provider = AlpacaDataProvider(api_key="test", api_secret="test")
     with pytest.raises(UnsupportedSymbolError):

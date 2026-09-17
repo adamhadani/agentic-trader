@@ -6,7 +6,7 @@ live in [durable execution](durable-execution.md), [accounting](account-ledger.m
 and [operational monitoring](operational-monitoring.md).
 
 Read the [forecast-to-fill review](forecast-to-fill-review.md) before extending joint
-allocation or trusting scheduled retuning. It records reproduced shadow/legacy research
+allocation. Legacy scheduled retuning is now retired. The review records reproduced shadow/legacy research
 defects and the PR #52 recent-SIP entitlement/deadline findings. Ordered remediation
 lives in the [alpha roadmap](alpha-roadmap.md#forecast-to-fill-follow-up); the current
 allocator has no execution authority.
@@ -141,7 +141,8 @@ enrichment are explicit. Missing VIX fails regime evaluation; missing enrichment
 can leave volatility-only policy. Daily-feed admission age remains a gap.
 GEX is an option-chain/model estimate with quality notes and a required real spot.
 
-Research/retuning outputs do not automatically change running strategy parameters.
+Research outputs do not automatically change running strategy parameters. Legacy
+retuning and config exports are removed; use the canonical journal-backed pipeline.
 Alpha state now uses the [journal-backed pipeline](alpha-pipeline.md), schema 008.
 The [active alpha roadmap](alpha-roadmap.md) owns research priorities. The
 [A1b study](alpha-study-2026-09-16.md) retained 1,952 synthetic replicates, including
@@ -227,3 +228,10 @@ The [completed sector-panel study](alpha-sector-panel-2026-09-17.md) retains
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
 gains. All formulas remain research-only; active alphas remain zero. The next
 priority is lossless raw-provider provenance before a newly frozen turnover-aware study.
+
+## September 17 contract fixes
+
+See [implementation boundaries and residual risks](forecast-contract-hardening.md).
+The retuner, optional VectorBT engine and uncalibrated Kelly mode are retired.
+Regression tests reproduce timeout, participation, future-label, incompatible-target,
+duplicate-family and zero-capacity sizing defects before their fixes.

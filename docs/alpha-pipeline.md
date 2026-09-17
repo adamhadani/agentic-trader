@@ -174,25 +174,29 @@ and retain contributors. Timeframe filtering happens before conflict resolution.
 Opposing proposals follow the existing configured policy. This is arbitration,
 not a claim that raw z-scores can be added as independent alpha allocations.
 
-Training-only return calibration and uncertainty-weighted combination produce
-shadow forecasts. Pooling requires the same symbol, horizon and observation time;
-stale/future/duplicate/nonfinite evidence fails explicitly. Uncertainty aggregation
-makes no independence claim.
+Training-only calibration carries explicit horizon, return label, feed, adjustment,
+bar clock and currency. Outcome availability is checked against the training cutoff.
+Forecast-mean HAC standard errors are distinct from return volatility. Explicit weighted
+blends reject duplicate families/calibrations and use a worst-correlation error bound.
+Stale/future/mismatched evidence fails explicitly; legacy untyped calibrations are
+journaled as unavailable, never silently reinterpreted.
 
-`alpha portfolio SNAPSHOT.json` builds a **shadow-only** instrument vector covering
-all holdings and pending reservations. It requires fresh account/data/config versions,
-complete covariance observations, tradability, shortability, liquidity capacity and
-group membership. Opposing reservations cannot hide risk through netting. Existing
-positions count before deterministic preselection enforces the discrete position cap.
+`alpha portfolio SNAPSHOT.json --output REPORT.json` builds a **shadow-only** vector
+of actual filled holdings. Nonzero pending orders block construction until reachable
+risk and executable plans are supported. Fresh account/data/config versions and a
+matching explicit `risk_contract` are required, with complete covariance, tradability,
+shortability, liquidity and group observations. Liquidity bounds traded notional,
+separately from final position size. Existing positions count before deterministic
+preselection; this position-count heuristic is not globally optimal allocation.
 Closing/nontradable holdings must be explicitly locked by the input adapter.
 
-CVXPY/Clarabel solves mean/variance plus turnover cost with gross, per-name, turnover,
-liquidity, overlapping sector/class and optional net/factor bounds. Covariance is
-shrunk to its observed diagonal; no placeholder covariance is invented. Required
-factor observations must be present and aligned. Only an optimal result passing
-independent feasibility checks yields weights. Failure returns **no target**, never
-a fallback liquidation or equal weights. See [CVXPY QP documentation](https://www.cvxpy.org/examples/basic/quadratic_program.html)
-and [Clarabel settings](https://clarabel.org/stable/api_settings/).
+CVXPY/Clarabel solves expected return minus variance, turnover-cost and forecast-error
+penalties with gross, per-name, turnover, overlapping group and optional net/factor
+bounds. Only strict optimal results passing independent feasibility checks yield
+weights. Failure returns **no target**. Immutable private reports retain input/hash,
+contracts, policy, objective components, solver settings, constraint margins/duals and
+covariance eigenvalues. See [the hardening contract](forecast-contract-hardening.md)
+for uncertainty assumptions, input schema and limits.
 
 Combined portfolio execution stays disabled. Versioned rebalance plans, post-rounding
 risk, partial-fill attribution and shared protective-order ownership must be implemented
@@ -297,7 +301,7 @@ other symbols continue; the overall CLI exits nonzero when any symbol fails.
 Network timeouts remain provider transport policy. Re-running completed research
 counts new trials; it is not a free statistical reset.
 
-Installed weekly mining is staggered to **Saturday 03:00 local time** after retuning.
+Installed weekly mining is staggered to **Saturday 03:00 local time**. The divergent automatic retuner has been removed.
 It requests 9 genetic proposals plus 7 catalog trials on each of 32 ETFs (512 trials
 maximum), 5y daily Alpaca observations, and a 120-second per-symbol compute budget.
 It never qualifies or promotes automatically. Use `launchd.sh install-miner` after

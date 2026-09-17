@@ -14,8 +14,9 @@ from requests import Response
 from requests.adapters import BaseAdapter
 from sqlalchemy.engine import make_url
 
-from agentic_trader.broker.alpaca import AlpacaBroker, BoundedStockDataClient, BoundedTradingClient
+from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.storage.migrations import downgrade_migrations
+from agentic_trader.transport.alpaca import BoundedStockDataClient, BoundedTradingClient
 
 
 def order_payload(**overrides):

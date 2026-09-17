@@ -20,6 +20,7 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from agentic_trader.constants import (
     DEFAULT_DAILY_LOOKBACK_PERIOD,
+    DEFAULT_DATA_TIMEOUT_SECONDS,
     DEFAULT_INTRADAY_LOOKBACK_PERIOD,
 )
 from agentic_trader.resilience.fallback import (
@@ -27,6 +28,7 @@ from agentic_trader.resilience.fallback import (
     RetryPolicy,
     RunnableWithFallbacks,
 )
+from agentic_trader.transport.alpaca import BoundedCryptoDataClient, BoundedStockDataClient
 
 
 logger = logging.getLogger(__name__)
@@ -80,8 +82,10 @@ class AlpacaDataProvider:
         stock_client: StockHistoricalDataClient | None = None,
         crypto_client: CryptoHistoricalDataClient | None = None,
         feed: str = "sip",
+        request_timeout: float = DEFAULT_DATA_TIMEOUT_SECONDS,
     ):
         self._name = "alpaca"
+        self.request_timeout = request_timeout
         self.feed = DataFeed(feed)
         self.api_key = api_key
         self.api_secret = api_secret
@@ -89,14 +93,18 @@ class AlpacaDataProvider:
         if stock_client:
             self.stock_client: StockHistoricalDataClient | None = stock_client
         elif api_key and api_secret:
-            self.stock_client = StockHistoricalDataClient(api_key=api_key, secret_key=api_secret)
+            self.stock_client = BoundedStockDataClient(
+                api_key=api_key, secret_key=api_secret, request_timeout=request_timeout
+            )
         else:
             self.stock_client = None
 
         if crypto_client:
             self.crypto_client: CryptoHistoricalDataClient | None = crypto_client
         elif api_key and api_secret:
-            self.crypto_client = CryptoHistoricalDataClient(api_key=api_key, secret_key=api_secret)
+            self.crypto_client = BoundedCryptoDataClient(
+                api_key=api_key, secret_key=api_secret, request_timeout=request_timeout
+            )
         else:
             self.crypto_client = None
 
@@ -142,18 +150,6 @@ class AlpacaDataProvider:
             raise UnsupportedSymbolError(f"Alpaca does not support futures continuous contract '{symbol}'")
 
         is_crypto = "/" in symbol
-        if is_crypto and not self.crypto_client:
-            if self.api_key and self.api_secret:
-                self.crypto_client = CryptoHistoricalDataClient(api_key=self.api_key, secret_key=self.api_secret)
-            else:
-                raise UnsupportedSymbolError("Alpaca crypto client not configured")
-
-        if not is_crypto and not self.stock_client:
-            if self.api_key and self.api_secret:
-                self.stock_client = StockHistoricalDataClient(api_key=self.api_key, secret_key=self.api_secret)
-            else:
-                raise UnsupportedSymbolError("Alpaca stock client not configured")
-
         if start is None:
             delta = parse_period_to_timedelta(
                 period

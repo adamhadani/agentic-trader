@@ -40,7 +40,7 @@ from agentic_trader.research.alpha.evidence import (
     load_forward_evidence,
 )
 from agentic_trader.research.alpha.forecast_policy import MAX_SIDE_COST_BPS, DailyLongFlatPolicy
-from agentic_trader.research.alpha.forecasts import CombinedForecast
+from agentic_trader.research.alpha.forecasts import CombinedForecast, ForecastContract
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.panel_study import (
@@ -98,7 +98,10 @@ def download_bars(symbol, lookback, interval, *, feed="yfinance", config=None):
         if config is None:
             raise ValueError("Explicit Alpaca research configuration required")
         provider = AlpacaDataProvider(
-            api_key=config.alpaca_api_key, api_secret=config.alpaca_api_secret, feed=config.market_data.alpaca_feed
+            api_key=config.alpaca_api_key,
+            api_secret=config.alpaca_api_secret,
+            feed=config.market_data.alpaca_feed,
+            request_timeout=config.market_data.timeout_seconds,
         )
         frame = provider.fetch_bars(symbol, requested, period=lookback)
         if (
@@ -423,8 +426,11 @@ async def alpha_benchmark_cmd(run_id, method, budget, seed, horizon, label, feat
 
 @alpha_group.command("portfolio")
 @click.argument("snapshot_path", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--output", required=True, type=click.Path(path_type=Path), help="Immutable private audit report destination."
+)
 @coro
-async def alpha_portfolio_cmd(snapshot_path):
+async def alpha_portfolio_cmd(snapshot_path, output):
     """Validate/solve a shadow portfolio from an explicit JSON evidence snapshot.
 
     Input contains snapshot, forecasts, returns (pandas split orient), and optional
@@ -432,14 +438,19 @@ async def alpha_portfolio_cmd(snapshot_path):
     are available through this command.
     """
     payload = await asyncio.to_thread(lambda: json.loads(snapshot_path.read_text()))
-    snapshot_data = payload["snapshot"]
+    snapshot_data = dict(payload["snapshot"])
     snapshot_data["as_of"] = datetime.fromisoformat(snapshot_data["as_of"])
     for key in ("locked_symbols", "shortable", "tradable"):
         snapshot_data[key] = frozenset(snapshot_data[key])
     snapshot = PortfolioSnapshot(**snapshot_data)
     forecasts = tuple(
         CombinedForecast(
-            **{**f, "observed_at": datetime.fromisoformat(f["observed_at"]), "contributors": tuple(f["contributors"])}
+            **{
+                **f,
+                "observed_at": datetime.fromisoformat(f["observed_at"]),
+                "contract": ForecastContract.from_document(f["contract"]),
+                **{key: tuple(f[key]) for key in ("contributors", "families", "calibration_ids")},
+            }
         )
         for f in payload["forecasts"]
     )
@@ -451,7 +462,18 @@ async def alpha_portfolio_cmd(snapshot_path):
         returns,
         snapshot,
         now=datetime.now(UTC),
+        risk_contract=ForecastContract.from_document(payload["risk_contract"]),
         policy=PortfolioPolicy(**payload.get("policy", {})),
+    )
+    await asyncio.to_thread(
+        save_json_report,
+        {
+            "kind": "shadow_portfolio_v2",
+            "input": payload,
+            "output": result,
+            "input_hash": hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest(),
+        },
+        output,
     )
     click.echo(json.dumps(result, indent=2))
 

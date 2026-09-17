@@ -392,21 +392,19 @@ The [tutorial comparison and reproduced findings](forecast-to-fill-review.md) re
 A2/A3 without authorizing optimized portfolio execution or changing promotion gates.
 Production still arbitrates individual candidates; the convex allocator is shadow-only.
 
-1. **Operational prerequisites / legacy research containment.** PR #52 verification
-   found recent SIP denied by the current entitlement, while delayed SIP works.
-   Expose this through feed-aware doctor/freshness policy; never change feed identity
-   silently. Consolidate bounded read transport and correct sync/async timeout handling.
-   Separately, the scheduled legacy retuner's NumPy simulator overcounts unrealized
-   P&L (a $150 synthetic profit becomes $250). Contain misleading reports and migrate
-   useful retuning to shared accounting/execution/trial evidence before trusting it.
-   The recent alpha studies do not use that simulator.
-2. **Data provenance.** Preserve lossless provider rows and normalization outcomes;
+1. **Implemented: operational safeguards / legacy containment.** Shared bounded
+   read capacity, Alpaca socket deadlines and an exact-feed recent-access doctor probe.
+   The divergent retuner, scheduler/config-export path and optional VectorBT engine
+   are removed. Recent-SIP permission still requires an operator entitlement/feed
+   decision; success of a process or empty request is not freshness evidence.
+2. **Next: data provenance.** Preserve lossless provider rows and normalization outcomes;
    finish the SPY-minute postmortem. Preserve all frozen failed studies.
-3. **A3 allocation contracts.** Reuse explicit forecast targets across calibration,
-   pooling and risk/cost snapshots. Distinguish return volatility from forecast-mean
-   error. Fix participation bounds on trades rather than holdings; keep actual
-   inventory separate from pending-risk envelopes. Persist solver input hashes,
-   objective components and validation diagnostics. Targets remain non-executable.
+3. **Implemented: A3 allocation contract corrections.** Explicit target/feed/price/clock/
+   currency contracts, causal calibration cutoffs, forecast-mean HAC error, duplicate
+   family fences, conservative uncertainty penalties and trade participation bounds.
+   Nonzero pending orders block shadow allocation. Reports retain input hashes,
+   objective components and solver diagnostics. [Limits and details](forecast-contract-hardening.md).
+   Targets remain non-executable; learned dependence and a full KKT certificate remain open.
 4. **A3/A4 persistent-book experiment.** Predeclare a bounded slower-turnover ETF
    study with full costs, total-return/borrow assumptions, terminal inventory and
    causal dependence-aware blending. Compare fixed baskets with persistent holdings,
@@ -417,6 +415,6 @@ Production still arbitrates individual candidates; the convex allocator is shado
    Reuse entry FIFO, close services, journal and outbox. Verify intermediate exposure
    and actual fills through SDK HTTP/WebSocket plus disposable PostgreSQL tests.
 
-Defer MPC, advanced impact scheduling, CVaR/robust-mean extensions and new asset classes
+Defer MPC, advanced impact scheduling, CVaR and new asset classes
 until these contracts and a credible economic case exist. The tutorial's optimization
 methods are useful tools, not evidence that our current hypotheses have an edge.

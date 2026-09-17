@@ -247,6 +247,30 @@ class RiskEvaluator:
         effective_leverage = round(notional_value / self.config.portfolio.cash, 2)
         projected_notional = current_open_notional + notional_value
 
+        if quantity <= 0:
+            return LLMTradeEvaluation(
+                approved=False,
+                rejection_reason="Sizing blocked: " + "; ".join(gating_reasons),
+                contract=candidate.contract,
+                direction=candidate.direction,
+                entry_price=entry,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                stop_distance_points=stop_distance,
+                target_distance_points=target_distance,
+                risk_reward_ratio=target_distance / stop_distance if stop_distance > 0 else 0,
+                risk_dollars=0,
+                reward_dollars=0,
+                notional_value=0,
+                effective_leverage=0,
+                macro_clearance=True,
+                thesis_summary="Rejected by deterministic sizing gates.",
+                quantity=0,
+                asset_class=asset_class,
+                sizing_tiers=sizing_tiers,
+                gating_reasons=gating_reasons,
+            )
+
         # 1. Check the configured portfolio exposure limit
         if projected_notional > self.config.portfolio.max_notional_exposure:
             return LLMTradeEvaluation(

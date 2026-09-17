@@ -101,6 +101,11 @@ class StrategyType(StrEnum):
     OPTIONS_VERTICAL = "OPTIONS_VERTICAL"
 
 
+class SizingMode(StrEnum):
+    STATIC = "static"
+    VOLATILITY_TARGETED = "volatility_targeted"
+
+
 class StrategyMode(StrEnum):
     """Strategy execution orchestration mode."""
 
@@ -248,19 +253,6 @@ SECTOR_MAP: dict[str, str] = {
     "TLT": "US Treasuries",
     "IEF": "US Treasuries",
 }
-
-# Research, Walk-Forward & Optimization Defaults
-DEFAULT_OPTIMIZATION_LOOKBACK = "2y"
-DEFAULT_WALK_FORWARD_SPLITS = 3
-DEFAULT_TRAIN_RATIO = 0.70
-DEFAULT_MIN_WFE = 0.50
-DEFAULT_MIN_OOS_SHARPE = 0.80
-DEFAULT_CALIBRATIONS_FILENAME = "calibrated_parameters.json"
-
-DEFAULT_TREND_PULLBACK_RSI_GRID: list[float] = [35.0, 38.0, 40.0, 42.0, 45.0, 48.0, 50.0]
-DEFAULT_TREND_PULLBACK_EMA_GRID: list[int] = [15, 20, 25]
-DEFAULT_SQUEEZE_VOLUME_GRID: list[float] = [1.1, 1.2, 1.3, 1.4, 1.5]
-DEFAULT_SQUEEZE_BARS_GRID: list[int] = [3, 4, 5, 6, 8]
 
 # Options & Gamma Exposure (GEX) Constants
 DEFAULT_IMPLIED_VOLATILITY = 0.20

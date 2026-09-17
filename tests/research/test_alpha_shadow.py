@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,6 +11,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import select
 
+from agentic_trader.research.alpha.forecasts import ForecastCalibration
 from agentic_trader.research.alpha.models import AlphaDefinition, RegistrySnapshot
 from agentic_trader.research.alpha.shadow import AlphaShadowService, observe_definition
 from agentic_trader.storage.alpha import AlphaRepository
@@ -107,3 +109,38 @@ async def test_clock_rejection_is_journaled_without_shadow_credit(shadow_inputs,
         assert await repository.get(f"shadow/{definition.version_id}") is None
     finally:
         await temp_db.engine.dispose()
+
+
+@pytest.mark.parametrize("defect", [None, "legacy", "future", "feed", "clone"])
+async def test_calibration_to_shadow_projection_keeps_contract_and_rejection_evidence(
+    shadow_inputs, forecast_contract, defect
+):
+    definition, data, now = shadow_inputs
+    index = pd.date_range("2020-01-01", periods=60, freq="h", tz="UTC")
+    scores = pd.Series(np.linspace(-2, 2, 60), index=index)
+    model = ForecastCalibration.fit(
+        scores,
+        scores * 0.002 + 0.0001,
+        contract=forecast_contract,
+        trained_until=(index[-1] + pd.Timedelta(hours=1)).isoformat(),
+        label_observed_at=pd.Series(index + pd.Timedelta(hours=1), index=index),
+    )
+    if defect == "future":
+        model = replace(model, trained_until=(now + pd.Timedelta(days=1)).isoformat())
+    elif defect == "feed":
+        model = replace(model, contract=replace(model.contract, feed="alpaca:iex"))
+    repository = AsyncMock()
+    repository.get.return_value = {"calibration": {"slope": 1} if defect == "legacy" else model.document()}
+    definitions = (definition,)
+    if defect == "clone":
+        definitions += (replace(definition, alpha_id="renamed", name="Renamed", entry_threshold=0.7),)
+    await AlphaShadowService(repository).observe(RegistrySnapshot(1, (), definitions), data, as_of=now)
+    payloads = [call.args[1] for call in repository.record_forecast.call_args_list]
+    if defect:
+        assert any(p.get("reason") in ("calibration_unavailable", "combined_forecast_unavailable") for p in payloads)
+        assert not any(p.get("reason") == "combined_shadow_forecast" for p in payloads)
+    else:
+        combined = next(p for p in payloads if p.get("reason") == "combined_shadow_forecast")
+        assert not combined["valid"]  # A combined estimate never earns independent promotion credit.
+        assert combined["contract"]["target"]["horizon_bars"] == 1
+        assert combined["calibration_ids"] == (model.calibration_id,)
