@@ -302,3 +302,23 @@ The same injected workers/journal/source boundary handles both feeds, with no fa
 constructor compatibility shim, extra poller or execution authority. Actual successful
 IEX observations remain a deployment check alongside dated stock-universe preparation.
 Worker/process readiness alone cannot establish alpha data quality.
+
+### Prospective equity universe capture
+
+The [dated equity cohort](alpha-equity-universe.md) uses pure UUID-based selection,
+strict public-directory parsing, injected bounded read-only transports and the shared
+alpha journal/artifact store. All blocking CLI/source/hash work is off-loop. Review
+closed receipt-clock backdating, raw malformed-response loss and UTC/ET fixture
+issues with regressions. No new schema, compatibility fallback, execution path or
+background process was added. Instrument subtypes/sectors, historical membership and
+delistings, source-specific trailing liquidity, dynamic missing-member panels and
+bounded acquisition checkpoints remain on the [ordered roadmap](alpha-roadmap.md).
+
+Actual IEX verification distinguishes transport from modeling: current SPY/QQQ
+session observations are complete, but 14-day decision history has source-absent
+minutes and all six first decisions fail closed. Raw JSON/NPZ audit found no local
+row/value loss. Review a versioned sparse signal-bar contract separately from the
+strict replay execution clock; a missing IEX trade bar is not automatically an unknown
+feed outage or an executable unchanged price. Existing results/semantics stay immutable.
+The [measured evidence](alpha-iex-forward.md#deployed-evidence--september-17-2026)
+and daily-equity next priority are recorded in the roadmap.

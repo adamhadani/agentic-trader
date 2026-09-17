@@ -435,3 +435,17 @@ identities, raw receipts and every trial/failure. Both SIP and IEX protocols are
 `config/research/volume-*-v1.json`. It changes no feed, strategy or registry state.
 Telegram `/alphas` is a compact status/glossary; CLI `alpha forward --days 7` and
 `alpha list` retain detailed metrics and immutable definitions.
+
+### Prospective equity universe
+
+```bash
+uv run copilot alpha universe-snapshot config/research/prospective-equity-300-v2.json \
+  --output /private/path/new-equity-cohort
+```
+
+This [metadata-only command](alpha-equity-universe.md) charges one diagnostic attempt
+before reads, retains raw provider evidence and selects a reproducible current cohort.
+`--previous /private/path/older/snapshot.json` retains observed additions/removals/changes.
+Output must be new. Current membership, unknown instrument subtype and unscreened
+liquidity cannot establish historical eligibility or alpha qualification. The actual
+300-name cohort is recorded in the linked report; invoking again is another attempt.

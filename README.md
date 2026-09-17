@@ -228,3 +228,7 @@ and status summary; use `alpha forward` and `alpha list` for full evidence/defin
 
 Prospective alpha checks use [separately configured IEX workers](docs/alpha-iex-forward.md);
 their diagnostic candidates and receipts grant no trading or promotion authority.
+
+The [prospective equity universe](docs/alpha-equity-universe.md) adds a reproducible
+300-name non-ETF candidate cohort with source evidence. It is a metadata snapshot;
+liquidity screening, historical membership and forecast qualification remain separate.

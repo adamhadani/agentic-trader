@@ -261,3 +261,9 @@ Prospective research workers have explicit `alpha_pipeline.{observations,decisio
 settings, independent of trading data. Desk IEX collection and the separately identified
 control cohort are documented in [IEX forward evidence](docs/alpha-iex-forward.md).
 Keep original SIP failures/identities; other-feed candidates remain visible but uncollected.
+
+[Prospective equity candidates](docs/alpha-equity-universe.md) are captured by
+`alpha universe-snapshot`: exact UUIDs, raw metadata, exclusions, receipt fences and
+stable-hash selection use the existing diagnostic journal. The actual 300-name
+cohort is not a historical constituent list or a verified common-stock/liquidity universe.
+Use its snapshot ID and preceding-only screening before any broader forecast study.
