@@ -508,3 +508,5 @@ complete [dated equity cohort](alpha-equity-universe.md#daily-liquidity-and-cove
 It reuses the daily study service and diagnostic journal, with bounded paced reads,
 immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
 this development screen neither establishes historical membership nor qualifies alphas.
+
+`copilot alpha forecast-study PROTOCOL --selection COMPLETED_LIQUIDITY_DIRECTORY --output NEW_PRIVATE_DIRECTORY` runs the [screened-cohort development study](alpha-panel-forecasts.md). The frozen matrix is charged and every acquired member/date excluded before reads. Keep artifacts private; this command neither promotes alphas nor sends messages/orders. It does not start a daemon or poller. Existing output directories cannot be overwritten.

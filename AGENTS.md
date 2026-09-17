@@ -159,3 +159,5 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
   member checkpoint. Unknown acquisition or invalid source evidence withholds selection;
   legitimate empty bars mean missing coverage. Current IEX volume is not consolidated
   capacity, and current-cohort historical development is not point-in-time validation.
+
+- [Panel forecast studies](docs/alpha-panel-forecasts.md) keep every frozen member on the expected calendar. Fit preprocessing only on training rows with strictly mature labels. Eligibility and basket weights cannot depend on future outcomes; missing held outcomes withhold full-path P&L. Current-cohort historical diagnostics cannot qualify an alpha or relax older complete-book contracts.

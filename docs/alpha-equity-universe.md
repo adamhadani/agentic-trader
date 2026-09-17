@@ -135,8 +135,9 @@ The screen charges one declared selection attempt, excludes every inspected
 member/interval before source access, and preserves acquisition receipts and
 artifacts through the shared research journal. It evaluates at most 500 metadata
 candidates, no more than 90 calendar days, and selects at most 64. These are
-acquisition/screen bounds; existing forecast panels still require their own frozen
-universe and complete coverage. No daemon enrollment, registry promotion, order,
+acquisition/screen bounds; existing complete-panel studies retain their coverage
+contracts. The separately versioned [forecast study](alpha-panel-forecasts.md)
+supports causal per-date eligibility without dropping frozen members. No daemon enrollment, registry promotion, order,
 notification or automatic live threshold update follows from a screen.
 
 IEX volume measures one venue. A resulting cohort has evidence of IEX activity,
@@ -150,16 +151,17 @@ separately from unit/SDK/database test results.
 1. **Completed:** run and independently verify the frozen daily liquidity/coverage
    screen over the complete sampled cohort; preserve every missing/ineligible
    member and all read/exclusion history. See the actual evidence below.
-2. Freeze a bounded economic-hypothesis/Ridge-control experiment over the screened
-   cohort, with purged chronological labels, declared costs and cohort transfer.
+2. **Completed:** the [bounded economic/Ridge study](alpha-panel-forecasts-2026-09-17.md)
+   retained 96 comparisons over 64 equities and nine ETF controls, with purged
+   chronological labels and declared costs. It found an equity Ridge research lead.
    Retrospective tests selected using today's membership/liquidity are explicitly
    survivor-conditioned development evidence, not historical tradable universes.
 3. Acquire authoritative instrument subtypes/sectors, historical eligibility/delistings,
    corporate-action and actual feed/execution evidence before qualification.
 
 Comparing feeds requires a separately frozen source-specific mapping/calibration.
-Nothing here relaxes the existing panel member limit, complete-coverage contract
-or qualification gates. Prospective labels begin only after the cohort and policy
+The [separate forecast contract](alpha-panel-forecasts.md) supports causal historical
+eligibility; it does not relax existing complete-book contracts or qualification gates. Prospective labels begin only after the cohort and policy
 were actually observed and frozen; historical development dates stay consumed.
 
 Tests cover deterministic sampling, unknown subtypes, exact metadata joins,
