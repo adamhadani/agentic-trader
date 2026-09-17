@@ -79,6 +79,8 @@ Telegram supports `/status`, `/positions`, `/perf`, `/macro`, `/explain_macro`,
 The menu is registered in default, private-chat and operator-chat scopes at startup.
 
 Normal equity closes require regular trading hours before canceling protection.
+Outside those hours, replies and durable notices explain the refusal, report the
+broker's next regular open in UTC, and confirm protection was left unchanged by the request.
 Panic can queue emergency exits for the next session. A requested or accepted close
 is not a confirmed liquidation. Inspect per-position outcomes and broker positions.
 

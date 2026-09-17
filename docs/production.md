@@ -225,6 +225,9 @@ in account-level `/perf` reconciliation.
 
 For ordinary equity close/flatten requests the broker clock must indicate regular
 trading hours before any cancellation; after-hours requests retain protection.
+Direct replies and durable result notices include the same refusal reason, the
+broker's next regular open in UTC, and a prompt to retry during regular hours.
+No close is queued by an ordinary closed-session refusal; the trading halt is unchanged.
 Panic explicitly retains its emergency policy: cancel orders, permit market exits
 queued for the next session, and persist the halt. A queued order is not a confirmed
 liquidation.
@@ -238,6 +241,10 @@ broker fails after cancellation, protective orders may already be removed. The
 response explicitly reports that condition: inspect the account and restore
 protection or close through the broker as appropriate. No automatic restoration
 or blind close retry is attempted after an uncertain mutation.
+Cancellation attempts are audited before DELETE, so even a lost cancellation
+acknowledgement carries this protection warning. Only a pre-mutation refusal may
+say existing protective orders were left unchanged by this request. External SDK
+errors expose their type/HTTP status, not raw broker response text.
 
 `close_requests` persists a UUID client order ID before broker mutations. A partial
 unique index allows only one active request per environment/account mode/symbol,
@@ -257,6 +264,18 @@ failures. They complement `exit_order_submitted`, reconciliation and Telegram
 handler/delivery audits. `execution.close_cancel_timeout_seconds` (default 10) and
 `execution.close_cancel_poll_seconds` (default 0.25) control cancellation polling;
 SDK calls run off the event loop. These are not guarantees of broker HTTP latency.
+
+### September 17 close-message investigation
+
+The requests at 13:06:55 and 13:07:17 UTC were refused before any cancellation:
+Alpaca's clock reported the next regular open at 13:30 UTC. Both Telegram handlers
+completed and their direct replies and outbox messages received HTTP 200 responses.
+The durable result notice had omitted the useful market-closed explanation and
+showed only a request ID and `failed`; it now includes the symbol and full safe
+explanation. Private audit evidence is retained outside Git. Loopback SDK and
+isolated database regressions cover both commands, post-cancellation session closure,
+lost cancellation acknowledgements and broker-error redaction; these test results
+are separate from subsequent deployment verification.
 
 Deployment checks must verify `/flatten` in default, private-chat and operator-chat
 command scopes, the chat menu button, current daemon revision and poll freshness.
