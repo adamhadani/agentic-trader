@@ -60,14 +60,17 @@ class DailyResearchPanel:
         return pd.DataFrame({symbol: frame.open for symbol, frame in self.frames.items()})
 
 
-def align_daily_panel(frames: dict[str, pd.DataFrame], expected_index: pd.DatetimeIndex, *, feed: str):
+def align_daily_panel(
+    frames: dict[str, pd.DataFrame], expected_index: pd.DatetimeIndex, *, feed: str, adjustment: str = "raw"
+):
     """Observed native daily bars aligned to an explicit exchange-date calendar.
 
     Missing dates stay NaN; there is no intersection, resampling, or forward fill.
     Historical native daily prices are not exchange auction execution evidence.
     """
     if (
-        not frames
+        adjustment not in ("raw", "all")
+        or not frames
         or not isinstance(expected_index, pd.DatetimeIndex)
         or expected_index.tz is None
         or expected_index.empty
@@ -83,9 +86,9 @@ def align_daily_panel(frames: dict[str, pd.DataFrame], expected_index: pd.Dateti
         if (
             frame.attrs.get("timeframe") != "1d"
             or frame.attrs.get("feed") != feed
-            or frame.attrs.get("adjustment") != "raw"
+            or frame.attrs.get("adjustment") != adjustment
         ):
-            raise ValueError("Panel source must match native daily/raw/feed semantics")
+            raise ValueError("Panel source must match native daily/adjustment/feed semantics")
         if (
             not isinstance(frame.index, pd.DatetimeIndex)
             or frame.index.tz is None

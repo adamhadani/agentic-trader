@@ -133,3 +133,9 @@ diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-ben
   parsing/cleaning. Inject the shared evidence store in production composition; keep
   per-request context isolation, immutable page hashes and failure references. Never
   treat successful capture as complete/fresh market coverage or prune evidence silently.
+
+The [persistent ETF book experiment](docs/alpha-persistent-book.md) uses the shared
+panel journal and explicit adjusted-price accounting. It is research-only: reserve
+the frozen matrix before access; no promotion or live portfolio execution.
+[Verified feed access and alternatives](docs/research-data-sources.md) distinguish
+recent-SIP entitlement from throttling; historical SIP remains usable.

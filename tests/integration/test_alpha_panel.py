@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from dataclasses import fields
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,7 @@ from agentic_trader.data.sessions import AlpacaSessionSource
 from agentic_trader.research.alpha.information import ICPolicy
 from agentic_trader.research.alpha.panel_study import PanelFold, PanelHypothesis, PanelStudyPlan
 from agentic_trader.research.alpha.panel_workflow import AlphaPanelService
+from agentic_trader.research.alpha.persistent_study import BookTriage, PersistentStudyPlan, compute_persistent_study
 from agentic_trader.research.alpha.targets import ForecastLabel, ForecastTarget
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
@@ -35,8 +37,10 @@ async def panel_repository(request, temp_db):
 @pytest.mark.enable_socket
 @pytest.mark.allow_hosts(["127.0.0.1", "localhost"])
 @pytest.mark.parametrize("fault", [None, "missing", "provider"])
+@pytest.mark.parametrize("study", ["baskets", "book"])
+@pytest.mark.parametrize("feed", ["sip", "iex"])
 async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before_reads(
-    alpaca_http, panel_repository, tmp_path, fault
+    alpaca_http, panel_repository, tmp_path, fault, study, feed
 ):
     venue, broker = alpaca_http
     repo = panel_repository
@@ -53,7 +57,20 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
         (0.0, 5.0),
         1,
         ICPolicy(min_assets=4, min_observations=10, hac_lags=5),
+        feed=f"alpaca:{feed}",
     )
+    compute = None
+    if study == "book":
+        arguments = {f.name: getattr(plan, f.name) for f in fields(plan)}
+        arguments["hypotheses"] = (*plan.hypotheses, PanelHypothesis("reversal", "-roc(close,5)"))
+        plan = PersistentStudyPlan(
+            **arguments,
+            blend_window=10,
+            borrow_bps=(0.0, 300.0),
+            funding_bps=(0.0, 500.0),
+            triage=BookTriage(primary_cost_bps=0.0),
+        )
+        compute = compute_persistent_study
     requests = []
 
     def response(method, path, query, body):
@@ -62,7 +79,9 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
         if path == "/v2/stocks/bars":
             symbol = query["symbols"][0]
             requests.append((symbol, query))
-            assert query["timeframe"] == ["1Day"] and query["adjustment"] == ["raw"] and query["feed"] == ["sip"]
+            assert (
+                query["timeframe"] == ["1Day"] and query["adjustment"] == [plan.adjustment] and query["feed"] == [feed]
+            )
             assert pd.Timestamp(query["start"][0]) == clock[0]
             assert pd.Timestamp(query["end"][0]) == clock[-1] + pd.DateOffset(days=1) - pd.Timedelta(microseconds=1)
             if fault == "provider" and symbol == "BBB":
@@ -91,22 +110,22 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
     source = AlpacaSessionSource(
         AlpacaDataProvider(
             stock_client=broker.data_client,
-            feed="sip",
+            feed=feed,
             evidence=BarEvidenceStore(tmp_path / "raw", MarketDataEvidenceConfig()),
         ),
         broker.client,
     )
     output = tmp_path / "panel"
-    result = await AlphaPanelService(repo, source).run(
+    result = await AlphaPanelService(repo, source, compute=compute).run(
         plan, output, environment={"fixture": True}, as_of=pd.Timestamp("2023-01-01T00:00Z")
     )
     assert result["status"] == ("completed" if fault is None else "failed")
-    assert result["charged_trials"] == 3 and not result["authorizes_promotion"]
+    assert result["charged_trials"] == plan.trial_count and not result["authorizes_promotion"]
     if fault == "missing":
         assert result["coverage"]["AAA"]["missing_dates"] == [clock[60].date().isoformat()]
     for name in ("manifest", "inputs", "calendar"):
         assert result[f"{name}_hash"] == hashlib.sha256((output / f"{name}.json").read_bytes()).hexdigest()
-    assert (await repo.get("family/all"))["trial_count"] == 3
+    assert (await repo.get("family/all"))["trial_count"] == plan.trial_count
     assert (await repo.snapshot()).generation == 0
     assert await repo.get(repo._variance_family_key("1d")) is None
     inputs = json.loads((output / "inputs.json").read_text())
@@ -138,5 +157,5 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
     await repo.rebuild()
     assert await repo.get(f"diagnostic/{result['run_id']}") == evidence
     with pytest.raises(FileExistsError):
-        await AlphaPanelService(repo, source).run(plan, output, environment={})
-    assert (await repo.get("family/all"))["trial_count"] == 3
+        await AlphaPanelService(repo, source, compute=compute).run(plan, output, environment={})
+    assert (await repo.get("family/all"))["trial_count"] == plan.trial_count

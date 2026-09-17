@@ -419,3 +419,10 @@ arrays, receipts, manifests, IC series, basket weights/costs and a separate scre
 report. Failed acquisition/coverage exits nonzero without refunding attempts; existing
 outputs are never overwritten. This is intentional research persistence, not a dry
 run or permission to submit a basket. See [panel contracts](alpha-sector-panel.md).
+
+### Persistent ETF book research
+
+`copilot alpha book-study PROTOCOL.json --output NEW_DIRECTORY` runs the frozen
+[monthly book comparison](alpha-persistent-book.md), charges every comparison before
+acquisition and retains daily cash/inventory/cost evidence. No orders, notifications,
+registry changes or promotion credit. See [data access](research-data-sources.md).

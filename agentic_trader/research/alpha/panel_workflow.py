@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -18,7 +19,6 @@ from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.panel import PanelCoverageError, align_daily_panel
 from agentic_trader.research.alpha.panel_study import (
     PANEL_JOURNAL_SYMBOL,
-    PANEL_STUDY_VERSION,
     PanelStudyPlan,
     PanelStudyStatus,
     compute_panel_study,
@@ -30,7 +30,7 @@ from agentic_trader.storage.artifacts import save_json_report
 
 class DailyPanelSource(Protocol):
     def calendar(self, start: date, end: date) -> tuple[TradingSession, ...]: ...
-    def daily(self, symbol: str, start: date, end: date, feed: str) -> pd.DataFrame: ...
+    def daily(self, symbol: str, start: date, end: date, feed: str, adjustment: str = "raw") -> pd.DataFrame: ...
 
 
 def _file_hash(path: Path) -> str:
@@ -49,15 +49,16 @@ def _save_observations(frame: pd.DataFrame, output: Path):
     }
 
 
-def _compute(frames, clock, plan):
+def _compute(frames, clock, plan, sessions):
     panel = align_daily_panel(frames, clock, feed=plan.feed)
     return compute_panel_study(panel, plan)
 
 
 class AlphaPanelService:
-    def __init__(self, repository: AlphaRepository, source: DailyPanelSource):
+    def __init__(self, repository: AlphaRepository, source: DailyPanelSource, *, compute: Callable | None = None):
         self.repository = repository
         self.source = source
+        self.compute = compute
 
     async def run(self, plan: PanelStudyPlan, output: Path, *, environment: dict, as_of=None):
         observed_at = utc_timestamp(as_of if as_of is not None else datetime.now(UTC))
@@ -116,10 +117,10 @@ class AlphaPanelService:
             clock = pd.DatetimeIndex([pd.Timestamp(s.date, tz=ET_TZ) for s in sessions])
             frames = {}
             for symbol in symbols:
-                frame = await acquire("daily", symbol, plan.start, plan.end, plan.feed)
+                frame = await acquire("daily", symbol, plan.start, plan.end, plan.feed, plan.adjustment)
                 inputs["datasets"][symbol] = await asyncio.to_thread(_save_observations, frame, output)
                 frames[symbol] = frame
-            result = await asyncio.to_thread(_compute, frames, clock, plan)
+            result = await asyncio.to_thread(self.compute or _compute, frames, clock, plan, sessions)
             result.update(status=PanelStudyStatus.COMPLETED, completed_comparisons=plan.trial_count)
         except Exception as exc:
             result = {
@@ -141,7 +142,7 @@ class AlphaPanelService:
         await self.repository.record_diagnostic(
             run_id,
             {
-                "kind": PANEL_STUDY_VERSION,
+                "kind": plan.document()["version"],
                 "status": result["status"],
                 "plan": plan.document(),
                 "artifact": str(output / "result.json"),

@@ -473,3 +473,10 @@ in the private state directory. Budget failures reject the Alpaca acquisition an
 retain a failure receipt; no evidence is automatically deleted. Monitor disk growth
 and back up referenced pages with research journals. Capture success, worker readiness
 and recent-feed entitlement remain separate checks.
+
+### Market-data entitlement finding
+
+The September 17 read-only [access probes](research-data-sources.md) confirmed
+recent SIP is forbidden by subscription, with 199/200 requests still available.
+Delayed SIP and current IEX succeeded. Historical research can proceed; do not
+backdate delayed observations or silently switch a qualified alpha's feed.

@@ -245,3 +245,9 @@ The [completed sector-panel study](docs/alpha-sector-panel-2026-09-17.md) retain
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
 gains. All formulas remain research-only; active alphas remain zero. The next
 priority is a newly frozen turnover-aware study. [Automatic Alpaca bar evidence](docs/market-data-evidence.md) now retains raw pages and normalization outcomes.
+
+The [persistent ETF book experiment](docs/alpha-persistent-book.md) uses the shared
+panel journal and explicit adjusted-price accounting. It is research-only: reserve
+the frozen matrix before access; no promotion or live portfolio execution.
+[Verified feed access and alternatives](docs/research-data-sources.md) distinguish
+recent-SIP entitlement from throttling; historical SIP remains usable.
