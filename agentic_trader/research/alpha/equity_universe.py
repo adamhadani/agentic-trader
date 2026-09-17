@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import Any
@@ -16,7 +17,7 @@ from agentic_trader.market.bars import utc_timestamp
 from agentic_trader.market.session import ET_TZ
 
 
-UNIVERSE_VERSION = "prospective_equity_candidates_v1"
+UNIVERSE_VERSION = "prospective_equity_candidates_v2"
 MAX_CANDIDATES = 500
 CLASSIFICATION = "listed_non_etf_equity_candidate"
 
@@ -53,6 +54,7 @@ class EquityUniversePlan:
             "exchanges": list(self.exchanges),
             "version": UNIVERSE_VERSION,
             "sampling": "sha256_seed_asset_id",
+            "symbol_resolution": "unique_active_tradable_uuid",
             "price_reads": False,
             "trial_count": 1,
         }
@@ -100,6 +102,8 @@ def _directory_index(directories: tuple[dict, ...], plan: EquityUniversePlan, ob
             if not symbol or symbol in index:
                 raise ValueError("Empty or duplicate directory symbol")
             index[symbol] = {"source": name, **row}
+    if seen != set(DIRECTORY_NAMES):
+        raise ValueError("Both Nasdaq directories are required for the frozen cohort")
     return index
 
 
@@ -131,18 +135,22 @@ def build_snapshot(
     directory_index = _directory_index(directories, plan, observed)
     if not assets or len(assets) > MAX_METADATA_ROWS:
         raise ValueError("Nonempty bounded asset response required")
-    ids, symbols = set(), set()
+    ids = set()
+    current_symbols = Counter(
+        asset["symbol"] for asset in assets if asset.get("status") == "active" and asset.get("tradable") is True
+    )
     members = []
     for asset in assets:
         asset_id, symbol = str(UUID(asset["id"])), asset["symbol"]
-        if asset_id in ids or symbol in symbols or not symbol:
+        if asset_id in ids or not symbol:
             raise ValueError("Duplicate or empty broker asset identity")
         ids.add(asset_id)
-        symbols.add(symbol)
         if type(asset.get("tradable")) is not bool or asset.get("status") not in {"active", "inactive"}:
             raise ValueError("Invalid broker eligibility fields")
         directory = directory_index.get(symbol)
         reasons = []
+        if current_symbols[symbol] > 1 and asset["status"] == "active" and asset["tradable"]:
+            reasons.append("ambiguous_current_symbol")
         if asset.get("class") != "us_equity":
             reasons.append("not_us_equity")
         if asset["status"] != "active":

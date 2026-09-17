@@ -14,6 +14,7 @@ from alpaca.trading.requests import GetAssetsRequest
 
 from agentic_trader.data.evidence import artifact_reference
 from agentic_trader.data.symbol_directory import DIRECTORY_NAMES, MAX_METADATA_ROWS, parse_directory
+from agentic_trader.market.bars import utc_timestamp
 from agentic_trader.storage.artifacts import save_json_report
 from agentic_trader.transport.alpaca import BoundedTradingClient, ResponsePage
 
@@ -35,8 +36,6 @@ class EquityMetadataSource:
                 raise ValueError("Unexpected equity metadata response")
             if len(json.dumps(page.response).encode()) > MAX_METADATA_BYTES:
                 raise ValueError("Equity metadata byte budget exceeded")
-            if not isinstance(page.response, list) or not 0 < len(page.response) <= MAX_METADATA_ROWS:
-                raise ValueError("Invalid asset response cardinality")
             save_json_report(
                 {
                     "requested_at": page.requested_at.isoformat(),
@@ -46,6 +45,8 @@ class EquityMetadataSource:
                 },
                 output / "alpaca-assets.json",
             )
+            if not isinstance(page.response, list) or not 0 < len(page.response) <= MAX_METADATA_ROWS:
+                raise ValueError("Invalid asset response cardinality")
             pages.append(page.response)
 
         with self.trading.observe_responses(retain):
@@ -87,3 +88,33 @@ def metadata_references(output: Path) -> dict:
         for name in ("alpaca-assets", *DIRECTORY_NAMES)
         if (path := output / f"{name}.json").exists()
     }
+
+
+class MetadataClockError(ValueError):
+    """Receipt evidence cannot establish prospective availability."""
+
+
+def validate_receipt_sequence(receipts: list[dict], started_at: str) -> None:
+    previous = utc_timestamp(started_at)
+    for receipt in receipts:
+        requested, received = utc_timestamp(receipt["requested_at"]), utc_timestamp(receipt["received_at"])
+        if not previous <= requested <= received:
+            raise MetadataClockError("Metadata request/receipt clock moved backward")
+        previous = received
+
+
+def validate_capture_receipts(output: Path, receipts: list[dict]) -> dict:
+    references = metadata_references(output)
+    if set(references) != {"alpaca-assets", *DIRECTORY_NAMES}:
+        raise ValueError("Complete raw source evidence is required")
+    for receipt in receipts:
+        name = "alpaca-assets" if receipt["method"] == "assets" else receipt["arguments"][0]
+        source = json.loads(Path(references[name]["artifact"]).read_text())
+        if not (
+            utc_timestamp(receipt["requested_at"])
+            <= utc_timestamp(source["requested_at"])
+            <= utc_timestamp(source["received_at"])
+            <= utc_timestamp(receipt["received_at"])
+        ):
+            raise MetadataClockError("Raw source receipts are not enclosed by acquisition receipts")
+    return references

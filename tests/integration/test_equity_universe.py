@@ -1,8 +1,11 @@
 """Real SDK/TCP metadata capture and replay on SQLite and disposable PostgreSQL."""
 
+import base64
 import hashlib
 import json
+import threading
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import UUID
 
@@ -12,6 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from agentic_trader.data.equity_metadata import EquityMetadataSource
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.equity_universe import EquityUniversePlan, candidate_symbols
 from agentic_trader.research.alpha.universe_workflow import EquityUniverseService
 from agentic_trader.storage.alpha import AlphaRepository
@@ -32,8 +36,6 @@ async def universe_repository(request, temp_db):
 @pytest.fixture
 def metadata_http(alpaca_http, monkeypatch):
     venue, broker = alpaca_http
-    base = str(broker.client._base_url)
-    monkeypatch.setattr("agentic_trader.data.equity_metadata.NASDAQ_DIRECTORY_ROOT", base)
     assets = [
         {
             "id": str(UUID(int=i + 1)),
@@ -50,7 +52,7 @@ def metadata_http(alpaca_http, monkeypatch):
         }
         for i, symbol in enumerate(("AAA", "BBB", "ETF"))
     ]
-    footer = f"File Creation Time: {datetime.now(UTC):%m%d%Y}16:00|||||||\n"
+    footer = f"File Creation Time: {datetime.now(ET_TZ):%m%d%Y}16:00|||||||\n"
     directories = {
         "nasdaqlisted": "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\nAAA|AAA|Q|N|N|100|N|N\nBBB|BBB|Q|N|N|100|N|N\nETF|ETF|Q|N|N|100|Y|N\n"
         + footer,
@@ -58,26 +60,55 @@ def metadata_http(alpaca_http, monkeypatch):
         + footer,
     }
 
-    # The existing SDK fixture speaks JSON; use real HTTP for SDK and HTTPX's transport for plain text directories.
-    def metadata(request):
-        name = request.url.path.removeprefix("/").removesuffix(".txt")
-        return httpx.Response(200, text=directories[name])
+    class DirectoryHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            name = self.path.removeprefix("/").removesuffix(".txt")
+            payload = directories[name]
+            body = payload if isinstance(payload, bytes) else payload.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
-    with httpx.Client(transport=httpx.MockTransport(metadata), timeout=1) as http:
-        yield venue, broker, assets, directories, http
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DirectoryHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        "agentic_trader.data.equity_metadata.NASDAQ_DIRECTORY_ROOT", f"http://127.0.0.1:{server.server_port}"
+    )
+    try:
+        with httpx.Client(timeout=1) as http:
+            yield venue, broker, assets, directories, http
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
 
 
 @pytest.mark.enable_socket
 @pytest.mark.allow_hosts(["127.0.0.1", "localhost"])
-@pytest.mark.parametrize("fault", [None, "sdk_parse", "directory_parse", "asset_denied"])
+@pytest.mark.parametrize(
+    "fault", [None, "sdk_parse", "sdk_empty", "sdk_shape", "directory_parse", "directory_utf8", "asset_denied"]
+)
 async def test_snapshot_preserves_failures_charges_before_io_and_replays(
     metadata_http, universe_repository, tmp_path, fault
 ):
     venue, broker, assets, directories, http = metadata_http
+    if fault == "sdk_empty":
+        assets = []
+    if fault == "sdk_shape":
+        assets = {"unexpected": "fixture"}
     if fault == "sdk_parse":
         assets[0]["id"] = "invalid-uuid"
     if fault == "directory_parse":
         directories["otherlisted"] = "broken\n"
+
+    if fault == "directory_utf8":
+        directories["otherlisted"] = b"\xff"
 
     def response(method, path, query, body):
         if path == "/v2/assets":
@@ -98,16 +129,21 @@ async def test_snapshot_preserves_failures_charges_before_io_and_replays(
     assert not result["price_reads"] and not result["authorizes_promotion"]
     assert (await repo.snapshot()).generation == 0
     inputs = json.loads((output / "inputs.json").read_text())
-    if fault in {"sdk_parse", "directory_parse"}:
+    if fault in {"sdk_parse", "sdk_empty", "sdk_shape", "directory_parse"}:
         assert json.loads((output / "alpaca-assets.json").read_text())["response"] == assets
     if fault is None:
         snapshot = json.loads((output / "snapshot.json").read_text())
         assert set(candidate_symbols(snapshot, at=datetime.now(UTC))) == {"AAA", "BBB"}
         assert snapshot["selected_count"] == 2 and snapshot["target_met"]
         assert len(inputs["sources"]) == 3
+        assert snapshot["source_evidence"] == inputs["sources"]
+        assert snapshot["observed_at"] == max(r["received_at"] for r in inputs["receipts"])
     else:
         assert inputs["receipts"][-1]["error_type"]
         assert not (output / "snapshot.json").exists()
+    if fault == "directory_utf8":
+        raw = json.loads((output / "otherlisted.json").read_text())
+        assert base64.b64decode(raw["raw_base64"]) == b"\xff"
     assert all(c[0] == "GET" and c[1] == "/v2/assets" for c in venue.calls)
     assert all(r["requested_at"] <= r["received_at"] for r in inputs["receipts"])
     async with repo.store.db.session_factory() as session:

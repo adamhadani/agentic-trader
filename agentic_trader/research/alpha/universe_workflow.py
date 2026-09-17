@@ -10,7 +10,12 @@ from uuid import uuid4
 
 import httpx
 
-from agentic_trader.data.equity_metadata import metadata_references
+from agentic_trader.data.equity_metadata import (
+    MetadataClockError,
+    metadata_references,
+    validate_capture_receipts,
+    validate_receipt_sequence,
+)
 from agentic_trader.data.evidence import artifact_reference
 from agentic_trader.data.symbol_directory import DIRECTORY_NAMES
 from agentic_trader.research.alpha.equity_universe import (
@@ -35,16 +40,17 @@ class EquityUniverseService:
 
     async def run(self, plan: EquityUniversePlan, output: Path, *, environment: dict, previous: dict | None = None):
         if previous is not None:
-            verify_snapshot(previous)
+            await asyncio.to_thread(verify_snapshot, previous)
         await asyncio.to_thread(output.mkdir, parents=True, mode=0o700)
         run_id = uuid4().hex
+        started_at = datetime.now(UTC).isoformat()
         await asyncio.to_thread(
             save_json_report,
             {
                 "run_id": run_id,
                 "plan_id": plan.identity,
                 "plan": plan.document(),
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": started_at,
                 "environment": environment,
                 "previous_snapshot_id": previous["snapshot_id"] if previous else None,
             },
@@ -52,11 +58,13 @@ class EquityUniverseService:
         )
         # A fixed metadata-selection attempt, not one alpha test per listed security.
         await self.repository.reserve_run(run_id, symbol="__EQUITY_UNIVERSE__", timeframe="metadata", trials=1)
-        receipts = []
+        receipts: list[dict] = []
 
         async def acquire(method, *args):
             receipt = {"method": method, "arguments": list(args), "requested_at": datetime.now(UTC).isoformat()}
             try:
+                previous = receipts[-1]["received_at"] if receipts else started_at
+                validate_receipt_sequence([{**receipt, "received_at": receipt["requested_at"]}], previous)
                 return await asyncio.to_thread(lambda: getattr(self.source, method)(*args, output))
             except Exception as exc:
                 receipt["error_type"] = type(exc).__name__
@@ -67,6 +75,11 @@ class EquityUniverseService:
             finally:
                 receipt["received_at"] = datetime.now(UTC).isoformat()
                 receipts.append(receipt)
+                try:
+                    validate_receipt_sequence(receipts, started_at)
+                except MetadataClockError:
+                    receipt["clock_error"] = "MetadataClockError"
+                    raise
 
         snapshot = None
         try:
@@ -79,7 +92,7 @@ class EquityUniverseService:
                 directories,
                 observed_at=max(receipt["received_at"] for receipt in receipts),
                 previous=previous,
-                source_evidence=await asyncio.to_thread(metadata_references, output),
+                source_evidence=await asyncio.to_thread(validate_capture_receipts, output, receipts),
             )
             await asyncio.to_thread(save_json_report, snapshot, output / "snapshot.json")
             result = {

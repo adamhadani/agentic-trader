@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -24,9 +25,9 @@ from agentic_trader.transport.alpaca import BoundedTradingClient
 @coro
 async def universe_snapshot_cmd(protocol: Path, output: Path, previous: Path | None):
     """Freeze current non-ETF equity candidates; no prices, trading or historical membership claim."""
-    plan = EquityUniversePlan.from_document(json.loads(protocol.read_text()))
-    old = json.loads(previous.read_text()) if previous else None
-    config = load_config()
+    plan = await asyncio.to_thread(lambda: EquityUniversePlan.from_document(json.loads(protocol.read_text())))
+    old = await asyncio.to_thread(lambda: json.loads(previous.read_text())) if previous else None
+    config = await asyncio.to_thread(load_config)
     trading = BoundedTradingClient(
         config.alpaca_api_key,
         config.alpaca_api_secret,
@@ -37,7 +38,7 @@ async def universe_snapshot_cmd(protocol: Path, output: Path, previous: Path | N
         with httpx.Client(timeout=config.market_data.timeout_seconds, follow_redirects=False) as http:
             async with alpha_repository() as repository:
                 result = await EquityUniverseService(repository, EquityMetadataSource(trading, http)).run(
-                    plan, output, environment=research_environment(), previous=old
+                    plan, output, environment=await asyncio.to_thread(research_environment), previous=old
                 )
     finally:
         trading._session.close()
