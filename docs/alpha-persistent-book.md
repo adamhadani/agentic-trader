@@ -1,7 +1,7 @@
 # Persistent ETF book experiment
 
 The frozen [persistent-etf-v1 protocol](../config/research/persistent-etf-v1.json)
-tests whether slower signals and retained inventory survive realistic cost stress.
+tests whether slower signals and retained inventory survive declared cost stress.
 It is a new development experiment, not a rerun or rescue of the failed
 [sector-panel study](alpha-sector-panel-2026-09-17.md). No promotion gate changes.
 
@@ -152,3 +152,9 @@ Audit review also made matrix axes explicit: new blend evidence includes ordered
 Original SIP artifacts use the frozen protocol's hypothesis order; independent
 reconstruction confirms their matrix, scores and arithmetic. No original artifact
 or computation was rewritten.
+
+## Completed run
+
+[Results and independent audit](alpha-persistent-book-2026-09-17.md): 160 comparisons
+complete, 80 unavailable original-IEX comparisons retained, zero research passes or
+promotions. Netting reduced costs; predictive weakness/fold instability remain.

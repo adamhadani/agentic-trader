@@ -269,3 +269,11 @@ quote/fill costs, prospective IEX availability if historical evidence warrants i
 physical-share/partial-fill protection, and source/calibration identity in executable
 plans. Do not infer those contracts from adjusted-price research results. Retain the
 existing artifact archival/resource isolation/checkpoint priorities.
+
+The [completed SIP/IEX book audit](alpha-persistent-book-2026-09-17.md) confirms
+accounting consistency but no passing alpha. Covariance evidence now pins ordered
+factor axes independently of JSON object-key order. Original IEX missing warmup
+is retained as a failed acquisition; a separately charged coverage follow-up
+completed. No automatic truncation, imputation or alternate-feed substitution was
+added. Prospective IEX timing and broader expected-return benchmarks are next on
+the [alpha roadmap](alpha-roadmap.md#persistent-book-delivery-result).

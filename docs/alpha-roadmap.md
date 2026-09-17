@@ -440,3 +440,21 @@ explicit adjustment and borrow/funding stress. Commit and charge before access.
 not throttling; delayed SIP and recent IEX work, Finnhub candles refuse this key,
 and yfinance daily/action connectivity works. Retain both feed matrices, source
 receipts and all failures. No automatic production switch or promotion.
+
+### Persistent-book delivery result
+
+[Completed results](alpha-persistent-book-2026-09-17.md): SIP 80/80 and IEX coverage
+follow-up 80/80 complete; original IEX 80 remain unavailable/charged for missing
+early-2020 warmup. Zero passes/promotions; 7,557 lifetime attempts; generation 10,
+active 0/shadow 10. Independent Decimal accounting and IC/covariance audits agree.
+The SIP/IEX persistent blends gain 2.91%/2.84% at primary costs but lose 0.36%/0.41%
+under stress and have unstable annual returns/negative IC. Retain every failure.
+
+Next ordered work: (1) a frozen prospective IEX receipt/coverage/latency diagnostic,
+with separate version/feed identity before any production switch; (2) a bounded
+broader-ETF forecast benchmark using purged training-only expected-return fitting
+and simple constant/Ridge controls, measured against matching economic targets and
+factors; (3) independent action/quote/fill/borrow evidence for promising candidates.
+Pause further sector-momentum/reversal parameter searches and new search engines.
+Physical-share accounting, plan identity, partial-fill protection and untouched
+qualification/forward evidence remain required before portfolio execution.
