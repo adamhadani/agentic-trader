@@ -65,3 +65,13 @@ frozen daily/action cross-check when a candidate merits investigation. A source
 comparison must reserve inspected periods/trials before analyzing outcomes, preserve
 both source artifacts and diagnose discrepancies. Never fill primary missing bars
 with another vendor or use vendor choice to rescue a failed economic screen.
+
+### Historical IEX coverage finding
+
+The first frozen ETF acquisition returned all ten series only from **2020-07-27**
+(864 bars each through 2023), despite requesting January 2020. The matching raw
+pages retain this boundary and no normalization losses. This observed response
+limit is narrower than the generic plan table's history description; do not infer
+IEX coverage from SIP availability. The original run remains failed. The separately
+charged [follow-up protocol](alpha-persistent-book.md#iex-coverage-follow-up-separate-protocol)
+changes only warmup start; research comparison and live feed validation stay separate.

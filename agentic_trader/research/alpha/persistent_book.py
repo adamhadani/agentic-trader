@@ -284,6 +284,7 @@ def dependence_blend(components: dict[str, pd.DataFrame], *, window: int, shrink
                     "bar": first.index[i].isoformat(),
                     "trained_through": first.index[i].isoformat(),
                     "observations": len(sample),
+                    "factors": names,
                     "weights": dict(zip(names, w.tolist(), strict=True)),
                     "covariance": covariance.tolist(),
                     "solver_status": problem.status,

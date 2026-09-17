@@ -44,7 +44,9 @@ def test_exact_protocol_roundtrip_and_budget(persistent_input):
         replace(plan, borrow_bps=(0.0,))
 
 
-@pytest.mark.parametrize("filename", ["persistent-etf-v1.json", "persistent-etf-iex-v1.json"])
+@pytest.mark.parametrize(
+    "filename", ["persistent-etf-v1.json", "persistent-etf-iex-v1.json", "persistent-etf-iex-v2.json"]
+)
 def test_frozen_protocol_is_valid_and_bounded(filename):
     doc = json.loads((Path("config/research") / filename).read_text())
     plan = PersistentStudyPlan.from_document(doc)

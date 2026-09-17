@@ -131,3 +131,24 @@ results. IEX's single-exchange bars are never merged with SIP bars. Neither succ
 research nor current IEX request access changes production feed, creates an active
 alpha or authorizes delayed-SIP/session substitution. Prospective IEX receipt timing,
 coverage, independently qualified versions and execution evidence remain necessary.
+
+### IEX coverage follow-up (separate protocol)
+
+The first IEX run returned 864/1,006 expected bars for every symbol: all begin
+2020-07-27. Its 80 comparisons remain charged and unavailable. Raw pages contain
+that same boundary; no normalizer loss or member-specific gap explains it.
+
+[persistent-etf-iex-v2](../config/research/persistent-etf-iex-v2.json) starts warmup
+at the observed 2020-07-27 boundary and charges another 80 comparisons before a
+fresh read. All evaluation dates (2022/2023), hypotheses, costs, thresholds and
+other parameters are unchanged. The shortened warmup still exceeds the finite
+251-prior-session maximum needed by the declared score/blend at evaluation start.
+This is an explicit coverage-driven new protocol, not an in-place repair or a
+response to IEX profitability (none was computed). Total reserved comparisons
+across SIP, failed IEX v1 and IEX v2: **240**. Preserve all three reports.
+
+Audit review also made matrix axes explicit: new blend evidence includes ordered
+`factors` alongside covariance/weights, since JSON object keys can be reordered.
+Original SIP artifacts use the frozen protocol's hypothesis order; independent
+reconstruction confirms their matrix, scores and arithmetic. No original artifact
+or computation was rewritten.

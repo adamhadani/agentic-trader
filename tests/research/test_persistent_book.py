@@ -1,5 +1,7 @@
 """Self-financing daily research book; no broker or promotion authority."""
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -133,3 +135,13 @@ def test_null_and_planted_edge_controls(edge):
         prices, prices, targets, sessions, BookPolicy(BookMode.BUFFERED, 20, 0.1), CostScenario(5, 300, 500)
     )
     assert (result["net_return"] > 0) == edge
+
+
+def test_serialized_covariance_retains_explicit_factor_axis_order():
+    clock = pd.date_range("2022-01-03", periods=12, freq="B", tz="America/New_York")
+    rng = np.random.default_rng(86)
+    components = {name: pd.DataFrame(rng.normal(size=(12, 4)), index=clock) for name in ["zeta", "alpha"]}
+    _, evidence = dependence_blend(components, window=10, shrinkage=0.2)
+    saved = json.loads(json.dumps(evidence, sort_keys=True))
+    assert saved[0]["factors"] == ["zeta", "alpha"]
+    assert set(saved[0]["factors"]) == set(saved[0]["weights"])
