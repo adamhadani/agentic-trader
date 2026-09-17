@@ -21,6 +21,12 @@ The historical priority was to repair research/live parity, causality, confidenc
 gaps before increasing search volume or connecting optimized weights to trading.
 The previously ranked work below remains deferred, not completed or superseded.
 
+The [September 17 forecast-to-fill comparison](forecast-to-fill-review.md) reviews
+the supplied optimization tutorial against the actual production and shadow paths.
+It reproduces a shadow participation-limit defect and a separate legacy retuner
+accounting error, and defines target/horizon, uncertainty and execution-plan gaps.
+Its ordered follow-up is in the [canonical roadmap](alpha-roadmap.md#forecast-to-fill-follow-up).
+
 ## Boundaries and mechanisms
 
 | Concern | Mechanism and reason |
@@ -68,6 +74,9 @@ second job infrastructure is justified for the current single-destination outbox
 
 | Priority | Finding and use case | Recommendation / tradeoff |
 | --- | --- | --- |
+| P1 | PR #52 verification: current entitlement rejects recent SIP; fallback executor shutdown can defeat its timeout, and async fallback can run sync work inline. | Add feed-aware preflight/freshness and consolidate bounded SDK reads. Worker health is not data completeness; changing SIP to IEX requires a new data contract. Preserve deadline/late-result evidence. |
+| P1 | Scheduled legacy `ParameterGridOptimizer` overcounts unrealized P&L; its alternate engines use different execution assumptions. | Contain misleading retuning reports and consolidate shared simulation/accounting and attempt evidence. The recent alpha/panel studies and broker P&L do not use this engine. See the [exact counterexample](forecast-to-fill-review.md#f7--a-legacy-simulator-still-diverges-from-the-hardened-research-path). |
+| P1 before allocation execution | Shadow liquidity caps bound final holdings rather than trades; forecast/risk horizons and forecast-error semantics are incomplete. | Fix contracts and participation, then validate a persistent cost-aware portfolio in research. Keep target execution gated on rounding, pending exposure, partial fills and protection ownership. |
 | P1 | Corporate actions or stock transfers make account reconciliation unsupported; per-signal partial exits remain conservative. | Add exact typed activity semantics and replay fixtures, then explicit ownership/allocation/protection models. Keep totals withheld and sliced trading disabled until complete; never assign by symbol. |
 | P1 | Missing macro enrichment permits volatility-only evaluation; daily feeds have no maximum-age admission policy. The economic-calendar fetch can also turn a provider error into an empty event list. | Define per-feed age/calendar policy and fail/size decisions before increasing automation. Strict gates improve safety but can block valid trades on provider holidays/outages. |
 | P1 | Live trailing uses recorded risk distance, while research supports ATR/high-water marks; replacement uncertainty has limited durable requested/acknowledged modeling. | Unify policy inputs and persistent stop intent, retaining exact broker confirmation and thesis/risk. Avoid changing existing protective orders during an incidental refactor. |

@@ -5,6 +5,12 @@ and the [architecture review](architecture-review.md). Detailed workflow contrac
 live in [durable execution](durable-execution.md), [accounting](account-ledger.md)
 and [operational monitoring](operational-monitoring.md).
 
+Read the [forecast-to-fill review](forecast-to-fill-review.md) before extending joint
+allocation or trusting scheduled retuning. It records reproduced shadow/legacy research
+defects and the PR #52 recent-SIP entitlement/deadline findings. Ordered remediation
+lives in the [alpha roadmap](alpha-roadmap.md#forecast-to-fill-follow-up); the current
+allocator has no execution authority.
+
 Alpha closure/clock checks now live in `market/bars.py`, shared by research,
 screening and shadow. Fixed-duration versions reject explicit session/unknown
 layouts and ambiguous timestamps. [New session versions](alpha-session-decisions.md)
