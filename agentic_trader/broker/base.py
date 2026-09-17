@@ -228,6 +228,17 @@ class BaseBroker(ABC):
         """Fetch current cash balance and portfolio value if supported by broker."""
         return {}
 
+    async def read_entry_group(self, order_id: str, known_ids: tuple[str, ...] = ()) -> list[OrderObservation]:
+        """Exact current entry/protection observations; no replacement following."""
+        raise NotImplementedError("This broker has no entry-group lifecycle contract")
+
+    async def cancel_order(self, order_id: str) -> None:
+        """Submit one cancellation request; acknowledgement is not terminal evidence."""
+        raise NotImplementedError("This broker has no exact-order cancellation contract")
+
+    async def regular_session_open(self) -> bool:
+        raise NotImplementedError("This broker has no regular-session lifecycle contract")
+
     async def submit_position_close(
         self, request: PositionCloseRequest, observe: Callable[[dict[str, Any]], Awaitable[None]]
     ) -> OrderResult:

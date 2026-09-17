@@ -110,3 +110,11 @@ def test_triage_keeps_missing_concentrated_or_cost_fragile_candidates_unselected
     result = triage(primary, stressed, campaign_protocol["triage"], expected_blocks=3)
     assert result["advance_to_further_research"] is (defect is None)
     assert result["authorizes_promotion"] is False
+
+
+def test_timed_campaign_creates_new_policy_without_rewriting_frozen_protocol(campaign_protocol):
+    original = campaign_jobs(campaign_protocol)[0]["plan"].identity
+    campaign_protocol["execution"]["lifetime"] = {"resting_seconds": 300, "holding_seconds": 86400}
+    timed = campaign_jobs(campaign_protocol)[0]["plan"]
+    assert timed.identity != original
+    assert timed.definition.execution.lifetime.resting_seconds == 300

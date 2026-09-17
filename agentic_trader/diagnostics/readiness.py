@@ -121,6 +121,12 @@ class ReadinessService:
                 "unresolved": pending,
                 "unmapped_legacy_signal_ids": legacy,
             }
+            cancellations = await self.store.work_summary(WorkKind.ENTRY_CANCEL)
+            pending_cancels = sum(
+                cancellations.get(status, {}).get("count", 0) for status in (WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)
+            )
+            checks["entry_cancellation"] = {"ready": not pending_cancels, "unresolved": pending_cancels}
+            self.metrics.set_gauge("trader_entry_cancellations_unresolved", pending_cancels)
             checks["outbox"] = {
                 "ready": not dead and age <= self.config.telemetry.notification_max_age_seconds,
                 "dead_letters": dead,

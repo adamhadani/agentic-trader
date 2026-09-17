@@ -22,10 +22,12 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from agentic_trader.market.bars import utc_timestamp
 from agentic_trader.research.alpha.metrics import observed_return_values
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.strategy import (
     AlphaExecutionPolicy,
+    TimedAlphaExecutionPolicy,
     alpha_scores,
     bracket_prices,
     entry_directions,
@@ -52,14 +54,18 @@ def return_statistics(returns: pd.Series, trades: list[dict], annual_factor: flo
     pnls = [trade["net_return"] for trade in trades]
     gains = sum(max(0, value) for value in pnls)
     losses = -sum(min(0, value) for value in pnls)
+    try:
+        annualized = ((1 + total) ** (annual_factor / len(valid)) - 1) * 100 if len(valid) and total > -1 else 0.0
+    except OverflowError:
+        annualized = None
+    if annualized is not None and not math.isfinite(annualized):
+        annualized = None
     return {
         "sharpe": per_bar * math.sqrt(annual_factor),
         "per_bar_sharpe": per_bar,
         "annual_factor": annual_factor,
         "total_return_pct": total * 100,
-        "annualized_return_pct": ((1 + total) ** (annual_factor / len(valid)) - 1) * 100
-        if len(valid) and total > -1
-        else 0,
+        "annualized_return_pct": annualized,
         "max_drawdown_pct": float(((peak - equity) / peak).max() * 100) if len(equity) else 0,
         "total_trades": len(trades),
         "profit_factor": gains / losses if losses > 0 else None,
@@ -124,6 +130,8 @@ def simulate_strategy(
 
 class SimulationEventKind(StrEnum):
     ORDER_CREATED = "order_created"
+    ENTRY_EXPIRED = "entry_expired"
+    HOLDING_EXPIRED = "holding_expired"
     ENTRY_FILLED = "entry_filled"
     EXIT_FILLED = "exit_filled"
     STOP_UPDATED = "stop_updated"
@@ -189,14 +197,21 @@ def simulate_execution(
     trades = []
     entries = []
     pending = None
+    lifetime = policy.lifetime if isinstance(policy, TimedAlphaExecutionPolicy) else None
+    pending_deadline = holding_deadline = None
     returns = pd.Series(0.0, index=frame.index[start:end], dtype=float)
     for i in range(start, end):
         before = equity
         intrabar_entry = False
         o, h, low, close = values[i]
+        now = utc_timestamp(frame.index[i]) if lifetime else None
+        if pending is not None and pending_deadline is not None and now is not None and now >= pending_deadline:
+            emit(SimulationEventKind.ENTRY_EXPIRED, deadline=pending_deadline.isoformat())
+            pending, pending_deadline = None, None
         # A fold starts flat; only proposals eligible on this clock may enter.
         if direction == 0 and pending is None and i in intents:
             pending = intents[i]
+            pending_deadline = lifetime.entry_deadline(now) if lifetime and now is not None else None
             order_number += 1
             emit(
                 SimulationEventKind.ORDER_CREATED,
@@ -219,6 +234,7 @@ def simulate_execution(
                 entry_fee = quantity * entry * policy.friction_per_side
                 cash -= direction * quantity * entry + entry_fee
                 entry_timestamp = str(frame.index[i])
+                holding_deadline = lifetime.holding_deadline(now) if lifetime and now is not None else None
                 entries.append({"timestamp": entry_timestamp, "price": entry, "limit": limit, "direction": direction})
                 emit(
                     SimulationEventKind.ENTRY_FILLED,
@@ -232,6 +248,9 @@ def simulate_execution(
             exit_price = None
             if not intrabar_entry and (direction * (o - stop) <= 0 or direction * (o - target) >= 0):
                 exit_price = o
+            elif holding_deadline is not None and now is not None and now >= holding_deadline:
+                exit_price = o
+                emit(SimulationEventKind.HOLDING_EXPIRED, deadline=holding_deadline.isoformat())
             elif low <= stop if direction == 1 else h >= stop:
                 exit_price = stop
             elif (h >= target if direction == 1 else low <= target) and (

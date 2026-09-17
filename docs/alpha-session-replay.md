@@ -82,10 +82,10 @@ instant availability, not measured operational latency. Several delayed observat
 mapping to the same minute use the latest decision, including a latest no-signal.
 An observation is evaluated once; a stale coarse score cannot re-enter every minute.
 New v2 replay artifacts also expire unsubmitted decisions outside their versioned
-window (default 120 seconds after eligibility). Already-submitted GTC orders persist.
+window (default 120 seconds after eligibility). Already-submitted GTC orders persist unless a new immutable [timed execution policy](alpha-trade-lifetimes.md) declares an entry lifetime.
 See [versioned decisions](alpha-session-decisions.md) for historical v1 differences.
 
-Accepted GTC limits remain pending across closed sessions, independently of later
+Untimed accepted GTC limits remain pending across closed sessions, independently of later
 feature availability. Folds can start flat without inheriting an old order or replaying
 an earlier signal. Existing conservative stop/target ordering, gap handling, both
 fill costs and marked equity apply on the finer clock. A trailing change based on

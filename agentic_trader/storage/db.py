@@ -158,7 +158,16 @@ class SignalDatabase:
                 )
             await session.commit()
 
-    async def claim_close_request(self, values: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    async def get_close_request(self, request_id: str) -> dict[str, Any] | None:
+        async with self.session_factory() as session:
+            row = await session.get(CloseRequestRecord, request_id)
+            if row and row.environment == self.environment and row.execution_mode == self.execution_mode:
+                return row.to_dict()
+            return None
+
+    async def claim_close_request(
+        self, values: dict[str, Any], *, context: dict | None = None
+    ) -> tuple[bool, dict[str, Any]]:
         """A database unique index arbitrates concurrent processes before broker mutations."""
         record = CloseRequestRecord(
             **values,
@@ -169,6 +178,24 @@ class SignalDatabase:
         )
         async with self.session_factory() as session:
             await self.workflows.lock(session)
+            prior = await session.get(CloseRequestRecord, values["id"])
+            if prior is not None:
+                if (
+                    prior.environment != self.environment
+                    or prior.execution_mode != self.execution_mode
+                    or any(
+                        getattr(prior, key) != values.get(key)
+                        for key in ("symbol", "direction", "quantity", "signal_id")
+                    )
+                ):
+                    raise ValueError("Close request identity cannot change")
+                return False, prior.to_dict()
+            if await self.workflows.unresolved_cancellation(session, symbol=values["symbol"]):
+                return False, {
+                    **values,
+                    "status": CloseRequestStatus.UNKNOWN,
+                    "detail": "Entry cancellation is unresolved on this symbol; reconcile it before closing.",
+                }
             submitting = await session.scalar(
                 select(SignalRecord.id)
                 .where(
@@ -184,15 +211,29 @@ class SignalDatabase:
                     "status": CloseRequestStatus.UNKNOWN,
                     "detail": "Entry authorization is unresolved on this symbol; reconcile it before closing.",
                 }
-            session.add(record)
-            session.add(
-                self._audit(
-                    AuditEventType.CLOSE_REQUEST,
-                    values.get("signal_id"),
-                    {**values, "status": CloseRequestStatus.CLAIMED},
-                )
-            )
             try:
+                session.add(record)
+                await self.workflows.append(
+                    session,
+                    stream=f"close/{record.id}",
+                    kind=EventKind.CLOSE_REQUESTED,
+                    payload={**values, "context": context or {}, "status": CloseRequestStatus.CLAIMED},
+                )
+                await self.workflows.add_notification(
+                    session,
+                    f"close/{record.id}/claimed",
+                    NotificationKind.MESSAGE,
+                    {
+                        "text": f"Close intent recorded for {record.symbol}. Awaiting broker confirmation; inspect /positions for actual holdings."
+                    },
+                )
+                session.add(
+                    self._audit(
+                        AuditEventType.CLOSE_REQUEST,
+                        values.get("signal_id"),
+                        {**values, "status": CloseRequestStatus.CLAIMED},
+                    )
+                )
                 await session.commit()
                 return True, record.to_dict()
             except IntegrityError:
@@ -254,6 +295,15 @@ class SignalDatabase:
         broker_order_id: str | None = None,
     ) -> None:
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
+            prior = await session.get(CloseRequestRecord, request_id)
+            if (
+                prior
+                and prior.status == status
+                and prior.detail == detail
+                and (not broker_order_id or prior.broker_order_id == broker_order_id)
+            ):
+                return
             values: dict[str, Any] = {"status": status, "detail": detail, "updated_at": datetime.now(UTC)}
             if broker_order_id:
                 values["broker_order_id"] = broker_order_id
@@ -269,6 +319,18 @@ class SignalDatabase:
             )
             if getattr(result, "rowcount", 0):
                 session.add(self._audit(AuditEventType.CLOSE_REQUEST, None, {"request_id": request_id, **values}))
+                await self.workflows.append(
+                    session,
+                    stream=f"close/{request_id}",
+                    kind=EventKind.CLOSE_RESOLVED,
+                    payload={"request_id": request_id, **values},
+                )
+                await self.workflows.add_notification(
+                    session,
+                    f"close/{request_id}/{status}",
+                    NotificationKind.MESSAGE,
+                    {"text": f"Close request {request_id}: {status}. Check /positions for current broker holdings."},
+                )
             await session.commit()
 
     async def get_audit_events(

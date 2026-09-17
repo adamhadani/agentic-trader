@@ -217,3 +217,9 @@ Pre-commit and CI validate the committed tree. Deployment evidence is separate:
 `scripts/verify_runtime.py` checks a clean matching revision and current-run
 `/readyz`, broker/report parity and Telegram menu/poll freshness. Runtime startup,
 component observations, order events and delivery audits persist in PostgreSQL.
+
+## Timed entry cancellations and holding closes
+
+[Trade lifetimes](alpha-trade-lifetimes.md) reuse these tables and scope locks. `entry_cancel` transitions directly to non-replayable `submitting` before one exact DELETE. Only complete, zero-fill terminal evidence for the persisted group permits `accepted`; ambiguous outcomes become `unknown`, halt new risk and retain their reservation. Independent recovery gives a submitting owner its bounded transport/confirmation window before declaring uncertainty, and never reissues the mutation. Journal projections fence stale snapshots. Both enqueue and pre-POST authorization reject unresolved cancellations.
+
+Holding deadlines invoke `PositionCloseService` with a deterministic identity derived from scope/signal/entry. Existing/failed IDs are never resubmitted. Close claims and changed results append `close_requested`/`close_resolved` plus deduplicated notification intents in the same transaction; identical recovery observations do not append repeated result transitions. Partial/uncertain evidence receives a retained `lifetime_review` event and outbox notice. No additional event bus, queue or schema is introduced.

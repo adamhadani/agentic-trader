@@ -89,6 +89,15 @@ class WorkflowStore:
             .values(version=WorkflowLockRecord.version + 1)
         )
 
+    async def halt(self, session: AsyncSession, reason: str) -> None:
+        """Persist a fail-closed halt inside the caller's locked workflow transaction."""
+        for key, value in ((SystemStateKey.TRADING_HALTED, "true"), (SystemStateKey.TRADING_HALT_REASON, reason)):
+            row = await session.get(SystemStateRecord, key)
+            if row:
+                row.value, row.updated_at = value, datetime.now(UTC)
+            else:
+                session.add(SystemStateRecord(key=key, value=value))
+
     async def append(
         self, session: AsyncSession, *, stream: str, kind: EventKind, payload: dict[str, Any], key: str | None = None
     ) -> DomainEventRecord:
@@ -194,6 +203,20 @@ class WorkflowStore:
                 )
             )
 
+    async def unresolved_cancellation(self, session: AsyncSession, *, symbol: str | None = None) -> bool:
+        query = select(WorkItemRecord.id).where(
+            WorkItemRecord.scope == self.scope,
+            WorkItemRecord.kind == WorkKind.ENTRY_CANCEL,
+            WorkItemRecord.status.in_((WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)),
+        )
+        if symbol is not None:
+            query = query.where(
+                WorkItemRecord.dedup_key.in_(
+                    select(cast(SignalRecord.id, String)).where(*self.db._scope(), SignalRecord.contract == symbol)
+                )
+            )
+        return bool(await session.scalar(query.limit(1)))
+
     async def enqueue_entry(self, request: OrderRequest, config: AppConfig) -> tuple[WorkItem | None, str]:
 
         async with self.db.session_factory() as session, session.begin():
@@ -210,6 +233,8 @@ class WorkflowStore:
             halted = await session.get(SystemStateRecord, SystemStateKey.TRADING_HALTED)
             if halted and halted.value.lower() in ("true", "1", "yes"):
                 return None, "Emergency trading halt active."
+            if await self.unresolved_cancellation(session):
+                return None, "Unconfirmed entry cancellation remains; inspect broker evidence."
             closing = await session.scalar(
                 select(CloseRequestRecord.id)
                 .where(
@@ -342,6 +367,8 @@ class WorkflowStore:
             halted = await session.get(SystemStateRecord, SystemStateKey.TRADING_HALTED)
             if halted and halted.value.lower() in ("true", "1", "yes"):
                 return False
+            if await self.unresolved_cancellation(session):
+                return False
             row = await session.scalar(
                 select(WorkItemRecord).where(
                     WorkItemRecord.id == item.id,
@@ -396,18 +423,7 @@ class WorkflowStore:
                 if result.fill_price is not None:
                     signal.entry_price = result.fill_price
             if row.status == WorkStatus.UNKNOWN:
-                for key, value in (
-                    (SystemStateKey.TRADING_HALTED, "true"),
-                    (
-                        SystemStateKey.TRADING_HALT_REASON,
-                        f"Unconfirmed broker entry {item.id}; lookup recovery required before /resume",
-                    ),
-                ):
-                    state = await session.get(SystemStateRecord, key)
-                    if state:
-                        state.value, state.updated_at = value, datetime.now(UTC)
-                    else:
-                        session.add(SystemStateRecord(key=key, value=value))
+                await self.halt(session, f"Unconfirmed broker entry {item.id}; lookup recovery required before /resume")
                 session.add(
                     self.db._audit(
                         AuditEventType.ENTRY_SUBMISSION_UNKNOWN,
@@ -592,7 +608,7 @@ class WorkflowStore:
                             SignalRecord.executed_at.is_(None),
                         )
                     )
-                    if signal:
+                    if signal and not await self.unresolved_cancellation(session, symbol=signal.contract):
                         signal.status = SignalStatus.FAILED
                         await self.add_notification(
                             session,

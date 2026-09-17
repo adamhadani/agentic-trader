@@ -25,7 +25,7 @@ from agentic_trader.constants import (
     StrategyType,
 )
 from agentic_trader.market.session import MarketSessionProtocol
-from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, bracket_prices, entry_limit
+from agentic_trader.research.alpha.strategy import bracket_prices, entry_limit, execution_policy_from_dict
 from agentic_trader.screeners.base import ScreenerCandidate
 
 
@@ -127,7 +127,7 @@ class RiskEvaluator:
             tick_size = contract_info.tick_size if contract_info else 0.25
 
         entry = (
-            entry_limit(candidate.current_price, AlphaExecutionPolicy(**candidate.alpha_policy))
+            entry_limit(candidate.current_price, execution_policy_from_dict(candidate.alpha_policy))
             if candidate.alpha_policy
             else candidate.current_price
         )
@@ -156,7 +156,7 @@ class RiskEvaluator:
             target_distance = round(entry - take_profit, 2)
 
         if candidate.alpha_policy is not None:
-            policy = AlphaExecutionPolicy(**candidate.alpha_policy)
+            policy = execution_policy_from_dict(candidate.alpha_policy)
             if abs(policy.tick_size - tick_size) > 1e-9:
                 raise ValueError("Alpha execution tick differs from instrument policy; revalidate this version")
             stop_loss, take_profit = bracket_prices(
@@ -232,7 +232,7 @@ class RiskEvaluator:
         gating_reasons = levels.gating_reasons
 
         entry = (
-            entry_limit(candidate.current_price, AlphaExecutionPolicy(**candidate.alpha_policy))
+            entry_limit(candidate.current_price, execution_policy_from_dict(candidate.alpha_policy))
             if candidate.alpha_policy
             else candidate.current_price
         )

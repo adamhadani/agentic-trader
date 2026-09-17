@@ -410,3 +410,11 @@ CAS during controlled deployment; restart installs the new generation before rea
 is verified. All remain unqualified, and active-alpha count remains zero. Inspect the
 [results and limits](alpha-session-campaign-2026-09-17.md); positive historical marks
 are not Alpaca paper-account P&L.
+
+### Timed alpha lifecycle operations
+
+Only explicitly timed alpha positions participate in [trade lifetimes](alpha-trade-lifetimes.md); historical positions receive no inferred limits. Resting deadlines request one exact entry cancellation, then reconcile by GET. `entry_cancellation` readiness and `trader_entry_cancellations_unresolved` expose unresolved work. Entry admission remains blocked during cancellation even before an uncertainty halt. Partial fills, replacements or ambiguous outcomes require protection review and retain journal/outbox evidence; never manually replay the DELETE. `/resume` rechecks unresolved cancellation and timed-position evidence.
+
+Holding expiry waits for a current eligible broker session and uses the existing close service with a stable ID. A failed attempt is retained for operator review, not retried every monitor cycle. General close claims/results now also create durable journal/outbox notifications; confirmed financial accounting remains separate. Monitor cadence and host availability bound response time: an elapsed lifetime is not a guaranteed fill time. Session-alpha promotion remains disabled.
+
+Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation.

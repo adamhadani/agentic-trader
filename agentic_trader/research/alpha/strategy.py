@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from agentic_trader.execution.lifetime_policy import TradeLifetimePolicy
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 
 
@@ -60,6 +61,25 @@ class AlphaExecutionPolicy:
 
     def to_dict(self):
         return asdict(self)
+
+
+@dataclass(frozen=True, kw_only=True)
+class TimedAlphaExecutionPolicy(AlphaExecutionPolicy):
+    lifetime: TradeLifetimePolicy
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not isinstance(self.lifetime, TradeLifetimePolicy):
+            raise TypeError("Explicit validated lifetime policy required")
+
+
+def execution_policy_from_dict(document: dict) -> AlphaExecutionPolicy:
+    """Deserialize versioned policy without rewriting historical financial identity."""
+    if "lifetime" in document:
+        fields = dict(document)
+        fields["lifetime"] = TradeLifetimePolicy(**fields["lifetime"])
+        return TimedAlphaExecutionPolicy(**fields)
+    return AlphaExecutionPolicy(**document)
 
 
 def normalize_scores(raw: pd.Series, window: int = NORMALIZATION_WINDOW) -> pd.Series:

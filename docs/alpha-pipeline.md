@@ -367,3 +367,7 @@ is separate from capture quality. Immutable claims/cursors/results use the exist
 journal and private `forward-decisions` artifacts. A healthy worker with no eligible
 version-3 candidates is idle, not evidence of a forward score. No promotion, orders,
 qualified shadow credit or synthetic Telegram messages follow from these diagnostics.
+
+## Optional timed session policies
+
+[Trade lifetimes](alpha-trade-lifetimes.md) add immutable elapsed-UTC entry/holding intent to explicit session definitions. Historical execution dictionaries retain their hashes and unlimited GTC semantics. Replay and broker orchestration share deadline functions; timed replay remains idealized full-size OHLC execution, so SDK integration coverage does not replace prospective broker evidence. Timed policies remain subject to the existing session qualification/activation/admission gates. The ordered next experiment is a frozen continuous study; prior campaign failures are retained.
