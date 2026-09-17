@@ -195,9 +195,11 @@ The [frozen ETF session campaign](alpha-session-campaign-2026-09-17.md) complete
 coverage. None passed every rule: QQQ momentum's positive cost-stressed returns had
 only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for diagnostic
 forward observation, not activation or qualifying shadow credit. Preserve the failed
-triage result; next priorities are measured forward/lifecycle evidence, explicit
-order/holding lifetimes and a longer frozen study before causal panel expansion.
+triage result; timed order/holding lifetimes are implemented. The continuous campaign now tests
+new timed policies while measured forward/lifecycle evidence accumulates, before causal panel expansion.
 
 ## Timed order and holding policies
 
 The [lifetime contract](alpha-trade-lifetimes.md) connects session research to broker execution without adding another queue/schema. Timed definitions use shared pure UTC deadlines, immutable identities and canonical policy parsing. The injected lifecycle service runs in position monitoring; its repository uses the existing trading lock, events and outbox. Pending cancellations block both authorization and submission; exact group confirmation releases the unfilled reservation. Full holding expiry uses stable close IDs, with failed/uncertain outcomes retained. Annualized returns that overflow are unavailable; actual equity/trade evidence remains intact. Existing GTC policies and diagnostic activation gates stay unchanged.
+
+The [continuous timed ETF campaign](alpha-continuous-campaign.md) pairs the new lifetime contract with actual-data discovery: 48 frozen comparisons and a new trend/pullback hypothesis. Replay supports one continuous year with bounded acquisition chunks; trial/holdout accounting and session activation gates remain intact. Report research yield separately from deployment readiness.

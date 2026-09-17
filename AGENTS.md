@@ -112,3 +112,5 @@ diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-ben
 - Forward evidence reporting reuses canonical alpha projections and the [shared report builder](docs/alpha-forward-evidence.md). Exclude aliases/late results; preserve missing counts, truncation and cursor gaps. Receipt lag includes polling/delay, and diagnostic score directions are never fills or qualified shadow credit.
 
 - [Timed alpha policies](docs/alpha-trade-lifetimes.md) share elapsed-UTC deadlines with broker execution. Never retrofit historical policies, release entry risk before exact cancellation-group confirmation, replay a cancellation, or retry a failed deterministic holding close. Use the existing journal/outbox and `PositionCloseService`; session activation remains gated.
+
+- Pair research-semantic changes with bounded actual-data experiments per the [roadmap cadence](docs/alpha-roadmap.md#research-delivery-cadence-and-progress-september-17). Continuous replay chunks only acquisition: never reset features, pending orders or positions at chunk boundaries. Preserve inclusive SDK/exclusive internal range semantics, failed receipts and promotion gates.

@@ -310,3 +310,27 @@ observation. No session alpha is activated by these increments.
 Keep execution/qualification gates, weekly bounded discovery and existing single-owner
 admission. Research job checkpoints/resource isolation and longer-term artifact
 retention remain architectural dependencies; no new search engine is justified yet.
+
+## Research delivery cadence and progress — September 17
+
+The operator wants credible candidates alongside hardening. Pair each change to
+research semantics with a bounded, predeclared real-data experiment before moving
+to unrelated infrastructure, unless a concrete safety/validity blocker prevents it.
+Keep the existing weekly bounded daily miner; do not increase search volume without
+reviewing failure attribution. Reproducible negative evidence is useful, but new
+infrastructure alone is not evidence of an alpha.
+
+The next active experiment is the [48-attempt continuous timed ETF campaign](alpha-continuous-campaign.md):
+SPY/QQQ, two calendar years, three costs, three retained controls/leads and one new
+trend/pullback hypothesis. The limited acquisition extension directly enables that
+experiment. Report attempts/completion, coverage failures, closed-trade density,
+primary/stressed returns, benchmark excess/concentration, and exact rejection reasons.
+Then report qualification, actual forward dates/decisions and activation eligibility
+as separate stages. No quota of promoted alphas and no threshold relaxation.
+
+Original profitable trades remain anecdotal unless attributed and evaluated as a
+sufficient out-of-sample strategy sample. Active alphas remain zero at this protocol's
+freeze; six session controls and four historical shadows are not qualified strategies.
+The session execution gate is an additional engineering/evidence requirement, not a
+statistical rejection. Default observed-shadow requirements still require 20 dates
+and 10 triggered decisions; elapsed wall time or a healthy collector is insufficient.

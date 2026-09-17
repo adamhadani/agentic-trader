@@ -193,3 +193,12 @@ Accepted limit: the denominator is recorded decisions. Current cursor gaps are v
 [Timed execution](alpha-trade-lifetimes.md) now uses a pure immutable deadline value object, injected application service and repository over existing workflow tables. Research references the pure execution policy; execution does not import research. The execution package no longer eagerly imports broker engines, preventing an import cycle. Cancellation, admission, journal projections and notifications share the trading lock/transaction; no network call holds that transaction. Holding close uses the canonical close service and deterministic command identity.
 
 Accepted limits: partial fills/replacements require operator review; OHLC fill times and instantaneous simulated cancellation are assumptions; monitoring/market hours bound actual response time. Production exchange latency and protective behavior still require prospective evidence before session promotion. Research worker isolation/checkpoints, continuous sample length, causal panel alignment and per-signal portfolio attribution remain on the [roadmap](alpha-roadmap.md#next-work-after-the-etf-session-campaign).
+
+## Continuous research acquisition — September 17
+
+The [longer ETF study](alpha-continuous-campaign.md) extends the shared read-only
+source with bounded disjoint acquisitions, then invokes the existing aggregation and
+execution state machine once. No second simulator, research queue, schema or promotion
+path is added. Actual SDK/PostgreSQL tests cover pending/held positions across chunks,
+DST boundaries and retained failures. The explicit 366-date replay bound caps memory;
+streaming checkpoints, worker isolation and long-term artifact capacity remain open.
