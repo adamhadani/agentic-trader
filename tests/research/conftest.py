@@ -38,3 +38,25 @@ def schedule_for():
 @pytest.fixture
 def minute_bars():
     return _minute_bars
+
+
+@pytest.fixture
+def forecast_market():
+    rng = np.random.default_rng(518)
+    gap = rng.normal(0, 0.01, 600)
+    # The preceding observable open gap predicts the next close return.
+    returns = np.r_[0, 0.8 * gap[:-1]] + rng.normal(0, 0.001, 600)
+    close = 100 * np.exp(returns.cumsum())
+    opening = np.r_[100, close[:-1]] * (1 + gap)
+    frame = pd.DataFrame(
+        {
+            "open": opening,
+            "high": np.maximum(opening, close) * 1.01,
+            "low": np.minimum(opening, close) * 0.99,
+            "close": close,
+            "volume": rng.integers(1000, 10000, 600),
+        },
+        index=pd.date_range("2020-01-01", periods=600, tz="UTC"),
+    )
+    frame.attrs.update(timeframe="1d", feed="synthetic", adjustment="raw")
+    return frame

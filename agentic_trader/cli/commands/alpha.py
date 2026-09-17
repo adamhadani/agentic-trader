@@ -21,7 +21,14 @@ from agentic_trader.cli.utils import artifact_directory, coro, session_source
 from agentic_trader.config import load_config
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.market.bars import MAX_DECISION_SECONDS, SessionClockPolicy, completed_fixed_bars
-from agentic_trader.research.alpha.baselines import benchmark_models
+from agentic_trader.research.alpha.baselines import (
+    BENCHMARK_METHODS,
+    MAX_BENCHMARK_TRIALS,
+    MAX_FORECAST_HORIZON,
+    ForecastBenchmarkPlan,
+    ForecastTarget,
+)
+from agentic_trader.research.alpha.benchmark_workflow import AlphaBenchmarkService
 from agentic_trader.research.alpha.calibration import CalibrationPlan, run_calibration
 from agentic_trader.research.alpha.catalog import AlphaCatalog
 from agentic_trader.research.alpha.data import load_dataset, save_dataset, save_json_report
@@ -347,29 +354,39 @@ async def alpha_test_cmd(expression, symbol, lookback, interval):
 
 @alpha_group.command("benchmark")
 @click.argument("run_id")
-@click.option("--method", type=click.Choice(["ridge", "boosted"]), required=True)
-@click.option("--budget", type=click.IntRange(1, 100), default=5)
-@click.option("--seed", type=int, default=20260916)
+@click.option("--method", type=click.Choice(BENCHMARK_METHODS), required=True)
+@click.option("--budget", type=click.IntRange(1, MAX_BENCHMARK_TRIALS), default=5)
+@click.option("--seed", type=click.IntRange(0, 2**32 - 1), default=20260917)
+@click.option(
+    "--horizon", type=click.IntRange(1, MAX_FORECAST_HORIZON), default=1, help="Forecast horizon in observed bars"
+)
+@click.option("--output", type=click.Path(path_type=Path), help="New private artifact directory")
 @coro
-async def alpha_benchmark_cmd(run_id, method, budget, seed):
-    """Compare ML baselines against a saved dataset without reading its holdout."""
-
+async def alpha_benchmark_cmd(run_id, method, budget, seed, horizon, output):
+    """Benchmark forecast components on frozen discovery; no trading-policy P&L or promotion."""
     async with alpha_repository() as repository:
         saved = await repository.get(f"run/{run_id}")
         if not saved:
             raise click.ClickException("Unknown source run")
-        bars = await asyncio.to_thread(load_dataset, Path(saved["manifest"]["artifact"]))
-        identifier = uuid4().hex
-        await repository.reserve_run(
-            identifier, symbol=saved["manifest"]["symbol"], timeframe=saved["manifest"]["timeframe"], trials=budget
-        )
-        result = await asyncio.to_thread(
-            benchmark_models, bars, timeframe=saved["manifest"]["timeframe"], method=method, budget=budget, seed=seed
-        )
-        await repository.record_run(
-            identifier, {**result, "environment": await asyncio.to_thread(research_environment)}, saved["manifest"]
-        )
-        click.echo(json.dumps({"run_id": identifier, **result}, indent=2))
+        try:
+            plan = ForecastBenchmarkPlan(
+                ForecastTarget(saved["manifest"]["timeframe"], horizon),
+                method=method,
+                budget=budget,
+                seed=seed,
+            )
+            output = output or artifact_directory() / f"forecast-benchmark-{uuid4().hex}"
+            result = await AlphaBenchmarkService(repository).run(
+                run_id,
+                plan,
+                output,
+                environment=await asyncio.to_thread(research_environment),
+            )
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps({**result, "artifact_directory": str(output)}, indent=2))
+        if result["status"] != "completed":
+            raise click.ClickException("Forecast benchmark failed; attempt and artifacts retained")
 
 
 @alpha_group.command("portfolio")

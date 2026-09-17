@@ -161,3 +161,8 @@ and does not change strategy scans or activate mined alphas.
 Session alpha research now uses [versioned receipt/delay/expiry contracts](docs/alpha-session-decisions.md).
 New session versions remain diagnostic-only while live acquisition, durable decision
 scheduling and execution evidence are completed; existing alpha identities are preserved.
+
+Forecast research: `copilot alpha benchmark RUN_ID --method ridge --budget 5 --horizon 1`
+compares causal predictions on saved discovery data. See the
+[forecast benchmark guide](docs/alpha-forecast-benchmarks.md) and
+[prioritized alpha roadmap](docs/alpha-roadmap.md). Diagnostic results do not authorize trading.

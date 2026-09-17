@@ -31,7 +31,7 @@ also recognize controlled positive cases and quantify its statistical power.
 | A1a | Implemented — [PR #35](https://github.com/adamhadani/agentic-trader/pull/35) | Calibration instruments and permanent control/reference tests; diagnostic outputs cannot authorize promotion. [Pilot evidence](alpha-calibration-2026-09-16.md). |
 | A1b | Implemented — [PR #36](https://github.com/adamhadani/agentic-trader/pull/36), [study results](alpha-study-2026-09-16.md) | All 1,952 jobs retained; scientific status incomplete (22 unavailable comparisons). No replacement gate accepted. |
 | A2 | A2a implemented — [PR #37](https://github.com/adamhadani/agentic-trader/pull/37); A2b replay groundwork — [PR #38](https://github.com/adamhadani/agentic-trader/pull/38) | [Replay contract](alpha-session-replay.md) and [four-run evidence](alpha-session-replay-2026-09-16.md): SIP coverage complete, IEX incomplete in both windows. Live signal-clock migration and broker execution observations remain; intraday promotion stays blocked. |
-| A3 | Planned; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
+| A3 | Forecast benchmark prerequisite implemented and 78-trial comparison complete; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
 | A4 | Planned | Broader economic hypotheses and point-in-time universe/data coverage. |
 | A5 | Planned | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
 
@@ -138,6 +138,13 @@ Only then replace the unconditional intraday gate with evidence-based eligibilit
 
 ### A3 — Forecast components and executable combinations
 
+The [forecast benchmark](alpha-forecast-benchmarks.md) now separates explicit
+close-return horizons from bracket-policy P&L, compares single-feature/Ridge/boosted
+predictions on purged walk-forward folds, and retains all attempts/artifacts in the
+existing journal. This is a bounded A3 prerequisite while A2b forward data accumulates;
+it does not supersede the unfinished A2b acquisition/decision worker or enable trading.
+
+
 A useful next-day predictor need not be profitable under an unrelated bracket/holding
 policy. Define forecast horizon/label/uncertainty separately from trade execution.
 Train calibration and combination weights only on preceding observations; retain
@@ -174,6 +181,57 @@ registry generations, duplicate candles, restart/recovery and worker contention 
 covered. Observe actual paper fills before scaling. GP/Ridge/boosted methods remain
 benchmarks; RL/AlphaGen/AlphaForge follow only after the evaluation/ensemble objectives
 and simpler baselines are established.
+
+## Funnel expansion: ranked experiments (September 17 review)
+
+1. **Forecast objective and simple baselines (current increment).** The frozen
+   78-trial ETF comparison is [complete](alpha-forecast-comparison-2026-09-17.md).
+   Three one-bar single-feature leads improved every discovery fold; none is qualified.
+   Next predeclare SPY open-gap target/execution matching (including next-open costs),
+   with QQQ transfer and null/positive controls, before examining fresh evidence. Keep all existing statistical gates unchanged.
+2. **Complete A2b live acquisition and durable decisions.** Measure publication delay
+   before choosing production timing; collect prospective forecasts and actual paper
+   acknowledgments/fills. More historic search cannot substitute for this evidence.
+3. **Aligned panel/relative hypotheses (A3/A4).** Add sector-relative residual momentum,
+   reversal, overnight/session decomposition and liquidity conditioning. Implement a
+   panel dataset contract and causal cross-sectional alignment before DSL `rank` or
+   peer regressions. Compare incremental forecasts against frozen incumbent factors.
+4. **Grammar-guided exploration (A4/A5).** Existing search already has typed AST
+   mutation/crossover, a structural diversity archive and score deduplication. First
+   benchmark bounded grammar productions and subtree novelty against existing random
+   and GP search at identical trial/compute budgets. Only then evaluate MCTS/RL.
+   [AlphaCFG (2026)](https://arxiv.org/abs/2601.22119) combines bounded grammar with
+   syntax-aware policy/value learning and MCTS; [RiskMiner](https://arxiv.org/abs/2402.07080)
+   is another MCTS comparator. Their published gains are hypotheses for our data,
+   not transferable validation or permission to expand trial budgets indefinitely.
+5. **Combination, then assisted generation.**
+   [AlphaForge](https://arxiv.org/abs/2406.18394) studies generation plus changing
+   factor combinations; [AlphaGen](https://arxiv.org/abs/2306.12964) targets collections.
+   Compare these only after simple causal Ridge/linear combinations and attribution.
+   [Microsoft RD-Agent(Q)](https://github.com/microsoft/RD-Agent) offers automated
+   factor/model research workflows; evaluate bounded proposal generation behind our
+   existing DSL, trial ledger and validator, without a second execution authority.
+6. **Broader assets only with data/execution contracts.** ETF32 remains the initial
+   benchmark, followed by point-in-time liquid equities with delistings and corporate
+   actions. Options require historical contract chains/quotes, spread/slippage/Greeks,
+   expiration/exercise/assignment accounting and protection ownership; Alpaca's
+   [documented option lifecycle](https://docs.alpaca.markets/us/docs/options-trading-overview)
+   includes these events. Futures require contract rolls, multipliers, margin/session
+   data and a separately verified broker adapter. Neither is just adding ticker strings.
+   Reuse equity ETFs for broad economic exposures while those capabilities are absent.
+
+**Cadence:** keep bounded weekly discovery; collect daily forward outcomes. Do not
+increase frequency while power/objective and deployment-clock gaps remain. Later
+campaigns should include null/positive controls, parameter-budget matching, failure
+rates, fold coverage, turnover/cost and cohort transfer, with a fresh untouched final
+period. Current-list equities must never be described as survivorship-free history.
+
+**Fallout retained:** benchmark failures keep reservations but lack automatic job
+recovery/per-trial checkpoints (A5). The broader discovery/exposure audit should ensure
+all inspected prefixes, not only explicit diagnostics, are fenced against later
+holdout reuse. Forecast pooling still identifies horizon by bar timeframe; versioned
+multi-bar target/uncertainty compatibility must precede deploying combined forecasts
+(A3). Research-worker isolation and operational dependencies remain below.
 
 ## Operational dependencies retained
 

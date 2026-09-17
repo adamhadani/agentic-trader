@@ -375,3 +375,11 @@ New session alpha versions use [explicit decision windows](alpha-session-decisio
 but remain blocked from activation and entry admission. The native scan schedule and
 forward collector are unchanged; a healthy collector is not evidence of deployed
 session strategies or of complete forward samples.
+
+### Forecast research operations
+
+`alpha benchmark` runs explicit-horizon forecast diagnostics against saved discovery
+data. It charges trials and retains private artifacts through the shared journal;
+it sends no orders or notifications and does not change the weekly miner cadence.
+See [forecast benchmarks](alpha-forecast-benchmarks.md). Run research outside the
+daemon; broader worker-resource isolation remains a roadmap item.

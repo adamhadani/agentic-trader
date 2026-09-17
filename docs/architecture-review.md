@@ -136,3 +136,13 @@ and owns dedicated SDK readers, with blocking work offloaded and orderly shutdow
 No new schema, execution queue or notification mechanism was added. It measures REST
 receipt/revision evidence only; live strategy acquisition/scheduling and execution observations
 remain unfinished, and shared research executor capacity remains a ranked concern.
+
+## Alpha research boundary update — September 17
+
+Forecast-component evaluation now uses an explicit target and purged folds, separate
+from trade simulation. The application service injects the existing alpha repository;
+no new schema, queue or deployment authority was introduced. Plans, trial charges,
+exposure intervals and diagnostic artifact hashes use the existing journal.
+See [current contract](alpha-forecast-benchmarks.md). Remaining target-aware pooling,
+complete discovery exposure fencing, job recovery/checkpoints, panel data and modern
+search comparisons are ranked in the [canonical alpha roadmap](alpha-roadmap.md#funnel-expansion-ranked-experiments-september-17-review).

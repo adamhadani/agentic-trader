@@ -175,3 +175,8 @@ and an explicit clock inside their immutable identity. Replay and screening/shad
 share delay/expiry; live snapshots require actual request/receipt times. Old version-2
 hashes remain exact. Session versions cannot qualify, activate or reserve entry risk;
 normal scan acquisition and durable session decision scheduling remain pending.
+
+`alpha benchmark` now evaluates explicit-horizon forecast components, separately from
+trading-policy P&L. It retains charged diagnostic artifacts, never promotes, and does
+not add forecast statistics to the strategy-Sharpe variance sample. See the
+[forecast benchmark contract](docs/alpha-forecast-benchmarks.md) and canonical alpha roadmap.

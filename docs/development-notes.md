@@ -174,3 +174,8 @@ deployment evidence. Consult [ranked remaining work](architecture-review.md#rema
 instead of appending duplicate historical status reports to this handoff.
 
 The [active alpha roadmap](alpha-roadmap.md) is the canonical long-horizon research queue. Keep its acceptance criteria and progress current; the [September 16 campaign](alpha-research-2026-09-16.md) records the baseline rejection and control evidence.
+
+`alpha benchmark` now evaluates explicit-horizon forecast components, separately from
+trading-policy P&L. It retains charged diagnostic artifacts, never promotes, and does
+not add forecast statistics to the strategy-Sharpe variance sample. See the
+[forecast benchmark contract](alpha-forecast-benchmarks.md) and canonical alpha roadmap.
