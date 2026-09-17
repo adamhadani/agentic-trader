@@ -19,7 +19,7 @@ from agentic_trader.research.alpha.simulation import entry_intents, simulate_exe
 from agentic_trader.research.alpha.strategy import alpha_scores
 
 
-MAX_REPLAY_DAYS = 31
+MAX_REPLAY_DAYS = 366
 SESSION_REPLAY_KIND = "session_replay"
 
 
@@ -42,7 +42,7 @@ def simulate_session_strategy(
 
     Delay is an explicit assumption, not measured broker/operator latency. If
     several delayed observations become eligible on one bar, the latest wins.
-    An accepted GTC order remains pending independently of subsequent signals.
+    Accepted GTC orders follow their immutable lifetime independently of subsequent signals.
     """
     if definition.clock is None:
         raise ValueError("Session replay requires a versioned session clock")
@@ -76,7 +76,8 @@ def simulate_session_strategy(
             "fills": "Full-size OHLC fill hypotheses do not measure spread, queue priority, partial fills or buy-stop conversion.",
             "protection": "Trailing changes are assumed effective on the next execution bar; broker acknowledgment latency is unverified.",
             "costs": "Configured friction excludes corporate actions, dividends, borrow and funding.",
-            "deployment": "Live signal aggregation/scan timing has not adopted this RTH clock; intraday promotion remains blocked.",
+            "lifetimes": "Timed entries cancel instantaneously in simulation; intrabar fill times are known only to the minute bar. Broker latency remains unmeasured.",
+            "deployment": "Session decisions run diagnostically; actual execution and qualification evidence remain required before activation.",
         },
         execution_scope="diagnostic_observed_session_minutes",
         coverage=data.coverage,
@@ -111,7 +112,7 @@ class ReplayPlan:
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", self.symbol):
             raise ValueError("Explicit US equity/ETF symbol required")
         if not 0 <= (self.end - self.start).days < MAX_REPLAY_DAYS:
-            raise ValueError("Replay requires an ordered window of at most 31 calendar days")
+            raise ValueError(f"Replay requires an ordered window of at most {MAX_REPLAY_DAYS} calendar days")
         if self.definition.data_feed not in ("alpaca:iex", "alpaca:sip") or self.definition.adjustment != "raw":
             raise ValueError("Replay requires an explicit raw Alpaca stock feed")
         if self.definition.eligible_symbols != (self.symbol,):

@@ -118,3 +118,16 @@ def test_timed_campaign_creates_new_policy_without_rewriting_frozen_protocol(cam
     timed = campaign_jobs(campaign_protocol)[0]["plan"]
     assert timed.identity != original
     assert timed.definition.execution.lifetime.resting_seconds == 300
+
+
+def test_continuous_timed_protocol_freezes_new_search_and_adequate_trade_screen():
+    protocol = json.loads((Path(__file__).parents[2] / "config/research/etf-continuous-timed-v1.json").read_text())
+    jobs = campaign_jobs(protocol)
+    assert len(jobs) == 48 and len({job["plan"].identity for job in jobs}) == 48
+    assert len({job["hypothesis"] for job in jobs}) == 4
+    assert all(364 <= (job["plan"].end - job["plan"].start).days <= 365 for job in jobs)
+    assert all(job["plan"].definition.execution.lifetime.resting_seconds == 300 for job in jobs)
+    assert all(job["plan"].definition.execution.lifetime.holding_seconds == 86400 for job in jobs)
+    assert protocol["triage"]["minimum_closed_trades"] == 100
+    assert protocol["triage"]["minimum_positive_blocks"] == len(protocol["windows"]) == 2
+    assert not protocol["forward_diagnostics"]["symbols"]

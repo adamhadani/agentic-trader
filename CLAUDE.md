@@ -205,11 +205,19 @@ The [frozen ETF session campaign](docs/alpha-session-campaign-2026-09-17.md) com
 coverage. None passed every rule: QQQ momentum's positive cost-stressed returns had
 only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for diagnostic
 forward observation, not activation or qualifying shadow credit. Preserve the failed
-triage result; next priorities are measured forward/lifecycle evidence, explicit
-order/holding lifetimes and a longer frozen study before causal panel expansion.
+triage result; timed order/holding lifetimes are implemented. The continuous campaign now tests
+new timed policies while measured forward/lifecycle evidence accumulates, before causal panel expansion.
 
 Inspect `copilot alpha forward --days 7` or `/alphas` for the [shared forward evidence report](docs/alpha-forward-evidence.md). It counts canonical outcomes and measured receipts, exposes gaps/truncation, and grants no qualification credit. Recorded-score fractions are not complete calendar coverage; readiness remains a separate freshness check.
 
 ## Timed alpha execution
 
 Read [trade lifetimes](docs/alpha-trade-lifetimes.md) before changing expiry. Pure elapsed-UTC deadlines are shared by replay and the injected `TradeLifetimeService`; optional timed policies create new immutable version-3 identities. Existing policy hashes/positions are unchanged. Entry cancellation persists one `entry_cancel` work item before DELETE, retains risk and blocks fresh admission until exact group confirmation, and recovers by lookup only. Holding expiry reuses `PositionCloseService` with a stable request ID, including failed attempts. Partial/uncertain evidence halts new risk; `/resume` cannot waive it. Journal/outbox writes are atomic; readiness includes `entry_cancellation`. No new schema/queue, automatic promotion, or live qualification claim.
+
+The [continuous timed ETF campaign](docs/alpha-continuous-campaign.md) pairs the new lifetime contract with actual-data discovery: 48 frozen comparisons and a new trend/pullback hypothesis. Replay supports one continuous year with bounded acquisition chunks; trial/holdout accounting and session activation gates remain intact. Report research yield separately from deployment readiness.
+
+The [completed continuous study](docs/alpha-continuous-campaign-2026-09-17.md)
+retains 36 complete runs and 12 SPY coverage failures. QQQ momentum has 415 closes
+and positive primary-cost returns, but fails cost stress; zero alphas promoted.
+Next: causal ETF panels with explicit [Rank IC/ICIR contracts](docs/alpha-information-coefficient.md).
+Existing miner ICIR is overlapping, single-symbol and unannualized.

@@ -108,7 +108,7 @@ uv run copilot alpha replay 'delta(close,3)' \
   --decision-delay-seconds 60 --output /private/path/new-run
 ```
 
-Dates are inclusive exchange dates, bounded to 31 calendar days. `--feed iex|sip`
+Dates are inclusive exchange dates, bounded to 366 calendar days. `--feed iex|sip`
 defaults to the configured feed. An explicit feed comparison does not change the
 daemon's feed. Calendar and bars use injected, bounded SDK clients and GET requests.
 No daemon, broker connection/stream, order submission or Telegram notifier starts.
@@ -170,3 +170,11 @@ This increment is **A2b groundwork**, not authorization to activate intraday alp
 
 Continue A2b before A3 forecast/trading-policy alignment and broader mining. Synthetic
 or historical replay earns no shadow dates/decisions and cannot promote an alpha.
+
+## Continuous research windows
+
+Acquisition now uses disjoint chunks of at most 31 elapsed days, followed by one
+continuous aggregation/simulation. SDK-inclusive endpoints map to exclusive chunk
+ends at microsecond precision. Metadata, order, duplicates and out-of-range prices
+fail explicitly; chunk receipts survive failures. No feature/order/position reset
+is introduced at a chunk boundary. See the [frozen longer campaign](alpha-continuous-campaign.md).

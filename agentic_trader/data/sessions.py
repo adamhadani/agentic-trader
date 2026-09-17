@@ -1,13 +1,25 @@
 """Read-only observed-calendar/raw-minute boundary, shared by replay and live evidence."""
 
-from datetime import date
-from typing import Protocol
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, Protocol
 
 import pandas as pd
 from alpaca.trading.requests import GetCalendarRequest
 
-from agentic_trader.market.bars import TradingSession
+from agentic_trader.market.bars import TradingSession, utc_timestamp
 from agentic_trader.market.session import ET_TZ
+
+
+SESSION_REQUEST_DAYS = 31
+MAX_SESSION_REQUESTS = 12  # Bounds acquisition to roughly one leap year, including timezone offsets.
+
+
+class SessionAcquisitionError(ValueError):
+    def __init__(self, receipts: list[dict]):
+        self.receipts = receipts
+        super().__init__(
+            f"Session acquisition failed: {receipts[-1]['error_type']}; partial chunks are not usable evidence"
+        )
 
 
 class SessionDataSource(Protocol):
@@ -38,7 +50,56 @@ class AlpacaSessionSource:
         return tuple(sessions)
 
     def minutes(self, symbol: str, start: pd.Timestamp, end: pd.Timestamp, feed: str) -> pd.DataFrame:
-        bars = self.bars_provider.fetch_bars(symbol, "1m", start=start.to_pydatetime(), end=end.to_pydatetime())
-        if bars.attrs.get("feed") != feed or bars.attrs.get("adjustment") != "raw":
-            raise ValueError("Minute observations do not match the frozen feed/adjustment")
-        return bars
+        """Acquire disjoint half-open chunks, then return one uninterrupted price clock.
+
+        Alpaca endpoints are inclusive; one microsecond maps our exclusive upper
+        bound to the SDK's datetime precision. Never deduplicate or fill missing prices.
+        Pagination within a chunk remains the SDK/provider's responsibility.
+        """
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("Explicit aware acquisition bounds required")
+        cursor, end = utc_timestamp(start), utc_timestamp(end)
+        if not cursor < end <= cursor + pd.Timedelta(days=SESSION_REQUEST_DAYS * MAX_SESSION_REQUESTS):
+            raise ValueError("Ordered bounded session acquisition required")
+        chunks, receipts = [], []
+        while cursor < end:
+            boundary = min(cursor + pd.Timedelta(days=SESSION_REQUEST_DAYS), end)
+            receipt: dict[str, Any] = {
+                "start": cursor.isoformat(),
+                "end_exclusive": boundary.isoformat(),
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+            try:
+                bars = self.bars_provider.fetch_bars(
+                    symbol,
+                    "1m",
+                    start=cursor.to_pydatetime(),
+                    end=boundary.to_pydatetime() - timedelta(microseconds=1),
+                )
+                if (
+                    bars.attrs.get("feed") != feed
+                    or bars.attrs.get("adjustment") != "raw"
+                    or bars.attrs.get("timeframe") != "1m"
+                ):
+                    raise ValueError("Minute observations do not match the frozen feed/adjustment/timeframe")
+                if (
+                    not isinstance(bars.index, pd.DatetimeIndex)
+                    or bars.index.tz is None
+                    or bars.index.hasnans
+                    or not bars.index.is_unique
+                    or not bars.index.is_monotonic_increasing
+                    or not ((bars.index >= cursor) & (bars.index < boundary)).all()
+                ):
+                    raise ValueError("Unique ordered chunk observations within exact requested bounds required")
+                receipt["rows"] = len(bars)
+                chunks.append(bars)
+            except Exception as exc:
+                receipt.update(error_type=type(exc).__name__, error=str(exc), received_at=datetime.now(UTC).isoformat())
+                receipts.append(receipt)
+                raise SessionAcquisitionError(receipts) from exc
+            receipt["received_at"] = datetime.now(UTC).isoformat()
+            receipts.append(receipt)
+            cursor = boundary
+        combined = pd.concat(chunks)
+        combined.attrs = {**chunks[0].attrs, "acquisition": receipts}
+        return combined

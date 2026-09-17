@@ -1,0 +1,107 @@
+{
+  "campaign_id": "etf-continuous-timed-v1",
+  "purpose": "Predeclared discovery screen of timed policies on two continuous calendar years; no fresh qualification holdout or automatic promotion",
+  "target": "Shared bracket-policy net equity payoff, retaining cash and warmup on the full minute clock",
+  "symbols": [
+    "SPY",
+    "QQQ"
+  ],
+  "windows": [
+    [
+      "2022-01-01",
+      "2022-12-31"
+    ],
+    [
+      "2023-01-01",
+      "2023-12-31"
+    ]
+  ],
+  "feed": "alpaca:sip",
+  "timeframe": "15m",
+  "direction": "bi_directional",
+  "normalization_window": 50,
+  "entry_threshold": 1.5,
+  "clock": {
+    "decision_delay_seconds": 60,
+    "max_lateness_seconds": 120,
+    "bar_layout": "rth_open_v1"
+  },
+  "execution": {
+    "stop_atr": 1.5,
+    "atr_method": "simple_true_range",
+    "reward_risk": 2.0,
+    "swing_window": 10,
+    "atr_window": 14,
+    "tick_size": 0.01,
+    "structural_buffer_ticks": 2,
+    "trail_trigger_r": 1.5,
+    "trail_distance_r": 1.5,
+    "lifetime": {
+      "version": "elapsed_utc_v1",
+      "resting_seconds": 300,
+      "holding_seconds": 86400
+    }
+  },
+  "cost_bps_per_side": [
+    0.0,
+    1.0,
+    5.0
+  ],
+  "hypotheses": [
+    {
+      "id": "hour_momentum",
+      "expression": "close / delay(close,4) - 1",
+      "rationale": "Continuation of unusually strong four-bar moves relative to their trailing distribution"
+    },
+    {
+      "id": "bar_reversal",
+      "expression": "-returns",
+      "rationale": "Reversal of unusually large one-bar moves relative to their trailing distribution"
+    },
+    {
+      "id": "volume_momentum",
+      "expression": "(close / delay(close,4) - 1) * volume / ts_mean(volume,20)",
+      "rationale": "Continuation strengthened by volume relative to the trailing twenty-bar local distribution"
+    },
+    {
+      "id": "trend_pullback",
+      "expression": "roc(close,20) - roc(close,4)",
+      "rationale": "New causal trend/pullback hypothesis: contrast twenty-bar price change with the most recent four bars; normalization/brackets unchanged; no independence claim"
+    }
+  ],
+  "budget": 48,
+  "comparators": [
+    "cash_zero_return",
+    "passive_long_entry_at_first_rth_open_marked_at_last_close_minus_entry_cost"
+  ],
+  "triage": {
+    "primary_cost_bps": 1.0,
+    "stress_cost_bps": 5.0,
+    "minimum_feature_coverage": 0.8,
+    "minimum_closed_trades": 100,
+    "minimum_positive_blocks": 2,
+    "maximum_positive_day_share_of_net_log_gain": 0.5,
+    "require_positive_primary_net_and_excess": true,
+    "require_positive_stress_net": true
+  },
+  "forward_diagnostics": {
+    "symbols": [],
+    "hypotheses": [],
+    "cost_bps": 1.0,
+    "selection": "No automatic enrollment; first retain all outcomes and compare lead identity, rejection reasons and correlation with the existing fixed forward cohort"
+  },
+  "limitations": [
+    "Rolling bar features cross session boundaries; four bars is not always one wall-clock hour",
+    "Not a replication of published first-half-hour/last-half-hour momentum",
+    "Local volume normalization is not a time-of-day seasonal model",
+    "Corrected raw bars do not establish point-in-time receipt or fill availability",
+    "Bracket OHLC full-fill assumptions exclude partial fills, queue position, borrow, funding, distributions and corporate actions",
+    "Triage is predeclared descriptive screening, not a calibrated statistical significance test",
+    "Each year is one continuous simulation with one initial warmup; chunk boundaries cannot reset pending orders, inventory, features or protection",
+    "Calendar years reset flat between independent diagnostic runs; compounded year returns are selected-run wealth, not an unbroken two-year account",
+    "2022 and 2023 are development history, potentially previously observed in daily research, not untouched qualification holdouts",
+    "The 5-minute resting and 24-hour elapsed holding intents are frozen before acquisition; no alternative duration will be tried in this campaign",
+    "At least 100 aggregate closed trades and both annual primary-cost returns positive are required; a pass grants only further research, not qualification",
+    "No parameter retuning, extra symbols, reruns after coverage failure or final holdout use"
+  ]
+}

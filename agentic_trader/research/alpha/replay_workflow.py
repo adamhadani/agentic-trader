@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pandas as pd
 
-from agentic_trader.data.sessions import SessionDataSource
+from agentic_trader.data.sessions import SessionAcquisitionError, SessionDataSource
 from agentic_trader.market.bars import (
     SessionCoverageError,
     SessionSchedule,
@@ -98,6 +98,8 @@ class AlphaReplayService:
             result = {**detail, "status": ReplayStatus.COMPLETED}
         except Exception as exc:
             result = {"status": ReplayStatus.FAILED, "error_type": type(exc).__name__, "error": str(exc)}
+            if isinstance(exc, SessionAcquisitionError):
+                result["acquisition"] = exc.receipts
             if isinstance(exc, SessionCoverageError):
                 result["coverage"] = exc.coverage
         result.update(run_id=run_id, plan_id=plan.identity, authorizes_promotion=False)

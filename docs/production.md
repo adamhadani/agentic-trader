@@ -418,3 +418,11 @@ Only explicitly timed alpha positions participate in [trade lifetimes](alpha-tra
 Holding expiry waits for a current eligible broker session and uses the existing close service with a stable ID. A failed attempt is retained for operator review, not retried every monitor cycle. General close claims/results now also create durable journal/outbox notifications; confirmed financial accounting remains separate. Monitor cadence and host availability bound response time: an elapsed lifetime is not a guaranteed fill time. Session-alpha promotion remains disabled.
 
 Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation.
+
+The [continuous timed ETF campaign](alpha-continuous-campaign.md) pairs the new lifetime contract with actual-data discovery: 48 frozen comparisons and a new trend/pullback hypothesis. Replay supports one continuous year with bounded acquisition chunks; trial/holdout accounting and session activation gates remain intact. Report research yield separately from deployment readiness.
+
+The [completed continuous study](alpha-continuous-campaign-2026-09-17.md)
+retains 36 complete runs and 12 SPY coverage failures. QQQ momentum has 415 closes
+and positive primary-cost returns, but fails cost stress; zero alphas promoted.
+Next: causal ETF panels with explicit [Rank IC/ICIR contracts](alpha-information-coefficient.md).
+Existing miner ICIR is overlapping, single-symbol and unannualized.

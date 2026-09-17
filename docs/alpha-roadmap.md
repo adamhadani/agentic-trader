@@ -299,10 +299,11 @@ observation. No session alpha is activated by these increments.
    GTC entries could fill days after submission. Specify immutable resting-order
    lifetime/holding intent, preserve uncertain-cancel recovery, and compare broker
    lifecycle observations. The [shared timed policy and lifecycle implementation](alpha-trade-lifetimes.md) now covers cancellation/recovery and deterministic holding closes. Prospective broker timing/protection evidence remains required before session promotion.
-3. Predeclare a longer continuous or explicitly stitched momentum study with enough
-   independent trade evidence and untouched confirmation. The 30-trade failure stays
-   failed; do not lower it or select new windows after seeing these results. Calendar/
-   data partitioning must not silently reset a live position or pending GTC order.
+3. The [continuous timed study](alpha-continuous-campaign-2026-09-17.md) completed
+   36/48 comparisons; 12 SPY comparisons retain a four-minute coverage failure.
+   QQQ momentum now has 415 closes but fails the frozen 5 bp cost stress. No complete
+   triage pass. Annual development runs are not untouched confirmation; old failures
+   remain failed and calendar/acquisition partitions never reset trading state.
 4. Add causal aligned ETF panels for relative/residual hypotheses, retaining benchmark
    and joint-risk comparisons. Momentum variants and SPY/QQQ returns were highly
    correlated in the inspected sample; separate formulas are not independent risk.
@@ -310,3 +311,47 @@ observation. No session alpha is activated by these increments.
 Keep execution/qualification gates, weekly bounded discovery and existing single-owner
 admission. Research job checkpoints/resource isolation and longer-term artifact
 retention remain architectural dependencies; no new search engine is justified yet.
+
+## Research delivery cadence and progress — September 17
+
+The operator wants credible candidates alongside hardening. Pair each change to
+research semantics with a bounded, predeclared real-data experiment before moving
+to unrelated infrastructure, unless a concrete safety/validity blocker prevents it.
+Keep the existing weekly bounded daily miner; do not increase search volume without
+reviewing failure attribution. Reproducible negative evidence is useful, but new
+infrastructure alone is not evidence of an alpha.
+
+The [48-attempt continuous timed ETF campaign](alpha-continuous-campaign-2026-09-17.md) is complete:
+SPY/QQQ, two calendar years, three costs, three retained controls/leads and one new
+trend/pullback hypothesis. The limited acquisition extension directly enables that
+experiment. Report attempts/completion, coverage failures, closed-trade density,
+primary/stressed returns, benchmark excess/concentration, and exact rejection reasons.
+Then report qualification, actual forward dates/decisions and activation eligibility
+as separate stages. No quota of promoted alphas and no threshold relaxation.
+
+Original profitable trades remain anecdotal unless attributed and evaluated as a
+sufficient out-of-sample strategy sample. Active alphas remain zero at this protocol's
+freeze; six session controls and four historical shadows are not qualified strategies.
+The session execution gate is an additional engineering/evidence requirement, not a
+statistical rejection. Default observed-shadow requirements still require 20 dates
+and 10 triggered decisions; elapsed wall time or a healthy collector is insufficient.
+
+### Next delivery after the continuous campaign
+
+1. Pair causal ETF-panel alignment and relative/residual hypotheses with the
+   [IC measurement contract](alpha-information-coefficient.md). Existing rolling
+   single-symbol ICIR is unannualized and overlaps; it cannot use cross-sectional
+   or IID t-stat rules directly. Define/test units, coverage, fold boundaries and
+   dependence-aware uncertainty before a bounded frozen actual-data experiment.
+2. Trace raw SPY coverage/normalization without replacing the frozen failed evidence.
+   Retain omitted/null raw rows and normalization outcomes; existing `dropna()`
+   prevents definitive supplier-versus-cleaner attribution from saved frames.
+3. Gather independent quote/fill cost evidence and actual session decisions. Five bp
+   is a stress assumption, not a measured cost; do not reduce it to rescue this study.
+   Session qualification/execution and multi-owner portfolio gates remain unchanged.
+
+Outcome scoreboard: 48 charged attempts; 36 complete/12 unavailable; 0 full triage
+passes; 0 qualifications/promotions; 7,280 lifetime attempts; registry generation 10
+with 0 active/10 shadow versions. Three QQQ momentum variants pass the primary
+economic screens but all fail cost stress. This supports testing a different
+information/turnover structure instead of another search over the same formulas.
