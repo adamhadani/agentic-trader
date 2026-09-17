@@ -1,13 +1,15 @@
 # Development and debugging handoff
 
-Updated **2026-09-16**. Read [CLAUDE.md](../CLAUDE.md), [operations](production.md)
+Updated **2026-09-17**. Read [CLAUDE.md](../CLAUDE.md), [operations](production.md)
 and the [architecture review](architecture-review.md). Detailed workflow contracts
 live in [durable execution](durable-execution.md), [accounting](account-ledger.md)
 and [operational monitoring](operational-monitoring.md).
 
 Alpha closure/clock checks now live in `market/bars.py`, shared by research,
 screening and shadow. Fixed-duration versions reject explicit session/unknown
-layouts and ambiguous timestamps; session-clock live migration is still pending.
+layouts and ambiguous timestamps. [New session versions](alpha-session-decisions.md)
+share receipt/delay/expiry selection between replay, screening and shadow; normal
+scan acquisition and durable session decision scheduling are still pending.
 See [replay contracts](alpha-session-replay.md#clock-isolation-before-live-migration).
 
 ## Runtime ownership

@@ -324,6 +324,8 @@ class WorkflowStore:
         if not qualification or json.loads(qualification.payload).get("policy") != asdict(ValidationPolicy()):
             return "Alpha qualification policy is obsolete; fresh research and qualification are required."
         definition = json.loads(row.payload)["definition"]
+        if definition.get("clock") is not None:
+            return "Alpha session-clock execution remains diagnostic; new risk is disabled."
         if (
             signal.strategy != definition["alpha_id"]
             or signal.timeframe != definition["timeframe"]

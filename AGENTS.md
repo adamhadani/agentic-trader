@@ -83,3 +83,8 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   Preserve actual request/receipt times, raw failures/revisions and inspected-date
   exclusions; never backdate availability or grant promotion/shadow credit. Collector
   readiness is distinct from data completeness. See [forward observations](docs/alpha-forward-observations.md).
+
+- New session alpha clocks are immutable definition identity; preserve version-2 hashes.
+  Require receipt-stamped session snapshots and shared delay/expiry selection. Session
+  versions remain diagnostic-only until acquisition, durable decision scheduling and
+  execution evidence are complete. See [session decisions](docs/alpha-session-decisions.md).

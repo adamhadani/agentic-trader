@@ -110,10 +110,11 @@ status and artifact hash. There are no routine observation Telegram notices.
 ## Remaining A2b work
 
 Collect prospective quality/revision/latency evidence over real sessions. Use it to
-choose and version the live acquisition, availability/freshness and decision-clock
-contract for **new** alpha definitions. Existing fixed-duration versions remain
-unchanged. Add versioned research/live score parity and missed/repeated-decision
-fixtures before routing session forecasts toward the existing execution boundaries.
+measure live acquisition/availability before enabling the
+[versioned decision contract](alpha-session-decisions.md) for **new** alpha definitions. Existing fixed-duration versions remain
+unchanged. Research/screening/shadow score parity fixtures now cover receipt/delay/expiry.
+Durable missed/repeated-decision and restart/revision handling still precede routing
+session forecasts toward the existing execution boundaries.
 Actual operator/broker acknowledgment, partial fills, protection and corporate-action
 semantics remain separate required evidence. No intraday qualification follows from
 this collector alone. Continue the [ordered roadmap](alpha-roadmap.md).

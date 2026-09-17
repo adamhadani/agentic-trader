@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import pandas as pd
-
 from agentic_trader.constants import AssetClass, Direction
-from agentic_trader.market.bars import BAR_DURATIONS, completed_fixed_bars
+from agentic_trader.research.alpha.clock import closed_alpha_bars
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
-from agentic_trader.research.alpha.strategy import TIMEFRAME_FIELDS, alpha_scores, entry_directions, strategy_atr
+from agentic_trader.research.alpha.strategy import alpha_scores, entry_directions, strategy_atr
 from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
 from agentic_trader.screeners.indicators import calculate_ema, calculate_rsi
 
@@ -20,6 +19,7 @@ if TYPE_CHECKING:
     from agentic_trader.research.alpha.models import AlphaDefinition
 
 logger = logging.getLogger(__name__)
+FIXED_CLOCK_MINIMUM_BARS = 15  # Preserve version-2 screening's existing warmup.
 
 
 class FormulaicAlphaStrategy(BaseStrategy):
@@ -34,6 +34,7 @@ class FormulaicAlphaStrategy(BaseStrategy):
         definition: AlphaDefinition,
         config: AppConfig | None = None,
         evaluator: AlphaExpressionEvaluator | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         super().__init__(config=config)
         self.definition = definition
@@ -42,6 +43,7 @@ class FormulaicAlphaStrategy(BaseStrategy):
         self.default_timeframe = definition.timeframe or "4h"
         self.supported_asset_classes = (AssetClass.FUTURES, AssetClass.EQUITY, AssetClass.CRYPTO)
         self.evaluator = evaluator or AlphaExpressionEvaluator()
+        self.clock = clock or (lambda: datetime.now(UTC))
 
     def is_enabled(self, config: AppConfig | None = None) -> bool:
         """Determines whether this alpha is enabled."""
@@ -65,28 +67,17 @@ class FormulaicAlphaStrategy(BaseStrategy):
             if not any(s and s in target_syms for s in (contract_clean, ticker_clean, symbol_clean)):
                 return []
 
-        # A strategy version never substitutes another sampling frequency.
-        df: pd.DataFrame = getattr(data, TIMEFRAME_FIELDS[self.definition.timeframe])
-
-        if self.definition.data_feed != "unverified" and (
-            df.attrs.get("feed") != self.definition.data_feed
-            or df.attrs.get("adjustment") != self.definition.adjustment
-        ):
-            logger.warning("Alpha %s rejected mismatched data feed/adjustment", self.strategy_id)
-            return []
         try:
-            df = completed_fixed_bars(df, self.definition.timeframe)
+            df, _ = closed_alpha_bars(self.definition, data, as_of=self.clock())
         except (TypeError, ValueError) as exc:
-            logger.warning("Alpha %s rejected invalid bar clock: %s", self.strategy_id, exc)
+            logger.warning("Alpha %s rejected invalid bar clock/data: %s", self.strategy_id, exc)
             return []
-        if self.definition.data_feed != "unverified" and not df.empty:
-            timestamp = pd.Timestamp(df.index[-1])
-            if timestamp.tzinfo is None:
-                timestamp = timestamp.tz_localize("UTC")
-            if datetime.now(UTC) - timestamp > 2 * BAR_DURATIONS[self.definition.timeframe]:
-                logger.warning("Alpha %s rejected stale closed bar", self.strategy_id)
-                return []
-        if len(df) < 15:
+        minimum_bars = (
+            max(self.definition.execution.atr_window, self.definition.execution.swing_window)
+            if self.definition.clock is not None
+            else FIXED_CLOCK_MINIMUM_BARS
+        )
+        if len(df) < minimum_bars:
             return []
 
         try:

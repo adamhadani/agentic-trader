@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.promotion import AlphaPromotionService
-from agentic_trader.research.alpha.replay import ReplayPlan, SessionReplayPolicy
+from agentic_trader.research.alpha.replay import ReplayPlan
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.workflow import encode
@@ -30,9 +31,15 @@ async def replay_workflow(temp_db, tmp_path, schedule_for, minute_bars):
         date(2024, 11, 27),
         date(2024, 11, 27),
         AlphaDefinition(
-            "replay", "Replay", "close", timeframe="15m", data_feed="alpaca:iex", eligible_symbols=("SPY",)
+            "replay",
+            "Replay",
+            "close",
+            semantics_version=3,
+            clock=SessionClockPolicy(),
+            timeframe="15m",
+            data_feed="alpaca:iex",
+            eligible_symbols=("SPY",),
         ),
-        SessionReplayPolicy(),
     )
     yield repo, plan, bars, schedule, tmp_path / "replay"
     await temp_db.engine.dispose()

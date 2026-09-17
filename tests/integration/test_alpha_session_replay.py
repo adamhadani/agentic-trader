@@ -6,17 +6,22 @@ from datetime import date
 
 import pandas as pd
 import pytest
+from sqlalchemy import select
 
+from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
-from agentic_trader.market.bars import SessionSchedule, build_session_bars
+from agentic_trader.market.bars import SessionClockPolicy, SessionSchedule, SessionSnapshot, build_session_bars
 from agentic_trader.research.alpha.data import load_dataset
-from agentic_trader.research.alpha.models import AlphaDefinition
-from agentic_trader.research.alpha.replay import ReplayPlan, SessionReplayPolicy
+from agentic_trader.research.alpha.models import AlphaDefinition, RegistrySnapshot
+from agentic_trader.research.alpha.replay import ReplayPlan, simulate_session_strategy
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
+from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.validation import DatasetManifest
+from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.storage.models import AlphaProjectionRecord
 
 
 @pytest.mark.enable_socket
@@ -50,8 +55,16 @@ async def test_sdk_calendar_pagination_and_replay_remain_read_only(alpaca_http, 
         "SPY",
         date(2024, 11, 27),
         date(2024, 11, 29),
-        AlphaDefinition("replay", "Replay", "close", timeframe="1h", eligible_symbols=("SPY",), data_feed="alpaca:iex"),
-        SessionReplayPolicy(),
+        AlphaDefinition(
+            "replay",
+            "Replay",
+            "close",
+            semantics_version=3,
+            clock=SessionClockPolicy(),
+            timeframe="1h",
+            eligible_symbols=("SPY",),
+            data_feed="alpaca:iex",
+        ),
     )
     await temp_db.init_db()
     repo = AlphaRepository(temp_db.workflows)
@@ -123,3 +136,90 @@ async def test_diagnostic_completion_is_immutable_across_postgres_clients(postgr
     finally:
         await first.engine.dispose()
         await second.engine.dispose()
+
+
+@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
+async def session_db(request, temp_db):
+    db = temp_db if request.param == "sqlite" else SignalDatabase(db_url=request.getfixturevalue("postgres_test_db"))
+    await db.init_db()
+    try:
+        yield db
+    finally:
+        await db.engine.dispose()
+
+
+@pytest.mark.enable_socket
+@pytest.mark.allow_hosts(["127.0.0.1", "localhost"])
+async def test_sdk_session_snapshot_scores_agree_and_replay_never_grants_credit(alpaca_http, session_db):
+
+    venue, broker = alpaca_http
+
+    def response(method, path, query, body):
+        if path == "/v2/calendar":
+            return 200, [{"date": "2024-11-27", "open": "09:30", "close": "16:00"}]
+        if path == "/v2/stocks/bars":
+            index = pd.date_range("2024-11-27 14:30Z", periods=390, freq="min")
+            bars = []
+            for i, t in enumerate(index):
+                price = 100 + i**2 / 100000
+                bars.append(
+                    {
+                        "t": t.isoformat(),
+                        "o": price,
+                        "h": price + 1,
+                        "l": price - 1,
+                        "c": price,
+                        "v": 1000,
+                        "n": 10,
+                        "vw": price,
+                    }
+                )
+            return 200, {"bars": {"SPY": bars}, "next_page_token": None}
+        return None
+
+    venue.override = response
+    source = AlpacaSessionSource(AlpacaDataProvider(stock_client=broker.data_client, feed="sip"), broker.client)
+    day = date(2024, 11, 27)
+    sessions = await asyncio.to_thread(source.calendar, day, day)
+    schedule = SessionSchedule(day, day, sessions, "alpaca_calendar")
+    minutes = await asyncio.to_thread(source.minutes, "SPY", sessions[0].open, sessions[0].close, "alpaca:sip")
+    definition = AlphaDefinition(
+        "session",
+        "Session",
+        "delta(close,3)",
+        semantics_version=3,
+        clock=SessionClockPolicy(),
+        timeframe="15m",
+        data_feed="alpaca:sip",
+        eligible_symbols=("SPY",),
+        normalization_window=10,
+        entry_threshold=0.1,
+    )
+    now = pd.Timestamp("2024-11-27 20:01Z")
+    bars = build_session_bars(minutes, schedule, "15m", as_of=now)
+    snapshot = SessionSnapshot(bars, symbol="SPY", requested_at=now - pd.Timedelta(seconds=2), received_at=now)
+    data = ContractMarketData(symbol="SPY", session_bars={"15m": snapshot})
+    candidates = FormulaicAlphaStrategy(definition, clock=lambda: now).evaluate(data)
+    replay = simulate_session_strategy(definition, bars)
+    assert candidates[0].alpha_score == pytest.approx(replay["decisions"][-1]["score"])
+    repo = AlphaRepository(session_db.workflows)
+    await repo.register(definition, actor="fixture")
+    await repo.set_shadow(definition.version_id, actor="fixture", expected_generation=0)
+    registry = await repo.snapshot()
+    for _ in range(2):
+        observed = await AlphaShadowService(repo).observe(registry, data, as_of=now)
+        assert observed[0]["score"] == pytest.approx(candidates[0].alpha_score)
+        assert observed[0]["received_at"] == snapshot.received_at.isoformat()
+        assert observed[0]["requested_at"] == snapshot.requested_at.isoformat()
+    with pytest.raises(ValueError, match="Session-clock activation"):
+        await repo.promote(definition.version_id, actor="fixture", expected_generation=registry.generation)
+    async with session_db.session_factory() as db:
+        records = (
+            await db.scalars(select(AlphaProjectionRecord).where(AlphaProjectionRecord.key.like("forecast/%")))
+        ).all()
+    assert len(records) == 1
+    assert await repo.get(f"shadow/{definition.version_id}") is None
+    await repo.rebuild()
+    assert await repo.snapshot() == RegistrySnapshot(1, (), (definition,))
+    assert await repo.get(f"shadow/{definition.version_id}") is None
+    assert all(method == "GET" for method, *_ in venue.calls)

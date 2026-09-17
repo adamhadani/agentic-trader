@@ -20,7 +20,6 @@ from agentic_trader.research.alpha.strategy import alpha_scores
 
 
 MAX_REPLAY_DAYS = 31
-MAX_DECISION_DELAY_SECONDS = int(timedelta(days=1).total_seconds())
 SESSION_REPLAY_KIND = "session_replay"
 
 
@@ -29,26 +28,13 @@ class ReplayStatus(StrEnum):
     FAILED = "failed"
 
 
-SESSION_REPLAY_VERSION = "observed_session_minutes_v1"
-
-
-@dataclass(frozen=True)
-class SessionReplayPolicy:
-    decision_delay_seconds: int = 60
-
-    def __post_init__(self):
-        if (
-            type(self.decision_delay_seconds) is not int
-            or not 0 <= self.decision_delay_seconds <= MAX_DECISION_DELAY_SECONDS
-        ):
-            raise ValueError("Decision delay requires integer seconds between zero and one day")
+SESSION_REPLAY_VERSION = "observed_session_minutes_v2"
 
 
 def simulate_session_strategy(
     definition: AlphaDefinition,
     data: SessionBars,
     *,
-    policy: SessionReplayPolicy,
     scores: pd.Series | None = None,
     start=None,
 ) -> dict:
@@ -58,16 +44,26 @@ def simulate_session_strategy(
     several delayed observations become eligible on one bar, the latest wins.
     An accepted GTC order remains pending independently of subsequent signals.
     """
+    if definition.clock is None:
+        raise ValueError("Session replay requires a versioned session clock")
+    policy = definition.clock
+    data.validate(definition.timeframe)
     signals = data.signals
+    if signals.attrs.get("feed") != definition.data_feed or signals.attrs.get("adjustment") != definition.adjustment:
+        raise ValueError("Session replay feed/adjustment mismatch")
     if signals.empty or signals.attrs.get("timeframe") != definition.timeframe:
         raise ValueError("Completed signal bars matching the definition are required")
     scores = alpha_scores(definition, signals) if scores is None else scores
     if not scores.index.equals(signals.index) or np.isinf(scores.to_numpy(dtype=float)).any():
         raise ValueError("Finite or unavailable scores must align with completed signal observations")
     observations = entry_intents(definition, signals, scores)
-    available = data.closed_at + pd.Timedelta(seconds=policy.decision_delay_seconds)
+    available, expires = policy.windows(data.closed_at)
     locations = data.execution.index.searchsorted(available)
-    latest = {int(location): i for i, location in enumerate(locations) if location < len(data.execution)}
+    eligible = [
+        location < len(data.execution) and data.execution.index[location] < expires[i]
+        for i, location in enumerate(locations)
+    ]
+    latest = {int(location): i for i, location in enumerate(locations) if eligible[i]}
     proposals = {location: proposal for location, i in latest.items() if (proposal := observations[i]) is not None}
     start_index = 0 if start is None else int(data.execution.index.searchsorted(utc_timestamp(start)))
     result = simulate_execution(data.execution, proposals, definition.execution, start=start_index, trace=True)
@@ -90,11 +86,11 @@ def simulate_session_strategy(
                 "signal_bar_start": str(signals.index[i]),
                 "closed_at": str(data.closed_at[i]),
                 "available_at": str(available[i]),
-                "eligible_bar": str(data.execution.index[locations[i]]) if locations[i] < len(data.execution) else None,
+                "expires_at": str(expires[i]),
+                "eligible_bar": str(data.execution.index[locations[i]]) if eligible[i] else None,
+                "expired_before_eligibility": bool(locations[i] < len(data.execution) and not eligible[i]),
                 "score": float(scores.iloc[i]) if pd.notna(scores.iloc[i]) else None,
-                "superseded_before_eligibility": bool(
-                    locations[i] < len(data.execution) and latest[int(locations[i])] != i
-                ),
+                "superseded_before_eligibility": bool(eligible[i] and latest[int(locations[i])] != i),
             }
             for i in range(len(signals))
         ],
@@ -108,9 +104,10 @@ class ReplayPlan:
     start: date
     end: date
     definition: AlphaDefinition
-    policy: SessionReplayPolicy
 
     def __post_init__(self):
+        if self.definition.clock is None:
+            raise ValueError("Replay requires a versioned session clock")
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", self.symbol):
             raise ValueError("Explicit US equity/ETF symbol required")
         if not 0 <= (self.end - self.start).days < MAX_REPLAY_DAYS:
@@ -129,12 +126,13 @@ class ReplayPlan:
         return pd.Timestamp(self.end + timedelta(days=1), tz=ET_TZ).tz_convert("UTC")
 
     def document(self):
+        assert self.definition.clock is not None  # Validated at plan construction.
         return {
             "symbol": self.symbol,
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
             "definition": self.definition.to_dict(),
-            "replay_policy": asdict(self.policy),
+            "replay_policy": asdict(self.definition.clock),
             "replay_version": SESSION_REPLAY_VERSION,
             "bar_layout": SESSION_BAR_LAYOUT,
             "authorizes_promotion": False,

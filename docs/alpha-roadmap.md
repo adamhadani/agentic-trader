@@ -1,6 +1,6 @@
 # Alpha research roadmap
 
-**Active long-horizon plan — updated 2026-09-16.** This is the canonical alpha work
+**Active long-horizon plan — updated 2026-09-17.** This is the canonical alpha work
 queue. [Pipeline contracts](alpha-pipeline.md) describe current behavior; the
 [architecture review](architecture-review.md) retains broader operational priorities.
 The [original alpha review](alpha-stack-review.md) is historical defect evidence.
@@ -119,8 +119,13 @@ through the existing journal, and excludes inspected dates before price access.
 It measures the REST data boundary without scoring, trading or promotion credit.
 The desk enables SPY/15m; actual forward evidence requires subsequent live sessions.
 
-Remaining A2b: version and install this signal-bar contract in live strategy acquisition,
-freshness and scan timing; collect actual publication/acknowledgment/fill evidence.
+The [versioned decision contract](alpha-session-decisions.md) now preserves old
+identities, gives new session versions shared receipt/delay/expiry screening and
+shadow semantics, and prevents expired replay proposals from crossing closed sessions.
+New versions remain diagnostic-only, including session-derived daily definitions.
+
+Remaining A2b: install session acquisition and a durable, session-aligned decision
+worker (including restart/revision/missed-window handling); collect actual publication/acknowledgment/fill evidence.
 Native provider bars cannot be silently treated as session-derived bars.
 Cover timezone/DST, holidays/early closes, extended-hours aggregation, closed-bar
 availability, GTC pending entries, conservative same-bar paths, gap/partial fills,

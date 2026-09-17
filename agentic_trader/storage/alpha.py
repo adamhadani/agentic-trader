@@ -208,6 +208,8 @@ class AlphaRepository:
                 raise ValueError("Registry changed; refresh generation before retrying")
             definition = AlphaDefinition.from_dict(version["definition"])
             if mode == "active":
+                if definition.clock is not None:
+                    raise ValueError("Session-clock activation requires live acquisition and execution evidence")
                 if definition.data_feed not in ("alpaca:iex", "alpaca:sip"):
                     raise ValueError("Passing qualification requires an explicit deployment feed")
                 decision = await self._get(session, f"qualification/{version_id}")

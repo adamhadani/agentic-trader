@@ -48,7 +48,7 @@ def _compute(plan: ReplayPlan, bars: pd.DataFrame, schedule: SessionSchedule, as
         output / "observations.json",
     )
     data = build_session_bars(bars, schedule, plan.definition.timeframe, as_of=as_of)
-    result = simulate_session_strategy(plan.definition, data, policy=plan.policy)
+    result = simulate_session_strategy(plan.definition, data)
     result["net_returns"] = [
         {"bar_start": t.isoformat(), "net_return": float(v)} for t, v in result["net_returns"].items()
     ]
