@@ -83,6 +83,13 @@ Relative outperformance at higher costs can simply reflect fewer losing round tr
 not a viable policy. No retrospective sign/threshold/cost tuning is authorized by
 this result.
 
+## Failure investigation
+
+The [independent postmortem](alpha-open-gap-postmortem-2026-09-17.md) reproduced
+forecasts/cash flows and verified influential vendor data. It found concentrated
+pooled error improvements, unstable day selection and a prediction-loss/action
+mismatch. Positive pooled skill does not establish a robust predictive edge.
+
 ## Decision and next work
 
 1. Retain the failed hypothesis and all scenarios; do not spend a qualification

@@ -192,7 +192,12 @@ and simpler baselines are established.
    [All 20 attempts completed](alpha-open-gap-policy-2026-09-17.md); SPY failed the
    every-fold net/excess-return criterion. Pause this standalone policy; no promotion
    or gate change. Forecast skill survives, but this trading rule is unstable/cost-sensitive.
-2. **Complete A2b live acquisition and durable decisions (next priority).** Measure publication delay
+   The [failure postmortem](alpha-open-gap-postmortem-2026-09-17.md) found no numeric
+   discrepancy, but unstable selection, concentrated error gains and a loss/action
+   mismatch. Before selecting another lead, extend the existing report with fold
+   stability, influence, entered/skipped returns, turnover/cost and fitted-model
+   evidence. Predeclare the economic use of each forecast; do not retune this result.
+2. **Complete A2b live acquisition and durable decisions (next implementation priority).** Measure publication delay
    before choosing production timing; collect prospective forecasts and actual paper
    acknowledgments/fills. More historic search cannot substitute for this evidence.
 3. **Aligned panel/relative hypotheses (A3/A4).** Add sector-relative residual momentum,
