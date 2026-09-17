@@ -110,7 +110,7 @@ class AlpacaSessionSource:
         combined.attrs["acquisition"] = receipts
         return combined
 
-    def daily(self, symbol: str, start: date, end: date, feed: str) -> pd.DataFrame:
+    def daily(self, symbol: str, start: date, end: date, feed: str, adjustment: str = "raw") -> pd.DataFrame:
         """Read native daily history for panel diagnostics; no auction-fill claim.
 
         The application bounds the historical plan. Calendar alignment/coverage
@@ -125,10 +125,11 @@ class AlpacaSessionSource:
             "1d",
             start=opened.to_pydatetime(),
             end=closed.to_pydatetime() - timedelta(microseconds=1),
+            adjustment=adjustment,
         )
         if (
             bars.attrs.get("feed") != feed
-            or bars.attrs.get("adjustment") != "raw"
+            or bars.attrs.get("adjustment") != adjustment
             or bars.attrs.get("timeframe") != "1d"
         ):
             raise ValueError("Daily observations do not match the frozen feed/adjustment/timeframe")

@@ -429,3 +429,14 @@ pages with no normalization loss/revision and reproduced the known raw gap. The 
 engineering checks were conservatively charged (**7,317** lifetime attempts); they
 are not new alpha hypotheses. See [evidence](alpha-spy-minute-postmortem-2026-09-17.md#automatic-capture-follow-up).
 Private evidence archival/capacity monitoring remains required; no automatic pruning.
+
+### Persistent holdings and IEX evaluation — frozen September 17
+
+[Monthly book protocols](alpha-persistent-book.md) now predeclare 80 comparisons each
+on SIP and separately on IEX (operator-selected feed evaluation): slow relative and
+residual momentum, reversal, causal dependence blending; reset/net/buffered books;
+explicit adjustment and borrow/funding stress. Commit and charge before access.
+[Entitlement probes](research-data-sources.md) establish SIP subscription refusal,
+not throttling; delayed SIP and recent IEX work, Finnhub candles refuse this key,
+and yfinance daily/action connectivity works. Retain both feed matrices, source
+receipts and all failures. No automatic production switch or promotion.

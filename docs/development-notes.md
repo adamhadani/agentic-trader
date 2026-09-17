@@ -248,3 +248,9 @@ observer records pages before typed parsing; production adapters inject a privat
 evidence store. Preserve context isolation and error references through the existing
 journal. `save_json_report` now belongs to `storage.artifacts`; no research-layer
 compatibility import remains. Source validation and deployed verification stay separate.
+
+The [persistent ETF book experiment](alpha-persistent-book.md) uses the shared
+panel journal and explicit adjusted-price accounting. It is research-only: reserve
+the frozen matrix before access; no promotion or live portfolio execution.
+[Verified feed access and alternatives](research-data-sources.md) distinguish
+recent-SIP entitlement from throttling; historical SIP remains usable.

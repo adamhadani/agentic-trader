@@ -152,11 +152,16 @@ class AlpacaDataProvider:
         start: datetime | None = None,
         end: datetime | None = None,
         period: str | None = None,
+        *,
+        adjustment: str = "raw",
     ) -> pd.DataFrame:
         if not self.supports_symbol(symbol):
             raise UnsupportedSymbolError(f"Alpaca does not support futures continuous contract '{symbol}'")
 
+        adjustment_kind = Adjustment(adjustment)
         is_crypto = "/" in symbol
+        if is_crypto and adjustment_kind != Adjustment.RAW:
+            raise ValueError("Corporate-action adjustments apply only to equities")
         if start is None:
             delta = parse_period_to_timedelta(
                 period
@@ -181,7 +186,7 @@ class AlpacaDataProvider:
                     "start": start.isoformat(),
                     "end_inclusive": end.isoformat() if end is not None else None,
                     "feed": "alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}",
-                    "adjustment": "raw",
+                    "adjustment": adjustment_kind.value,
                 }
             )
             if self.evidence
@@ -208,13 +213,13 @@ class AlpacaDataProvider:
                             start=start,
                             end=end,
                             feed=self.feed,
-                            adjustment=Adjustment.RAW,
+                            adjustment=adjustment_kind,
                         )
                     )
             df, normalization = self._normalize_bars(bars, clean_sym)
             df.attrs.update(
                 feed="alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}",
-                adjustment="raw",
+                adjustment=adjustment_kind.value,
                 timeframe=timeframe,
             )
             if capture:

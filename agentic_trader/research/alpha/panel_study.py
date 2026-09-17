@@ -122,6 +122,10 @@ class PanelStudyPlan:
             raise ValueError("Panel study exceeds bounded trial budget")
 
     @property
+    def adjustment(self):
+        return "raw"
+
+    @property
     def trial_count(self):
         return len(self.hypotheses) * len(self.folds) * (1 + len(self.costs_bps))
 
@@ -154,26 +158,30 @@ class PanelStudyPlan:
 
     @classmethod
     def from_document(cls, document):
-        plan = cls(
-            campaign_id=document["campaign_id"],
-            symbols=tuple(document["symbols"]),
-            benchmark=document["benchmark"],
-            start=date.fromisoformat(document["start"]),
-            end=date.fromisoformat(document["end"]),
-            folds=tuple(
-                PanelFold(f["name"], date.fromisoformat(f["start"]), date.fromisoformat(f["end"]))
-                for f in document["folds"]
-            ),
-            hypotheses=tuple(PanelHypothesis(**h) for h in document["hypotheses"]),
-            target=ForecastTarget("1d", document["horizon_sessions"], ForecastLabel.NEXT_OPEN_TO_CLOSE),
-            costs_bps=tuple(document["costs_bps"]),
-            top_k=document["top_k"],
-            ic=ICPolicy(**document["ic"]),
-            feed=document["feed"],
-        )
+        plan = cls(**cls.arguments_from_document(document))
         if document != plan.document():
             raise ValueError("Frozen panel version and exact trial count required")
         return plan
+
+    @staticmethod
+    def arguments_from_document(document):
+        return {
+            "campaign_id": document["campaign_id"],
+            "symbols": tuple(document["symbols"]),
+            "benchmark": document["benchmark"],
+            "start": date.fromisoformat(document["start"]),
+            "end": date.fromisoformat(document["end"]),
+            "folds": tuple(
+                PanelFold(f["name"], date.fromisoformat(f["start"]), date.fromisoformat(f["end"]))
+                for f in document["folds"]
+            ),
+            "hypotheses": tuple(PanelHypothesis(**h) for h in document["hypotheses"]),
+            "target": ForecastTarget("1d", document["horizon_sessions"], ForecastLabel.NEXT_OPEN_TO_CLOSE),
+            "costs_bps": tuple(document["costs_bps"]),
+            "top_k": document["top_k"],
+            "ic": ICPolicy(**document["ic"]),
+            "feed": document["feed"],
+        }
 
 
 def basket_weights(scores: pd.Series, top_k: int) -> pd.Series:
@@ -195,7 +203,7 @@ def basket_weights(scores: pd.Series, top_k: int) -> pd.Series:
     return (long - short) / (2 * top_k)
 
 
-def _scores(panel: DailyResearchPanel, plan: PanelStudyPlan, hypothesis: PanelHypothesis):
+def panel_scores(panel: DailyResearchPanel, plan: PanelStudyPlan, hypothesis: PanelHypothesis):
     evaluator = AlphaExpressionEvaluator()
     scores = pd.DataFrame({s: evaluator.evaluate(hypothesis.expression, panel.frames[s]) for s in plan.symbols})
     if hypothesis.beta_window is not None:
@@ -280,7 +288,7 @@ def compute_panel_study(panel: DailyResearchPanel, plan: PanelStudyPlan):
         raise PanelCoverageError(panel.coverage)
     trials = []
     for hypothesis in plan.hypotheses:
-        scores = _scores(panel, plan, hypothesis)
+        scores = panel_scores(panel, plan, hypothesis)
         for fold in plan.folds:
             dates = panel.close.index[(panel.close.index.date >= fold.start) & (panel.close.index.date <= fold.end)]
             if len(dates) <= plan.target.horizon_bars:

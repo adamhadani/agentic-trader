@@ -254,3 +254,18 @@ now retains provider/normalization evidence. Next address explicit total-return,
 turnover and execution assumptions for a new bounded study. Preserve the distinction
 between a pure payoff diagnostic and a broker-capable strategy; a different horizon or
 cost model must not become an undocumented shim to rescue a failed hypothesis.
+
+### Persistent ETF book boundary and source evaluation
+
+The [frozen book study](alpha-persistent-book.md) reuses `AlphaPanelService`, the
+existing journal, acquisition evidence, DSL/panel operators and IC reports. Its
+pure cash/inventory book models retained targets; it does not replace the shared
+bracket simulator or add live execution authority. Separate SIP/IEX plans preserve
+feed identity and charge all comparisons before access. Minimum-variance rank-score
+blending models redundancy only; learned expected-return combinations remain open.
+
+Follow-up: independent corporate-action/total-return reconciliation, real borrow and
+quote/fill costs, prospective IEX availability if historical evidence warrants it,
+physical-share/partial-fill protection, and source/calibration identity in executable
+plans. Do not infer those contracts from adjusted-price research results. Retain the
+existing artifact archival/resource isolation/checkpoint priorities.

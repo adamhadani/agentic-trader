@@ -51,6 +51,7 @@ from agentic_trader.research.alpha.panel_study import (
     assess_panel_hypothesis,
 )
 from agentic_trader.research.alpha.panel_workflow import AlphaPanelService
+from agentic_trader.research.alpha.persistent_study import PersistentStudyPlan, compute_persistent_study
 from agentic_trader.research.alpha.portfolio import PortfolioPolicy, PortfolioSnapshot, build_shadow_portfolio
 from agentic_trader.research.alpha.promotion import AlphaPromotionService, read_alpha_definitions
 from agentic_trader.research.alpha.replay import (
@@ -680,6 +681,34 @@ async def alpha_replay_cmd(
     click.echo(
         f"Observed minutes: {result['coverage']['observed_minutes']}; completed simulated trades: {result['total_trades']}"
     )
+
+
+@alpha_group.command("book-study")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@coro
+async def alpha_book_study_cmd(protocol_path, output):
+    """Run a frozen adjusted-price ETF book diagnostic; never submit portfolio orders."""
+    document = json.loads(await asyncio.to_thread(protocol_path.read_text))
+    plan = PersistentStudyPlan.from_document(document)
+    config = load_config()
+    environment = await asyncio.to_thread(research_environment)
+    async with alpha_repository() as repository:
+        with session_source(config, plan.feed.removeprefix("alpaca:")) as source:
+            result = await AlphaPanelService(repository, source, compute=compute_persistent_study).run(
+                plan, output, environment=environment
+            )
+    report = {
+        k: result[k] for k in ("status", "plan_id", "charged_trials", "completed_comparisons", "authorizes_promotion")
+    }
+    report["decisions"] = result.get("decisions", [])
+    report["result_hash"] = await asyncio.to_thread(
+        lambda: hashlib.sha256((output / "result.json").read_bytes()).hexdigest()
+    )
+    await asyncio.to_thread(save_json_report, report, output / "screen.json")
+    click.echo(json.dumps(report, indent=2))
+    if result["status"] != PanelStudyStatus.COMPLETED:
+        raise click.ClickException("Book study failed; retained inputs/receipts explain unavailable comparisons")
 
 
 @alpha_group.command("panel-study")

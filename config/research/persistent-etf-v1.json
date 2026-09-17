@@ -1,0 +1,105 @@
+{
+  "adjustment": "all",
+  "authorizes_promotion": false,
+  "availability": "Historical native daily completion assumed by next local midnight; receipts are not backdated",
+  "benchmark": "SPY",
+  "blend": "dependence_blend",
+  "blend_scope": "Trailing rank-score covariance with diagonal shrinkage, long-only minimum-variance weights; exact duplicate histories deduplicated before fitting; no return fitting",
+  "blend_shrinkage": 0.2,
+  "blend_window": 126,
+  "borrow_bps": [
+    0.0,
+    100.0,
+    300.0
+  ],
+  "campaign_id": "persistent-etf-v1",
+  "carry_scope": "ACT/365 overnight and intraday short-notional borrow and negative-cash funding; zero positive-cash interest and short rebate",
+  "charged_trials": 80,
+  "corporate_action_scope": "Alpaca all-adjusted price ratios are total-return proxies; no extra dividend credit, physical share, payment-date or historical borrow claim",
+  "costs_bps": [
+    0.0,
+    1.0,
+    5.0
+  ],
+  "end": "2023-12-31",
+  "feed": "alpaca:sip",
+  "folds": [
+    {
+      "end": "2022-12-31",
+      "name": "2022",
+      "start": "2022-01-01"
+    },
+    {
+      "end": "2023-12-31",
+      "name": "2023",
+      "start": "2023-01-01"
+    }
+  ],
+  "funding_bps": [
+    0.0,
+    300.0,
+    500.0
+  ],
+  "horizon_sessions": 20,
+  "hypotheses": [
+    {
+      "beta_window": null,
+      "expression": "roc(close, 126) - roc(close, 21)",
+      "name": "slow_momentum"
+    },
+    {
+      "beta_window": 126,
+      "expression": "roc(close, 126) - roc(close, 21)",
+      "name": "residual_momentum"
+    },
+    {
+      "beta_window": null,
+      "expression": "-roc(close, 21)",
+      "name": "monthly_reversal"
+    }
+  ],
+  "ic": {
+    "confidence": 0.95,
+    "hac_lags": 20,
+    "min_assets": 9,
+    "min_observations": 200,
+    "observations_per_year": 252
+  },
+  "modes": [
+    "reset",
+    "persistent",
+    "buffered"
+  ],
+  "payoff_scope": "Self-financing adjusted-price-unit research book; prior-close quantities, next-session opens, daily marks, terminal close liquidation",
+  "rebalance_sessions": 20,
+  "reset_scope": "Matched monthly full roundtrip at the same open; isolates avoidable turnover, not the old disjoint five-session strategy",
+  "start": "2020-01-01",
+  "symbols": [
+    "XLB",
+    "XLE",
+    "XLF",
+    "XLI",
+    "XLK",
+    "XLP",
+    "XLU",
+    "XLV",
+    "XLY"
+  ],
+  "target": {
+    "horizon_bars": 20,
+    "label": "observed_next_open_to_close_v1",
+    "timeframe": "1d"
+  },
+  "top_k": 3,
+  "triage": {
+    "maximum_drawdown": 0.2,
+    "maximum_positive_block_share": 0.5,
+    "minimum_mean_ic": 0.03,
+    "minimum_rebalances": 20,
+    "primary_cost_bps": 1.0,
+    "stress_cost_bps": 5.0
+  },
+  "turnover_buffer": 0.1,
+  "universe_scope": "Fixed curated cohort; not historical point-in-time membership or execution eligibility",
+  "version": "persistent_daily_panel_v1"
+}
