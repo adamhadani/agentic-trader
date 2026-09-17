@@ -83,7 +83,7 @@ second job infrastructure is justified for the current single-destination outbox
 
 | Priority | Finding and use case | Recommendation / tradeoff |
 | --- | --- | --- |
-| P1 | Current entitlement rejects recent SIP; operator feed/entitlement choice remains open. | PR #54 fixed read deadlines/offloading and added the exact-feed probe. Worker health is not data completeness; changing SIP to IEX requires a separately validated data contract. |
+| P1 | Current entitlement rejects recent SIP; operator selected separate IEX evaluation. | PR #54 fixed read deadlines/offloading and added the exact-feed probe. Worker health is not data completeness; changing SIP to IEX requires a separately validated data contract. |
 | Resolved in PR #54 | The legacy retuner overcounted unrealized P&L. | Retired its engine, scheduler, commands and config-export path. The canonical alpha/panel studies and broker P&L never used this engine; preserve the [counterexample](forecast-to-fill-review.md#f7--a-legacy-simulator-still-diverges-from-the-hardened-research-path). |
 | P1 before allocation execution | PR #54 fixed shadow trade-participation and forecast/risk/uncertainty contracts; executable target plans remain absent. | Validate persistent cost-aware portfolios in research. Keep execution gated on rounding, pending exposure, partial fills and protection ownership. |
 | P1 | Corporate actions or stock transfers make account reconciliation unsupported; per-signal partial exits remain conservative. | Add exact typed activity semantics and replay fixtures, then explicit ownership/allocation/protection models. Keep totals withheld and sliced trading disabled until complete; never assign by symbol. |
@@ -295,8 +295,10 @@ IEX receipts and exact calibration/plan execution identity. These are unfinished
 source normalization alone creates neither predictive edge nor paper eligibility.
 
 Read-only forward audit during PR #58: 78/78 current session evaluations were
-unavailable, each with retained HTTP 403 evidence. The existing single-feed decision
-worker rejects mixed deployment feeds; successful prospective IEX observation needs
-explicit composition/configuration and immutable feed identity, not a per-command
-fallback. This takes immediate priority alongside dated stock-universe preparation.
+unavailable, each with retained HTTP 403 evidence. [Explicit per-worker research feeds](alpha-iex-forward.md) now replace trading-feed
+inheritance. Exact-feed filtering precedes enrollment and budgeting; reports retain
+uncollected other-feed candidates. Six fixed IEX controls receive new identities.
+The same injected workers/journal/source boundary handles both feeds, with no fallback,
+constructor compatibility shim, extra poller or execution authority. Actual successful
+IEX observations remain a deployment check alongside dated stock-universe preparation.
 Worker/process readiness alone cannot establish alpha data quality.

@@ -63,8 +63,7 @@ async def test_actual_sdk_forward_receipts_and_revisions(alpaca_http, temp_db, t
     observer = SessionObservationService(
         repo,
         source,
-        SessionObservationConfig(enabled=True),
-        feed="alpaca:iex",
+        SessionObservationConfig(enabled=True, feed="alpaca:iex"),
         directory=tmp_path / "forward",
         clock=lambda: now[0],
         runtime={"run_id": "sdk_fixture"},

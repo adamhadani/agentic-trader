@@ -225,3 +225,6 @@ Source-specific [volume calibration](docs/alpha-volume-calibration.md) uses the 
 daily study harness with frozen training/forward intervals and exact feed identity.
 `alpha volume-study` is research-only. `/alphas` now provides a compact explanation
 and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.
+
+Prospective alpha checks use [separately configured IEX workers](docs/alpha-iex-forward.md);
+their diagnostic candidates and receipts grant no trading or promotion authority.

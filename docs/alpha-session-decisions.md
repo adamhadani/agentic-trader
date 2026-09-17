@@ -86,8 +86,12 @@ and artifact writes run outside asyncio; shutdown drains work before closing cli
 No broker mutation, notifier, second execution queue or new database schema is involved.
 
 Desk `alpha_pipeline.decisions` enables SPY/QQQ, a 30-second poll, 14 calendar days of
-history, at most 12 session definitions and 128 consumed windows per poll. Only explicitly
-eligible symbols in registered version-3 candidates are observed. With no such candidates,
+history, at most 12 matching-feed session definitions and 128 consumed windows per poll.
+Its explicit `feed: alpaca:iex` is independent of the trading feed. Only registered
+version-3 candidates with that exact feed and explicitly eligible symbols are observed.
+Other-feed versions and their evidence remain intact; reports flag them as
+`feed_not_configured`. [IEX controls](alpha-iex-forward.md) have new identities,
+not a relabeling of the original SIP cohort. With no such candidates,
 the worker is healthy and idle; that is not a forward sample. Insufficient history,
 missing minutes and contract mismatches remain unavailable. There is no fallback feed.
 

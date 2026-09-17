@@ -9,7 +9,9 @@ qualification thresholds or the unconditional intraday promotion gate.
 ## What runs
 
 The existing daemon owns one independent, read-only observation loop. The checked-in
-configuration enables SPY, 15m, using the configured Alpaca stock feed. It does not
+configuration enables SPY/QQQ, 15m, using its own `feed: alpaca:iex`.
+Research feed settings are independent of `market_data.alpaca_feed`; there is no
+implicit inheritance or fallback. It does not
 start a broker stream, Telegram poller, execution queue or discovery search.
 Dependencies are injected; SDK reads and artifact/aggregation work run off the
 asyncio loop. Shutdown waits for an in-flight observation before closing its owned
@@ -81,7 +83,8 @@ alongside successes. Existing capacity/backup work applies to these accumulating
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | false in model; true in desk YAML | Daemon starts the observation loop |
-| `symbols` | `[SPY]` | 1–5 explicit unique stock symbols; independent of permission to trade |
+| `feed` | `alpaca:sip` in model; `alpaca:iex` in desk YAML | Exact research feed, independent of trading |
+| `symbols` | `[SPY]` in model; `[SPY, QQQ]` in desk YAML | 1–5 explicit unique stock symbols; independent of permission to trade |
 | `timeframe` | `15m` | `15m`, `1h`, `4h`, or `1d` session windows |
 | `poll_seconds` | 30 | Bounded sampling cadence, 10–60 seconds |
 | `poll_offset_seconds` | 5 | Wall-clock offset, less than ten seconds |

@@ -256,3 +256,8 @@ Source-specific [volume calibration](docs/alpha-volume-calibration.md) uses the 
 daily study harness with frozen training/forward intervals and exact feed identity.
 `alpha volume-study` is research-only. `/alphas` now provides a compact explanation
 and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.
+
+Prospective research workers have explicit `alpha_pipeline.{observations,decisions}.feed`
+settings, independent of trading data. Desk IEX collection and the separately identified
+control cohort are documented in [IEX forward evidence](docs/alpha-iex-forward.md).
+Keep original SIP failures/identities; other-feed candidates remain visible but uncollected.

@@ -262,12 +262,14 @@ database:
 alpha_pipeline:
   observations:
     enabled: true
-    symbols: [SPY]
+    feed: alpaca:iex
+    symbols: [SPY, QQQ]
     timeframe: "15m"
     poll_seconds: 30
     window_seconds: 180
   decisions:
     enabled: true
+    feed: alpaca:iex
     symbols: [SPY, QQQ]
     history_days: 14
     poll_seconds: 30

@@ -101,10 +101,14 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
 async def test_session_worker_finishes_inflight_capture_before_closing_readers(monkeypatch, config, component, factory):
 
     config.alpha_pipeline.observations.enabled = True
+    config.market_data.alpaca_feed = "sip"
+    config.alpha_pipeline.observations.feed = "alpaca:iex"
+    config.alpha_pipeline.decisions.feed = "alpaca:iex"
     entered, release, closed, stopped = asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     @contextmanager
     def readers(*args):
+        assert args == (config, "iex")  # Research feed never inherits trading feed.
         try:
             yield object()
         finally:
@@ -112,7 +116,8 @@ async def test_session_worker_finishes_inflight_capture_before_closing_readers(m
 
     class Observer:
         def __init__(self, *args, **kwargs):
-            pass
+            assert args[2].feed == "alpaca:iex"
+            assert "feed" not in kwargs  # A single policy owns acquisition identity.
 
         async def run_once(self):
             entered.set()

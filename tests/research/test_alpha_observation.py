@@ -50,6 +50,8 @@ def test_clipped_signal_windows_are_shared_with_replay(schedule_for):
         {"timeframe": "5m"},
         {"poll_seconds": 0},
         {"window_seconds": 1},
+        {"feed": "sip"},
+        {"feed": "alpaca:unknown"},
     ],
 )
 def test_observation_policy_rejects_unbounded_or_ambiguous_inputs(values):
@@ -75,8 +77,7 @@ async def observer(temp_db, tmp_path, schedule_for, minute_bars):
     service = SessionObservationService(
         repo,
         source,
-        SessionObservationConfig(enabled=True),
-        feed="alpaca:iex",
+        SessionObservationConfig(enabled=True, feed="alpaca:iex"),
         directory=tmp_path / "observations",
         clock=lambda: now[0],
         runtime={"run_id": "fixture"},

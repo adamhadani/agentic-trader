@@ -89,15 +89,12 @@ class SessionObservationService:
         source: SessionDataSource,
         policy: SessionObservationConfig,
         *,
-        feed: str,
         directory: Path,
         clock=None,
         runtime: dict,
     ):
-        if feed not in ("alpaca:iex", "alpaca:sip"):
-            raise ValueError("Explicit deployment stock feed required")
         self.repository, self.source, self.policy = repository, source, policy.model_copy(deep=True)
-        self.feed, self.directory, self.runtime = feed, directory, runtime
+        self.feed, self.directory, self.runtime = self.policy.feed, directory, runtime
         self.clock = clock or (lambda: datetime.now(UTC))
         self._lock = asyncio.Lock()
         self._calendar: tuple[TradingSession, ...] = ()
@@ -106,7 +103,6 @@ class SessionObservationService:
         self.policy_document = {
             "version": OBSERVATION_VERSION,
             "bar_layout": SESSION_BAR_LAYOUT,
-            "feed": feed,
             **policy.model_dump(exclude={"enabled"}),
         }
         self.policy_id = hashlib.sha256(encode(self.policy_document).encode()).hexdigest()
