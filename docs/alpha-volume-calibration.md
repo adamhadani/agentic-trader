@@ -80,3 +80,8 @@ and unchanged registry. Parameterized actual SDK TCP + SQLite/disposable Postgre
 integration covers both feeds, pagination, exact adjustments, missing data, provider
 rejection, exclusions before reads and journal replay. Source tests and deployed
 health verification are recorded separately in the delivery PR.
+
+The [completed result](alpha-volume-calibration-2026-09-17.md) retains 80/80
+comparisons and an independent reconstruction with zero threshold discrepancy.
+IEX forward event rates were 6.45% in 2022 and 10.16% in 2023, versus the nominal
+10% training tail. Distribution shift remains; no live policy/registry change.

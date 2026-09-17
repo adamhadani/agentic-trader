@@ -566,7 +566,7 @@ class TelegramHtmlFormatter:
         lines.extend(
             [
                 "",
-                "<b>Shadow</b> = saved candidates under evaluation. Shadow candidates cannot place orders.",
+                "<b>Shadow</b> = saved candidates for evaluation. Shadow candidates cannot place orders.",
                 f"<b>Live-data checks · last {evidence['days']} days</b>",
                 "Forward diagnostics check new observations as they arrive; they are not a historical backtest.",
             ]
@@ -575,7 +575,7 @@ class TelegramHtmlFormatter:
         if rows:
             recorded = sum(row["recorded_decisions"] for row in rows)
             scored = sum(row["counts"]["scored"] for row in rows)
-            lines.append(f"Monitoring {len(rows)} candidate/symbol pairs.")
+            lines.append(f"Scope: {len(rows)} candidate/symbol pairs.")
             lines.append(
                 f"{scored:,} of {recorded:,} recorded evaluations scored."
                 if recorded

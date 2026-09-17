@@ -293,3 +293,10 @@ records individual-equity universe expansion, point-in-time membership/delisting
 contracts, bounded broader-panel resources, intraday volume seasonality, prospective
 IEX receipts and exact calibration/plan execution identity. These are unfinished;
 source normalization alone creates neither predictive edge nor paper eligibility.
+
+Read-only forward audit during PR #58: 78/78 current session evaluations were
+unavailable, each with retained HTTP 403 evidence. The existing single-feed decision
+worker rejects mixed deployment feeds; successful prospective IEX observation needs
+explicit composition/configuration and immutable feed identity, not a per-command
+fallback. This takes immediate priority alongside dated stock-universe preparation.
+Worker/process readiness alone cannot establish alpha data quality.

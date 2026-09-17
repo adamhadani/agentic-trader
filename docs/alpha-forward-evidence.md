@@ -73,6 +73,6 @@ worker into this report. Telegram uses the existing generic chunked reply helper
 These checks establish software behavior, not elapsed live forward evidence.
 
 Review the fixed six-control cohort after actual exchange sessions. Preserve missing
-and failed decisions. Execution/qualification gates remain unchanged. The next
-[roadmap item](alpha-roadmap.md#next-work-after-the-etf-session-campaign) is a shared,
-versioned resting-order/holding-lifetime contract with broker cancellation recovery.
+and failed decisions. Execution/qualification gates remain unchanged. The [shared timed-order lifecycle](alpha-trade-lifetimes.md) is implemented;
+prospective feed/execution evidence and broader discovery remain in the
+[current roadmap](alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities).

@@ -374,7 +374,7 @@ qualified shadow credit or synthetic Telegram messages follow from these diagnos
 
 ## Optional timed session policies
 
-[Trade lifetimes](alpha-trade-lifetimes.md) add immutable elapsed-UTC entry/holding intent to explicit session definitions. Historical execution dictionaries retain their hashes and unlimited GTC semantics. Replay and broker orchestration share deadline functions; timed replay remains idealized full-size OHLC execution, so SDK integration coverage does not replace prospective broker evidence. Timed policies remain subject to the existing session qualification/activation/admission gates. The ordered next experiment is a frozen continuous study; prior campaign failures are retained.
+[Trade lifetimes](alpha-trade-lifetimes.md) add immutable elapsed-UTC entry/holding intent to explicit session definitions. Historical execution dictionaries retain their hashes and unlimited GTC semantics. Replay and broker orchestration share deadline functions; timed replay remains idealized full-size OHLC execution, so SDK integration coverage does not replace prospective broker evidence. Timed policies remain subject to the existing session qualification/activation/admission gates. The continuous and persistent-book studies are complete; prior campaign failures remain retained. Current priorities live in the [alpha roadmap](alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities).
 
 The [persistent ETF book experiment](alpha-persistent-book.md) uses the shared
 panel journal and explicit adjusted-price accounting. It is research-only: reserve

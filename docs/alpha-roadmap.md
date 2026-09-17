@@ -32,8 +32,8 @@ also recognize controlled positive cases and quantify its statistical power.
 | A1b | Implemented — [PR #36](https://github.com/adamhadani/agentic-trader/pull/36), [study results](alpha-study-2026-09-16.md) | All 1,952 jobs retained; scientific status incomplete (22 unavailable comparisons). No replacement gate accepted. |
 | A2 | A2a implemented — [PR #37](https://github.com/adamhadani/agentic-trader/pull/37); A2b replay groundwork — [PR #38](https://github.com/adamhadani/agentic-trader/pull/38) | [Replay contract](alpha-session-replay.md) and [four-run evidence](alpha-session-replay-2026-09-16.md): SIP coverage complete, IEX incomplete in both windows. Live signal-clock migration and broker execution observations remain; intraday promotion stays blocked. |
 | A3 | Forecast benchmark prerequisite — [PR #43](https://github.com/adamhadani/agentic-trader/pull/43); [PR #44](https://github.com/adamhadani/agentic-trader/pull/44) timing/cost screen complete; standalone open-gap policy paused; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
-| A4 | Planned | Broader economic hypotheses and point-in-time universe/data coverage. |
-| A5 | Planned | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
+| A4 | ETF/panel/source groundwork implemented; individual-equity evidence next | Broader economic hypotheses and point-in-time universe/data coverage. |
+| A5 | Forward diagnostics implemented; campaign orchestration remains | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
 
 A1a makes A1b reproducible. A2 can follow those foundations while any longer A1b
 forward experiment accumulates evidence. A3–A5 may need small prerequisite adapters;
@@ -50,7 +50,7 @@ the initial and corrected study evidence. Neither is approval of a 5% error-cont
 claim. A1b adds predeclared scenarios, block-length sensitivity, ARCH comparisons
 and adaptive-search replay. Its [results](alpha-study-2026-09-16.md) expose return
 coverage and execution/objective limitations; no gate replacement is justified.
-**Current: A2b**, session/fine-bar execution replay. A2a corrected the return clock
+**A2b replay groundwork is implemented**; forward/execution evidence remains. A2a corrected the return clock
 and repeated calibration with a versioned policy and fresh validation: all 1,952
 jobs completed, null-search criteria passed, but planted-signal power remains
 insufficient. No replacement gate is justified by the [fresh results](alpha-timeline-study-2026-09-16.md).
@@ -375,7 +375,7 @@ hypotheses have negative mean IC and lose before costs. No detected arithmetic/c
 bug explains the outcome; no threshold or direction was changed. At study completion, lifetime
 attempts: **7,312**; registry generation 10, active 0/shadow 10, no new qualification.
 
-**Next ordered increment:** the deadline/retuner safeguards and SPY postmortem are
+**Historical ordering after the sector-panel result (completed below):** the deadline/retuner safeguards and SPY postmortem are
 complete. [Automatic raw-provider evidence](market-data-evidence.md) now retains
 pages before SDK parsing and preserves acquisition failures. Recent-SIP permission
 still requires an operator entitlement/feed decision. Freeze a small economically different, slower-turnover
@@ -395,8 +395,8 @@ Production still arbitrates individual candidates; the convex allocator is shado
 1. **Implemented: operational safeguards / legacy containment.** Shared bounded
    read capacity, Alpaca socket deadlines and an exact-feed recent-access doctor probe.
    The divergent retuner, scheduler/config-export path and optional VectorBT engine
-   are removed. Recent-SIP permission still requires an operator entitlement/feed
-   decision; success of a process or empty request is not freshness evidence.
+   are removed. Recent-SIP permission remains unavailable; the operator selected separate IEX
+   evaluation (implemented below), without authorizing a silent live feed switch; success of a process or empty request is not freshness evidence.
 2. **Implemented: automated data provenance.** The [SPY-minute postmortem](alpha-spy-minute-postmortem-2026-09-17.md)
    found all four gaps already absent from two fresh raw SIP responses, with no cleaning
    loss or revisions in 16,654 shared rows. Original failed evidence remains immutable.
@@ -460,7 +460,7 @@ qualification/forward evidence remain required before portfolio execution.
 
 ### Source calibration and individual equities — current ordered priorities
 
-1. **Implement and measure source-specific volume calibration.** The [frozen daily
+1. **Implemented and measured: source-specific volume calibration.** The [frozen daily
    SIP/IEX protocol](alpha-volume-calibration.md) fits prior-period relative-volume
    distributions and retains later drift/coverage evidence. No fixed IEX-to-SIP
    multiplier, live threshold replacement or promotion credit. Intraday seasonality
@@ -497,3 +497,15 @@ corporate-action complexity; they were not an architectural requirement. Alpaca'
 asset/status metadata. We must not infer historical index membership or historical
 shortability from that current response. Options/futures still require separate
 contract/lifecycle/data work; they rank below liquid equities and simple baselines.
+
+Source calibration completed: [80/80 retained comparisons](alpha-volume-calibration-2026-09-17.md),
+40 feed/symbol/fold profiles and exact independent numeric agreement; 7,637 lifetime
+attempts, registry unchanged at generation 10 / active 0 / shadow 10. Annual and
+per-symbol event-rate drift persists. Read-only operational review found **78/78 session captures unavailable**, all with
+retained HTTP 403 evidence; this is consistent with the separately probed recent-SIP
+entitlement refusal. Collector readiness is not successful observation evidence.
+**Immediate next priority:** separately bound prospective IEX acquisition, without
+changing original SIP alpha identities or falling back silently. Test actual receipt,
+coverage and decision latency; daily volume calibration does not authorize intraday
+reuse. Prepare item 2's dated individual-equity universe alongside this data work,
+then run the bounded stock/ETF forecast campaign.
