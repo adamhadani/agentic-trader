@@ -210,3 +210,27 @@ persistence and cumulative trials. [IC review](alpha-information-coefficient.md)
 identifies overlapping time-series ICIR, gap/fold compression and numeric unavailable
 fallbacks as measurement debt; replace through a versioned contract, not aliases or
 retroactive qualification. Keep P&L/cost and statistical evidence separate.
+
+## Sector-panel measurement boundary — September 17
+
+The [panel increment](alpha-sector-panel.md) reuses the observed-calendar SDK adapter,
+causal DSL/forecast targets, pure panel operators and diagnostic journal/artifacts.
+An injected service owns acquisition/offloading; no new schema, execution queue,
+notification path or live strategy authority is added. Rank IC observations carry
+explicit target/axis/policy and retain unavailable dates. HAC runs per fold rather
+than stitching windows or inventing effective sample sizes. Basket proxies have
+explicit gross/net weights, ties and entry/exit notional costs; native bar labels
+are distinct from assumed availability and cannot masquerade as broker fill times.
+
+Accepted limits: normalized rather than lossless raw responses; publication/auction
+assumptions; no intrahorizon marking/protection, borrow or corporate-action accounting;
+curated rather than point-in-time membership; uncheckpointed CPU work and legacy miner
+IC migration/calibration. A research screen cannot bypass existing qualification or
+single-owner execution. Preserve these limits when evaluating any apparent winner.
+
+The [completed panel audit](alpha-sector-panel-2026-09-17.md) found full native daily
+coverage and independently matching arithmetic, but zero passes. Next address lossless
+provider/normalization evidence in the shared data boundary, then explicit total-return,
+turnover and execution assumptions for a new bounded study. Preserve the distinction
+between a pure payoff diagnostic and a broker-capable strategy; a different horizon or
+cost model must not become an undocumented shim to rescue a failed hypothesis.

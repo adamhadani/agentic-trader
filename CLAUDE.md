@@ -205,8 +205,7 @@ The [frozen ETF session campaign](docs/alpha-session-campaign-2026-09-17.md) com
 coverage. None passed every rule: QQQ momentum's positive cost-stressed returns had
 only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for diagnostic
 forward observation, not activation or qualifying shadow credit. Preserve the failed
-triage result; timed order/holding lifetimes are implemented. The continuous campaign now tests
-new timed policies while measured forward/lifecycle evidence accumulates, before causal panel expansion.
+triage result; timed order/holding lifetimes are implemented. The continuous and sector-panel campaigns are complete; measured forward/lifecycle evidence continues to accumulate.
 
 Inspect `copilot alpha forward --days 7` or `/alphas` for the [shared forward evidence report](docs/alpha-forward-evidence.md). It counts canonical outcomes and measured receipts, exposes gaps/truncation, and grants no qualification credit. Recorded-score fractions are not complete calendar coverage; readiness remains a separate freshness check.
 
@@ -219,5 +218,18 @@ The [continuous timed ETF campaign](docs/alpha-continuous-campaign.md) pairs the
 The [completed continuous study](docs/alpha-continuous-campaign-2026-09-17.md)
 retains 36 complete runs and 12 SPY coverage failures. QQQ momentum has 415 closes
 and positive primary-cost returns, but fails cost stress; zero alphas promoted.
-Next: causal ETF panels with explicit [Rank IC/ICIR contracts](docs/alpha-information-coefficient.md).
+The sector-panel path adds explicit [Rank IC/ICIR contracts](docs/alpha-information-coefficient.md).
 Existing miner ICIR is overlapping, single-symbol and unannualized.
+
+`copilot alpha panel-study PROTOCOL --output NEW_PRIVATE_DIRECTORY` runs the
+[frozen sector-panel research path](docs/alpha-sector-panel.md): observed-calendar
+native daily inputs, causal relative features, cross-sectional IC/HAC and five-session
+basket/cost diagnostics. All 32 declared comparisons and every member's inspected
+interval are journaled before provider access. It sends no orders or notifications,
+grants no qualification/registry credit and leaves weekly mining unchanged.
+
+The [completed sector-panel study](docs/alpha-sector-panel-2026-09-17.md) retains
+32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
+Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
+gains. All formulas remain research-only; active alphas remain zero. The next
+priority is lossless raw-provider provenance before a newly frozen turnover-aware study.

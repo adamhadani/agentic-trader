@@ -1,0 +1,87 @@
+{
+  "plan": {
+    "authorizes_promotion": false,
+    "availability": "Historical native daily completion assumed by next local midnight; receipts are not backdated",
+    "benchmark": "SPY",
+    "campaign_id": "sector-panel-v1",
+    "charged_trials": 32,
+    "costs_bps": [
+      0.0,
+      1.0,
+      5.0
+    ],
+    "end": "2023-12-31",
+    "feed": "alpaca:sip",
+    "folds": [
+      {
+        "end": "2022-12-31",
+        "name": "2022",
+        "start": "2022-01-01"
+      },
+      {
+        "end": "2023-12-31",
+        "name": "2023",
+        "start": "2023-01-01"
+      }
+    ],
+    "horizon_sessions": 5,
+    "hypotheses": [
+      {
+        "beta_window": null,
+        "expression": "roc(close, 60) - roc(close, 5)",
+        "name": "sector_momentum"
+      },
+      {
+        "beta_window": null,
+        "expression": "-roc(close, 5)",
+        "name": "sector_reversal"
+      },
+      {
+        "beta_window": null,
+        "expression": "roc(close, 20) / realized_vol(returns, 20)",
+        "name": "vol_scaled_momentum"
+      },
+      {
+        "beta_window": 60,
+        "expression": "roc(close, 60) - roc(close, 5)",
+        "name": "beta_adjusted_momentum"
+      }
+    ],
+    "ic": {
+      "confidence": 0.95,
+      "hac_lags": 20,
+      "min_assets": 9,
+      "min_observations": 200,
+      "observations_per_year": 252
+    },
+    "payoff_scope": "Gross at most one, half-long/half-short rank baskets; flat between disjoint fixed-horizon proxies",
+    "start": "2021-01-01",
+    "symbols": [
+      "XLB",
+      "XLE",
+      "XLF",
+      "XLI",
+      "XLK",
+      "XLP",
+      "XLU",
+      "XLV",
+      "XLY"
+    ],
+    "target": {
+      "horizon_bars": 5,
+      "label": "observed_next_open_to_close_v1",
+      "timeframe": "1d"
+    },
+    "top_k": 3,
+    "universe_scope": "Fixed curated cohort; not historical point-in-time membership or execution eligibility",
+    "version": "native_daily_panel_diagnostics_v1"
+  },
+  "triage": {
+    "maximum_positive_basket_share": 0.5,
+    "minimum_baskets": 90,
+    "minimum_ic_dates_per_fold": 200,
+    "minimum_mean_ic": 0.03,
+    "primary_cost_bps": 1.0,
+    "stress_cost_bps": 5.0
+  }
+}

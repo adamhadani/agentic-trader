@@ -304,8 +304,9 @@ observation. No session alpha is activated by these increments.
    QQQ momentum now has 415 closes but fails the frozen 5 bp cost stress. No complete
    triage pass. Annual development runs are not untouched confirmation; old failures
    remain failed and calendar/acquisition partitions never reset trading state.
-4. Add causal aligned ETF panels for relative/residual hypotheses, retaining benchmark
-   and joint-risk comparisons. Momentum variants and SPY/QQQ returns were highly
+4. The [causal sector-panel study](alpha-sector-panel-2026-09-17.md) now implements
+   aligned relative/beta-adjusted diagnostics: 32/32 complete, zero passes. Retain
+   benchmark and joint-risk comparisons for subsequent studies. Momentum variants and SPY/QQQ returns were highly
    correlated in the inspected sample; separate formulas are not independent risk.
 
 Keep execution/qualification gates, weekly bounded discovery and existing single-owner
@@ -338,11 +339,12 @@ and 10 triggered decisions; elapsed wall time or a healthy collector is insuffic
 
 ### Next delivery after the continuous campaign
 
-1. Pair causal ETF-panel alignment and relative/residual hypotheses with the
+1. The [sector-panel implementation and frozen study](alpha-sector-panel.md) now
+   pair causal alignment and relative/beta-adjusted hypotheses with the
    [IC measurement contract](alpha-information-coefficient.md). Existing rolling
    single-symbol ICIR is unannualized and overlaps; it cannot use cross-sectional
-   or IID t-stat rules directly. Define/test units, coverage, fold boundaries and
-   dependence-aware uncertainty before a bounded frozen actual-data experiment.
+   or IID t-stat rules directly. Units, coverage, fold boundaries and uncertainty
+   are tested; the [actual-data study](alpha-sector-panel-2026-09-17.md) is complete.
 2. Trace raw SPY coverage/normalization without replacing the frozen failed evidence.
    Retain omitted/null raw rows and normalization outcomes; existing `dropna()`
    prevents definitive supplier-versus-cleaner attribution from saved frames.
@@ -350,8 +352,34 @@ and 10 triggered decisions; elapsed wall time or a healthy collector is insuffic
    is a stress assumption, not a measured cost; do not reduce it to rescue this study.
    Session qualification/execution and multi-owner portfolio gates remain unchanged.
 
-Outcome scoreboard: 48 charged attempts; 36 complete/12 unavailable; 0 full triage
+Continuous-campaign scoreboard at its completion: 48 charged attempts; 36 complete/12 unavailable; 0 full triage
 passes; 0 qualifications/promotions; 7,280 lifetime attempts; registry generation 10
 with 0 active/10 shadow versions. Three QQQ momentum variants pass the primary
 economic screens but all fail cost stress. This supports testing a different
 information/turnover structure instead of another search over the same formulas.
+
+### Sector-panel delivery
+
+The frozen `sector-panel-v1` study expands from two single-ETF entry policies to
+nine sector ETFs ranked cross-sectionally, using SPY only as a beta reference.
+Four fixed hypotheses × two annual development folds × IC/three cost scenarios
+charge 32 comparisons. Native daily acquisition, five-session nonoverlapping basket
+proxies and explicit rank/uncertainty contracts test different information and turnover
+patterns. Preserve the distinction between a contextual 0.03 IC research screen,
+conditional inference, formal qualification and actual portfolio execution.
+
+The [completed independent audit](alpha-sector-panel-2026-09-17.md) retains 32/32
+comparisons, complete daily coverage and zero passes. Volatility-scaled momentum has
+mean IC 0.0136, +3.63% at 1 bp, −4.27% at 5 bp and 84.78% gain concentration. Other
+hypotheses have negative mean IC and lose before costs. No detected arithmetic/coverage
+bug explains the outcome; no threshold or direction was changed. Latest lifetime
+attempts: **7,312**; registry generation 10, active 0/shadow 10, no new qualification.
+
+**Next ordered increment:** lossless raw-provider/normalization provenance and the
+retained SPY-minute postmortem. Then freeze a small economically different, slower-
+turnover relative/residual ETF experiment with explicit total-return/borrow assumptions;
+charge every horizon/buffer/cohort comparison before acquisition. No post-hoc rerun
+belongs to the failed protocol and no best-of-failures candidate gains forward or
+paper-trading credit. Continue actual receipts and independent quote/fill cost evidence.
+Corporate actions, temporal availability, legacy miner metric migration/calibration,
+multi-owner protection and worker checkpoints remain explicit dependencies.

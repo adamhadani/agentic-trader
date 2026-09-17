@@ -183,15 +183,27 @@ The [frozen ETF session campaign](docs/alpha-session-campaign-2026-09-17.md) com
 coverage. None passed every rule: QQQ momentum's positive cost-stressed returns had
 only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for diagnostic
 forward observation, not activation or qualifying shadow credit. Preserve the failed
-triage result; timed order/holding lifetimes are implemented. The continuous campaign now tests
-new timed policies while measured forward/lifecycle evidence accumulates, before causal panel expansion.
+triage result; timed order/holding lifetimes are implemented. The continuous and sector-panel campaigns are complete; measured forward/lifecycle evidence continues to accumulate.
 
-Timed session research supports [immutable entry/holding lifetimes](docs/alpha-trade-lifetimes.md), shared with the broker lifecycle service. `alpha replay` accepts paired `--entry-lifetime-seconds` and `--holding-lifetime-seconds`; omitted limits preserve existing GTC behavior. Cancellation recovery, risk fencing and close intents reuse the execution journal/outbox. Session alphas remain diagnostic-only; the next research step is a predeclared continuous study under a frozen lifetime policy.
+Timed session research supports [immutable entry/holding lifetimes](docs/alpha-trade-lifetimes.md), shared with the broker lifecycle service. `alpha replay` accepts paired `--entry-lifetime-seconds` and `--holding-lifetime-seconds`; omitted limits preserve existing GTC behavior. Cancellation recovery, risk fencing and close intents reuse the execution journal/outbox. Session alphas remain diagnostic-only; the completed continuous study and subsequent sector-panel experiment retain separate frozen protocols.
 
 The [continuous timed ETF campaign](docs/alpha-continuous-campaign.md) pairs the new lifetime contract with actual-data discovery: 48 frozen comparisons and a new trend/pullback hypothesis. Replay supports one continuous year with bounded acquisition chunks; trial/holdout accounting and session activation gates remain intact. Report research yield separately from deployment readiness.
 
 The [completed continuous study](docs/alpha-continuous-campaign-2026-09-17.md)
 retains 36 complete runs and 12 SPY coverage failures. QQQ momentum has 415 closes
 and positive primary-cost returns, but fails cost stress; zero alphas promoted.
-Next: causal ETF panels with explicit [Rank IC/ICIR contracts](docs/alpha-information-coefficient.md).
+The sector-panel path adds explicit [Rank IC/ICIR contracts](docs/alpha-information-coefficient.md).
 Existing miner ICIR is overlapping, single-symbol and unannualized.
+
+`copilot alpha panel-study PROTOCOL --output NEW_PRIVATE_DIRECTORY` runs the
+[frozen sector-panel research path](docs/alpha-sector-panel.md): observed-calendar
+native daily inputs, causal relative features, cross-sectional IC/HAC and five-session
+basket/cost diagnostics. All 32 declared comparisons and every member's inspected
+interval are journaled before provider access. It sends no orders or notifications,
+grants no qualification/registry credit and leaves weekly mining unchanged.
+
+The [completed sector-panel study](docs/alpha-sector-panel-2026-09-17.md) retains
+32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
+Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
+gains. All formulas remain research-only; active alphas remain zero. The next
+priority is lossless raw-provider provenance before a newly frozen turnover-aware study.

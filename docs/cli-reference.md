@@ -269,6 +269,7 @@ uv run copilot alpha mine --symbol SPY --feed alpaca --interval 1d --lookback 5y
 uv run copilot alpha mine --universe etf32 --feed alpaca --method genetic --iterations 9 --max-seconds 120
 uv run copilot alpha benchmark RUN_ID --method ridge --budget 5 --horizon 1
 uv run copilot alpha benchmark RUN_ID --method single --budget 7 --horizon 5
+uv run copilot alpha panel-study config/research/sector-panel-v1.json --output /private/path/new-panel
 uv run copilot alpha qualify RUN_ID VERSION_ID
 uv run copilot alpha shadow VERSION_ID --generation N
 uv run copilot alpha promote VERSION_ID --generation N
@@ -423,3 +424,13 @@ no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-po
 `copilot alpha replay EXPRESSION --symbol SPY --start YYYY-MM-DD --end YYYY-MM-DD --entry-lifetime-seconds 300 --holding-lifetime-seconds 86400` declares both elapsed-UTC lifetimes in a new immutable execution policy. Both options are required together, each 1–2,678,400 seconds. Omit both to preserve the original GTC contract. Entry age starts at simulated submission; holding age starts at simulated full fill. These flags do not change current positions, promote alphas, or place orders. See [trade lifetimes](alpha-trade-lifetimes.md).
 
 Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation.
+
+### Native daily panel diagnostics
+
+`alpha panel-study PROTOCOL --output DIRECTORY` requires a new output directory and
+a complete frozen plan/screen JSON. It charges the full hypothesis/fold/IC/cost matrix
+and excludes member/benchmark/warmup intervals before acquisition. It retains source
+arrays, receipts, manifests, IC series, basket weights/costs and a separate screen
+report. Failed acquisition/coverage exits nonzero without refunding attempts; existing
+outputs are never overwritten. This is intentional research persistence, not a dry
+run or permission to submit a basket. See [panel contracts](alpha-sector-panel.md).
