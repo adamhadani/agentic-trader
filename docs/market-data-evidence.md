@@ -38,7 +38,8 @@ Private layout under `~/.local/state/agentic-trader/market-data/YYYY-MM-DD/UUID/
 | `result.json` | Page hashes/counts, normalization fingerprint or typed failure |
 
 Directories are created with mode 0700 and files with mode 0600. Tests use
-`COPILOT_TEST_ROOT/market-data`. Raw pages stay out of Git. Logs emit the capture
+`COPILOT_TEST_ROOT/market-data`; test mode without that root refuses artifact access.
+Raw pages stay out of Git. Logs emit the capture
 UUID, artifact hash and status using the existing structured logger; they do not
 emit bar payloads, auth headers, credentials or raw exception messages.
 

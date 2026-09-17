@@ -22,6 +22,8 @@ RUN_ID = str(uuid4())
 def state_directory() -> Path:
     """Private application artifacts; tests stay within their isolated root."""
     root = os.environ.get("COPILOT_TEST_ROOT")
+    if os.environ.get("COPILOT_ENV") == RuntimeEnvironment.TEST and not root:
+        raise ValueError("Test artifact access requires COPILOT_TEST_ROOT.")
     return Path(root) if root else Path.home() / ".local/state/agentic-trader"
 
 
