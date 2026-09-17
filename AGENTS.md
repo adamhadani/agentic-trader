@@ -88,3 +88,8 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   Require receipt-stamped session snapshots and shared delay/expiry selection. Session
   versions remain diagnostic-only until acquisition, durable decision scheduling and
   execution evidence are complete. See [session decisions](docs/alpha-session-decisions.md).
+
+- Forecast benchmarks use explicit target horizons and purged training labels; retain
+  plans/trial charges/artifacts through the existing diagnostic journal. Forecast
+  metrics are not strategy P&L or qualification evidence. See
+  [forecast benchmarks](docs/alpha-forecast-benchmarks.md).

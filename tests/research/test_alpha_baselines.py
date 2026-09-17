@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from agentic_trader.research.alpha.baselines import benchmark_models
+from agentic_trader.research.alpha.baselines import ForecastBenchmarkPlan, ForecastTarget, benchmark_models
 from agentic_trader.research.alpha.miner import AlphaMiner
 
 
@@ -31,7 +31,9 @@ def test_methods_have_fixed_budget_and_never_select_on_holdout(baseline_market, 
             miner = AlphaMiner(seed=17)
             miner.mine(frame, iterations=3, include_catalog=False, method=method)
             return miner.last_run
-        return benchmark_models(frame, timeframe="1d", method=method, seed=17, budget=3)
+        return benchmark_models(
+            frame, ForecastBenchmarkPlan(ForecastTarget("1d"), method=method, seed=17, budget=3)
+        ).document()
 
     initial = run(baseline_market)
     changed = baseline_market.copy()

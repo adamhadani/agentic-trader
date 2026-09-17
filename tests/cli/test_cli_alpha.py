@@ -1,17 +1,22 @@
 """Public commands use journal evidence, never direct unverified YAML promotion."""
 
+import asyncio
 import json
 from contextlib import nullcontext
+from dataclasses import asdict
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from agentic_trader.cli.commands.alpha import download_bars
+from agentic_trader.cli.commands.alpha import alpha_repository, download_bars
 from agentic_trader.cli.main import cli
+from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.study import MarketScenario, PanelScenario, StudyProtocol
+from agentic_trader.research.alpha.validation import DatasetManifest, ValidationPolicy
 
 
 @pytest.mark.parametrize("command", ["catalog", "list", "export"])
@@ -214,3 +219,60 @@ def test_session_replay_cli_persists_failed_attempt_without_broker_or_notifier(m
     assert report["status"] == "failed" and not report["authorizes_promotion"]
     status = CliRunner().invoke(cli, ["alpha", "status"])
     assert json.loads(status.output)["research_family"]["trial_count"] == 1
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_forecast_benchmark_cli_retains_success_and_failure(tmp_path, missing):
+    rng = np.random.default_rng(14)
+    close = 100 * np.exp(rng.normal(0, 0.01, 500).cumsum())
+    bars = pd.DataFrame(
+        {
+            "open": close,
+            "high": close * 1.01,
+            "low": close * 0.99,
+            "close": close,
+            "volume": rng.integers(1000, 10000, 500),
+        },
+        index=pd.date_range("2020-01-01", periods=500, tz="UTC"),
+    )
+    bars.attrs.update(timeframe="1d", feed="synthetic", adjustment="raw")
+    manifest = DatasetManifest.from_frame(
+        bars, symbol="SPY", timeframe="1d", feed="synthetic", adjustment="raw", universe_version="fixture"
+    ).to_dict()
+    path = save_dataset(bars, tmp_path, manifest["content_hash"])
+    manifest.update(artifact=str(path), holdout_start=str(bars.index[400]))
+
+    async def setup():
+        async with alpha_repository() as repo:
+            await repo.record_run(
+                "fixture",
+                {"policy": asdict(ValidationPolicy()), "trial_count": 0, "trials": [], "holdout_start": 400},
+                manifest,
+            )
+
+    asyncio.run(setup())
+    if missing:
+        path.unlink()
+    output = tmp_path / "benchmark"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "alpha",
+            "benchmark",
+            "fixture",
+            "--method",
+            "single",
+            "--budget",
+            "2",
+            "--horizon",
+            "5",
+            "--output",
+            str(output),
+        ],
+    )
+    assert result.exit_code == int(missing), result.output
+    document = json.loads((output / "result.json").read_text())
+    assert document["status"] == ("failed" if missing else "completed")
+    assert not document["authorizes_promotion"]
+    status = CliRunner().invoke(cli, ["alpha", "status"])
+    assert json.loads(status.output)["research_family"]["trial_count"] == 2

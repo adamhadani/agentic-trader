@@ -198,6 +198,13 @@ Combined portfolio execution stays disabled. Versioned rebalance plans, post-rou
 risk, partial-fill attribution and shared protective-order ownership must be implemented
 and exercised through the existing execution services before enabling it.
 
+## Forecast-component research
+
+`alpha benchmark` now compares explicit-horizon single-feature, Ridge and boosted
+forecasts on the saved discovery prefix. It reports predictive skill and fold coverage,
+not bracket-policy profit or promotion evidence. See the [contract](alpha-forecast-benchmarks.md).
+Old baseline artifacts retain their original meanings; new diagnostics cannot qualify.
+
 ## Commands and cadence
 
 ```bash

@@ -267,7 +267,8 @@ uv run copilot alpha study config/research/a2a-v1.json --output /private/path/ne
 uv run copilot alpha replay 'delta(close,3)' --symbol SPY --interval 15m --start 2024-11-27 --end 2024-11-29 --output /private/path/new-replay
 uv run copilot alpha mine --symbol SPY --feed alpaca --interval 1d --lookback 5y --iterations 25 --method random
 uv run copilot alpha mine --universe etf32 --feed alpaca --method genetic --iterations 9 --max-seconds 120
-uv run copilot alpha benchmark RUN_ID --method ridge --budget 5
+uv run copilot alpha benchmark RUN_ID --method ridge --budget 5 --horizon 1
+uv run copilot alpha benchmark RUN_ID --method single --budget 7 --horizon 5
 uv run copilot alpha qualify RUN_ID VERSION_ID
 uv run copilot alpha shadow VERSION_ID --generation N
 uv run copilot alpha promote VERSION_ID --generation N
@@ -409,3 +410,6 @@ and `--readiness` are mutually exclusive. Active `doctor` probes are separate.
 (default 60) and `--max-lateness-seconds` (default 120). Expired proposals cannot
 become new orders at a later session; already-submitted GTC orders persist. See
 [session decision contracts](alpha-session-decisions.md) and their diagnostic-only limits.
+
+Alpha benchmarks are [forecast diagnostics](alpha-forecast-benchmarks.md) with private
+artifacts and charged trials; they do not simulate orders or authorize promotion.
