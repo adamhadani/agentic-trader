@@ -6,6 +6,7 @@ is charged as a trial; forecasts and their matured labels stay inside discovery.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field, replace
@@ -18,14 +19,14 @@ from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from agentic_trader.market.bars import BAR_DURATIONS
-from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
+from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator, compile_expression
+from agentic_trader.research.alpha.forecast_policy import DailyLongFlatPolicy, PolicyScenario, evaluate_daily_policy
+from agentic_trader.research.alpha.targets import ForecastTarget, forecast_labels
 from agentic_trader.research.alpha.validation import ValidationPolicy, frame_digest, purged_folds, validate_sampling
 
 
-FORECAST_BENCHMARK_VERSION = "forecast_components_v1"
-FORECAST_LABEL = "observed_close_to_close_v1"
-MAX_FORECAST_HORIZON = 60
+FORECAST_BENCHMARK_VERSION = "forecast_components_v2"
+MAX_FORECAST_FEATURES = 32
 MAX_BENCHMARK_TRIALS = 100
 MIN_TRAINING_OBSERVATIONS = 30
 BENCHMARK_METHODS = ("single", "ridge", "boosted")
@@ -41,36 +42,35 @@ ECONOMIC_FEATURES = (
 
 
 @dataclass(frozen=True)
-class ForecastTarget:
-    timeframe: str
-    horizon_bars: int = 1
-
-    def __post_init__(self):
-        if self.timeframe not in BAR_DURATIONS:
-            raise ValueError("Unsupported forecast timeframe")
-        if type(self.horizon_bars) is not int or not 1 <= self.horizon_bars <= MAX_FORECAST_HORIZON:
-            raise ValueError("Invalid forecast horizon")
-
-    def document(self):
-        return {**asdict(self), "label": FORECAST_LABEL}
-
-
-@dataclass(frozen=True)
 class ForecastBenchmarkPlan:
     target: ForecastTarget
     method: str = "ridge"
     budget: int = 5
     seed: int = 20260917
     validation: ValidationPolicy = field(default_factory=ValidationPolicy)
+    features: tuple[str, ...] = ECONOMIC_FEATURES
+    execution: DailyLongFlatPolicy | None = None
 
     def __post_init__(self):
         if self.method not in BENCHMARK_METHODS:
             raise ValueError("Invalid forecast benchmark method")
-        maximum = len(ECONOMIC_FEATURES) if self.method == "single" else MAX_BENCHMARK_TRIALS
+        if not isinstance(self.features, tuple) or not 1 <= len(self.features) <= MAX_FORECAST_FEATURES:
+            raise ValueError("A bounded immutable feature tuple is required")
+        canonical = tuple(ast.unparse(compile_expression(expr).tree) for expr in self.features)
+        if len(set(canonical)) != len(canonical):
+            raise ValueError("Duplicate forecast features")
+        object.__setattr__(self, "features", canonical)
+        if self.execution is not None and (self.target.timeframe != "1d" or self.target.horizon_bars != 1):
+            raise ValueError("Execution proxy requires a daily one-bar horizon")
+        maximum = len(self.features) if self.method == "single" else MAX_BENCHMARK_TRIALS
         if type(self.budget) is not int or not 1 <= self.budget <= maximum:
             raise ValueError("Invalid forecast benchmark budget")
         if type(self.seed) is not int or not 0 <= self.seed < 2**32:
             raise ValueError("Invalid forecast benchmark seed")
+
+    @property
+    def trial_count(self):
+        return self.budget * (1 + (len(self.execution.costs_bps) if self.execution is not None else 0))
 
     def document(self):
         return {
@@ -80,7 +80,9 @@ class ForecastBenchmarkPlan:
             "budget": self.budget,
             "seed": self.seed,
             "validation": asdict(self.validation),
-            "features": list(ECONOMIC_FEATURES),
+            "features": list(self.features),
+            "execution": self.execution.document() if self.execution is not None else None,
+            "charged_trials": self.trial_count,
             "minimum_training_observations": MIN_TRAINING_OBSERVATIONS,
             "trials": [_parameters(self, trial) for trial in range(self.budget)],
         }
@@ -97,6 +99,7 @@ class ForecastTrial:
     predictions: pd.DataFrame
     folds: list[dict]
     metrics: dict
+    execution: list[PolicyScenario] = field(default_factory=list)
 
     def document(self):
         return {
@@ -105,6 +108,7 @@ class ForecastTrial:
             "folds": self.folds,
             "metrics": self.metrics,
             "prediction_hash": frame_digest(self.predictions),
+            "execution": [scenario.document() for scenario in self.execution],
         }
 
 
@@ -120,7 +124,8 @@ class ForecastBenchmark:
             "plan": self.plan.document(),
             "plan_id": self.plan.identity,
             "target": self.plan.target.document(),
-            "trial_count": len(self.trials),
+            "trial_count": self.plan.trial_count,
+            "model_trial_count": len(self.trials),
             "discovery_hash": self.discovery_hash,
             "holdout_start": self.holdout_start,
             "trials": [trial.document() for trial in self.trials],
@@ -154,9 +159,9 @@ def forecast_metrics(observations: pd.DataFrame) -> dict:
 
 def _parameters(plan: ForecastBenchmarkPlan, trial: int):
     if plan.method == "single":
-        return {"features": [ECONOMIC_FEATURES[trial]]}
+        return {"features": [plan.features[trial]]}
     regularization = float(np.logspace(-3, 3, plan.budget)[trial])
-    parameters: dict[str, Any] = {"features": list(ECONOMIC_FEATURES), "regularization": regularization}
+    parameters: dict[str, Any] = {"features": list(plan.features), "regularization": regularization}
     if plan.method == "boosted":
         parameters.update(max_iter=50 + 10 * (trial % 5), max_leaf_nodes=3 + 2 * (trial // 5), learning_rate=0.05)
     return parameters
@@ -186,11 +191,9 @@ def benchmark_models(bars: pd.DataFrame, plan: ForecastBenchmarkPlan) -> Forecas
     holdout = int(len(bars) * (1 - plan.validation.holdout_fraction))
     discovery = bars.iloc[:holdout]
     evaluator = AlphaExpressionEvaluator()
-    features = pd.DataFrame({expr: evaluator.evaluate(expr, discovery) for expr in ECONOMIC_FEATURES})
+    features = pd.DataFrame({expr: evaluator.evaluate(expr, discovery) for expr in plan.features})
     features = features.replace([np.inf, -np.inf], np.nan)
-    close = discovery.rename(columns=str.lower).close
-    valid_close = close.where(np.isfinite(close) & (close > 0))
-    labels = (valid_close.shift(-horizon) / valid_close - 1).replace([np.inf, -np.inf], np.nan)
+    labels = forecast_labels(discovery, plan.target)
     trials = []
     for trial in range(plan.budget):
         parameters = _parameters(plan, trial)
@@ -240,5 +243,8 @@ def benchmark_models(bars: pd.DataFrame, plan: ForecastBenchmarkPlan) -> Forecas
             )
             predictions.append(observations)
         combined = pd.concat(predictions)
-        trials.append(ForecastTrial(trial, parameters, combined, evidence, forecast_metrics(combined)))
+        policy_results = (
+            evaluate_daily_policy(discovery, combined, evidence, plan.execution) if plan.execution is not None else []
+        )
+        trials.append(ForecastTrial(trial, parameters, combined, evidence, forecast_metrics(combined), policy_results))
     return ForecastBenchmark(plan, frame_digest(discovery), holdout, trials)

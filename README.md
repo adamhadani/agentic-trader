@@ -166,3 +166,7 @@ Forecast research: `copilot alpha benchmark RUN_ID --method ridge --budget 5 --h
 compares causal predictions on saved discovery data. See the
 [forecast benchmark guide](docs/alpha-forecast-benchmarks.md) and
 [prioritized alpha roadmap](docs/alpha-roadmap.md). Diagnostic results do not authorize trading.
+
+`alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
+`--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
+no promotion or broker-fill claim; see [timing/cost contracts](docs/alpha-forecast-policy.md).

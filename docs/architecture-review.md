@@ -146,3 +146,9 @@ exposure intervals and diagnostic artifact hashes use the existing journal.
 See [current contract](alpha-forecast-benchmarks.md). Remaining target-aware pooling,
 complete discovery exposure fencing, job recovery/checkpoints, panel data and modern
 search comparisons are ranked in the [canonical alpha roadmap](alpha-roadmap.md#funnel-expansion-ranked-experiments-september-17-review).
+
+The [forecast timing/cost screen](alpha-forecast-policy.md) extends the same benchmark
+service with explicit outcome endpoints and a pure stateless daily payoff evaluator.
+It does not replace the shared bracket execution engine or broker services. New
+policy variants are charged and arrays remain private. Actual auction/quote execution
+coverage and the A2b durable worker remain roadmap prerequisites.

@@ -383,3 +383,7 @@ data. It charges trials and retains private artifacts through the shared journal
 it sends no orders or notifications and does not change the weekly miner cadence.
 See [forecast benchmarks](alpha-forecast-benchmarks.md). Run research outside the
 daemon; broader worker-resource isolation remains a roadmap item.
+
+`alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
+`--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
+no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-policy.md).

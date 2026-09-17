@@ -7,9 +7,10 @@ from dataclasses import asdict
 import pytest
 from sqlalchemy import select
 
-from agentic_trader.research.alpha.baselines import ForecastBenchmarkPlan, ForecastTarget, benchmark_models
+from agentic_trader.research.alpha.baselines import ForecastBenchmarkPlan, benchmark_models
 from agentic_trader.research.alpha.benchmark_workflow import AlphaBenchmarkService
 from agentic_trader.research.alpha.data import load_dataset, save_dataset
+from agentic_trader.research.alpha.targets import ForecastTarget
 from agentic_trader.research.alpha.validation import DatasetManifest, ValidationPolicy
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.models import DomainEventRecord

@@ -93,3 +93,7 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   plans/trial charges/artifacts through the existing diagnostic journal. Forecast
   metrics are not strategy P&L or qualification evidence. See
   [forecast benchmarks](docs/alpha-forecast-benchmarks.md).
+
+`alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
+`--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
+no promotion or broker-fill claim; see [timing/cost contracts](docs/alpha-forecast-policy.md).

@@ -8,10 +8,10 @@ import pytest
 
 from agentic_trader.research.alpha.baselines import (
     ForecastBenchmarkPlan,
-    ForecastTarget,
     benchmark_models,
     forecast_metrics,
 )
+from agentic_trader.research.alpha.targets import ForecastTarget
 
 
 @pytest.fixture
