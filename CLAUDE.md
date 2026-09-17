@@ -273,3 +273,5 @@ complete [dated equity cohort](docs/alpha-equity-universe.md#daily-liquidity-and
 It reuses the daily study service and diagnostic journal, with bounded paced reads,
 immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
 this development screen neither establishes historical membership nor qualifies alphas.
+
+[Screened panel forecasts](docs/alpha-panel-forecasts.md) reuse the daily acquisition/journal service. Keep all frozen members on the exchange clock, derive eligibility only from past bars, and train Ridge only on strictly mature labels with training-only scaling. Freeze weights before inspecting outcomes; missing held outcomes withhold the full curve. The old complete-panel and production qualification contracts remain unchanged. No active alpha or calibrated promotion power is implied by a completed diagnostic.

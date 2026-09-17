@@ -337,3 +337,19 @@ strict studies reject that loss without a liquidity-specific transport or anothe
 persistence schema. The actual run had no row loss. Next priorities remain bounded
 economic/Ridge experiments and prospective evidence, plus authoritative subtypes,
 corporate actions and historical eligibility before qualification.
+
+### Screened equity forecasts and gate power
+
+The [new forecast study](alpha-panel-forecasts.md) reuses daily acquisition, the
+existing event journal and the shared model/scaler boundary. Its separate versioned
+computation handles causal per-date eligibility without weakening complete-book
+contracts. No fallback prices, outcome-selected constituents, new schema or
+production execution authority is introduced. Forecast, label and basket support
+remain separate; unavailable held outcomes prevent full-path compounding.
+
+Open high-value findings: the legacy one-step IC is not aligned with multi-session
+bracket outcomes, lifetime gate power failed planted-edge tests, and lifetime trial
+counts are not demonstrated independent tests. Preserve accounting while running a
+fresh predeclared power ablation before changing that rule. Historical current-cohort
+results retain survivorship/liquidity-selection bias; subtype, delisting, borrow and
+measured execution evidence remain required for qualification.

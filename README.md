@@ -238,3 +238,5 @@ complete [dated equity cohort](docs/alpha-equity-universe.md#daily-liquidity-and
 It reuses the daily study service and diagnostic journal, with bounded paced reads,
 immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
 this development screen neither establishes historical membership nor qualifies alphas.
+
+`alpha forecast-study` now separates explicit-horizon forecast evidence from deployment gates over the [screened equities and ETF controls](docs/alpha-panel-forecasts.md). It preserves past-only eligibility, mature training labels, all model outcomes and cost sensitivity; current membership remains survivor-conditioned development evidence.

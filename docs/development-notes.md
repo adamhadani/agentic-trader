@@ -276,3 +276,5 @@ complete [dated equity cohort](alpha-equity-universe.md#daily-liquidity-and-cove
 It reuses the daily study service and diagnostic journal, with bounded paced reads,
 immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
 this development screen neither establishes historical membership nor qualifies alphas.
+
+[Screened panel forecasts](alpha-panel-forecasts.md) compose a versioned pure computation through `AlphaPanelService`; plan validation binds the complete prior liquidity result, manifest and input evidence. Shared forecast estimator construction serves both single-symbol and panel diagnostics. No additional journal/schema or execution path is introduced. Test causal eligibility, strict label maturity, future perturbations and held/unheld missing outcomes separately from actual data and deployed verification.

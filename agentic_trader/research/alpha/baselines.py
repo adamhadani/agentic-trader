@@ -181,22 +181,25 @@ def _parameters(plan: ForecastBenchmarkPlan, trial: int):
     return parameters
 
 
-def _estimator(plan: ForecastBenchmarkPlan, parameters: dict):
-    if plan.method == "single":
+def build_forecast_estimator(method: str, parameters: dict, *, seed: int):
+    """Construct one unfitted estimator; callers own causal training support."""
+    if method == "single":
         return make_pipeline(StandardScaler(), LinearRegression())
-    if plan.method == "ridge":
+    if method == "ridge":
         return make_pipeline(StandardScaler(), Ridge(alpha=parameters["regularization"]))
+    if method != "boosted":
+        raise ValueError("Unsupported forecast estimator")
     return HistGradientBoostingRegressor(
         max_iter=parameters["max_iter"],
         max_leaf_nodes=parameters["max_leaf_nodes"],
         learning_rate=parameters["learning_rate"],
         l2_regularization=parameters["regularization"],
-        random_state=plan.seed,
+        random_state=seed,
         early_stopping=False,
     )
 
 
-def _fitted_evidence(estimator, method: str, training: pd.DataFrame, target: pd.Series):
+def fitted_forecast_evidence(estimator, method: str, training: pd.DataFrame, target: pd.Series):
     fitted = estimator if method == "boosted" else estimator[-1]
     result = {
         "features": list(training.columns),
@@ -239,7 +242,7 @@ def benchmark_models(bars: pd.DataFrame, plan: ForecastBenchmarkPlan) -> Forecas
             mask = train.notna().all(axis=1) & target.notna()
             if mask.sum() < MIN_TRAINING_OBSERVATIONS:
                 raise ValueError("Insufficient complete training observations")
-            estimator = _estimator(plan, parameters)
+            estimator = build_forecast_estimator(plan.method, parameters, seed=plan.seed)
             estimator.fit(train.loc[mask], target.loc[mask])
             # Keep every eligible validation row; do not fill holes or lose the
             # coverage denominator. Labels must mature within this same fold.
@@ -265,7 +268,7 @@ def benchmark_models(bars: pd.DataFrame, plan: ForecastBenchmarkPlan) -> Forecas
                 {
                     **asdict(fold),
                     "training_observations": int(mask.sum()),
-                    "fitted_model": _fitted_evidence(estimator, plan.method, train.loc[mask], target.loc[mask]),
+                    "fitted_model": fitted_forecast_evidence(estimator, plan.method, train.loc[mask], target.loc[mask]),
                     "diagnostics": {**forecast_diagnostics(observations), "fold": fold_number},
                     "last_training_feature_position": last_training,
                     "last_training_label_position": last_training + horizon,
