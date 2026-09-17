@@ -88,6 +88,9 @@ these results, no promotion and no claim of an independent final test. These per
 have already been used for discovery. Record every completion/failure and fold skill;
 use findings to choose the next *predeclared* experiment, not relax a gate.
 
+The [completed comparison](alpha-forecast-comparison-2026-09-17.md) retains all 78
+trials and three modest forecast leads. No promotion follows.
+
 ## What remains before paper admission
 
 A3 still needs versioned deployable forecast components, causal incumbent-relative
