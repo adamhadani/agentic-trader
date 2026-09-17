@@ -66,8 +66,10 @@ Existing complete-panel/persistent-book contracts remain unchanged.
 
 Each model/fold retains eligibility, prediction and label support, fitted training
 evidence, daily cross-sectional Spearman IC and nonoverlapping basket decisions.
-Statistics use dates as observations, not correlated stock rows as independent
-replications. Constant scores legitimately have undefined Rank IC. HAC is a
+Cross-sectional IC inference uses dates as observations, not correlated stock rows
+as independent replications. `trial.ic` is the daily cross-sectional report;
+`forecast_metrics.rank_ic` is a separate pooled date-symbol diagnostic and must
+not be compared to cross-sectional IC heuristics. Constant scores legitimately have undefined Rank IC. HAC is a
 per-fold serial-dependence diagnostic, not an adaptive-search correction.
 
 Basket weights are fixed using available forecasts before inspecting outcomes.
@@ -80,6 +82,12 @@ The application workflow handles pacing, checkpoints, failed attempts, exclusion
 and immutable private artifacts. No second journal, schema, execution queue or
 daemon is introduced. Scikit-learn's train-only pipeline is the shared model
 boundary; see its [leakage guidance](https://scikit-learn.org/stable/common_pitfalls.html#data-leakage).
+
+## Actual evidence
+
+The [first completed study](alpha-panel-forecasts-2026-09-17.md) retained all 96
+comparisons and found an equity Ridge lead, with positive annual cost-stressed
+basket proxies but unstable annual IC and no promotion authority.
 
 ## Follow-up decisions
 

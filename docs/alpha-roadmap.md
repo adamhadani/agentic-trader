@@ -465,7 +465,7 @@ qualification/forward evidence remain required before portfolio execution.
    distributions and retains later drift/coverage evidence. No fixed IEX-to-SIP
    multiplier, live threshold replacement or promotion credit. Intraday seasonality
    and prospective IEX receipt/coverage/latency remain separate requirements.
-2. **Metadata cohort captured; daily liquidity screen implemented, actual run pending.** Expand the information
+2. **Metadata cohort captured; daily liquidity screen executed and independently verified.** Expand the information
    set to 200–500 individual equities using a dated,
    immutable prospective universe snapshot with stable asset IDs, type/sector source,
    historical/as-of eligibility and observed trailing liquidity. Preserve additions,
@@ -477,7 +477,7 @@ qualification/forward evidence remain required before portfolio execution.
    as a control. Widen the current 64-symbol panel bound only with bounded acquisition,
    memory/CPU tests and a dynamic membership/missing-data contract; simply increasing
    this constant does not implement a valid historical equity panel.
-3. **Run a matched-budget stock/ETF forecast campaign.** Predeclare a few economically
+3. **First matched-budget stock/ETF forecast campaign completed; exposure/endpoint controls pending.** Predeclare a few economically
    distinct families (sector/market-residual momentum, short-horizon reversal with
    liquidity conditioning, overnight/session decomposition), constant/Ridge controls,
    purged walk-forward folds, turnover/cost/borrow stress and factor-neutral incremental
@@ -536,18 +536,20 @@ Independent reconstruction matched all 9,450 raw/normalized bars and every selec
 UUID/metric, with no cleaning loss. Journal ordering was verified separately.
 Lifetime attempts are 7,640; active alphas remain zero. See the linked actual report.
 
-**Next highest priority after that evidence:** freeze a matched-budget
-economic-hypothesis/Ridge-control campaign over the screened cohort, with ETF controls,
-purged chronological labels and declared cost/turnover stress. Current membership
+**Completed next exercise:** the [screened forecast campaign](alpha-panel-forecasts-2026-09-17.md)
+retained all 96 declared comparisons across 64 equities and nine ETF controls,
+with strictly mature chronological labels and declared cost stress. The equity Ridge
+model is a research lead: positive annual basket proxies at both 1 and 5 bp,
+but negative 2024 IC and no annual HAC significance. No alpha was promoted. Current membership
 and current liquidity select a survivor-conditioned development cohort; retrospective
 results cannot establish historical eligibility, a point-in-time tradable universe,
 or qualification. Preserve this limitation rather than selecting historical members
 using future coverage. Prospective confirmation begins after actual selection.
 
-Use the selected cohort for the matched-budget economic/Ridge controls in item 3.
-Keep existing <=64 complete-panel contracts until a separately tested dynamic
-membership/missing-data contract is ready. Bounded acquisition checkpointing is
-now shared across daily studies.
+The separately versioned forecast computation now keeps all frozen members and
+uses only past bars for per-date eligibility. Existing <=64 complete-panel/book
+contracts remain unchanged. Bounded acquisition checkpointing is shared across
+daily studies; all actual forecast/model/basket metrics remain visible.
 Do not broaden the panel constant alone, silently intersect available history,
 reuse future coverage to select historical members, or substitute unavailable names.
 Record coverage and economic results separately, including null or failed outcomes.
@@ -560,3 +562,33 @@ audit reproduced 2 SPY and 52 QQQ absent minutes with zero local row/value loss.
 Record a separate sparse-trade-bar/unknown-execution-price contract and condition-level
 source investigation; preserve existing version semantics and failed windows. This
 intraday limitation does not block the next native-daily equity liquidity/forecast stage.
+
+
+### Next work after the screened-equity forecast study
+
+1. Freeze an exposure/concentration and endpoint-evidence diagnostic before further
+   candidate selection: compare the Ridge lead with matched passive/style controls,
+   distinguish high-volatility reversal exposure from incremental forecasting skill,
+   and define unknown/zero-volume execution endpoints without outcome-based basket
+   substitution. Current results are numerically verified but five names supply
+   74.23% of net arithmetic gain; 2024 loses without its best original basket.
+   The training-mean control is not an exposure benchmark. Retained-data follow-ups
+   remain development evidence, with separately declared/charged comparisons.
+2. Freeze prospective daily panel observations for the equity Ridge lead using
+   the existing observation/journal infrastructure. Persist the exact eligible
+   universe, mature training cutoff, fitted artifact, forecast and frozen basket
+   before outcomes arrive. Keep it diagnostic until complete horizon labels,
+   stability and execution/borrow evidence exist. Historical results from today's
+   surviving/liquid cohort cannot be promoted through the formula/bracket path.
+3. Run the predeclared fresh-seed power ablation: known predictor versus learned
+   winner, forecast skill versus actual bracket conversion, full and drop-one-gate
+   diagnostics. Migrate legacy one-step IC only with horizon-aligned evidence.
+   Keep lifetime accounting; calibrate the decision rule rather than lowering
+   thresholds to pass the newly inspected lead. Nominal test level and acceptable
+   false-positive bound must be distinct protocol parameters.
+4. Obtain authoritative instrument subtype, historical constituent/delisting and
+   borrow/corporate-action evidence; extend economic/capacity tests and eventual
+   executable portfolio ownership before any panel allocation can trade.
+
+No additional genetic/DSL search is justified merely by the previous zero-promotion
+count: this fixed simple model now provides a concrete lead to investigate.
