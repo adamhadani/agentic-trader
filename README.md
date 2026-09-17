@@ -232,3 +232,9 @@ their diagnostic candidates and receipts grant no trading or promotion authority
 The [prospective equity universe](docs/alpha-equity-universe.md) adds a reproducible
 300-name non-ETF candidate cohort with source evidence. It is a metadata snapshot;
 liquidity screening, historical membership and forecast qualification remain separate.
+
+`alpha liquidity-study` now applies a frozen daily liquidity/coverage screen to the
+complete [dated equity cohort](docs/alpha-equity-universe.md#daily-liquidity-and-coverage-screen).
+It reuses the daily study service and diagnostic journal, with bounded paced reads,
+immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
+this development screen neither establishes historical membership nor qualifies alphas.

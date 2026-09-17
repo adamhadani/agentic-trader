@@ -97,20 +97,70 @@ Do not convert today's sample into survivorship-free historical constituents.
 Prospective return/label collection starts strictly after observation; preceding
 prices may support separately declared development features or a liquidity screen.
 
+## Daily liquidity and coverage screen
+
+```bash
+uv run copilot alpha liquidity-study PROTOCOL.json --universe SNAPSHOT.json --output NEW_PRIVATE_DIRECTORY
+```
+
+The source-specific daily screen now consumes the **entire** selected snapshot
+through the existing daily-study acquisition/journal service. Its frozen protocol
+binds the snapshot hash, feed, raw native-daily semantics, observed exchange
+calendar, acquisition interval, trailing lookback and selection rules. A consumer
+cannot supply a preferred subset or replace asset UUIDs/symbols. The snapshot's
+receipt must precede the screen's actual observation time, and every inspected
+daily date must be strictly before the current New York date. These fences do not
+backdate current membership or historical bar availability.
+
+The first declared study will inspect August 1–September 16, 2026 on **IEX**, then
+select up to **64** candidates using the last **20 observed exchange sessions**.
+Each eligible member needs all 20 daily bars, positive volume on all 20, and a
+latest completed close of at least **$5**. Ranking uses median daily `close × volume`
+over those same sessions, descending, with exact asset UUID tie-breaking. The
+minimum median dollar-volume policy is zero: selection ranks measured IEX activity
+without pretending an arbitrary cutoff measures consolidated market capacity.
+The actual source run and resulting cohort remain pending.
+
+All snapshot members retain their UUID, symbol, unknown subtype, full acquired
+coverage, trailing coverage, available metrics and exclusion reasons. Missing dates
+before the required trailing window remain evidence without changing trailing
+eligibility. A successful zero-row source response is known missing coverage;
+zeros are not filled, and fewer eligible names produce an explicit shortfall.
+Transport failures, unaccounted missing frames, malformed OHLCV or incompatible
+feed/adjustment/clock evidence withhold the **entire** final selection and mark the
+attempt failed. Valid members' diagnostics remain available; failed attempts do not
+refund the charged trial or authorize selecting around unknown evidence.
+
+The screen charges one declared selection attempt, excludes every inspected
+member/interval before source access, and preserves acquisition receipts and
+artifacts through the shared research journal. It evaluates at most 500 metadata
+candidates, no more than 90 calendar days, and selects at most 64. These are
+acquisition/screen bounds; existing forecast panels still require their own frozen
+universe and complete coverage. No daemon enrollment, registry promotion, order,
+notification or automatic live threshold update follows from a screen.
+
+IEX volume measures one venue. A resulting cohort has evidence of IEX activity,
+not consolidated liquidity, borrow availability or a participation/capacity limit.
+Raw prices require corporate-action review before return experiments. Actual-run
+findings, independent numerical verification and deployed health must be recorded
+separately from unit/SDK/database test results.
+
 ## Next stages and qualification limits
 
-1. Freeze a preceding-session liquidity/coverage screen over this complete sampled
-   cohort; preserve missing/ineligible members and all read/exclusion history.
-2. Evaluate distinct economic hypotheses with purged training labels, costs and
-   cohort transfer, calling retrospective current-cohort tests development evidence.
+1. Run and independently verify the frozen daily liquidity/coverage screen over
+   this complete sampled cohort; preserve missing/ineligible members and all
+   read/exclusion history. Implementation alone does not establish a usable cohort.
+2. Freeze a bounded economic-hypothesis/Ridge-control experiment over the screened
+   cohort, with purged chronological labels, declared costs and cohort transfer.
+   Retrospective tests selected using today's membership/liquidity are explicitly
+   survivor-conditioned development evidence, not historical tradable universes.
 3. Acquire authoritative instrument subtypes/sectors, historical eligibility/delistings,
    corporate-action and actual feed/execution evidence before qualification.
 
-A later liquidity stage must bind its feed, clock, adjustment and actual past-only
-training cutoff. IEX volume represents one venue; it is not consolidated market
-liquidity or a whole-market capacity/participation limit. Preserve coverage failures
-and use a separately frozen mapping/calibration if comparing feeds. Nothing here
-relaxes the existing panel member limit or complete-coverage contract.
+Comparing feeds requires a separately frozen source-specific mapping/calibration.
+Nothing here relaxes the existing panel member limit, complete-coverage contract
+or qualification gates. Prospective labels begin only after the cohort and policy
+were actually observed and frozen; historical development dates stay consumed.
 
 Tests cover deterministic sampling, unknown subtypes, exact metadata joins,
 failures, stale/future directory dates, tampered/backdated consumption,

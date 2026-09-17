@@ -269,4 +269,10 @@ is not an intraday calibration and worker readiness is not scoring success.
 logic, injected SDK/HTTP adapters and an application service over the existing journal.
 The actual dated sample is 300 of 6,721 eligible candidates; all 33,509 broker records
 remain retained. Identity/receipt/raw-response regressions and independent reconstruction
-cover the two attempts. Follow with a frozen source-specific liquidity/coverage stage.
+cover the two attempts. The frozen source-specific liquidity/coverage stage is implemented; see the linked report for actual-run evidence.
+
+`alpha liquidity-study` now applies a frozen daily liquidity/coverage screen to the
+complete [dated equity cohort](alpha-equity-universe.md#daily-liquidity-and-coverage-screen).
+It reuses the daily study service and diagnostic journal, with bounded paced reads,
+immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
+this development screen neither establishes historical membership nor qualifies alphas.

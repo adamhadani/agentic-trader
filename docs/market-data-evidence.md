@@ -96,3 +96,8 @@ Native scan signal records do not yet pin all input-frame references individuall
 capture UUIDs, timestamps and request manifests support investigation. Carrying exact
 source/calibration references into executable target/signal identity remains part
 of the roadmap execution gate.
+
+Valid empty bar maps and requested-symbol empty lists retain a zero-row normalized
+receipt and missing coverage. Invalid envelopes, unexpected symbols, non-list bar
+values and invalid pagination tokens fail as `BarResponseError`; raw response
+evidence is saved before validation. Typed row parsing remains owned by the SDK.

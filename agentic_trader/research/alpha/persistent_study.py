@@ -135,7 +135,8 @@ class PersistentStudyPlan(PanelStudyPlan):
         return plan
 
 
-def compute_persistent_study(frames, clock, plan: PersistentStudyPlan, sessions):
+def compute_persistent_study(batch, clock, plan: PersistentStudyPlan, sessions):
+    frames = batch.require_complete(plan.acquisition_symbols)
     panel = align_daily_panel(frames, clock, feed=plan.feed, adjustment=plan.adjustment)
     if set(frames) != {*plan.symbols, plan.benchmark}:
         raise ValueError("Exact frozen universe required")

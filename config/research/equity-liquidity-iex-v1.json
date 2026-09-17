@@ -1,0 +1,35 @@
+{
+  "acquisition": {
+    "max_days": 3660,
+    "max_elapsed_seconds": 900,
+    "max_symbols": 500,
+    "min_request_interval_seconds": 0.6
+  },
+  "plan": {
+    "adjustment": "raw",
+    "authorizes_promotion": false,
+    "bar_layout": "fixed_duration_v1",
+    "campaign_id": "equity-liquidity-iex-v1",
+    "charged_trials": 1,
+    "cohort_members_hash": "605513474f865075b287a13dafc41a9c7a0e42c17f1092817e9a6bcd3e6a4e64",
+    "cohort_size": 300,
+    "end": "2026-09-16",
+    "feed": "alpaca:iex",
+    "incomplete_acquisition": "withhold_entire_selection",
+    "lookback": 20,
+    "min_median_dollar_volume": 0.0,
+    "min_positive_volume_sessions": 20,
+    "point_in_time_historical_membership": false,
+    "price_filter": "latest_completed_close",
+    "price_floor": 5.0,
+    "ranking": "median_close_times_volume_descending_asset_uuid_tiebreak",
+    "scope": "current_cohort_development_and_future_research_only",
+    "selection_size": 64,
+    "snapshot_id": "bf162c80350e390248813ad461c437787731f76efc15c5f6c5bf49693da9735f",
+    "snapshot_observed_at": "2026-09-17T17:32:02.193972+00:00",
+    "start": "2026-08-01",
+    "timeframe": "1d",
+    "version": "equity_liquidity_screen_v1",
+    "window": "last_observed_exchange_dates_through_end"
+  }
+}

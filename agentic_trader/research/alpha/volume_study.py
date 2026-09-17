@@ -13,6 +13,7 @@ import pandas as pd
 
 from agentic_trader.market.bars import FIXED_BAR_LAYOUT
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.alpha.daily_inputs import validate_daily_window
 from agentic_trader.research.alpha.panel import PanelCoverageError, align_daily_panel
 from agentic_trader.research.alpha.panel_study import MAX_PANEL_DAYS, MAX_PANEL_SYMBOLS, MAX_PANEL_TRIALS
 from agentic_trader.research.alpha.volume import VolumeCalibration, VolumeContract, VolumePolicy
@@ -82,6 +83,9 @@ class VolumeStudyPlan:
         ):
             raise ValueError("Explicit bounded source-specific volume protocol required")
 
+    def validate_as_of(self, now):
+        validate_daily_window(self.end, now)
+
     @property
     def acquisition_symbols(self):
         return self.symbols
@@ -140,7 +144,8 @@ class VolumeStudyPlan:
         return hashlib.sha256(json.dumps(self.document(), sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
-def compute_volume_study(frames, clock, plan: VolumeStudyPlan, sessions):
+def compute_volume_study(batch, clock, plan: VolumeStudyPlan, sessions):
+    frames = batch.require_complete(plan.acquisition_symbols)
     if set(frames) != set(plan.symbols) or any(
         f.attrs.get("bar_layout", FIXED_BAR_LAYOUT) != plan.contract.bar_layout for f in frames.values()
     ):

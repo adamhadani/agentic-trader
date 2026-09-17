@@ -449,3 +449,18 @@ before reads, retains raw provider evidence and selects a reproducible current c
 Output must be new. Current membership, unknown instrument subtype and unscreened
 liquidity cannot establish historical eligibility or alpha qualification. The actual
 300-name cohort is recorded in the linked report; invoking again is another attempt.
+
+### Current-cohort liquidity screen
+
+```bash
+uv run copilot alpha liquidity-study config/research/equity-liquidity-iex-v1.json \
+  --universe /private/path/cohort/snapshot.json --output /private/path/new-liquidity
+```
+
+The frozen protocol contains exact `plan` and `acquisition` policies. The snapshot
+hash binds every candidate; prices are read only after the diagnostic charge and
+all observation exclusions persist. Results retain every candidate and selected
+asset UUID, input hashes, raw evidence, per-member checkpoints and any shortfall.
+A provider/validation failure withholds the full selection. A completed but undersized
+selection exits nonzero with its evidence intact. No orders, notifications, observer,
+activation or qualification are created. See [equity research](alpha-equity-universe.md).

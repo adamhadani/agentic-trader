@@ -33,7 +33,12 @@ from agentic_trader.resilience.fallback import (
     RetryPolicy,
     RunnableWithFallbacks,
 )
-from agentic_trader.transport.alpaca import BoundedCryptoDataClient, BoundedStockDataClient, BoundedTransport
+from agentic_trader.transport.alpaca import (
+    BoundedCryptoDataClient,
+    BoundedStockDataClient,
+    BoundedTransport,
+    ResponsePage,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,26 @@ logger = logging.getLogger(__name__)
 
 class UnsupportedSymbolError(Exception):
     """Raised when a data provider cannot service the requested symbol or asset class."""
+
+
+class BarResponseError(ValueError):
+    """A decoded bar page violates the requested response contract."""
+
+
+def _validate_bar_page(page: ResponsePage, symbol: str) -> None:
+    """Check the envelope before SDK aggregation can erase malformed empty values.
+
+    Empty symbol maps/lists are legitimate zero-observation responses. SDK parsing
+    still owns typed rows (including its retained null-row behavior).
+    """
+    response = page.response
+    if not isinstance(response, dict) or not isinstance(response.get("bars"), dict):
+        raise BarResponseError("Expected a symbol-keyed bars mapping")
+    if any(key != symbol or not isinstance(rows, list) for key, rows in response["bars"].items()):
+        raise BarResponseError("Expected bar lists for the requested symbol only")
+    token = response.get("next_page_token")
+    if token is not None and (not isinstance(token, str) or not token):
+        raise BarResponseError("Expected a nonempty string or null pagination token")
 
 
 class MarketDataProvider(Protocol):
@@ -192,14 +217,16 @@ class AlpacaDataProvider:
             if self.evidence
             else None
         )
+
+        def observe(page: ResponsePage) -> None:
+            if capture:
+                capture.observe(page)
+            _validate_bar_page(page, clean_sym)
+
         try:
             if capture:
                 capture.check_capacity()
-            scope = (
-                client.observe_responses(capture.observe)
-                if capture and isinstance(client, BoundedTransport)
-                else nullcontext()
-            )
+            scope = client.observe_responses(observe) if isinstance(client, BoundedTransport) else nullcontext()
             with scope:
                 if is_crypto and self.crypto_client is not None:
                     bars = self.crypto_client.get_crypto_bars(

@@ -6,6 +6,7 @@ import os
 import click
 
 from agentic_trader.cli.commands.alpha import alpha_group
+from agentic_trader.cli.commands.alpha_liquidity import liquidity_study_cmd
 from agentic_trader.cli.commands.alpha_universe import universe_snapshot_cmd
 from agentic_trader.cli.commands.backtest import backtest
 from agentic_trader.cli.commands.db import db_group
@@ -92,6 +93,7 @@ cli.add_command(doctor)
 cli.add_command(eval_command, name="eval")
 cli.add_command(db_group, name="db")
 alpha_group.add_command(universe_snapshot_cmd)
+alpha_group.add_command(liquidity_study_cmd)
 cli.add_command(alpha_group, name="alpha")
 
 

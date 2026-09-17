@@ -18,6 +18,7 @@ from numbers import Real
 import numpy as np
 import pandas as pd
 
+from agentic_trader.research.alpha.daily_inputs import validate_daily_window
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator, compile_expression
 from agentic_trader.research.alpha.forecast_policy import BASIS_POINTS, DailyLongFlatPolicy
 from agentic_trader.research.alpha.information import ICPolicy, cross_sectional_ic
@@ -120,6 +121,9 @@ class PanelStudyPlan:
         object.__setattr__(self, "costs_bps", DailyLongFlatPolicy(self.costs_bps).costs_bps)
         if not 1 <= self.trial_count <= MAX_PANEL_TRIALS:
             raise ValueError("Panel study exceeds bounded trial budget")
+
+    def validate_as_of(self, now):
+        validate_daily_window(self.end, now)
 
     @property
     def acquisition_symbols(self):

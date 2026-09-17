@@ -12,8 +12,10 @@ import pytest
 from agentic_trader.config import MarketDataEvidenceConfig
 from agentic_trader.data import evidence
 from agentic_trader.data.evidence import BarAcquisitionError, BarEvidenceStore
-from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.data.providers import AlpacaDataProvider, BarResponseError
 from agentic_trader.data.sessions import AlpacaSessionSource, SessionAcquisitionError
+from agentic_trader.market.bars import SessionCoverageError, SessionSchedule, TradingSession, build_session_bars
+from agentic_trader.research.alpha.panel import align_daily_panel
 from agentic_trader.transport.alpaca import BoundedCryptoDataClient
 
 
@@ -47,6 +49,83 @@ def read_reference(reference):
     assert hashlib.sha256(path.read_bytes()).hexdigest() == reference["sha256"]
     assert path.stat().st_mode & 0o777 == 0o600
     return json.loads(path.read_text())
+
+
+@pytest.mark.parametrize("bars", [{}, {"SPY": []}])
+@pytest.mark.parametrize("timeframe", ["1m", "1d"])
+def test_successful_empty_response_retains_unknown_coverage(captured_provider, bars, timeframe):
+    venue, broker, provider = captured_provider
+    payload = {"bars": bars, "next_page_token": None}
+    venue.override = lambda *args: (200, payload)
+    source = AlpacaSessionSource(provider, broker.client)
+    if timeframe == "1m":
+        frame = source.minutes("SPY", START, START + pd.Timedelta(minutes=15), "alpaca:sip")
+        reference = frame.attrs["acquisition"][0]["evidence"]
+        schedule = SessionSchedule(
+            START.date(),
+            START.date(),
+            (TradingSession(START.date(), START, START + pd.Timedelta(minutes=15)),),
+            "fixture",
+        )
+        with pytest.raises(SessionCoverageError) as caught:
+            build_session_bars(frame, schedule, "15m", as_of=START + pd.Timedelta(minutes=15))
+        assert caught.value.coverage["missing_minutes"] == 15
+        assert caught.value.coverage["observed_minutes"] == 0
+    else:
+        frame = source.daily("SPY", START.date(), START.date(), "alpaca:sip")
+        reference = frame.attrs["evidence"]
+        expected = pd.DatetimeIndex(["2024-06-03"], tz="America/New_York")
+        panel = align_daily_panel({"SPY": frame}, expected, feed="alpaca:sip")
+        assert not panel.complete
+        assert panel.coverage["SPY"] == {"expected": 1, "observed": 0, "missing_dates": ["2024-06-03"]}
+        assert panel.close.isna().all().all()
+    assert frame.empty
+    assert list(frame.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert isinstance(frame.index, pd.DatetimeIndex) and str(frame.index.tz) == "UTC"
+    assert {k: frame.attrs[k] for k in ("feed", "adjustment", "timeframe")} == {
+        "feed": "alpaca:sip",
+        "adjustment": "raw",
+        "timeframe": timeframe,
+    }
+    result = read_reference(reference)
+    assert result["status"] == "complete"
+    assert result["normalization"]["parsed_rows"] == result["normalization"]["normalized_rows"] == 0
+    assert result["normalization"]["dropped_rows"] == []
+    assert read_reference(result["pages"][0])["response"] == payload
+    assert len(venue.calls) == 1 and venue.calls[0][0] == "GET"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"trades": {}},
+        {"bars": None},
+        {"bars": []},
+        {"bars": {"SPY": {}}},
+        {"bars": {"SPY": ""}},
+        {"bars": {"SPY": None}},
+        {"bars": {"QQQ": []}},
+        {"bars": {"SPY": [], "QQQ": [row()]}},
+        {"bars": {}, "next_page_token": 1},
+        {"bars": {}, "next_page_token": ""},
+    ],
+)
+@pytest.mark.parametrize("capture", [False, True])
+def test_malformed_envelopes_are_not_successful_empty_bars(captured_provider, payload, capture):
+    venue, _, provider = captured_provider
+    if not capture:
+        provider.evidence = None
+    venue.override = lambda *args: (200, payload)
+    with pytest.raises(BarAcquisitionError if capture else BarResponseError) as caught:
+        provider.fetch_bars("SPY", "1d", start=START)
+    if capture:
+        result = read_reference(caught.value.evidence)
+        assert result["status"] == "failed"
+        assert result["error_type"] == "BarResponseError"
+        assert result["normalization"] is None
+        assert read_reference(result["pages"][0])["response"] == payload
+    assert len(venue.calls) == 1
 
 
 @pytest.mark.parametrize("case", ["null", "cleaner", "malformed", "pagination", "empty"])

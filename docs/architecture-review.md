@@ -322,3 +322,9 @@ strict replay execution clock; a missing IEX trade bar is not automatically an u
 feed outage or an executable unchanged price. Existing results/semantics stay immutable.
 The [measured evidence](alpha-iex-forward.md#deployed-evidence--september-17-2026)
 and daily-equity next priority are recorded in the roadmap.
+
+`alpha liquidity-study` now applies a frozen daily liquidity/coverage screen to the
+complete [dated equity cohort](alpha-equity-universe.md#daily-liquidity-and-coverage-screen).
+It reuses the daily study service and diagnostic journal, with bounded paced reads,
+immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
+this development screen neither establishes historical membership nor qualifies alphas.
