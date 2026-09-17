@@ -189,3 +189,8 @@ The [open-gap timing/cost follow-up](docs/alpha-open-gap-policy-2026-09-17.md)
 completed 20 attempts and failed its frozen trading criterion. Keep this standalone
 long/cash policy paused. Next alpha priority: A2b live acquisition/durable decisions,
 then aligned panel hypotheses; zero active alphas remains an intentional outcome.
+
+The [open-gap postmortem](docs/alpha-open-gap-postmortem-2026-09-17.md) reproduced
+calculations but found outlier-concentrated forecast gains and unstable selection.
+Add fold/influence/action diagnostics before selecting further leads; a rejected
+experiment alone is not evidence of a calibrated or bug-free pipeline.
