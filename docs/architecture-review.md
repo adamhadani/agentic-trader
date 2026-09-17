@@ -83,9 +83,9 @@ second job infrastructure is justified for the current single-destination outbox
 
 | Priority | Finding and use case | Recommendation / tradeoff |
 | --- | --- | --- |
-| P1 | PR #52 verification: current entitlement rejects recent SIP; fallback executor shutdown can defeat its timeout, and async fallback can run sync work inline. | Add feed-aware preflight/freshness and consolidate bounded SDK reads. Worker health is not data completeness; changing SIP to IEX requires a new data contract. Preserve deadline/late-result evidence. |
-| P1 | Scheduled legacy `ParameterGridOptimizer` overcounts unrealized P&L; its alternate engines use different execution assumptions. | Contain misleading retuning reports and consolidate shared simulation/accounting and attempt evidence. The recent alpha/panel studies and broker P&L do not use this engine. See the [exact counterexample](forecast-to-fill-review.md#f7--a-legacy-simulator-still-diverges-from-the-hardened-research-path). |
-| P1 before allocation execution | Shadow liquidity caps bound final holdings rather than trades; forecast/risk horizons and forecast-error semantics are incomplete. | Fix contracts and participation, then validate a persistent cost-aware portfolio in research. Keep target execution gated on rounding, pending exposure, partial fills and protection ownership. |
+| P1 | Current entitlement rejects recent SIP; operator feed/entitlement choice remains open. | PR #54 fixed read deadlines/offloading and added the exact-feed probe. Worker health is not data completeness; changing SIP to IEX requires a separately validated data contract. |
+| Resolved in PR #54 | The legacy retuner overcounted unrealized P&L. | Retired its engine, scheduler, commands and config-export path. The canonical alpha/panel studies and broker P&L never used this engine; preserve the [counterexample](forecast-to-fill-review.md#f7--a-legacy-simulator-still-diverges-from-the-hardened-research-path). |
+| P1 before allocation execution | PR #54 fixed shadow trade-participation and forecast/risk/uncertainty contracts; executable target plans remain absent. | Validate persistent cost-aware portfolios in research. Keep execution gated on rounding, pending exposure, partial fills and protection ownership. |
 | P1 | Corporate actions or stock transfers make account reconciliation unsupported; per-signal partial exits remain conservative. | Add exact typed activity semantics and replay fixtures, then explicit ownership/allocation/protection models. Keep totals withheld and sliced trading disabled until complete; never assign by symbol. |
 | P1 | Missing macro enrichment permits volatility-only evaluation; daily feeds have no maximum-age admission policy. The economic-calendar fetch can also turn a provider error into an empty event list. | Define per-feed age/calendar policy and fail/size decisions before increasing automation. Strict gates improve safety but can block valid trades on provider holidays/outages. |
 | P1 | Live trailing uses recorded risk distance, while research supports ATR/high-water marks; replacement uncertainty has limited durable requested/acknowledged modeling. | Unify policy inputs and persistent stop intent, retaining exact broker confirmation and thesis/risk. Avoid changing existing protective orders during an incidental refactor. |
@@ -240,15 +240,17 @@ than stitching windows or inventing effective sample sizes. Basket proxies have
 explicit gross/net weights, ties and entry/exit notional costs; native bar labels
 are distinct from assumed availability and cannot masquerade as broker fill times.
 
-Accepted limits: normalized rather than lossless raw responses; publication/auction
+At panel-study delivery, inputs were normalized rather than raw responses. Automatic
+[bar evidence](market-data-evidence.md) now closes that provenance gap for new Alpaca
+acquisitions; original historical snapshots remain unchanged. Remaining limits: publication/auction
 assumptions; no intrahorizon marking/protection, borrow or corporate-action accounting;
 curated rather than point-in-time membership; uncheckpointed CPU work and legacy miner
 IC migration/calibration. A research screen cannot bypass existing qualification or
 single-owner execution. Preserve these limits when evaluating any apparent winner.
 
 The [completed panel audit](alpha-sector-panel-2026-09-17.md) found full native daily
-coverage and independently matching arithmetic, but zero passes. Next address lossless
-provider/normalization evidence in the shared data boundary, then explicit total-return,
+coverage and independently matching arithmetic, but zero passes. The shared data boundary
+now retains provider/normalization evidence. Next address explicit total-return,
 turnover and execution assumptions for a new bounded study. Preserve the distinction
 between a pure payoff diagnostic and a broker-capable strategy; a different horizon or
 cost model must not become an undocumented shim to rescue a failed hypothesis.

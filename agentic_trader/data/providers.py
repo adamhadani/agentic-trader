@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 from alpaca.data.enums import Adjustment, DataFeed
@@ -23,12 +26,14 @@ from agentic_trader.constants import (
     DEFAULT_DATA_TIMEOUT_SECONDS,
     DEFAULT_INTRADAY_LOOKBACK_PERIOD,
 )
+from agentic_trader.data.evidence import BarAcquisitionError, BarEvidenceStore
+from agentic_trader.market.bars import OHLCV
 from agentic_trader.resilience.fallback import (
     AllFallbacksExhaustedError,
     RetryPolicy,
     RunnableWithFallbacks,
 )
-from agentic_trader.transport.alpaca import BoundedCryptoDataClient, BoundedStockDataClient
+from agentic_trader.transport.alpaca import BoundedCryptoDataClient, BoundedStockDataClient, BoundedTransport
 
 
 logger = logging.getLogger(__name__)
@@ -83,8 +88,10 @@ class AlpacaDataProvider:
         crypto_client: CryptoHistoricalDataClient | None = None,
         feed: str = "sip",
         request_timeout: float = DEFAULT_DATA_TIMEOUT_SECONDS,
+        evidence: BarEvidenceStore | None = None,
     ):
         self._name = "alpaca"
+        self.evidence = evidence
         self.request_timeout = request_timeout
         self.feed = DataFeed(feed)
         self.api_key = api_key
@@ -160,44 +167,88 @@ class AlpacaDataProvider:
         tf = self._map_timeframe(timeframe)
         clean_sym = symbol.strip().upper()
 
-        if is_crypto and self.crypto_client:
-            crypto_req = CryptoBarsRequest(symbol_or_symbols=clean_sym, timeframe=tf, start=start, end=end)
-            bars = self.crypto_client.get_crypto_bars(crypto_req)
-        elif self.stock_client:
-            stock_req = StockBarsRequest(
-                symbol_or_symbols=clean_sym,
-                timeframe=tf,
-                start=start,
-                end=end,
-                feed=self.feed,
-                adjustment=Adjustment.RAW,
-            )
-            bars = self.stock_client.get_stock_bars(stock_req)
-        else:
+        client = self.crypto_client if is_crypto else self.stock_client
+        if client is None:
             raise UnsupportedSymbolError("No Alpaca client available")
-
-        df: pd.DataFrame = getattr(bars, "df", pd.DataFrame())
-        if df.empty:
-            return pd.DataFrame()
-
-        # Handle MultiIndex ('symbol', 'timestamp')
-        if isinstance(df.index, pd.MultiIndex):
-            df = df.xs(clean_sym, level="symbol") if "symbol" in df.index.names else df.reset_index(level=0, drop=True)
-
-        rename_map = {
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-            "volume": "Volume",
-        }
-        df = df.rename(columns=rename_map)
-        cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-        df = df[cols].dropna()
-        df.attrs.update(
-            feed="alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}", adjustment="raw", timeframe=timeframe
+        if self.evidence is not None and not isinstance(client, BoundedTransport):
+            raise TypeError("Evidence capture requires the observed SDK transport")
+        capture = (
+            self.evidence.begin(
+                {
+                    "symbol": clean_sym,
+                    "timeframe": timeframe,
+                    "sdk_timeframe": str(tf),
+                    "start": start.isoformat(),
+                    "end_inclusive": end.isoformat() if end is not None else None,
+                    "feed": "alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}",
+                    "adjustment": "raw",
+                }
+            )
+            if self.evidence
+            else None
         )
+        try:
+            if capture:
+                capture.check_capacity()
+            scope = (
+                client.observe_responses(capture.observe)
+                if capture and isinstance(client, BoundedTransport)
+                else nullcontext()
+            )
+            with scope:
+                if is_crypto and self.crypto_client is not None:
+                    bars = self.crypto_client.get_crypto_bars(
+                        CryptoBarsRequest(symbol_or_symbols=clean_sym, timeframe=tf, start=start, end=end)
+                    )
+                elif self.stock_client is not None:
+                    bars = self.stock_client.get_stock_bars(
+                        StockBarsRequest(
+                            symbol_or_symbols=clean_sym,
+                            timeframe=tf,
+                            start=start,
+                            end=end,
+                            feed=self.feed,
+                            adjustment=Adjustment.RAW,
+                        )
+                    )
+            df, normalization = self._normalize_bars(bars, clean_sym)
+            df.attrs.update(
+                feed="alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}",
+                adjustment="raw",
+                timeframe=timeframe,
+            )
+            if capture:
+                df.attrs["evidence"] = capture.finish(normalization=normalization)
+        except Exception as exc:
+            if capture:
+                raise BarAcquisitionError(type(exc).__name__, capture.fail(exc)) from exc
+            raise
         return df
+
+    @staticmethod
+    def _normalize_bars(bars, symbol: str) -> tuple[pd.DataFrame, dict]:
+        df: pd.DataFrame = bars.df
+        if isinstance(df.index, pd.MultiIndex):
+            df = df.xs(symbol, level="symbol")
+        rename_map = {name: name.title() for name in OHLCV}
+        if df.empty:
+            df = pd.DataFrame(columns=list(rename_map.values()), index=pd.DatetimeIndex([], tz="UTC", name="timestamp"))
+        else:
+            df = df.rename(columns=rename_map)[list(rename_map.values())]
+        missing = df.isna()
+        dropped = [
+            {"position": int(i), "timestamp": df.index[i].isoformat(), "missing": list(df.columns[missing.iloc[i]])}
+            for i in np.flatnonzero(missing.any(axis=1).to_numpy())
+        ]
+        cleaned = df.dropna()
+        normalization = {
+            "parsed_rows": len(df),
+            "normalized_rows": len(cleaned),
+            "dropped_rows": dropped,
+            "columns": list(cleaned.columns),
+            "frame_hash": hashlib.sha256(pd.util.hash_pandas_object(cleaned, index=True).values.tobytes()).hexdigest(),
+        }
+        return cleaned, normalization
 
     def fetch_latest_price(self, symbol: str) -> float | None:
         if not self.supports_symbol(symbol):

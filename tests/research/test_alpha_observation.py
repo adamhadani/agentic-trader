@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from agentic_trader.config import SessionObservationConfig
+from agentic_trader.data.sessions import SessionAcquisitionError
 from agentic_trader.market.bars import session_bar_windows
 from agentic_trader.research.alpha.observation import SessionObservationService, observation_target
 from agentic_trader.storage.alpha import AlphaRepository
@@ -242,3 +243,18 @@ async def test_clock_rollback_after_preparation_cannot_authorize_availability(ob
     result = (await service.run_once())[0]
     assert result["status"] == "unavailable"
     assert await repo.get(result["bar_key"]) is None
+
+
+async def test_failed_acquisition_pages_survive_observer_journal_replay(observer):
+
+    service, repo, _frame, _now, _calls = observer
+    receipts = [{"error_type": "BarAcquisitionError", "evidence": {"artifact": "fixture", "sha256": "abc"}}]
+
+    def fail(*args):
+        raise SessionAcquisitionError(receipts)
+
+    service.source.minutes = fail
+    result = (await service.run_once())[0]
+    assert result["acquisition"] == receipts
+    await repo.rebuild()
+    assert (await repo.get(f"observation/{result['observation_id']}"))["acquisition"] == receipts

@@ -22,12 +22,12 @@ from agentic_trader.cli.utils import session_source
 from agentic_trader.config import load_config
 from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.alpha.data import save_json_report
 from agentic_trader.research.alpha.forecast_policy import BASIS_POINTS, MAX_SIDE_COST_BPS
 from agentic_trader.research.alpha.models import AlphaDefinition, AlphaOrigin
 from agentic_trader.research.alpha.replay import ReplayPlan, ReplayStatus
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict
+from agentic_trader.storage.artifacts import save_json_report
 
 
 MAX_CAMPAIGN_ATTEMPTS = 128

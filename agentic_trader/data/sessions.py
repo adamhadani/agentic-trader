@@ -6,6 +6,7 @@ from typing import Any, Protocol
 import pandas as pd
 from alpaca.trading.requests import GetCalendarRequest
 
+from agentic_trader.data.evidence import BarAcquisitionError
 from agentic_trader.market.bars import TradingSession, utc_timestamp
 from agentic_trader.market.session import ET_TZ
 
@@ -76,6 +77,8 @@ class AlpacaSessionSource:
                     start=cursor.to_pydatetime(),
                     end=boundary.to_pydatetime() - timedelta(microseconds=1),
                 )
+                if "evidence" in bars.attrs:
+                    receipt["evidence"] = bars.attrs["evidence"]
                 if (
                     bars.attrs.get("feed") != feed
                     or bars.attrs.get("adjustment") != "raw"
@@ -94,6 +97,8 @@ class AlpacaSessionSource:
                 receipt["rows"] = len(bars)
                 chunks.append(bars)
             except Exception as exc:
+                if isinstance(exc, BarAcquisitionError):
+                    receipt["evidence"] = exc.evidence
                 receipt.update(error_type=type(exc).__name__, error=str(exc), received_at=datetime.now(UTC).isoformat())
                 receipts.append(receipt)
                 raise SessionAcquisitionError(receipts) from exc
@@ -101,7 +106,8 @@ class AlpacaSessionSource:
             receipts.append(receipt)
             cursor = boundary
         combined = pd.concat(chunks)
-        combined.attrs = {**chunks[0].attrs, "acquisition": receipts}
+        combined.attrs = {k: v for k, v in chunks[0].attrs.items() if k != "evidence"}
+        combined.attrs["acquisition"] = receipts
         return combined
 
     def daily(self, symbol: str, start: date, end: date, feed: str) -> pd.DataFrame:

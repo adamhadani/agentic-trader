@@ -13,6 +13,7 @@ from click.testing import CliRunner
 
 from agentic_trader.cli.commands.alpha import alpha_repository, download_bars
 from agentic_trader.cli.main import cli
+from agentic_trader.data.evidence import BarAcquisitionError
 from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.study import MarketScenario, PanelScenario, StudyProtocol
@@ -56,6 +57,26 @@ def test_unattended_auto_promotion_removed():
     result = CliRunner().invoke(cli, ["alpha", "mine", "--auto-promote"])
     assert result.exit_code != 0
     assert "No such option" in result.output
+
+
+def test_mining_failure_keeps_raw_evidence_in_existing_journal(monkeypatch):
+    evidence = {"artifact": "fixture/result.json", "sha256": "fixture-hash"}
+
+    def failed(*args, **kwargs):
+        raise BarAcquisitionError("APIError", evidence)
+
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.download_bars", failed)
+    result = CliRunner().invoke(cli, ["alpha", "mine", "--symbol", "SPY", "--iterations", "1"])
+    assert result.exit_code != 0
+
+    async def check():
+        async with alpha_repository() as repo:
+            latest = await repo.get("research/latest")
+            assert latest["evidence"] == evidence
+            await repo.rebuild()
+            assert await repo.get("research/latest") == latest
+
+    asyncio.run(check())
 
 
 def test_diagnostic_command_records_exposure_before_a_failed_evaluation(monkeypatch):

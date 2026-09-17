@@ -236,6 +236,10 @@ trailing_stop:
   trail_step_ticks: 2
 
 market_data:
+  evidence:
+    max_pages: 100
+    max_capture_bytes: 134217728 # 128 MiB per acquisition; never prune retained evidence
+    min_free_bytes: 1073741824 # 1 GiB reserve; not an atomic filesystem quota
   primary_equities_provider: "alpaca" # "alpaca" (StockHistoricalDataClient), "yfinance"
   fallback_providers:
     - "yfinance"

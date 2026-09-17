@@ -5,7 +5,8 @@ import asyncio
 import pandas as pd
 import pytest
 
-from agentic_trader.config import SessionObservationConfig
+from agentic_trader.config import MarketDataEvidenceConfig, SessionObservationConfig
+from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
 from agentic_trader.research.alpha.observation import SessionObservationService
@@ -51,7 +52,14 @@ async def test_actual_sdk_forward_receipts_and_revisions(alpaca_http, temp_db, t
     venue.override = response
     await temp_db.init_db()
     repo = AlphaRepository(temp_db.workflows)
-    source = AlpacaSessionSource(AlpacaDataProvider(stock_client=broker.data_client, feed="iex"), broker.client)
+    source = AlpacaSessionSource(
+        AlpacaDataProvider(
+            stock_client=broker.data_client,
+            feed="iex",
+            evidence=BarEvidenceStore(tmp_path / "raw", MarketDataEvidenceConfig()),
+        ),
+        broker.client,
+    )
     observer = SessionObservationService(
         repo,
         source,

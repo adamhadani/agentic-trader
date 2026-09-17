@@ -11,7 +11,7 @@ from uuid import uuid4
 import pandas as pd
 
 from agentic_trader.config import SessionObservationConfig
-from agentic_trader.data.sessions import SessionDataSource
+from agentic_trader.data.sessions import SessionAcquisitionError, SessionDataSource
 from agentic_trader.market.bars import (
     SESSION_BAR_LAYOUT,
     ObservationStatus,
@@ -23,9 +23,10 @@ from agentic_trader.market.bars import (
     utc_timestamp,
 )
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.alpha.data import save_dataset, save_json_report
+from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.validation import frame_digest
 from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.artifacts import save_json_report
 from agentic_trader.storage.workflow import encode
 
 
@@ -186,6 +187,8 @@ class SessionObservationService:
                 payload["availability_upper_bound_seconds"] = (received - target.closed_at).total_seconds()
         except Exception as exc:
             payload.update(status=ObservationStatus.UNAVAILABLE, error_type=type(exc).__name__, error=str(exc))
+            if isinstance(exc, SessionAcquisitionError):
+                payload["acquisition"] = exc.receipts
             if isinstance(exc, SessionCoverageError):
                 payload["coverage"] = exc.coverage
         payload["finished_at"] = utc_timestamp(self.clock()).isoformat()

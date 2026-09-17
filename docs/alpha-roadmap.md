@@ -375,10 +375,10 @@ hypotheses have negative mean IC and lose before costs. No detected arithmetic/c
 bug explains the outcome; no threshold or direction was changed. Latest lifetime
 attempts: **7,312**; registry generation 10, active 0/shadow 10, no new qualification.
 
-**Next ordered increment:** resolve the recent-SIP/deadline prerequisites and contain
-the divergent legacy retuner identified in the [forecast-to-fill follow-up](#forecast-to-fill-follow-up).
-Then add lossless raw-provider/normalization provenance and complete the retained
-SPY-minute postmortem. Freeze a small economically different, slower-turnover
+**Next ordered increment:** the deadline/retuner safeguards and SPY postmortem are
+complete. [Automatic raw-provider evidence](market-data-evidence.md) now retains
+pages before SDK parsing and preserves acquisition failures. Recent-SIP permission
+still requires an operator entitlement/feed decision. Freeze a small economically different, slower-turnover
 relative/residual ETF experiment with explicit total-return/borrow assumptions;
 charge every horizon/buffer/cohort comparison before acquisition. No post-hoc rerun
 belongs to the failed protocol and no best-of-failures candidate gains forward or
@@ -397,11 +397,12 @@ Production still arbitrates individual candidates; the convex allocator is shado
    The divergent retuner, scheduler/config-export path and optional VectorBT engine
    are removed. Recent-SIP permission still requires an operator entitlement/feed
    decision; success of a process or empty request is not freshness evidence.
-2. **Next: automated data provenance.** The [SPY-minute postmortem](alpha-spy-minute-postmortem-2026-09-17.md)
+2. **Implemented: automated data provenance.** The [SPY-minute postmortem](alpha-spy-minute-postmortem-2026-09-17.md)
    found all four gaps already absent from two fresh raw SIP responses, with no cleaning
    loss or revisions in 16,654 shared rows. Original failed evidence remains immutable.
-   Automate lossless raw-row/normalization retention at the shared data boundary,
-   including failed parsing/interrupted pagination; forensic capture alone is insufficient.
+   [Automatic raw-row/normalization retention](market-data-evidence.md) now covers
+   the shared Alpaca bar boundary, including typed parsing failures and interrupted
+   pagination. Original failed studies remain immutable; data capture grants no promotion credit.
 3. **Implemented: A3 allocation contract corrections.** Explicit target/feed/price/clock/
    currency contracts, causal calibration cutoffs, forecast-mean HAC error, duplicate
    family fences, conservative uncertainty penalties and trade participation bounds.

@@ -364,7 +364,14 @@ class TrailingStopConfig(BaseModel):
     trail_step_ticks: int = DEFAULT_TRAIL_STEP_TICKS  # Minimum ratchet step in ticks
 
 
+class MarketDataEvidenceConfig(BaseModel):
+    max_pages: int = Field(default=100, ge=1, le=1000)
+    max_capture_bytes: int = Field(default=128 * 1024 * 1024, ge=1024)
+    min_free_bytes: int = Field(default=1024 * 1024 * 1024, ge=0)
+
+
 class MarketDataConfig(BaseModel):
+    evidence: MarketDataEvidenceConfig = Field(default_factory=MarketDataEvidenceConfig)
     alpaca_feed: str = Field(default="sip", pattern="^(sip|iex)$")
     probe_symbol: str = Field(default="SPY", pattern="^[A-Z]{1,10}$")
     primary_equities_provider: str = DEFAULT_PRIMARY_EQUITIES_PROVIDER  # ExecutionMode.ALPACA, "yfinance"

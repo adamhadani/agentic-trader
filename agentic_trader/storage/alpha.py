@@ -550,8 +550,10 @@ class AlphaRepository:
             await self._append(session, key, payload, EventKind.ALPHA_RESEARCH, "session_observer")
             await self._observation_latest(session, payload)
 
-    async def record_failure(self, run_id: str, *, symbol: str, timeframe: str, error: str):
-        payload = {
+    async def record_failure(
+        self, run_id: str, *, symbol: str, timeframe: str, error: str, evidence: dict | None = None
+    ):
+        payload: dict = {
             "run_id": run_id,
             "symbol": symbol,
             "timeframe": timeframe,
@@ -559,6 +561,8 @@ class AlphaRepository:
             "error": error,
             "recorded_at": datetime.now(UTC).isoformat(),
         }
+        if evidence is not None:
+            payload["evidence"] = evidence
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session, resource="alpha")
             await self._append(

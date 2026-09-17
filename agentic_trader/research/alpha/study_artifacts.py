@@ -6,7 +6,6 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agentic_trader.research.alpha.data import save_json_report
 from agentic_trader.research.alpha.study import (
     StudyPhase,
     StudyStatus,
@@ -15,6 +14,7 @@ from agentic_trader.research.alpha.study import (
     study_jobs,
     summarize_study,
 )
+from agentic_trader.storage.artifacts import save_json_report
 
 
 def execute_study(protocol, directory: Path, environment: dict, *, evaluator=None, progress=None):

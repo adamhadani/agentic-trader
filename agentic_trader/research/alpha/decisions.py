@@ -16,7 +16,7 @@ import pandas as pd
 
 from agentic_trader.config import SessionDecisionConfig
 from agentic_trader.data.market_data import ContractMarketData
-from agentic_trader.data.sessions import SessionDataSource
+from agentic_trader.data.sessions import SessionAcquisitionError, SessionDataSource
 from agentic_trader.market.bars import (
     SessionCoverageError,
     SessionSchedule,
@@ -26,10 +26,11 @@ from agentic_trader.market.bars import (
     utc_timestamp,
 )
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.alpha.data import save_dataset, save_json_report
+from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.shadow import observe_definition
 from agentic_trader.research.alpha.validation import frame_digest
+from agentic_trader.storage.artifacts import save_json_report
 from agentic_trader.storage.workflow import encode
 
 
@@ -218,6 +219,8 @@ class SessionDecisionService:
             payload["status"] = DecisionStatus.SCORED
         except Exception as exc:
             payload.update(status=DecisionStatus.UNAVAILABLE, error_type=type(exc).__name__, reason=str(exc))
+            if isinstance(exc, SessionAcquisitionError):
+                payload["acquisition"] = exc.receipts
             if isinstance(exc, SessionCoverageError):
                 payload["coverage"] = exc.coverage
         finished = utc_timestamp(self.clock())

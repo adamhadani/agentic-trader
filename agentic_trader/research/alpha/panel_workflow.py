@@ -11,9 +11,10 @@ from uuid import uuid4
 
 import pandas as pd
 
+from agentic_trader.data.evidence import BarAcquisitionError
 from agentic_trader.market.bars import SessionSchedule, TradingSession, utc_timestamp
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.alpha.data import save_dataset, save_json_report
+from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.panel import PanelCoverageError, align_daily_panel
 from agentic_trader.research.alpha.panel_study import (
     PANEL_JOURNAL_SYMBOL,
@@ -24,6 +25,7 @@ from agentic_trader.research.alpha.panel_study import (
 )
 from agentic_trader.research.alpha.validation import frame_digest
 from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.artifacts import save_json_report
 
 
 class DailyPanelSource(Protocol):
@@ -100,6 +102,8 @@ class AlphaPanelService:
                 return await asyncio.to_thread(getattr(self.source, method), *args)
             except Exception as exc:
                 receipt["error_type"] = type(exc).__name__
+                if isinstance(exc, BarAcquisitionError):
+                    receipt["evidence"] = exc.evidence
                 raise
             finally:
                 receipt["received_at"] = datetime.now(UTC).isoformat()
