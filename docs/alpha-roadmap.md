@@ -164,7 +164,7 @@ momentum/reversal, residual signals, overnight versus session behavior, and liqu
 volatility conditioning. Extend typed/panel operators only with alignment, dimensional,
 missing-data and future-perturbation tests.
 
-Expand toward 100–200 liquid equities only with point-in-time membership, delistings,
+Expand toward 200–500 liquid individual equities with point-in-time membership, delistings,
 corporate actions, historical eligibility and feed coverage. Do not use today's list
 as survivorship-safe history or silently replace raw execution prices with adjusted
 feature prices. Require cohort-transfer tests and measured cost/borrow/capacity.
@@ -450,11 +450,50 @@ active 0/shadow 10. Independent Decimal accounting and IC/covariance audits agre
 The SIP/IEX persistent blends gain 2.91%/2.84% at primary costs but lose 0.36%/0.41%
 under stress and have unstable annual returns/negative IC. Retain every failure.
 
-Next ordered work: (1) a frozen prospective IEX receipt/coverage/latency diagnostic,
-with separate version/feed identity before any production switch; (2) a bounded
-broader-ETF forecast benchmark using purged training-only expected-return fitting
-and simple constant/Ridge controls, measured against matching economic targets and
-factors; (3) independent action/quote/fill/borrow evidence for promising candidates.
+Next ordered work is refined by the operator's September 17 feed-calibration and
+individual-stock requests below. ETF32 remains a control cohort, not the ceiling
+of the discovery universe.
 Pause further sector-momentum/reversal parameter searches and new search engines.
 Physical-share accounting, plan identity, partial-fill protection and untouched
 qualification/forward evidence remain required before portfolio execution.
+
+
+### Source calibration and individual equities — current ordered priorities
+
+1. **Implement and measure source-specific volume calibration.** The [frozen daily
+   SIP/IEX protocol](alpha-volume-calibration.md) fits prior-period relative-volume
+   distributions and retains later drift/coverage evidence. No fixed IEX-to-SIP
+   multiplier, live threshold replacement or promotion credit. Intraday seasonality
+   and prospective IEX receipt/coverage/latency remain separate requirements.
+2. **Expand the information set to 200–500 individual equities.** Start a dated,
+   immutable prospective universe snapshot with stable asset IDs, type/sector source,
+   historical/as-of eligibility and observed trailing liquidity. Preserve additions,
+   removals, missing bars and delistings; do not select history using today's survivors
+   or future full-window coverage. Acquire/validate point-in-time membership and
+   delisting returns for confirmatory historical claims. In parallel, a bounded
+   explicitly survivor-conditioned development pilot may test mechanics and generate
+   hypotheses, but cannot claim survivorship-safe performance or qualify. ETF32 stays
+   as a control. Widen the current 64-symbol panel bound only with bounded acquisition,
+   memory/CPU tests and a dynamic membership/missing-data contract; simply increasing
+   this constant does not implement a valid historical equity panel.
+3. **Run a matched-budget stock/ETF forecast campaign.** Predeclare a few economically
+   distinct families (sector/market-residual momentum, short-horizon reversal with
+   liquidity conditioning, overnight/session decomposition), constant/Ridge controls,
+   purged walk-forward folds, turnover/cost/borrow stress and factor-neutral incremental
+   tests. Use the exact source volume profiles where relevant. Select on stable net
+   economic outcomes and uncertainty, not a minimum number of passing alphas. Record
+   all trials and reserve fresh confirmation before data access. More names increase
+   breadth, but sector/market correlations do not create independent samples.
+4. **Move credible leads through forward and paper execution gates.** Freeze exact
+   feed/formula/calibration/holding identities, collect actual receipts and independent
+   quote/borrow/fill evidence, then qualify untouched evidence. Pin source/calibration
+   IDs to executable plans and complete rounding/partial-fill/protection contracts
+   before a combined target can send orders. Collect prospectively while research runs.
+
+Why equities now: broader cross-sectional dispersion and more economic hypotheses
+are useful after the validation/accounting fixes. ETFs reduced early debugging and
+corporate-action complexity; they were not an architectural requirement. Alpaca's
+[current asset master](https://docs.alpaca.markets/us/reference/get-v2-assets-1) supplies
+asset/status metadata. We must not infer historical index membership or historical
+shortability from that current response. Options/futures still require separate
+contract/lifecycle/data work; they rank below liquid equities and simple baselines.

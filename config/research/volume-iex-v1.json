@@ -1,0 +1,49 @@
+{
+  "version": "source_volume_study_v1",
+  "campaign_id": "volume-iex-v1",
+  "symbols": [
+    "SPY",
+    "XLB",
+    "XLE",
+    "XLF",
+    "XLI",
+    "XLK",
+    "XLP",
+    "XLU",
+    "XLV",
+    "XLY"
+  ],
+  "start": "2020-07-27",
+  "end": "2023-12-31",
+  "folds": [
+    {
+      "name": "2022",
+      "training_start": "2021-01-01",
+      "training_end": "2021-12-31",
+      "start": "2022-01-01",
+      "end": "2022-12-31"
+    },
+    {
+      "name": "2023",
+      "training_start": "2022-01-01",
+      "training_end": "2022-12-31",
+      "start": "2023-01-01",
+      "end": "2023-12-31"
+    }
+  ],
+  "contract": {
+    "feed": "alpaca:iex",
+    "timeframe": "1d",
+    "adjustment": "all",
+    "bar_layout": "fixed_duration_v1"
+  },
+  "policy": {
+    "lookback": 20,
+    "min_observations": 200,
+    "quantile": 0.9
+  },
+  "reference_threshold": 1.5,
+  "charged_trials": 40,
+  "authorizes_promotion": false,
+  "availability": "Historical native daily completion assumed by next local midnight; receipts are not backdated"
+}

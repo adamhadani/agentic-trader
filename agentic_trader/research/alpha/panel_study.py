@@ -122,6 +122,10 @@ class PanelStudyPlan:
             raise ValueError("Panel study exceeds bounded trial budget")
 
     @property
+    def acquisition_symbols(self):
+        return (*self.symbols, self.benchmark)
+
+    @property
     def adjustment(self):
         return "raw"
 

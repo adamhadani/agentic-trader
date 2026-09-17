@@ -254,3 +254,8 @@ panel journal and explicit adjusted-price accounting. It is research-only: reser
 the frozen matrix before access; no promotion or live portfolio execution.
 [Verified feed access and alternatives](research-data-sources.md) distinguish
 recent-SIP entitlement from throttling; historical SIP remains usable.
+
+Source-specific [volume calibration](alpha-volume-calibration.md) uses the shared
+daily study harness with frozen training/forward intervals and exact feed identity.
+`alpha volume-study` is research-only. `/alphas` now provides a compact explanation
+and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.

@@ -2,14 +2,22 @@
 
 `uv run copilot alpha forward --days 7 --limit 10000` reads the existing alpha
 journal projections. Telegram `/alphas` uses the same application query and pure
-report builder for its seven-day summary. Both are diagnostic, read-only surfaces:
+report builder for a compact seven-day summary. It shows enabled/candidate counts,
+aggregate recorded evaluations and missing/pending/coverage warnings; expressions,
+version hashes and per-symbol timing stay in the full CLI report. Both are diagnostic, read-only surfaces:
 no provider reads, orders, notifications, qualification or shadow credit are created.
 The CLI's usual database initialization checks schema readiness.
+
+“Shadow” means a registered candidate without permission to place orders. Registration
+alone does not prove a worker is collecting observations for it. “Forward diagnostics”
+checks newly arriving data and scores; these checks are not historical backtests,
+realized profits or qualifying shadow credit. The current session cohort is diagnostic
+only. Zero enabled alphas does not disable other configured strategies.
 
 ## Interpret the report
 
 - Scope is **current registry session versions**, per eligible symbol. Historical
-  native-bar shadows remain listed in `/alphas` but are outside this session report.
+  native-bar shadows contribute to the candidate count in `/alphas` but are outside this session report.
 - The inclusive time window uses candle close time. Each immutable decision is
   counted once by its current canonical outcome: scored, unavailable, missed,
   superseded, interrupted or claimed. Latest/pending aliases and late forensic

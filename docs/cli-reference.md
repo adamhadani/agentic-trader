@@ -426,3 +426,12 @@ run or permission to submit a basket. See [panel contracts](alpha-sector-panel.m
 [monthly book comparison](alpha-persistent-book.md), charges every comparison before
 acquisition and retains daily cash/inventory/cost evidence. No orders, notifications,
 registry changes or promotion credit. See [data access](research-data-sources.md).
+
+
+`copilot alpha volume-study PROTOCOL.json --output NEW_DIRECTORY` runs the
+[frozen source-volume study](alpha-volume-calibration.md). Fit per-symbol daily
+relative-volume profiles on prior data and retain later event rates, exact profile
+identities, raw receipts and every trial/failure. Both SIP and IEX protocols are in
+`config/research/volume-*-v1.json`. It changes no feed, strategy or registry state.
+Telegram `/alphas` is a compact status/glossary; CLI `alpha forward --days 7` and
+`alpha list` retain detailed metrics and immutable definitions.

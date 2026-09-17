@@ -480,3 +480,8 @@ The September 17 read-only [access probes](research-data-sources.md) confirmed
 recent SIP is forbidden by subscription, with 199/200 requests still available.
 Delayed SIP and current IEX succeeded. Historical research can proceed; do not
 backdate delayed observations or silently switch a qualified alpha's feed.
+
+Source-specific [volume calibration](alpha-volume-calibration.md) uses the shared
+daily study harness with frozen training/forward intervals and exact feed identity.
+`alpha volume-study` is research-only. `/alphas` now provides a compact explanation
+and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.

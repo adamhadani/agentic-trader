@@ -265,12 +265,11 @@ def test_format_alphas_dashboard_html_universe():
     global_definition = AlphaDefinition("alpha_global", "Global", "close")
     card = TelegramHtmlFormatter.format_alphas_dashboard_html(
         RegistrySnapshot(3, (), (targeted, global_definition)),
-        catalog_count=10,
         evidence={"days": 7, "truncated": False, "candidates": []},
     )
-    assert "AMD, NVDA" in card
-    assert "Unqualified universe" in card
-    assert "Shadow: 2" in card
+    assert "2 research candidates" in card
+    assert "Shadow candidates cannot place orders" in card
+    assert "0 enabled for signals" in card
     assert "--auto-promote" not in card
 
 
