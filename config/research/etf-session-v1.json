@@ -1,0 +1,52 @@
+{
+  "campaign_id": "etf-session-v1",
+  "purpose": "Exploratory chronological stress blocks; no qualification holdout or automatic promotion",
+  "target": "Shared bracket-policy net equity payoff, retaining cash and warmup on the full minute clock",
+  "symbols": ["SPY", "QQQ", "XLF"],
+  "windows": [
+    ["2024-06-01", "2024-06-30"],
+    ["2024-11-01", "2024-11-30"],
+    ["2025-03-01", "2025-03-31"]
+  ],
+  "feed": "alpaca:sip",
+  "timeframe": "15m",
+  "direction": "bi_directional",
+  "normalization_window": 50,
+  "entry_threshold": 1.5,
+  "clock": {"decision_delay_seconds": 60, "max_lateness_seconds": 120, "bar_layout": "rth_open_v1"},
+  "execution": {
+    "stop_atr": 1.5, "atr_method": "simple_true_range", "reward_risk": 2.0,
+    "swing_window": 10, "atr_window": 14, "tick_size": 0.01,
+    "structural_buffer_ticks": 2, "trail_trigger_r": 1.5, "trail_distance_r": 1.5
+  },
+  "cost_bps_per_side": [0.0, 1.0, 5.0],
+  "hypotheses": [
+    {"id": "hour_momentum", "expression": "close / delay(close,4) - 1", "rationale": "Continuation of unusually strong four-bar moves relative to their trailing distribution"},
+    {"id": "bar_reversal", "expression": "-returns", "rationale": "Reversal of unusually large one-bar moves relative to their trailing distribution"},
+    {"id": "volume_momentum", "expression": "(close / delay(close,4) - 1) * volume / ts_mean(volume,20)", "rationale": "Continuation strengthened by volume relative to the trailing twenty-bar local distribution"}
+  ],
+  "budget": 81,
+  "comparators": ["cash_zero_return", "passive_long_entry_at_first_rth_open_marked_at_last_close_minus_entry_cost"],
+  "triage": {
+    "primary_cost_bps": 1.0, "stress_cost_bps": 5.0,
+    "minimum_feature_coverage": 0.8, "minimum_closed_trades": 30,
+    "minimum_positive_blocks": 2, "maximum_positive_day_share_of_net_log_gain": 0.5,
+    "require_positive_primary_net_and_excess": true, "require_positive_stress_net": true
+  },
+  "forward_diagnostics": {
+    "symbols": ["SPY", "QQQ"], "hypotheses": ["hour_momentum", "bar_reversal", "volume_momentum"],
+    "cost_bps": 1.0,
+    "selection": "Fixed before historical results: observe all six hypothesis/symbol versions as diagnostics, including rejected controls; no active trading or qualification credit"
+  },
+  "limitations": [
+    "Rolling bar features cross session boundaries; four bars is not always one wall-clock hour",
+    "Not a replication of published first-half-hour/last-half-hour momentum",
+    "Local volume normalization is not a time-of-day seasonal model",
+    "Corrected raw bars do not establish point-in-time receipt or fill availability",
+    "Bracket OHLC full-fill assumptions exclude partial fills, queue position, borrow, funding, distributions and corporate actions",
+    "Blocks reset flat and include feature warmup cash; terminal positions are marked, not forcibly closed",
+    "Compounded selected-block returns are discontinuous diagnostic wealth, not a continuous backtest",
+    "Triage is predeclared descriptive screening, not a calibrated statistical significance test",
+    "No parameter retuning, extra symbols, reruns after coverage failure or final holdout use"
+  ]
+}
