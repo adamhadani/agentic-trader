@@ -5,6 +5,7 @@ import contextlib
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,6 +14,7 @@ from websockets.asyncio.server import serve
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import AuditEventType, SignalStatus, SystemStateKey
+from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.storage.db import SignalDatabase
 
 
@@ -404,3 +406,100 @@ async def test_failed_history_journal_does_not_prevent_exact_exit_reconciliation
     health = await copilot.db.workflows.events(f"health/{copilot.readiness.run_id}/reconciliation", limit=1)
     assert not health[0]["payload"]["success"]
     assert "order_journal" in health[0]["payload"]["detail"]
+
+
+@pytest.mark.parametrize("operation", ["close", "flatten"])
+@pytest.mark.parametrize("desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+async def test_closed_session_reason_reaches_telegram_reply_and_durable_notice(desk, operation):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    venue.market_open = False
+    venue.override = lambda method, path, query, body: (
+        (
+            200,
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "is_open": False,
+                "next_open": "2026-09-17T09:30:00-04:00",
+                "next_close": "2026-09-17T16:00:00-04:00",
+            },
+        )
+        if path == "/v2/clock"
+        else None
+    )
+    notifier = TelegramNotifier(
+        None,
+        "test-chat",
+        close_handler=copilot.close_position_manual,
+        flatten_handler=copilot.flatten_positions,
+    )
+    update = MagicMock(effective_chat=SimpleNamespace(id="test-chat"))
+    update.message.reply_text = AsyncMock()
+    handler = notifier.handle_close_command if operation == "close" else notifier.handle_flatten_command
+    await handler(update, SimpleNamespace(args=[str(sid)] if operation == "close" else ["confirm"]))
+    reply = update.message.reply_text.await_args.args[0]
+    await copilot.outbox.drain()
+    notices = [call.args[0] for call in copilot.notifier.send_message.await_args_list]
+    result_notices = [text for text in notices if "market is closed" in text]
+    assert len(result_notices) == 1
+    for text in (reply, result_notices[0]):
+        assert "market is closed" in text
+        assert "No close submitted or queued" in text
+        assert "Next regular open: 2026-09-17 13:30 UTC" in text
+        assert "Existing protective orders were left unchanged by this request" in text
+        assert "Retry during regular market hours" in text
+    assert "SPY" in result_notices[0]
+    assert not any(method != "GET" for method, *_ in venue.calls)
+    assert await copilot.db.active_close_requests() == []
+    assert await copilot.db.get_state(SystemStateKey.TRADING_HALTED) is None
+
+
+@pytest.mark.parametrize("failure", ["session_ended", "cancel_ack_lost", "broker_read_error", "submit_ack_lost"])
+async def test_close_failure_notice_tracks_mutation_phase_and_hides_raw_broker_errors(desk, failure):
+    copilot, venue, sid = desk
+    await track_existing(copilot, venue, sid)
+    original = venue.dispatch
+    clock_reads = 0
+
+    def fail(method, path, query, body):
+        nonlocal clock_reads
+        response = original(method, path, query, body)
+        if path == "/v2/clock":
+            clock_reads += 1
+            if failure == "session_ended" and clock_reads == 2:
+                response[1]["is_open"] = False
+            elif failure == "broker_read_error":
+                return 403, {"code": 40310000, "message": "private broker payload <secret>"}
+        if failure == "cancel_ack_lost" and method == "DELETE":
+            time.sleep(0.3)  # The real SDK socket deadline is 0.2s; cancellation already reached venue.
+        if failure == "submit_ack_lost" and method == "POST":
+            return 504, {"code": 50410000, "message": "private broker payload <secret>"}
+        return response
+
+    venue.dispatch = fail
+    reply = await copilot.close_service.close_signal(sid)
+    await copilot.outbox.drain()
+    notices = [call.args[0] for call in copilot.notifier.send_message.await_args_list]
+    assert len(notices) == 2
+    for text in (reply, notices[-1]):
+        assert "private broker payload" not in text and "&lt;secret&gt;" not in text
+        if failure == "broker_read_error":
+            assert "HTTP 403" in text
+            assert "Existing protective orders were left unchanged by this request" in text
+        else:
+            assert "Protective orders may have been cancelled" in text
+            assert "left unchanged" not in text
+    assert sum(method == "POST" for method, *_ in venue.calls) == (failure == "submit_ack_lost")
+    failed = [e for e in await copilot.db.get_audit_events(sid) if e["payload"].get("phase") == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["payload"]["cancellation_attempted"] == (failure != "broker_read_error")
+    attempted = [
+        e for e in await copilot.db.get_audit_events(sid) if e["payload"].get("phase") == "cancellation_requested"
+    ]
+    assert len(attempted) == sum(method == "DELETE" for method, *_ in venue.calls)
+    if failure == "cancel_ack_lost":
+        assert len(attempted) == 1  # A delivery/transport failure never replays the mutation.
+    if failure == "submit_ack_lost":
+        assert "HTTP 504" in reply and "Do not resubmit" in reply
+        assert failed[0]["payload"]["submission_uncertain"]
+        assert len(await copilot.db.active_close_requests()) == 1

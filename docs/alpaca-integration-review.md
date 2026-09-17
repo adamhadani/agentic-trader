@@ -62,6 +62,7 @@ No test has production credentials, database access, or external network permiss
 | Lost entry/close acknowledgement, socket timeout, HTTP 504 | Actual SDK transport; assert one POST, durable uncertainty/halt or close recovery |
 | Broker WebSocket authentication/subscription and binary fill delivery | Actual `TradingStream` against loopback WebSocket, REST reconciliation, duplicate-notification guard |
 | Closed session, emergency queueing, bulk cancel partial failure | HTTP tests plus `tests/agent/test_panic_kill_switch.py` |
+| Close/flatten refusal explanation in Telegram reply and durable outbox | Actual SDK HTTP + SQLite/PostgreSQL; next-open UTC, pre-mutation protection, session close after cancellation, lost DELETE acknowledgement and safe external-error text |
 | Concurrent close intents, migrations, DB guards | `tests/integration/test_postgres.py`; independent DB clients and disposable `test_` database |
 | Partial/external/unrelated fills and cancellation races | `tests/broker/test_incident_regressions.py`, `tests/execution/test_position_closing.py` |
 | Telegram delivery retry/poll recovery and command authorization | Loopback HTTP transport tests plus command/service fixtures; handlers execute once |

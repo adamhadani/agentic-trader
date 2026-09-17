@@ -60,6 +60,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    order-group cancellation, revalidates position/session and submits once.
    `/flatten` previews by default and preserves halt state. Partial/ambiguous
    ownership remains blocked; exact full fills and conditional SQL govern closure.
+   Direct replies and durable notices retain refusal reasons. Closed-session refusals
+   show the broker's next regular open in UTC; a cancellation attempt, even with a
+   lost acknowledgement, must warn that protection may have been removed.
 3. **Broker evidence:** never match exits by symbol alone, infer a fill price from
    an order request, or persist a stop ratchet before exact replacement confirmation.
    Preserve original thesis/risk. POST/PATCH/DELETE are never automatically retried.

@@ -297,9 +297,10 @@ class SignalDatabase:
         async with self.session_factory() as session:
             await self.workflows.lock(session)
             prior = await session.get(CloseRequestRecord, request_id)
+            if prior is None:
+                return
             if (
-                prior
-                and prior.status == status
+                prior.status == status
                 and prior.detail == detail
                 and (not broker_order_id or prior.broker_order_id == broker_order_id)
             ):
@@ -329,7 +330,10 @@ class SignalDatabase:
                     session,
                     f"close/{request_id}/{status}",
                     NotificationKind.MESSAGE,
-                    {"text": f"Close request {request_id}: {status}. Check /positions for current broker holdings."},
+                    {
+                        "text": f"Close {prior.symbol}: {status}. {detail}\n"
+                        "Check /positions for current broker holdings."
+                    },
                 )
             await session.commit()
 
