@@ -6,6 +6,9 @@ not a retry or reinterpretation of its failures. Commit the protocol and tested
 runner before acquiring its market observations. Results belong in a separate
 report with the protocol/source hashes and every attempted comparison.
 
+Completed: [September 17 results](alpha-continuous-campaign-2026-09-17.md), including
+all 48 attempts and independent accounting checks.
+
 ## Question and fixed design
 
 Do the existing momentum leads, or a new causal trend/pullback hypothesis, retain

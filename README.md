@@ -189,3 +189,9 @@ new timed policies while measured forward/lifecycle evidence accumulates, before
 Timed session research supports [immutable entry/holding lifetimes](docs/alpha-trade-lifetimes.md), shared with the broker lifecycle service. `alpha replay` accepts paired `--entry-lifetime-seconds` and `--holding-lifetime-seconds`; omitted limits preserve existing GTC behavior. Cancellation recovery, risk fencing and close intents reuse the execution journal/outbox. Session alphas remain diagnostic-only; the next research step is a predeclared continuous study under a frozen lifetime policy.
 
 The [continuous timed ETF campaign](docs/alpha-continuous-campaign.md) pairs the new lifetime contract with actual-data discovery: 48 frozen comparisons and a new trend/pullback hypothesis. Replay supports one continuous year with bounded acquisition chunks; trial/holdout accounting and session activation gates remain intact. Report research yield separately from deployment readiness.
+
+The [completed continuous study](docs/alpha-continuous-campaign-2026-09-17.md)
+retains 36 complete runs and 12 SPY coverage failures. QQQ momentum has 415 closes
+and positive primary-cost returns, but fails cost stress; zero alphas promoted.
+Next: causal ETF panels with explicit [Rank IC/ICIR contracts](docs/alpha-information-coefficient.md).
+Existing miner ICIR is overlapping, single-symbol and unannualized.

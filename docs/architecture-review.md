@@ -192,7 +192,7 @@ Accepted limit: the denominator is recorded decisions. Current cursor gaps are v
 
 [Timed execution](alpha-trade-lifetimes.md) now uses a pure immutable deadline value object, injected application service and repository over existing workflow tables. Research references the pure execution policy; execution does not import research. The execution package no longer eagerly imports broker engines, preventing an import cycle. Cancellation, admission, journal projections and notifications share the trading lock/transaction; no network call holds that transaction. Holding close uses the canonical close service and deterministic command identity.
 
-Accepted limits: partial fills/replacements require operator review; OHLC fill times and instantaneous simulated cancellation are assumptions; monitoring/market hours bound actual response time. Production exchange latency and protective behavior still require prospective evidence before session promotion. Research worker isolation/checkpoints, continuous sample length, causal panel alignment and per-signal portfolio attribution remain on the [roadmap](alpha-roadmap.md#next-work-after-the-etf-session-campaign).
+Accepted limits: partial fills/replacements require operator review; OHLC fill times and instantaneous simulated cancellation are assumptions; monitoring/market hours bound actual response time. Production exchange latency and protective behavior still require prospective evidence before session promotion. Research worker isolation/checkpoints, untouched confirmation, causal panel alignment and per-signal portfolio attribution remain on the [roadmap](alpha-roadmap.md#next-work-after-the-etf-session-campaign).
 
 ## Continuous research acquisition — September 17
 
@@ -202,3 +202,11 @@ execution state machine once. No second simulator, research queue, schema or pro
 path is added. Actual SDK/PostgreSQL tests cover pending/held positions across chunks,
 DST boundaries and retained failures. The explicit 366-date replay bound caps memory;
 streaming checkpoints, worker isolation and long-term artifact capacity remain open.
+
+The [completed campaign](alpha-continuous-campaign-2026-09-17.md) has sufficient
+QQQ trade counts but fails cost stress; SPY has an unresolved raw/normalized coverage
+gap. The next panel increment should reuse explicit forecast targets, artifact
+persistence and cumulative trials. [IC review](alpha-information-coefficient.md)
+identifies overlapping time-series ICIR, gap/fold compression and numeric unavailable
+fallbacks as measurement debt; replace through a versioned contract, not aliases or
+retroactive qualification. Keep P&L/cost and statistical evidence separate.
