@@ -56,3 +56,45 @@ exact IEX/raw/one-minute requests, concurrent consume-once claims, source failur
 and event replay without orders or qualification credit.
 
 Actual deployed receipt/coverage evidence is recorded separately after restart.
+
+## Deployed evidence — September 17, 2026
+
+PR #59 passed 1,519 full-suite tests (70 skipped) and 200 SDK/network/PostgreSQL
+integration tests before squash merge. Revision `620b5d8` was installed through a
+controlled launchd restart, with the six committed IEX controls imported while the
+single daemon was stopped. Original SIP definitions remain retained: generation 16,
+active 0/shadow 16. No research orders or Telegram messages were sent.
+
+The read-only runtime report verified all 17 readiness checks, matching broker/DB
+positions (flat), Telegram polling age 9.61 seconds, and event-loop lag 0.0021 seconds.
+Current-run logs had no warnings/errors; two bar-acquisition warnings in the wider
+log slice belonged to the previous runtime. Private deployment evidence is under
+`~/.local/state/agentic-trader/reviews/iex-forward-20260917/`.
+
+### Acquisition works; the dense-minute decision contract still rejects history
+
+At the **17:45 UTC** signal close, the first SPY and QQQ observations contained all
+**255/255** expected RTH minutes. Receipt upper bounds were **5.65s** and **6.11s**.
+By 17:46:40 UTC there were eight complete repeated observations, with zero unavailable
+observations. These are a short observation window, not elapsed forward qualification.
+
+All six candidate decisions for that candle were **unavailable**, with no score:
+
+| Symbol | Expected historical RTH minutes | Missing | Raw rows including extended hours |
+| --- | ---: | ---: | ---: |
+| SPY | 3,375 | 2 | 3,425 |
+| QQQ | 3,375 | 52 | 3,575 |
+
+A separate calculation using the stored raw JSON and NPZ, without application imports
+or new provider reads, reproduced all missing timestamps. Every raw/normalized timestamp
+and OHLCV value agreed; both responses exhausted pagination and normalization dropped
+zero rows. This is source absence under the existing complete-minute contract, not
+local filtering loss or the earlier SIP entitlement refusal.
+
+[Alpaca's aggregation rules](https://docs.alpaca.markets/us/docs/market-data-faq)
+permit absent minute bars when trades do not establish eligible OHLC/volume fields.
+That is a possible explanation, not proof of the cause of these particular omissions.
+A separate trade-condition/source investigation and versioned sparse signal-bar versus
+execution-price contract would be needed before changing treatment. Do not impute,
+splice feeds, shorten warmup after seeing failures, or reinterpret these frozen results.
+Native-daily broader-equity research can proceed independently of this intraday gate.

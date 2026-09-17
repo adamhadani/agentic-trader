@@ -148,3 +148,8 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
 - Research worker feed comes from its injected policy, never the trading feed. Filter
   session candidates by exact feed before enrollment/budgeting; retain/report other-feed
   evidence. New-feed controls need new immutable identities. See [IEX forward](docs/alpha-iex-forward.md).
+
+- Equity universe snapshots retain current asset UUIDs and directory evidence; never
+  infer common-stock subtype/sector from names or backdate current membership. Bind
+  follow-up research to the snapshot hash and freeze/charge before prices. Preserve
+  missing/excluded members and all failed attempts. See [equity universe](docs/alpha-equity-universe.md).

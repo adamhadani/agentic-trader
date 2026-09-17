@@ -493,3 +493,12 @@ Desk `alpha_pipeline.observations.feed` and `alpha_pipeline.decisions.feed` sele
 [fixed IEX controls](alpha-iex-forward.md) use new identities; SIP failures remain
 retained and are reported as an uncollected feed. Import is explicit after deployment.
 Verify actual coverage and scores separately from worker readiness.
+
+### Equity universe research command
+
+`copilot alpha universe-snapshot config/research/prospective-equity-300-v2.json
+--output NEW_PRIVATE_DIRECTORY` is an explicit metadata-only research operation. It
+charges one attempt and retains failures; it does not add the selected symbols to
+trading scans, launch a poller, send messages or fetch prices. The [September 17
+capture](alpha-equity-universe.md#actual-metadata-capture--september-17-2026) selected
+300 candidates. Keep source/artifact files private and bind later studies to the hash.

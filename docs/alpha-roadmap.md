@@ -465,7 +465,8 @@ qualification/forward evidence remain required before portfolio execution.
    distributions and retains later drift/coverage evidence. No fixed IEX-to-SIP
    multiplier, live threshold replacement or promotion credit. Intraday seasonality
    and prospective IEX receipt/coverage/latency remain separate requirements.
-2. **Expand the information set to 200–500 individual equities.** Start a dated,
+2. **Metadata cohort implemented; liquidity/PIT stages remain.** Expand the information
+   set to 200–500 individual equities using a dated,
    immutable prospective universe snapshot with stable asset IDs, type/sector source,
    historical/as-of eligibility and observed trailing liquidity. Preserve additions,
    removals, missing bars and delistings; do not select history using today's survivors
@@ -504,9 +505,43 @@ attempts, registry unchanged at generation 10 / active 0 / shadow 10. Annual and
 per-symbol event-rate drift persists. Read-only operational review found **78/78 session captures unavailable**, all with
 retained HTTP 403 evidence; this is consistent with the separately probed recent-SIP
 entitlement refusal. Collector readiness is not successful observation evidence.
-**In verification:** [separately configured prospective IEX workers](alpha-iex-forward.md)
+**Deployed in PR #59:** [separately configured prospective IEX workers](alpha-iex-forward.md)
 and six predeclared IEX diagnostic controls preserve original SIP identities/failures.
 Actual receipt, coverage and scoring evidence remains a separate deployment check;
 daily volume calibration does not authorize intraday reuse. Item 2's dated 300-name
-individual-equity candidate universe is proceeding alongside this data work, followed
-by the bounded stock/ETF forecast campaign.
+individual-equity candidate universe is captured (below); preceding-only liquidity
+and coverage screening comes before the bounded stock/ETF forecast campaign.
+
+### Prospective equity cohort delivered
+
+The [dated equity universe](alpha-equity-universe.md) now retains 33,509 Alpaca
+asset records and both current Nasdaq symbol directories. The frozen v2 policy
+selected 300 candidates from 6,721 eligible listings by stable asset-ID hashing;
+all selections match independent reconstruction. A first failed metadata attempt
+exposed historical symbol reuse, and remains retained/charged. Two metadata attempts
+are not alpha comparisons. Current non-ETF flags do not establish common-stock
+subtype, sectors, historical membership, shortability, or liquidity.
+
+**Next highest priority:** a frozen preceding-session liquidity/coverage study over
+all 300 members. Bind exact snapshot ID, feed, adjustment, calendar, trailing window,
+cutoff and selection policy before prices. Retain every missing/ineligible member and
+source receipt; exclude inspected/warmup dates before access. Treat IEX turnover as
+venue-specific activity, not consolidated liquidity or capacity. A current cohort
+may support explicitly survivor-conditioned development experiments; it cannot
+be backdated into historical eligibility or qualify an alpha.
+
+Use the selected cohort for the matched-budget economic/Ridge controls in item 3.
+Keep existing <=64 complete-panel contracts until a separately tested dynamic
+membership/missing-data contract and bounded acquisition checkpointing are ready.
+Do not broaden the panel constant alone, silently intersect available history,
+reuse future coverage to select historical members, or substitute unavailable names.
+Record coverage and economic results separately, including null or failed outcomes.
+
+**IEX deployment measured:** the first SPY/QQQ session-prefix captures are complete
+(255/255 minutes, receipt upper bounds 5.65s/6.11s), while all six 17:45 UTC formula
+decisions remain unavailable under the dense historical-minute contract. A raw-data
+audit reproduced 2 SPY and 52 QQQ absent minutes with zero local row/value loss.
+[Evidence and interpretation](alpha-iex-forward.md#deployed-evidence--september-17-2026).
+Record a separate sparse-trade-bar/unknown-execution-price contract and condition-level
+source investigation; preserve existing version semantics and failed windows. This
+intraday limitation does not block the next native-daily equity liquidity/forecast stage.

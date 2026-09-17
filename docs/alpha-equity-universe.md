@@ -67,7 +67,8 @@ dated; their date is freshness evidence, not an inferred receipt time. Each sour
 has a 32 MiB parsed-response capture ceiling, with 100,000 rows and 500 candidate
 hard limits. Requests are sequential with configured socket deadlines; acquisition
 and computation run off the asyncio loop. The SDK asset endpoint is not paginated;
-its decoded response is validated before retention, after network decoding.
+its decoded response byte budget is checked before retention, and bounded responses
+are retained before structural validation.
 
 The result is projected through the existing diagnostic journal. No migration,
 second journal, daemon, order queue or notification path is introduced. Failed and

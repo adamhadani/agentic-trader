@@ -264,3 +264,9 @@ and status summary; use `alpha forward` and `alpha list` for full evidence/defin
 from trading configuration. Mixed-feed registries retain old evidence and expose
 uncollected feeds. The IEX control cohort is diagnostic-only; daily volume calibration
 is not an intraday calibration and worker readiness is not scoring success.
+
+[Equity universe capture](alpha-equity-universe.md) now has pure membership/sampling
+logic, injected SDK/HTTP adapters and an application service over the existing journal.
+The actual dated sample is 300 of 6,721 eligible candidates; all 33,509 broker records
+remain retained. Identity/receipt/raw-response regressions and independent reconstruction
+cover the two attempts. Follow with a frozen source-specific liquidity/coverage stage.
