@@ -75,7 +75,7 @@ The [sector-panel path](alpha-sector-panel.md) now implements cross-sectional
 observations, explicit target/clock/units, per-fold sample variance and HAC uncertainty,
 missing/tie handling and journal-backed diagnostics. The legacy miner described above
 is unchanged; migrating its validation/ranking evidence requires a separate versioned
-change and calibration. The frozen sector study is the first actual-data application.
+change and calibration. The [completed sector study](alpha-sector-panel-2026-09-17.md) is the first actual-data application: 32 complete comparisons, zero passes, and all eight per-fold HAC intervals include zero.
 
 ## Measurement requirements, with TDD before use
 

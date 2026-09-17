@@ -115,3 +115,9 @@ Tests cover ties, missing/constant observations, sample/annualization units, HAC
 an independent covariance formula, persistence-induced uncertainty, fold/future
 perturbations, exact cost arithmetic, real paginated HTTP/SDK, both database backends,
 CLI failures and event-loop responsiveness. Deployment verification is separate.
+
+## Completed first run
+
+The [September 17 result](alpha-sector-panel-2026-09-17.md) records 32/32 complete
+comparisons, zero passes, independent arithmetic/journal audits and the next priorities.
+The original protocol and rejection reasons remain frozen.

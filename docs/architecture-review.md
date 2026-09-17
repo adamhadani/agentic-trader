@@ -227,3 +227,10 @@ assumptions; no intrahorizon marking/protection, borrow or corporate-action acco
 curated rather than point-in-time membership; uncheckpointed CPU work and legacy miner
 IC migration/calibration. A research screen cannot bypass existing qualification or
 single-owner execution. Preserve these limits when evaluating any apparent winner.
+
+The [completed panel audit](alpha-sector-panel-2026-09-17.md) found full native daily
+coverage and independently matching arithmetic, but zero passes. Next address lossless
+provider/normalization evidence in the shared data boundary, then explicit total-return,
+turnover and execution assumptions for a new bounded study. Preserve the distinction
+between a pure payoff diagnostic and a broker-capable strategy; a different horizon or
+cost model must not become an undocumented shim to rescue a failed hypothesis.

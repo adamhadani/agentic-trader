@@ -195,8 +195,7 @@ The [frozen ETF session campaign](alpha-session-campaign-2026-09-17.md) complete
 coverage. None passed every rule: QQQ momentum's positive cost-stressed returns had
 only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for diagnostic
 forward observation, not activation or qualifying shadow credit. Preserve the failed
-triage result; timed order/holding lifetimes are implemented. The continuous campaign now tests
-new timed policies while measured forward/lifecycle evidence accumulates, before causal panel expansion.
+triage result; timed order/holding lifetimes are implemented. The continuous and sector-panel campaigns are complete; measured forward/lifecycle evidence continues to accumulate.
 
 ## Timed order and holding policies
 
@@ -216,3 +215,9 @@ native daily inputs, causal relative features, cross-sectional IC/HAC and five-s
 basket/cost diagnostics. All 32 declared comparisons and every member's inspected
 interval are journaled before provider access. It sends no orders or notifications,
 grants no qualification/registry credit and leaves weekly mining unchanged.
+
+The [completed sector-panel study](alpha-sector-panel-2026-09-17.md) retains
+32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
+Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
+gains. All formulas remain research-only; active alphas remain zero. The next
+priority is lossless raw-provider provenance before a newly frozen turnover-aware study.
