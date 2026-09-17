@@ -417,3 +417,9 @@ artifacts and charged trials; they do not simulate orders or authorize promotion
 `alpha benchmark` supports explicit `--label`/`--feature` and optional per-side
 `--cost-bps` scenarios. These are charged daily bar-price payoff diagnostics with
 no promotion or broker-fill claim; see [timing/cost contracts](alpha-forecast-policy.md).
+
+### Timed session replay
+
+`copilot alpha replay EXPRESSION --symbol SPY --start YYYY-MM-DD --end YYYY-MM-DD --entry-lifetime-seconds 300 --holding-lifetime-seconds 86400` declares both elapsed-UTC lifetimes in a new immutable execution policy. Both options are required together, each 1–2,678,400 seconds. Omit both to preserve the original GTC contract. Entry age starts at simulated submission; holding age starts at simulated full fill. These flags do not change current positions, promote alphas, or place orders. See [trade lifetimes](alpha-trade-lifetimes.md).
+
+Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation.

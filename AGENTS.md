@@ -110,3 +110,5 @@ diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-ben
   reasons; entry/holding lifetime changes require a new shared execution contract.
 
 - Forward evidence reporting reuses canonical alpha projections and the [shared report builder](docs/alpha-forward-evidence.md). Exclude aliases/late results; preserve missing counts, truncation and cursor gaps. Receipt lag includes polling/delay, and diagnostic score directions are never fills or qualified shadow credit.
+
+- [Timed alpha policies](docs/alpha-trade-lifetimes.md) share elapsed-UTC deadlines with broker execution. Never retrofit historical policies, release entry risk before exact cancellation-group confirmation, replay a cancellation, or retry a failed deterministic holding close. Use the existing journal/outbox and `PositionCloseService`; session activation remains gated.

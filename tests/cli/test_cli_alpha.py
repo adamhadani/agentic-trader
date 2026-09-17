@@ -295,3 +295,30 @@ def test_forward_evidence_cli_uses_isolated_storage(options):
     report = json.loads(result.output)
     assert report["candidates"] == [] and not report["authorizes_promotion"]
     assert report["coverage_basis"] == "recorded_decisions" and not report["truncated"]
+
+
+@pytest.mark.parametrize("option", ["--entry-lifetime-seconds", "--holding-lifetime-seconds"])
+def test_replay_requires_both_lifetimes_before_provider_access(option):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "alpha",
+            "replay",
+            "returns",
+            "--symbol",
+            "SPY",
+            "--start",
+            "2024-11-27",
+            "--end",
+            "2024-11-29",
+            option,
+            "300",
+        ],
+    )
+    assert result.exit_code != 0 and "Both entry and holding lifetimes" in result.output
+
+
+@pytest.mark.parametrize("kind", ["entry", "entry_cancel"])
+def test_workflow_queue_cli_supports_read_only_cancellation_inspection(kind):
+    result = CliRunner().invoke(cli, ["db", "queue", "--kind", kind])
+    assert result.exit_code == 0, result.output

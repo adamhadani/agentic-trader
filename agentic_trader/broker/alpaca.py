@@ -58,6 +58,8 @@ from agentic_trader.constants import (
 from agentic_trader.execution.durable import OrderObservation
 
 
+ALPACA_BRACKET_ORDER_COUNT = 3
+
 logger = logging.getLogger(__name__)
 
 
@@ -515,6 +517,48 @@ class AlpacaBroker(BaseBroker):
                 obs.replaced_by for obs in observations.values() if obs.replaced_by and obs.replaced_by not in seen
             )
         return list(observations.values())
+
+    async def read_entry_group(self, order_id: str, known_ids: tuple[str, ...] = ()) -> list[OrderObservation]:
+        if not self.client and not await self.connect():
+            raise RuntimeError("Alpaca lifecycle connection failed")
+        assert self.client is not None
+        root = await asyncio.to_thread(self.client.get_order_by_id, order_id, GetOrderByIdRequest(nested=True))
+        if str(self._field(root, "id")) != order_id:
+            raise ValueError("Broker returned a different entry ID")
+        observations = {order_id: self._observation(root, source="lifetime")}
+        legs = self._field(root, "legs") or []
+        for leg in legs:
+            observation = self._observation(leg, parent=order_id, source="lifetime")
+            if observation.order_id in observations:
+                raise ValueError("Duplicate broker bracket identity")
+            observations[observation.order_id] = observation
+        if len(set(known_ids) | observations.keys()) > ALPACA_BRACKET_ORDER_COUNT:
+            raise ValueError("Entry group exceeds bounded exact-order lookup")
+        for identity in set(known_ids) - observations.keys():
+            order = await asyncio.to_thread(self.client.get_order_by_id, identity)
+            if str(self._field(order, "id")) != identity:
+                raise ValueError("Broker returned a different protective order ID")
+            observations[identity] = self._observation(order, parent=order_id, source="lifetime")
+        return list(observations.values())
+
+    async def cancel_order(self, order_id: str) -> None:
+        if not self.client:
+            raise RuntimeError("Connected broker required before cancellation")
+        # BoundedTransport never retries DELETE. Recovery belongs to the journal owner.
+        await asyncio.to_thread(self.client.cancel_order_by_id, order_id)
+
+    async def regular_session_open(self) -> bool:
+        if not self.client and not await self.connect():
+            raise RuntimeError("Alpaca lifecycle connection failed")
+        assert self.client is not None
+        clock = await asyncio.to_thread(self.client.get_clock)
+        timestamp = self._field(clock, "timestamp")
+        is_open = self._field(clock, "is_open")
+        if not isinstance(timestamp, datetime) or timestamp.tzinfo is None or type(is_open) is not bool:
+            raise ValueError("Broker session clock is incomplete")
+        if abs((datetime.now(UTC) - timestamp).total_seconds()) > self.config.execution.entry_quote_max_age_seconds:
+            raise ValueError("Broker session clock is stale")
+        return is_open
 
     async def close_position(
         self,

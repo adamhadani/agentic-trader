@@ -209,3 +209,7 @@ triage result; next priorities are measured forward/lifecycle evidence, explicit
 order/holding lifetimes and a longer frozen study before causal panel expansion.
 
 Inspect `copilot alpha forward --days 7` or `/alphas` for the [shared forward evidence report](docs/alpha-forward-evidence.md). It counts canonical outcomes and measured receipts, exposes gaps/truncation, and grants no qualification credit. Recorded-score fractions are not complete calendar coverage; readiness remains a separate freshness check.
+
+## Timed alpha execution
+
+Read [trade lifetimes](docs/alpha-trade-lifetimes.md) before changing expiry. Pure elapsed-UTC deadlines are shared by replay and the injected `TradeLifetimeService`; optional timed policies create new immutable version-3 identities. Existing policy hashes/positions are unchanged. Entry cancellation persists one `entry_cancel` work item before DELETE, retains risk and blocks fresh admission until exact group confirmation, and recovers by lookup only. Holding expiry reuses `PositionCloseService` with a stable request ID, including failed attempts. Partial/uncertain evidence halts new risk; `/resume` cannot waive it. Journal/outbox writes are atomic; readiness includes `entry_cancellation`. No new schema/queue, automatic promotion, or live qualification claim.

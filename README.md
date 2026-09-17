@@ -185,3 +185,5 @@ only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for dia
 forward observation, not activation or qualifying shadow credit. Preserve the failed
 triage result; next priorities are measured forward/lifecycle evidence, explicit
 order/holding lifetimes and a longer frozen study before causal panel expansion.
+
+Timed session research supports [immutable entry/holding lifetimes](docs/alpha-trade-lifetimes.md), shared with the broker lifecycle service. `alpha replay` accepts paired `--entry-lifetime-seconds` and `--holding-lifetime-seconds`; omitted limits preserve existing GTC behavior. Cancellation recovery, risk fencing and close intents reuse the execution journal/outbox. Session alphas remain diagnostic-only; the next research step is a predeclared continuous study under a frozen lifetime policy.

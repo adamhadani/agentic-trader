@@ -805,7 +805,10 @@ def format_alpha_inspection_report(candidate: AlphaCandidate) -> str:
         f"• Deflated Sharpe Ratio (DSR):    {m.dsr:.2f}  ({'✅ PASS (>0.95)' if m.dsr >= 0.95 else '⚠️ CAUTION'})",
         f"• Mean Rank IC (Spearman):        {m.rank_ic_mean:+.4f}",
         f"• Rank IC Information Ratio (IR): {m.rank_ic_ir:+.2f}",
-        f"• Annualized Strategy Return:     {m.annualized_return_pct:+.2f}%",
+        "• Annualized Strategy Return:     "
+        + (
+            f"{m.annualized_return_pct:+.2f}%" if m.annualized_return_pct is not None else "N/A (undefined or overflow)"
+        ),
         f"• Maximum Drawdown:               {m.max_drawdown_pct:.2f}%",
         f"• Profit Factor:                  {m.profit_factor if m.profit_factor is not None else 'N/A (no losing completed trades)'}",
         f"• Win Rate:                       {m.win_rate * 100:.1f}% ({m.total_trades} trades)",

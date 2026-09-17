@@ -116,3 +116,9 @@ individual execution IDs. See [SDK order models](https://alpaca.markets/sdks/pyt
 and [client-ID order lookup](https://docs.alpaca.markets/us/docs/working-with-orders).
 The in-process HTTP adapter is an explicit restricted-environment test option;
 the default harness and CI retain real TCP/WebSocket and disposable PostgreSQL.
+
+### Timed bracket lifecycles
+
+Reviewed against [Alpaca order contracts](https://docs.alpaca.markets/us/docs/orders-at-alpaca): bracket exits activate after complete entry fill; cancellation can affect the remaining group; `pending_cancel` is not terminal. Keep GTC protection and implement entry lifetime with an exact persisted cancellation intent. Read parent/nested children plus missing persisted IDs; changed identities, replacements and partial fills fail closed. No automatic DELETE retry. Holding expiry uses the existing cancel/revalidate/close workflow and current broker clock.
+
+`tests/integration/test_trade_lifetimes.py` exercises actual SDK/TCP serialization with SQLite and independent PostgreSQL clients: contention, lost replies, fill/cancel races, crash boundaries, stale projections, failed outbox transactions, session eligibility, failed/pending close deduplication and protective exits. These controlled venue tests establish failure behavior, not measured live exchange cancellation latency. Diagnostic session admission stays disabled.

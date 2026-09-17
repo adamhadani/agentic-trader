@@ -20,6 +20,7 @@ import yfinance as yf
 from agentic_trader.cli.utils import artifact_directory, coro, session_source
 from agentic_trader.config import load_config
 from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.execution.lifetime_policy import MAX_TRADE_LIFETIME_SECONDS, TradeLifetimePolicy
 from agentic_trader.market.bars import MAX_DECISION_SECONDS, SessionClockPolicy, completed_fixed_bars
 from agentic_trader.research.alpha.baselines import (
     BENCHMARK_METHODS,
@@ -49,6 +50,7 @@ from agentic_trader.research.alpha.replay import (
     ReplayStatus,
 )
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
+from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, TimedAlphaExecutionPolicy
 from agentic_trader.research.alpha.study import StudyProtocol, StudyStatus
 from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
@@ -584,22 +586,42 @@ async def alpha_study_cmd(protocol_path, output):
     "--max-lateness-seconds",
     type=click.IntRange(1, MAX_DECISION_SECONDS),
     default=SessionClockPolicy().max_lateness_seconds,
-    help="Expire an unsubmitted decision after this window; accepted GTC orders persist",
+    help="Expire an unsubmitted decision; resting orders follow the separate entry lifetime, if declared",
 )
+@click.option("--entry-lifetime-seconds", type=click.IntRange(1, MAX_TRADE_LIFETIME_SECONDS))
+@click.option("--holding-lifetime-seconds", type=click.IntRange(1, MAX_TRADE_LIFETIME_SECONDS))
 @click.option("--output", type=click.Path(path_type=Path), help="New private directory; no overwrite")
 @coro
 async def alpha_replay_cmd(
-    expression, symbol, start, end, interval, feed, decision_delay_seconds, max_lateness_seconds, output
+    expression,
+    symbol,
+    start,
+    end,
+    interval,
+    feed,
+    decision_delay_seconds,
+    max_lateness_seconds,
+    entry_lifetime_seconds,
+    holding_lifetime_seconds,
+    output,
 ):
     """Diagnostic session/minute replay; charges one trial and consumes the inspected period."""
     config = load_config()
     feed = feed or config.market_data.alpaca_feed
     try:
+        if (entry_lifetime_seconds is None) != (holding_lifetime_seconds is None):
+            raise ValueError("Both entry and holding lifetimes must be declared together")
+        execution = (
+            TimedAlphaExecutionPolicy(lifetime=TradeLifetimePolicy(entry_lifetime_seconds, holding_lifetime_seconds))
+            if entry_lifetime_seconds is not None
+            else AlphaExecutionPolicy()
+        )
         symbol = symbol.strip().upper()
         definition = AlphaDefinition(
             "session_replay",
             "Session replay",
             expression,
+            execution=execution,
             semantics_version=3,
             clock=SessionClockPolicy(decision_delay_seconds, max_lateness_seconds),
             timeframe=interval,

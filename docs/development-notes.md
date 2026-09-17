@@ -197,3 +197,7 @@ only 11 closed trades. Six predeclared SPY/QQQ hypotheses are designated for dia
 forward observation, not activation or qualifying shadow credit. Preserve the failed
 triage result; next priorities are measured forward/lifecycle evidence, explicit
 order/holding lifetimes and a longer frozen study before causal panel expansion.
+
+## Timed order and holding policies
+
+The [lifetime contract](alpha-trade-lifetimes.md) connects session research to broker execution without adding another queue/schema. Timed definitions use shared pure UTC deadlines, immutable identities and canonical policy parsing. The injected lifecycle service runs in position monitoring; its repository uses the existing trading lock, events and outbox. Pending cancellations block both authorization and submission; exact group confirmation releases the unfilled reservation. Full holding expiry uses stable close IDs, with failed/uncertain outcomes retained. Annualized returns that overflow are unavailable; actual equity/trade evidence remains intact. Existing GTC policies and diagnostic activation gates stay unchanged.

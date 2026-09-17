@@ -298,7 +298,7 @@ observation. No session alpha is activated by these increments.
    produced 9–12 completed trades over three sampled blocks, sometimes held for days;
    GTC entries could fill days after submission. Specify immutable resting-order
    lifetime/holding intent, preserve uncertain-cancel recovery, and compare broker
-   lifecycle observations. Do not bolt a research-only timeout onto the simulator.
+   lifecycle observations. The [shared timed policy and lifecycle implementation](alpha-trade-lifetimes.md) now covers cancellation/recovery and deterministic holding closes. Prospective broker timing/protection evidence remains required before session promotion.
 3. Predeclare a longer continuous or explicitly stitched momentum study with enough
    independent trade evidence and untouched confirmation. The 30-trade failure stays
    failed; do not lower it or select new windows after seeing these results. Calendar/

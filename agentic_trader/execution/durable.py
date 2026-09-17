@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 class WorkKind(StrEnum):
     ENTRY = "entry"
+    ENTRY_CANCEL = "entry_cancel"
     NOTIFICATION = "notification"
 
 
@@ -28,6 +29,11 @@ ENTRY_BLOCKING = (WorkStatus.QUEUED, WorkStatus.CHECKING, WorkStatus.SUBMITTING,
 
 
 class EventKind(StrEnum):
+    ENTRY_CANCEL_REQUESTED = "entry_cancel_requested"
+    ENTRY_CANCEL_RESOLVED = "entry_cancel_resolved"
+    LIFETIME_REVIEW = "lifetime_review"
+    CLOSE_REQUESTED = "close_requested"
+    CLOSE_RESOLVED = "close_resolved"
     ENTRY_QUEUED = "entry_queued"
     ENTRY_CHECKING = "entry_checking"
     ENTRY_SUBMITTING = "entry_submitting"

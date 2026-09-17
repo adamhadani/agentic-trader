@@ -115,12 +115,13 @@ async def events(stream: str | None, limit: int) -> None:
         await db.engine.dispose()
 
 
-@db_group.command("queue", help="Inspect durable entry authorizations and outcomes")
+@db_group.command("queue", help="Inspect durable entry/cancellation commands and outcomes")
+@click.option("--kind", type=click.Choice([str(WorkKind.ENTRY), str(WorkKind.ENTRY_CANCEL)]), default=WorkKind.ENTRY)
 @coro
-async def queue() -> None:
+async def queue(kind: str) -> None:
     db = SignalDatabase(config=load_config())
     try:
-        for item in await db.workflows.list_work(WorkKind.ENTRY):
+        for item in await db.workflows.list_work(WorkKind(kind)):
             click.echo(json.dumps(asdict(item), default=str))
     finally:
         await db.engine.dispose()

@@ -38,10 +38,11 @@ from agentic_trader.constants import (
 )
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
-from agentic_trader.execution import SlicedExecutionEngine
 from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import OrderObservation, WorkKind, WorkStatus
+from agentic_trader.execution.engine import SlicedExecutionEngine
 from agentic_trader.execution.entries import EntryExecutionService
+from agentic_trader.execution.lifetimes import TradeLifetimeService
 from agentic_trader.market.session import CompositeMarketSessionProvider
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
@@ -61,13 +62,14 @@ from agentic_trader.presentation.formatters import (
 from agentic_trader.research.alpha import AlphaCatalog
 from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.shadow import AlphaShadowService
-from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, trailing_price
+from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
 from agentic_trader.research.retuner import AutoRetuner
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
+from agentic_trader.storage.lifetimes import LifetimeRepository
 from agentic_trader.telemetry import MetricsServer, global_metrics
 
 
@@ -90,6 +92,7 @@ class TradingCopilot:
         notifier: TelegramNotifier | None = None,
         close_service: PositionCloseService | None = None,
         entry_service: EntryExecutionService | None = None,
+        lifetime_service: TradeLifetimeService | None = None,
         outbox: NotificationDispatcher | None = None,
         ledger: AccountLedgerService | None = None,
         alpha_repository: AlphaRepository | None = None,
@@ -104,6 +107,13 @@ class TradingCopilot:
             broker if broker is not None else create_broker(config=config, data_fetcher=self.data_fetcher)
         )
         self.close_service = close_service if close_service is not None else PositionCloseService(self.broker, self.db)
+        self.lifetime_service = (
+            lifetime_service
+            if lifetime_service is not None
+            else TradeLifetimeService(
+                LifetimeRepository(self.db.workflows), self.broker, self.close_service, config=config.execution
+            )
+        )
         self.alpha_repository = (
             alpha_repository
             if alpha_repository is not None
@@ -731,6 +741,11 @@ class TradingCopilot:
         records exits in database, and emits Telegram alerts.
         """
         await self.entry_service.recover()
+        try:
+            await self.lifetime_service.reconcile()
+        except Exception as exc:
+            self._reconciliation_errors.append(f"trade_lifetimes:{type(exc).__name__}")
+            logger.exception("Trade lifetime reconciliation failed; continuing exact position reconciliation")
         if self.broker.supports_order_journal:
             try:
                 tracked = await self.db.get_active_positions()
@@ -833,7 +848,7 @@ class TradingCopilot:
                         target, reason = trail, StopAdjustmentReason.TRAILING_STOP
                 if pos.get("alpha_policy"):
                     target = trailing_price(
-                        entry, current, old_stop, risk, sign, AlphaExecutionPolicy(**pos["alpha_policy"])
+                        entry, current, old_stop, risk, sign, execution_policy_from_dict(pos["alpha_policy"])
                     )
                     reason = StopAdjustmentReason.TRAILING_STOP
                 if target == old_stop:
@@ -1443,11 +1458,20 @@ class TradingCopilot:
         unresolved = await self.db.workflows.list_work(
             WorkKind.ENTRY, statuses=(WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)
         )
-        if unresolved or await self.db.workflows.legacy_claims():
+        await self.lifetime_service.recover()
+        cancellations = await self.db.workflows.list_work(
+            WorkKind.ENTRY_CANCEL, statuses=(WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)
+        )
+        if (
+            unresolved
+            or cancellations
+            or await self.db.workflows.legacy_claims()
+            or await self.lifetime_service.resume_blockers()
+        ):
             return {
                 "success": False,
                 "is_halted": True,
-                "message": "Unconfirmed broker entry remains; inspect execution journal before resuming.",
+                "message": "Unconfirmed broker entry or cancellation remains; inspect execution journal before resuming.",
             }
         logger.info("Resuming trading operations from emergency halt...")
         self.is_halted = False

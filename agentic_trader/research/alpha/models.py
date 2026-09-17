@@ -10,7 +10,13 @@ from typing import Any
 
 from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.research.alpha.dsl import compile_expression
-from agentic_trader.research.alpha.strategy import NORMALIZATION_WINDOW, TIMEFRAME_FIELDS, AlphaExecutionPolicy
+from agentic_trader.research.alpha.strategy import (
+    NORMALIZATION_WINDOW,
+    TIMEFRAME_FIELDS,
+    AlphaExecutionPolicy,
+    TimedAlphaExecutionPolicy,
+    execution_policy_from_dict,
+)
 
 
 class DecisionStatus(StrEnum):
@@ -74,6 +80,8 @@ class AlphaDefinition:
             )
         ):
             raise ValueError("Version 3 requires an explicit raw Alpaca session clock; version 2 is fixed-duration")
+        if isinstance(self.execution, TimedAlphaExecutionPolicy) and self.clock is None:
+            raise ValueError("Timed execution requires a versioned session clock")
         if self.eligible_symbols is not None:
             object.__setattr__(
                 self, "eligible_symbols", tuple(sorted({s.strip().upper() for s in self.eligible_symbols if s.strip()}))
@@ -113,7 +121,7 @@ class AlphaDefinition:
             origin=str(data.get("origin", AlphaOrigin.MINED)),
             eligible_symbols=eligible_symbols,
             normalization_window=data.get("normalization_window", NORMALIZATION_WINDOW),
-            execution=AlphaExecutionPolicy(**data.get("execution", {})),
+            execution=execution_policy_from_dict(data.get("execution", {})),
             semantics_version=data.get("semantics_version", 2),
             data_feed=str(data.get("data_feed", "unverified")),
             adjustment=str(data.get("adjustment", "raw")),
@@ -135,7 +143,7 @@ class AlphaEvaluationMetrics:
     profit_factor: float | None = None
     max_drawdown_pct: float = 0.0
     total_trades: int = 0
-    annualized_return_pct: float = 0.0
+    annualized_return_pct: float | None = 0.0
     per_bar_sharpe: float = 0.0
     sample_length: int = 0
     skewness: float = 0.0
@@ -157,7 +165,9 @@ class AlphaEvaluationMetrics:
             profit_factor=float(data["profit_factor"]) if data.get("profit_factor") is not None else None,
             max_drawdown_pct=float(data.get("max_drawdown_pct", 0.0)),
             total_trades=int(data.get("total_trades", 0)),
-            annualized_return_pct=float(data.get("annualized_return_pct", 0.0)),
+            annualized_return_pct=float(data["annualized_return_pct"])
+            if data.get("annualized_return_pct") is not None
+            else None,
             per_bar_sharpe=float(data.get("per_bar_sharpe", 0)),
             sample_length=int(data.get("sample_length", 0)),
             skewness=float(data.get("skewness", 0)),

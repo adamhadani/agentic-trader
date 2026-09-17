@@ -27,7 +27,7 @@ from agentic_trader.research.alpha.forecast_policy import BASIS_POINTS, MAX_SIDE
 from agentic_trader.research.alpha.models import AlphaDefinition, AlphaOrigin
 from agentic_trader.research.alpha.replay import ReplayPlan, ReplayStatus
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
-from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
+from agentic_trader.research.alpha.strategy import execution_policy_from_dict
 
 
 MAX_CAMPAIGN_ATTEMPTS = 128
@@ -69,7 +69,9 @@ def campaign_jobs(protocol):
                         data_feed=protocol["feed"],
                         semantics_version=3,
                         clock=SessionClockPolicy(**protocol["clock"]),
-                        execution=AlphaExecutionPolicy(**protocol["execution"], friction_per_side=cost / BASIS_POINTS),
+                        execution=execution_policy_from_dict(
+                            {**protocol["execution"], "friction_per_side": cost / BASIS_POINTS}
+                        ),
                     )
                     jobs.append(
                         {

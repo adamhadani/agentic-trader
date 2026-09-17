@@ -93,16 +93,23 @@ class PositionCloseService:
                 )
 
     async def close(
-        self, position: BrokerPosition, signal: dict[str, Any] | None = None, *, allow_queued: bool = False
+        self,
+        position: BrokerPosition,
+        signal: dict[str, Any] | None = None,
+        *,
+        allow_queued: bool = False,
+        request_id: str | None = None,
+        context: dict | None = None,
     ) -> str:
         claimed, record = await self.db.claim_close_request(
             {
-                "id": f"close-{uuid4().hex}",
+                "id": request_id or f"close-{uuid4().hex}",
                 "symbol": position.symbol,
                 "direction": str(position.direction),
                 "quantity": position.quantity,
                 "signal_id": signal["id"] if signal else None,
-            }
+            },
+            context=context,
         )
         if not claimed:
             return (
@@ -133,7 +140,9 @@ class PositionCloseService:
             )
         return await self._save_result(record, result)
 
-    async def close_signal(self, signal_id: int, *, allow_queued: bool = False) -> str:
+    async def close_signal(
+        self, signal_id: int, *, allow_queued: bool = False, request_id: str | None = None, context: dict | None = None
+    ) -> str:
         await self.recover()
         signal = await self.db.get_signal_by_id(signal_id)
         if not signal or signal["status"] != SignalStatus.EXECUTED:
@@ -148,7 +157,7 @@ class PositionCloseService:
         tracked = [p for p in await self.db.get_active_positions() if p["contract"].strip("/").upper() == symbol]
         if len(tracked) != 1 or not self.matches(signal, position):
             return "Tracked quantity/direction is ambiguous or differs from the broker; no orders changed."
-        return await self.close(position, signal, allow_queued=allow_queued)
+        return await self.close(position, signal, allow_queued=allow_queued, request_id=request_id, context=context)
 
     @staticmethod
     def matches(signal: dict[str, Any], position: BrokerPosition) -> bool:
