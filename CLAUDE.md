@@ -165,9 +165,9 @@ the gates unchanged. A2b's [session replay groundwork](docs/alpha-session-replay
 uses observed calendars, complete minute coverage and the shared execution engine.
 `alpha replay` charges one real-data research attempt and excludes the inspected
 interval before I/O; it never qualifies or earns shadow credit. Historical minute
-data cannot establish point-in-time availability or actual partial fills. Next:
-complete acquisition/durable scheduling for the now-versioned session clock and
-verify broker execution assumptions.
+data cannot establish point-in-time availability or actual partial fills. Durable
+session acquisition/scheduling is implemented; actual feed and broker execution
+evidence remains necessary.
 Existing fixed-duration research/screening/shadow paths share the market clock
 guard and reject explicit session/unknown layouts or ambiguous timestamps. Do not
 silently reinterpret an old alpha version as using session-derived bars.
@@ -200,8 +200,8 @@ no promotion or broker-fill claim; see [timing/cost contracts](docs/alpha-foreca
 
 The [open-gap timing/cost follow-up](docs/alpha-open-gap-policy-2026-09-17.md)
 completed 20 attempts and failed its frozen trading criterion. Keep this standalone
-long/cash policy paused. Next alpha priority: measured forward/execution evidence and a bounded
-predeclared ETF hypothesis campaign; zero active alphas remains an intentional outcome.
+long/cash policy paused. Subsequent ETF campaigns are recorded below; measured
+forward/execution evidence and the current roadmap govern further work.
 
 The [open-gap postmortem](docs/alpha-open-gap-postmortem-2026-09-17.md) reproduced
 calculations but found outlier-concentrated forecast gains and unstable selection.
@@ -243,11 +243,16 @@ grants no qualification/registry credit and leaves weekly mining unchanged.
 The [completed sector-panel study](docs/alpha-sector-panel-2026-09-17.md) retains
 32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
-gains. All formulas remain research-only; active alphas remain zero. The next
-priority is a newly frozen turnover-aware study. [Automatic Alpaca bar evidence](docs/market-data-evidence.md) now retains raw pages and normalization outcomes.
+gains. All formulas remain research-only; active alphas remain zero. The [persistent-book follow-up](docs/alpha-persistent-book-2026-09-17.md) is also complete;
+use the [current roadmap](docs/alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities) for next work. [Automatic Alpaca bar evidence](docs/market-data-evidence.md) now retains raw pages and normalization outcomes.
 
 The [persistent ETF book experiment](docs/alpha-persistent-book.md) uses the shared
 panel journal and explicit adjusted-price accounting. It is research-only: reserve
 the frozen matrix before access; no promotion or live portfolio execution.
 [Verified feed access and alternatives](docs/research-data-sources.md) distinguish
 recent-SIP entitlement from throttling; historical SIP remains usable.
+
+Source-specific [volume calibration](docs/alpha-volume-calibration.md) uses the shared
+daily study harness with frozen training/forward intervals and exact feed identity.
+`alpha volume-study` is research-only. `/alphas` now provides a compact explanation
+and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.

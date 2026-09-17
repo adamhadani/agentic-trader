@@ -555,54 +555,52 @@ class TelegramHtmlFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def format_alphas_dashboard_html(snapshot: RegistrySnapshot, catalog_count: int = 0, *, evidence: dict) -> str:
-        """Report the authoritative registry, with no invented allocation/performance."""
+    def format_alphas_dashboard_html(snapshot: RegistrySnapshot, *, evidence: dict) -> str:
+        """Compact operator overview; full immutable definitions/evidence stay in CLI."""
         lines = [
-            "🧪 <b>FORMULAIC ALPHA INTELLIGENCE</b>",
-            f"Registry generation: <code>{snapshot.generation}</code>",
-            f"Active: {len(snapshot.active)} · Shadow: {len(snapshot.shadow)} · Catalog: {catalog_count}",
+            "🧪 <b>ALPHA RESEARCH</b>",
+            f"<b>{len(snapshot.active)} enabled for signals</b> · {len(snapshot.shadow)} research candidates",
         ]
-        for mode, definitions in (("Active", snapshot.active), ("Shadow", snapshot.shadow)):
-            for definition in definitions:
-                universe = ", ".join(definition.eligible_symbols or ()) or "Unqualified universe"
-                lines.extend(
-                    [
-                        f"{mode}: <code>{html.escape(definition.alpha_id)}</code> · {definition.timeframe} · {definition.version_id[:12]}",
-                        f"Universe: {html.escape(universe)}",
-                        f"Expression: <code>{html.escape(definition.expression)}</code>",
-                    ]
-                )
-        lines.append(
-            "Shadow observations do not place orders. Promotion requires recorded qualification and shadow evidence."
-        )
-        lines.append(f"\n<b>Forward diagnostics · {evidence['days']} days</b>")
-        if evidence["truncated"]:
-            lines.append("⚠ History limit reached: counts below are lower bounds; statistics use the loaded subset.")
-        for row in evidence["candidates"]:
-            counts = row["counts"]
-            lines.append(
-                f"<code>{html.escape(row['alpha_id'])}</code> / {html.escape(row['symbol'])} · {row['version_id'][:12]}: "
-                f"{counts['scored']}/{row['recorded_decisions']} recorded decisions scored · "
-                f"unavailable {counts['unavailable']} · missed {counts['missed']} · "
-                f"interrupted {counts['interrupted']} · superseded {counts['superseded']} · "
-                f"pending {counts['claimed']} ({row['overdue_pending']} overdue)"
-            )
-            lag = row["receipt_lag_seconds"]
-            lines.append(
-                f"Receipt lag p95: {lag['p95']:.1f}s ({lag['count']} measured)"
-                if lag["count"]
-                else "No measured receipts in this window."
-            )
-            if row["coverage_warnings"]:
-                lines.append("⚠ " + html.escape(", ".join(row["coverage_warnings"]).replace("_", " ")))
-        if not evidence["candidates"]:
-            lines.append("No session candidates in the current registry.")
+        if not snapshot.active:
+            lines.append("No alpha strategies enabled. Other configured strategies may still suggest trades.")
         lines.extend(
             [
-                "Recorded decisions only; absent windows may be unknown. Receipt lag includes delay/polling.",
-                "Diagnostic scores are not orders, P&amp;L or qualifying shadow credit.",
-                f"Full counts, directions and timing: <code>copilot alpha forward --days {evidence['days']}</code>.",
-                "Definitions: <code>copilot alpha list</code> or <code>copilot alpha inspect VERSION</code>.",
+                "",
+                "<b>Shadow</b> = saved candidates for evaluation. Shadow candidates cannot place orders.",
+                f"<b>Live-data checks · last {evidence['days']} days</b>",
+                "Forward diagnostics check new observations as they arrive; they are not a historical backtest.",
+            ]
+        )
+        rows = evidence["candidates"]
+        if rows:
+            recorded = sum(row["recorded_decisions"] for row in rows)
+            scored = sum(row["counts"]["scored"] for row in rows)
+            lines.append(f"Scope: {len(rows)} candidate/symbol pairs.")
+            lines.append(
+                f"{scored:,} of {recorded:,} recorded evaluations scored."
+                if recorded
+                else "No recorded evaluations in this window."
+            )
+            issues = sum(sum(row["counts"][k] for k in ("unavailable", "missed", "interrupted")) for row in rows)
+            pending = sum(row["counts"]["claimed"] for row in rows)
+            overdue = sum(row["overdue_pending"] for row in rows)
+            if issues or pending:
+                lines.append(f"Unavailable/missed/interrupted: {issues:,} · Pending: {pending:,} ({overdue:,} overdue)")
+            warnings = sorted(
+                {w.replace("_", " ") for row in rows for w in row["coverage_warnings"] if w != "row_limit_hit"}
+            )
+            if warnings:
+                lines.append("⚠ " + html.escape(", ".join(warnings)))
+        else:
+            lines.append("No session candidates configured for these checks.")
+        if evidence["truncated"]:
+            lines.append("⚠ History limit reached: counts are lower bounds.")
+        lines.extend(
+            [
+                "Recorded evaluations do not establish complete coverage, profits or promotion readiness.",
+                "",
+                f"Details: <code>copilot alpha forward --days {evidence['days']}</code>",
+                "Definitions: <code>copilot alpha list</code>",
             ]
         )
         return "\n".join(lines)

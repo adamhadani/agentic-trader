@@ -14,11 +14,14 @@ from agentic_trader.config import MarketDataEvidenceConfig
 from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
+from agentic_trader.market.bars import FIXED_BAR_LAYOUT
 from agentic_trader.research.alpha.information import ICPolicy
 from agentic_trader.research.alpha.panel_study import PanelFold, PanelHypothesis, PanelStudyPlan
 from agentic_trader.research.alpha.panel_workflow import AlphaPanelService
 from agentic_trader.research.alpha.persistent_study import BookTriage, PersistentStudyPlan, compute_persistent_study
 from agentic_trader.research.alpha.targets import ForecastLabel, ForecastTarget
+from agentic_trader.research.alpha.volume import VolumeContract, VolumePolicy
+from agentic_trader.research.alpha.volume_study import VolumeFold, VolumeStudyPlan, compute_volume_study
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import DomainEventRecord
@@ -37,7 +40,7 @@ async def panel_repository(request, temp_db):
 @pytest.mark.enable_socket
 @pytest.mark.allow_hosts(["127.0.0.1", "localhost"])
 @pytest.mark.parametrize("fault", [None, "missing", "provider"])
-@pytest.mark.parametrize("study", ["baskets", "book"])
+@pytest.mark.parametrize("study", ["baskets", "book", "volume"])
 @pytest.mark.parametrize("feed", ["sip", "iex"])
 async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before_reads(
     alpaca_http, panel_repository, tmp_path, fault, study, feed
@@ -71,6 +74,17 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
             triage=BookTriage(primary_cost_bps=0.0),
         )
         compute = compute_persistent_study
+    if study == "volume":
+        plan = VolumeStudyPlan(
+            "fixture",
+            tuple(sorted(plan.acquisition_symbols)),
+            clock[0].date(),
+            clock[-1].date(),
+            (VolumeFold("one", clock[10].date(), clock[59].date(), clock[60].date(), clock[-1].date()),),
+            VolumeContract(f"alpaca:{feed}", "1d", "all", FIXED_BAR_LAYOUT),
+            VolumePolicy(lookback=5, min_observations=30),
+        )
+        compute = compute_volume_study
     requests = []
 
     def response(method, path, query, body):
@@ -136,6 +150,13 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
         assert json.loads(Path(raw["artifact"]).read_text())["error_type"] == "APIError"
     else:
         assert len(requests) == 10 and len(inputs["datasets"]) == 5
+    if study == "volume" and fault is None:
+        assert len(result["profiles"]) == 5
+        for profile in result["profiles"]:
+            assert profile["calibration"]["contract"]["feed"] == f"alpaca:{feed}"
+            assert profile["threshold"] == 1.0
+            assert profile["evaluation_surge_fraction"] == 0.0
+            assert profile["training_observations"] == 50
     assert all(c[0] == "GET" for c in venue.calls)
     evidence = await repo.get(f"diagnostic/{result['run_id']}")
     assert evidence["artifact_hash"] == hashlib.sha256((output / "result.json").read_bytes()).hexdigest()
@@ -146,7 +167,7 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
         for e in events
         if json.loads(e.payload)["key"].startswith("external-observation/")
     ]
-    assert {v["symbol"] for _, v in exclusions} == {*plan.symbols, plan.benchmark}
+    assert {v["symbol"] for _, v in exclusions} == set(plan.acquisition_symbols)
     first_read = pd.Timestamp(inputs["receipts"][0]["requested_at"])
     assert all(
         pd.Timestamp(e.recorded_at).tz_localize("UTC") <= first_read

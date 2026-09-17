@@ -57,7 +57,6 @@ from agentic_trader.presentation.formatters import (
     TelegramHtmlFormatter,
     TerminalFormatter,
 )
-from agentic_trader.research.alpha import AlphaCatalog
 from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
@@ -1629,12 +1628,10 @@ class TradingCopilot:
         return await explainer.explain(report, format_mode="html")
 
     async def get_alphas_summary_html(self) -> str:
-        """Format HTML formulaic alpha intelligence dashboard for Telegram /alphas."""
+        """Format the compact registry and forward-evidence summary for Telegram /alphas."""
 
         snapshot, evidence = await load_forward_evidence(self.alpha_repository)
-        return TelegramHtmlFormatter.format_alphas_dashboard_html(
-            snapshot, catalog_count=len(AlphaCatalog().list_alphas()), evidence=evidence
-        )
+        return TelegramHtmlFormatter.format_alphas_dashboard_html(snapshot, evidence=evidence)
 
     async def broadcast_macro_briefing(self) -> None:
         """Broadcast morning macro intelligence card to Telegram."""

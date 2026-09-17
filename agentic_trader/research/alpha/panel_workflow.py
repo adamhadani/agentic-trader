@@ -19,7 +19,6 @@ from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.panel import PanelCoverageError, align_daily_panel
 from agentic_trader.research.alpha.panel_study import (
     PANEL_JOURNAL_SYMBOL,
-    PanelStudyPlan,
     PanelStudyStatus,
     compute_panel_study,
 )
@@ -31,6 +30,26 @@ from agentic_trader.storage.artifacts import save_json_report
 class DailyPanelSource(Protocol):
     def calendar(self, start: date, end: date) -> tuple[TradingSession, ...]: ...
     def daily(self, symbol: str, start: date, end: date, feed: str, adjustment: str = "raw") -> pd.DataFrame: ...
+
+
+class DailyStudyPlan(Protocol):
+    """Acquisition/accounting contract shared by pure daily study computations."""
+
+    @property
+    def start(self) -> date: ...
+    @property
+    def end(self) -> date: ...
+    @property
+    def feed(self) -> str: ...
+    @property
+    def adjustment(self) -> str: ...
+    @property
+    def acquisition_symbols(self) -> tuple[str, ...]: ...
+    @property
+    def trial_count(self) -> int: ...
+    @property
+    def identity(self) -> str: ...
+    def document(self) -> dict: ...
 
 
 def _file_hash(path: Path) -> str:
@@ -60,7 +79,7 @@ class AlphaPanelService:
         self.source = source
         self.compute = compute
 
-    async def run(self, plan: PanelStudyPlan, output: Path, *, environment: dict, as_of=None):
+    async def run(self, plan: DailyStudyPlan, output: Path, *, environment: dict, as_of=None):
         observed_at = utc_timestamp(as_of if as_of is not None else datetime.now(UTC))
         start = pd.Timestamp(plan.start, tz=ET_TZ)
         end = pd.Timestamp(plan.end + timedelta(days=1), tz=ET_TZ)
@@ -80,7 +99,7 @@ class AlphaPanelService:
             output / "manifest.json",
         )
         await self.repository.reserve_run(run_id, symbol=PANEL_JOURNAL_SYMBOL, timeframe="1d", trials=plan.trial_count)
-        symbols = (*plan.symbols, plan.benchmark)
+        symbols = plan.acquisition_symbols
         # Every member, including warmup/benchmark observations, is excluded before any provider call.
         for symbol in symbols:
             await self.repository.exclude_observed_interval(

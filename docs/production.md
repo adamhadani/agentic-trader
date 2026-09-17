@@ -456,8 +456,8 @@ grants no qualification/registry credit and leaves weekly mining unchanged.
 The [completed sector-panel study](alpha-sector-panel-2026-09-17.md) retains
 32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
-gains. All formulas remain research-only; active alphas remain zero. The next
-priority is a newly frozen turnover-aware study. [Automatic Alpaca bar evidence](market-data-evidence.md) now retains raw pages and normalization outcomes.
+gains. All formulas remain research-only; active alphas remain zero. The [persistent-book follow-up](alpha-persistent-book-2026-09-17.md) is also complete;
+use the [current roadmap](alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities) for next work. [Automatic Alpaca bar evidence](market-data-evidence.md) now retains raw pages and normalization outcomes.
 
 ## Provider read and forecast hardening
 
@@ -480,3 +480,8 @@ The September 17 read-only [access probes](research-data-sources.md) confirmed
 recent SIP is forbidden by subscription, with 199/200 requests still available.
 Delayed SIP and current IEX succeeded. Historical research can proceed; do not
 backdate delayed observations or silently switch a qualified alpha's feed.
+
+Source-specific [volume calibration](alpha-volume-calibration.md) uses the shared
+daily study harness with frozen training/forward intervals and exact feed identity.
+`alpha volume-study` is research-only. `/alphas` now provides a compact explanation
+and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.

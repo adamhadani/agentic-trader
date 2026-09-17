@@ -277,3 +277,26 @@ is retained as a failed acquisition; a separately charged coverage follow-up
 completed. No automatic truncation, imputation or alternate-feed substitution was
 added. Prospective IEX timing and broader expected-return benchmarks are next on
 the [alpha roadmap](alpha-roadmap.md#persistent-book-delivery-result).
+
+
+### Source calibration and broader discovery (September 17)
+
+[Daily volume profiles](alpha-volume-calibration.md) add a pure source-bound transform
+and injected study computation to the existing panel workflow. The shared
+`DailyStudyPlan` protocol expresses acquisition/accounting requirements; studies do
+not inherit irrelevant portfolio fields. No new schema, queue, feed fallback or
+execution authority. `/alphas` aggregates the existing evidence report without
+changing its query/count semantics. Full details remain in CLI.
+
+The [current alpha roadmap](alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities)
+records individual-equity universe expansion, point-in-time membership/delisting
+contracts, bounded broader-panel resources, intraday volume seasonality, prospective
+IEX receipts and exact calibration/plan execution identity. These are unfinished;
+source normalization alone creates neither predictive edge nor paper eligibility.
+
+Read-only forward audit during PR #58: 78/78 current session evaluations were
+unavailable, each with retained HTTP 403 evidence. The existing single-feed decision
+worker rejects mixed deployment feeds; successful prospective IEX observation needs
+explicit composition/configuration and immutable feed identity, not a per-command
+fallback. This takes immediate priority alongside dated stock-universe preparation.
+Worker/process readiness alone cannot establish alpha data quality.

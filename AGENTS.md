@@ -72,7 +72,7 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   Only redundant old healthy observations may be compacted. Retain all financial,
   incident, work/deduplication and dead-letter evidence. HTTP health is passive.
 
-- Follow the [active alpha roadmap](docs/alpha-roadmap.md) for research changes. Calibration artifacts are synthetic diagnostics, never promotion credentials; preserve attempt history and predeclare statistical acceptance criteria.
+- Follow the [active alpha roadmap](docs/alpha-roadmap.md) for research changes. `alpha calibrate` artifacts are synthetic diagnostics, never promotion credentials; preserve attempt history and predeclare statistical acceptance criteria.
 - Session replay uses observed exchange calendars and complete raw minute coverage,
   with the shared bracket engine. `alpha replay` journals a real research attempt
   and excludes inspected periods before provider access. Do not impute missing
@@ -139,3 +139,8 @@ panel journal and explicit adjusted-price accounting. It is research-only: reser
 the frozen matrix before access; no promotion or live portfolio execution.
 [Verified feed access and alternatives](docs/research-data-sources.md) distinguish
 recent-SIP entitlement from throttling; historical SIP remains usable.
+
+- [Volume calibration](docs/alpha-volume-calibration.md) binds symbol/feed/timeframe/
+  adjustment/clock and training evidence. Preserve past-only fitting and exact profile
+  identity; no SIP conversion factor, automatic live threshold change or intraday
+  reuse without seasonality. Both real-data and synthetic diagnostics grant no promotion.

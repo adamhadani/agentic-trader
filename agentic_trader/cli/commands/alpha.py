@@ -65,6 +65,7 @@ from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 from agentic_trader.research.alpha.validation import DatasetManifest
+from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_volume_study
 from agentic_trader.runtime import runtime_identity, state_directory
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.artifacts import save_json_report
@@ -681,6 +682,33 @@ async def alpha_replay_cmd(
     click.echo(
         f"Observed minutes: {result['coverage']['observed_minutes']}; completed simulated trades: {result['total_trades']}"
     )
+
+
+@alpha_group.command("volume-study")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@coro
+async def alpha_volume_study_cmd(protocol_path, output):
+    """Fit source-specific daily volume profiles and evaluate frozen forward intervals."""
+    document = json.loads(await asyncio.to_thread(protocol_path.read_text))
+    plan = VolumeStudyPlan.from_document(document)
+    config = load_config()
+    environment = await asyncio.to_thread(research_environment)
+    async with alpha_repository() as repository:
+        with session_source(config, plan.feed.removeprefix("alpaca:")) as source:
+            result = await AlphaPanelService(repository, source, compute=compute_volume_study).run(
+                plan, output, environment=environment
+            )
+    report = {
+        k: result[k] for k in ("status", "plan_id", "charged_trials", "completed_comparisons", "authorizes_promotion")
+    }
+    report["result_hash"] = await asyncio.to_thread(
+        lambda: hashlib.sha256((output / "result.json").read_bytes()).hexdigest()
+    )
+    await asyncio.to_thread(save_json_report, report, output / "screen.json")
+    click.echo(json.dumps(report, indent=2))
+    if result["status"] != PanelStudyStatus.COMPLETED:
+        raise click.ClickException("Volume study failed; retained inputs/receipts explain unavailable comparisons")
 
 
 @alpha_group.command("book-study")

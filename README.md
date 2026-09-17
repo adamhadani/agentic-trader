@@ -208,8 +208,8 @@ grants no qualification/registry credit and leaves weekly mining unchanged.
 The [completed sector-panel study](docs/alpha-sector-panel-2026-09-17.md) retains
 32/32 complete comparisons and zero passes. Volatility-scaled momentum has mean
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
-gains. All formulas remain research-only; active alphas remain zero. The next
-priority is a newly frozen turnover-aware study. [Automatic Alpaca bar evidence](docs/market-data-evidence.md) now retains raw pages and normalization outcomes.
+gains. All formulas remain research-only; active alphas remain zero. The [persistent-book follow-up](docs/alpha-persistent-book-2026-09-17.md) is also complete;
+use the [current roadmap](docs/alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities) for next work. [Automatic Alpaca bar evidence](docs/market-data-evidence.md) now retains raw pages and normalization outcomes.
 
 The [forecast contract hardening](docs/forecast-contract-hardening.md) records causal calibration,
 trade participation bounds, forecast-error penalties and bounded provider reads. The
@@ -220,3 +220,8 @@ panel journal and explicit adjusted-price accounting. It is research-only: reser
 the frozen matrix before access; no promotion or live portfolio execution.
 [Verified feed access and alternatives](docs/research-data-sources.md) distinguish
 recent-SIP entitlement from throttling; historical SIP remains usable.
+
+Source-specific [volume calibration](docs/alpha-volume-calibration.md) uses the shared
+daily study harness with frozen training/forward intervals and exact feed identity.
+`alpha volume-study` is research-only. `/alphas` now provides a compact explanation
+and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.

@@ -20,11 +20,12 @@ def test_alpha_dashboard_shows_registry_and_safe_guidance(empty):
     html = TelegramHtmlFormatter.format_alphas_dashboard_html(
         snapshot, evidence={"days": 7, "truncated": False, "candidates": []}
     )
-    assert "FORMULAIC ALPHA INTELLIGENCE" in html
-    assert "Shadow observations do not place orders" in html
+    assert "ALPHA RESEARCH" in html
+    assert "Shadow candidates cannot place orders" in html
     assert "--auto-promote" not in html
     if not empty:
-        assert definition.version_id[:12] in html
+        assert definition.version_id[:12] not in html
+        assert "1 research candidates" in html
 
 
 @pytest.mark.asyncio
@@ -74,7 +75,7 @@ async def test_telegram_handle_alphas_command_unauthorized():
     assert mock_update.message.reply_text.call_count == 0
 
 
-async def test_forward_dashboard_uses_generic_delivery_chunking():
+async def test_forward_dashboard_stays_compact_as_registry_grows():
     definitions = tuple(
         AlphaDefinition(
             f"control_{i}",
@@ -86,7 +87,7 @@ async def test_forward_dashboard_uses_generic_delivery_chunking():
             data_feed="alpaca:sip",
             clock=SessionClockPolicy(),
         )
-        for i in range(12)
+        for i in range(100)
     )
     snapshot = RegistrySnapshot(1, (), definitions)
     report = build_forward_evidence(
@@ -97,14 +98,17 @@ async def test_forward_dashboard_uses_generic_delivery_chunking():
         days=7,
     )
     card = TelegramHtmlFormatter.format_alphas_dashboard_html(snapshot, evidence=report)
-    assert "lower bounds" in card and "0/0 recorded decisions" in card and "No measured receipts" in card
-    assert "not orders" in card and "copilot alpha forward" in card
+    assert "lower bounds" in card and "No recorded evaluations" in card
+    assert "100 research candidates" in card and "100 candidate/symbol pairs" in card
+    assert len(card) < 1800
+    assert "cannot place orders" in card and "copilot alpha forward" in card
     notifier = TelegramNotifier("test_token", "12345", alphas_provider=AsyncMock(return_value=card))
     update = MagicMock()
     update.effective_chat.id = 12345
     update.message = AsyncMock()
     await notifier.handle_alphas_command(update, MagicMock())
     chunks = [call.args[0] for call in update.message.reply_text.call_args_list]
-    assert len(chunks) > 1 and all(len(chunk) <= 4096 for chunk in chunks)
+    assert len(chunks) == 1
     for definition in definitions:
-        assert definition.alpha_id in "\n".join(chunks)
+        assert definition.expression not in card
+        assert definition.version_id[:12] not in card
