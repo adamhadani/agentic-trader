@@ -397,3 +397,11 @@ is separate from capture quality. Immutable claims/cursors/results use the exist
 journal and private `forward-decisions` artifacts. A healthy worker with no eligible
 version-3 candidates is idle, not evidence of a forward score. No promotion, orders,
 qualified shadow credit or synthetic Telegram messages follow from these diagnostics.
+
+
+The frozen ETF campaign designates six SPY/QQQ session hypotheses for forward diagnostics
+alongside four historical shadows. Enrollment uses immutable registration and registry
+CAS during controlled deployment; restart installs the new generation before readiness
+is verified. All remain unqualified, and active-alpha count remains zero. Inspect the
+[results and limits](alpha-session-campaign-2026-09-17.md); positive historical marks
+are not Alpaca paper-account P&L.

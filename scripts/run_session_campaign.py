@@ -209,6 +209,10 @@ def triage(primary, stressed, policy, *, expected_blocks):
     return result
 
 
+def file_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 async def execute_campaign(protocol_path: Path, output: Path, repository, adapter, *, environment):
     protocol = json.loads(await asyncio.to_thread(protocol_path.read_text))
     jobs = await asyncio.to_thread(campaign_jobs, protocol)
@@ -216,12 +220,12 @@ async def execute_campaign(protocol_path: Path, output: Path, repository, adapte
     if any(job["plan"].end_at > as_of for job in jobs):
         raise ValueError("Campaign requires fully elapsed historical windows")
     await asyncio.to_thread(output.mkdir, parents=True, mode=0o700)  # Refuse overwrite/reuse of a previous campaign.
-    protocol_hash = hashlib.sha256(protocol_path.read_bytes()).hexdigest()
+    protocol_hash = await asyncio.to_thread(file_hash, protocol_path)
     manifest = {
         "protocol": protocol,
         "protocol_hash": protocol_hash,
         "environment": environment,
-        "runner_hash": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "runner_hash": await asyncio.to_thread(file_hash, Path(__file__)),
         "plans": [j["plan"].document() for j in jobs],
         "started_at": datetime.now(UTC).isoformat(),
     }
@@ -246,7 +250,7 @@ async def execute_campaign(protocol_path: Path, output: Path, repository, adapte
             "run_id": result["run_id"],
             "plan_id": plan.identity,
             "summary": summary,
-            "result_hash": hashlib.sha256((folder / "result.json").read_bytes()).hexdigest(),
+            "result_hash": await asyncio.to_thread(file_hash, folder / "result.json"),
         }
         await asyncio.to_thread(save_json_report, row, folder / "summary.json")
         rows.append(row)
