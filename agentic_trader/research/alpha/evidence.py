@@ -69,6 +69,8 @@ def _candidate(definition, symbol, cursor, records, policy, generation, now, sin
     warnings = []
     if not policy.enabled:
         warnings.append("worker_disabled")
+    if definition.data_feed != policy.feed:
+        warnings.append("feed_not_configured")
     if symbol not in policy.symbols:
         warnings.append("symbol_not_configured")
     if cursor is None:
@@ -144,6 +146,7 @@ def build_forward_evidence(snapshot, policy, inputs, *, now, days):
         "registry_generation": snapshot.generation,
         "scope": "current_registry_session_versions",
         "coverage_basis": "recorded_decisions",
+        "configured_feed": policy.feed,
         "truncated": inputs["truncated"],
         "rows_loaded": len(inputs["decisions"]),
         "outside_window_rows": outside,

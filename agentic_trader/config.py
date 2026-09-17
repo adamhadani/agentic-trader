@@ -3,7 +3,7 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import dotenv_values
@@ -413,6 +413,7 @@ class SessionWorkerConfig(BaseModel):
     """Bounded polling and explicit observation universe, separate from trading permissions."""
 
     enabled: bool = False
+    feed: Literal["alpaca:sip", "alpaca:iex"] = "alpaca:sip"
     symbols: list[str] = Field(default_factory=lambda: ["SPY"], min_length=1, max_length=5)
     poll_seconds: int = Field(default=30, ge=10, le=60)
     poll_offset_seconds: int = Field(default=5, ge=0, lt=10)

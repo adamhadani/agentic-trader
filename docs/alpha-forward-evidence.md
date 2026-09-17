@@ -76,3 +76,8 @@ Review the fixed six-control cohort after actual exchange sessions. Preserve mis
 and failed decisions. Execution/qualification gates remain unchanged. The [shared timed-order lifecycle](alpha-trade-lifetimes.md) is implemented;
 prospective feed/execution evidence and broader discovery remain in the
 [current roadmap](alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities).
+
+The report exposes `configured_feed`; `feed_not_configured` marks current registry
+versions retained for evidence but not acquired by this worker. Counts still retain
+all current-cohort feeds; they are not a claim that every candidate is being monitored.
+See [IEX enrollment and limits](alpha-iex-forward.md).

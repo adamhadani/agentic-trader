@@ -259,3 +259,8 @@ Source-specific [volume calibration](alpha-volume-calibration.md) uses the share
 daily study harness with frozen training/forward intervals and exact feed identity.
 `alpha volume-study` is research-only. `/alphas` now provides a compact explanation
 and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.
+
+[Prospective IEX workers](alpha-iex-forward.md) now bind their own exact feed independently
+from trading configuration. Mixed-feed registries retain old evidence and expose
+uncollected feeds. The IEX control cohort is diagnostic-only; daily volume calibration
+is not an intraday calibration and worker readiness is not scoring success.

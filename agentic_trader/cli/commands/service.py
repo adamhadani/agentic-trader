@@ -96,12 +96,11 @@ async def run_session_worker(config, repository, readiness, metrics, shutdown, *
         ),
         HealthComponent.ALPHA_DECISIONS: (SessionDecisionService, config.alpha_pipeline.decisions, "forward-decisions"),
     }[component]
-    with session_source(config, config.market_data.alpaca_feed) as source:
+    with session_source(config, policy.feed.removeprefix("alpaca:")) as source:
         observer = factory(
             repository,
             source,
             policy,
-            feed=f"alpaca:{config.market_data.alpaca_feed}",
             directory=artifact_directory() / folder,
             runtime=await asyncio.to_thread(runtime_identity),
         )

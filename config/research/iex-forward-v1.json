@@ -1,0 +1,212 @@
+{
+  "protocol_id": "iex-forward-v1",
+  "purpose": "Prospective IEX acquisition and scoring diagnostics, fixed before observing outcomes",
+  "selection": "All three existing control formulas on SPY and QQQ, independent new feed identities; preserve existing SIP versions and failures.",
+  "formula_trials": 0,
+  "authorizes_promotion": false,
+  "limitations": [
+    "Diagnostic score directions are not orders, fills, returns, or qualified shadow credit.",
+    "Do not backfill missed or failed windows, impute minutes, or substitute another feed.",
+    "Daily volume calibration is not used for intraday data."
+  ],
+  "alphas": [
+    {
+      "alpha_id": "iex-forward-v1_hour_momentum_SPY",
+      "name": "IEX SPY hour_momentum",
+      "expression": "close / delay(close,4) - 1",
+      "description": "Predeclared acquisition/scoring control; not a qualified trading alpha. Local relative volume is not intraday seasonal calibration.",
+      "direction": "bi_directional",
+      "entry_threshold": 1.5,
+      "timeframe": "15m",
+      "eligible_symbols": [
+        "SPY"
+      ],
+      "normalization_window": 50,
+      "execution": {
+        "stop_atr": 1.5,
+        "atr_method": "simple_true_range",
+        "reward_risk": 2.0,
+        "swing_window": 10,
+        "atr_window": 14,
+        "tick_size": 0.01,
+        "structural_buffer_ticks": 2,
+        "trail_trigger_r": 1.5,
+        "trail_distance_r": 1.5
+      },
+      "semantics_version": 3,
+      "data_feed": "alpaca:iex",
+      "adjustment": "raw",
+      "clock": {
+        "decision_delay_seconds": 60,
+        "max_lateness_seconds": 120,
+        "bar_layout": "rth_open_v1"
+      },
+      "origin": "manual"
+    },
+    {
+      "alpha_id": "iex-forward-v1_hour_momentum_QQQ",
+      "name": "IEX QQQ hour_momentum",
+      "expression": "close / delay(close,4) - 1",
+      "description": "Predeclared acquisition/scoring control; not a qualified trading alpha. Local relative volume is not intraday seasonal calibration.",
+      "direction": "bi_directional",
+      "entry_threshold": 1.5,
+      "timeframe": "15m",
+      "eligible_symbols": [
+        "QQQ"
+      ],
+      "normalization_window": 50,
+      "execution": {
+        "stop_atr": 1.5,
+        "atr_method": "simple_true_range",
+        "reward_risk": 2.0,
+        "swing_window": 10,
+        "atr_window": 14,
+        "tick_size": 0.01,
+        "structural_buffer_ticks": 2,
+        "trail_trigger_r": 1.5,
+        "trail_distance_r": 1.5
+      },
+      "semantics_version": 3,
+      "data_feed": "alpaca:iex",
+      "adjustment": "raw",
+      "clock": {
+        "decision_delay_seconds": 60,
+        "max_lateness_seconds": 120,
+        "bar_layout": "rth_open_v1"
+      },
+      "origin": "manual"
+    },
+    {
+      "alpha_id": "iex-forward-v1_bar_reversal_SPY",
+      "name": "IEX SPY bar_reversal",
+      "expression": "-returns",
+      "description": "Predeclared acquisition/scoring control; not a qualified trading alpha. Local relative volume is not intraday seasonal calibration.",
+      "direction": "bi_directional",
+      "entry_threshold": 1.5,
+      "timeframe": "15m",
+      "eligible_symbols": [
+        "SPY"
+      ],
+      "normalization_window": 50,
+      "execution": {
+        "stop_atr": 1.5,
+        "atr_method": "simple_true_range",
+        "reward_risk": 2.0,
+        "swing_window": 10,
+        "atr_window": 14,
+        "tick_size": 0.01,
+        "structural_buffer_ticks": 2,
+        "trail_trigger_r": 1.5,
+        "trail_distance_r": 1.5
+      },
+      "semantics_version": 3,
+      "data_feed": "alpaca:iex",
+      "adjustment": "raw",
+      "clock": {
+        "decision_delay_seconds": 60,
+        "max_lateness_seconds": 120,
+        "bar_layout": "rth_open_v1"
+      },
+      "origin": "manual"
+    },
+    {
+      "alpha_id": "iex-forward-v1_bar_reversal_QQQ",
+      "name": "IEX QQQ bar_reversal",
+      "expression": "-returns",
+      "description": "Predeclared acquisition/scoring control; not a qualified trading alpha. Local relative volume is not intraday seasonal calibration.",
+      "direction": "bi_directional",
+      "entry_threshold": 1.5,
+      "timeframe": "15m",
+      "eligible_symbols": [
+        "QQQ"
+      ],
+      "normalization_window": 50,
+      "execution": {
+        "stop_atr": 1.5,
+        "atr_method": "simple_true_range",
+        "reward_risk": 2.0,
+        "swing_window": 10,
+        "atr_window": 14,
+        "tick_size": 0.01,
+        "structural_buffer_ticks": 2,
+        "trail_trigger_r": 1.5,
+        "trail_distance_r": 1.5
+      },
+      "semantics_version": 3,
+      "data_feed": "alpaca:iex",
+      "adjustment": "raw",
+      "clock": {
+        "decision_delay_seconds": 60,
+        "max_lateness_seconds": 120,
+        "bar_layout": "rth_open_v1"
+      },
+      "origin": "manual"
+    },
+    {
+      "alpha_id": "iex-forward-v1_volume_momentum_SPY",
+      "name": "IEX SPY volume_momentum",
+      "expression": "(close / delay(close,4) - 1) * volume / ts_mean(volume,20)",
+      "description": "Predeclared acquisition/scoring control; not a qualified trading alpha. Local relative volume is not intraday seasonal calibration.",
+      "direction": "bi_directional",
+      "entry_threshold": 1.5,
+      "timeframe": "15m",
+      "eligible_symbols": [
+        "SPY"
+      ],
+      "normalization_window": 50,
+      "execution": {
+        "stop_atr": 1.5,
+        "atr_method": "simple_true_range",
+        "reward_risk": 2.0,
+        "swing_window": 10,
+        "atr_window": 14,
+        "tick_size": 0.01,
+        "structural_buffer_ticks": 2,
+        "trail_trigger_r": 1.5,
+        "trail_distance_r": 1.5
+      },
+      "semantics_version": 3,
+      "data_feed": "alpaca:iex",
+      "adjustment": "raw",
+      "clock": {
+        "decision_delay_seconds": 60,
+        "max_lateness_seconds": 120,
+        "bar_layout": "rth_open_v1"
+      },
+      "origin": "manual"
+    },
+    {
+      "alpha_id": "iex-forward-v1_volume_momentum_QQQ",
+      "name": "IEX QQQ volume_momentum",
+      "expression": "(close / delay(close,4) - 1) * volume / ts_mean(volume,20)",
+      "description": "Predeclared acquisition/scoring control; not a qualified trading alpha. Local relative volume is not intraday seasonal calibration.",
+      "direction": "bi_directional",
+      "entry_threshold": 1.5,
+      "timeframe": "15m",
+      "eligible_symbols": [
+        "QQQ"
+      ],
+      "normalization_window": 50,
+      "execution": {
+        "stop_atr": 1.5,
+        "atr_method": "simple_true_range",
+        "reward_risk": 2.0,
+        "swing_window": 10,
+        "atr_window": 14,
+        "tick_size": 0.01,
+        "structural_buffer_ticks": 2,
+        "trail_trigger_r": 1.5,
+        "trail_distance_r": 1.5
+      },
+      "semantics_version": 3,
+      "data_feed": "alpaca:iex",
+      "adjustment": "raw",
+      "clock": {
+        "decision_delay_seconds": 60,
+        "max_lateness_seconds": 120,
+        "bar_layout": "rth_open_v1"
+      },
+      "origin": "manual"
+    }
+  ]
+}
