@@ -101,3 +101,10 @@ Valid empty bar maps and requested-symbol empty lists retain a zero-row normaliz
 receipt and missing coverage. Invalid envelopes, unexpected symbols, non-list bar
 values and invalid pagination tokens fail as `BarResponseError`; raw response
 evidence is saved before validation. Typed row parsing remains owned by the SDK.
+
+Frames also carry canonical `source_quality` counts for observed raw rows, SDK
+parsed rows and normalized rows. The shared daily-panel boundary rejects SDK
+omission or normalization loss before interpreting absent dates as ordinary
+coverage. Raw-response observation supplies these counts even when evidence
+retention is disabled. This preserves the provider's general cleaning behavior
+while making strict research data loss explicit.

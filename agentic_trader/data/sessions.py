@@ -8,6 +8,7 @@ from alpaca.trading.requests import GetCalendarRequest
 
 from agentic_trader.data.evidence import BarAcquisitionError
 from agentic_trader.market.bars import TradingSession, utc_timestamp
+from agentic_trader.market.quality import SOURCE_QUALITY_ATTR, BarSourceQuality
 from agentic_trader.market.session import ET_TZ
 
 
@@ -79,6 +80,8 @@ class AlpacaSessionSource:
                 )
                 if "evidence" in bars.attrs:
                     receipt["evidence"] = bars.attrs["evidence"]
+                if SOURCE_QUALITY_ATTR in bars.attrs:
+                    receipt[SOURCE_QUALITY_ATTR] = bars.attrs[SOURCE_QUALITY_ATTR]
                 if (
                     bars.attrs.get("feed") != feed
                     or bars.attrs.get("adjustment") != "raw"
@@ -106,7 +109,14 @@ class AlpacaSessionSource:
             receipts.append(receipt)
             cursor = boundary
         combined = pd.concat(chunks)
-        combined.attrs = {k: v for k, v in chunks[0].attrs.items() if k != "evidence"}
+        combined.attrs = {k: v for k, v in chunks[0].attrs.items() if k not in ("evidence", SOURCE_QUALITY_ATTR)}
+        if all(SOURCE_QUALITY_ATTR in chunk.attrs for chunk in chunks):
+            quality = BarSourceQuality.combine(
+                [BarSourceQuality.from_document(chunk.attrs[SOURCE_QUALITY_ATTR]) for chunk in chunks]
+            )
+            if quality.normalized_rows != len(combined):
+                raise ValueError("Combined source quality does not match observed rows")
+            combined.attrs[SOURCE_QUALITY_ATTR] = quality.document()
         combined.attrs["acquisition"] = receipts
         return combined
 

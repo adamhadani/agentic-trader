@@ -43,7 +43,9 @@ def read_reference(reference, directory=None):
     return json.loads(path.read_text())
 
 
-@pytest.mark.parametrize("fault", [None, "empty", "malformed", "provider", "invalid_data"])
+@pytest.mark.parametrize(
+    "fault", [None, "empty", "malformed", "provider", "invalid_data", "cleaned_nan", "null_only", "mixed_null"]
+)
 async def test_sdk_liquidity_retains_every_member_without_selecting_around_provider_failures(
     alpaca_http, liquidity_repository, tmp_path, fault
 ):
@@ -98,6 +100,8 @@ async def test_sdk_liquidity_retains_every_member_without_selecting_around_provi
         if symbol == "BBB":
             if fault == "empty":
                 return 200, {"bars": {}, "next_page_token": None}
+            if fault == "null_only":
+                return 200, {"bars": {"BBB": [None]}, "next_page_token": None}
             if fault == "malformed":
                 return 200, {"bars": {"BBB": {}}, "next_page_token": None}
             if fault == "provider" and second:
@@ -110,7 +114,7 @@ async def test_sdk_liquidity_retains_every_member_without_selecting_around_provi
                 "o": 10,
                 "h": 11,
                 "l": 9,
-                "c": 10,
+                "c": "NaN" if fault == "cleaned_nan" and symbol == "BBB" and t == clock[-1] else 10,
                 "v": -1 if fault == "invalid_data" and symbol == "BBB" and t == clock[-1] else volume,
                 "n": 1,
                 "vw": 10,
@@ -118,6 +122,8 @@ async def test_sdk_liquidity_retains_every_member_without_selecting_around_provi
             }
             for t in selected
         ]
+        if fault == "mixed_null" and symbol == "BBB" and not second:
+            bars.append(None)
         return 200, {"bars": {symbol: bars}, "next_page_token": None if second else "two"}
 
     venue.override = response
@@ -163,12 +169,15 @@ async def test_sdk_liquidity_retains_every_member_without_selecting_around_provi
     else:
         raw = read_reference(inputs["datasets"]["BBB"]["attrs"]["evidence"])
         assert raw["status"] == "complete"
-        assert len(raw["pages"]) == (1 if fault == "empty" else 2)
+        assert len(raw["pages"]) == (1 if fault in ("empty", "null_only") else 2)
         assert all(read_reference(ref)["response"] for ref in raw["pages"])
-        assert (
-            member["reasons"]
-            == ({None: [], "empty": ["missing_window_sessions"], "invalid_data": ["invalid_source_evidence"]}[fault])
+        assert member["reasons"] == (
+            [] if fault is None else ["missing_window_sessions"] if fault == "empty" else ["invalid_source_evidence"]
         )
+        if fault in ("cleaned_nan", "null_only", "mixed_null"):
+            quality = inputs["datasets"]["BBB"]["attrs"]["source_quality"]
+            assert quality["normalization_dropped_rows"] + quality["sdk_omitted_rows"] == 1
+            assert raw["normalization"]["source_quality"] == quality
         if fault == "empty":
             assert raw["normalization"]["normalized_rows"] == 0
             assert member["observed_sessions"] == 0 and len(member["missing_dates"]) == 5

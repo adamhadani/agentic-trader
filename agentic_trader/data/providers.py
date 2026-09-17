@@ -28,6 +28,7 @@ from agentic_trader.constants import (
 )
 from agentic_trader.data.evidence import BarAcquisitionError, BarEvidenceStore
 from agentic_trader.market.bars import OHLCV
+from agentic_trader.market.quality import SOURCE_QUALITY_ATTR, BarSourceQuality
 from agentic_trader.resilience.fallback import (
     AllFallbacksExhaustedError,
     RetryPolicy,
@@ -217,11 +218,14 @@ class AlpacaDataProvider:
             if self.evidence
             else None
         )
+        raw_rows = 0
 
         def observe(page: ResponsePage) -> None:
+            nonlocal raw_rows
             if capture:
                 capture.observe(page)
             _validate_bar_page(page, clean_sym)
+            raw_rows += sum(len(rows) for rows in page.response["bars"].values())
 
         try:
             if capture:
@@ -244,6 +248,12 @@ class AlpacaDataProvider:
                         )
                     )
             df, normalization = self._normalize_bars(bars, clean_sym)
+            quality = BarSourceQuality(
+                raw_rows if isinstance(client, BoundedTransport) else None,
+                normalization["parsed_rows"],
+                normalization["normalized_rows"],
+            )
+            df.attrs[SOURCE_QUALITY_ATTR] = normalization[SOURCE_QUALITY_ATTR] = quality.document()
             df.attrs.update(
                 feed="alpaca:crypto" if is_crypto else f"alpaca:{self.feed.value}",
                 adjustment=adjustment_kind.value,

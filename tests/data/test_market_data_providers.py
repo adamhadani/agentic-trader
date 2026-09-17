@@ -71,6 +71,14 @@ def test_alpaca_provider_fetch_bars_standardizes_df(mock_alpaca_bars_df):
     assert len(df) == 5
     assert df["Close"].iloc[-1] == 506.0
     assert not isinstance(df.index, pd.MultiIndex)
+    assert df.attrs["source_quality"] == {
+        "version": "bar_source_quality_v1",
+        "raw_rows": None,
+        "parsed_rows": 5,
+        "normalized_rows": 5,
+        "sdk_omitted_rows": None,
+        "normalization_dropped_rows": 0,
+    }
 
 
 def test_alpaca_provider_fetch_latest_price():

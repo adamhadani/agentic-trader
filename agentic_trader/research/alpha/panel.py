@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from agentic_trader.market.quality import SOURCE_QUALITY_ATTR, BarSourceQuality
 from agentic_trader.market.session import ET_TZ
 
 
@@ -83,6 +84,8 @@ def align_daily_panel(
     aligned, coverage = {}, {}
     for symbol, frame in sorted(frames.items()):
         frame = frame.rename(columns=str.lower).copy()
+        if SOURCE_QUALITY_ATTR in frame.attrs:
+            BarSourceQuality.from_document(frame.attrs[SOURCE_QUALITY_ATTR]).require_lossless(frame_rows=len(frame))
         if (
             frame.attrs.get("timeframe") != "1d"
             or frame.attrs.get("feed") != feed

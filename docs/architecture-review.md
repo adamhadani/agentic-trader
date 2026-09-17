@@ -328,3 +328,12 @@ complete [dated equity cohort](alpha-equity-universe.md#daily-liquidity-and-cove
 It reuses the daily study service and diagnostic journal, with bounded paced reads,
 immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
 this development screen neither establishes historical membership nor qualifies alphas.
+
+The actual daily screen selected 64 of 150 eligible members from all 300 candidates;
+independent raw/normalized reconstruction and journal ordering passed. Review also
+reproduced SDK/normalization row loss being mistaken for ordinary missing coverage.
+Canonical source-quality metadata now crosses the provider/panel boundary, so
+strict studies reject that loss without a liquidity-specific transport or another
+persistence schema. The actual run had no row loss. Next priorities remain bounded
+economic/Ridge experiments and prospective evidence, plus authoritative subtypes,
+corporate actions and historical eligibility before qualification.

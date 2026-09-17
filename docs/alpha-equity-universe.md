@@ -112,14 +112,14 @@ receipt must precede the screen's actual observation time, and every inspected
 daily date must be strictly before the current New York date. These fences do not
 backdate current membership or historical bar availability.
 
-The first declared study will inspect August 1–September 16, 2026 on **IEX**, then
-select up to **64** candidates using the last **20 observed exchange sessions**.
+The first frozen study inspected August 1–September 16, 2026 on **IEX**, then
+selected **64** candidates using the last **20 observed exchange sessions**.
 Each eligible member needs all 20 daily bars, positive volume on all 20, and a
 latest completed close of at least **$5**. Ranking uses median daily `close × volume`
 over those same sessions, descending, with exact asset UUID tie-breaking. The
 minimum median dollar-volume policy is zero: selection ranks measured IEX activity
 without pretending an arbitrary cutoff measures consolidated market capacity.
-The actual source run and resulting cohort remain pending.
+Actual acquisition and independent verification are recorded below.
 
 All snapshot members retain their UUID, symbol, unknown subtype, full acquired
 coverage, trailing coverage, available metrics and exclusion reasons. Missing dates
@@ -147,9 +147,9 @@ separately from unit/SDK/database test results.
 
 ## Next stages and qualification limits
 
-1. Run and independently verify the frozen daily liquidity/coverage screen over
-   this complete sampled cohort; preserve missing/ineligible members and all
-   read/exclusion history. Implementation alone does not establish a usable cohort.
+1. **Completed:** run and independently verify the frozen daily liquidity/coverage
+   screen over the complete sampled cohort; preserve every missing/ineligible
+   member and all read/exclusion history. See the actual evidence below.
 2. Freeze a bounded economic-hypothesis/Ridge-control experiment over the screened
    cohort, with purged chronological labels, declared costs and cohort transfer.
    Retrospective tests selected using today's membership/liquidity are explicitly
@@ -211,3 +211,52 @@ verification. All-file pre-commit checks passed before commits.
 
 This is metadata selection evidence, not evidence that the cohort contains alpha
 or that the daemon has begun collecting these symbols.
+
+## Actual daily screen — September 17, 2026
+
+The protocol and implementation were committed as `1962f52` before price access.
+The IEX acquisition began at 18:59:22 UTC, after one diagnostic charge and all
+300 member/date exclusions were persisted. All 300 reads succeeded: 32 observed
+exchange dates, 9,450 returned daily bars, and an August 19–September 16 trailing
+20-session window. The private original input/result artifacts remain immutable.
+
+| Result | Count |
+| --- | ---: |
+| Frozen candidates assessed | 300 |
+| Eligible under the frozen policy | 150 |
+| Selected by IEX activity ranking | 64 |
+| Eligible but outside the declared cap | 86 |
+| Ineligible | 150 |
+| Acquisition failures / target shortfall | 0 / 0 |
+
+Exclusion reasons overlap: 119 lacked positive volume on all 20 sessions, 76 were
+below $5, and six lacked trailing daily observations. The selected cohort's median
+daily IEX dollar volume ranges from approximately $1.86M to $41.20M; these values
+measure this feed and do not establish consolidated execution capacity.
+
+A standalone NumPy/stdlib audit, without application imports or new source calls,
+reconstructed every coverage record, metric, exclusion, UUID tie and selected name.
+All 300 raw SDK pages and all 9,450 raw/normalized OHLCV rows matched exactly;
+median errors were zero. Every raw row was non-null and finite, and normalization
+dropped no rows. A separate read-only journal audit confirmed all 300 exclusions
+preceded the first calendar/data read, the single charge and matching diagnostic hash.
+Lifetime research attempts increased from 7,639 to **7,640**; registry generation
+remained **16**, active **0**, shadow **16**. A screen is not an alpha comparison
+per member and does not authorize promotion.
+
+Final review reproduced another boundary defect using synthetic SDK responses:
+normalization could discard malformed/null rows and make them look like ordinary
+missing dates. Shared acquisition-quality metadata and strict panel validation now
+reject that loss. The raw audit above establishes that the original actual screen
+was unaffected; it was not rerun or retuned after seeing its result.
+
+Redacted artifact identities:
+
+- Plan: `ea4b3b8d903c923bc9c77ce00343b3b34dcf0b8ef8c76ef8eb6e694920816e8c`
+- Result: `29f04e1b741907b36d0ad1cf6eaf9e6d05aa0c69d40a93f0f7d48cf3e897a536`
+- Independent audit: `846f8d126b21c252ba8fbb78ea5414418d3feb7ce4286b6db5dda7f3fe52b963`
+
+Local verification before capture: 1,632 tests passed (82 gated skips), and all
+250 SDK/TCP/WebSocket/PostgreSQL integration tests passed using a disposable DB.
+Final focused workflow/liquidity checks passed separately. Deployment verification
+is recorded after merge; these test results alone are not operational evidence.
