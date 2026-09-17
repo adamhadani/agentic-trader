@@ -455,7 +455,9 @@ async def test_closed_session_reason_reaches_telegram_reply_and_durable_notice(d
 
 
 @pytest.mark.parametrize("failure", ["session_ended", "cancel_ack_lost", "broker_read_error", "submit_ack_lost"])
-async def test_close_failure_notice_tracks_mutation_phase_and_hides_raw_broker_errors(desk, failure):
+async def test_close_failure_notice_tracks_mutation_phase_and_hides_raw_broker_errors(desk, failure, request):
+    if failure == "cancel_ack_lost" and request.config.getoption("--alpaca-transport") != "socket":
+        pytest.skip("A lost DELETE acknowledgement requires the real SDK socket deadline")
     copilot, venue, sid = desk
     await track_existing(copilot, venue, sid)
     original = venue.dispatch
