@@ -10,24 +10,26 @@ from agentic_trader.screeners.base import ScreenerCandidate
 from agentic_trader.screeners.registry import ConflictResolver
 
 
-def test_combination_is_permutation_invariant_and_horizon_aware():
+def test_combination_is_permutation_invariant_and_horizon_aware(forecast_contract):
 
     now = datetime(2026, 9, 16, 12, tzinfo=UTC)
-    first = AlphaForecast("a", "SPY", "1h", now, 0.01, 0.02, 1)
-    second = replace(first, version_id="b", expected_return=-0.004)
+    first = AlphaForecast("a", "SPY", forecast_contract, now, 0.01, 0.02, 1, "family-a", "calibration-a")
+    second = replace(
+        first, version_id="b", family_id="family-b", calibration_id="calibration-b", expected_return=-0.004
+    )
     result = combine_forecasts([first, second], as_of=now)
     assert result == combine_forecasts([second, first], as_of=now)
     assert result[0].expected_return == pytest.approx(0.003)
     assert result[0].contributors == ("a", "b")
     with pytest.raises(ValueError, match="horizon"):
-        combine_forecasts([first, replace(second, timeframe="4h")], as_of=now)
+        combine_forecasts([first, replace(second, contract=replace(forecast_contract, feed="alpaca:iex"))], as_of=now)
 
 
 @pytest.mark.parametrize("defect", ["stale", "future", "duplicate", "nonfinite"])
-def test_forecast_rejection_is_explicit(defect):
+def test_forecast_rejection_is_explicit(defect, forecast_contract):
 
     now = datetime(2026, 9, 16, 12, tzinfo=UTC)
-    forecast = AlphaForecast("a", "SPY", "1h", now, 0.01, 0.02, 1)
+    forecast = AlphaForecast("a", "SPY", forecast_contract, now, 0.01, 0.02, 1, "family-a", "calibration-a")
     forecasts = [forecast]
     if defect == "stale":
         forecasts = [replace(forecast, observed_at=now - timedelta(days=1))]
@@ -41,14 +43,19 @@ def test_forecast_rejection_is_explicit(defect):
         combine_forecasts(forecasts, as_of=now)
 
 
-def test_calibration_fit_uses_past_targets_only():
-
-    scores = pd.Series(np.arange(100) / 100)
-    returns = pd.Series(np.arange(100) / 1000)
-    model = ForecastCalibration.fit(scores.iloc[:60], returns.iloc[:60], trained_until="2020-01-01")
+def test_calibration_fit_uses_past_targets_only(forecast_contract):
+    index = pd.date_range("2020-01-01", periods=100, freq="h", tz="UTC")
+    scores = pd.Series(np.arange(100) / 100, index=index)
+    returns = pd.Series(np.arange(100) / 1000, index=index)
+    args = {
+        "contract": forecast_contract,
+        "trained_until": index[60].isoformat(),
+        "label_observed_at": pd.Series(index + pd.Timedelta(hours=1), index=index).iloc[:60],
+    }
+    model = ForecastCalibration.fit(scores.iloc[:60], returns.iloc[:60], **args)
     changed = returns.copy()
     changed.iloc[60:] *= -1000
-    other = ForecastCalibration.fit(scores.iloc[:60], changed.iloc[:60], trained_until="2020-01-01")
+    other = ForecastCalibration.fit(scores.iloc[:60], changed.iloc[:60], **args)
     assert model == other
     assert model.predict(0.5) > 0
 

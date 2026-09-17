@@ -22,7 +22,7 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 - Swing scans: every four hours from startup, immediate first run, all timeframes.
 - Intraday scans: every 15 minutes from startup, session gated, `15m` filter.
 - Position monitor: every minute, with additional broker stream wakeups.
-- Macro briefing: weekdays 12:30; retuning: Saturday 02:00. These cron schedules
+- Macro briefing: weekdays 12:30. Automatic legacy retuning is removed. Cron schedules
   inherit scheduler/system timezone. Intervals are not candle-close aligned.
 - Alpha miner: Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol,
   5y daily Alpaca data, 120s compute/symbol; no automatic qualification or promotion.
@@ -439,3 +439,10 @@ The [completed sector-panel study](alpha-sector-panel-2026-09-17.md) retains
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
 gains. All formulas remain research-only; active alphas remain zero. The next
 priority is lossless raw-provider provenance before a newly frozen turnover-aware study.
+
+## Provider read and forecast hardening
+
+See [forecast contract hardening](forecast-contract-hardening.md). Active `doctor` includes
+a recent request against the exact configured Alpaca feed; HTTP permission and actual
+bar freshness are distinct. Read fallbacks share bounded executor capacity and Alpaca
+socket timeouts. Unfinished reads are never replayed by the fallback wrapper.

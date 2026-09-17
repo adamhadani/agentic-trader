@@ -1127,3 +1127,11 @@ Expand the quantitative trading engine beyond 4-hour swing scans to ingest, calc
 | **Phase 47** | Cloud Infrastructure & AWS Container Deployment | **Planned** | Containerized deployment on AWS ECS/Fargate or EC2 with Terraform/Ansible automation |
 
 The [active alpha roadmap](alpha-roadmap.md) supersedes the historical alpha phase checklist below for future research work.
+
+## September 17 correction to historical implementations
+
+The legacy optimization/automatic retuning/config-export path described above and
+its optional VectorBT dependencies have been retired. The `fractional_kelly` mode
+is also removed; current sizing supports `static` and `volatility_targeted` only.
+See [contract hardening](forecast-contract-hardening.md) and the [active alpha roadmap](alpha-roadmap.md).
+Earlier sections are historical implementation records, not current CLI contracts.

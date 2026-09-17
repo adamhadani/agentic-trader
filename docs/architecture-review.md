@@ -5,6 +5,15 @@ title: Architecture review — September 2026
 
 # Architecture review — September 16, 2026
 
+## Remediation status — September 17
+
+[Contract hardening](forecast-contract-hardening.md) fixes trade participation,
+calibration boundaries, incompatible forecast/risk units, uncertainty use and cloned
+family weighting. It adds immutable solve diagnostics, bounded provider reads and
+an exact-feed access probe. The divergent retuner and uncalibrated Kelly mode are
+retired; a further minimum-size/hard-gate defect is fixed. The findings below remain
+the original review evidence. Executable plans and empirical profitability remain open.
+
 ## Assessment
 
 The central architecture is sound for an operator-approved paper desk: application

@@ -2,10 +2,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.position_sizing import (
     calculate_dynamic_sizing,
-    compute_fractional_kelly_multiplier,
 )
 from agentic_trader.config import AppConfig, ContractConfig, PositionSizingConfig
 from agentic_trader.constants import AssetClass, Direction, StrategyType
@@ -39,23 +37,10 @@ def _make_candidate(
     )
 
 
-def test_fractional_kelly_multiplier_bounds():
-    # Baseline: win_rate=0.50, R:R=2.0 -> multiplier should be 1.0
-    mult_baseline = compute_fractional_kelly_multiplier(win_rate=0.50, payoff_ratio=2.0, fraction=0.5)
-    assert mult_baseline == 1.0
-
-    # High edge: win_rate=0.65, R:R=3.0 -> multiplier should scale up toward 2.0
-    mult_high = compute_fractional_kelly_multiplier(win_rate=0.65, payoff_ratio=3.0, fraction=0.5)
-    assert mult_high > 1.0
-    assert mult_high <= 2.0
-
-    # Negative expectancy: win_rate=0.30, R:R=1.0 -> should be clamped to min_multiplier 0.50
-    mult_low = compute_fractional_kelly_multiplier(win_rate=0.30, payoff_ratio=1.0, fraction=0.5)
-    assert mult_low == 0.50
-
-    # Zero or negative payoff ratio
-    mult_zero = compute_fractional_kelly_multiplier(win_rate=0.50, payoff_ratio=0.0)
-    assert mult_zero == 1.0
+@pytest.mark.parametrize("mode", ["fractional_kelly", "unknown", "STATIC"])
+def test_unvalidated_sizing_modes_are_rejected(mode):
+    with pytest.raises(ValueError):
+        PositionSizingConfig(mode=mode)
 
 
 @pytest.mark.parametrize(
@@ -100,47 +85,6 @@ def test_sizing_uses_actual_price_and_notional_cap(
     assert tier.risk_dollars == expected_risk
     assert tier.reward_dollars == 2 * expected_risk
     assert tier.notional_dollars <= config.sizing.max_trade_notional_cap
-
-
-def test_fractional_kelly_evaluator_integration():
-    config = AppConfig(
-        sizing=PositionSizingConfig(
-            mode="fractional_kelly",
-            target_futures_risk_dollars=300.0,
-            max_contracts_per_trade=4,
-            min_contracts=1,
-            kelly_fraction=0.5,
-            baseline_win_rate=0.50,
-        ),
-        contracts={
-            "/MNQ": ContractConfig(
-                ticker="MNQ=F", name="Micro NQ", multiplier=2.0, tick_size=0.25, asset_class=AssetClass.FUTURES
-            )
-        },
-    )
-
-    evaluator = RiskEvaluator(config=config)
-    cand = _make_candidate(
-        contract="/MNQ",
-        price=18000.0,
-        atr_14=50.0,
-        direction=Direction.LONG,
-        recent_swing_low=17925.0,  # 75 pt stop
-    )
-
-    levels = evaluator.calculate_levels_deterministic(cand)
-    stop_loss = levels.stop_loss
-    take_profit = levels.take_profit
-    stop_dist = levels.stop_distance
-    target_dist = levels.target_distance
-    notional = levels.notional_value
-    quantity = levels.quantity
-
-    assert stop_loss < 18000.0
-    assert take_profit > 18000.0
-    assert target_dist >= stop_dist * 2.0
-    assert 1.0 <= quantity <= 4.0
-    assert notional == round(cand.current_price * 2.0 * quantity, 2)
 
 
 def test_dynamic_sizing_drawdown_gating_and_tiers():
@@ -220,3 +164,23 @@ def test_dynamic_sizing_notional_cap_and_equity_tiers():
     # Verify tiers generated (e.g. Conservative / Base / Max)
     assert len(res.tiers) >= 1
     assert all(t.risk_dollars <= 1000.0 for t in res.tiers)  # 1% risk cap on $100k
+
+
+@pytest.mark.parametrize("mode", ["static", "volatility_targeted"])
+@pytest.mark.parametrize("asset,multiplier", [(AssetClass.EQUITY, 1), (AssetClass.FUTURES, 5)])
+@pytest.mark.parametrize("constraint", ["exhausted", "drawdown", "unit_too_large", "minimum_above_cap"])
+def test_minimum_size_never_overrides_a_hard_gate(mode, asset, multiplier, constraint):
+    config = AppConfig(sizing=PositionSizingConfig(mode=mode))
+    opened = config.portfolio.max_notional_exposure if constraint == "exhausted" else 0
+    drawdown = 0.07 if constraint == "drawdown" else 0
+    entry = 100000 if constraint == "unit_too_large" else 100
+    if constraint == "minimum_above_cap":
+        config.sizing.min_shares = 1000
+        config.sizing.min_contracts = 1000
+        config.sizing.max_trade_notional_cap = entry * multiplier * 2
+    result = calculate_dynamic_sizing(
+        entry, 10, 20, multiplier, asset, config, current_open_notional=opened, current_drawdown_pct=drawdown
+    )
+    for tier in result.tiers:
+        assert tier.quantity == 0
+        assert tier.risk_dollars == tier.notional_dollars == 0

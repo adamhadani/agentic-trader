@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import AssetClass, SizingMode
 
 
 if TYPE_CHECKING:
@@ -32,40 +32,6 @@ class PositionSizingResult(BaseModel):
     tiers: list[SizingTier] = Field(default_factory=list)
     drawdown_factor: float = 1.0
     gating_reasons: list[str] = Field(default_factory=list)
-
-
-def compute_fractional_kelly_multiplier(
-    win_rate: float,
-    payoff_ratio: float,
-    fraction: float = 0.5,
-    baseline_win_rate: float = 0.50,
-    min_multiplier: float = 0.50,
-    max_multiplier: float = 2.00,
-) -> float:
-    """Calculate Fractional Kelly sizing multiplier based on win rate and payoff ratio (R:R).
-
-    Full Kelly fraction f* = (p * (b + 1) - 1) / b = p - (1 - p) / b
-    where p is win probability, b is win/loss payoff ratio (R:R).
-    """
-    if payoff_ratio <= 0:
-        return 1.0
-
-    p = max(0.01, min(0.99, win_rate))
-    b = max(0.1, payoff_ratio)
-
-    full_kelly = p - ((1.0 - p) / b)
-    if full_kelly <= 0:
-        # Negative expectancy trade under Kelly formula
-        return min_multiplier
-
-    fractional_kelly = full_kelly * fraction
-
-    # Compare against baseline half-Kelly with p=baseline_win_rate, b=2.0 (f* = 0.25, half = 0.125)
-    baseline_full = baseline_win_rate - ((1.0 - baseline_win_rate) / 2.0)
-    baseline_fractional = max(0.05, baseline_full * fraction)
-
-    raw_multiplier = fractional_kelly / baseline_fractional
-    return max(min_multiplier, min(max_multiplier, round(raw_multiplier, 2)))
 
 
 def calculate_dynamic_sizing(
@@ -127,16 +93,36 @@ def calculate_dynamic_sizing(
 
     if asset_class == AssetClass.EQUITY:
         raw_max_qty = min(float(sizing_cfg.max_shares_per_trade), qty_by_risk, qty_by_notional)
-        max_qty = max(1.0, float(int(raw_max_qty)))
+        max_qty = max(0.0, float(int(raw_max_qty)))
     else:
         raw_max_qty = min(float(sizing_cfg.max_contracts_per_trade), qty_by_risk, qty_by_notional)
-        max_qty = max(1.0, float(int(raw_max_qty)))
+        max_qty = max(0.0, float(int(raw_max_qty)))
 
-    if (
-        raw_max_qty < sizing_cfg.max_contracts_per_trade
-        if asset_class != AssetClass.EQUITY
-        else sizing_cfg.max_shares_per_trade
-    ):
+    minimum = sizing_cfg.min_shares if asset_class == AssetClass.EQUITY else sizing_cfg.min_contracts
+    if drawdown_factor == 0 or max_qty < minimum:
+        gating_reasons.append("No permissible quantity under hard risk/notional/drawdown gates")
+        tier = SizingTier(
+            tier_id="blocked",
+            label="Unavailable",
+            quantity=0,
+            risk_dollars=0,
+            reward_dollars=0,
+            notional_dollars=0,
+            effective_leverage=0,
+            is_default=True,
+        )
+        return PositionSizingResult(
+            default_tier=tier,
+            max_tier=tier,
+            tiers=[tier],
+            drawdown_factor=drawdown_factor,
+            gating_reasons=gating_reasons,
+        )
+
+    count_cap = (
+        sizing_cfg.max_shares_per_trade if asset_class == AssetClass.EQUITY else sizing_cfg.max_contracts_per_trade
+    )
+    if raw_max_qty < count_cap:
         if qty_by_notional < qty_by_risk:
             gating_reasons.append(f"Max size capped by remaining ${trade_notional_ceiling:,.0f} notional limit")
         else:
@@ -144,9 +130,9 @@ def calculate_dynamic_sizing(
 
     # 4. Standard Base Quantity
     contract_info = config.contracts.get(candidate.contract) if candidate else None
-    mode = sizing_cfg.mode.lower().strip() if sizing_cfg else "static"
+    mode = sizing_cfg.mode
 
-    if mode == "static":
+    if mode == SizingMode.STATIC:
         if asset_class == AssetClass.EQUITY:
             if contract_info and contract_info.target_risk_dollars:
                 base_risk_budget = contract_info.target_risk_dollars
@@ -182,19 +168,7 @@ def calculate_dynamic_sizing(
             else:
                 base_risk_budget = portfolio_cash * sizing_cfg.target_risk_pct
 
-        # Adjust base budget if Fractional Kelly
-        if mode == "fractional_kelly":
-            rr_ratio = (target_distance / stop_distance) if stop_distance > 0 else 2.0
-            win_rate = sizing_cfg.baseline_win_rate
-            kelly_mult = compute_fractional_kelly_multiplier(
-                win_rate=win_rate,
-                payoff_ratio=rr_ratio,
-                fraction=sizing_cfg.kelly_fraction,
-                baseline_win_rate=sizing_cfg.baseline_win_rate,
-            )
-            effective_base_budget = base_risk_budget * kelly_mult * effective_adjustment
-        else:
-            effective_base_budget = base_risk_budget * effective_adjustment
+        effective_base_budget = base_risk_budget * effective_adjustment
 
         raw_base_qty = effective_base_budget / per_unit_risk
 

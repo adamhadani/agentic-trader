@@ -147,7 +147,7 @@ scheduler:
   cron_hour_interval: 4 # Scan every 4 hours aligned with 4h candle closes
 
 sizing:
-  mode: "static" # "static", "volatility_targeted", "fractional_kelly"
+  mode: "static" # "static", "volatility_targeted"
   target_risk_pct: 0.005 # 0.5% risk per trade
   target_futures_risk_dollars: 300.0
   default_equity_risk_dollars: 250.0
@@ -155,8 +155,6 @@ sizing:
   min_contracts: 1
   max_shares_per_trade: 500
   min_shares: 1.0
-  kelly_fraction: 0.5
-  baseline_win_rate: 0.50
   max_risk_pct_cap: 0.01 # 1.0% hard risk cap per trade / tier
   max_trade_notional_cap: 30000.0 # 50% of portfolio $60k notional ceiling
   drawdown_gating_enabled: true
@@ -222,14 +220,6 @@ backtest:
   monte_carlo_seed: 42
   min_warmup_bars: 20
   apply_friction: true
-
-research:
-  lookback: "2y"
-  walk_forward_splits: 3
-  train_ratio: 0.70
-  min_wfe: 0.50
-  min_oos_sharpe: 0.80
-  calibrations_filename: "calibrated_parameters.json"
 
 session:
   enforce_rth: true

@@ -118,3 +118,13 @@ diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-ben
 - The [IC review](docs/alpha-information-coefficient.md) distinguishes single-symbol rolling IC from cross-sectional IC. Existing ICIR is unannualized and overlapping; never apply IID t-statistics or cross-sectional reference thresholds directly. New metric semantics require versioned evidence and predeclared tests/studies.
 
 - [Panel studies](docs/alpha-sector-panel.md) use explicit native daily calendars/targets and per-fold IC evidence. Never intersect away missing members, rank by future availability, annualize with an inferred 252, or relabel price proxies as fills. Reserve the whole matrix and exclude all members/benchmark/warmup before acquisition; only research screens may consume their outputs.
+
+- Forecast calibration must verify outcome availability at its cutoff. Pooling and
+  shadow allocation require matching target/feed/price/clock/currency contracts.
+  Bound traded notional separately from holdings; nonzero pending orders currently
+  block shadow allocation. Preserve immutable solver input/output evidence.
+- Legacy `optimize`/`retune` and uncalibrated Kelly sizing are retired. Use the
+  journal-backed research pipeline; do not introduce replacement config-export shims.
+- Read fallback deadlines never replay unfinished reads; shared worker capacity is
+  bounded, while transport adapters still require real socket deadlines. See
+  [forecast contract hardening](docs/forecast-contract-hardening.md).

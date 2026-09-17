@@ -10,8 +10,6 @@ from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from alpaca.trading.client import TradingClient
-
 from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
@@ -63,7 +61,6 @@ from agentic_trader.research.alpha import AlphaCatalog
 from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
-from agentic_trader.research.retuner import AutoRetuner
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
@@ -71,6 +68,7 @@ from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.lifetimes import LifetimeRepository
 from agentic_trader.telemetry import MetricsServer, global_metrics
+from agentic_trader.transport.alpaca import BoundedTradingClient
 
 
 logger = logging.getLogger("copilot")
@@ -131,7 +129,8 @@ class TradingCopilot:
             and not config.alpaca_api_key.startswith("your_")
         ):
             try:
-                alpaca_client = TradingClient(
+                alpaca_client = BoundedTradingClient(
+                    request_timeout=config.market_data.timeout_seconds,
                     api_key=config.alpaca_api_key,
                     secret_key=config.alpaca_api_secret,
                     paper=config.alpaca_paper,
@@ -1692,23 +1691,6 @@ class TradingCopilot:
         """Run statistical pairs screener and format as Telegram HTML."""
         results = await self.scan_pairs()
         return format_pairs_telegram(results)
-
-    async def run_auto_retune(
-        self,
-        symbols: list[str] | None = None,
-        strategies: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Execute automated parameter recalibration and broadcast Telegram summary."""
-        retuner = AutoRetuner(self.config)
-        logger.info("Executing scheduled parameter retuning...")
-        res = await asyncio.to_thread(
-            retuner.run_retune,
-            symbols=symbols,
-            strategies=strategies,
-        )
-        if self.notifier.is_configured():
-            await self.outbox.publish_message(res["summary_html"])
-        return res
 
     async def send_test_alert(self):
         """Synthetic diagnostics never create actionable signal records."""

@@ -1,7 +1,3 @@
-import argparse
-import tempfile
-from pathlib import Path
-
 import pandas as pd
 import yaml
 
@@ -14,12 +10,6 @@ from agentic_trader.config import (
 )
 from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.data.market_data import ContractMarketData
-from agentic_trader.research.models import ParameterCandidate
-from agentic_trader.research.reporting import (
-    candidate_to_strategy_dict,
-    export_candidate_to_config,
-    format_candidate_as_yaml,
-)
 from agentic_trader.screeners.strategies import StrategyEngine
 
 
@@ -206,89 +196,6 @@ def test_strategy_engine_custom_squeeze_config():
     cand_custom = engine_custom.check_squeeze_breakout(data, timeframe="4h")
     assert cand_custom is not None
     assert cand_custom.direction == Direction.LONG
-
-
-def test_candidate_to_strategy_dict_and_yaml_formatting():
-    cand = ParameterCandidate(
-        parameters={"ema_span": 10, "rsi_threshold": 45},
-        total_return_pct=15.5,
-        total_trades=12,
-        win_rate=75.0,
-        sharpe_ratio=2.85,
-        max_drawdown_pct=2.1,
-        profit_factor=3.1,
-    )
-
-    strat_dict = candidate_to_strategy_dict(cand, "trend_pullback")
-    assert strat_dict["enabled"] is True
-    assert strat_dict["trigger_ema_span"] == 10
-    assert strat_dict["rsi_oversold"] == 45.0
-    assert strat_dict["rsi_oversold_dip"] == 50.0
-    assert strat_dict["rsi_overbought"] == 55.0
-    assert strat_dict["rsi_overbought_surge"] == 50.0
-
-    yaml_str = format_candidate_as_yaml(cand, "trend_pullback")
-    parsed = yaml.safe_load(yaml_str)
-    assert parsed["strategies"]["trend_pullback"]["trigger_ema_span"] == 10
-    assert parsed["strategies"]["trend_pullback"]["rsi_oversold"] == 45.0
-
-
-def test_export_candidate_to_config_roundtrip():
-    cand = ParameterCandidate(
-        parameters={"volume_factor": 1.15, "min_squeeze_bars": 3},
-        total_return_pct=12.0,
-        total_trades=8,
-        win_rate=62.5,
-        sharpe_ratio=1.95,
-        max_drawdown_pct=3.0,
-        profit_factor=2.4,
-    )
-
-    with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as f:
-        temp_path = f.name
-
-    try:
-        # Write initial skeleton config
-        init_cfg = {"portfolio": {"cash": 50000.0}}
-        with open(temp_path, "w", encoding="utf-8") as f:
-            yaml.dump(init_cfg, f)
-
-        # Export candidate
-        success = export_candidate_to_config(cand, "squeeze_breakout", temp_path)
-        assert success is True
-
-        # Load with load_config
-        loaded = load_config(temp_path)
-        assert loaded.strategies.squeeze_breakout.volume_factor == 1.15
-        assert loaded.strategies.squeeze_breakout.min_squeeze_bars == 3
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
-
-
-def test_cli_optimize_export_config_parser():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    opt_parser = subparsers.add_parser("optimize")
-    opt_parser.add_argument("--symbol", default="SPY")
-    opt_parser.add_argument(
-        "--export-config",
-        nargs="?",
-        const="stdout",
-        default=None,
-        help="Export configuration",
-    )
-
-    # Test default (no flag passed)
-    args_default = parser.parse_args(["optimize"])
-    assert args_default.export_config is None
-
-    # Test flag without argument -> defaults to const "stdout"
-    args_stdout = parser.parse_args(["optimize", "--export-config"])
-    assert args_stdout.export_config == "stdout"
-
-    # Test flag with explicit filepath
-    args_file = parser.parse_args(["optimize", "--export-config", "config/custom.yaml"])
-    assert args_file.export_config == "config/custom.yaml"
 
 
 def test_alpha_observation_policy_is_loaded_from_explicit_yaml(tmp_path):

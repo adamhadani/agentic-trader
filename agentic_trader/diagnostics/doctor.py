@@ -6,7 +6,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import litellm
-from alpaca.trading.client import TradingClient
+from alpaca.data.enums import Adjustment, DataFeed
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.models import BarSet
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
 from pydantic import BaseModel, Field
 from telegram import Bot
 
@@ -15,11 +19,14 @@ from agentic_trader.broker.tradovate import TradovateBroker
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import APP_DISPLAY_NAME
 from agentic_trader.market.session import CompositeMarketCalendar, FinnhubCalendarProvider
+from agentic_trader.resilience.fallback import AllFallbacksExhaustedError, RetryPolicy, RunnableWithFallbacks
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.transport.alpaca import BoundedStockDataClient, BoundedTradingClient
 
 
 logger = logging.getLogger(__name__)
+RECENT_ACCESS_WINDOW = timedelta(minutes=1)
 
 
 class ComponentHealth(BaseModel):
@@ -174,6 +181,70 @@ async def check_tradovate(config: AppConfig) -> ComponentHealth:
         )
 
 
+async def check_market_data(
+    config: AppConfig, *, client: StockHistoricalDataClient | None = None, now: datetime | None = None
+) -> ComponentHealth:
+    """Probe exact recent-feed access, without fallback or a freshness claim.
+
+    An empty successful response proves request access, not current price coverage.
+    Owned clients close inside the worker, even when the caller deadline expires.
+    """
+    feed = f"alpaca:{config.market_data.alpaca_feed}"
+    if client is None and not (config.alpaca_api_key and config.alpaca_api_secret):
+        return ComponentHealth(name="market_data", status="DISABLED", message="Alpaca data credentials not configured")
+    now = now or datetime.now(UTC)
+    request = StockBarsRequest(
+        symbol_or_symbols=config.market_data.probe_symbol,
+        timeframe=TimeFrame.Minute,
+        start=now - RECENT_ACCESS_WINDOW,
+        end=now,
+        limit=1,
+        feed=DataFeed(config.market_data.alpaca_feed),
+        adjustment=Adjustment.RAW,
+    )
+
+    def probe():
+        reader = (
+            client
+            if client is not None
+            else BoundedStockDataClient(
+                config.alpaca_api_key, config.alpaca_api_secret, request_timeout=config.market_data.timeout_seconds
+            )
+        )
+        try:
+            bars = reader.get_stock_bars(request)
+            if not isinstance(bars, BarSet):
+                raise TypeError("Typed Alpaca bar response required")
+            return sum(len(rows) for rows in bars.data.values())
+        finally:
+            if client is None:
+                reader._session.close()
+
+    details: dict[str, Any] = {"feed": feed, "recent_access": False, "freshness_verified": False}
+    try:
+        observations = await RunnableWithFallbacks(
+            probe,
+            primary_name="alpaca_recent_access",
+            retry_policy=RetryPolicy(max_retries=0, timeout_seconds=config.market_data.timeout_seconds),
+        ).ainvoke()
+        details.update(recent_access=True, observations=observations)
+        return ComponentHealth(
+            name="market_data",
+            status="OK",
+            message=f"Recent {feed} request permitted; price freshness requires separate observations",
+            details=details,
+        )
+    except AllFallbacksExhaustedError as failure:
+        error = failure.errors[-1]
+        details.update(error_type=type(error).__name__, http_status=getattr(error, "status_code", None))
+        return ComponentHealth(
+            name="market_data",
+            status="ERROR",
+            message=f"Recent {feed} request failed; verify feed entitlement and transport. No fallback used",
+            details=details,
+        )
+
+
 async def check_finnhub(config: AppConfig) -> ComponentHealth:
     """Check the actual Finnhub exchange-holiday provider, without fallback."""
     key = config.finnhub_api_key
@@ -270,7 +341,8 @@ async def check_market_calendar(config: AppConfig) -> ComponentHealth:
         alpaca_client = None
         if config.alpaca_api_key and config.alpaca_api_secret and not config.alpaca_api_key.startswith("your_"):
             try:
-                alpaca_client = TradingClient(
+                alpaca_client = BoundedTradingClient(
+                    request_timeout=config.market_data.timeout_seconds,
                     api_key=config.alpaca_api_key,
                     secret_key=config.alpaca_api_secret,
                     paper=config.alpaca_paper,
@@ -322,6 +394,7 @@ async def run_diagnostics(config: AppConfig | None = None) -> DiagnosticReport:
         check_market_calendar(config),
         check_telegram(config),
         check_alpaca(config),
+        check_market_data(config),
         check_tradovate(config),
         check_finnhub(config),
         check_llm(config),
@@ -332,7 +405,17 @@ async def run_diagnostics(config: AppConfig | None = None) -> DiagnosticReport:
     has_error = False
     has_warning = False
 
-    names = ["database", "risk_limits", "market_calendar", "telegram", "alpaca", "tradovate", "finnhub", "llm"]
+    names = [
+        "database",
+        "risk_limits",
+        "market_calendar",
+        "telegram",
+        "alpaca",
+        "market_data",
+        "tradovate",
+        "finnhub",
+        "llm",
+    ]
     for name, res in zip(names, results, strict=False):
         if isinstance(res, BaseException):
             comp = ComponentHealth(

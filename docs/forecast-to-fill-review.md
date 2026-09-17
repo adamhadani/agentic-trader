@@ -7,6 +7,15 @@ The HTML was read statically, including its mathematical annotations. It is not
 vendored here. This is an assessment and implementation plan, not a change to
 trading policy or an authorization path for shadow portfolios.
 
+## Remediation status — September 17
+
+[Contract hardening](forecast-contract-hardening.md) fixes trade participation,
+calibration boundaries, incompatible forecast/risk units, uncertainty use and cloned
+family weighting. It adds immutable solve diagnostics, bounded provider reads and
+an exact-feed access probe. The divergent retuner and uncalibrated Kelly mode are
+retired; a further minimum-size/hard-gate defect is fixed. The findings below remain
+the original review evidence. Executable plans and empirical profitability remain open.
+
 ## Conclusion
 
 The tutorial is a useful design reference. Its most valuable contribution for us
@@ -162,8 +171,8 @@ a new optimizer framework is unnecessary.
 ### F7 — A legacy simulator still diverges from the hardened research path
 
 **P1 before trusting scheduled retuning reports.**
-[ParameterGridOptimizer](../agentic_trader/research/optimizer.py) and
-[AutoRetuner](../agentic_trader/research/retuner.py) retain a separate NumPy simulation
+[ParameterGridOptimizer](https://github.com/adamhadani/agentic-trader/blob/366a5b8/agentic_trader/research/optimizer.py) and
+[AutoRetuner](https://github.com/adamhadani/agentic-trader/blob/366a5b8/agentic_trader/research/retuner.py) retain a separate NumPy simulation
 and an optional VectorBT path with different stop assumptions. The NumPy branch adds
 the entire accumulated unrealized P&L to the preceding equity value each bar, then
 adds the full realized P&L on exit.

@@ -132,7 +132,7 @@ Docker Compose is an alternative deployment with `postgres` and `copilot` servic
 use `docker compose logs -f copilot`. Never start it alongside this desk's launchd
 stack. Compose's PostgreSQL image is independent of the installed Homebrew version.
 
-Research commands include `backtest`, `optimize`, `retune`, `stress`, `gex`, `pairs`
+Research commands include `backtest`, `stress`, `gex`, `pairs`
 and `alpha` mining/inspection/promotion. Research results are not live account P&L.
 Research does not automatically change running strategy parameters. External config
 edits require a restart; alpha registry changes load between scans. Allocation
@@ -208,3 +208,7 @@ The [completed sector-panel study](docs/alpha-sector-panel-2026-09-17.md) retain
 Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrated
 gains. All formulas remain research-only; active alphas remain zero. The next
 priority is lossless raw-provider provenance before a newly frozen turnover-aware study.
+
+The [forecast contract hardening](docs/forecast-contract-hardening.md) records causal calibration,
+trade participation bounds, forecast-error penalties and bounded provider reads. The
+legacy `optimize`/`retune` and uncalibrated Kelly sizing paths have been retired.

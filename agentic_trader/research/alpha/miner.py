@@ -9,9 +9,10 @@ from dataclasses import asdict, replace
 import numpy as np
 import pandas as pd
 
+from agentic_trader.market.bars import FIXED_BAR_LAYOUT, fixed_bar_closes
 from agentic_trader.research.alpha.catalog import AlphaCatalog
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
-from agentic_trader.research.alpha.forecasts import ForecastCalibration
+from agentic_trader.research.alpha.forecasts import ForecastCalibration, ForecastContract
 from agentic_trader.research.alpha.metrics import (
     calculate_cross_strategy_correlations,
     calculate_deflated_sharpe_ratio,
@@ -26,6 +27,7 @@ from agentic_trader.research.alpha.models import (
 from agentic_trader.research.alpha.search import TypedGeneticSearch
 from agentic_trader.research.alpha.simulation import return_statistics, simulate_strategy
 from agentic_trader.research.alpha.strategy import alpha_scores
+from agentic_trader.research.alpha.targets import ForecastTarget
 from agentic_trader.research.alpha.validation import ValidationPolicy, frame_digest, purged_folds, validate_sampling
 
 
@@ -162,12 +164,24 @@ class AlphaMiner:
         )
         calibration = None
         try:
+            # Scores/labels are available at bar CLOSE, not the start-labelled index.
+            closes = fixed_bar_closes(df, definition.timeframe)
+            train_end = training - self.policy.label_horizon
+            availability = pd.Series(closes, index=closes).shift(-self.policy.label_horizon)
             calibrated = ForecastCalibration.fit(
-                scores.iloc[: training - self.policy.label_horizon],
-                labels.iloc[: training - self.policy.label_horizon],
-                trained_until=str(df.index[training - 1]),
+                pd.Series(scores.to_numpy(), index=closes).iloc[:train_end],
+                pd.Series(labels.to_numpy(), index=closes).iloc[:train_end],
+                label_observed_at=availability.iloc[:train_end],
+                trained_until=closes[training - 1].isoformat(),
+                contract=ForecastContract(
+                    ForecastTarget(definition.timeframe, self.policy.label_horizon),
+                    definition.data_feed,
+                    definition.adjustment,
+                    FIXED_BAR_LAYOUT,
+                    "USD",
+                ),
             )
-            calibration = asdict(calibrated)
+            calibration = calibrated.document()
         except ValueError:
             pass
         candidate = AlphaCandidate(

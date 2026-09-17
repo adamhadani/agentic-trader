@@ -204,31 +204,16 @@ uv run copilot backtest --symbols /MES --trailing-stop-mode breakeven_and_trail 
 uv run copilot backtest --no-friction
 ```
 
-### `copilot optimize`
-Performs vectorized parameter grid searches and rolling out-of-sample walk-forward cross-validation.
-```bash
-# Standard parameter grid search
-uv run copilot optimize --symbol SPY --strategy trend_pullback
+### Retired research commands
 
-# Rolling Walk-Forward Out-of-Sample Validation
-uv run copilot optimize --symbol IWM --strategy trend_pullback --walk-forward --lookback 2y
+`optimize` and `retune` have been removed, including scheduled retuning and config
+export. Their separate simulator/trial accounting was unreliable. Use journal-backed
+`alpha mine`, `alpha benchmark`, panel/replay and explicit qualification instead.
+See [research contracts](forecast-contract-hardening.md).
 
-# Export top parameter candidate as YAML
-uv run copilot optimize --symbol IWM --walk-forward --export-config stdout
-```
-
-### `copilot retune`
-Automated parameter recalibration across all watchlist symbols with minimum Walk-Forward Efficiency (WFE) threshold filtering.
-```bash
-# Retune all strategies
-uv run copilot retune
-
-# Require minimum WFE of 0.60 and Sharpe of 1.0
-uv run copilot retune --min-wfe 0.60 --min-sharpe 1.0
-
-# Export winning parameters directly into config/config.yaml
-uv run copilot retune --export-config config/config.yaml
-```
+`alpha portfolio SNAPSHOT.json --output REPORT.json` requires explicit matching
+forecast/risk contracts and persists an immutable private input/output audit. It is
+shadow-only and rejects nonzero pending orders.
 
 ### `copilot stress`
 Performs tail-risk evaluation by replaying strategy execution through historical macro crises or simulating instantaneous cross-asset factor shocks.
@@ -274,7 +259,7 @@ uv run copilot alpha qualify RUN_ID VERSION_ID
 uv run copilot alpha shadow VERSION_ID --generation N
 uv run copilot alpha promote VERSION_ID --generation N
 uv run copilot alpha demote VERSION_ID --generation N
-uv run copilot alpha portfolio /private/path/observed-snapshot.json
+uv run copilot alpha portfolio /private/path/observed-snapshot.json --output /private/path/shadow-report.json
 uv run copilot alpha import config/promoted_alphas.yaml
 uv run copilot alpha test --symbol NVDA --interval 1d -- '-1.0 * delta(ts_rank(volume, 10), 5)'
 ```

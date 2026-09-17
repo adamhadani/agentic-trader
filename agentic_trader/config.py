@@ -14,7 +14,6 @@ from agentic_trader.constants import (
     DEFAULT_ACTIVE_STRATEGY,
     DEFAULT_BACKTEST_LOOKBACK,
     DEFAULT_BREAKEVEN_BUFFER_DOLLARS,
-    DEFAULT_CALIBRATIONS_FILENAME,
     DEFAULT_CONFLICT_RESOLUTION,
     DEFAULT_DATA_MAX_RETRIES,
     DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
@@ -27,9 +26,7 @@ from agentic_trader.constants import (
     DEFAULT_DB_POOL_TIMEOUT,
     DEFAULT_DB_RETRY_DELAY,
     DEFAULT_FALLBACK_PROVIDERS,
-    DEFAULT_MIN_OOS_SHARPE,
     DEFAULT_MIN_WARMUP_BARS,
-    DEFAULT_MIN_WFE,
     DEFAULT_MONTE_CARLO_SIMULATIONS,
     DEFAULT_PORTFOLIO_CASH,
     DEFAULT_POSTGRES_DB_URL,
@@ -47,14 +44,13 @@ from agentic_trader.constants import (
     DEFAULT_TRAIL_STEP_TICKS,
     DEFAULT_TRAIL_TRIGGER_R,
     DEFAULT_TRAILING_STOP_MODE,
-    DEFAULT_TRAIN_RATIO,
     DEFAULT_VIX_COMPRESSED_THRESHOLD,
     DEFAULT_VIX_ELEVATED_THRESHOLD,
     DEFAULT_VIX_EXTREME_THRESHOLD,
-    DEFAULT_WALK_FORWARD_SPLITS,
     AssetClass,
     ExecutionMode,
     RuntimeEnvironment,
+    SizingMode,
 )
 from agentic_trader.market.bars import BAR_DURATIONS
 
@@ -175,10 +171,6 @@ class StrategyConfig(BaseModel):
 class SchedulerConfig(BaseModel):
     misfire_grace_seconds: int = Field(default=60, gt=0)
     cron_hour_interval: int = 4
-    retune_enabled: bool = True
-    retune_day_of_week: str = "sat"
-    retune_hour: int = 2
-    retune_minute: int = 0
     macro_briefing_enabled: bool = True
     macro_briefing_hour: int = 12
     macro_briefing_minute: int = 30
@@ -218,7 +210,7 @@ class RedundancyConfig(BaseModel):
 
 
 class PositionSizingConfig(BaseModel):
-    mode: str = "static"  # "static", "volatility_targeted", "fractional_kelly"
+    mode: SizingMode = SizingMode.STATIC
     target_risk_pct: float = 0.005  # 0.5% of cash
     target_futures_risk_dollars: float = 300.0
     default_equity_risk_dollars: float = 250.0
@@ -226,8 +218,6 @@ class PositionSizingConfig(BaseModel):
     min_contracts: int = 1
     max_shares_per_trade: int = 500
     min_shares: float = 1.0
-    kelly_fraction: float = 0.5
-    baseline_win_rate: float = 0.50
     max_risk_pct_cap: float = 0.01  # Hard ceiling: no single trade or tier can exceed 1.0% capital risk
     max_trade_notional_cap: float = 30000.0  # Max notional for a single trade (50% of $60k portfolio cap)
     drawdown_gating_enabled: bool = True  # Dynamically haircut sizes during portfolio drawdown
@@ -353,15 +343,6 @@ class BacktestConfig(BaseModel):
     apply_friction: bool = True
 
 
-class ResearchConfig(BaseModel):
-    lookback: str = "2y"
-    walk_forward_splits: int = DEFAULT_WALK_FORWARD_SPLITS
-    train_ratio: float = DEFAULT_TRAIN_RATIO
-    min_wfe: float = DEFAULT_MIN_WFE
-    min_oos_sharpe: float = DEFAULT_MIN_OOS_SHARPE
-    calibrations_filename: str = DEFAULT_CALIBRATIONS_FILENAME
-
-
 class SessionConfig(BaseModel):
     enforce_rth: bool = True
     allow_extended_hours: bool = False
@@ -385,9 +366,10 @@ class TrailingStopConfig(BaseModel):
 
 class MarketDataConfig(BaseModel):
     alpaca_feed: str = Field(default="sip", pattern="^(sip|iex)$")
+    probe_symbol: str = Field(default="SPY", pattern="^[A-Z]{1,10}$")
     primary_equities_provider: str = DEFAULT_PRIMARY_EQUITIES_PROVIDER  # ExecutionMode.ALPACA, "yfinance"
     fallback_providers: list[str] = Field(default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS))
-    timeout_seconds: float = DEFAULT_DATA_TIMEOUT_SECONDS
+    timeout_seconds: float = Field(default=DEFAULT_DATA_TIMEOUT_SECONDS, gt=0, le=120, allow_inf_nan=False)
     max_retries: int = DEFAULT_DATA_MAX_RETRIES
     retry_backoff_factor: float = DEFAULT_DATA_RETRY_BACKOFF_FACTOR
 
@@ -487,7 +469,6 @@ class AppConfig(BaseModel):
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     pairs: PairsConfig = Field(default_factory=PairsConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
-    research: ResearchConfig = Field(default_factory=ResearchConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     trailing_stop: TrailingStopConfig = Field(default_factory=TrailingStopConfig)
     market_data: MarketDataConfig = Field(default_factory=MarketDataConfig)
@@ -717,7 +698,6 @@ def load_config(
         telemetry=TelemetryConfig(**cfg_dict.get("telemetry", {})),
         pairs=PairsConfig(**cfg_dict.get("pairs", {})),
         backtest=BacktestConfig(**cfg_dict.get("backtest", {})),
-        research=ResearchConfig(**cfg_dict.get("research", {})),
         trailing_stop=TrailingStopConfig(**cfg_dict.get("trailing_stop", {})),
         database=DatabaseConfig(
             name=db_name,

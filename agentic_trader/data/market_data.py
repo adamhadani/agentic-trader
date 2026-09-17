@@ -70,7 +70,10 @@ class MarketDataFetcher:
         else:
             cfg = config or load_config()
             alpaca_prov = AlpacaDataProvider(
-                api_key=cfg.alpaca_api_key, api_secret=cfg.alpaca_api_secret, feed=cfg.market_data.alpaca_feed
+                api_key=cfg.alpaca_api_key,
+                api_secret=cfg.alpaca_api_secret,
+                feed=cfg.market_data.alpaca_feed,
+                request_timeout=cfg.market_data.timeout_seconds,
             )
             yf_prov = YFinanceDataProvider()
 

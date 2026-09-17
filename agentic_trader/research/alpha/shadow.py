@@ -11,7 +11,13 @@ import numpy as np
 
 from agentic_trader.market.bars import FIXED_BAR_LAYOUT
 from agentic_trader.research.alpha.clock import AlphaClockRejection, closed_alpha_bars
-from agentic_trader.research.alpha.forecasts import AlphaForecast, ForecastCalibration, combine_forecasts
+from agentic_trader.research.alpha.forecasts import (
+    AlphaForecast,
+    ForecastCalibration,
+    ForecastContract,
+    combine_forecasts,
+    forecast_family,
+)
 from agentic_trader.research.alpha.strategy import TIMEFRAME_FIELDS, alpha_scores, entry_directions
 from agentic_trader.storage.workflow import encode
 
@@ -74,7 +80,8 @@ class AlphaShadowService:
                 if d.clock is None or d.timeframe in data.session_bars
             ]
         )
-        calibrated: dict[str, list[AlphaForecast]] = {}
+        definitions = {d.version_id: d for d in (*snapshot.active, *snapshot.shadow)}
+        calibrated: dict[ForecastContract, list[AlphaForecast]] = {}
         for payload in observations:
             if payload is None:
                 continue
@@ -86,26 +93,67 @@ class AlphaShadowService:
                 decision = await self.repository.get(f"qualification/{payload['version_id']}")
                 calibration = decision.get("calibration") if decision else None
                 if calibration:
-                    model = ForecastCalibration(**calibration)
-                    forecast = AlphaForecast(
-                        payload["version_id"],
-                        payload["symbol"],
-                        payload["timeframe"],
-                        datetime.fromisoformat(payload["completed_at"]),
-                        model.predict(payload["score"]),
-                        model.return_volatility,
-                        1,
-                    )
-                    calibrated.setdefault(payload["timeframe"], []).append(forecast)
+                    try:
+                        model = ForecastCalibration.from_document(calibration)
+                        definition = definitions[payload["version_id"]]
+                        observed_at = datetime.fromisoformat(payload["completed_at"])
+                        if (
+                            model.contract.feed != definition.data_feed
+                            or model.contract.adjustment != definition.adjustment
+                            or model.contract.target.timeframe != definition.timeframe
+                            or model.contract.bar_layout != payload["bar_layout"]
+                            or datetime.fromisoformat(model.trained_until) > observed_at
+                        ):
+                            raise ValueError("Calibration contract/cutoff does not match observation")
+                        forecast = AlphaForecast(
+                            payload["version_id"],
+                            payload["symbol"],
+                            model.contract,
+                            observed_at,
+                            model.predict(payload["score"]),
+                            model.standard_error(payload["score"]),
+                            1,
+                            forecast_family(definition.expression, definition.normalization_window),
+                            model.calibration_id,
+                        )
+                        calibrated.setdefault(model.contract, []).append(forecast)
+                    except (ValueError, TypeError, KeyError) as exc:
+                        await self._record(
+                            {
+                                **payload,
+                                "valid": False,
+                                "reason": "calibration_unavailable",
+                                "detail": str(exc),
+                                "registry_generation": snapshot.generation,
+                            }
+                        )
         for forecasts in calibrated.values():
-            combined = combine_forecasts(forecasts, as_of=now)
+            try:
+                combined = combine_forecasts(forecasts, as_of=now)
+            except ValueError as exc:
+                await self._record(
+                    {
+                        "symbol": data.symbol or data.contract,
+                        "observed_at": now.isoformat(),
+                        "valid": False,
+                        "reason": "combined_forecast_unavailable",
+                        "detail": str(exc),
+                        "registry_generation": snapshot.generation,
+                    }
+                )
+                continue
             for result in combined:
-                payload = {
-                    "valid": False,
-                    "reason": "combined_shadow_forecast",
-                    **asdict(result),
-                    "registry_generation": snapshot.generation,
-                }
-                key = hashlib.sha256(encode(payload).encode()).hexdigest()
-                await self.repository.record_forecast(key, payload)
+                await self._record(
+                    {
+                        "valid": False,
+                        "reason": "combined_shadow_forecast",
+                        **asdict(result),
+                        "timeframe": result.contract.target.timeframe,
+                        "registry_generation": snapshot.generation,
+                    }
+                )
         return [p for p in observations if p is not None]
+
+    async def _record(self, payload):
+        key = hashlib.sha256(encode(payload).encode()).hexdigest()
+        await self.repository.record_forecast(key, payload)

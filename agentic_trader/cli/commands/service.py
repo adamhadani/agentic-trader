@@ -265,22 +265,6 @@ async def daemon(no_llm: bool) -> None:
         id="position_monitor",
         next_run_time=datetime.now(UTC),
     )
-    # Schedule weekend automated parameter retuning
-    if config.scheduler.retune_enabled:
-        scheduler.add_job(
-            copilot.run_auto_retune,
-            "cron",
-            day_of_week=config.scheduler.retune_day_of_week,
-            hour=config.scheduler.retune_hour,
-            minute=config.scheduler.retune_minute,
-            id="auto_retune",
-        )
-        logger.info(
-            "Scheduled auto-retuning job for %s at %02d:%02d UTC.",
-            config.scheduler.retune_day_of_week,
-            config.scheduler.retune_hour,
-            config.scheduler.retune_minute,
-        )
     # Schedule daily morning macro briefing (Monday - Friday)
     if config.scheduler.macro_briefing_enabled:
         scheduler.add_job(

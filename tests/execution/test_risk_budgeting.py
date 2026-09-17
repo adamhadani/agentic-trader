@@ -282,7 +282,9 @@ async def test_dynamic_statistical_correlation(risk_config):
     ]
 
     # Candidate in /MES (assume statistical test returns 0.94)
-    cand = create_candidate("/MES", direction=Direction.LONG, price=5000.0, asset_class=AssetClass.FUTURES)
+    cand = create_candidate(
+        "/MES", direction=Direction.LONG, price=5000.0, swing_low=4990, swing_high=5010, asset_class=AssetClass.FUTURES
+    )
 
     res = await evaluator.evaluate_candidate(cand, use_llm=False, active_positions=active_positions)
     assert res.approved is False
