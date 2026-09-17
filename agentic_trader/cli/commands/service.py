@@ -24,6 +24,7 @@ from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
+from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.observation import SessionObservationService
 from agentic_trader.runtime import runtime_identity
 from agentic_trader.storage.db import SignalDatabase
@@ -85,16 +86,23 @@ async def listen() -> None:
         await copilot.notifier.stop_polling()
 
 
-async def run_session_observer(config, repository, readiness, metrics, shutdown):
+async def run_session_worker(config, repository, readiness, metrics, shutdown, *, component):
     """One read-only consumer; finish in-flight reads before closing owned clients."""
-    policy = config.alpha_pipeline.observations
+    factory, policy, folder = {
+        HealthComponent.ALPHA_OBSERVER: (
+            SessionObservationService,
+            config.alpha_pipeline.observations,
+            "forward-observations",
+        ),
+        HealthComponent.ALPHA_DECISIONS: (SessionDecisionService, config.alpha_pipeline.decisions, "forward-decisions"),
+    }[component]
     with session_source(config, config.market_data.alpaca_feed) as source:
-        observer = SessionObservationService(
+        observer = factory(
             repository,
             source,
             policy,
             feed=f"alpaca:{config.market_data.alpaca_feed}",
-            directory=artifact_directory() / "forward-observations",
+            directory=artifact_directory() / folder,
             runtime=await asyncio.to_thread(runtime_identity),
         )
         while not shutdown.is_set():
@@ -102,6 +110,23 @@ async def run_session_observer(config, repository, readiness, metrics, shutdown)
                 results = await observer.run_once()
                 for result in results:
                     labels = {"symbol": result["symbol"], "timeframe": result["timeframe"], "feed": result["feed"]}
+                    if component == HealthComponent.ALPHA_DECISIONS:
+                        metrics.inc_counter(
+                            "alpha_session_decisions_total", labels={**labels, "status": result["status"]}
+                        )
+                        logger.info(
+                            "Session decision retained: %s %s %s",
+                            result["symbol"],
+                            result["closed_at"],
+                            result["status"],
+                            extra={
+                                "event": "alpha_session_decision",
+                                "decision_id": result["decision_id"],
+                                "status": result["status"],
+                                "artifact_hash": result.get("artifact_hash"),
+                            },
+                        )
+                        continue
                     complete = result["status"] == ObservationStatus.COMPLETE
                     metrics.set_gauge("alpha_observation_complete", float(complete), labels=labels)
                     metrics.set_gauge(
@@ -126,10 +151,10 @@ async def run_session_observer(config, repository, readiness, metrics, shutdown)
                         },
                     )
                 # This checks the collector's durable progress, not feed completeness.
-                await readiness.observe(HealthComponent.ALPHA_OBSERVER, True)
+                await readiness.observe(component, True)
             except Exception as exc:
-                logger.exception("Session observation worker failed")
-                await readiness.observe(HealthComponent.ALPHA_OBSERVER, False, type(exc).__name__)
+                logger.exception("Session diagnostic worker failed: %s", component)
+                await readiness.observe(component, False, type(exc).__name__)
             # Align polls to the wall clock, independent of daemon startup drift.
             # A configured offset leaves a small initial publication window.
             offset = policy.poll_offset_seconds
@@ -170,19 +195,23 @@ async def daemon(no_llm: bool) -> None:
     workflow_task = asyncio.create_task(copilot.workflow_worker())
     lag_task = asyncio.create_task(monitor_event_loop(config.telemetry, copilot.metrics, copilot.db.record_audit))
 
-    observation_task = (
+    session_tasks = [
         asyncio.create_task(
-            run_session_observer(
+            run_session_worker(
                 config,
                 copilot.alpha_repository,
                 copilot.readiness,
                 copilot.metrics,
                 copilot._shutdown_event,
+                component=component,
             )
         )
-        if config.alpha_pipeline.observations.enabled
-        else None
-    )
+        for component, policy in (
+            (HealthComponent.ALPHA_OBSERVER, config.alpha_pipeline.observations),
+            (HealthComponent.ALPHA_DECISIONS, config.alpha_pipeline.decisions),
+        )
+        if policy.enabled
+    ]
 
     scheduler = AsyncIOScheduler(
         job_defaults={
@@ -277,8 +306,8 @@ async def daemon(no_llm: bool) -> None:
         logger.info("Shutting down daemon...")
         copilot._shutdown_event.set()
         copilot.readiness.started = False
-        if observation_task is not None:
-            await observation_task
+        for task in session_tasks:
+            await task
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await workflow_task

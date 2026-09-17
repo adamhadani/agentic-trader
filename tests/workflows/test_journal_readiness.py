@@ -175,16 +175,21 @@ async def test_accounting_readiness_requires_current_run_evidence(store, app_con
 
 
 @pytest.mark.parametrize("mode", ["disabled", "missing", "fresh", "previous-run", "stale", "failure"])
-async def test_forward_observer_readiness_uses_current_run_progress(store, app_config, mode):
-    app_config.alpha_pipeline.observations.enabled = mode != "disabled"
+@pytest.mark.parametrize(
+    ("component", "policy"),
+    [
+        (HealthComponent.ALPHA_OBSERVER, "observations"),
+        (HealthComponent.ALPHA_DECISIONS, "decisions"),
+    ],
+)
+async def test_session_readiness_uses_current_run_progress(store, app_config, mode, component, policy):
+    getattr(app_config.alpha_pipeline, policy).enabled = mode != "disabled"
     readiness = ReadinessService(store, app_config, MetricsCollector(), run_id="current")
     if mode not in ("disabled", "missing"):
-        await store.record_health(
-            HealthComponent.ALPHA_OBSERVER, mode != "failure", run_id="old" if mode == "previous-run" else "current"
-        )
+        await store.record_health(component, mode != "failure", run_id="old" if mode == "previous-run" else "current")
     now = datetime.now(UTC) + (timedelta(hours=1) if mode == "stale" else timedelta())
     checks = (await readiness.report(now=now))["checks"]
     if mode == "disabled":
-        assert HealthComponent.ALPHA_OBSERVER not in checks
+        assert component not in checks
     else:
-        assert checks[HealthComponent.ALPHA_OBSERVER]["ready"] == (mode == "fresh")
+        assert checks[component]["ready"] == (mode == "fresh")

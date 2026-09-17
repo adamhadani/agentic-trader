@@ -174,7 +174,8 @@ New [session alpha definitions](docs/alpha-session-decisions.md) use semantics v
 and an explicit clock inside their immutable identity. Replay and screening/shadow
 share delay/expiry; live snapshots require actual request/receipt times. Old version-2
 hashes remain exact. Session versions cannot qualify, activate or reserve entry risk;
-normal scan acquisition and durable session decision scheduling remain pending.
+the dedicated diagnostic worker now owns receipt-aware acquisition and durable session
+decisions; native strategy scans retain their own clock.
 
 `alpha benchmark` now evaluates explicit-horizon forecast components, separately from
 trading-policy P&L. It retains charged diagnostic artifacts, never promotes, and does
@@ -187,12 +188,12 @@ no promotion or broker-fill claim; see [timing/cost contracts](docs/alpha-foreca
 
 The [open-gap timing/cost follow-up](docs/alpha-open-gap-policy-2026-09-17.md)
 completed 20 attempts and failed its frozen trading criterion. Keep this standalone
-long/cash policy paused. Next alpha priority: A2b live acquisition/durable decisions,
-then aligned panel hypotheses; zero active alphas remains an intentional outcome.
+long/cash policy paused. Next alpha priority: measured forward/execution evidence and a bounded
+predeclared ETF hypothesis campaign; zero active alphas remains an intentional outcome.
 
 The [open-gap postmortem](docs/alpha-open-gap-postmortem-2026-09-17.md) reproduced
 calculations but found outlier-concentrated forecast gains and unstable selection.
-Add fold/influence/action diagnostics before selecting further leads; a rejected
+Fold/influence/action diagnostics now accompany every new benchmark; a rejected
 experiment alone is not evidence of a calibrated or bug-free pipeline.
 
 Benchmark reports now expose fold stability, signed error influence, forecast/action

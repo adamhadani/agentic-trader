@@ -68,7 +68,11 @@ class AlphaShadowService:
         now = as_of or datetime.now(UTC)
         # CPU work stays off the event loop; writes remain short transactions.
         observations = await asyncio.to_thread(
-            lambda: [observe_definition(d, data, now) for d in (*snapshot.active, *snapshot.shadow)]
+            lambda: [
+                observe_definition(d, data, now)
+                for d in (*snapshot.active, *snapshot.shadow)
+                if d.clock is None or d.timeframe in data.session_bars
+            ]
         )
         calibrated: dict[str, list[AlphaForecast]] = {}
         for payload in observations:

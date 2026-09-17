@@ -13,6 +13,15 @@ from agentic_trader.research.alpha.dsl import compile_expression
 from agentic_trader.research.alpha.strategy import NORMALIZATION_WINDOW, TIMEFRAME_FIELDS, AlphaExecutionPolicy
 
 
+class DecisionStatus(StrEnum):
+    CLAIMED = "claimed"
+    SCORED = "scored"
+    UNAVAILABLE = "unavailable"
+    MISSED = "missed"
+    SUPERSEDED = "superseded"
+    INTERRUPTED = "interrupted"
+
+
 class AlphaOrigin(StrEnum):
     """Origin source of the formulaic alpha."""
 

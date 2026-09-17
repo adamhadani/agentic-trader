@@ -159,8 +159,9 @@ Inspect `copilot alpha status` for capture quality; it provides no promotion cre
 and does not change strategy scans or activate mined alphas.
 
 Session alpha research now uses [versioned receipt/delay/expiry contracts](docs/alpha-session-decisions.md).
-New session versions remain diagnostic-only while live acquisition, durable decision
-scheduling and execution evidence are completed; existing alpha identities are preserved.
+The daemon now acquires receipt-stamped minutes and persists one diagnostic decision
+per candidate/symbol/candle, including missed and interrupted outcomes. New session
+versions remain blocked from promotion pending measured execution and qualification evidence.
 
 Forecast research: `copilot alpha benchmark RUN_ID --method ridge --budget 5 --horizon 1`
 compares causal predictions on saved discovery data. See the

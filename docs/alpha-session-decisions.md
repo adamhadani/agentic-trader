@@ -1,11 +1,11 @@
 # Versioned session decisions
 
-A2b now gives **new** alpha definitions an explicit session decision clock, shared
-by minute replay, formulaic screening and shadow scoring. This is the contract and
-parity increment, not completed live migration. The normal scanner still acquires
-native provider bars; it does not populate session snapshots. Session definitions
-cannot qualify, activate or reserve new entry risk. The forward data observer
-continues collecting receipt evidence without scoring or trading.
+New alpha definitions have an explicit session decision clock shared by replay,
+formulaic screening, shadow scoring and the daemon's **diagnostic forward worker**.
+The worker acquires bounded raw-minute history with actual receipts and durably
+consumes each candidate/symbol/candle window. Normal trading scans still acquire
+native bars. Session versions cannot qualify, activate or reserve new entry risk:
+actual forward and broker execution evidence remain necessary.
 
 ## Immutable meaning
 
@@ -66,8 +66,7 @@ the fixture integration suite.
 Session shadow scores are retained as `valid: false`, reason
 `session_clock_diagnostic`, with their actual close and observation times. Repeated
 same-candle diagnostics deduplicate through the existing journal, and rebuild does
-not grant shadow dates/decisions. This is diagnostic deduplication, not a durable
-live decision/submission cursor. Qualification, registry activation and durable
+not grant shadow dates/decisions. Qualification, registry activation and durable
 entry admission explicitly reject session-clock versions, including session-derived
 `1d` versions. The coarse simulator also rejects them.
 
@@ -78,13 +77,59 @@ proposal expiry, persistent GTC orders and journal rebuild/no-credit behavior. R
 SDK loopback HTTP and disposable PostgreSQL exercise acquisition through screening
 and journal persistence; these are integration fixtures, not actual paper fills.
 
-## Next acceptance boundary
+## Durable diagnostic worker
 
-Wire bounded minute/calendar acquisition into a session-aligned decision worker,
-with adequate causal history and actual receipts. Persist one decision identity per
-version/symbol/closed candle before downstream processing; test restart, revised
-bars, skipped windows and slow reads without replaying stale decisions. Reuse the
-existing journal/entry services and keep native built-in strategy acquisition separate.
-Then collect forward score and actual broker execution evidence. These remain
-required before lifting any session/intraday promotion gate. Continue the
-[alpha roadmap](alpha-roadmap.md); broader mining and A3 follow these foundations.
+`SessionDecisionService` receives configuration, repository, read-only session source,
+clock and private artifact directory. The daemon composes it with dedicated bounded
+SDK readers through the same lifecycle as the data observer. Blocking reads, scoring
+and artifact writes run outside asyncio; shutdown drains work before closing clients.
+No broker mutation, notifier, second execution queue or new database schema is involved.
+
+Desk `alpha_pipeline.decisions` enables SPY/QQQ, a 30-second poll, 14 calendar days of
+history, at most 12 session definitions and 128 consumed windows per poll. Only explicitly
+eligible symbols in registered version-3 candidates are observed. With no such candidates,
+the worker is healthy and idle; that is not a forward sample. Insufficient history,
+missing minutes and contract mismatches remain unavailable. There is no fallback feed.
+
+- Initial enrollment starts now, without backfilling a decision already available.
+  Registry-generation changes conservatively re-enroll and retain the intervening gap.
+- Observed calendars enumerate due windows; a changed previously observed calendar
+  fails closed without moving the cursor. Gaps beyond the bounded calendar horizon
+  are retained as unknown intervals rather than fabricated missed candles.
+- Cursor CAS and immutable `(version_id, symbol, closed_at)` claims share one journal
+  transaction under the existing alpha lock. Competing clients cannot claim twice.
+- Expired windows become `missed` without price reads. Overlapping older windows are
+  `superseded`. Claimed work becomes `scored` or `unavailable`, with actual transport and
+  completion timestamps. Commit checks the clock after acquiring the database lock
+  and fences registry changes. No failure triggers a retry of that window.
+- An uncompleted claim becomes `interrupted` after expiry, including after restart
+  or candidate removal. Late completions retain separate forensic evidence and cannot
+  replace that outcome. Bar revisions never rescore an already consumed candle.
+- Claims, cursors, pending indexes, outcomes and late evidence replay from existing
+  `domain_events` into `alpha_projections`. Price exposure is excluded before reads;
+  forward scoring adds zero search trials and zero qualified shadow credit.
+- Private manifests bind the definition, clock, policy, calendar and runtime. Raw
+  arrays, input hashes, receipt times and result hashes permit reconstruction. The
+  journal's final status is authoritative if registry/expiry changed after artifact writing.
+
+`alpha status` includes `latest_session_decision` and pending claims. `/readyz` adds
+current-run `alpha_decisions` progress; it means the worker progresses, including idle
+and unavailable results, not that prices are complete or a strategy is qualified.
+`alpha_session_decisions_total` uses bounded symbol/timeframe/feed/status labels;
+structured logs include the durable decision ID and artifact hash. Inspect all outcomes,
+not only the latest success. No routine Telegram messages are emitted.
+
+## Evidence and next acceptance boundary
+
+Tests cover initial enrollment, receipts/score parity, missing data, late/reversed clocks,
+registry changes, repeated/revised candles, missed windows, unknown gaps, restart and late
+completion fencing, event-loop responsiveness and client-draining shutdown. Real SDK
+loopback HTTP plus independent PostgreSQL clients exercise contention and journal replay.
+These fixtures are not real paper fills or elapsed forward sessions.
+
+Collect real forward decisions and review publication/score availability, then compare
+broker acknowledgments and fills through existing execution services. Keep all session
+promotion/entry gates until those contracts and statistical qualification are satisfied.
+Independent candidate reads are currently bounded but not shared; if measured latency
+requires batching, group acquisition while retaining separate claims and receipt lineage.
+Research/live portfolio attribution remains separate from this diagnostic milestone.
