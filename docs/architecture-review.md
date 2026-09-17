@@ -152,3 +152,9 @@ service with explicit outcome endpoints and a pure stateless daily payoff evalua
 It does not replace the shared bracket execution engine or broker services. New
 policy variants are charged and arrays remain private. Actual auction/quote execution
 coverage and the A2b durable worker remain roadmap prerequisites.
+
+The [frozen open-gap follow-up](alpha-open-gap-policy-2026-09-17.md) completed all
+20 attempts but failed its trading criterion. Prediction accuracy alone did not
+justify an executable strategy. The next alpha priority remains A2b acquisition
+and durable decisions, followed by aligned panel hypotheses; no additional search
+engine or qualification bypass is justified by these results.

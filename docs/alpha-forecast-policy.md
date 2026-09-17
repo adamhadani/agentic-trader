@@ -101,3 +101,10 @@ The periods were already inspected in discovery. No result is a fresh final test
 Deterministic synthetic tests cover an overnight-only edge, a genuine daytime edge,
 independent cash-flow arithmetic, costs, missing values, fold boundaries and future/
 holdout perturbation. They do not establish search-wide false-discovery rates.
+
+## Completed experiment
+
+The [20-attempt result](alpha-open-gap-policy-2026-09-17.md) failed the frozen
+SPY advance criterion. Pause this standalone daily long/cash hypothesis; continue
+A2b acquisition/durable decisions, then aligned panel hypotheses. No promotion,
+gate change or retrospective threshold tuning follows from the experiment.
