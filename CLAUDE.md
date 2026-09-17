@@ -267,3 +267,9 @@ Keep original SIP failures/identities; other-feed candidates remain visible but 
 stable-hash selection use the existing diagnostic journal. The actual 300-name
 cohort is not a historical constituent list or a verified common-stock/liquidity universe.
 Use its snapshot ID and preceding-only screening before any broader forecast study.
+
+`alpha liquidity-study` now applies a frozen daily liquidity/coverage screen to the
+complete [dated equity cohort](docs/alpha-equity-universe.md#daily-liquidity-and-coverage-screen).
+It reuses the daily study service and diagnostic journal, with bounded paced reads,
+immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
+this development screen neither establishes historical membership nor qualifies alphas.

@@ -97,20 +97,70 @@ Do not convert today's sample into survivorship-free historical constituents.
 Prospective return/label collection starts strictly after observation; preceding
 prices may support separately declared development features or a liquidity screen.
 
+## Daily liquidity and coverage screen
+
+```bash
+uv run copilot alpha liquidity-study PROTOCOL.json --universe SNAPSHOT.json --output NEW_PRIVATE_DIRECTORY
+```
+
+The source-specific daily screen now consumes the **entire** selected snapshot
+through the existing daily-study acquisition/journal service. Its frozen protocol
+binds the snapshot hash, feed, raw native-daily semantics, observed exchange
+calendar, acquisition interval, trailing lookback and selection rules. A consumer
+cannot supply a preferred subset or replace asset UUIDs/symbols. The snapshot's
+receipt must precede the screen's actual observation time, and every inspected
+daily date must be strictly before the current New York date. These fences do not
+backdate current membership or historical bar availability.
+
+The first frozen study inspected August 1–September 16, 2026 on **IEX**, then
+selected **64** candidates using the last **20 observed exchange sessions**.
+Each eligible member needs all 20 daily bars, positive volume on all 20, and a
+latest completed close of at least **$5**. Ranking uses median daily `close × volume`
+over those same sessions, descending, with exact asset UUID tie-breaking. The
+minimum median dollar-volume policy is zero: selection ranks measured IEX activity
+without pretending an arbitrary cutoff measures consolidated market capacity.
+Actual acquisition and independent verification are recorded below.
+
+All snapshot members retain their UUID, symbol, unknown subtype, full acquired
+coverage, trailing coverage, available metrics and exclusion reasons. Missing dates
+before the required trailing window remain evidence without changing trailing
+eligibility. A successful zero-row source response is known missing coverage;
+zeros are not filled, and fewer eligible names produce an explicit shortfall.
+Transport failures, unaccounted missing frames, malformed OHLCV or incompatible
+feed/adjustment/clock evidence withhold the **entire** final selection and mark the
+attempt failed. Valid members' diagnostics remain available; failed attempts do not
+refund the charged trial or authorize selecting around unknown evidence.
+
+The screen charges one declared selection attempt, excludes every inspected
+member/interval before source access, and preserves acquisition receipts and
+artifacts through the shared research journal. It evaluates at most 500 metadata
+candidates, no more than 90 calendar days, and selects at most 64. These are
+acquisition/screen bounds; existing forecast panels still require their own frozen
+universe and complete coverage. No daemon enrollment, registry promotion, order,
+notification or automatic live threshold update follows from a screen.
+
+IEX volume measures one venue. A resulting cohort has evidence of IEX activity,
+not consolidated liquidity, borrow availability or a participation/capacity limit.
+Raw prices require corporate-action review before return experiments. Actual-run
+findings, independent numerical verification and deployed health must be recorded
+separately from unit/SDK/database test results.
+
 ## Next stages and qualification limits
 
-1. Freeze a preceding-session liquidity/coverage screen over this complete sampled
-   cohort; preserve missing/ineligible members and all read/exclusion history.
-2. Evaluate distinct economic hypotheses with purged training labels, costs and
-   cohort transfer, calling retrospective current-cohort tests development evidence.
+1. **Completed:** run and independently verify the frozen daily liquidity/coverage
+   screen over the complete sampled cohort; preserve every missing/ineligible
+   member and all read/exclusion history. See the actual evidence below.
+2. Freeze a bounded economic-hypothesis/Ridge-control experiment over the screened
+   cohort, with purged chronological labels, declared costs and cohort transfer.
+   Retrospective tests selected using today's membership/liquidity are explicitly
+   survivor-conditioned development evidence, not historical tradable universes.
 3. Acquire authoritative instrument subtypes/sectors, historical eligibility/delistings,
    corporate-action and actual feed/execution evidence before qualification.
 
-A later liquidity stage must bind its feed, clock, adjustment and actual past-only
-training cutoff. IEX volume represents one venue; it is not consolidated market
-liquidity or a whole-market capacity/participation limit. Preserve coverage failures
-and use a separately frozen mapping/calibration if comparing feeds. Nothing here
-relaxes the existing panel member limit or complete-coverage contract.
+Comparing feeds requires a separately frozen source-specific mapping/calibration.
+Nothing here relaxes the existing panel member limit, complete-coverage contract
+or qualification gates. Prospective labels begin only after the cohort and policy
+were actually observed and frozen; historical development dates stay consumed.
 
 Tests cover deterministic sampling, unknown subtypes, exact metadata joins,
 failures, stale/future directory dates, tampered/backdated consumption,
@@ -161,3 +211,52 @@ verification. All-file pre-commit checks passed before commits.
 
 This is metadata selection evidence, not evidence that the cohort contains alpha
 or that the daemon has begun collecting these symbols.
+
+## Actual daily screen — September 17, 2026
+
+The protocol and implementation were committed as `1962f52` before price access.
+The IEX acquisition began at 18:59:22 UTC, after one diagnostic charge and all
+300 member/date exclusions were persisted. All 300 reads succeeded: 32 observed
+exchange dates, 9,450 returned daily bars, and an August 19–September 16 trailing
+20-session window. The private original input/result artifacts remain immutable.
+
+| Result | Count |
+| --- | ---: |
+| Frozen candidates assessed | 300 |
+| Eligible under the frozen policy | 150 |
+| Selected by IEX activity ranking | 64 |
+| Eligible but outside the declared cap | 86 |
+| Ineligible | 150 |
+| Acquisition failures / target shortfall | 0 / 0 |
+
+Exclusion reasons overlap: 119 lacked positive volume on all 20 sessions, 76 were
+below $5, and six lacked trailing daily observations. The selected cohort's median
+daily IEX dollar volume ranges from approximately $1.86M to $41.20M; these values
+measure this feed and do not establish consolidated execution capacity.
+
+A standalone NumPy/stdlib audit, without application imports or new source calls,
+reconstructed every coverage record, metric, exclusion, UUID tie and selected name.
+All 300 raw SDK pages and all 9,450 raw/normalized OHLCV rows matched exactly;
+median errors were zero. Every raw row was non-null and finite, and normalization
+dropped no rows. A separate read-only journal audit confirmed all 300 exclusions
+preceded the first calendar/data read, the single charge and matching diagnostic hash.
+Lifetime research attempts increased from 7,639 to **7,640**; registry generation
+remained **16**, active **0**, shadow **16**. A screen is not an alpha comparison
+per member and does not authorize promotion.
+
+Final review reproduced another boundary defect using synthetic SDK responses:
+normalization could discard malformed/null rows and make them look like ordinary
+missing dates. Shared acquisition-quality metadata and strict panel validation now
+reject that loss. The raw audit above establishes that the original actual screen
+was unaffected; it was not rerun or retuned after seeing its result.
+
+Redacted artifact identities:
+
+- Plan: `ea4b3b8d903c923bc9c77ce00343b3b34dcf0b8ef8c76ef8eb6e694920816e8c`
+- Result: `29f04e1b741907b36d0ad1cf6eaf9e6d05aa0c69d40a93f0f7d48cf3e897a536`
+- Independent audit: `846f8d126b21c252ba8fbb78ea5414418d3feb7ce4286b6db5dda7f3fe52b963`
+
+Local verification before capture: 1,632 tests passed (82 gated skips), and all
+250 SDK/TCP/WebSocket/PostgreSQL integration tests passed using a disposable DB.
+Final focused workflow/liquidity checks passed separately. Deployment verification
+is recorded after merge; these test results alone are not operational evidence.

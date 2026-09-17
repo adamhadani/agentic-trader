@@ -465,7 +465,7 @@ qualification/forward evidence remain required before portfolio execution.
    distributions and retains later drift/coverage evidence. No fixed IEX-to-SIP
    multiplier, live threshold replacement or promotion credit. Intraday seasonality
    and prospective IEX receipt/coverage/latency remain separate requirements.
-2. **Metadata cohort implemented; liquidity/PIT stages remain.** Expand the information
+2. **Metadata cohort captured; daily liquidity screen implemented, actual run pending.** Expand the information
    set to 200–500 individual equities using a dated,
    immutable prospective universe snapshot with stable asset IDs, type/sector source,
    historical/as-of eligibility and observed trailing liquidity. Preserve additions,
@@ -522,17 +522,32 @@ exposed historical symbol reuse, and remains retained/charged. Two metadata atte
 are not alpha comparisons. Current non-ETF flags do not establish common-stock
 subtype, sectors, historical membership, shortability, or liquidity.
 
-**Next highest priority:** a frozen preceding-session liquidity/coverage study over
-all 300 members. Bind exact snapshot ID, feed, adjustment, calendar, trailing window,
-cutoff and selection policy before prices. Retain every missing/ineligible member and
-source receipt; exclude inspected/warmup dates before access. Treat IEX turnover as
-venue-specific activity, not consolidated liquidity or capacity. A current cohort
-may support explicitly survivor-conditioned development experiments; it cannot
-be backdated into historical eligibility or qualify an alpha.
+**Daily screen executed and independently verified:** the
+[source-specific liquidity/coverage screen](alpha-equity-universe.md#daily-liquidity-and-coverage-screen)
+binds all 300 snapshot identities and reuses the daily acquisition/journal path.
+The first declared IEX/raw study inspects August 1–September 16 and ranks the last
+20 observed sessions by median `close × volume`, selecting up to 64. Eligibility
+requires complete trailing coverage, 20/20 positive-volume sessions and a latest
+close of at least $5. All members and read failures remain evidence. Known coverage
+shortfalls are reported; unknown or malformed source evidence withholds the entire
+selection. Source-specific activity is not consolidated liquidity or capacity.
+All 300 reads completed; 150 candidates met the rules and 64 were selected.
+Independent reconstruction matched all 9,450 raw/normalized bars and every selected
+UUID/metric, with no cleaning loss. Journal ordering was verified separately.
+Lifetime attempts are 7,640; active alphas remain zero. See the linked actual report.
+
+**Next highest priority after that evidence:** freeze a matched-budget
+economic-hypothesis/Ridge-control campaign over the screened cohort, with ETF controls,
+purged chronological labels and declared cost/turnover stress. Current membership
+and current liquidity select a survivor-conditioned development cohort; retrospective
+results cannot establish historical eligibility, a point-in-time tradable universe,
+or qualification. Preserve this limitation rather than selecting historical members
+using future coverage. Prospective confirmation begins after actual selection.
 
 Use the selected cohort for the matched-budget economic/Ridge controls in item 3.
 Keep existing <=64 complete-panel contracts until a separately tested dynamic
-membership/missing-data contract and bounded acquisition checkpointing are ready.
+membership/missing-data contract is ready. Bounded acquisition checkpointing is
+now shared across daily studies.
 Do not broaden the panel constant alone, silently intersect available history,
 reuse future coverage to select historical members, or substitute unavailable names.
 Record coverage and economic results separately, including null or failed outcomes.

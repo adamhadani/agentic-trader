@@ -386,3 +386,21 @@ Source-specific [volume calibration](alpha-volume-calibration.md) uses the share
 daily study harness with frozen training/forward intervals and exact feed identity.
 `alpha volume-study` is research-only. `/alphas` now provides a compact explanation
 and status summary; use `alpha forward` and `alpha list` for full evidence/definitions.
+
+### Frozen daily equity liquidity screen
+
+`alpha liquidity-study` now screens every member of the [dated equity cohort](alpha-equity-universe.md)
+using an observed exchange calendar and completed native daily bars. The pure policy
+requires complete trailing coverage, positive source volume and a price floor, then
+ranks by median close × volume with a stable asset UUID tie-break. IEX activity is
+not consolidated market capacity. This is current-cohort development evidence; it
+cannot establish historical eligibility, common-stock subtype or alpha qualification.
+
+The existing daily study service owns acquisition and journal charging. Its injected
+`DailyAcquisitionConfig` bounds symbols, history, elapsed acquisition time and the
+interval between top-level source calls (SDK pagination may make additional HTTP
+requests). Each member gets an immutable checkpoint before the next read. Known
+empty responses remain missing coverage; failed or invalid inputs withhold selection.
+Portfolio/volume studies still require complete inputs. Cancellation drains the current
+bounded read and checkpoint; its charged unfinished manifest remains, without a
+completion claim or automatic replay. Freeze a new attempt before another acquisition.

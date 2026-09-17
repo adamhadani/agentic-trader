@@ -696,9 +696,9 @@ async def alpha_volume_study_cmd(protocol_path, output):
     environment = await asyncio.to_thread(research_environment)
     async with alpha_repository() as repository:
         with session_source(config, plan.feed.removeprefix("alpaca:")) as source:
-            result = await AlphaPanelService(repository, source, compute=compute_volume_study).run(
-                plan, output, environment=environment
-            )
+            result = await AlphaPanelService(
+                repository, source, acquisition=config.alpha_pipeline.daily_research, compute=compute_volume_study
+            ).run(plan, output, environment=environment)
     report = {
         k: result[k] for k in ("status", "plan_id", "charged_trials", "completed_comparisons", "authorizes_promotion")
     }
@@ -723,9 +723,9 @@ async def alpha_book_study_cmd(protocol_path, output):
     environment = await asyncio.to_thread(research_environment)
     async with alpha_repository() as repository:
         with session_source(config, plan.feed.removeprefix("alpaca:")) as source:
-            result = await AlphaPanelService(repository, source, compute=compute_persistent_study).run(
-                plan, output, environment=environment
-            )
+            result = await AlphaPanelService(
+                repository, source, acquisition=config.alpha_pipeline.daily_research, compute=compute_persistent_study
+            ).run(plan, output, environment=environment)
     report = {
         k: result[k] for k in ("status", "plan_id", "charged_trials", "completed_comparisons", "authorizes_promotion")
     }
@@ -758,7 +758,9 @@ async def alpha_panel_study_cmd(protocol_path, output):
     environment["panel_protocol_hash"] = hashlib.sha256(json.dumps(protocol, sort_keys=True).encode()).hexdigest()
     async with alpha_repository() as repository:
         with session_source(config, plan.feed.removeprefix("alpaca:")) as source:
-            result = await AlphaPanelService(repository, source).run(plan, output, environment=environment)
+            result = await AlphaPanelService(repository, source, acquisition=config.alpha_pipeline.daily_research).run(
+                plan, output, environment=environment
+            )
     decisions = []
     if result["status"] == PanelStudyStatus.COMPLETED:
         for hypothesis in plan.hypotheses:

@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import select
 
-from agentic_trader.config import MarketDataEvidenceConfig
+from agentic_trader.config import DailyAcquisitionConfig, MarketDataEvidenceConfig
 from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
@@ -130,9 +130,9 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
         broker.client,
     )
     output = tmp_path / "panel"
-    result = await AlphaPanelService(repo, source, compute=compute).run(
-        plan, output, environment={"fixture": True}, as_of=pd.Timestamp("2023-01-01T00:00Z")
-    )
+    result = await AlphaPanelService(
+        repo, source, acquisition=DailyAcquisitionConfig(min_request_interval_seconds=0), compute=compute
+    ).run(plan, output, environment={"fixture": True}, as_of=pd.Timestamp("2023-01-01T00:00Z"))
     assert result["status"] == ("completed" if fault is None else "failed")
     assert result["charged_trials"] == plan.trial_count and not result["authorizes_promotion"]
     if fault == "missing":
@@ -145,8 +145,8 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
     inputs = json.loads((output / "inputs.json").read_text())
     assert all(r["requested_at"] <= r["received_at"] for r in inputs["receipts"])
     if fault == "provider":
-        assert inputs["receipts"][-1]["error_type"] == "BarAcquisitionError"
-        raw = inputs["receipts"][-1]["evidence"]
+        assert inputs["failures"]["BBB"]["error_type"] == "BarAcquisitionError"
+        raw = inputs["failures"]["BBB"]["evidence"]
         assert json.loads(Path(raw["artifact"]).read_text())["error_type"] == "APIError"
     else:
         assert len(requests) == 10 and len(inputs["datasets"]) == 5
@@ -178,5 +178,7 @@ async def test_sdk_panel_preserves_every_attempt_and_excludes_all_members_before
     await repo.rebuild()
     assert await repo.get(f"diagnostic/{result['run_id']}") == evidence
     with pytest.raises(FileExistsError):
-        await AlphaPanelService(repo, source, compute=compute).run(plan, output, environment={})
+        await AlphaPanelService(
+            repo, source, acquisition=DailyAcquisitionConfig(min_request_interval_seconds=0), compute=compute
+        ).run(plan, output, environment={})
     assert (await repo.get("family/all"))["trial_count"] == plan.trial_count

@@ -153,3 +153,9 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
   infer common-stock subtype/sector from names or backdate current membership. Bind
   follow-up research to the snapshot hash and freeze/charge before prices. Preserve
   missing/excluded members and all failed attempts. See [equity universe](docs/alpha-equity-universe.md).
+
+- Daily equity liquidity screens must bind the complete verified snapshot and frozen
+  acquisition policy. Use shared `AlphaPanelService`/`DailyStudyInputs`; retain every
+  member checkpoint. Unknown acquisition or invalid source evidence withholds selection;
+  legitimate empty bars mean missing coverage. Current IEX volume is not consolidated
+  capacity, and current-cohort historical development is not point-in-time validation.

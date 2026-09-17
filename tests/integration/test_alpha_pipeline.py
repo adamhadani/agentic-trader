@@ -106,7 +106,19 @@ def test_real_sdk_historical_pagination_retains_feed_and_adjustment(alpaca_http)
         "SPY", "1d", start=datetime(2026, 9, 14, tzinfo=UTC), end=datetime(2026, 9, 16, tzinfo=UTC)
     )
     assert len(bars) == 2
-    assert bars.attrs == {"feed": "alpaca:iex", "adjustment": "raw", "timeframe": "1d"}
+    assert bars.attrs == {
+        "feed": "alpaca:iex",
+        "adjustment": "raw",
+        "timeframe": "1d",
+        "source_quality": {
+            "version": "bar_source_quality_v1",
+            "raw_rows": 2,
+            "parsed_rows": 2,
+            "normalized_rows": 2,
+            "sdk_omitted_rows": 0,
+            "normalization_dropped_rows": 0,
+        },
+    }
     calls = [call for call in venue.calls if call[1] == "/v2/stocks/bars"]
     assert len(calls) == 2
     assert all(call[2]["feed"] == ["iex"] and call[2]["adjustment"] == ["raw"] for call in calls)

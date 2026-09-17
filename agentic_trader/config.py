@@ -448,7 +448,17 @@ class SessionDecisionConfig(SessionWorkerConfig):
     max_decisions_per_poll: int = Field(default=128, ge=1, le=512)
 
 
+class DailyAcquisitionConfig(BaseModel):
+    """Bounded read-only research; pace request starts without blocking the event loop."""
+
+    min_request_interval_seconds: float = Field(default=0.6, ge=0, le=60, allow_inf_nan=False)
+    max_symbols: int = Field(default=500, ge=1, le=500)
+    max_days: int = Field(default=3660, ge=1, le=3660)
+    max_elapsed_seconds: float = Field(default=900, ge=1, le=7200, allow_inf_nan=False)
+
+
 class AlphaPipelineConfig(BaseModel):
+    daily_research: DailyAcquisitionConfig = Field(default_factory=DailyAcquisitionConfig)
     observations: SessionObservationConfig = Field(default_factory=SessionObservationConfig)
     decisions: SessionDecisionConfig = Field(default_factory=SessionDecisionConfig)
     minimum_shadow_sessions: int = Field(default=20, ge=1)

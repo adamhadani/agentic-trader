@@ -502,3 +502,9 @@ charges one attempt and retains failures; it does not add the selected symbols t
 trading scans, launch a poller, send messages or fetch prices. The [September 17
 capture](alpha-equity-universe.md#actual-metadata-capture--september-17-2026) selected
 300 candidates. Keep source/artifact files private and bind later studies to the hash.
+
+`alpha liquidity-study` now applies a frozen daily liquidity/coverage screen to the
+complete [dated equity cohort](alpha-equity-universe.md#daily-liquidity-and-coverage-screen).
+It reuses the daily study service and diagnostic journal, with bounded paced reads,
+immutable member checkpoints and fail-closed selection. IEX activity is source-specific;
+this development screen neither establishes historical membership nor qualifies alphas.

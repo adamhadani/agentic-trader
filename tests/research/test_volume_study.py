@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from agentic_trader.cli.main import cli
 from agentic_trader.market.bars import FIXED_BAR_LAYOUT, TradingSession
+from agentic_trader.research.alpha.daily_inputs import DailyStudyInputs
 from agentic_trader.research.alpha.volume import VolumeContract, VolumePolicy
 from agentic_trader.research.alpha.volume_study import VolumeFold, VolumeStudyPlan, compute_volume_study
 
@@ -47,13 +48,13 @@ def test_frozen_identity_and_past_only_calibration(volume_study_case):
     frames, clock, plan = volume_study_case
     assert VolumeStudyPlan.from_document(json.loads(json.dumps(plan.document()))) == plan
     assert plan.trial_count == 4
-    result = compute_volume_study(frames, clock, plan, ())
+    result = compute_volume_study(DailyStudyInputs(frames), clock, plan, ())
     assert not result["authorizes_promotion"]
     assert len(result["profiles"]) == 2
     changed = {s: f.copy(deep=True) for s, f in frames.items()}
     for frame in changed.values():
         frame.loc[clock[90] :, "volume"] *= 100
-    other = compute_volume_study(changed, clock, plan, ())
+    other = compute_volume_study(DailyStudyInputs(changed), clock, plan, ())
     assert [r["calibration"] for r in result["profiles"]] == [r["calibration"] for r in other["profiles"]]
     for first, second in zip(result["profiles"], other["profiles"], strict=True):
         assert first["observations"][:30] == second["observations"][:30]
@@ -70,7 +71,7 @@ def test_study_refuses_invalid_evidence(volume_study_case, fault):
                 frames["AAA"] = frames["AAA"].drop(clock[80])
             else:
                 frames["AAA"].attrs["feed" if fault == "wrong_feed" else "adjustment"] = "other"
-            compute_volume_study(frames, clock, plan, ())
+            compute_volume_study(DailyStudyInputs(frames), clock, plan, ())
 
 
 @pytest.mark.parametrize("fault", [None, "missing"])

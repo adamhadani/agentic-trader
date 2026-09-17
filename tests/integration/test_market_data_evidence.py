@@ -12,8 +12,10 @@ import pytest
 from agentic_trader.config import MarketDataEvidenceConfig
 from agentic_trader.data import evidence
 from agentic_trader.data.evidence import BarAcquisitionError, BarEvidenceStore
-from agentic_trader.data.providers import AlpacaDataProvider
+from agentic_trader.data.providers import AlpacaDataProvider, BarResponseError
 from agentic_trader.data.sessions import AlpacaSessionSource, SessionAcquisitionError
+from agentic_trader.market.bars import SessionCoverageError, SessionSchedule, TradingSession, build_session_bars
+from agentic_trader.research.alpha.panel import align_daily_panel
 from agentic_trader.transport.alpaca import BoundedCryptoDataClient
 
 
@@ -47,6 +49,146 @@ def read_reference(reference):
     assert hashlib.sha256(path.read_bytes()).hexdigest() == reference["sha256"]
     assert path.stat().st_mode & 0o777 == 0o600
     return json.loads(path.read_text())
+
+
+@pytest.mark.parametrize("bars", [{}, {"SPY": []}])
+@pytest.mark.parametrize("timeframe", ["1m", "1d"])
+def test_successful_empty_response_retains_unknown_coverage(captured_provider, bars, timeframe):
+    venue, broker, provider = captured_provider
+    payload = {"bars": bars, "next_page_token": None}
+    venue.override = lambda *args: (200, payload)
+    source = AlpacaSessionSource(provider, broker.client)
+    if timeframe == "1m":
+        frame = source.minutes("SPY", START, START + pd.Timedelta(minutes=15), "alpaca:sip")
+        reference = frame.attrs["acquisition"][0]["evidence"]
+        schedule = SessionSchedule(
+            START.date(),
+            START.date(),
+            (TradingSession(START.date(), START, START + pd.Timedelta(minutes=15)),),
+            "fixture",
+        )
+        with pytest.raises(SessionCoverageError) as caught:
+            build_session_bars(frame, schedule, "15m", as_of=START + pd.Timedelta(minutes=15))
+        assert caught.value.coverage["missing_minutes"] == 15
+        assert caught.value.coverage["observed_minutes"] == 0
+    else:
+        frame = source.daily("SPY", START.date(), START.date(), "alpaca:sip")
+        reference = frame.attrs["evidence"]
+        expected = pd.DatetimeIndex(["2024-06-03"], tz="America/New_York")
+        panel = align_daily_panel({"SPY": frame}, expected, feed="alpaca:sip")
+        assert not panel.complete
+        assert panel.coverage["SPY"] == {"expected": 1, "observed": 0, "missing_dates": ["2024-06-03"]}
+        assert panel.close.isna().all().all()
+    assert frame.empty
+    assert list(frame.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert isinstance(frame.index, pd.DatetimeIndex) and str(frame.index.tz) == "UTC"
+    assert {k: frame.attrs[k] for k in ("feed", "adjustment", "timeframe")} == {
+        "feed": "alpaca:sip",
+        "adjustment": "raw",
+        "timeframe": timeframe,
+    }
+    result = read_reference(reference)
+    assert result["status"] == "complete"
+    assert result["normalization"]["parsed_rows"] == result["normalization"]["normalized_rows"] == 0
+    assert result["normalization"]["dropped_rows"] == []
+    quality = frame.attrs["source_quality"]
+    assert quality == {
+        "version": "bar_source_quality_v1",
+        "raw_rows": 0,
+        "parsed_rows": 0,
+        "normalized_rows": 0,
+        "sdk_omitted_rows": 0,
+        "normalization_dropped_rows": 0,
+    }
+    assert result["normalization"]["source_quality"] == quality
+    assert read_reference(result["pages"][0])["response"] == payload
+    assert len(venue.calls) == 1 and venue.calls[0][0] == "GET"
+
+
+@pytest.mark.parametrize("fault", ["cleaned_nan", "mixed_null", "null_only"])
+def test_source_quality_does_not_require_evidence_capture(captured_provider, fault):
+    venue, _, provider = captured_provider
+    provider.evidence = None
+    rows = {"cleaned_nan": [row(), row(1, c="NaN")], "mixed_null": [row(), None], "null_only": [None]}[fault]
+    venue.override = lambda *args: (200, {"bars": {"SPY": rows}, "next_page_token": None})
+    frame = provider.fetch_bars("SPY", "1m", start=START)
+    quality = frame.attrs["source_quality"]
+    assert quality["version"] == "bar_source_quality_v1"
+    assert quality["raw_rows"] == len(rows)
+    assert quality["parsed_rows"] == (2 if fault == "cleaned_nan" else 1 if fault == "mixed_null" else 0)
+    assert quality["normalized_rows"] == len(frame) == (0 if fault == "null_only" else 1)
+    assert quality["sdk_omitted_rows"] == int(fault != "cleaned_nan")
+    assert quality["normalization_dropped_rows"] == int(fault == "cleaned_nan")
+    assert "evidence" not in frame.attrs
+
+
+def test_minute_chunks_preserve_each_quality_and_aggregate_all_rows(captured_provider):
+    venue, broker, provider = captured_provider
+
+    def response(method, path, query, body):
+        opened = pd.Timestamp(query["start"][0])
+        rows = [row(t=opened.isoformat())]
+        if opened == START:
+            rows.append(None)
+        else:
+            rows.extend(
+                [
+                    row(t=(opened + pd.Timedelta(minutes=1)).isoformat()),
+                    row(t=(opened + pd.Timedelta(minutes=2)).isoformat(), c="NaN"),
+                ]
+            )
+        return 200, {"bars": {"SPY": rows}, "next_page_token": None}
+
+    venue.override = response
+    frame = AlpacaSessionSource(provider, broker.client).minutes(
+        "SPY", START, START + pd.Timedelta(days=32), "alpaca:sip"
+    )
+    assert len(venue.calls) == 2 and len(frame) == 3
+    assert frame.attrs["source_quality"] == {
+        "version": "bar_source_quality_v1",
+        "raw_rows": 5,
+        "parsed_rows": 4,
+        "normalized_rows": 3,
+        "sdk_omitted_rows": 1,
+        "normalization_dropped_rows": 1,
+    }
+    receipts = frame.attrs["acquisition"]
+    assert [r["source_quality"]["raw_rows"] for r in receipts] == [2, 3]
+    for receipt in receipts:
+        assert read_reference(receipt["evidence"])["normalization"]["source_quality"] == receipt["source_quality"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"trades": {}},
+        {"bars": None},
+        {"bars": []},
+        {"bars": {"SPY": {}}},
+        {"bars": {"SPY": ""}},
+        {"bars": {"SPY": None}},
+        {"bars": {"QQQ": []}},
+        {"bars": {"SPY": [], "QQQ": [row()]}},
+        {"bars": {}, "next_page_token": 1},
+        {"bars": {}, "next_page_token": ""},
+    ],
+)
+@pytest.mark.parametrize("capture", [False, True])
+def test_malformed_envelopes_are_not_successful_empty_bars(captured_provider, payload, capture):
+    venue, _, provider = captured_provider
+    if not capture:
+        provider.evidence = None
+    venue.override = lambda *args: (200, payload)
+    with pytest.raises(BarAcquisitionError if capture else BarResponseError) as caught:
+        provider.fetch_bars("SPY", "1d", start=START)
+    if capture:
+        result = read_reference(caught.value.evidence)
+        assert result["status"] == "failed"
+        assert result["error_type"] == "BarResponseError"
+        assert result["normalization"] is None
+        assert read_reference(result["pages"][0])["response"] == payload
+    assert len(venue.calls) == 1
 
 
 @pytest.mark.parametrize("case", ["null", "cleaner", "malformed", "pagination", "empty"])

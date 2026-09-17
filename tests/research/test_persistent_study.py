@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from agentic_trader.cli.main import cli
 from agentic_trader.market.bars import TradingSession
+from agentic_trader.research.alpha.daily_inputs import DailyStudyInputs
 from agentic_trader.research.alpha.persistent_study import PersistentStudyPlan, compute_persistent_study
 
 
@@ -56,13 +57,13 @@ def test_frozen_protocol_is_valid_and_bounded(filename):
 
 def test_complete_study_preserves_cash_clock_all_modes_and_later_fold_causality(persistent_input):
     frames, clock, plan, sessions = persistent_input
-    result = compute_persistent_study(frames, clock, plan, sessions)
+    result = compute_persistent_study(DailyStudyInputs(frames), clock, plan, sessions)
     assert result["charged_trials"] == 60 and not result["authorizes_promotion"]
     assert len(result["trials"]) == 6
     assert all(len(t["books"]) == 9 for t in result["trials"])
     for f in frames.values():
         f.iloc[120:, :4] *= 2
-    changed = compute_persistent_study(frames, clock, plan, sessions)
+    changed = compute_persistent_study(DailyStudyInputs(frames), clock, plan, sessions)
     assert [t for t in result["trials"] if t["fold"] == "first"] == [
         t for t in changed["trials"] if t["fold"] == "first"
     ]
@@ -78,7 +79,7 @@ def test_study_fails_closed_on_data_contract_or_warmup(persistent_input, fault):
     if fault == "insufficient_warmup":
         plan = replace(plan, blend_window=126)
     with pytest.raises(ValueError):
-        compute_persistent_study(frames, clock, plan, sessions)
+        compute_persistent_study(DailyStudyInputs(frames), clock, plan, sessions)
 
 
 @pytest.mark.parametrize("fault", [None, "missing"])
