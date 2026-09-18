@@ -43,6 +43,8 @@ from agentic_trader.research.alpha.evidence import (
 )
 from agentic_trader.research.alpha.forecast_policy import MAX_SIDE_COST_BPS, DailyLongFlatPolicy
 from agentic_trader.research.alpha.forecasts import CombinedForecast, ForecastContract
+from agentic_trader.research.alpha.lifetime_artifacts import execute_lifetime_study
+from agentic_trader.research.alpha.lifetime_attribution import LifetimeAttributionProtocol
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.panel_study import (
@@ -658,6 +660,44 @@ async def alpha_power_study_cmd(protocol_path, family_snapshot, output):
     click.echo("Synthetic diagnosis only; no promotion permission or runtime state changed.")
     if result["status"] == StudyStatus.INCOMPLETE:
         raise click.ClickException("Incomplete power diagnosis; inspect retained missing/failed comparisons.")
+
+
+@alpha_group.command("lifetime-plan")
+@click.option("--seed", type=click.IntRange(0, 2**128 - 1), required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True)
+@coro
+async def alpha_lifetime_plan_cmd(seed, output):
+    """Freeze the paired P0/P1/P2 lifetime attribution protocol only."""
+    try:
+        protocol = LifetimeAttributionProtocol(seed=seed)
+        await asyncio.to_thread(save_json_report, protocol.document(), output)
+    except (TypeError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Lifetime attribution protocol {protocol.identity}: {output}")
+    click.echo("Synthetic diagnostic only; no promotion permission or runtime state changed.")
+
+
+@alpha_group.command("lifetime-study")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True)
+@coro
+async def alpha_lifetime_study_cmd(protocol_path, output):
+    """Run a frozen paired lifetime attribution protocol with durable artifacts."""
+    try:
+        protocol = LifetimeAttributionProtocol.from_document(
+            json.loads(await asyncio.to_thread(protocol_path.read_text))
+        )
+        environment = await asyncio.to_thread(research_environment)
+        click.echo(f"Starting lifetime attribution {protocol.identity}; output: {output}")
+        result = await asyncio.to_thread(execute_lifetime_study, protocol, output, environment, progress=click.echo)
+    except (TypeError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Lifetime attribution {result['status']}; {result['recorded_jobs']}/{result['expected_jobs']} jobs retained."
+    )
+    click.echo("Synthetic diagnostic only; neither completion nor a favorable counterfactual authorizes promotion.")
+    if result["status"] == StudyStatus.INCOMPLETE:
+        raise click.ClickException("Incomplete lifetime attribution; inspect retained failures.")
 
 
 @alpha_group.command("replay")

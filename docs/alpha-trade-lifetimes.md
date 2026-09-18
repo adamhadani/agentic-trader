@@ -57,7 +57,7 @@ ownership and unchanged promotion/qualification gates.
 
 ## Research and operator interfaces
 
-`alpha replay` accepts paired `--entry-lifetime-seconds` and `--holding-lifetime-seconds` (positive integers, maximum 31 days each). Frozen campaign protocols may declare `execution.lifetime` with the same fields and `version: elapsed_utc_v1`. The limit is a validation bound, not a suggested strategy. Missing lifetime means the original policy; malformed/partial lifetime never falls back. Policy variation is a new charged experiment, not an amendment to old artifacts.
+`alpha replay` accepts paired `--entry-lifetime-seconds` and `--holding-lifetime-seconds` (positive integers, maximum 31 days each). Frozen campaign protocols may declare `execution.lifetime` with the same fields and `version: elapsed_utc_v1`. The diagnostic lifetime-attribution harness additionally uses `elapsed_utc_v2`, where either deadline may be explicitly `null` while at least one remains positive; it never treats a missing value as an implicit long timeout. The limit is a validation bound, not a suggested strategy. Missing lifetime means the original policy; malformed/partial lifetime never falls back. Policy variation is a new charged experiment, not an amendment to old artifacts.
 
 Intrabar fills are located only to their minute bar; simulated holding time starts at that bar's timestamp. Exact exchange fill time, cancellation latency, partial fills and queue priority are not known from OHLC. Existing protective open/gap exits take precedence over a simultaneous holding deadline. Overflow in descriptive annualization returns unavailable rather than destroying otherwise valid equity evidence.
 

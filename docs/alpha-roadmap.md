@@ -47,11 +47,11 @@ research run or runtime policy change was made for this review.
    [800-search result](alpha-power-diagnosis-2026-09-18.md) meets the frozen null
    bounds but fails positive-control power. The known forecast works; GTC pending
    orders suppress about 90% of later opportunities. Search objectives and joint
-   gates add distinct losses. Implement and test the
-   [proposed lifetime-attribution design](alpha-lifetime-attribution-plan.md), then
-   freeze its fresh experiment. A versioned fixed-daily clock and independently
-   disabled deadlines are prerequisites; this is not an existing configuration
-   switch. Keep gates and lifetime history unchanged.
+   gates add distinct losses. The versioned fixed-daily clock, independent lifetime
+   deadlines, paired P0/P1/P2 harness, artifact checkpoints and isolated CLI are
+   now implemented and tested. Next freeze a fresh protocol and run the declared
+   experiment after review; no result or configuration switch exists yet. Keep
+   gates and lifetime history unchanged.
    The [native-daily collector](alpha-daily-panel.md) now implements parallel
    observation with source-qualified labels, actual receipts and frozen decisions.
    Actual forward forecasts and mature outcomes remain separately measured evidence.

@@ -262,6 +262,11 @@ They share the existing artifact workflow and cannot promote strategies or send
 orders. See the [completed power diagnosis](docs/alpha-power-diagnosis-2026-09-18.md) and
 [completed factor experiment](docs/alpha-factor-controls-2026-09-18.md).
 
+`alpha lifetime-plan` / `alpha lifetime-study` run the paired P0/P1/P2 lifetime
+counterfactual over a frozen selection. Independent disabled deadlines are explicit
+in `elapsed_utc_v2`; fixed-daily replay is synthetic-only, checkpointed before
+holdout, and cannot qualify an alpha or affect the paper service.
+
 
 The [800-search power diagnosis](docs/alpha-power-diagnosis-2026-09-18.md) found strong
 planted forecasts but poor GTC entry conversion and inadequate promotion power.
