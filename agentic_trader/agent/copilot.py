@@ -324,7 +324,8 @@ class TradingCopilot:
                 instrument_type=asset_class or "all"
             )
             if not session_allowed and not bypass_session_filter:
-                await self.readiness.observe(HealthComponent.SCAN, True, f"Session gate checked: {session_reason}")
+                if not dry_run:
+                    await self.readiness.observe(HealthComponent.SCAN, True, f"Session gate checked: {session_reason}")
                 logger.info(
                     "Market session filter inactive (%s): %s. Skipping universe scan.",
                     asset_class,
@@ -338,6 +339,10 @@ class TradingCopilot:
                 post_minutes=self.config.risk.lockout_post_event_minutes,
             )
             if in_lockout and lock_event:
+                if not dry_run:
+                    await self.readiness.observe(
+                        HealthComponent.SCAN, True, f"Macro gate checked: {lock_event.title}; entry alerts paused"
+                    )
                 logger.warning(
                     f"Macro Lockout Active: '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}. "
                     "No entry alerts will be emitted during this window.",
