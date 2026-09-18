@@ -12,7 +12,12 @@ import pandas as pd
 from agentic_trader.market.bars import FIXED_BAR_LAYOUT, OHLCV, SessionSchedule, utc_timestamp
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.baselines import build_forecast_estimator, fitted_forecast_evidence
-from agentic_trader.research.alpha.daily_plan import DAILY_MODELS
+from agentic_trader.research.alpha.daily_plan import (
+    DAILY_BASELINE_MODELS,
+    DAILY_MODELS,
+    MAX_DAILY_COMPARISONS,
+    DailyComparisonPlan,
+)
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 from agentic_trader.research.alpha.equity_universe import document_hash
 from agentic_trader.research.alpha.factor_features import factor_residuals_at, residual_momentum_features
@@ -28,6 +33,23 @@ from agentic_trader.research.alpha.validation import frame_digest
 DAILY_FORECAST_VERSION = "prospective_daily_panel_forecast_v1"
 DAILY_OUTCOME_VERSION = "prospective_daily_panel_outcome_v1"
 DAILY_RESIDUAL_VERSION = "prospective_daily_residual_state_v1"
+DAILY_COMPARISON_FORECAST_VERSION = "daily_baseline_comparison_forecast_v1"
+DAILY_COMPARISON_OUTCOME_VERSION = "daily_baseline_comparison_outcome_v1"
+COMPARISON_SHARED_FIELDS = (
+    "plan_id",
+    "decision_date",
+    "fit_cutoff",
+    "latest_received_at",
+    "receipts",
+    "input_hashes",
+    "vintage_id",
+    "coverage",
+    "entry_date",
+    "exit_date",
+    "economic_scheduled",
+    "ridge_fit",
+    "authorizes_promotion",
+)
 
 
 def _nullable(series):
@@ -277,7 +299,7 @@ def _ridge(panel, clock, plan, features, eligible, receipts, fit_cutoff):
     return predicted, evidence
 
 
-def compute_daily_forecasts(
+def _forecast_calculation(
     batch, sessions, plan, *, decision_date: date, fit_cutoff, receipts, previous_residual_state=None
 ):
     """Freeze all four arms from actually received prior data, independently of future labels."""
@@ -319,22 +341,9 @@ def compute_daily_forecasts(
         masked["rank_blend"].rank(method="average", pct=True)
         + residual_momentum.where(common).rank(method="average", pct=True)
     ) / 2
-    arms = []
+    arms = _forecast_arms(masked, common, plan, DAILY_MODELS)
     enough = int(common.sum()) >= plan.min_assets
-    for model in DAILY_MODELS:
-        scores = masked[model]
-        weights = pd.Series(0.0, index=plan.symbols)
-        if enough:
-            weights.loc[common] = basket_weights(scores.loc[common], plan.top_k)
-        arms.append(
-            {
-                "model": model,
-                "scores": _nullable(scores),
-                "weights": weights.to_dict(),
-                "status": "scored" if enough else "abstained",
-            }
-        )
-    return _seal(
+    primary = _seal(
         {
             "version": DAILY_FORECAST_VERSION,
             "plan_id": plan.identity,
@@ -363,10 +372,123 @@ def compute_daily_forecasts(
         "forecast_id",
     )
 
+    return primary, {"ridge": ridge, "volatility20": volatility, "reversal60": reversal}
 
-def evaluate_daily_outcomes(forecast, batch, sessions, plan, *, receipts, observed_at):
-    """Evaluate immutable scores/holdings against one later, consistently adjusted vintage."""
-    _verify(forecast, "forecast_id", DAILY_FORECAST_VERSION, plan)
+
+def _forecast_arms(masked, support, plan, models):
+    enough = int(support.sum()) >= plan.min_assets
+    arms = []
+    for model in models:
+        scores = masked[model]
+        weights = pd.Series(0.0, index=plan.symbols)
+        if enough:
+            weights.loc[support] = basket_weights(scores.loc[support], plan.top_k)
+        arms.append(
+            {
+                "model": model,
+                "scores": _nullable(scores),
+                "weights": weights.to_dict(),
+                "status": "scored" if enough else "abstained",
+            }
+        )
+    return arms
+
+
+def compute_daily_forecasts(
+    batch, sessions, plan, *, decision_date: date, fit_cutoff, receipts, previous_residual_state=None
+):
+    """Canonical four-arm primary forecast, independent of any companion enrollment."""
+    primary, _ = _forecast_calculation(
+        batch,
+        sessions,
+        plan,
+        decision_date=decision_date,
+        fit_cutoff=fit_cutoff,
+        receipts=receipts,
+        previous_residual_state=previous_residual_state,
+    )
+    return primary
+
+
+def _validate_comparisons(comparisons, plan, decision_date):
+    if (
+        not isinstance(comparisons, tuple)
+        or len(comparisons) > MAX_DAILY_COMPARISONS
+        or any(not isinstance(comparison, DailyComparisonPlan) for comparison in comparisons)
+        or len({comparison.comparison_id for comparison in comparisons}) != len(comparisons)
+    ):
+        raise ValueError("Bounded unique frozen daily comparisons required")
+    for comparison in comparisons:
+        comparison.validate_parent(plan)
+        if decision_date < comparison.first_decision_date:
+            raise ValueError("Daily comparison cannot create a forecast before its first declared date")
+    return tuple(sorted(comparisons, key=lambda comparison: comparison.comparison_id))
+
+
+def _comparison_binding(comparison, primary):
+    return {
+        "comparison_id": comparison.comparison_id,
+        "comparison_plan_id": comparison.identity,
+        "comparison_plan": comparison.document(),
+        "primary_forecast_id": primary["forecast_id"],
+    }
+
+
+def _companion_forecast(primary, scores, comparison, plan):
+    stages = {
+        name: pd.Series(evidence["mask"])
+        for name, evidence in primary["stage_support"].items()
+        if name not in ("finite_residual", "common")
+    }
+    support = pd.concat(stages.values(), axis=1).all(axis=1)
+    stages["common"] = support
+    masked = {"ridge": scores["ridge"].where(support), "volatility20": scores["volatility20"].where(support)}
+    masked["rank_blend"] = (
+        scores["reversal60"].where(support).rank(method="average", pct=True)
+        + masked["volatility20"].rank(method="average", pct=True)
+    ) / 2
+    enough = int(support.sum()) >= plan.min_assets
+    return _seal(
+        {
+            "version": DAILY_COMPARISON_FORECAST_VERSION,
+            **{key: deepcopy(primary[key]) for key in COMPARISON_SHARED_FIELDS},
+            **_comparison_binding(comparison, primary),
+            "common_support": support.to_dict(),
+            "stage_support": {
+                name: {"count": int(mask.sum()), "mask": mask.to_dict()} for name, mask in stages.items()
+            },
+            "status": "scored" if enough else "unavailable",
+            "reason": None if enough else "insufficient_common_breadth",
+            "arms": _forecast_arms(masked, support, plan, DAILY_BASELINE_MODELS),
+        },
+        "forecast_id",
+    )
+
+
+def compute_daily_forecast_bundle(
+    batch, sessions, plan, *, decision_date: date, fit_cutoff, receipts, previous_residual_state=None, comparisons=()
+):
+    """One fit/vintage/state update; independently sealed, prospectively pinned comparisons."""
+    comparisons = _validate_comparisons(comparisons, plan, decision_date)
+    primary, scores = _forecast_calculation(
+        batch,
+        sessions,
+        plan,
+        decision_date=decision_date,
+        fit_cutoff=fit_cutoff,
+        receipts=receipts,
+        previous_residual_state=previous_residual_state,
+    )
+    return {
+        "primary": primary,
+        "companions": {
+            comparison.comparison_id: _companion_forecast(primary, scores, comparison, plan)
+            for comparison in comparisons
+        },
+    }
+
+
+def _outcome_observations(forecast, batch, sessions, plan, *, receipts, observed_at):
     observed_at = utc_timestamp(observed_at)
     decision_date = date.fromisoformat(forecast["decision_date"])
     window = plan.decision_window(decision_date, sessions)
@@ -404,11 +526,17 @@ def evaluate_daily_outcomes(forecast, batch, sessions, plan, *, receipts, observ
             "received_at": retained_receipts[symbol]["received_at"],
             "source_hash": hashes[symbol],
         }
+    return window, observed_at, retained_receipts, hashes, labels
+
+
+def _evaluate_outcome(forecast, observations, plan, *, models, version, binding=None):
+    window, observed_at, retained_receipts, hashes, labels = observations
+    decision_date = date.fromisoformat(forecast["decision_date"])
     returns = pd.Series({s: row["value"] for s, row in labels.items()}, dtype=float)
     timestamp = pd.Timestamp(decision_date, tz=ET_TZ)
     index = pd.DatetimeIndex([timestamp])
     evaluated = []
-    if [arm["model"] for arm in forecast["arms"]] != list(DAILY_MODELS):
+    if [arm["model"] for arm in forecast["arms"]] != list(models):
         raise ValueError("Complete immutable daily forecast arms required")
     for arm in forecast["arms"]:
         scores = pd.Series(arm["scores"], index=plan.symbols, dtype=float)
@@ -438,7 +566,7 @@ def evaluate_daily_outcomes(forecast, batch, sessions, plan, *, receipts, observ
                 "ic_pairs": observation.pairs,
                 "missing_label_symbols": missing,
                 "basket": evaluate_frozen_basket(weights, returns, costs_bps=plan.costs_bps)
-                if window.economic_scheduled
+                if window.economic_scheduled and forecast["status"] == "scored"
                 else None,
             }
         )
@@ -450,7 +578,8 @@ def evaluate_daily_outcomes(forecast, batch, sessions, plan, *, receipts, observ
     )
     return _seal(
         {
-            "version": DAILY_OUTCOME_VERSION,
+            "version": version,
+            **(binding or {}),
             "plan_id": plan.identity,
             "forecast_id": forecast["forecast_id"],
             "decision_date": forecast["decision_date"],
@@ -471,3 +600,64 @@ def evaluate_daily_outcomes(forecast, batch, sessions, plan, *, receipts, observ
         },
         "outcome_id",
     )
+
+
+def evaluate_daily_outcomes(forecast, batch, sessions, plan, *, receipts, observed_at):
+    """Canonical primary outcome; unscored primary forecasts have no basket payoff."""
+    _verify(forecast, "forecast_id", DAILY_FORECAST_VERSION, plan)
+    observations = _outcome_observations(forecast, batch, sessions, plan, receipts=receipts, observed_at=observed_at)
+    return _evaluate_outcome(forecast, observations, plan, models=DAILY_MODELS, version=DAILY_OUTCOME_VERSION)
+
+
+def _verify_companion(companion, primary, comparison_id, plan):
+    _verify(companion, "forecast_id", DAILY_COMPARISON_FORECAST_VERSION, plan)
+    comparison = DailyComparisonPlan.from_document(companion.get("comparison_plan"))
+    _validate_comparisons((comparison,), plan, date.fromisoformat(primary["decision_date"]))
+    expected = _comparison_binding(comparison, primary)
+    if (
+        comparison_id != comparison.comparison_id
+        or any(companion.get(key) != value for key, value in expected.items())
+        or any(companion.get(key) != primary[key] for key in COMPARISON_SHARED_FIELDS)
+    ):
+        raise ValueError("Daily companion does not match its frozen primary forecast and comparison")
+    return comparison
+
+
+def validate_daily_comparison_forecast(companion, primary, comparison: DailyComparisonPlan, parentplan) -> None:
+    """Validate immutable evidence against the caller's authoritative enrollment pin."""
+    _verify(primary, "forecast_id", DAILY_FORECAST_VERSION, parentplan)
+    _validate_comparisons((comparison,), parentplan, date.fromisoformat(primary["decision_date"]))
+    embedded = _verify_companion(companion, primary, comparison.comparison_id, parentplan)
+    if embedded.identity != comparison.identity:
+        raise ValueError("Daily companion differs from the pinned comparison protocol")
+
+
+def evaluate_daily_outcome_bundle(primary, companions, batch, sessions, plan, *, receipts, observed_at):
+    """One observed label vintage evaluates each previously frozen comparison independently."""
+    _verify(primary, "forecast_id", DAILY_FORECAST_VERSION, plan)
+    if not isinstance(companions, dict) or len(companions) > MAX_DAILY_COMPARISONS:
+        raise ValueError("Bounded sealed daily companion mapping required")
+    comparisons = {}
+    for key, companion in companions.items():
+        if not isinstance(companion, dict):
+            raise TypeError("Sealed daily companion document required")
+        comparison = DailyComparisonPlan.from_document(companion.get("comparison_plan"))
+        if key != comparison.comparison_id:
+            raise ValueError("Daily companion mapping differs from its declared comparison identity")
+        validate_daily_comparison_forecast(companion, primary, comparison, plan)
+        comparisons[key] = comparison
+    observations = _outcome_observations(primary, batch, sessions, plan, receipts=receipts, observed_at=observed_at)
+    return {
+        "primary": _evaluate_outcome(primary, observations, plan, models=DAILY_MODELS, version=DAILY_OUTCOME_VERSION),
+        "companions": {
+            key: _evaluate_outcome(
+                companions[key],
+                observations,
+                plan,
+                models=DAILY_BASELINE_MODELS,
+                version=DAILY_COMPARISON_OUTCOME_VERSION,
+                binding=_comparison_binding(comparison, primary),
+            )
+            for key, comparison in sorted(comparisons.items())
+        },
+    }

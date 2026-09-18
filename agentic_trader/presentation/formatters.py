@@ -608,10 +608,9 @@ class TelegramHtmlFormatter:
                     "<b>Daily panel</b> · "
                     + ("collector enabled" if daily["worker_enabled"] else "collector disabled"),
                     (
-                        f"Loaded sessions: {decisions['scored']:,}/{daily['decision_sessions']:,} scored · "
+                        f"Primary sessions: {decisions['scored']:,}/{daily['decision_sessions']:,} scored · "
                         f"Outcomes: {outcomes['complete']:,}/{daily['outcome_sessions']:,} complete."
                     ),
-                    "Daily observations are diagnostic, not qualification or trading results.",
                 ]
             )
             failures = sum(decisions[status] for status in ("unavailable", "missed", "interrupted"))
@@ -619,6 +618,25 @@ class TelegramHtmlFormatter:
                 lines.append(
                     f"Unavailable/missed sessions: {failures:,} · Unknown outcomes: {outcomes['unavailable']:,}"
                 )
+            comparisons = daily["comparison_totals"]
+            if comparisons["protocols"]:
+                models = (
+                    f"{comparisons['models']:,} models"
+                    if comparisons["models"] is not None
+                    else f"{comparisons['protocols']:,} protocols (model count unknown)"
+                )
+                lines.append(
+                    f"Baselines · {models}: "
+                    f"{comparisons['decision_counts']['scored']:,}/{comparisons['decision_sessions']:,} "
+                    "pinned sessions scored · "
+                    f"Outcomes: {comparisons['outcome_counts']['complete']:,}/{comparisons['outcome_sessions']:,} complete."
+                )
+                if comparisons["decision_missing_summaries"] or comparisons["outcome_missing_summaries"]:
+                    lines.append(
+                        f"Baseline summaries missing: {comparisons['decision_missing_summaries']:,} decisions · "
+                        f"{comparisons['outcome_missing_summaries']:,} outcomes."
+                    )
+            lines.append("Daily observations are diagnostic, not qualification or trading results.")
             if daily["truncated"]:
                 lines.append("⚠ Daily history limit reached: counts are lower bounds.")
         lines.extend(

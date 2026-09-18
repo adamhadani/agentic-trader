@@ -19,7 +19,7 @@ from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.data.sessions import AlpacaSessionSource
 from agentic_trader.market.bars import TradingSession
 from agentic_trader.research.alpha.daily_observations import DailyPanelService
-from agentic_trader.research.alpha.daily_plan import DailyPanelPlan
+from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyPanelPlan
 from agentic_trader.storage.alpha_daily import DailyCampaignRepository
 
 
@@ -72,9 +72,12 @@ def load_reference(reference):
 
 @pytest.mark.enable_socket
 @pytest.mark.allow_hosts(["127.0.0.1", "localhost"])
-@pytest.mark.parametrize("fault", [None, "missing", "provider"])
+@pytest.mark.parametrize(
+    "fault,with_comparison",
+    [(None, False), (None, True), ("missing", True), ("provider", True), ("residual_gap", True)],
+)
 async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_gaps(
-    native_panel, alpaca_http, temp_db, tmp_path, monkeypatch, fault
+    native_panel, alpaca_http, temp_db, tmp_path, monkeypatch, fault, with_comparison
 ):
     c, (venue, broker) = native_panel, alpaca_http
     # This is a large-response functional contract test. The shared 200ms fixture
@@ -126,6 +129,9 @@ async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_ga
             if symbol == c.plan.symbols[0] and fault == "missing"
             else [bar for bar in c.bars[symbol] if start <= pd.Timestamp(bar["t"]) <= end]
         )
+        if fault == "residual_gap" and symbol == c.plan.factor_symbols[0]:
+            missing_date = c.dates[600].tz_convert("UTC").isoformat()
+            rows = [{**row, "v": 0} if row["t"] == missing_date else row for row in rows]
         return 200, {"bars": {symbol: rows}, "next_page_token": None}
 
     venue.override = response
@@ -138,7 +144,9 @@ async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_ga
         broker.client,
     )
 
-    def worker():
+    comparison = DailyComparisonPlan("baseline-support", c.plan.campaign_id, c.plan.identity, c.plan.start_date)
+
+    def worker(*, include_comparison=with_comparison):
         return DailyPanelService(
             repo,
             source,
@@ -148,14 +156,16 @@ async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_ga
             directory=tmp_path / "campaign",
             runtime={"fixture": True},
             clock=clock,
+            comparisons=(comparison,) if include_comparison else (),
         )
 
     service = worker()
     assert (await service.run_once())["decisions"] == 0
-    assert not requests and (await repo.get("family/all"))["trial_count"] == 4
+    expected_trials = 7 if with_comparison else 4
+    assert not requests and (await repo.get("family/all"))["trial_count"] == expected_trials
     now[0] = window.available_at + pd.Timedelta(minutes=1)
     computing = threading.Event()
-    compute = daily_module.compute_daily_forecasts
+    compute = daily_module.compute_daily_forecast_bundle
 
     def tracked_compute(*args, **kwargs):
         computing.set()
@@ -164,7 +174,7 @@ async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_ga
         finally:
             computing.clear()
 
-    monkeypatch.setattr(daily_module, "compute_daily_forecasts", tracked_compute)
+    monkeypatch.setattr(daily_module, "compute_daily_forecast_bundle", tracked_compute)
     task = asyncio.create_task(service.run_once())
     heartbeats = 0
     while not task.done():
@@ -187,7 +197,8 @@ async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_ga
         assert (await repo.campaign(c.plan.campaign_id))["state_ref"] is None
         assert "forecast" not in decision["evidence"]
     else:
-        assert decision["status"] == "scored", decision["evidence"]
+        primary_status = "unavailable" if fault == "residual_gap" else "scored"
+        assert decision["status"] == primary_status, decision["evidence"]
         forecast = load_reference(decision["evidence"]["forecast"])
         campaign = await repo.campaign(c.plan.campaign_id)
         state = load_reference(campaign["state_ref"])
@@ -199,15 +210,39 @@ async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_ga
         if fault == "missing":
             assert forecast["common_support"][c.plan.symbols[0]] is False
             assert sum(forecast["common_support"].values()) == 17
+        elif fault == "residual_gap":
+            assert not any(forecast["common_support"].values())
         else:
             assert all(forecast["common_support"].values())
+        if with_comparison:
+            companion = decision["evidence"]["comparisons"][0]
+            assert companion["status"] == "scored"
+            companion_forecast = load_reference(companion["forecast"])
+            assert len(companion_forecast["arms"]) == 3
+            assert companion_forecast["input_hashes"] == forecast["input_hashes"]
+            assert companion_forecast["vintage_id"] == forecast["vintage_id"]
+        # Restart without the enrollment files: committed forecasts still own their outcomes.
+        service = worker(include_comparison=False)
         now[0] = window.outcome_available_at + pd.Timedelta(minutes=1)
         assert (await service.run_once())["outcomes"] == 1
         outcome_record = (await repo.records(c.plan.campaign_id, kind="outcome"))["records"][0]
-        assert outcome_record["status"] == "complete", outcome_record["evidence"]
+        assert outcome_record["status"] == ("unavailable" if fault == "residual_gap" else "complete"), outcome_record[
+            "evidence"
+        ]
         outcome = load_reference(outcome_record["evidence"]["outcome"])
         assert outcome["forecast_id"] == forecast["forecast_id"]
-        assert all(arm["ic"] is not None and arm["basket"]["gross_return"] is not None for arm in outcome["arms"])
+        if fault == "residual_gap":
+            assert all(arm["ic"] is None and arm["basket"] is None for arm in outcome["arms"])
+        else:
+            assert all(arm["ic"] is not None and arm["basket"]["gross_return"] is not None for arm in outcome["arms"])
+        if with_comparison:
+            companion = outcome_record["evidence"]["comparisons"][0]
+            assert companion["status"] == "complete"
+            companion_outcome = load_reference(companion["outcome"])
+            assert all(
+                arm["ic"] is not None and arm["basket"]["gross_return"] is not None for arm in companion_outcome["arms"]
+            )
+            assert companion_outcome["vintage_id"] == outcome["vintage_id"]
         assert load_reference(decision["evidence"]["forecast"]) == forecast
         assert len(requests) == 2 * len(c.plan.acquisition_symbols)
 
@@ -223,7 +258,7 @@ async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_ga
     await repo.rebuild()
     assert await repo.records(c.plan.campaign_id) == before_decisions
     assert await repo.records(c.plan.campaign_id, kind="outcome") == before_outcomes
-    assert (await repo.get("family/all"))["trial_count"] == 4
+    assert (await repo.get("family/all"))["trial_count"] == expected_trials
     assert (await repo.snapshot()).generation == 0
     assert all(call[0] == "GET" for call in venue.calls)
     await temp_db.engine.dispose()

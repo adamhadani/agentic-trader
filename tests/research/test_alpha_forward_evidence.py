@@ -162,7 +162,9 @@ async def test_evidence_statistics_leave_event_loop_responsive(monkeypatch):
         evidence_module,
         "DailyCampaignRepository",
         lambda store, policy: SimpleNamespace(
-            report=AsyncMock(return_value={"campaigns": [], "decisions": [], "outcomes": [], "truncated": False})
+            report=AsyncMock(
+                return_value={"campaigns": [], "comparisons": [], "decisions": [], "outcomes": [], "truncated": False}
+            )
         ),
     )
     repository = SimpleNamespace(

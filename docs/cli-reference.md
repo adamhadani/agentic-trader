@@ -418,6 +418,10 @@ matured outcomes. Telegram `/alphas` shows compact totals. These counts describe
 recorded research sessions, not active strategies, fills or qualified shadow credit.
 Collection is configured under `alpha_pipeline.daily_panel` in the existing daemon;
 there is no manual command that can replay an expired daily forecast.
+Its `comparison_protocol_paths` enroll independent baseline portfolios sharing the
+same capture and fit. Reports separate primary and baseline statuses and retain
+missing comparison summaries. Removing a path does not withdraw a persisted
+enrollment or cancel outcomes; there is no campaign-retirement command yet.
 
 `alpha panel-study PROTOCOL --output DIRECTORY` requires a new output directory and
 a complete frozen plan/screen JSON. It charges the full hypothesis/fold/IC/cost matrix

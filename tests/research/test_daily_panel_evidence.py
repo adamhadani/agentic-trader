@@ -1,5 +1,6 @@
 """Daily panel progress stays distinct from intraday scores and qualification."""
 
+from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -25,6 +26,7 @@ def daily_records():
                 "protocol": {"feed": "alpaca:iex", "symbols": ["AAA", "BBB"], "models": ["ridge"]},
             }
         ],
+        "comparisons": [],
         "decisions": [
             {
                 "campaign_id": "fixture",
@@ -58,6 +60,106 @@ def test_daily_summary_counts_campaign_sessions_and_retains_unknown_outcomes(dai
     assert result["campaigns"][0]["symbols"] == 2
     assert "private URL/token" not in str(result)
     assert "protocol" not in result["campaigns"][0]
+    assert result["comparisons"] == [] and result["comparison_totals"]["protocols"] == 0
+
+
+@pytest.fixture
+def comparison_records(daily_records):
+    now, records = daily_records
+    comparison = {
+        "campaign_id": "fixture",
+        "comparison_id": "baseline-v1",
+        "protocol_hash": "b" * 64,
+        "enrolled_at": "2026-09-02T00:00Z",
+        "trial_count": 3,
+        "protocol": {"models": ["rank_blend", "volatility20", "ridge"], "private": "/private/protocol.json"},
+    }
+    later = {**comparison, "comparison_id": "later", "protocol_hash": "c" * 64}
+    records["comparisons"] = [comparison, later]
+    decision, outcome = deepcopy(records["decisions"][0]), deepcopy(records["outcomes"][0])
+
+    def row(template, primary_status, comparison_status, *, pinned=True):
+        result = {**deepcopy(template), "status": primary_status, "comparisons": [comparison] if pinned else []}
+        result["evidence"]["comparisons"] = (
+            []
+            if comparison_status is None
+            else [
+                {
+                    "comparison_id": comparison["comparison_id"],
+                    "protocol_hash": comparison["protocol_hash"],
+                    "status": comparison_status,
+                    "forecast": {"artifact": "/private/forecast.json"},
+                    "outcome": {"artifact": "/private/outcome.json"},
+                    "error": "private URL/token",
+                }
+            ]
+        )
+        return result
+
+    records["decisions"] = [
+        row(decision, "unavailable", "scored"),
+        row(decision, "scored", "unavailable"),
+        row(decision, "interrupted", None),
+        row(decision, "scored", None, pinned=False),
+    ]
+    records["outcomes"] = [row(outcome, "unavailable", "complete"), row(outcome, "complete", None)]
+    return now, records
+
+
+def test_comparison_counts_follow_pinned_enrollment_not_primary_status_or_later_enrollment(comparison_records):
+    now, records = comparison_records
+    result = build_daily_panel_evidence(DailyPanelWorkerConfig(), records, now=now, days=7)
+    assert result["decision_counts"]["scored"] == 2 and result["outcome_counts"]["complete"] == 1
+    baseline, later = result["comparisons"]
+    assert baseline["comparison_id"] == "baseline-v1" and baseline["models"] == 3
+    assert baseline["decision_sessions"] == 3 and baseline["outcome_sessions"] == 2
+    assert baseline["decision_recorded_sessions"] == 2 and baseline["decision_missing_summaries"] == 1
+    assert baseline["outcome_recorded_sessions"] == 1 and baseline["outcome_missing_summaries"] == 1
+    assert baseline["decision_counts"]["scored"] == baseline["decision_counts"]["unavailable"] == 1
+    assert baseline["decision_counts"]["interrupted"] == 0  # Missing summary cannot inherit primary status.
+    assert baseline["outcome_counts"]["complete"] == 1 and baseline["outcome_counts"]["unavailable"] == 0
+    assert later["decision_sessions"] == later["outcome_sessions"] == 0
+    totals = result["comparison_totals"]
+    assert totals["protocols"] == 2 and totals["models"] == 6
+    assert totals["decision_sessions"] == 3 and totals["outcome_sessions"] == 2
+    assert totals["decision_counts"]["scored"] == totals["outcome_counts"]["complete"] == 1
+    assert result["rows_loaded"] == 9 and not result["authorizes_promotion"]
+    assert "private" not in str(result)
+
+
+@pytest.mark.parametrize("keep_decisions", [False, True])
+def test_truncation_preserves_comparison_outcome_denominators_without_metadata_or_decisions(
+    comparison_records, keep_decisions
+):
+    now, records = comparison_records
+    records["comparisons"] = []
+    records["truncated"] = True
+    if not keep_decisions:
+        records["decisions"] = []
+    result = build_daily_panel_evidence(DailyPanelWorkerConfig(), records, now=now, days=7)
+    baseline = result["comparisons"][0]
+    assert baseline["metadata_available"] is False and baseline["models"] is None
+    assert baseline["decision_sessions"] == (3 if keep_decisions else 0)
+    assert baseline["outcome_sessions"] == 2 and baseline["outcome_missing_summaries"] == 1
+    assert result["comparison_totals"]["metadata_missing"] == 1
+    assert result["comparison_totals"]["models"] is None and result["truncated"]
+
+
+@pytest.mark.parametrize("defect", ["unpinned", "hash", "duplicate", "invalid_status"])
+def test_invalid_comparison_summary_cannot_gain_reported_success(comparison_records, defect):
+    now, records = comparison_records
+    row = records["decisions"][0]
+    summary = row["evidence"]["comparisons"][0]
+    if defect == "unpinned":
+        row["comparisons"] = []
+    elif defect == "hash":
+        summary["protocol_hash"] = "d" * 64
+    elif defect == "duplicate":
+        row["evidence"]["comparisons"].append(deepcopy(summary))
+    else:
+        summary["status"] = "complete"
+    with pytest.raises(ValueError):
+        build_daily_panel_evidence(DailyPanelWorkerConfig(), records, now=now, days=7)
 
 
 def test_truncated_campaign_metadata_does_not_hide_retained_decisions(daily_records):

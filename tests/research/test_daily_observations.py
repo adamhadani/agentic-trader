@@ -84,6 +84,43 @@ async def test_idle_claim_does_not_acquire_or_score(daily_service):
     assert c.repo.claim_decision.call_args.kwargs["context"]["decision_window"]["economic_scheduled"]
 
 
+async def test_baseline_outcomes_continue_when_primary_abstained_and_config_has_no_companion(daily_service):
+    c = daily_service
+    window = c.plan.decision_window(c.plan.start_date, c.sessions)
+    companion = {"comparison_id": "baselines", "protocol_hash": "b" * 64}
+    forecast_ref = {"artifact": str(c.tmp / "forecast.json"), "artifact_hash": "a" * 64}
+    decision = {
+        "session_date": c.plan.start_date.isoformat(),
+        "decision_id": "d" * 64,
+        "status": "unavailable",
+        "comparisons": [companion],
+        "context": {"decision_window": window.document()},
+        "evidence": {
+            "forecast": forecast_ref,
+            "comparisons": [{**companion, "status": "scored", "forecast": forecast_ref}],
+        },
+    }
+    c.now[0] = window.outcome_available_at + pd.Timedelta(minutes=1)
+
+    async def records(campaign_id, *, kind, **kwargs):
+        return {"records": [decision] if kind == "decision" else [], "truncated": False, "next_after": None}
+
+    c.repo.records.side_effect = records
+    c.repo.claim_outcome.return_value = {"decision_id": decision["decision_id"], "comparisons": [companion]}
+    c.service._outcome = AsyncMock(
+        return_value={
+            "status": "unavailable",
+            "comparisons": [companion],
+            "evidence": {"comparisons": [{**companion, "status": "complete"}]},
+        }
+    )
+    result = await c.service.run_once()
+    c.service._outcome.assert_awaited_once()
+    assert c.service._outcome.await_args.args[1] == decision
+    assert result["outcomes"] == 1 and result["terminal_counts"] == {"outcome:unavailable": 1}
+    assert result["comparison_counts"] == {"outcome:complete": 1}
+
+
 @pytest.mark.parametrize("terminal_status", ["scored", "interrupted"])
 async def test_claim_precedes_reads_and_result_and_state_commit_together(daily_service, monkeypatch, terminal_status):
     c = daily_service
@@ -94,10 +131,13 @@ async def test_claim_precedes_reads_and_result_and_state_commit_together(daily_s
         assert set(batch.frames) == set(plan.acquisition_symbols)
         assert all(pd.Timestamp(r["received_at"]) < kwargs["fit_cutoff"] for r in kwargs["receipts"].values())
         return {
-            "status": "scored",
-            "arms": [{"model": "ridge", "status": "scored"}],
-            "residual_state": {"last_date": "2026-09-18"},
-            "authorizes_promotion": False,
+            "primary": {
+                "status": "scored",
+                "arms": [{"model": "ridge", "status": "scored"}],
+                "residual_state": {"last_date": "2026-09-18"},
+                "authorizes_promotion": False,
+            },
+            "companions": {},
         }
 
     # The real wall clock always advances; the fixture advances explicitly at fit.
@@ -113,7 +153,7 @@ async def test_claim_precedes_reads_and_result_and_state_commit_together(daily_s
         c.repo.finish_decision.assert_awaited_once()
 
     c.service.on_progress = AsyncMock(side_effect=progress)
-    monkeypatch.setattr("agentic_trader.research.alpha.daily_observations.compute_daily_forecasts", compute)
+    monkeypatch.setattr("agentic_trader.research.alpha.daily_observations.compute_daily_forecast_bundle", compute)
     result = await c.service.run_once()
     assert result["decisions"] == 1 and len(c.calls) == 29
     c.service.on_progress.assert_awaited_once()

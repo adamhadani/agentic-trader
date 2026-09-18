@@ -35,6 +35,33 @@ successful capture is delayed. Later price revisions cannot repair or recompute
 previous innovations. Residual state and its forecast share one atomic parent-state
 transition; the 252-session, skipped-21-session score retains its established rule.
 
+### Independent baseline portfolios
+
+The [baseline companion protocol](../config/research/prospective-equity-baselines-iex-v1.json)
+adds three separately charged portfolios: rank blend, volatility20 and Ridge. It
+binds the unchanged parent campaign by its exact hash. These portfolios share
+past-only baseline support: the same 61-session history and finite Ridge, reversal
+and volatility values, without requiring residual history. Percentile ranks and
+weights are recomputed on that support. A broader-support result is not a paired
+increment against a portfolio on the narrower primary support.
+
+One acquisition, feature calculation, Ridge fit and residual update serve both
+comparisons. Each has its own sealed forecasts and statuses. The original four-arm
+forecast remains unchanged, including abstentions. Missing residual innovations
+are never repaired, and no previous baseline portfolio is reconstructed for credit.
+
+Companion enrollment charges **three additional hypotheses exactly once** under the
+existing alpha lock. Its database-observed enrollment must precede the native day
+boundary; the first declared decision date also applies. Each decision pins the
+eligible immutable companion protocols before price reads. Later enrollment cannot
+enrich that decision, and expired claims cannot be replayed.
+
+If either comparison scores, one maturity-window acquisition evaluates all frozen
+portfolios against the same labels. A primary abstention does not suppress baseline
+outcomes. Unknown endpoints stay unknown; an abstained portfolio has no basket
+payoff, including no fabricated zero return. Companion results never upgrade the
+primary comparison's status or grant promotion authority.
+
 ## Availability and outcomes
 
 Alpaca native daily bars follow the New York calendar day. Extended-hours trades
@@ -74,7 +101,8 @@ compound overlapping daily H20 returns as a unit-gross strategy or use IID signi
   owns startup/shutdown; blocking SDK, filesystem and math operations run off-loop.
   Cancellation drains an in-flight read before closing its client.
 
-Enrollment charges four hypotheses exactly once. All inspected member intervals
+Parent enrollment charges four hypotheses exactly once; the baseline companion
+adds three through its own immutable reservation. All inspected member intervals
 are excluded before price acquisition. A claim commits before I/O; a crash or expiry
 cannot replay it. Completion samples database wall time after acquiring the journal
 lock. A late result is retained, but cannot advance residual state or gain prospective
@@ -95,6 +123,22 @@ alpha. `alpha status`, `alpha forward` and the shared Telegram forward report sh
 separate campaign/decision/outcome evidence. Read those counts and private artifacts
 alongside readiness. Restart applies changed worker configuration; an enrolled
 protocol is immutable and any changed model/contract needs a new campaign identity.
+
+Optional `comparison_protocol_paths` enroll bounded, unique companion documents on
+startup. They are enrollment inputs, not activation switches: removing a path does
+not remove its persisted enrollment from future eligible decisions or cancel pending
+outcomes. The existing campaign remains the owner of all these observations. Changing
+the **parent** campaign still requires explicit retirement/outcome draining, which
+is not implemented; companion enrollment does not solve multi-campaign scheduling.
+
+CLI/Telegram reports keep primary and baseline counts separate. Companion denominators
+come from enrollments pinned to loaded decisions/outcomes; missing summaries and
+truncation remain explicit. The `alpha_daily_panel_comparisons_total` counter counts
+committed companion summaries separately from primary terminal counts. A failed
+artifact write retains forensic files and a failure reference, without committing
+partial successes or advancing residual state.
+If storage cannot save the failure evidence either, the claim remains uncommitted
+and expires; the worker reports failure and cannot replay that capture.
 
 The collector retains source frames, actual per-symbol receipts, calendar, model,
 weights, residual state and first outcomes under the private research artifact root.
@@ -117,10 +161,10 @@ mature observations arrive, assess available and expected counts, paired increme
 Rank IC with dependence-aware uncertainty, nonoverlapping cost sensitivity, exposure
 and concentration. Authoritative instrument history, corporate actions and borrow,
 measured execution and an explicit portfolio ownership/execution lane remain gates.
-The next research priority is the separately frozen, horizon-aligned entry-lifetime
-experiment in the [roadmap](alpha-roadmap.md#next-work-after-the-screened-equity-forecast-study).
+The next research priority is the [proposed lifetime-attribution design](alpha-lifetime-attribution-plan.md).
+Its clock/deadline extensions and experiment protocol are not yet implemented or frozen.
 
-### Local validation — September 18, 2026
+### Initial collector validation — September 18, 2026
 
 The full local suite passed 2,206 tests (133 opt-in skips). Focused math, shared
 regression and actual SDK/SQLite tests passed 111 cases, including an empty native
@@ -134,6 +178,15 @@ A synthetic 73-symbol × 1,451-session first-bootstrap probe took 23.385 seconds
 this desk. It used no provider or runtime database and is a sizing check, not observed
 production latency or alpha performance.
 
+The baseline extension adds exact primary-document parity checks against the prior
+implementation, all 231 missing-innovation boundaries, shared-fit/source/outcome
+assertions, immutable enrollment races and separate report denominators. Fault
+injection covers partial forecast/outcome/state writes and a self-consistently
+resealed artifact with the wrong enrolled protocol. Restart tests preserve pending
+outcomes and future eligible comparisons after configuration removal, without
+recharging trials. Both artifact-validation paths must let the event loop progress.
+Suite and deployment results for each revision are retained in its PR.
+
 ### Known support limitation
 
 The primary comparison deliberately shares the residual model's complete-history
@@ -142,9 +195,7 @@ unavailable on sessions j+21 through j+251: **231 later decisions**. Because thi
 a matched four-arm comparison, the same loss can abstain all four primary arms.
 Per-stage support masks distinguish this from missing Ridge/style predictors.
 
-The next declared experiment should retain the primary comparison and also freeze
-three baseline-only score/weight variants on their own common past-only support,
-charging those additional hypotheses. Reuse acquisition, fitting and outcome
-evidence; do not refill old residuals, replace unavailable primary results, or call
-post-hoc reconstructed portfolios prospective. Preserve pending outcomes when
-adding/replacing campaign configuration.
+The independent baseline companion now isolates those three portfolios from this
+residual-history requirement. The 231-session limitation still applies to the
+primary comparison. Actual forward coverage remains to be measured; an implemented
+collector is not an observed forecast or a qualified strategy.

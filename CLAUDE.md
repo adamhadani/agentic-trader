@@ -308,3 +308,9 @@ next-New-York-midnight windows, actual receipts, strictly mature training, atomi
 residual-state/forecast claims and terminal first outcomes. Missed sessions stay
 missing. Readiness is worker progress, not forecast/outcome quality. No promotion
 or trading authority follows from this experiment.
+Independent baseline companions share that capture, fit and outcome acquisition;
+preserve the original four-arm artifact and count each comparison separately.
+Journal claims pin immutable companion enrollments before price reads. Removing
+configuration paths does not retire enrollment or cancel outcomes. Validate saved
+artifacts against those pins; publish completion only after every required artifact
+is saved. Parent campaign retirement/draining remains unimplemented.

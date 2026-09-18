@@ -1,6 +1,8 @@
 """Daily claims use one replayable transaction across independent database clients."""
 
 import asyncio
+from dataclasses import replace
+from datetime import date
 from types import SimpleNamespace
 
 import pandas as pd
@@ -8,6 +10,7 @@ import pytest
 from sqlalchemy import event, text
 
 from agentic_trader.market.bars import ObservationStatus
+from agentic_trader.research.alpha.daily_plan import MAX_DAILY_COMPARISONS, DailyComparisonPlan, DailyPanelPlan
 from agentic_trader.research.alpha.equity_universe import document_hash
 from agentic_trader.research.alpha.evidence import load_daily_panel_evidence
 from agentic_trader.research.alpha.models import DecisionStatus
@@ -20,6 +23,8 @@ STATE = {"artifact": "/private/test/state.json", "artifact_hash": "a" * 64}
 NEXT_STATE = {"artifact": "/private/test/state-2.json", "artifact_hash": "b" * 64}
 EVIDENCE = {"forecast": {"artifact": "/private/test/forecast.json", "artifact_hash": "c" * 64}, "arms": 4}
 OUTCOME_EVIDENCE = {"outcome": {"artifact": "/private/test/outcome.json", "artifact_hash": "d" * 64}}
+COMPARISON_FORECAST = {"artifact": "/private/test/baseline.json", "artifact_hash": "e" * 64}
+COMPARISON_OUTCOME = {"artifact": "/private/test/baseline-outcome.json", "artifact_hash": "f" * 64}
 
 
 @pytest.fixture(
@@ -74,6 +79,407 @@ async def enroll_and_claim(case):
     await case.repos[0].enroll("daily", PROTOCOL, document_hash(PROTOCOL))
     case.now[0] = pd.Timestamp("2026-09-18 04:31Z")
     return await case.repos[0].claim_decision("daily", "2026-09-17", **window())
+
+
+@pytest.fixture
+def comparison_parent():
+    return DailyPanelPlan(
+        "daily",
+        tuple(f"A{i:02}" for i in range(20)),
+        tuple(f"F{i}" for i in range(9)),
+        date(2026, 9, 17),
+        date(2027, 9, 17),
+        date(2021, 1, 1),
+        "a" * 64,
+        "b" * 64,
+    )
+
+
+@pytest.fixture
+def comparison_plan(comparison_parent):
+    return DailyComparisonPlan("baseline", "daily", comparison_parent.identity, date(2026, 9, 17))
+
+
+def comparison_evidence(plan, *, kind="forecast", status=None):
+    return {
+        "comparison_id": plan.comparison_id,
+        "protocol_hash": plan.identity,
+        "status": status or (DecisionStatus.SCORED if kind == "forecast" else ObservationStatus.COMPLETE),
+        kind: COMPARISON_FORECAST if kind == "forecast" else COMPARISON_OUTCOME,
+    }
+
+
+async def enroll_comparison(case, parent, plan):
+    await case.repos[0].enroll(parent.campaign_id, parent.document(), parent.identity)
+    return await case.repos[0].enroll_comparison(parent.campaign_id, plan.document(), plan.identity)
+
+
+async def test_comparison_enrollment_charges_once_and_replays_without_changing_parent(
+    daily_clients, comparison_parent, comparison_plan
+):
+    c, p = daily_clients, comparison_plan
+    parent = await c.repos[0].enroll("daily", comparison_parent.document(), comparison_parent.identity)
+    rows = await asyncio.gather(*(r.enroll_comparison("daily", p.document(), p.identity) for r in c.repos))
+    assert rows[0] == rows[1]
+    assert rows[0]["enrolled_at"] == c.now[0].isoformat()
+    assert rows[0]["trial_count"] == 3 and rows[0]["protocol"] == p.document()
+    assert (await c.repos[0].get("family/all"))["trial_count"] == 7
+    assert await c.repos[0].campaign("daily") == parent
+    changed = replace(p, first_decision_date=date(2026, 9, 18))
+    with pytest.raises(ValueError, match="immutable"):
+        await c.repos[1].enroll_comparison("daily", changed.document(), changed.identity)
+    await c.repos[1].rebuild()
+    assert await c.repos[1].comparisons("daily") == rows[:1]
+    assert (await c.repos[1].get("family/all"))["trial_count"] == 7
+    now = pd.Timestamp.now(tz="UTC") + pd.Timedelta(seconds=1)
+    report = await c.repos[0].report(since=now, now=now)
+    assert len(report["comparisons"]) == 1 and report["comparisons"][0]["protocol"] == p.document()
+    assert not report["decisions"] and not report["outcomes"]
+
+
+@pytest.mark.parametrize("defect", ["campaign", "parent", "first_date", "hash"])
+async def test_comparison_enrollment_rejects_contract_mismatch_without_charging(
+    daily_clients, comparison_parent, comparison_plan, defect
+):
+    c, p = daily_clients, comparison_plan
+    await c.repos[0].enroll("daily", comparison_parent.document(), comparison_parent.identity)
+    if defect == "parent":
+        p = replace(p, parent_protocol_hash="c" * 64)
+    elif defect == "first_date":
+        p = replace(p, first_decision_date=date(2027, 9, 18))
+    with pytest.raises(ValueError):
+        await c.repos[0].enroll_comparison(
+            "other" if defect == "campaign" else "daily", p.document(), "d" * 64 if defect == "hash" else p.identity
+        )
+    assert (await c.repos[0].get("family/all"))["trial_count"] == 4
+    assert await c.repos[0].comparisons("daily") == []
+
+
+async def test_comparison_registration_limit_does_not_charge_rejected_or_duplicate_attempts(
+    daily_clients, comparison_parent, comparison_plan
+):
+    c = daily_clients
+    for i in range(MAX_DAILY_COMPARISONS):
+        await enroll_comparison(c, comparison_parent, replace(comparison_plan, comparison_id=f"baseline-{i}"))
+    with pytest.raises(ValueError, match="limit|bounded"):
+        await enroll_comparison(c, comparison_parent, replace(comparison_plan, comparison_id="overflow"))
+    p = replace(comparison_plan, comparison_id="baseline-0")
+    await c.repos[0].enroll_comparison("daily", p.document(), p.identity)
+    assert len(await c.repos[1].comparisons("daily")) == MAX_DAILY_COMPARISONS
+    assert (await c.repos[0].get("family/all"))["trial_count"] == 4 + 3 * MAX_DAILY_COMPARISONS
+
+
+@pytest.mark.parametrize(
+    "enrolled_at,first_date,expected",
+    [
+        ("2026-09-18T03:59:59Z", date(2026, 9, 17), True),
+        ("2026-09-18T04:00Z", date(2026, 9, 17), False),
+        ("2026-09-18T04:01Z", date(2026, 9, 17), False),
+        ("2026-09-18T03:59Z", date(2026, 9, 18), False),
+    ],
+)
+async def test_comparison_pin_requires_preclose_enrollment_and_declared_first_date(
+    daily_clients, comparison_parent, comparison_plan, enrolled_at, first_date, expected
+):
+    c = daily_clients
+    await c.repos[0].enroll("daily", comparison_parent.document(), comparison_parent.identity)
+    p = replace(comparison_plan, first_decision_date=first_date)
+    c.now[0] = pd.Timestamp(enrolled_at)
+    enrollment = await c.repos[0].enroll_comparison("daily", p.document(), p.identity)
+    c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+    claim = await c.repos[1].claim_decision("daily", "2026-09-17", **window())
+    assert claim["comparisons"] == ([enrollment] if expected else [])
+
+
+async def test_primary_abstention_keeps_successful_comparison_and_frozen_outcome_after_restart(
+    daily_clients, comparison_parent, comparison_plan
+):
+    c, p = daily_clients, comparison_plan
+    enrollment = await enroll_comparison(c, comparison_parent, p)
+    c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+    claim = await c.repos[0].claim_decision("daily", "2026-09-17", **window())
+    evidence = {**EVIDENCE, "comparisons": [comparison_evidence(p)]}
+    with pytest.raises(ValueError, match="state"):
+        await c.repos[0].finish_decision(claim, status=DecisionStatus.UNAVAILABLE, evidence=evidence)
+    decision = await c.repos[0].finish_decision(
+        claim, status=DecisionStatus.UNAVAILABLE, evidence=evidence, state_ref=STATE
+    )
+    assert decision["status"] == DecisionStatus.UNAVAILABLE
+    assert (await c.repos[0].campaign("daily"))["state_ref"] == STATE
+    # Registering another comparison cannot change the already saved decision.
+    later = replace(p, comparison_id="later")
+    await c.repos[1].enroll_comparison("daily", later.document(), later.identity)
+    await c.repos[1].rebuild()
+    c.now[0] = pd.Timestamp("2026-10-17T04:31Z")
+    outcome = await c.repos[1].claim_outcome(
+        claim["decision_id"], available_at="2026-10-17T04:30Z", expires_at="2026-10-17T07:00Z"
+    )
+    assert outcome["comparisons"] == [enrollment]
+    completed = await c.repos[1].finish_outcome(
+        outcome,
+        status=ObservationStatus.UNAVAILABLE,
+        evidence={**OUTCOME_EVIDENCE, "comparisons": [comparison_evidence(p, kind="outcome")]},
+    )
+    assert completed["status"] == ObservationStatus.UNAVAILABLE
+    assert completed["evidence"]["comparisons"][0]["status"] == ObservationStatus.COMPLETE
+    assert await c.repos[0].decision(claim["decision_id"]) == decision
+    with pytest.raises(ValueError, match="immutable"):
+        await c.repos[0].finish_outcome(
+            outcome,
+            status=ObservationStatus.UNAVAILABLE,
+            evidence={
+                **OUTCOME_EVIDENCE,
+                "comparisons": [comparison_evidence(p, kind="outcome", status="unavailable")],
+            },
+        )
+    events = await c.repos[0].store.events()
+    now = pd.Timestamp.now(tz="UTC") + pd.Timedelta(seconds=1)
+    summary = await load_daily_panel_evidence(c.repos[0], now=now)
+    baseline = next(row for row in summary["comparisons"] if row["comparison_id"] == p.comparison_id)
+    assert baseline["metadata_available"] and baseline["models"] == 3
+    assert baseline["decision_sessions"] == baseline["decision_counts"]["scored"] == 1
+    assert baseline["outcome_sessions"] == baseline["outcome_counts"]["complete"] == 1
+    assert summary["decision_counts"]["unavailable"] == summary["outcome_counts"]["unavailable"] == 1
+    assert not baseline["decision_missing_summaries"] and not baseline["outcome_missing_summaries"]
+    truncated = await load_daily_panel_evidence(c.repos[0], now=now, limit=1)
+    assert truncated["truncated"] and truncated["rows_loaded"] == 1
+    (baseline,) = truncated["comparisons"]
+    assert not baseline["metadata_available"] and baseline["models"] is None
+    assert baseline["decision_sessions"] == 0
+    assert baseline["outcome_sessions"] == baseline["outcome_counts"]["complete"] == 1
+    assert "/private/test" not in str(summary) + str(truncated)
+    assert not summary["authorizes_promotion"]
+    assert await c.repos[0].store.events() == events
+
+
+@pytest.mark.parametrize("defect", ["missing", "duplicate", "unknown", "hash", "artifact", "status"])
+async def test_completion_refuses_unpinned_or_missing_comparison_evidence(
+    daily_clients, comparison_parent, comparison_plan, defect
+):
+    c, p = daily_clients, comparison_plan
+    await enroll_comparison(c, comparison_parent, p)
+    c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+    claim = await c.repos[0].claim_decision("daily", "2026-09-17", **window())
+    row = comparison_evidence(p)
+    rows = [] if defect == "missing" else [row, row] if defect == "duplicate" else [row]
+    if defect == "unknown":
+        row["comparison_id"] = "unknown"
+    elif defect == "hash":
+        row["protocol_hash"] = "f" * 64
+    elif defect == "artifact":
+        row["forecast"] = {"artifact": "/private/test/invalid"}
+    elif defect == "status":
+        row["status"] = "promoted"
+    with pytest.raises(ValueError, match="(?i)comparison|artifact"):
+        await c.repos[0].finish_decision(
+            claim, status=DecisionStatus.UNAVAILABLE, evidence={**EVIDENCE, "comparisons": rows}, state_ref=STATE
+        )
+    assert await c.repos[1].decision(claim["decision_id"]) == claim
+
+
+async def test_failed_capture_preserves_pins_and_does_not_invent_forecasts(
+    daily_clients, comparison_parent, comparison_plan
+):
+    c = daily_clients
+    await enroll_comparison(c, comparison_parent, comparison_plan)
+    c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+    claim = await c.repos[0].claim_decision("daily", "2026-09-17", **window())
+    failed = await c.repos[1].finish_decision(
+        claim,
+        status=DecisionStatus.UNAVAILABLE,
+        evidence={"failure": COMPARISON_FORECAST, "error_type": "BarAcquisitionError", "comparisons": []},
+    )
+    assert failed["comparisons"] == claim["comparisons"]
+    assert not failed["evidence"]["comparisons"] and failed["state_ref"] is None
+    assert (await c.repos[0].campaign("daily"))["state_generation"] == 0
+
+
+async def test_enrollment_after_claim_cannot_retrofit_existing_forecast(
+    daily_clients, comparison_parent, comparison_plan
+):
+    c, p = daily_clients, comparison_plan
+    await c.repos[0].enroll("daily", comparison_parent.document(), comparison_parent.identity)
+    c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+    claim = await c.repos[0].claim_decision("daily", "2026-09-17", **window())
+    assert claim["comparisons"] == []
+    await c.repos[1].enroll_comparison("daily", p.document(), p.identity)
+    with pytest.raises(ValueError, match="(?i)comparison"):
+        await c.repos[0].finish_decision(
+            claim,
+            status=DecisionStatus.SCORED,
+            evidence={**EVIDENCE, "comparisons": [comparison_evidence(p)]},
+            state_ref=STATE,
+        )
+    result = await c.repos[1].finish_decision(claim, status=DecisionStatus.SCORED, evidence=EVIDENCE, state_ref=STATE)
+    assert result["comparisons"] == []
+
+
+async def test_historical_claim_without_pins_stays_primary_only_after_enrollment(
+    daily_clients, comparison_parent, comparison_plan
+):
+    c = daily_clients
+    await c.repos[0].enroll("daily", comparison_parent.document(), comparison_parent.identity)
+    c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+    original = c.repos[0]._write
+
+    async def historical_claim(session, kind, identity, payload):
+        if kind == "decision":
+            payload.pop("comparisons")
+            payload.pop("claim_hash")
+            payload["claim_hash"] = document_hash(payload)
+        await original(session, kind, identity, payload)
+
+    # Persist the original v1 wire contract, without retrospectively editing it.
+    c.repos[0]._write = historical_claim
+    claim = await c.repos[0].claim_decision("daily", "2026-09-17", **window())
+    c.repos[0]._write = original
+    assert "comparisons" not in claim
+    await c.repos[1].enroll_comparison("daily", comparison_plan.document(), comparison_plan.identity)
+    decision = await c.repos[0].finish_decision(claim, status=DecisionStatus.SCORED, evidence=EVIDENCE, state_ref=STATE)
+    assert "comparisons" not in decision
+    c.now[0] = pd.Timestamp("2026-10-17T04:31Z")
+    outcome = await c.repos[1].claim_outcome(
+        claim["decision_id"], available_at="2026-10-17T04:30Z", expires_at="2026-10-17T07:00Z"
+    )
+    assert outcome["comparisons"] == []
+    await c.repos[1].finish_outcome(outcome, status=ObservationStatus.COMPLETE, evidence=OUTCOME_EVIDENCE)
+    await c.repos[1].rebuild()
+    assert await c.repos[0].decision(claim["decision_id"]) == decision
+
+
+async def test_unavailable_comparison_cannot_gain_complete_outcome(daily_clients, comparison_parent, comparison_plan):
+    c, p = daily_clients, comparison_plan
+    await enroll_comparison(c, comparison_parent, p)
+    c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+    claim = await c.repos[0].claim_decision("daily", "2026-09-17", **window())
+    await c.repos[0].finish_decision(
+        claim,
+        status=DecisionStatus.UNAVAILABLE,
+        evidence={**EVIDENCE, "comparisons": [comparison_evidence(p, status=DecisionStatus.UNAVAILABLE)]},
+    )
+    c.now[0] = pd.Timestamp("2026-10-17T04:31Z")
+    outcome = await c.repos[0].claim_outcome(
+        claim["decision_id"], available_at="2026-10-17T04:30Z", expires_at="2026-10-17T07:00Z"
+    )
+    with pytest.raises(ValueError, match="unavailable comparison"):
+        await c.repos[1].finish_outcome(
+            outcome,
+            status=ObservationStatus.UNAVAILABLE,
+            evidence={**OUTCOME_EVIDENCE, "comparisons": [comparison_evidence(p, kind="outcome")]},
+        )
+    unavailable = {**comparison_evidence(p, kind="outcome", status="unavailable"), "reason": "forecast_abstained"}
+    unavailable.pop("outcome")
+    result = await c.repos[1].finish_outcome(
+        outcome, status=ObservationStatus.UNAVAILABLE, evidence={"comparisons": [unavailable]}
+    )
+    assert result["evidence"]["comparisons"] == [unavailable]
+
+
+async def test_late_companion_score_is_forensic_only_and_cannot_advance_state(
+    daily_clients, comparison_parent, comparison_plan
+):
+    c, p = daily_clients, comparison_plan
+    await enroll_comparison(c, comparison_parent, p)
+    c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+    claim = await c.repos[0].claim_decision("daily", "2026-09-17", **window())
+    c.now[0] = pd.Timestamp(claim["expires_at"])
+    evidence = {**EVIDENCE, "comparisons": [comparison_evidence(p)]}
+    result = await c.repos[1].finish_decision(
+        claim, status=DecisionStatus.UNAVAILABLE, evidence=evidence, state_ref=STATE
+    )
+    assert result["status"] == DecisionStatus.INTERRUPTED and "evidence" not in result
+    assert (await c.repos[0].campaign("daily"))["state_generation"] == 0
+    assert any(e["payload"]["value"].get("evidence") == evidence for e in await c.repos[0].store.events())
+
+
+async def test_failed_comparison_enrollment_rolls_back_charge_and_reservation(
+    daily_clients, comparison_parent, comparison_plan, monkeypatch
+):
+    c, p = daily_clients, comparison_plan
+    await c.repos[0].enroll("daily", comparison_parent.document(), comparison_parent.identity)
+    original = c.repos[0]._write
+
+    async def fail_enrollment(session, kind, identity, payload):
+        if kind == "comparison":
+            raise RuntimeError("injected enrollment failure")
+        await original(session, kind, identity, payload)
+
+    monkeypatch.setattr(c.repos[0], "_write", fail_enrollment)
+    before = await c.repos[0].store.events()
+    with pytest.raises(RuntimeError, match="injected"):
+        await c.repos[0].enroll_comparison("daily", p.document(), p.identity)
+    assert await c.repos[1].store.events() == before
+    assert await c.repos[1].comparisons("daily") == []
+    assert (await c.repos[1].get("family/all"))["trial_count"] == 4
+    await c.repos[1].enroll_comparison("daily", p.document(), p.identity)
+    assert (await c.repos[1].get("family/all"))["trial_count"] == 7
+
+
+@pytest.mark.parametrize("first_operation", ["enrollment", "claim"])
+async def test_postgres_comparison_enrollment_and_claim_have_one_lock_order(
+    daily_clients, comparison_parent, comparison_plan, first_operation, monkeypatch
+):
+    c, p = daily_clients, comparison_plan
+    if c.backend != "postgres":
+        pytest.skip("Real PostgreSQL lock contention is exercised by the gated fixture")
+    await c.repos[0].enroll("daily", comparison_parent.document(), comparison_parent.identity)
+    paused, release, submitted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    owner_pid = writer_pid = None
+    original = c.repos[0]._write
+
+    async def pause_first_transaction(session, kind, identity, payload):
+        nonlocal owner_pid
+        await original(session, kind, identity, payload)
+        if kind == ("comparison" if first_operation == "enrollment" else "decision"):
+            owner_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+            paused.set()
+            await release.wait()
+
+    def observe(connection, _cursor, statement, _parameters, _context, _executemany):
+        nonlocal writer_pid
+        if "workflow_locks" in statement:
+            writer_pid = connection.connection.driver_connection.get_server_pid()
+            submitted.set()
+
+    async def enroll(repo):
+        return await repo.enroll_comparison("daily", p.document(), p.identity)
+
+    async def claim(repo):
+        return await repo.claim_decision("daily", "2026-09-17", **window())
+
+    first_action, second_action = (enroll, claim) if first_operation == "enrollment" else (claim, enroll)
+    c.now[0] = pd.Timestamp("2026-09-18T03:59Z" if first_operation == "enrollment" else "2026-09-18T04:31Z")
+    monkeypatch.setattr(c.repos[0], "_write", pause_first_transaction)
+    event.listen(c.databases[1].engine.sync_engine, "before_cursor_execute", observe)
+    tasks = []
+    try:
+        async with asyncio.timeout(10):
+            tasks.append(asyncio.create_task(first_action(c.repos[0])))
+            await paused.wait()
+            c.now[0] = pd.Timestamp("2026-09-18T04:31Z")
+            tasks.append(asyncio.create_task(second_action(c.repos[1])))
+            await submitted.wait()
+            async with c.databases[0].session_factory() as observer:
+                while not await observer.scalar(
+                    text("SELECT :owner = ANY(pg_blocking_pids(:writer))"), {"owner": owner_pid, "writer": writer_pid}
+                ):
+                    if tasks[1].done():
+                        await tasks[1]
+                        pytest.fail("Enrollment and claim bypassed their shared journal lock")
+                    await asyncio.sleep(0.01)
+            release.set()
+            results = await asyncio.gather(*tasks)
+        enrollment, decision = results if first_operation == "enrollment" else reversed(results)
+        assert decision["comparisons"] == ([enrollment] if first_operation == "enrollment" else [])
+        assert (await c.repos[1].get("family/all"))["trial_count"] == 7
+        assert await c.repos[1].decision(decision["decision_id"]) == decision
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        event.remove(c.databases[1].engine.sync_engine, "before_cursor_execute", observe)
 
 
 async def test_enrollment_claim_and_state_are_atomic_immutable_and_replayable(daily_clients):

@@ -187,3 +187,7 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
   Preserve fixed H20 calendar anchors, strict mature training, immutable missed
   residual innovations and first outcomes. Its journal claims/state CAS cannot
   replay expired captures or authorize trading; see [daily panel](docs/alpha-daily-panel.md).
+  Independent baseline companions reuse that capture/fit and have separately
+  counted, charged immutable enrollments pinned by the journal. Validate artifacts
+  against those pins before outcome price reads. Configuration removal is not
+  retirement; partial artifact writes cannot publish partial success or advance state.

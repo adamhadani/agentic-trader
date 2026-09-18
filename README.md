@@ -282,3 +282,6 @@ The [prospective daily panel](docs/alpha-daily-panel.md) follows four fixed equi
 forecast controls with receipt-stamped inputs and immutable H20 outcomes. It runs
 in the existing daemon as research only; active mined alphas and paper-trading
 authorization remain governed by the separate qualification pipeline.
+An independently enrolled three-model baseline comparison shares the same capture
+and fit, so missing residual history need not suppress every future portfolio.
+Primary and baseline results remain separately counted; neither authorizes trading.

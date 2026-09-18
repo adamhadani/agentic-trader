@@ -201,6 +201,70 @@ async def load_forward_evidence(repository, *, days=DEFAULT_FORWARD_DAYS, limit=
     return snapshot, report
 
 
+def _comparison_statistics(counts):
+    result = {}
+    for kind, statuses in (("decision", DecisionStatus), ("outcome", ObservationStatus)):
+        expected = sum(counts[kind].values())
+        missing = counts[kind][None]
+        result.update(
+            {
+                f"{kind}_sessions": expected,
+                f"{kind}_recorded_sessions": expected - missing,
+                f"{kind}_missing_summaries": missing,
+                f"{kind}_counts": {status.value: counts[kind][status] for status in statuses},
+            }
+        )
+    return result
+
+
+def _daily_comparison_evidence(inputs):
+    """Count only immutable enrollment pins, including missing capture summaries."""
+    metadata = {(row["campaign_id"], row["comparison_id"], row["protocol_hash"]): row for row in inputs["comparisons"]}
+    groups: dict = {key: {"decision": Counter(), "outcome": Counter()} for key in metadata}
+    for kind, statuses in (("decision", DecisionStatus), ("outcome", ObservationStatus)):
+        for row in inputs[f"{kind}s"]:
+            # Historical sessions preceding comparison enrollment have no pins.
+            pins = [
+                (pin["campaign_id"], pin["comparison_id"], pin["protocol_hash"]) for pin in row.get("comparisons", [])
+            ]
+            if len(set(pins)) != len(pins) or any(key[0] != row["campaign_id"] for key in pins):
+                raise ValueError("Invalid daily comparison enrollment pins")
+            recorded = {}
+            for summary in row.get("evidence", {}).get("comparisons", []):
+                key = (row["campaign_id"], summary["comparison_id"], summary["protocol_hash"])
+                if key not in pins or key in recorded:
+                    raise ValueError("Unpinned or repeated daily comparison summary")
+                recorded[key] = statuses(summary["status"])
+            for key in pins:
+                counts = groups.setdefault(key, {"decision": Counter(), "outcome": Counter()})
+                counts[kind][recorded.get(key)] += 1
+    summaries = []
+    aggregate: dict = {"decision": Counter(), "outcome": Counter()}
+    for (campaign_id, comparison_id, protocol_hash), counts in sorted(groups.items()):
+        enrollment = metadata.get((campaign_id, comparison_id, protocol_hash))
+        summaries.append(
+            {
+                "campaign_id": campaign_id,
+                "comparison_id": comparison_id,
+                "protocol_hash": protocol_hash,
+                "metadata_available": enrollment is not None,
+                "enrolled_at": enrollment["enrolled_at"] if enrollment else None,
+                "models": len(enrollment["protocol"]["models"]) if enrollment else None,
+                "trial_count": enrollment["trial_count"] if enrollment else None,
+                **_comparison_statistics(counts),
+            }
+        )
+        for kind, total in aggregate.items():
+            total.update(counts[kind])
+    missing = sum(not row["metadata_available"] for row in summaries)
+    return summaries, {
+        "protocols": len(summaries),
+        "models": None if missing else sum(row["models"] for row in summaries),
+        "metadata_missing": missing,
+        **_comparison_statistics(aggregate),
+    }
+
+
 def build_daily_panel_evidence(policy, inputs, *, now, days):
     """Bounded latest journal projections; no forecasts, provider errors or private paths."""
     now = utc_timestamp(now)
@@ -208,8 +272,9 @@ def build_daily_panel_evidence(policy, inputs, *, now, days):
         raise ValueError("Daily-panel evidence days outside supported bounds")
     since = now - timedelta(days=days)
     decisions, outcomes = inputs["decisions"], inputs["outcomes"]
+    comparisons, comparison_totals = _daily_comparison_evidence(inputs)
     campaigns = {row["campaign_id"]: row for row in inputs["campaigns"]}
-    identities = sorted(set(campaigns) | {row["campaign_id"] for row in (*decisions, *outcomes)})
+    identities = sorted(set(campaigns) | {row["campaign_id"] for row in (*decisions, *outcomes, *comparisons)})
     decision_counts = Counter(DecisionStatus(row["status"]) for row in decisions)
     outcome_counts = Counter(ObservationStatus(row["status"]) for row in outcomes)
     summaries = []
@@ -239,8 +304,10 @@ def build_daily_panel_evidence(policy, inputs, *, now, days):
         "scope": "current_canonical_daily_campaign_projections",
         "coverage_basis": "recorded_campaign_sessions",
         "truncated": inputs["truncated"],
-        "rows_loaded": len(inputs["campaigns"]) + len(decisions) + len(outcomes),
+        "rows_loaded": len(inputs["campaigns"]) + len(inputs["comparisons"]) + len(decisions) + len(outcomes),
         "campaigns": summaries,
+        "comparisons": comparisons,
+        "comparison_totals": comparison_totals,
         "decision_sessions": len(decisions),
         "outcome_sessions": len(outcomes),
         "decision_counts": {status.value: decision_counts[status] for status in DecisionStatus},
@@ -252,6 +319,8 @@ def build_daily_panel_evidence(policy, inputs, *, now, days):
             "Truncated counts are lower bounds; campaign metadata may be outside the loaded rows.",
             "A complete outcome is research evidence, not a fill, profit claim or qualification.",
             "Worker readiness, usable forecasts and matured outcomes are separate observations.",
+            "Comparison denominators count enrollments pinned to loaded sessions, not all current enrollments or scheduled sessions.",
+            "Missing comparison summaries remain unknown; primary status never substitutes for comparison evidence.",
         ],
     }
 

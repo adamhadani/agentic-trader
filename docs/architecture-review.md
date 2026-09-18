@@ -407,8 +407,11 @@ borrow, protection or portfolio-order contracts. All 54 comparisons completed, w
 The [800-search diagnosis](alpha-power-diagnosis-2026-09-18.md) separates a functioning
 forecast from poor conversion into trades: persistent pending orders suppress about
 90% of known-control pulses. Search ranks bracket economics while one-step IC tests a
-different target; lifetime DSR and trade-count failures coexist. Reuse immutable
-execution-policy identities and timed lifetimes for a fresh causal comparison.
+different target; lifetime DSR and trade-count failures coexist. The
+[proposed lifetime-attribution design](alpha-lifetime-attribution-plan.md) requires
+a versioned fixed-daily clock and independently disabled deadlines before a fresh
+experiment can be frozen. Reuse immutable execution-policy identities and shared
+deadline/simulation machinery; preserve the 16-endpoint primary boundary.
 Do not introduce a second simulator, rewrite prior evidence or tune away joint gates.
 
 ### Retained factor implementation
@@ -445,6 +448,21 @@ SDK acquisition, journal concurrency and presentation in separate modules. It re
 alpha projections/events, the shared poll loop, daily artifacts and model/basket
 kernels. A separate aggregate is justified by immutable first outcomes and one
 residual-state lineage; it is not a new retry queue or trading pipeline.
+
+Independent baseline companions extend that same aggregate and one acquisition/fit.
+The parent four-arm protocol stays immutable; enrollments charge three additional
+hypotheses once and are pinned before each capture. Artifact publication completes
+as a bundle before journal/state advancement; failed partial writes remain forensic
+evidence, not successful portfolios. Outcome reads validate the saved comparison
+against the journal pin before accessing prices. Separate statuses preserve primary
+abstentions and baseline coverage without claiming matched residual comparisons.
+
+Parent campaign retirement and outcome draining across parent replacements remain
+unimplemented. Configuration paths enroll companions, so removing one is not a
+withdrawal mechanism; persisted eligible companions continue on future claims.
+Do not replace the parent while its outcomes are pending. A future lifecycle design
+must retain existing claims/first outcomes in this journal rather than add a worker
+or silently abandon them.
 
 Remaining follow-ups: isolate research CPU capacity from latency-sensitive workers;
 measure the daily capture duration and provider revision rate; aggregate mature

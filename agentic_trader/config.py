@@ -47,6 +47,7 @@ from agentic_trader.constants import (
     DEFAULT_VIX_COMPRESSED_THRESHOLD,
     DEFAULT_VIX_ELEVATED_THRESHOLD,
     DEFAULT_VIX_EXTREME_THRESHOLD,
+    MAX_DAILY_COMPARISONS,
     AssetClass,
     ExecutionMode,
     RuntimeEnvironment,
@@ -473,6 +474,7 @@ class DailyPanelWorkerConfig(BaseModel):
 
     enabled: bool = False
     protocol_path: Path | None = None
+    comparison_protocol_paths: tuple[Path, ...] = Field(default=(), max_length=MAX_DAILY_COMPARISONS)
     poll_seconds: int = Field(default=60, ge=10, le=300, strict=True)
     max_age_seconds: int = Field(default=1200, ge=60, le=3600, strict=True)
     calendar_refresh_seconds: int = Field(default=300, ge=30, le=3600, strict=True)
@@ -483,6 +485,22 @@ class DailyPanelWorkerConfig(BaseModel):
         if isinstance(value, str) and not value.strip():
             raise ValueError("Explicit nonempty daily-panel protocol path required")
         return value
+
+    @field_validator("comparison_protocol_paths", mode="before")
+    @classmethod
+    def explicit_comparison_paths(cls, values):
+        if not isinstance(values, (list, tuple)) or any(
+            isinstance(value, str) and not value.strip() for value in values
+        ):
+            raise ValueError("Explicit nonempty daily comparison protocol paths required")
+        return values
+
+    @field_validator("comparison_protocol_paths")
+    @classmethod
+    def unique_comparison_paths(cls, values):
+        if len(set(values)) != len(values):
+            raise ValueError("Daily comparison protocol paths must be unique")
+        return values
 
     @model_validator(mode="after")
     def bounded_worker(self):

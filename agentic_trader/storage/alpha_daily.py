@@ -15,8 +15,10 @@ from uuid import uuid4
 
 from sqlalchemy import JSON, and_, cast, or_, select, text, type_coerce
 
+from agentic_trader.constants import MAX_DAILY_COMPARISONS
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.bars import ObservationStatus, utc_timestamp
+from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyPanelPlan
 from agentic_trader.research.alpha.equity_universe import document_hash
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.storage.alpha import AlphaRepository
@@ -27,7 +29,12 @@ DAILY_HYPOTHESIS_COUNT = 4
 MAX_DAILY_RECORDS = 1000
 MAX_DAILY_PAYLOAD_BYTES = 65536
 DAILY_ACTOR = "daily_panel_observer"
-DAILY_PREFIXES = {"campaign": "daily-campaign/", "decision": "daily-decision/", "outcome": "daily-outcome/"}
+DAILY_PREFIXES = {
+    "campaign": "daily-campaign/",
+    "comparison": "daily-comparison/",
+    "decision": "daily-decision/",
+    "outcome": "daily-outcome/",
+}
 
 
 def _document(value):
@@ -62,6 +69,45 @@ def _evidence(value, *, required=None):
         if key in value and _reference(value[key]) is None:
             raise ValueError("Daily evidence artifact reference cannot be null")
     return value
+
+
+def _comparison_evidence(claim, evidence, *, kind, failed_capture):
+    """Absent pins on a historical claim mean primary-only, never today's registry."""
+    pins = {row["comparison_id"]: row for row in claim.get("comparisons", [])}
+    rows = evidence.get("comparisons", [])
+    if not isinstance(rows, list) or len(rows) > MAX_DAILY_COMPARISONS:
+        raise ValueError("Bounded comparison completion list required")
+    if not rows and (not pins or failed_capture):
+        return False
+    successful = DecisionStatus.SCORED if kind == "forecast" else ObservationStatus.COMPLETE
+    unavailable = DecisionStatus.UNAVAILABLE if kind == "forecast" else ObservationStatus.UNAVAILABLE
+    allowed = {"comparison_id", "protocol_hash", "status", kind, "reason", "error_type"}
+    seen, any_successful = set(), False
+    for row in rows:
+        if not isinstance(row, dict) or not set(row) <= allowed:
+            raise ValueError("Explicit comparison completion document required")
+        identity = row.get("comparison_id")
+        if (
+            not isinstance(identity, str)
+            or identity in seen
+            or identity not in pins
+            or row.get("protocol_hash") != pins[identity]["protocol_hash"]
+            or row.get("status") not in (successful, unavailable)
+        ):
+            raise ValueError("Comparison completion must match its exact pinned identity and status")
+        seen.add(identity)
+        ref = _reference(row.get(kind))
+        if row["status"] == successful:
+            if ref is None:
+                raise ValueError("Successful comparison requires its immutable artifact reference")
+            any_successful = True
+        elif ref is None and not any(
+            isinstance(row.get(key), str) and row[key].strip() for key in ("reason", "error_type")
+        ):
+            raise ValueError("Unavailable comparison requires an artifact or explicit reason")
+    if seen != set(pins):
+        raise ValueError("Every pinned comparison requires an explicit completion")
+    return any_successful
 
 
 def _campaign_id(value):
@@ -112,6 +158,73 @@ class DailyCampaignRepository(AlphaRepository):
 
     async def outcome(self, decision_id):
         return await self.get(_key("outcome", decision_id))
+
+    async def _comparisons(self, session, campaign_id):
+        prefix = _key("comparison", f"{_campaign_id(campaign_id)}/")
+        rows = list(
+            await session.scalars(
+                select(AlphaProjectionRecord)
+                .where(
+                    AlphaProjectionRecord.scope == self.store.scope,
+                    AlphaProjectionRecord.key.startswith(prefix, autoescape=True),
+                )
+                .order_by(AlphaProjectionRecord.key)
+                .limit(MAX_DAILY_COMPARISONS + 1)
+            )
+        )
+        if len(rows) > MAX_DAILY_COMPARISONS:
+            raise ValueError("Daily comparison registry exceeds its bounded limit")
+        return [json.loads(row.payload) for row in rows]
+
+    async def comparisons(self, campaign_id):
+        async with self.store.db.session_factory() as session:
+            return await self._comparisons(session, campaign_id)
+
+    async def enroll_comparison(self, campaign_id, protocol: dict, protocol_hash: str):
+        campaign_id, protocol = _campaign_id(campaign_id), _document(protocol)
+        plan = DailyComparisonPlan.from_document(protocol)
+        if plan.identity != protocol_hash or plan.campaign_id != campaign_id:
+            raise ValueError("Comparison requires its exact campaign and protocol hash")
+        identity = {
+            "campaign_id": campaign_id,
+            "comparison_id": plan.comparison_id,
+            "protocol": protocol,
+            "protocol_hash": protocol_hash,
+        }
+        comparison_key = f"{campaign_id}/{plan.comparison_id}"
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            campaign = await self._get(session, _key("campaign", campaign_id))
+            if campaign is None:
+                raise ValueError("Comparison requires an enrolled parent campaign")
+            plan.validate_parent(DailyPanelPlan.from_document(campaign["protocol"]))
+            existing = await self._get(session, _key("comparison", comparison_key))
+            if existing is not None:
+                if any(existing[key] != value for key, value in identity.items()):
+                    raise ValueError("Daily comparison enrollment is immutable")
+                return existing
+            if len(await self._comparisons(session, campaign_id)) >= MAX_DAILY_COMPARISONS:
+                raise ValueError("Daily comparison enrollment limit reached")
+            now = await self._now(session)
+            if now < utc_timestamp(campaign["enrolled_at"]):
+                raise ValueError("Comparison database clock moved before parent enrollment")
+            trials = protocol["charged_trials"]
+            result = {**identity, "enrolled_at": now.isoformat(), "trial_count": trials, "authorizes_promotion": False}
+            reservation_key = f"research/reservation/daily-comparison/{comparison_key}"
+            if await self._get(session, reservation_key) is not None:
+                raise ValueError("Daily comparison reservation exists without enrollment")
+            family = await self._get(session, "family/all") or {"trial_count": 0}
+            family["trial_count"] += trials
+            await self._append(
+                session,
+                reservation_key,
+                {"symbol": f"panel:{campaign_id}", "timeframe": "1d", "trials": trials},
+                EventKind.ALPHA_RESEARCH,
+                DAILY_ACTOR,
+            )
+            await self._append(session, "family/all", family, EventKind.ALPHA_RESEARCH, DAILY_ACTOR)
+            await self._write(session, "comparison", comparison_key, result)
+            return result
 
     async def enroll(self, campaign_id, protocol: dict, protocol_hash: str, initial_state: dict | None = None):
         campaign_id = _campaign_id(campaign_id)
@@ -224,6 +337,12 @@ class DailyCampaignRepository(AlphaRepository):
                 "parent_generation": campaign["state_generation"],
                 "parent_state": campaign["state_ref"],
                 "protocol_hash": campaign["protocol_hash"],
+                "comparisons": [
+                    comparison
+                    for comparison in await self._comparisons(session, campaign_id)
+                    if utc_timestamp(comparison["enrolled_at"]) < close
+                    and comparison["protocol"]["first_decision_date"] <= day
+                ],
                 "authorizes_promotion": False,
             }
             if reason:
@@ -258,7 +377,13 @@ class DailyCampaignRepository(AlphaRepository):
             raise ValueError("Daily completion must be scored or explicitly unavailable")
         evidence = _evidence(evidence, required="forecast" if status == DecisionStatus.SCORED else None)
         state_ref = _reference(state_ref)
-        if status == DecisionStatus.SCORED and state_ref is None:
+        comparison_scored = _comparison_evidence(
+            claim,
+            evidence,
+            kind="forecast",
+            failed_capture=status == DecisionStatus.UNAVAILABLE and "failure" in evidence,
+        )
+        if (status == DecisionStatus.SCORED or comparison_scored) and state_ref is None:
             raise ValueError("Scored daily forecast requires its resulting immutable state")
         completion = {"status": status, "evidence": evidence, "state_ref": state_ref}
         completion_hash = document_hash(completion)
@@ -322,6 +447,7 @@ class DailyCampaignRepository(AlphaRepository):
                 "expires_at": expires.isoformat(),
                 "claimed_at": now.isoformat(),
                 "decision_completion_hash": decision["completion_hash"],
+                "comparisons": decision.get("comparisons", []),
                 "authorizes_promotion": False,
             }
             if missed:
@@ -337,11 +463,30 @@ class DailyCampaignRepository(AlphaRepository):
             "status": status,
             "evidence": _evidence(evidence, required="outcome" if status == ObservationStatus.COMPLETE else None),
         }
+        _comparison_evidence(
+            claim,
+            completion["evidence"],
+            kind="outcome",
+            failed_capture=status == ObservationStatus.UNAVAILABLE and "failure" in completion["evidence"],
+        )
         completion_hash = document_hash(completion)
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session, resource="alpha")
             previous = await self._get(session, _key("outcome", claim["decision_id"]))
             _claim_matches(previous, claim)
+            decision = await self._get(session, _key("decision", claim["decision_id"]))
+            if decision is None or decision.get("completion_hash") != claim["decision_completion_hash"]:
+                raise ValueError("Outcome requires its immutable decision completion")
+            scored_comparisons = {
+                row["comparison_id"]
+                for row in decision["evidence"].get("comparisons", [])
+                if row["status"] == DecisionStatus.SCORED
+            }
+            if any(
+                row["status"] == ObservationStatus.COMPLETE and row["comparison_id"] not in scored_comparisons
+                for row in completion["evidence"].get("comparisons", [])
+            ):
+                raise ValueError("An unavailable comparison forecast cannot earn a complete outcome")
             now = await self._now(session)
             if previous["status"] != ObservationStatus.CAPTURING:
                 if previous.get("completion_hash") == completion_hash:
@@ -436,6 +581,7 @@ class DailyCampaignRepository(AlphaRepository):
             raise ValueError("Ordered daily report interval required")
         kinds = or_(
             AlphaProjectionRecord.key.startswith(DAILY_PREFIXES["campaign"]),
+            AlphaProjectionRecord.key.startswith(DAILY_PREFIXES["comparison"]),
             and_(
                 DomainEventRecord.recorded_at >= since.to_pydatetime(),
                 or_(*(AlphaProjectionRecord.key.startswith(DAILY_PREFIXES[kind]) for kind in ("decision", "outcome"))),
