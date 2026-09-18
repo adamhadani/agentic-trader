@@ -40,7 +40,7 @@ def calculate_rank_ic(
     def _spearman(df_sub: pd.DataFrame) -> float:
         a = df_sub["alpha"]
         b = df_sub["fwd"]
-        if a.std() == 0 or b.std() == 0:
+        if a.nunique(dropna=False) <= 1 or b.nunique(dropna=False) <= 1:
             return 0.0
         corr, _ = stats.spearmanr(a, b)
         return 0.0 if np.isnan(corr) else float(corr)
@@ -55,6 +55,8 @@ def calculate_rank_ic(
         ics.append(ic_val)
 
     if not ics:
+        if valid["alpha"].nunique(dropna=False) <= 1 or valid["fwd"].nunique(dropna=False) <= 1:
+            return 0.0, 0.0, 0.0
         # Full sample fallback
         corr, _ = stats.spearmanr(valid["alpha"], valid["fwd"])
         full_ic = 0.0 if np.isnan(corr) else float(corr)
