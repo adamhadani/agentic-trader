@@ -16,7 +16,8 @@ validation, historical point-in-time membership, or executable paper-trading evi
 ## Frozen exercise and accounting
 
 The [protocol](../config/research/equity-factor-controls-iex-v1.json) and code were
-committed as `c321d804f571faa3735fabccff2b55c1dbfc599c` before the retained-data run.
+committed as `c321d804f571faa3735fabccff2b55c1dbfc599c` before the retained-data run,
+preserved by tag `research/equity-factor-controls-iex-v1-20260918`.
 The [implementation contract](alpha-factor-controls.md) uses the original 64 equities
 and nine named sector ETFs, 1,255 observed sessions in 2021–2025, IEX all-adjusted
 prices and separate 2023/2024/2025 evaluation folds.
