@@ -1,0 +1,219 @@
+{
+  "acquisition": {
+    "max_days": 3660,
+    "max_elapsed_seconds": 900.0,
+    "max_symbols": 500,
+    "min_request_interval_seconds": 0.0
+  },
+  "plan": {
+    "authorizes_promotion": false,
+    "charged_trials": 90,
+    "cohort_name": "equities",
+    "comparison": "Matched gross/net tail construction, not beta/sector/volatility risk; long-only is context",
+    "controls": [
+      "ridge",
+      "reversal60",
+      "volatility20",
+      "rank_blend",
+      "equal_weight_long_only"
+    ],
+    "costs_bps": [
+      1.0,
+      5.0
+    ],
+    "endpoint_scopes": [
+      "finite_source_price",
+      "positive_endpoint_volume"
+    ],
+    "expressions": {
+      "reversal60": "-roc(close,60)",
+      "volatility20": "realized_vol(returns,20)"
+    },
+    "parent": {
+      "adjustment": "all",
+      "authorizes_promotion": false,
+      "availability": "Historical daily completion assumed by next local midnight; actual receipts are not backdated",
+      "campaign_id": "screened-equity-forecast-iex-v1",
+      "charged_trials": 96,
+      "cohorts": [
+        {
+          "min_assets": 16,
+          "name": "equities",
+          "symbols": [
+            "ADBE",
+            "AEM",
+            "AFL",
+            "AMKR",
+            "ATKR",
+            "AUB",
+            "AUGO",
+            "AVT",
+            "BALL",
+            "BRZE",
+            "BTDR",
+            "CAG",
+            "CART",
+            "CHYM",
+            "COLB",
+            "COMP",
+            "CR",
+            "CSX",
+            "DHT",
+            "EXE",
+            "FRO",
+            "FTNT",
+            "FTS",
+            "FULT",
+            "GEHC",
+            "GPOR",
+            "HII",
+            "HMY",
+            "HXL",
+            "IBP",
+            "KNF",
+            "KVYO",
+            "LAZ",
+            "LII",
+            "LYB",
+            "MMM",
+            "NSC",
+            "NTR",
+            "NVTS",
+            "NWG",
+            "NWSA",
+            "OVV",
+            "PEG",
+            "PFGC",
+            "PM",
+            "PNC",
+            "PRGO",
+            "REGN",
+            "RYTM",
+            "SEIC",
+            "SKY",
+            "SLG",
+            "SSRM",
+            "STNE",
+            "TALO",
+            "TAP",
+            "TDS",
+            "TNL",
+            "TPR",
+            "TTEK",
+            "VNT",
+            "VRNS",
+            "XPO",
+            "YUMC"
+          ],
+          "top_k": 8
+        },
+        {
+          "min_assets": 6,
+          "name": "sector_etfs",
+          "symbols": [
+            "XLB",
+            "XLE",
+            "XLF",
+            "XLI",
+            "XLK",
+            "XLP",
+            "XLU",
+            "XLV",
+            "XLY"
+          ],
+          "top_k": 3
+        }
+      ],
+      "corporate_action_scope": "Alpaca all-adjusted return proxies; no physical shares, dividend payment timing or historical borrow claim",
+      "costs_bps": [
+        0.0,
+        1.0,
+        5.0
+      ],
+      "economic_features": [
+        "momentum60",
+        "reversal5"
+      ],
+      "eligibility_scope": "Consecutive observed past bars and all finite features; no future outcome membership selection",
+      "end": "2025-12-31",
+      "features": [
+        {
+          "beta_window": null,
+          "expression": "roc(close, 60)",
+          "name": "momentum60"
+        },
+        {
+          "beta_window": null,
+          "expression": "-roc(close, 5)",
+          "name": "reversal5"
+        },
+        {
+          "beta_window": null,
+          "expression": "realized_vol(returns, 20)",
+          "name": "volatility20"
+        }
+      ],
+      "feed": "alpaca:iex",
+      "folds": [
+        {
+          "end": "2023-12-31",
+          "name": "2023",
+          "start": "2023-01-01"
+        },
+        {
+          "end": "2024-12-31",
+          "name": "2024",
+          "start": "2024-01-01"
+        },
+        {
+          "end": "2025-12-31",
+          "name": "2025",
+          "start": "2025-01-01"
+        }
+      ],
+      "history_sessions": 61,
+      "ic": {
+        "confidence": 0.95,
+        "hac_lags": 20,
+        "min_assets": 6,
+        "min_observations": 60,
+        "observations_per_year": 252
+      },
+      "inference_scope": "Descriptive per-fold Rank IC and HAC; no adaptive-selection correction or promotion gate",
+      "min_train_rows": 500,
+      "min_train_sessions": 126,
+      "missing_label_scope": "Any missing predicted outcome withholds that date's IC; unavailable expected dates withhold complete-fold inference",
+      "mse_scope": "Pooled paired date-symbol forecast errors versus the same training-mean support; descriptive, not independent row inference",
+      "payoff_scope": "Nonoverlapping fixed-horizon rank baskets; unknown held outcomes withhold the full curve; no borrow or funding modeled",
+      "refit_sessions": 20,
+      "ridge_alpha": 100.0,
+      "selection": {
+        "cohort_name": "equities",
+        "observed_at": "2026-09-17T19:02:23.420910+00:00",
+        "plan_id": "ea4b3b8d903c923bc9c77ce00343b3b34dcf0b8ef8c76ef8eb6e694920816e8c",
+        "result_sha256": "29f04e1b741907b36d0ad1cf6eaf9e6d05aa0c69d40a93f0f7d48cf3e897a536",
+        "snapshot_id": "bf162c80350e390248813ad461c437787731f76efc15c5f6c5bf49693da9735f"
+      },
+      "selection_clock": "observed_at is the final source receipt of the completed hashed liquidity screen, not its acquisition start",
+      "start": "2021-01-01",
+      "target": {
+        "horizon_bars": 20,
+        "label": "observed_next_open_to_close_v1",
+        "timeframe": "1d"
+      },
+      "train_sessions": 252,
+      "training_scope": "Per-cohort pooled equal-weight eligible date-symbol rows; strictly mature labels before refit; train-only scaling",
+      "universe_scope": "Current membership and liquidity conditioned historical development; not point-in-time constituents",
+      "version": "screened_panel_forecasts_v1"
+    },
+    "parent_result_sha256": "ab6f71367132db6b1ac0b8eb3e6e409883460934bb9c4bd2fb2fa72fe2862166",
+    "rank_blend": "Equal blend of within-date average percentile ranks of reversal60 and volatility20",
+    "scope": "Post-selection current-cohort historical development; not independent validation or fills",
+    "source": "Hash-verified retained artifacts; current reads are not new provider observations",
+    "strict_endpoints": "Positive source daily volume at entry and exit masks outcomes only, never decisions",
+    "support": "Original eligibility and finite frozen Ridge forecasts; no future-outcome selection",
+    "training": "Frozen parent Ridge; original finite-price training labels unchanged; no refitting",
+    "uncertainty": "Paired basket vectors and descriptive dispersion only; no economic significance claim",
+    "version": "retained_forecast_controls_v1"
+  }
+}

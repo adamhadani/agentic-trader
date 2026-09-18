@@ -353,3 +353,7 @@ counts are not demonstrated independent tests. Preserve accounting while running
 fresh predeclared power ablation before changing that rule. Historical current-cohort
 results retain survivorship/liquidity-selection bias; subtype, delisting, borrow and
 measured execution evidence remain required for qualification.
+
+### Retained forecast comparison boundary
+
+The [style/endpoint follow-up](alpha-forecast-controls.md) adds a read-only source adapter to `AlphaPanelService`, not a second acquisition or journal lifecycle. Pure forecast input preparation and basket/cost accounting are shared with the original study. The versioned plan binds the parent result and fixed comparisons; verification loads the same hashed dataset bytes. Original source metadata stays intact, while the new manifest identifies artifact-read receipts. Strict endpoint evidence affects outcomes only. Accepted limits remain original finite-price training, post-selection/current-cohort bias, unmatched beta/sector risk, absent borrow/capacity evidence and small economic sample size.

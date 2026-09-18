@@ -278,3 +278,5 @@ immutable member checkpoints and fail-closed selection. IEX activity is source-s
 this development screen neither establishes historical membership nor qualifies alphas.
 
 [Screened panel forecasts](alpha-panel-forecasts.md) compose a versioned pure computation through `AlphaPanelService`; plan validation binds the complete prior liquidity result, manifest and input evidence. Shared forecast estimator construction serves both single-symbol and panel diagnostics. No additional journal/schema or execution path is introduced. Test causal eligibility, strict label maturity, future perturbations and held/unheld missing outcomes separately from actual data and deployed verification.
+
+Retained-data follow-ups use `alpha forecast-controls` and the shared daily workflow. Its [contract](alpha-forecast-controls.md) requires tests for source/hash tampering, reservation before reads, exact parent forecast reconstruction, unchanged decisions under future-volume perturbations, and unknown paired denominators. Unit fixtures contain synthetic artifacts; integration tests replay the real journal on SQLite and opt-in disposable PostgreSQL without market APIs.

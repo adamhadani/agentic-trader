@@ -404,3 +404,7 @@ empty responses remain missing coverage; failed or invalid inputs withhold selec
 Portfolio/volume studies still require complete inputs. Cancellation drains the current
 bounded read and checkpoint; its charged unfinished manifest remains, without a
 completion claim or automatic replay. Freeze a new attempt before another acquisition.
+
+### Matched retained forecast controls
+
+`alpha forecast-controls` evaluates fixed reversal/volatility/blended controls against frozen panel Ridge forecasts with identical decision support. The [contract](alpha-forecast-controls.md) keeps source-price and positive-endpoint-volume outcomes separate, reuses shared basket accounting, and charges all comparisons through the existing journal. No refit, qualification, new market observation or allocation authority is implied.

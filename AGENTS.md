@@ -161,3 +161,5 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
   capacity, and current-cohort historical development is not point-in-time validation.
 
 - [Panel forecast studies](docs/alpha-panel-forecasts.md) keep every frozen member on the expected calendar. Fit preprocessing only on training rows with strictly mature labels. Eligibility and basket weights cannot depend on future outcomes; missing held outcomes withhold full-path P&L. Current-cohort historical diagnostics cannot qualify an alpha or relax older complete-book contracts.
+
+- [Retained forecast controls](docs/alpha-forecast-controls.md) use hash-bound parent artifacts and the shared daily journal. Reserve/exclude before retained-price access. Future endpoint evidence cannot change decisions; unknown held outcomes withhold curves. Preserve original training semantics and distinguish artifact-read receipts from provider observations.

@@ -510,3 +510,7 @@ immutable member checkpoints and fail-closed selection. IEX activity is source-s
 this development screen neither establishes historical membership nor qualifies alphas.
 
 `copilot alpha forecast-study PROTOCOL --selection COMPLETED_LIQUIDITY_DIRECTORY --output NEW_PRIVATE_DIRECTORY` runs the [screened-cohort development study](alpha-panel-forecasts.md). The frozen matrix is charged and every acquired member/date excluded before reads. Keep artifacts private; this command neither promotes alphas nor sends messages/orders. It does not start a daemon or poller. Existing output directories cannot be overwritten.
+
+### Retained forecast comparisons
+
+`alpha forecast-controls PROTOCOL --parent FORECAST_DIR --output NEW_DIR` is an explicit operator research command, not a daemon/poller. It reads verified local artifacts after durable trial reservation, excludes all inspected parent members, and writes private diagnostic evidence. It has no provider, broker or Telegram composition and grants no promotion authority. Keep the output directory outside Git; see the [research contract](alpha-forecast-controls.md).
