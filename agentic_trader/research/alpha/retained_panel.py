@@ -5,11 +5,22 @@ import io
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from agentic_trader.market.bars import SessionSchedule, utc_timestamp
 from agentic_trader.research.alpha.data import load_dataset
-from agentic_trader.research.alpha.forecast_controls_plan import ForecastControlsPlan
+from agentic_trader.research.alpha.panel_forecast_plan import PanelForecastPlan
 from agentic_trader.research.alpha.validation import frame_digest
+
+
+class RetainedForecastPlan(Protocol):
+    """Only the immutable parent binding belongs to the artifact adapter."""
+
+    @property
+    def parent(self) -> PanelForecastPlan: ...
+
+    @property
+    def parent_result_sha256(self) -> str: ...
 
 
 def _verified_bytes(path: Path, digest: str) -> bytes:
@@ -26,7 +37,7 @@ class RetainedPanelSource:
     dataset attributes stay unchanged in the hash-bound parent artifact chain.
     """
 
-    def __init__(self, directory: Path, plan: ForecastControlsPlan):
+    def __init__(self, directory: Path, plan: RetainedForecastPlan):
         self.directory = directory
         self.plan = plan
         self._result: dict | None = None
@@ -39,7 +50,7 @@ class RetainedPanelSource:
         return self._result
 
     def calendar(self, start, end):
-        if (start, end) != (self.plan.start, self.plan.end):
+        if (start, end) != (self.plan.parent.start, self.plan.parent.end):
             raise ValueError("Exact retained calendar range required")
         self._result = None
         self._datasets = {}
@@ -80,10 +91,10 @@ class RetainedPanelSource:
     def daily(self, symbol, start, end, feed, adjustment="raw"):
         _ = self.parent_result
         if (start, end, feed, adjustment) != (
-            self.plan.start,
-            self.plan.end,
-            self.plan.feed,
-            self.plan.adjustment,
+            self.plan.parent.start,
+            self.plan.parent.end,
+            self.plan.parent.feed,
+            self.plan.parent.adjustment,
         ) or symbol not in self._datasets:
             raise ValueError("Exact retained member and source contract required")
         metadata = self._datasets[symbol]

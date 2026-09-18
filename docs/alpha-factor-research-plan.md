@@ -1,10 +1,10 @@
 # Bounded factor research plan
 
-**September 18, 2026 — proposal, not executed.** Keep the
+**September 18, 2026 — implementation under verification; full experiment pending.** Keep the
 [power diagnosis](alpha-power-ablation-plan.md) as the immediate research task.
 The next useful factor experiment is a small test of information beyond our
 existing reversal/volatility styles. Prospective collection can proceed separately.
-This document adds no model, provider acquisition, journal write or promotion.
+The [implementation contract](alpha-factor-controls.md) records the new fixed research features and shared workflow. No experiment result or promotion is claimed here.
 
 ## What our evidence supports
 
@@ -125,8 +125,8 @@ all of them, including ETF controls and warmup, before the first retained read.
 Current artifact reads retain their identity separately from original provider
 receipts. No new acquisition or research engine is required.
 
-Missing: a typed frozen factor-controls plan, the causal rolling residual feature,
-and its saved fit/support evidence. `PanelForecastPlan` currently rejects
+Implemented: `FactorControlsPlan`, the causal rolling residual feature, and its
+saved fit/support evidence. `PanelForecastPlan` currently rejects
 `beta_window`; the older panel beta adjustment is not this feature contract.
 `orthogonalization.factor_neutralize` provides a projection primitive, but its WLS
 residuals are not portfolio weights. Do not reuse legacy `residual_validation`'s
@@ -137,9 +137,8 @@ The proposed application API is
 through `AlphaPanelService(..., compute=...).run(...)`, following
 `cli/commands/alpha_controls.py`. Share the retained-parent binding instead of
 copying its hash verifier; share evaluation kernels instead of rewriting IC/costs.
-There is **no existing CLI/config-only path for this exact experiment today**.
-A same-turn run would require those small additions, tests, review and a committed
-protocol first; the present task delivers the plan only.
+The `alpha factor-controls` CLI composes that application API through the existing
+retained-data workflow. Tests, review and a committed protocol precede the full run.
 
 Minimal RED tests: hand-computed rolling residuals; future-price/volume invariance
 of prior fits and decisions; rank-deficient/missing fits; exact skipped-month

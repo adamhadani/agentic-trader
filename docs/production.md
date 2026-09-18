@@ -533,3 +533,14 @@ protection and Telegram polling/menu registration. It does not submit a test tra
 A closed regular session prevents live entry preflight; loopback SDK and disposable
 PostgreSQL tests separately exercise success, refusal and race behavior. Record these
 limits independently of a healthy service or current market-data connection.
+
+
+## Offline research isolation
+
+`alpha power-study` is synthetic and artifact-only: it constructs no runtime DB,
+provider, broker or notifier. `alpha factor-controls` reads verified retained data
+and deliberately records its real research attempt in the configured alpha journal.
+It reserves trials/exclusions before reading observations, while issuing no provider
+requests, broker orders or Telegram messages. Neither command starts a daemon or
+poller, qualifies an alpha or grants shadow credit. Run substantial studies in a
+separate process with bounded numerical threads and monitor the existing daemon.

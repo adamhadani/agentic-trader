@@ -6,7 +6,7 @@ import os
 import click
 
 from agentic_trader.cli.commands.alpha import alpha_group
-from agentic_trader.cli.commands.alpha_controls import forecast_controls_cmd
+from agentic_trader.cli.commands.alpha_controls import factor_controls_cmd, forecast_controls_cmd
 from agentic_trader.cli.commands.alpha_forecast import forecast_study_cmd
 from agentic_trader.cli.commands.alpha_liquidity import liquidity_study_cmd
 from agentic_trader.cli.commands.alpha_universe import universe_snapshot_cmd
@@ -98,6 +98,7 @@ alpha_group.add_command(universe_snapshot_cmd)
 alpha_group.add_command(liquidity_study_cmd)
 alpha_group.add_command(forecast_study_cmd)
 alpha_group.add_command(forecast_controls_cmd)
+alpha_group.add_command(factor_controls_cmd)
 cli.add_command(alpha_group, name="alpha")
 
 
