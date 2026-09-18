@@ -55,6 +55,7 @@ No test has production credentials, database access, or external network permiss
 
 | Critical path | Coverage |
 | --- | --- |
+| Fresh funding/borrowability/protection → FIFO admission → journal/outbox | `test_entry_evidence.py`, `test_entry_capacity_http.py`, `test_entry_capacity_race.py`; real SDK/HTTP, strict account/asset fields, quote identity/age, changing books, exact nested roots, zero-POST refusals and PostgreSQL lock-wait revalidation |
 | Account activities → pagination → cash/inventory checks → journal/replay → performance | `tests/integration/test_account_ledger.py`, actual SDK/HTTP and opt-in PostgreSQL; account mismatch, partials, corrupt pages, errors and snapshot races |
 | Entry request → accepted → partial → complete fill → valuation → close → performance | `tests/integration/test_alpaca_http.py`, actual SDK/HTTP plus SQLite and opt-in PostgreSQL |
 | Native bracket/held-leg cancellation, close after stop replacement | Same HTTP suite; stateful cancellation and exact replacement chains |
@@ -123,3 +124,19 @@ the default harness and CI retain real TCP/WebSocket and disposable PostgreSQL.
 Reviewed against [Alpaca order contracts](https://docs.alpaca.markets/us/docs/orders-at-alpaca): bracket exits activate after complete entry fill; cancellation can affect the remaining group; `pending_cancel` is not terminal. Keep GTC protection and implement entry lifetime with an exact persisted cancellation intent. Read parent/nested children plus missing persisted IDs; changed identities, replacements and partial fills fail closed. No automatic DELETE retry. Holding expiry uses the existing cancel/revalidate/close workflow and current broker clock.
 
 `tests/integration/test_trade_lifetimes.py` exercises actual SDK/TCP serialization with SQLite and independent PostgreSQL clients: contention, lost replies, fill/cancel races, crash boundaries, stale projections, failed outbox transactions, session eligibility, failed/pending close deduplication and protective exits. These controlled venue tests establish failure behavior, not measured live exchange cancellation latency. Diagnostic session admission stays disabled.
+
+### September 18 funding and borrowing review
+
+[Entry capacity](entry-capacity.md) uses both account observations and stable complete
+order/inventory identities; it refuses truncated or malformed evidence. The SDK public
+raw GET boundary preserves strict account fields and the new `borrow_status`, which
+the installed typed asset model drops. No deprecated-flag fallback is used.
+
+The [current margin framework](https://docs.alpaca.markets/us/docs/the-intraday-margin-rule)
+replaces old PDT/$25,000 assumptions. Broker `buying_power` is authoritative; this
+application additionally caps overnight-capable brackets with `regt_buying_power`.
+Short checks use the [documented funding calculation](https://docs.alpaca.markets/us/docs/orders-at-alpaca)
+and current easy-to-borrow status. The [borrow API migration](https://docs.alpaca.markets/us/changelog/2026-06-05-borrow-status-6b96a5a)
+retires the legacy flag on September 22, 2026. A read-only paper schema probe confirmed
+the needed current fields and `borrow_status` are available; that is not a submitted
+order or evidence of future stock availability.

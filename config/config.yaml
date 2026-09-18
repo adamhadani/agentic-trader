@@ -1,5 +1,6 @@
 portfolio:
   cash: 100000.0
+  max_stop_risk_pct: 0.02 # aggregate planned stop risk; not a gap-loss guarantee
   max_notional_exposure: 60000.0
   max_concurrent_contracts: 2
   max_concurrent_positions: 4
@@ -163,6 +164,7 @@ sizing:
   suggest_tiers_enabled: true # suggest Half, Base, and Max tiers in Telegram
 
 execution:
+  entry_evidence_max_age_seconds: 30.0 # age starts before the first account/book read
   broker_request_timeout_seconds: 10.0
   stop_replace_timeout_seconds: 10.0
   close_cancel_timeout_seconds: 10.0

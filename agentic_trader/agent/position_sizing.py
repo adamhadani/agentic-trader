@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from agentic_trader.constants import AssetClass, SizingMode
-from agentic_trader.risk import drawdown_risk_factor
+from agentic_trader.risk import drawdown_risk_factor, risk_capital
 
 
 if TYPE_CHECKING:
@@ -46,12 +46,13 @@ def calculate_dynamic_sizing(
     current_open_notional: float = 0.0,
     current_drawdown_pct: float = 0.0,
     macro_risk_multiplier: float = 1.0,
+    current_equity: float | None = None,
 ) -> PositionSizingResult:
     """Calculate stop-distance sizing with drawdown, macro and notional limits,
     producing tiered sizing choices (Half, Base, Max).
     """
     sizing_cfg = config.sizing
-    portfolio_cash = max(config.portfolio.cash, 1000.0)
+    portfolio_cash = risk_capital(config.portfolio.cash, current_equity)
     max_portfolio_notional = config.portfolio.max_notional_exposure
     gating_reasons: list[str] = []
 

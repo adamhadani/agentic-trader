@@ -13,6 +13,7 @@ This document describes source behavior; deployment must be verified separately.
 ## Boundaries and patterns
 
 - `execution/admission.py`: pure risk/reservation policy.
+- `execution/capacity.py`: pure funding, borrowing and protected-exposure assessment.
 - `execution/entries.py`: injected entry application service; no Telegram rendering.
 - `execution/durable.py`: shared workflow vocabulary and immutable DTOs.
 - `storage/workflow.py`: transactional repository, scope locks, fenced claims,
@@ -68,6 +69,11 @@ macro/volatility risk policy. Alpaca admission also refreshes the reconciled
 [account risk snapshot](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission).
 Final submission pins its exact fingerprint under the ledger lock and rechecks the
 lease after waiting. Every tier and explicit quantity shares the drawdown cap.
+Typed [broker capacity evidence](entry-capacity.md) includes account restrictions,
+funding, asset borrowing, quote and complete exact order/position inventory. Final
+admission rechecks its age, the unchanged approved signal and all current reservations
+inside the trading lock. Economic signal writers share that lock. The journal retains
+the admitted snapshot and calculated capacity; refusal uses the existing result/outbox.
 Approval, signal, quote and session deadlines are
 checked again after preflight work so a slow admission check cannot use expired
 authorization. Existing risk limitations around daily macro feed

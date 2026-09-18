@@ -35,7 +35,7 @@ starting map; the linked domain guides own detailed contracts.
 | Signal evaluation and risk | `agent/evaluator.py`, `position_sizing.py`, `regime.py`, `macro.py`, `calendar.py` |
 | Market data and sessions | `data/`, `market/session.py`, `market/bars.py`, `resilience/fallback.py` |
 | Strategies | `screeners/base.py`, `strategies.py`, `registry.py`, `formulaic.py` |
-| Entry/close application services | `execution/entries.py`, `admission.py`, `closing.py` |
+| Entry/close application services | `execution/entries.py`, `admission.py`, `capacity.py`, `closing.py` |
 | Broker adapters and transport | `broker/base.py`, `alpaca.py`, `paper.py`, `tradovate.py` |
 | Durable workflows and accounting | `storage/workflow.py`, `storage/ledger.py`, `accounting/` |
 | Operational incidents and maintenance | `diagnostics/incidents.py`, `monitor.py`, `probe.py`, `storage/operations.py`, `maintenance.py` |
@@ -133,7 +133,7 @@ Schema 008 adds alpha projections and optional signal attribution. The original
 [alpha-stack review](docs/alpha-stack-review.md) remains historical evidence;
 its strict expected failures have become passing regression tests.
 
-The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. The first account-risk tranche fixes the missing drawdown path and legacy risk reporting; pre-reservation acquisition, uncalibrated gate power and broader live risk inputs remain open. The convex allocator remains shadow-only. Update milestones and evidence when completing work.
+The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. Account drawdown and [broker entry capacity](docs/entry-capacity.md) now share the existing FIFO/ledger boundaries: funding, borrowing, exact protection, observed-equity sizing and aggregate planned stop risk are rechecked before submission. Pre-reservation research acquisition, [gate-power diagnosis](docs/alpha-power-ablation-plan.md) and measured portfolio volatility/tail constraints remain open. The convex allocator remains shadow-only. Update milestones and evidence when completing work.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)

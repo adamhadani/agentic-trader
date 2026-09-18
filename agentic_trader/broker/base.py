@@ -1,14 +1,15 @@
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from decimal import Decimal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
+from uuid import UUID
 
 
 if TYPE_CHECKING:
     from agentic_trader.accounting.ledger import AccountSnapshot
-    from agentic_trader.execution.durable import OrderObservation
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_validator
 
 from agentic_trader.constants import (
     AssetClass,
@@ -20,6 +21,63 @@ from agentic_trader.constants import (
     OrderType,
     TimeInForce,
 )
+from agentic_trader.execution.durable import OrderObservation
+
+
+EntryMoney = Annotated[Decimal, Field(allow_inf_nan=False)]
+EntryIdentity = Annotated[StrictStr, Field(min_length=1, pattern=r"^\S+$")]
+
+
+class EntryEvidence(BaseModel):
+    """Validated immutable admission evidence, separate from wire responses."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class EntryAccountEvidence(EntryEvidence):
+    account_id: EntryIdentity
+    status: EntryIdentity
+    currency: EntryIdentity
+    buying_power: EntryMoney
+    regt_buying_power: EntryMoney
+    non_marginable_buying_power: EntryMoney
+    cash: EntryMoney
+    equity: EntryMoney
+    multiplier: EntryMoney
+    trading_blocked: StrictBool
+    account_blocked: StrictBool
+    trade_suspended_by_user: StrictBool
+    shorting_enabled: StrictBool
+
+    def inventory_identity(self) -> dict[str, Any]:
+        """Market marks may change funding/equity, but never cash or restrictions."""
+        return self.model_dump(exclude={"buying_power", "regt_buying_power", "non_marginable_buying_power", "equity"})
+
+
+class EntryAssetEvidence(EntryEvidence):
+    asset_id: UUID
+    symbol: EntryIdentity
+    asset_class: EntryIdentity
+    status: EntryIdentity
+    tradable: StrictBool
+    marginable: StrictBool
+    shortable: StrictBool
+    fractionable: StrictBool
+    borrow_status: StrictStr | None = None
+
+
+class EntryQuoteEvidence(EntryEvidence):
+    symbol: EntryIdentity
+    bid_price: EntryMoney = Field(gt=0)
+    ask_price: EntryMoney = Field(gt=0)
+    timestamp: AwareDatetime
+    feed: EntryIdentity
+
+    @model_validator(mode="after")
+    def valid_spread(self) -> EntryQuoteEvidence:
+        if self.ask_price < self.bid_price:
+            raise ValueError("Crossed entry quote")
+        return self
 
 
 class OrderRequest(BaseModel):
@@ -152,6 +210,40 @@ class ReconciliationEvent(BaseModel):
     order_side: str | None = None
 
 
+class BrokerEntryContext(EntryEvidence):
+    """Bounded stable-book observations; external changes remain broker-authoritative."""
+
+    positions: tuple[BrokerPosition, ...]
+    orders: tuple[OrderObservation, ...]
+    account_before: EntryAccountEvidence
+    account: EntryAccountEvidence
+    asset: EntryAssetEvidence
+    quote: EntryQuoteEvidence
+    price: EntryMoney = Field(gt=0)
+    trade_timestamp: AwareDatetime
+    requested_at: AwareDatetime
+    observed_at: AwareDatetime
+    session_closes_at: AwareDatetime
+    simulated: Literal[False] = False
+
+    @model_validator(mode="after")
+    def valid_receipts(self) -> BrokerEntryContext:
+        if self.requested_at > self.observed_at:
+            raise ValueError("Entry receipt precedes request")
+        return self
+
+
+class SimulatedEntryContext(EntryEvidence):
+    """Explicit empty dry-run portfolio; never synthetic broker funding evidence."""
+
+    simulated: Literal[True] = True
+    positions: tuple[()] = ()
+    orders: tuple[()] = ()
+
+
+EntryContext = BrokerEntryContext | SimulatedEntryContext
+
+
 class BaseBroker(ABC):
     """
     Abstract Base Class for multi-asset execution brokers.
@@ -208,10 +300,12 @@ class BaseBroker(ABC):
     def supports_order_journal(self) -> bool:
         return False
 
-    async def entry_market_context(self, request: OrderRequest) -> dict[str, Any]:
+    async def entry_market_context(
+        self, request: OrderRequest, *, entry_order_ids: tuple[str, ...] = ()
+    ) -> EntryContext:
         """Fresh admission evidence; unsupported external adapters fail closed."""
         if self.simulated_execution:
-            return {"positions": [], "orders": [], "simulated": True}
+            return SimulatedEntryContext()
         raise NotImplementedError("This broker has no fresh entry-admission contract")
 
     async def find_entry_order(self, request: OrderRequest) -> OrderResult | None:

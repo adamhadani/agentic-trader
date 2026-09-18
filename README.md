@@ -248,3 +248,9 @@ The [September 18 matched-control result](docs/alpha-forecast-controls-2026-09-1
 The [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) separates live controls from research-only allocation, records open risk/gate gaps and updates the mining roadmap. Zero active mined alphas does not disable the configured built-in screeners.
 
 [Account drawdown](docs/account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission) now gates Alpaca sizing and entry submission using persistent, cash-flow-adjusted observations. Missing evidence blocks new entries; all tiers share the cap. Historical Monte Carlo reports expose IID starting-capital losses and withhold unsupported annualized Sharpe.
+
+[Broker entry capacity](docs/entry-capacity.md) checks current funding, borrowing,
+exact protection and aggregate planned stop risk through the same durable FIFO.
+Sizing uses the lesser of mandate and observed equity. See the
+[power-ablation plan](docs/alpha-power-ablation-plan.md) for the next research diagnostic;
+no new alpha is qualified by these risk controls.

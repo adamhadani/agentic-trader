@@ -1,11 +1,20 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agentic_trader.agent.copilot import TradingCopilot
-from agentic_trader.broker.base import OrderResult, ReconciliationEvent
+from agentic_trader.broker.base import (
+    BrokerEntryContext,
+    BrokerPosition,
+    EntryAccountEvidence,
+    EntryAssetEvidence,
+    EntryQuoteEvidence,
+    OrderResult,
+    ReconciliationEvent,
+)
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution import entries
 from agentic_trader.execution.durable import WorkKind, WorkStatus
@@ -15,14 +24,45 @@ from agentic_trader.notifier.outbox import NotificationDispatcher
 
 @pytest.fixture
 def service(store, app_config):
-    context = {
-        "simulated": False,
-        "price": 100,
-        "quote_timestamp": datetime.now(UTC),
-        "session_closes_at": datetime.now(UTC) + timedelta(hours=6),
-        "orders": [],
-        "positions": [],
-    }
+    now = datetime.now(UTC)
+    account = EntryAccountEvidence(
+        account_id="fixture-account",
+        status="ACTIVE",
+        currency="USD",
+        cash="100000",
+        equity="100000",
+        buying_power="200000",
+        regt_buying_power="200000",
+        non_marginable_buying_power="100000",
+        multiplier="2",
+        trading_blocked=False,
+        account_blocked=False,
+        trade_suspended_by_user=False,
+        shorting_enabled=True,
+    )
+    context = BrokerEntryContext(
+        account_before=account,
+        account=account,
+        asset=EntryAssetEvidence(
+            asset_id="00000000-0000-0000-0000-000000000001",
+            symbol="SPY",
+            asset_class="us_equity",
+            status="active",
+            tradable=True,
+            marginable=True,
+            shortable=True,
+            fractionable=True,
+            borrow_status="easy_to_borrow",
+        ),
+        quote=EntryQuoteEvidence(symbol="SPY", bid_price="99.9", ask_price="100.1", timestamp=now, feed="iex"),
+        price="100",
+        trade_timestamp=now,
+        requested_at=now,
+        observed_at=now,
+        session_closes_at=now + timedelta(hours=6),
+        orders=(),
+        positions=(),
+    )
     broker = AsyncMock()
     broker.entry_market_context.return_value = context
     broker.find_entry_order.return_value = None
@@ -40,7 +80,7 @@ def service(store, app_config):
         ("expired-approval", "expired"),
         ("macro", "Macro"),
         ("unknown-price", "invalid"),
-        ("broker-position", "Symbol already"),
+        ("broker-position", "Untracked broker exposure"),
         ("broker-error", "unavailable"),
     ],
 )
@@ -48,11 +88,11 @@ async def test_conditions_changed_since_approval_fail_before_post(service, store
     item, _ = await store.enqueue_entry(await entry(), service.config)
     context = service.broker.entry_market_context.return_value
     if change == "stale-quote":
-        context["quote_timestamp"] -= timedelta(hours=1)
+        context = context.model_copy(update={"trade_timestamp": context.trade_timestamp - timedelta(hours=1)})
     elif change == "price-drift":
-        context["price"] = 200
+        context = context.model_copy(update={"price": Decimal(200)})
     elif change == "unknown-price":
-        context["price"] = float("nan")
+        service.broker.entry_market_context.side_effect = ValueError("Broker market-data price is invalid")
     elif change == "halt":
         await store.db.set_state(SystemStateKey.TRADING_HALTED, "true")
     elif change == "expired-approval":
@@ -60,9 +100,16 @@ async def test_conditions_changed_since_approval_fail_before_post(service, store
     elif change == "macro":
         service.macro_check.return_value = "Macro lockout changed"
     elif change == "broker-position":
-        context["positions"] = [{"symbol": "SPY", "quantity": 10, "entry_price": 100, "asset_class": "EQUITY"}]
+        context = context.model_copy(
+            update={
+                "positions": (
+                    BrokerPosition(symbol="SPY", quantity=10, entry_price=100, current_price=100, asset_class="EQUITY"),
+                )
+            }
+        )
     else:
         service.broker.entry_market_context.side_effect = TimeoutError
+    service.broker.entry_market_context.return_value = context
     assert await service.dispatch_one()
     service.executor.execute_order.assert_not_awaited()
     result = await store.get_work(item.id)
@@ -123,13 +170,19 @@ async def test_outbox_retry_is_delivery_only(store, app_config, mock_notifier):
     assert mock_notifier.send_exit_alert.await_count == 2
 
 
-async def test_price_freshness_rechecked_after_slow_macro_admission(service, store, entry):
+async def test_price_freshness_rechecked_after_slow_macro_admission(service, store, entry, monkeypatch):
+    clock = MagicMock(wraps=datetime)
+    clock.now.return_value = datetime.now(UTC)
+    monkeypatch.setattr(entries, "datetime", clock)
+    service.config.execution.entry_evidence_max_age_seconds = 600
+
     async def slow_macro(*args):
-        service.broker.entry_market_context.return_value["quote_timestamp"] -= timedelta(minutes=5)
+        clock.now.return_value += timedelta(minutes=5)
 
     service.macro_check.side_effect = slow_macro
     item, _ = await service.authorize(await entry())
     assert item.status == WorkStatus.REJECTED
+    assert "market trade" in item.result["error_message"].lower()
     service.executor.execute_order.assert_not_awaited()
 
 
@@ -140,10 +193,13 @@ async def test_admission_deadlines_are_rechecked_before_submission(service, entr
     monkeypatch.setattr(entries, "datetime", clock)
     policy = service.config.execution
     policy.entry_quote_max_age_seconds = 600
+    policy.entry_evidence_max_age_seconds = 600
     policy.entry_queue_max_age_seconds = 30 if expires == "approval" else 600
     policy.signal_max_age_seconds = 30 if expires == "signal" else 600
     if expires == "session":
-        service.broker.entry_market_context.return_value["session_closes_at"] = clock.now() + timedelta(seconds=30)
+        service.broker.entry_market_context.return_value = service.broker.entry_market_context.return_value.model_copy(
+            update={"session_closes_at": clock.now() + timedelta(seconds=30)}
+        )
 
     async def slow_macro(*args):
         clock.now.return_value += timedelta(seconds=60)

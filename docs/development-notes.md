@@ -17,6 +17,13 @@ tranche), inadequate measured qualification power, and the still-missing portfol
 deployment lane. Zero active mined
 alphas does not disable built-in screeners or prove that rejection gates are calibrated.
 
+The next risk tranche adds [broker entry capacity](entry-capacity.md), retaining one
+FIFO, journal and lock order. Tests include real SDK HTTP evidence and independent
+PostgreSQL writers, including stale evidence after lock waits. Funding, borrowing,
+protected exposure and planned stop-risk budgets are checked before POST. The
+[power-ablation plan](alpha-power-ablation-plan.md) records the next research experiment;
+planning evidence is not a completed run or promotion.
+
 Alpha closure/clock checks now live in `market/bars.py`, shared by research,
 screening and shadow. Fixed-duration versions reject explicit session/unknown
 layouts and ambiguous timestamps. [New session versions](alpha-session-decisions.md)

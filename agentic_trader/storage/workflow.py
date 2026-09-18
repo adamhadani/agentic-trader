@@ -21,9 +21,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentic_trader.accounting.risk import AccountRiskSnapshot, require_risk_checkpoint
-from agentic_trader.broker.base import OrderRequest
+from agentic_trader.broker.base import BrokerEntryContext, OrderRequest
 from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, AuditEventType, ExecutionMode, SignalStatus, SystemStateKey
-from agentic_trader.execution.admission import reservation_rejection
+from agentic_trader.execution.admission import authorization_expiry, reservation_rejection
+from agentic_trader.execution.capacity import assess_entry_capacity
 from agentic_trader.execution.durable import (
     ENTRY_BLOCKING,
     LEDGER_LOCK,
@@ -299,6 +300,7 @@ class WorkflowStore:
                 [r.to_dict() for r in rows],
                 config,
                 current_drawdown_pct=float(risk.drawdown_pct) if risk else 0.0,
+                current_equity=float(risk.equity) if risk else None,
             )
             if reason:
                 session.add(
@@ -412,7 +414,12 @@ class WorkflowStore:
         return None
 
     async def begin_submission(
-        self, item: WorkItem, config: AppConfig, *, risk_fingerprint: str | None = None
+        self,
+        item: WorkItem,
+        config: AppConfig,
+        *,
+        risk_fingerprint: str | None = None,
+        broker_context: BrokerEntryContext | None = None,
     ) -> str | None:
         """Commit submission authority, or return a concrete refusal reason."""
         async with self.db.session_factory() as session, session.begin():
@@ -436,7 +443,17 @@ class WorkflowStore:
             signal = await session.scalar(
                 select(SignalRecord).where(*self.db._scope(), SignalRecord.id == item.payload["signal_id"])
             )
-            if signal is None or await self._alpha_entry_rejection(session, signal):
+            request = OrderRequest.model_validate(item.payload)
+            if (
+                signal is None
+                or signal.status != SignalStatus.SUBMITTING
+                or signal.contract != request.symbol
+                or signal.direction != request.direction
+                or signal.asset_class != request.asset_class
+                or (signal.quantity, signal.entry_price, signal.stop_loss, signal.take_profit)
+                != (request.quantity, request.entry_price, request.stop_loss, request.take_profit)
+                or await self._alpha_entry_rejection(session, signal)
+            ):
                 return "Signal or active alpha authorization changed. No order submitted."
             try:
                 risk = await self._entry_risk(session, config)
@@ -444,23 +461,40 @@ class WorkflowStore:
                 return f"Account risk unavailable: {exc}. No order submitted."
             if risk and risk.fingerprint != risk_fingerprint:
                 return "Account risk changed after preflight. No order submitted; request a fresh scan."
-            if risk:
-                reason = reservation_rejection(
-                    OrderRequest.model_validate(item.payload),
-                    [],
-                    config,
-                    current_drawdown_pct=float(risk.drawdown_pct),
-                )
-                if reason:
-                    return reason
+            reservations = [
+                r.to_dict()
+                for r in (
+                    await session.scalars(
+                        select(SignalRecord).where(
+                            *self.db._scope(),
+                            SignalRecord.status.in_((SignalStatus.SUBMITTING, SignalStatus.EXECUTED)),
+                            SignalRecord.id != item.payload["signal_id"],
+                        )
+                    )
+                ).all()
+            ]
             if row.lease_until is None or row.lease_until <= datetime.now(UTC):
                 return "Admission claim expired while validating account risk. No order submitted."
+            if reason := authorization_expiry(row.created_at, signal.timestamp, config, now=datetime.now(UTC)):
+                return reason
+            capacity = None
+            if risk and broker_context is None:
+                return "Fresh broker capacity evidence is unavailable. No order submitted."
+            if broker_context is not None:
+                try:
+                    capacity = assess_entry_capacity(request, reservations, broker_context, config, account_risk=risk)
+                except (ValueError, TypeError, ArithmeticError) as exc:
+                    return f"Entry capacity refused: {exc}. No order submitted."
+            elif reason := reservation_rejection(request, reservations, config):
+                return reason
             row.status, row.lease_until = WorkStatus.SUBMITTING, None
             evidence = {
                 **item.payload,
                 "account_risk": risk.model_dump(mode="json") if risk else None,
                 "risk_fingerprint": risk_fingerprint,
                 "drawdown_multiplier": drawdown_risk_factor(float(risk.drawdown_pct), config.sizing) if risk else 1.0,
+                "broker_context": broker_context.model_dump(mode="json") if broker_context else None,
+                "capacity": capacity.model_dump(mode="json") if capacity else None,
             }
             await self.append(session, stream=f"entry/{row.id}", kind=EventKind.ENTRY_SUBMITTING, payload=evidence)
             session.add(self.db._audit(AuditEventType.ENTRY_SUBMISSION, item.payload["signal_id"], evidence))

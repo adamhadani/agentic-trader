@@ -372,5 +372,12 @@ execution path, and follow the [revised canonical ordering](alpha-roadmap.md#cur
 The survey itself changed no behavior. The subsequent
 [account-risk tranche](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission)
 connects S1 through scan/reservation/submission using the existing ledger projection
-and fixes S4 report semantics. S2, S3 funding/aggregate controls, gate calibration
-and executable portfolio plans remain open.
+and fixes S4 report semantics. [Entry capacity](entry-capacity.md) now addresses
+S3 funding/borrowability, observed-equity capital and aggregate planned stop risk
+using typed adapter evidence, one pure policy and the existing FIFO/journal. Final
+admission and economic writers share the trading lock; no network I/O occurs inside
+it. No fallback account model, protection inference by symbol, or second workflow
+was added. S2, calibrated gate power, measured portfolio volatility/tail constraints
+and executable portfolio plans remain open. The [power-ablation plan](alpha-power-ablation-plan.md)
+separates planted-predictor recovery, selected winner, execution and individual gates;
+it is a pending diagnostic experiment, not evidence that production gates are valid.

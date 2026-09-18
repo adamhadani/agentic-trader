@@ -3,61 +3,19 @@
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
 
-from agentic_trader.agent.copilot import TradingCopilot
-from agentic_trader.broker.base import OrderRequest
 from agentic_trader.cli.main import cli
-from agentic_trader.constants import AuditEventType, ExecutionMode, SignalStatus
+from agentic_trader.constants import AuditEventType
 from agentic_trader.execution.durable import EventKind, WorkStatus
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.storage import workflow
 
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
-
-
-@pytest.fixture
-async def risk_execution_desk(ledger_desk, app_config):
-    ledger, venue, state = ledger_desk
-    app_config.execution_mode = ExecutionMode.ALPACA
-    app_config.portfolio.cash = 10000
-    app_config.copilot_chat_enabled = False
-    venue.position = None
-    venue.take_profit["status"] = "held"
-    state["account"]["cash"] = "10000"
-    state["activities"] = [{"id": "deposit", "activity_type": "CSD", "net_amount": "10000"}]
-    await ledger.refresh()
-    copilot = TradingCopilot(
-        app_config, db=ledger.store.store.db, broker=ledger.broker, ledger=ledger, notifier=MagicMock()
-    )
-    copilot.entry_service.macro_check = AsyncMock(return_value=None)
-    signal = await copilot.db.record_signal(
-        contract="SPY",
-        direction="LONG",
-        strategy="risk-integration",
-        entry_price=99,
-        stop_loss=95,
-        take_profit=110,
-        risk_dollars=40,
-        quantity=10,
-        asset_class="EQUITY",
-        status=SignalStatus.PENDING,
-    )
-    order = OrderRequest(
-        signal_id=signal,
-        symbol="SPY",
-        asset_class="EQUITY",
-        direction="LONG",
-        entry_price=99,
-        stop_loss=95,
-        take_profit=110,
-        quantity=10,
-    )
-    return copilot, venue, state, order
 
 
 def record_loss(state, amount):

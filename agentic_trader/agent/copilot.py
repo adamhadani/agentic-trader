@@ -455,6 +455,7 @@ class TradingCopilot:
                             use_llm=use_llm,
                             active_positions=active_positions,
                             current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
+                            current_equity=float(account_risk.equity) if account_risk else None,
                         )
 
                         if not eval_res.approved:

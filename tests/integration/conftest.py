@@ -6,6 +6,7 @@ import os
 import threading
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -15,7 +16,10 @@ from requests.adapters import BaseAdapter
 from sqlalchemy.engine import make_url
 
 from agentic_trader.accounting.service import AccountLedgerService
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.alpaca import AlpacaBroker
+from agentic_trader.broker.base import OrderRequest
+from agentic_trader.constants import ExecutionMode, SignalStatus
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.migrations import downgrade_migrations
@@ -73,9 +77,36 @@ class AlpacaHTTP:
             "current_price": "105",
             "unrealized_pl": "50",
         }
+        self.account = {
+            "id": "account",
+            "currency": "USD",
+            "status": "ACTIVE",
+            "cash": "9000",
+            "equity": "10050",
+            "buying_power": "20000",
+            "regt_buying_power": "20000",
+            "non_marginable_buying_power": "9000",
+            "multiplier": "2",
+            "trading_blocked": False,
+            "account_blocked": False,
+            "trade_suspended_by_user": False,
+            "shorting_enabled": True,
+        }
+        self.asset = {
+            "id": self.position["asset_id"],
+            "symbol": "SPY",
+            "class": "us_equity",
+            "status": "active",
+            "tradable": True,
+            "marginable": True,
+            "shortable": True,
+            "fractionable": True,
+            "borrow_status": "easy_to_borrow",
+        }
         self.calls = []
         self.override = lambda method, path, query, body: None
         self.quote_price = 99.0
+        self.bid_price, self.ask_price = 98.9, 99.1
         self.quote_time = datetime.now(UTC)
         self.market_open = True
         self.session_closes_at = datetime.now(UTC) + timedelta(hours=6)
@@ -88,6 +119,26 @@ class AlpacaHTTP:
         custom = self.override(method, path, query, body)
         if custom is not None:
             return custom
+        if path == "/v2/account":
+            return 200, self.account
+        if path == "/v2/assets/SPY":
+            return 200, self.asset
+        if path == "/v2/stocks/quotes/latest":
+            return 200, {
+                "quotes": {
+                    "SPY": {
+                        "t": self.quote_time.isoformat(),
+                        "bp": self.bid_price,
+                        "ap": self.ask_price,
+                        "bs": 10,
+                        "as": 10,
+                        "bx": "V",
+                        "ax": "V",
+                        "c": [],
+                        "z": "A",
+                    }
+                }
+            }
         if path == "/v2/stocks/trades/latest":
             return 200, {
                 "trades": {
@@ -274,7 +325,7 @@ async def ledger_desk(alpaca_http, temp_db, app_config, request):
         }
         for i in range(100)
     ]
-    state = {"account": {"id": "account", "cash": "9000", "currency": "USD"}, "activities": activities, "failure": None}
+    state = {"account": venue.account, "activities": activities, "failure": None}
 
     def dispatch(method, path, query, body):
         if path == "/v2/account":
@@ -292,3 +343,43 @@ async def ledger_desk(alpaca_http, temp_db, app_config, request):
     service = AccountLedgerService(broker, LedgerStore(db.workflows), app_config.accounting)
     yield service, venue, state
     await db.engine.dispose()
+
+
+@pytest.fixture
+async def risk_execution_desk(ledger_desk, app_config):
+    ledger, venue, state = ledger_desk
+    app_config.execution_mode = ExecutionMode.ALPACA
+    app_config.portfolio.cash = 10000
+    app_config.copilot_chat_enabled = False
+    venue.position = None
+    venue.take_profit["status"] = "held"
+    state["account"]["cash"] = "10000"
+    state["activities"] = [{"id": "deposit", "activity_type": "CSD", "net_amount": "10000"}]
+    await ledger.refresh()
+    copilot = TradingCopilot(
+        app_config, db=ledger.store.store.db, broker=ledger.broker, ledger=ledger, notifier=MagicMock()
+    )
+    copilot.entry_service.macro_check = AsyncMock(return_value=None)
+    signal = await copilot.db.record_signal(
+        contract="SPY",
+        direction="LONG",
+        strategy="risk-integration",
+        entry_price=99,
+        stop_loss=95,
+        take_profit=110,
+        risk_dollars=40,
+        quantity=10,
+        asset_class="EQUITY",
+        status=SignalStatus.PENDING,
+    )
+    order = OrderRequest(
+        signal_id=signal,
+        symbol="SPY",
+        asset_class="EQUITY",
+        direction="LONG",
+        entry_price=99,
+        stop_loss=95,
+        take_profit=110,
+        quantity=10,
+    )
+    return copilot, venue, state, order
