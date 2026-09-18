@@ -32,6 +32,31 @@ def test_explicit_settings_mapping_never_reads_dotenv(tmp_path, monkeypatch):
     assert cfg.resolved_db_url == "sqlite+aiosqlite:///:memory:"
 
 
+def test_market_data_feed_uses_explicit_environment_override(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("market_data: {alpaca_feed: sip, probe_symbol: QQQ}\ndatabase: {path: test.db}\n")
+    cfg = load_config(
+        str(path),
+        environ={
+            "COPILOT_ENV": "test",
+            "DB_PATH": str(tmp_path / "config.db"),
+            "ALPACA_DATA_FEED": "iex",
+        },
+    )
+    assert cfg.market_data.alpaca_feed == "iex"
+    assert cfg.market_data.probe_symbol == "QQQ"
+
+
+def test_market_data_feed_defaults_from_top_level_feed(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("database: {path: test.db}\n")
+    cfg = load_config(
+        str(path),
+        environ={"COPILOT_ENV": "test", "DB_PATH": str(tmp_path / "config.db"), "ALPACA_DATA_FEED": "iex"},
+    )
+    assert cfg.market_data.alpaca_feed == "iex"
+
+
 def test_dotenv_loading_does_not_mutate_process_environment(tmp_path):
     dotenv = tmp_path / "test.env"
     dotenv.write_text("TELEGRAM_BOT_TOKEN=test-sentinel\n")

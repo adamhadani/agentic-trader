@@ -701,6 +701,13 @@ def load_config(
     )
     alpaca_base_url = env.get("APCA_API_BASE_URL") or env.get("ALPACA_BASE_URL")
     alpaca_data_feed = env.get("ALPACA_DATA_FEED") or env.get("APCA_DATA_FEED") or "iex"
+    market_data_cfg = cfg_dict.get("market_data", {})
+    if not isinstance(market_data_cfg, dict):
+        market_data_cfg = {}
+    if env.get("ALPACA_DATA_FEED") or env.get("APCA_DATA_FEED"):
+        market_data_cfg["alpaca_feed"] = alpaca_data_feed
+    else:
+        market_data_cfg.setdefault("alpaca_feed", alpaca_data_feed)
 
     if alpaca_base_url:
         alpaca_paper = ExecutionMode.PAPER in alpaca_base_url.lower()
@@ -772,6 +779,7 @@ def load_config(
         pairs=PairsConfig(**cfg_dict.get("pairs", {})),
         backtest=BacktestConfig(**cfg_dict.get("backtest", {})),
         trailing_stop=TrailingStopConfig(**cfg_dict.get("trailing_stop", {})),
+        market_data=MarketDataConfig(**market_data_cfg),
         database=DatabaseConfig(
             name=db_name,
             path=explicit_path,
