@@ -77,6 +77,30 @@ research run or runtime policy change was made for this review.
 No threshold was lowered, alpha promoted or trading configuration changed by this
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.
 
+### Prospective daily acceptance boundary
+
+The current session observer cannot become a native-daily panel collector by
+changing its timeframe. Reuse its journal, conditional claims and retained-read
+mechanisms, with a frozen campaign/cohort/date identity and a receipt deadline
+before the forecast's next-open entry. Native daily prices need their own observed
+calendar and source identity. All declared names remain visible when unavailable.
+
+Persist feature inputs, fitted artifacts, support, forecasts and basket decisions
+before outcomes. H20 labels require actual endpoint receipts and a consistent
+adjustment vintage for both endpoints; an entry saved today cannot be divided by
+a later differently adjusted exit price. Later corrections add evidence and never
+rewrite prior decisions or residual innovations. Tests must cover restart/duplicate
+claims, late receipts, source revisions, holidays, immature labels and unavailable
+held outcomes. These observations earn no automatic qualification or order authority.
+
+Reuse native daily reads/raw evidence, `AlphaRepository` claim/finalization primitives,
+the panel/factor kernels and the existing daemon client lifecycle/shared forward
+report. Claim all arms together per campaign/cohort/session. Historical Ridge
+prediction matrices cannot forecast new dates: the protocol must choose a frozen
+fitted artifact or a declared refit schedule, requiring every training label's
+actual receipt before the fit cutoff. Test two-client PostgreSQL races, late-result
+fencing and the real SDK capture → forecast → mature outcome path with no orders.
+
 ### September 18 progress — isolate the loss of detection power
 
 The [power-ablation harness](alpha-power-ablation-plan.md) implements 800 searches
