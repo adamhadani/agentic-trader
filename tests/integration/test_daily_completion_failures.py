@@ -297,23 +297,22 @@ async def test_companion_hash_validation_does_not_block_the_event_loop(completio
     if kind == "outcome":
         await c.worker.run_once()
         c.now[0] = c.window.outcome_available_at + pd.Timedelta(minutes=1)
-    entered, release, blocked = (threading.Event() for _ in range(3))
+    loop, loop_thread = asyncio.get_running_loop(), threading.get_ident()
     validate = module.validate_daily_comparison_forecast
+    validated = []
 
     def slow_validation(*args):
-        entered.set()
-        if not release.wait(2):
-            blocked.set()
-            raise RuntimeError("Validation blocked the event loop")
+        assert threading.get_ident() != loop_thread, "Full artifact hashing ran on the asyncio event loop"
+        # Begin the handshake at validation, independently of preceding DB/disk
+        # acquisition speed. The loop must run this callback while validation waits.
+        release = threading.Event()
+        loop.call_soon_threadsafe(release.set)
+        assert release.wait(10), "Event loop did not progress during artifact validation"
         validate(*args)
+        validated.append(args[2].comparison_id)
 
     monkeypatch.setattr(module, "validate_daily_comparison_forecast", slow_validation)
-    task = asyncio.create_task(c.worker.run_once())
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        assert not blocked.is_set(), "Full artifact hashing ran on the asyncio event loop"
-    finally:
-        release.set()
-        result = await task
+    result = await c.worker.run_once()
     status = "scored" if kind == "decision" else "complete"
     assert result["comparison_counts"] == {f"{kind}:{status}": 2}
+    assert validated == [comparison.comparison_id for comparison in c.comparisons]
