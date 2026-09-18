@@ -259,8 +259,8 @@ no new alpha is qualified by these risk controls.
 `alpha power-plan` / `alpha power-study` diagnose predictor, search, execution and
 qualification gates with paired synthetic controls and a sourced family snapshot.
 They share the existing artifact workflow and cannot promote strategies or send
-orders. See the [power diagnosis](docs/alpha-power-ablation-plan.md) and the next
-[bounded factor experiment](docs/alpha-factor-research-plan.md).
+orders. See the [completed power diagnosis](docs/alpha-power-diagnosis-2026-09-18.md) and
+[completed factor experiment](docs/alpha-factor-controls-2026-09-18.md).
 
 
 The [800-search power diagnosis](docs/alpha-power-diagnosis-2026-09-18.md) found strong

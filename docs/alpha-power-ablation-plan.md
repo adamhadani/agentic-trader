@@ -189,8 +189,8 @@ RED-first regression coverage and tiny integration fixtures address:
 
 Record final test results, the committed protocol and actual study completion
 separately. The [full run completed all 800 searches](alpha-power-diagnosis-2026-09-18.md),
-with no unavailable endpoints and insufficient positive-control power. Proceed to the
-[bounded factor comparison](alpha-factor-research-plan.md): 54 retained-data
+with no unavailable endpoints and insufficient positive-control power. The subsequent
+[bounded factor comparison](alpha-factor-controls-2026-09-18.md) completed 54 retained-data
 comparisons of existing styles, skipped-month momentum, causal residual momentum
 and incremental blend value. Prospective collection remains separate; a reused
 historical lead still needs fresh observations before paper allocation.

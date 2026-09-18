@@ -51,12 +51,17 @@ research run or runtime policy change was made for this review.
    using existing execution contracts; keep gates and lifetime history unchanged.
    Start prospective native-daily style observations alongside this work, with
    source-qualified labels, actual receipts and frozen decisions before outcomes.
-3. **Bounded factor comparison, then broader coverage.** The
-   [54-comparison retained-data plan](alpha-factor-research-plan.md) tests skipped-month
-   and causal residual momentum against existing Ridge/reversal/volatility styles,
-   including incremental net value. The implementation and actual-data follow-up
-   are delivered separately. Broader adaptive search waits for measured diagnosis;
-   expand forecast breadth only with explicit membership/missing-support contracts.
+3. **Factor comparison completed; prospective daily evidence next.** The
+   [54-comparison study](alpha-factor-controls-2026-09-18.md) and independent audit
+   found mixed residual-momentum results, no consistent incremental winner, major
+   early support loss and some concentrated gains. Freeze an existing rank-blend
+   benchmark, volatility control and residual-blend challenger for prospective
+   comparison; retain Ridge as a fixed model comparator, not a privileged winner.
+   Persist actual source receipts, eligible universe, mature training cutoff,
+   predictions and decisions before outcomes. Investigate missing-history/IEX
+   support separately and evaluate delayed SIP under its own source identity.
+   Expand forecast breadth toward 150–300 only with bounded resource and dynamic
+   membership tests. Historical current-cohort returns grant no qualification.
 4. **Consolidate ongoing campaigns before increasing cadence (S2).** Scheduled
    `alpha mine` still fetches before reservation and remains ETF32; migrate to the
    predeclared journal/acquisition boundary. Add an explicit stage/rejection/maturity
@@ -85,8 +90,10 @@ Review and tests verified mechanical development stopping, predictor/execution
 boundaries, frozen bootstrap settings and stratified cofailures. The completed
 [800-search diagnosis](alpha-power-diagnosis-2026-09-18.md) has no failed jobs or
 unavailable full-policy endpoints, but fails every positive-power criterion.
-The [factor follow-up](alpha-factor-research-plan.md) is a concrete 54-comparison
-next experiment; prospective collection remains separate. No threshold reduction,
+The [factor follow-up](alpha-factor-controls-2026-09-18.md) completed all 54
+comparisons and its independent numerical audit; prospective collection remains
+separate. Lifetime attempts are now 7,880 (7,826 + 54); registry generation 16,
+active 0/shadow 16 are unchanged. No threshold reduction,
 promotion or paper allocation follows from either diagnostic.
 
 ## Ordered work queue
@@ -636,8 +643,10 @@ intraday limitation does not block the next native-daily equity liquidity/foreca
    volatility style has higher mean IC in every year; incremental learning is
    unproven. Strict endpoint evidence withholds four 2023 Ridge baskets. Preserve
    the original result semantics and all comparison/inspection accounting.
-2. Build prospective daily panel observations with fixed Ridge and simple-style
-   controls using the existing observation/journal infrastructure. First freeze
+2. The [54-comparison factor follow-up](alpha-factor-controls-2026-09-18.md) is
+   also complete, with no consistent incremental winner. Build prospective daily
+   panel observations with the fixed blend, volatility and residual-blend controls
+   plus the frozen Ridge comparator, using existing observation/journal infrastructure. First freeze
    a source-qualified label contract for both training and evaluation; the retained
    study intentionally did not refit its original finite-price labels. Any changed
    historical fit is a separately charged diagnostic, not a rewrite of this run.
