@@ -87,6 +87,17 @@ separate test token/chat and creates no signal. Nonproduction messages are label
 
 ## Test and review workflow
 
+Pull requests run `pytest-impacted` in branch mode against `origin/main` with
+the optional Rust backend from `pytest-impacted[fast]`. Static import analysis
+selects the affected tests; changes to workflows or runtime configuration are
+explicitly configured to invalidate the full test set. A core module change can
+therefore still fan out to the complete dependency closure.
+
+Pushes to `main`, the weekly scheduled workflow, and manual dispatches run the
+full suite. This keeps a broad regression signal without making every leaf PR
+wait for unrelated tests. PostgreSQL integration remains a separate required
+job and is never skipped by the unit-test selection tier.
+
 - Function-scoped autouse isolation removes credentials, selects fixture YAML and
   temporary DB paths. Socket/libcurl guards block external I/O; native psycopg2 and
   SQLAlchemy guards prevent bypassing DB isolation.

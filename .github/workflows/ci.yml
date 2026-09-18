@@ -5,6 +5,9 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -65,7 +68,27 @@ jobs:
       - name: Install Dependencies
         run: uv sync --dev
 
-      - name: Run Full Test Suite
+      - name: Verify Rust impacted backend
+        if: github.event_name == 'pull_request'
+        run: >-
+          uv run python -c
+          "from pytest_impacted._rust import RUST_AVAILABLE;
+          raise SystemExit(0 if RUST_AVAILABLE else 'pytest-impacted Rust backend is unavailable')"
+
+      - name: Run Impacted Test Suite (pull request)
+        if: github.event_name == 'pull_request'
+        run: >-
+          uv run pytest -v
+          --impacted
+          --impacted-git-mode=branch
+          --impacted-base-branch=origin/main
+          --impacted-module=agentic_trader
+          --impacted-tests-dir=tests
+          --impacted-invalidate-all='.github/workflows/**'
+          --impacted-invalidate-all='config/**'
+
+      - name: Run Full Test Suite (main, scheduled, or manual)
+        if: github.event_name != 'pull_request'
         run: uv run pytest -v
 
   postgres-integration:
