@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from statistics import NormalDist
 
 import numpy as np
@@ -27,6 +28,23 @@ def test_rank_ic_perfect_and_inverse():
     fwd_inv = -fwd_perf
     ic_mean_inv, _, _ = calculate_rank_ic(alpha, fwd_inv, window=20)
     assert ic_mean_inv < -0.90, f"Expected high negative Rank IC, got {ic_mean_inv}"
+
+
+@pytest.mark.parametrize(
+    "alpha,forward",
+    [
+        (np.ones(100), np.linspace(0.01, 0.10, 100)),
+        (np.linspace(1.0, 100.0, 100), np.ones(100)),
+    ],
+)
+def test_rank_ic_constant_input_returns_zero_without_scipy_warning(alpha, forward):
+    dates = pd.date_range("2025-01-01", periods=100, freq="D")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = calculate_rank_ic(pd.Series(alpha, index=dates), pd.Series(forward, index=dates), window=20)
+
+    assert result == (0.0, 0.0, 0.0)
+    assert not any("ConstantInputWarning" in str(item.message) for item in caught)
 
 
 def test_deflated_sharpe_ratio_behavior():
