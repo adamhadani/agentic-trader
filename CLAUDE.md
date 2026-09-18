@@ -133,7 +133,7 @@ Schema 008 adds alpha projections and optional signal attribution. The original
 [alpha-stack review](docs/alpha-stack-review.md) remains historical evidence;
 its strict expected failures have become passing regression tests.
 
-The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. Account drawdown and [broker entry capacity](docs/entry-capacity.md) now share the existing FIFO/ledger boundaries: funding, borrowing, exact protection, observed-equity sizing and aggregate planned stop risk are rechecked before submission. Pre-reservation research acquisition, [gate-power diagnosis](docs/alpha-power-ablation-plan.md) and measured portfolio volatility/tail constraints remain open. The convex allocator remains shadow-only. Update milestones and evidence when completing work.
+The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. Account drawdown and [broker entry capacity](docs/entry-capacity.md) now share the existing FIFO/ledger boundaries: funding, borrowing, exact protection, observed-equity sizing and aggregate planned stop risk are rechecked before submission. Pre-reservation research acquisition, [gate-power diagnosis](docs/alpha-power-ablation-plan.md) and measured portfolio volatility/tail constraints remain research priorities. The power harness is implemented; distinguish its recorded experiment from the next proposed [factor controls](docs/alpha-factor-research-plan.md). The convex allocator remains shadow-only. Update milestones and evidence when completing work.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
@@ -279,3 +279,11 @@ this development screen neither establishes historical membership nor qualifies 
 [Screened panel forecasts](docs/alpha-panel-forecasts.md) reuse the daily acquisition/journal service. Keep all frozen members on the exchange clock, derive eligibility only from past bars, and train Ridge only on strictly mature labels with training-only scaling. Freeze weights before inspecting outcomes; missing held outcomes withhold the full curve. The old complete-panel and production qualification contracts remain unchanged. No active alpha or calibrated promotion power is implied by a completed diagnostic.
 
 [Retained forecast controls](docs/alpha-forecast-controls.md) reuse the same daily workflow and payoff kernels. Charge and exclude all parent members before reading artifacts; preserve source hashes and original receipt times. Strict endpoint volume masks outcomes only. Never change decisions based on future availability, refit the frozen parent, compound paired return differences, or present long-only context as matched market-neutral risk.
+
+
+`alpha power-plan`/`power-study` reuse the synthetic artifact lifecycle. Keep paired
+known/winner routes, frozen bootstrap and sourced count/variance scenarios. Persist
+selection before holdout; mechanical development failures must leave validation
+unexamined. Measurement reuse changes no valid qualification thresholds. Missing or
+nonfinite sampling evidence is unavailable and fails closed. Synthetic diagnostics
+cannot authorize promotion, journal production trials or earn shadow credit.

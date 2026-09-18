@@ -254,3 +254,10 @@ exact protection and aggregate planned stop risk through the same durable FIFO.
 Sizing uses the lesser of mandate and observed equity. See the
 [power-ablation plan](docs/alpha-power-ablation-plan.md) for the next research diagnostic;
 no new alpha is qualified by these risk controls.
+
+
+`alpha power-plan` / `alpha power-study` diagnose predictor, search, execution and
+qualification gates with paired synthetic controls and a sourced family snapshot.
+They share the existing artifact workflow and cannot promote strategies or send
+orders. See the [power diagnosis](docs/alpha-power-ablation-plan.md) and the next
+[bounded factor experiment](docs/alpha-factor-research-plan.md).

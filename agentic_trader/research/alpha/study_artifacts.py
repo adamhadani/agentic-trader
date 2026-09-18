@@ -17,10 +17,20 @@ from agentic_trader.research.alpha.study import (
 from agentic_trader.storage.artifacts import save_json_report
 
 
-def execute_study(protocol, directory: Path, environment: dict, *, evaluator=None, progress=None):
+def execute_study(
+    protocol,
+    directory: Path,
+    environment: dict,
+    *,
+    evaluator=None,
+    progress=None,
+    jobs_factory=study_jobs,
+    endpoints=endpoint_rows,
+    summarizer=summarize_study,
+):
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     save_json_report(protocol.document(), directory / "protocol.json")
-    jobs = list(study_jobs(protocol))
+    jobs = list(jobs_factory(protocol))
     save_json_report(
         {
             "protocol_id": protocol.identity,
@@ -48,7 +58,7 @@ def execute_study(protocol, directory: Path, environment: dict, *, evaluator=Non
                 "protocol_id": protocol.identity,
                 "status": StudyStatus.FAILED,
                 "error": f"{type(exc).__name__}: {exc}",
-                "rows": endpoint_rows(job, protocol),
+                "rows": endpoints(job, protocol),
                 "synthetic_only": True,
                 "authorizes_promotion": False,
             }
@@ -60,6 +70,6 @@ def execute_study(protocol, directory: Path, environment: dict, *, evaluator=Non
             development_failed = True
         if progress:
             progress(f"{len(records)}/{len(jobs)} {job.key}: {record['status']}")
-    summary = summarize_study(protocol, records)
+    summary = summarizer(protocol, records)
     save_json_report(summary, directory / "completion.json")
     return summary

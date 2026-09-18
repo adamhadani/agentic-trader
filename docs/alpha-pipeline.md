@@ -408,3 +408,20 @@ completion claim or automatic replay. Freeze a new attempt before another acquis
 ### Matched retained forecast controls
 
 `alpha forecast-controls` evaluates fixed reversal/volatility/blended controls against frozen panel Ridge forecasts with identical decision support. The [contract](alpha-forecast-controls.md) keeps source-price and positive-endpoint-volume outcomes separate, reuses shared basket accounting, and charges all comparisons through the existing journal. No refit, qualification, new market observation or allocation authority is implied.
+
+
+### Paired gate-power diagnosis
+
+The [power study](alpha-power-ablation-plan.md) follows both the known control and
+the selected winner from the same discovery run. Qualification now separates
+immutable statistical measurements from criteria assessment; count/variance
+sensitivities reuse the exact simulations, bootstrap and novelty evidence. Valid
+qualification decisions and reason order are unchanged. Missing sampling moments,
+nonfinite gate values and malformed incumbent evidence explicitly fail closed.
+Each criterion retains its value, threshold and pass/fail/unavailable status.
+
+Execution diagnostics observe the shared simulator, including pending/holding
+suppression, delayed entries, boundary censoring and fees. They introduce no new
+execution policy. Development failures preserve completed evidence and leave
+validation untouched. These synthetic artifacts cannot qualify or accrue shadow
+credit. Factor hypotheses follow the [bounded research plan](alpha-factor-research-plan.md).

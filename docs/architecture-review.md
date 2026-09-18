@@ -381,3 +381,20 @@ was added. S2, calibrated gate power, measured portfolio volatility/tail constra
 and executable portfolio plans remain open. The [power-ablation plan](alpha-power-ablation-plan.md)
 separates planted-predictor recovery, selected winner, execution and individual gates;
 it is a pending diagnostic experiment, not evidence that production gates are valid.
+
+
+### Power diagnosis and factor research (September 18)
+
+The [power harness](alpha-power-ablation-plan.md) composes pure jobs and summaries
+through the existing synthetic artifact lifecycle. Qualification splits expensive
+immutable measurements from cheap criteria assessment; this avoids rerunning
+bootstrap or novelty calculations for count/variance sensitivities. The shared
+simulator supplies observation-only traces. No alternative simulator, journal,
+provider adapter or queue was introduced. Missing/nonfinite evidence now fails
+closed explicitly; valid thresholds and decisions remain unchanged.
+
+The next [factor-controls experiment](alpha-factor-research-plan.md) should reuse
+retained-panel provenance, the study reservation boundary and existing IC/basket
+kernels. Distinguish explanatory risk exposures from predictive characteristics
+and executable portfolios; a residual score alone supplies none of the missing
+borrow, protection or portfolio-order contracts. The plan is not an executed study.

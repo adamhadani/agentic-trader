@@ -85,6 +85,7 @@ def simulate_strategy(
     start: int = 0,
     end: int | None = None,
     scores: pd.Series | None = None,
+    trace: bool = False,
 ) -> dict:
     if definition.clock is not None:
         raise ValueError("Versioned session strategies require session/minute replay")
@@ -114,7 +115,7 @@ def simulate_strategy(
         raise ValueError("Infinite feature scores are invalid")
     observations = entry_intents(definition, frame, scores)
     intents = {i: proposal for i in range(max(1, start), end) if (proposal := observations[i - 1]) is not None}
-    result = simulate_execution(frame, intents, definition.execution, start=start)
+    result = simulate_execution(frame, intents, definition.execution, start=start, trace=trace)
     scored = int(scores.shift(1).iloc[start:end].notna().sum())
     result["feature_coverage"] = {
         "bars": len(result["net_returns"]),
@@ -242,6 +243,9 @@ def simulate_execution(
                     limit=limit,
                     direction=direction,
                     intrabar=intrabar_entry,
+                    quantity=quantity,
+                    fee=entry_fee,
+                    entry_equity=entry_equity,
                 )
                 pending = None
         if direction:
@@ -275,6 +279,11 @@ def simulate_execution(
                     SimulationEventKind.EXIT_FILLED,
                     price=exit_price,
                     net_return=pnl / entry_equity,
+                    quantity=quantity,
+                    fee=exit_fee,
+                    entry_equity=entry_equity,
+                    gross_pnl=direction * quantity * (exit_price - entry),
+                    net_pnl=pnl,
                     phase="open" if exit_price == o and not intrabar_entry else "intrabar",
                 )
                 direction, quantity = 0, 0

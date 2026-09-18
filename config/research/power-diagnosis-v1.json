@@ -1,0 +1,310 @@
+{
+  "budget": {
+    "bootstrap_resamples_max": 1600000,
+    "datasets": 400,
+    "expression_evaluations": 12800,
+    "family_assessments_max": 8000,
+    "holdout_simulations_max": 4800,
+    "route_evaluations_max": 1600,
+    "searches": 800
+  },
+  "confidence": 0.95,
+  "contracts": {
+    "bootstrap": {
+      "block": 10,
+      "method": "moving_block_mean",
+      "quantiles": [
+        0.025,
+        0.975
+      ],
+      "samples": 1000,
+      "seed": "independent_bootstrap_role_paired_across_effects_and_methods"
+    },
+    "catalog": [
+      {
+        "adjustment": "raw",
+        "alpha_id": "alpha_wq_001",
+        "data_feed": "unverified",
+        "description": "Measures the recency of peak positive correlation between rolling price and volume ranks.",
+        "direction": "bi_directional",
+        "eligible_symbols": null,
+        "entry_threshold": 0.8,
+        "execution": {
+          "atr_method": "simple_true_range",
+          "atr_window": 14,
+          "friction_per_side": 0.0005,
+          "reward_risk": 2.0,
+          "stop_atr": 1.5,
+          "structural_buffer_ticks": 2,
+          "swing_window": 10,
+          "tick_size": 0.01,
+          "trail_distance_r": 1.5,
+          "trail_trigger_r": 1.5
+        },
+        "expression": "ts_argmax(ts_corr(ts_rank(volume, 5), ts_rank(close, 5), 10), 5)",
+        "name": "Adapted Price-Volume Momentum Alignment (legacy ID 001)",
+        "normalization_window": 30,
+        "origin": "factor_library",
+        "semantics_version": 2,
+        "timeframe": "4h"
+      },
+      {
+        "adjustment": "raw",
+        "alpha_id": "alpha_wq_006",
+        "data_feed": "unverified",
+        "description": "Identifies institutional volume absorption when heavy volume fails to sustain opening momentum.",
+        "direction": "bi_directional",
+        "eligible_symbols": null,
+        "entry_threshold": 0.6,
+        "execution": {
+          "atr_method": "simple_true_range",
+          "atr_window": 14,
+          "friction_per_side": 0.0005,
+          "reward_risk": 2.0,
+          "stop_atr": 1.5,
+          "structural_buffer_ticks": 2,
+          "swing_window": 10,
+          "tick_size": 0.01,
+          "trail_distance_r": 1.5,
+          "trail_trigger_r": 1.5
+        },
+        "expression": "-1.0 * ts_corr(open, volume, 10)",
+        "name": "WQ-006 Open-Volume Absorption Divergence",
+        "normalization_window": 30,
+        "origin": "worldquant_101",
+        "semantics_version": 2,
+        "timeframe": "4h"
+      },
+      {
+        "adjustment": "raw",
+        "alpha_id": "alpha_wq_012",
+        "data_feed": "unverified",
+        "description": "Fades short-term price spikes that occur on surging volume, capturing mean-reversion liquidity.",
+        "direction": "bi_directional",
+        "eligible_symbols": null,
+        "entry_threshold": 1.0,
+        "execution": {
+          "atr_method": "simple_true_range",
+          "atr_window": 14,
+          "friction_per_side": 0.0005,
+          "reward_risk": 2.0,
+          "stop_atr": 1.5,
+          "structural_buffer_ticks": 2,
+          "swing_window": 10,
+          "tick_size": 0.01,
+          "trail_distance_r": 1.5,
+          "trail_trigger_r": 1.5
+        },
+        "expression": "sign(delta(volume, 1)) * (-1.0 * delta(close, 1))",
+        "name": "WQ-012 Volume Flow Delta Reversal",
+        "normalization_window": 30,
+        "origin": "worldquant_101",
+        "semantics_version": 2,
+        "timeframe": "4h"
+      },
+      {
+        "adjustment": "raw",
+        "alpha_id": "alpha_wq_028",
+        "data_feed": "unverified",
+        "description": "Correlates intermediate moving averages of price and volume to identify institutional accumulation.",
+        "direction": "long",
+        "eligible_symbols": null,
+        "entry_threshold": 0.5,
+        "execution": {
+          "atr_method": "simple_true_range",
+          "atr_window": 14,
+          "friction_per_side": 0.0005,
+          "reward_risk": 2.0,
+          "stop_atr": 1.5,
+          "structural_buffer_ticks": 2,
+          "swing_window": 10,
+          "tick_size": 0.01,
+          "trail_distance_r": 1.5,
+          "trail_trigger_r": 1.5
+        },
+        "expression": "ts_corr(sma(close, 20), sma(volume, 20), 5)",
+        "name": "Adapted Smoothed Trend-Volume Alignment (legacy ID 028)",
+        "normalization_window": 30,
+        "origin": "factor_library",
+        "semantics_version": 2,
+        "timeframe": "4h"
+      },
+      {
+        "adjustment": "raw",
+        "alpha_id": "alpha_wq_053",
+        "data_feed": "unverified",
+        "description": "Detects exhaustion in volume rank acceleration as an early warning of trend exhaustion.",
+        "direction": "bi_directional",
+        "eligible_symbols": null,
+        "entry_threshold": 0.7,
+        "execution": {
+          "atr_method": "simple_true_range",
+          "atr_window": 14,
+          "friction_per_side": 0.0005,
+          "reward_risk": 2.0,
+          "stop_atr": 1.5,
+          "structural_buffer_ticks": 2,
+          "swing_window": 10,
+          "tick_size": 0.01,
+          "trail_distance_r": 1.5,
+          "trail_trigger_r": 1.5
+        },
+        "expression": "-1.0 * delta(ts_rank(volume, 10), 5)",
+        "name": "Adapted Volume Exhaustion Counter-Trend (legacy ID 053)",
+        "normalization_window": 30,
+        "origin": "factor_library",
+        "semantics_version": 2,
+        "timeframe": "4h"
+      },
+      {
+        "adjustment": "raw",
+        "alpha_id": "alpha_vol_reversal",
+        "data_feed": "unverified",
+        "description": "Combines 3-bar price displacement with rolling volume rank to enter high-conviction reversions.",
+        "direction": "bi_directional",
+        "eligible_symbols": null,
+        "entry_threshold": 1.2,
+        "execution": {
+          "atr_method": "simple_true_range",
+          "atr_window": 14,
+          "friction_per_side": 0.0005,
+          "reward_risk": 2.0,
+          "stop_atr": 1.5,
+          "structural_buffer_ticks": 2,
+          "swing_window": 10,
+          "tick_size": 0.01,
+          "trail_distance_r": 1.5,
+          "trail_trigger_r": 1.5
+        },
+        "expression": "-1.0 * delta(close, 3) * ts_rank(volume, 10)",
+        "name": "Quant-VR Volume-Weighted Mean Reversion",
+        "normalization_window": 30,
+        "origin": "factor_library",
+        "semantics_version": 2,
+        "timeframe": "4h"
+      },
+      {
+        "adjustment": "raw",
+        "alpha_id": "alpha_trend_expansion",
+        "data_feed": "unverified",
+        "description": "Quantifies joint price expansion away from moving average confirmed by volume surge.",
+        "direction": "long",
+        "eligible_symbols": null,
+        "entry_threshold": 0.6,
+        "execution": {
+          "atr_method": "simple_true_range",
+          "atr_window": 14,
+          "friction_per_side": 0.0005,
+          "reward_risk": 2.0,
+          "stop_atr": 1.5,
+          "structural_buffer_ticks": 2,
+          "swing_window": 10,
+          "tick_size": 0.01,
+          "trail_distance_r": 1.5,
+          "trail_trigger_r": 1.5
+        },
+        "expression": "ts_rank(close - sma(close, 20), 10) * ts_rank(volume, 10)",
+        "name": "Quant-TE Trend-Volume Range Expansion",
+        "normalization_window": 30,
+        "origin": "factor_library",
+        "semantics_version": 2,
+        "timeframe": "4h"
+      },
+      {
+        "adjustment": "raw",
+        "alpha_id": "synthetic_pulse",
+        "data_feed": "synthetic",
+        "description": "",
+        "direction": "bi_directional",
+        "eligible_symbols": [
+          "SYNTH"
+        ],
+        "entry_threshold": 1.5,
+        "execution": {
+          "atr_method": "simple_true_range",
+          "atr_window": 14,
+          "friction_per_side": 0.0005,
+          "reward_risk": 2.0,
+          "stop_atr": 1.5,
+          "structural_buffer_ticks": 2,
+          "swing_window": 10,
+          "tick_size": 0.01,
+          "trail_distance_r": 1.5,
+          "trail_trigger_r": 1.5
+        },
+        "expression": "volume",
+        "name": "Synthetic volume control",
+        "normalization_window": 30,
+        "origin": "mined",
+        "semantics_version": 2,
+        "timeframe": "1d"
+      }
+    ],
+    "cost_stress_multiplier": 2,
+    "counterfactual": "append_this_search_once_to_frozen_family_each_replicate_independent",
+    "diagnostic_only": true,
+    "families": [
+      "local",
+      "count_only",
+      "variance_only",
+      "historical",
+      "current"
+    ],
+    "generator": {
+      "daily_noise": 0.001,
+      "intrabar_steps": 4,
+      "log_vol_noise": 0.25
+    },
+    "methods": [
+      "random",
+      "genetic"
+    ],
+    "multiplicity": "bonferroni_one_sided_exact_binomial_16_endpoints",
+    "policy": {
+      "embargo_bars": 1,
+      "folds": 3,
+      "holdout_fraction": 0.2,
+      "initial_train_fraction": 0.5,
+      "label_horizon": 1,
+      "max_drawdown_pct": 20.0,
+      "min_dsr": 0.95,
+      "min_ic": 0.01,
+      "min_sharpe": 1.0,
+      "minimum_trades": 10,
+      "minimum_validation_bars": 20,
+      "return_timeline": "complete_observed_bars_v1"
+    },
+    "primary": "full_policy_current_family_each_profile_effect_method_route",
+    "profiles": {
+      "dense": [
+        8,
+        0.004,
+        0.0
+      ],
+      "sparse": [
+        20,
+        0.02,
+        0.8
+      ]
+    },
+    "routes": [
+      "known",
+      "winner"
+    ],
+    "selection": "unchanged_miner_composite_before_holdout"
+  },
+  "dense_lower": 0.8,
+  "development_replicates": 4,
+  "edge_replicates": 64,
+  "family_snapshot_hash": "13cdae276d89c015bcbef3b75aa6e96b8eed67ff8a53e61dbb8b5ef658bc7c73",
+  "generated_candidates": 8,
+  "historical_trials": 7049,
+  "historical_variance": 0.0028764548818829777,
+  "null_replicates": 128,
+  "null_upper": 0.05,
+  "observations": 2500,
+  "schema_version": "alpha_power_diagnosis_v1",
+  "search_timeout_seconds": 30.0,
+  "seed": 170209711382394186826530268528226193237,
+  "sparse_lower": 0.5
+}

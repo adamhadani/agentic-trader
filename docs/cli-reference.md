@@ -464,3 +464,22 @@ asset UUID, input hashes, raw evidence, per-member checkpoints and any shortfall
 A provider/validation failure withholds the full selection. A completed but undersized
 selection exits nonzero with its evidence intact. No orders, notifications, observer,
 activation or qualification are created. See [equity research](alpha-equity-universe.md).
+
+
+### Synthetic power diagnosis
+
+```bash
+uv run copilot alpha power-plan --seed FRESH_INTEGER \
+  --family-snapshot /private/path/family.json --output /private/path/new-protocol.json
+uv run copilot alpha power-study /private/path/new-protocol.json \
+  --family-snapshot /private/path/family.json --output /private/path/new-power-study
+```
+
+Replace `FRESH_INTEGER` with a new explicit nonnegative integer below `2**128`.
+The [power protocol](alpha-power-ablation-plan.md) binds the snapshot hash, seeds,
+bootstrap, policy and finite budget. The runner requires a new output directory,
+retains selection before holdout and stops before validation after development
+calculation failures. A missing snapshot leaves current-family endpoints unavailable;
+there is no historical substitution. Complete scientific rejection exits successfully;
+incomplete evidence exits nonzero. No runtime DB, provider, notifier or broker is
+constructed; no trial is charged to production and no synthetic result can promote.
