@@ -20,10 +20,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, AuditEventType, SignalStatus, SystemStateKey
+from agentic_trader.accounting.risk import AccountRiskSnapshot, require_risk_checkpoint
+from agentic_trader.broker.base import OrderRequest
+from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, AuditEventType, ExecutionMode, SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import reservation_rejection
 from agentic_trader.execution.durable import (
     ENTRY_BLOCKING,
+    LEDGER_LOCK,
     EventKind,
     NotificationKind,
     OrderObservation,
@@ -32,10 +35,12 @@ from agentic_trader.execution.durable import (
     WorkStatus,
 )
 from agentic_trader.research.alpha.validation import ValidationPolicy
+from agentic_trader.risk import drawdown_risk_factor, requires_account_risk
 from agentic_trader.storage.models import (
     AlphaProjectionRecord,
     CloseRequestRecord,
     DomainEventRecord,
+    LedgerCheckpointRecord,
     OrderProjectionRecord,
     SignalRecord,
     SystemStateRecord,
@@ -45,7 +50,7 @@ from agentic_trader.storage.models import (
 
 
 if TYPE_CHECKING:
-    from agentic_trader.broker.base import OrderRequest, OrderResult
+    from agentic_trader.broker.base import OrderResult
     from agentic_trader.config import AppConfig
     from agentic_trader.storage.db import SignalDatabase
 
@@ -217,6 +222,20 @@ class WorkflowStore:
             )
         return bool(await session.scalar(query.limit(1)))
 
+    async def _entry_risk(self, session: AsyncSession, config: AppConfig) -> AccountRiskSnapshot | None:
+        if not requires_account_risk(config) and not self.db.execution_mode.startswith(f"{ExecutionMode.ALPACA}:"):
+            return None
+        # Lock order is trading -> ledger. Imports hold only the ledger lock;
+        # no remote call occurs while either transaction lock is held.
+        await self.lock(session, resource=LEDGER_LOCK)
+        checkpoint = await session.get(LedgerCheckpointRecord, self.scope)
+        risk = require_risk_checkpoint(
+            json.loads(checkpoint.payload) if checkpoint else {}, max_age_seconds=config.accounting.max_age_seconds
+        )
+        if risk.equity <= 0:
+            raise ValueError("Observed account equity is nonpositive; new entries blocked")
+        return risk
+
     async def enqueue_entry(self, request: OrderRequest, config: AppConfig) -> tuple[WorkItem | None, str]:
 
         async with self.db.session_factory() as session, session.begin():
@@ -254,6 +273,18 @@ class WorkflowStore:
                 return None, "Signal is not pending."
             if reason := await self._alpha_entry_rejection(session, signal):
                 return None, reason
+            try:
+                risk = await self._entry_risk(session, config)
+            except ValueError as exc:
+                reason = f"Account risk unavailable: {exc}. No order submitted."
+                session.add(
+                    self.db._audit(
+                        AuditEventType.ENTRY_ADMISSION_REJECTED,
+                        request.signal_id,
+                        {"reason": reason, "request": request.model_dump(mode="json")},
+                    )
+                )
+                return None, reason
             rows = list(
                 (
                     await session.scalars(
@@ -263,8 +294,24 @@ class WorkflowStore:
                     )
                 ).all()
             )
-            reason = reservation_rejection(request, [r.to_dict() for r in rows], config)
+            reason = reservation_rejection(
+                request,
+                [r.to_dict() for r in rows],
+                config,
+                current_drawdown_pct=float(risk.drawdown_pct) if risk else 0.0,
+            )
             if reason:
+                session.add(
+                    self.db._audit(
+                        AuditEventType.ENTRY_ADMISSION_REJECTED,
+                        request.signal_id,
+                        {
+                            "reason": reason,
+                            "request": request.model_dump(mode="json"),
+                            "risk_fingerprint": risk.fingerprint if risk else None,
+                        },
+                    )
+                )
                 return None, reason
             command_id = f"entry-{uuid4().hex}"
             request = request.model_copy(update={"client_order_id": command_id})
@@ -290,7 +337,10 @@ class WorkflowStore:
             signal.notional_value = request.entry_price * request.quantity * multiplier
             signal.risk_dollars = abs(request.entry_price - request.stop_loss) * request.quantity * multiplier
             queued_event = await self.append(
-                session, stream=f"entry/{command_id}", kind=EventKind.ENTRY_QUEUED, payload=payload
+                session,
+                stream=f"entry/{command_id}",
+                kind=EventKind.ENTRY_QUEUED,
+                payload={**payload, "account_risk": risk.model_dump(mode="json") if risk else None},
             )
             row.sequence = queued_event.id
             session.add(
@@ -361,14 +411,17 @@ class WorkflowStore:
             return "Alpha signal differs from its immutable strategy contract."
         return None
 
-    async def begin_submission(self, item: WorkItem) -> bool:
+    async def begin_submission(
+        self, item: WorkItem, config: AppConfig, *, risk_fingerprint: str | None = None
+    ) -> str | None:
+        """Commit submission authority, or return a concrete refusal reason."""
         async with self.db.session_factory() as session, session.begin():
             await self.lock(session)
             halted = await session.get(SystemStateRecord, SystemStateKey.TRADING_HALTED)
             if halted and halted.value.lower() in ("true", "1", "yes"):
-                return False
+                return "Emergency trading halt active. No order submitted."
             if await self.unresolved_cancellation(session):
-                return False
+                return "Unconfirmed entry cancellation remains. No order submitted."
             row = await session.scalar(
                 select(WorkItemRecord).where(
                     WorkItemRecord.id == item.id,
@@ -379,16 +432,39 @@ class WorkflowStore:
                 )
             )
             if not row:
-                return False
+                return "Admission claim expired or changed. No order submitted; request fresh approval."
             signal = await session.scalar(
                 select(SignalRecord).where(*self.db._scope(), SignalRecord.id == item.payload["signal_id"])
             )
             if signal is None or await self._alpha_entry_rejection(session, signal):
-                return False
+                return "Signal or active alpha authorization changed. No order submitted."
+            try:
+                risk = await self._entry_risk(session, config)
+            except ValueError as exc:
+                return f"Account risk unavailable: {exc}. No order submitted."
+            if risk and risk.fingerprint != risk_fingerprint:
+                return "Account risk changed after preflight. No order submitted; request a fresh scan."
+            if risk:
+                reason = reservation_rejection(
+                    OrderRequest.model_validate(item.payload),
+                    [],
+                    config,
+                    current_drawdown_pct=float(risk.drawdown_pct),
+                )
+                if reason:
+                    return reason
+            if row.lease_until is None or row.lease_until <= datetime.now(UTC):
+                return "Admission claim expired while validating account risk. No order submitted."
             row.status, row.lease_until = WorkStatus.SUBMITTING, None
-            await self.append(session, stream=f"entry/{row.id}", kind=EventKind.ENTRY_SUBMITTING, payload=item.payload)
-            session.add(self.db._audit(AuditEventType.ENTRY_SUBMISSION, item.payload["signal_id"], item.payload))
-            return True
+            evidence = {
+                **item.payload,
+                "account_risk": risk.model_dump(mode="json") if risk else None,
+                "risk_fingerprint": risk_fingerprint,
+                "drawdown_multiplier": drawdown_risk_factor(float(risk.drawdown_pct), config.sizing) if risk else 1.0,
+            }
+            await self.append(session, stream=f"entry/{row.id}", kind=EventKind.ENTRY_SUBMITTING, payload=evidence)
+            session.add(self.db._audit(AuditEventType.ENTRY_SUBMISSION, item.payload["signal_id"], evidence))
+            return None
 
     async def resolve_entry(self, item: WorkItem, result: OrderResult, *, recovery: bool = False) -> bool:
         async with self.db.session_factory() as session, session.begin():

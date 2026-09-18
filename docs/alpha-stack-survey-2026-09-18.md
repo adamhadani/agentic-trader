@@ -246,6 +246,9 @@ Three independent source reviews plus root call-graph inspection; official paper
 and Alpaca documentation checked. Pure offline probes reproduced S1's omitted
 argument and S4's all-positive-tail inconsistency. No new market-price acquisition,
 mining, qualification, activation, broker mutation or Telegram message occurred.
-The fixes above remain **open**; this documentation does not assert they are deployed.
+The findings above were **open at the reviewed revision**. The subsequent
+[account-risk tranche](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission)
+implements S1 and corrects S4; S2/S3 and the research/deployment gaps remain.
+Source/test completion does not itself establish deployed verification.
 Prior PR #63's 1,750 passing tests and 278 integration cases establish useful existing
 coverage, not proof that these newly identified missing contracts are implemented.

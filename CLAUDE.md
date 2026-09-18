@@ -54,7 +54,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
 1. **Entry authorization:** CLI/buttons call `EntryExecutionService`, atomically
    reserve risk and join the durable FIFO. Only a valid preflight token commits
    `submitting`; never expire or replay a broker submission. Unknown outcomes halt
-   new risk and recover by exact client ID, including after a 404. Rejected/unfilled
+   new risk and recover by exact client ID, including after a 404. Alpaca admission
+   requires fresh journaled account drawdown; every tier shares its cap. Final
+   submission pins the risk fingerprint and rechecks the lease after ledger locking. Rejected/unfilled
    terminal evidence releases capacity; acceptance is not a fill.
 2. **Closure:** `PositionCloseService` persists exclusive intent, confirms exact
    order-group cancellation, revalidates position/session and submits once.
@@ -131,7 +133,7 @@ Schema 008 adds alpha projections and optional signal attribution. The original
 [alpha-stack review](docs/alpha-stack-review.md) remains historical evidence;
 its strict expected failures have become passing regression tests.
 
-The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. Open findings include the missing production drawdown input, pre-reservation acquisition in legacy mining, uncalibrated gate power and legacy CVaR reporting semantics. The convex allocator remains shadow-only. Update milestones and evidence when completing work.
+The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. The first account-risk tranche fixes the missing drawdown path and legacy risk reporting; pre-reservation acquisition, uncalibrated gate power and broader live risk inputs remain open. The convex allocator remains shadow-only. Update milestones and evidence when completing work.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)

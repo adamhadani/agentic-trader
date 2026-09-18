@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from agentic_trader.accounting.ledger import LedgerReport, reconcile
+from agentic_trader.accounting.risk import AccountRiskSnapshot, require_risk_checkpoint
 from agentic_trader.broker.base import BaseBroker
 from agentic_trader.config import AccountingConfig
 from agentic_trader.storage.ledger import LedgerStore
@@ -55,3 +56,7 @@ class AccountLedgerService:
         if not 0 <= age <= self.config.max_age_seconds:
             return None, "Account activity reconciliation is stale"
         return report, ""
+
+    async def current_risk(self) -> AccountRiskSnapshot:
+        """Fresh account risk evidence for entry admission; unavailable evidence raises."""
+        return require_risk_checkpoint(await self.store.status(), max_age_seconds=self.config.max_age_seconds)

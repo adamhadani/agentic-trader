@@ -116,7 +116,7 @@ async def test_alpha_change_during_preflight_blocks_submission_commit(store, app
                 EventKind.ALPHA_RESEARCH,
                 "fixture",
             )
-    assert not await store.begin_submission(claim)
+    assert await store.begin_submission(claim, app_config) is not None
     assert (await store.get_work(item.id)).status == WorkStatus.CHECKING
 
 

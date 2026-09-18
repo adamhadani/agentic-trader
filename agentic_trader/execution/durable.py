@@ -26,6 +26,7 @@ class WorkStatus(StrEnum):
 
 
 ENTRY_BLOCKING = (WorkStatus.QUEUED, WorkStatus.CHECKING, WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)
+LEDGER_LOCK = "ledger"
 
 
 class EventKind(StrEnum):

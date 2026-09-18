@@ -12,8 +12,9 @@ lives in the [alpha roadmap](alpha-roadmap.md#current-priorities-after-the-whole
 allocator has no execution authority.
 
 The [whole-stack survey](alpha-stack-survey-2026-09-18.md) records newly confirmed,
-still-open drawdown wiring and legacy CVaR reporting defects, inadequate measured
-qualification power, and the missing portfolio deployment lane. Zero active mined
+drawdown wiring and legacy risk-report defects (fixed by the first account-risk
+tranche), inadequate measured qualification power, and the still-missing portfolio
+deployment lane. Zero active mined
 alphas does not disable built-in screeners or prove that rejection gates are calibrated.
 
 Alpha closure/clock checks now live in `market/bars.py`, shared by research,

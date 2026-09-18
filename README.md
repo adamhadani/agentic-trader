@@ -246,3 +246,5 @@ this development screen neither establishes historical membership nor qualifies 
 The [September 18 matched-control result](docs/alpha-forecast-controls-2026-09-18.md) reproduces Ridge but finds comparable simple-style performance and unknown 2023 endpoints. No active alpha was added; prospective evidence with fixed controls is next.
 
 The [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) separates live controls from research-only allocation, records open risk/gate gaps and updates the mining roadmap. Zero active mined alphas does not disable the configured built-in screeners.
+
+[Account drawdown](docs/account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission) now gates Alpaca sizing and entry submission using persistent, cash-flow-adjusted observations. Missing evidence blocks new entries; all tiers share the cap. Historical Monte Carlo reports expose IID starting-capital losses and withhold unsupported annualized Sharpe.

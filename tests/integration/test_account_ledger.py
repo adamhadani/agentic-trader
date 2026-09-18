@@ -1,7 +1,6 @@
 """Actual SDK/HTTP activity pagination -> journal -> replay -> performance."""
 
 import asyncio
-from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -14,55 +13,11 @@ from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.cli.main import cli
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
-from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from scripts.verify_runtime import verified_account_report
 
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
-
-
-@pytest.fixture
-async def ledger_desk(alpaca_http, temp_db, app_config, request):
-    venue, broker = alpaca_http
-    db = (
-        SignalDatabase(db_url=request.getfixturevalue("postgres_test_db"))
-        if getattr(request, "param", "sqlite") == "postgres"
-        else temp_db
-    )
-    activities = [{"id": "deposit", "activity_type": "CSD", "net_amount": "10000"}]
-    # Individual partial executions, all tied to one exact order.
-    activities += [
-        {
-            "id": f"fill-{i:03}",
-            "activity_type": "FILL",
-            "symbol": "SPY",
-            "order_id": venue.entry["id"],
-            "side": "buy",
-            "qty": "0.1",
-            "price": "100",
-            "transaction_time": datetime.now(UTC).isoformat(),
-        }
-        for i in range(100)
-    ]
-    state = {"account": {"id": "account", "cash": "9000", "currency": "USD"}, "activities": activities, "failure": None}
-
-    def dispatch(method, path, query, body):
-        if path == "/v2/account":
-            return 200, state["account"]
-        if path == "/v2/account/activities":
-            if state["failure"]:
-                return state["failure"]
-            token = query.get("page_token", [None])[0]
-            rows = state["activities"]
-            start = next(i + 1 for i, a in enumerate(rows) if a["id"] == token) if token else 0
-            return 200, rows[start : start + int(query["page_size"][0])]
-        return None
-
-    venue.override = dispatch
-    service = AccountLedgerService(broker, LedgerStore(db.workflows), app_config.accounting)
-    yield service, venue, state
-    await db.engine.dispose()
 
 
 @pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
@@ -194,3 +149,77 @@ async def test_runtime_verification_is_passive_and_preserves_importer_ownership(
         assert await service.store.commit(token, state["activities"], before), (
             "Verifier stole the daemon's import token"
         )
+
+
+@pytest.mark.parametrize("ledger_desk", ["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)], indirect=True)
+@pytest.mark.parametrize("baseline_kind", ["CSD", "JNLC"])
+async def test_sdk_account_risk_tracks_marks_and_transfers_and_survives_replay(ledger_desk, baseline_kind):
+    service, venue, state = ledger_desk
+    state["activities"][0]["activity_type"] = baseline_kind
+    await service.refresh()
+    baseline = await service.current_risk()
+    assert baseline.equity == Decimal(10050) and baseline.drawdown_pct == 0
+    assert baseline.cash_flows == (10000 if baseline_kind == "CSD" else 0)
+    assert bool(baseline.baseline_cash_journal_fingerprints) is (baseline_kind == "JNLC")
+
+    venue.position["unrealized_pl"] = "-452.5"
+    await service.refresh()
+    loss = await service.current_risk()
+    assert loss.drawdown_pct == Decimal(".05")
+
+    for kind, amount in (("CSD", "5000"), ("CSW", "-3000")):
+        state["activities"].append({"id": kind, "activity_type": kind, "net_amount": amount})
+        state["account"]["cash"] = str(Decimal(state["account"]["cash"]) + Decimal(amount))
+        await service.refresh()
+        risk = await service.current_risk()
+        assert risk.drawdown_pct == loss.drawdown_pct
+        assert risk.adjusted_equity == loss.adjusted_equity
+        assert risk.baseline_observed_at == baseline.observed_at
+
+    state["activities"].append({"id": "fee", "activity_type": "FEE", "net_amount": "-20"})
+    state["account"]["cash"] = str(Decimal(state["account"]["cash"]) - 20)
+    await service.refresh()
+    risk = await service.current_risk()
+    assert risk.adjusted_equity == loss.adjusted_equity - 20
+    assert risk.drawdown_pct > loss.drawdown_pct, "Fees are performance, not external capital"
+
+    before = await service.store.status()
+    await service.store.rebuild()
+    restarted = AccountLedgerService(service.broker, LedgerStore(service.store.store), service.config)
+    assert await restarted.store.status() == before
+    assert (await restarted.current_risk()).fingerprint == risk.fingerprint
+    assert {call[0] for call in venue.calls} == {"GET"}
+
+
+@pytest.mark.parametrize("problem", ["http", "unreconciled", "journal", "revision", "retraction"])
+async def test_sdk_invalid_risk_preserves_history_and_never_defaults_to_zero(ledger_desk, problem):
+    service, venue, state = ledger_desk
+    await service.refresh()
+    baseline = await service.current_risk()
+    if problem == "http":
+        state["failure"] = (403, {"message": "denied"})
+        with pytest.raises(APIError):
+            await service.refresh()
+    else:
+        if problem == "unreconciled":
+            state["account"]["cash"] = "999999"
+        elif problem == "journal":
+            state["activities"].append({"id": "journal", "activity_type": "JNLC", "net_amount": "-100"})
+            state["account"]["cash"] = "8900"
+        elif problem == "revision":
+            state["activities"][0]["net_amount"] = "20000"
+            state["account"]["cash"] = "19000"
+        else:
+            state["activities"].pop(0)
+            state["account"]["cash"] = "-1000"
+        report = await service.refresh()
+        assert report.ready is (problem != "unreconciled")
+    with pytest.raises(ValueError):
+        await service.current_risk()
+    checkpoint = await service.store.status()
+    assert checkpoint["risk"] == baseline.model_dump(mode="json")
+    await service.store.rebuild()
+    assert await service.store.status() == checkpoint
+    with pytest.raises(ValueError):
+        await service.current_risk()
+    assert {call[0] for call in venue.calls} == {"GET"}

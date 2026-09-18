@@ -345,6 +345,7 @@ class AuditEventType(StrEnum):
     STOP_REPLACEMENT = "stop_replacement"
     STOP_UPDATED = "stop_updated"
     ENTRY_SUBMISSION = "entry_submission"
+    ENTRY_ADMISSION_REJECTED = "entry_admission_rejected"
     ENTRY_SUBMISSION_UNKNOWN = "entry_submission_unknown"
     EXECUTION_CLAIMED = "execution_claimed"
     RUNTIME_STARTED = "runtime_started"

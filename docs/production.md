@@ -514,3 +514,7 @@ this development screen neither establishes historical membership nor qualifies 
 ### Retained forecast comparisons
 
 `alpha forecast-controls PROTOCOL --parent FORECAST_DIR --output NEW_DIR` is an explicit operator research command, not a daemon/poller. It reads verified local artifacts after durable trial reservation, excludes all inspected parent members, and writes private diagnostic evidence. It has no provider, broker or Telegram composition and grants no promotion authority. Keep the output directory outside Git; see the [research contract](alpha-forecast-controls.md).
+
+## Account risk on deployment
+
+The first reconciled checkpoint after enabling [account risk](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission) establishes its dated baseline; historical peaks are not inferred. Verify `db ledger` risk availability and the passive runtime verifier after restart. Accounting readiness includes risk validity. Derived drawdown can block new entries without setting the emergency halt; `/resume` cannot waive it. Broker-held protection, closes and reconciliation continue. Preserve the journal when investigating corrections or transfer-classification failures.

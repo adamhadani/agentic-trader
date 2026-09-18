@@ -8,11 +8,14 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from agentic_trader.accounting.risk import AccountRiskSnapshot
+from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.broker.base import BaseBroker, OrderRequest, OrderResult
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import BROKER_CLOCK_SKEW_TOLERANCE_SECONDS, SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import reservation_rejection
 from agentic_trader.execution.durable import WorkItem, WorkKind, WorkStatus
+from agentic_trader.risk import requires_account_risk
 from agentic_trader.storage.workflow import WorkflowStore
 
 
@@ -30,9 +33,12 @@ class EntryExecutionService:
         broker: BaseBroker,
         executor: SlicedExecutionEngine,
         macro_check: Callable[[OrderRequest, dict[str, Any]], Awaitable[str | None]],
+        *,
+        ledger: AccountLedgerService | None = None,
     ):
         self.config, self.store, self.broker = config, store, broker
         self.executor, self.macro_check = executor, macro_check
+        self.ledger = ledger
 
     async def authorize(self, request: OrderRequest) -> tuple[WorkItem | None, str]:
         item, reason = await self.store.enqueue_entry(request, self.config)
@@ -55,7 +61,7 @@ class EntryExecutionService:
             return "Signal is stale or clock-skewed; request a fresh scan."
         return None
 
-    async def _preflight(self, item: WorkItem, request: OrderRequest) -> str | None:
+    async def _preflight(self, item: WorkItem, request: OrderRequest, risk: AccountRiskSnapshot | None) -> str | None:
         policy = self.config.execution
         assert request.signal_id is not None
         signal = await self.store.db.get_signal_by_id(request.signal_id)
@@ -127,27 +133,40 @@ class EntryExecutionService:
             final_age = (datetime.now(UTC) - context["quote_timestamp"]).total_seconds()
             if final_age < -BROKER_CLOCK_SKEW_TOLERANCE_SECONDS or final_age > policy.entry_quote_max_age_seconds:
                 return "Market-data observation expired during admission checks; request a fresh approval."
-        return reservation_rejection(request, list(exposure.values()), self.config)
+        return reservation_rejection(
+            request,
+            list(exposure.values()),
+            self.config,
+            current_drawdown_pct=float(risk.drawdown_pct) if risk else 0.0,
+        )
 
     async def dispatch_one(self) -> bool:
         item = await self.store.claim_entry(lease_seconds=self.config.execution.entry_preflight_lease_seconds)
         if item is None:
             return False
         request = OrderRequest.model_validate(item.payload)
+        risk = None
         try:
-            rejection = await self._preflight(item, request)
+            if requires_account_risk(self.config):
+                if self.ledger is None:
+                    raise ValueError("Observed account risk service is unavailable")
+                await self.ledger.refresh()
+                risk = await self.ledger.current_risk()
+            rejection = await self._preflight(item, request, risk)
         except Exception as exc:
             logger.exception("Entry preflight failed: %s", item.id)
             rejection = f"Admission evidence unavailable ({type(exc).__name__}: {exc}). No order submitted."
         if rejection:
             await self.store.resolve_entry(item, OrderResult(success=False, error_message=rejection))
             return True
-        if not await self.store.begin_submission(item):
+        if reason := await self.store.begin_submission(
+            item, self.config, risk_fingerprint=risk.fingerprint if risk else None
+        ):
             await self.store.resolve_entry(
                 item,
                 OrderResult(
                     success=False,
-                    error_message="Admission claim expired, trading halted, or active alpha authorization changed. No order submitted.",
+                    error_message=reason,
                 ),
             )
             return True

@@ -60,8 +60,8 @@ reviewed incremental strategy. Do not simply raise limits indefinitely.
 The first import permanently binds the environment/account-mode scope to the
 broker account ID. A different account is rejected. Each importer receives a
 fencing token before remote reads; a superseded importer cannot replace newer
-results. A separate ledger transaction lock avoids blocking entry admission during
-large imports on PostgreSQL. No DB transaction spans broker I/O. A successful full read commits changed
+results. A separate ledger lock keeps remote acquisition outside trading transactions.
+Final admission briefly acquires it after the trading lock to pin risk evidence. No DB transaction spans broker I/O. A successful full read commits changed
 activities, removals and its broker snapshot/report together. Repeated observations
 are deduplicated; revisions and reversions append events, and removed activities
 append retractions. Failed imports preserve prior evidence and record an error.
@@ -69,7 +69,8 @@ Rebuild replays events and invalidates outstanding importer tokens.
 
 `/readyz` includes current-run accounting freshness. Import errors, reconciliation
 failures or missing/stale observations degrade readiness; they do not automatically
-halt existing trading. Entry risk checks remain independent. Default freshness is
+set the emergency halt. New Alpaca entries require valid risk evidence;
+exits and protection remain available. Default freshness is
 180 seconds. `/perf` uses the latest cached reconciliation with an explicit timestamp;
 `copilot perf` refreshes the ledger read-only first. Neither submits orders or sends
 synthetic bot messages. Interactive replies retain normal Telegram behavior.
@@ -94,3 +95,63 @@ private storage, out of Git and shared diagnostics. Never delete events needed f
 replay. Back up PostgreSQL before migration 006; deploy only after integration
 verification, then restart the single registered daemon and verify readiness,
 current revision, Telegram command descriptions and broker reconciliation.
+
+## Cash-flow-adjusted drawdown and entry admission
+
+The same fenced ledger checkpoint now persists versioned account risk evidence;
+there is no second importer, risk queue or schema. Equity is explicitly **derived**
+from broker cash + signed open cost basis + unrealized P&L, using Decimal. It is not
+an independently requested broker equity field or a portfolio-volatility estimate.
+For the first reconciled positive-equity observation, retain baseline equity `E0`,
+cumulative deposits/withdrawals `F0`, and its observation time. Subsequently:
+
+```text
+adjusted_equity = equity - (cumulative_external_flows - F0)
+high_water_mark = max(previous_high_water_mark, adjusted_equity)
+drawdown = max(0, (high_water_mark - adjusted_equity) / high_water_mark)
+```
+
+Deposits and withdrawals do not manufacture profit or erase drawdown. Fees, dividends
+and unrealized losses affect performance. This is a **fixed-baseline dollar-equity**
+series, not time-weighted return. Monitoring begins at the recorded first baseline;
+we do not invent earlier peaks. Sixty-second observations can miss intervening peaks.
+Restart and journal replay preserve the baseline and sampled high-water mark.
+
+Alpaca `CSD`/`CSW` provide supported signed external flows. `JNLC` only establishes
+that a cash journal occurred. Journals already present at the first reconciled baseline
+are frozen as starting history, without being classified as profit or external flows.
+New, revised or removed journals in a subsequent reconciled observation invalidate
+risk history persistently, as do revisions or retractions of accepted transfers.
+An unreconciled import blocks risk temporarily; it can recover if the source reverts
+before a valid observation establishes permanent invalidation. Existing P&L reporting
+is unchanged. Fixing invalidated source history requires a
+reviewed recovery; `/resume`, restart or replay cannot reset the baseline or waive
+an invalidation. [Alpaca activity definitions](https://docs.alpaca.markets/us/docs/account-activities).
+
+Alpaca scans require fresh reconciled risk before evaluating candidates. The drawdown
+multiplier applies to **every sizing tier and the hard per-trade cap**, including
+explicit operator quantities. Configured `portfolio.cash` remains a separate capital
+mandate. The current policy starts reducing size above 3% drawdown, retains the
+configured 10% minimum multiplier until the 6% threshold, then blocks new entries.
+These values come from `sizing.drawdown_*` and `max_drawdown_stop_pct`; they are not
+broker-side orders or a guarantee against gap losses. Nonpositive observed equity
+also blocks new entries even if a withdrawal left adjusted drawdown unchanged.
+
+Authorization checks risk under the trading → ledger lock order. Preflight refreshes
+through the injected ledger service. The final `SUBMITTING` transaction rechecks
+freshness, the exact risk fingerprint, the cap and the lease after acquiring locks.
+A changed/expired observation rejects the original request with a reason; no order
+is resized or replayed. Queue/submission events retain the admitted risk observation;
+signal provenance retains its fingerprint. Missing, stale, failed or unsupported
+risk evidence blocks new entries rather than becoming zero drawdown.
+
+This is a derived entry gate. It does not alter the emergency halt or prevent closes,
+protective-order maintenance or reconciliation. Empty local dry scans read no broker
+risk; their zero drawdown describes that simulated portfolio. Other local simulations
+do not claim this broker-account drawdown protection.
+
+The existing accounting readiness check now includes risk availability for Alpaca.
+`db ledger` displays risk without account/transfer identifiers; `db events` retains
+private evidence. The passive runtime verifier includes current risk and separately
+reports whether the drawdown gate permits new entries. Funding/borrowability and
+aggregate portfolio risk remain separate open admission work (survey S3).
