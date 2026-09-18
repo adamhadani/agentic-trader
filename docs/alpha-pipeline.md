@@ -425,3 +425,11 @@ suppression, delayed entries, boundary censoring and fees. They introduce no new
 execution policy. Development failures preserve completed evidence and leave
 validation untouched. These synthetic artifacts cannot qualify or accrue shadow
 credit. Factor hypotheses follow the [bounded research plan](alpha-factor-research-plan.md).
+
+## Prospective native-daily panel lane
+
+The [daily equity panel](alpha-daily-panel.md) collects four fixed forecasts and
+first H20 outcomes using the existing alpha journal. This current-cohort experiment
+is distinct from formula/bracket qualification, session-clock diagnostics and
+portfolio execution. Enrollment charges its four hypotheses once; daily observations
+add evidence, not new parameter trials. No automatic activation is supported.

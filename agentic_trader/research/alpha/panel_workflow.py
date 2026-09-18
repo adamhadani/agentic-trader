@@ -17,15 +17,14 @@ from agentic_trader.config import DailyAcquisitionConfig
 from agentic_trader.data.evidence import BarAcquisitionError
 from agentic_trader.market.bars import SessionSchedule, TradingSession, utc_timestamp
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.alpha.acquisition import AcquisitionBudgetExceeded, drain_on_cancel, save_observations
 from agentic_trader.research.alpha.daily_inputs import DailyStudyInputs
-from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.panel import PanelCoverageError, align_daily_panel
 from agentic_trader.research.alpha.panel_study import (
     PANEL_JOURNAL_SYMBOL,
     PanelStudyStatus,
     compute_panel_study,
 )
-from agentic_trader.research.alpha.validation import frame_digest
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.artifacts import save_json_report
 
@@ -60,41 +59,10 @@ def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _save_observations(frame: pd.DataFrame, output: Path):
-    digest = frame_digest(frame)
-    path = save_dataset(frame, output, digest)
-    return {
-        "artifact": path.name,
-        "content_hash": digest,
-        "artifact_hash": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "rows": len(frame),
-        "attrs": frame.attrs,
-    }
-
-
 def _compute(batch, clock, plan, sessions):
     frames = batch.require_complete(plan.acquisition_symbols)
     panel = align_daily_panel(frames, clock, feed=plan.feed)
     return compute_panel_study(panel, plan)
-
-
-async def _drain_on_cancel(operation):
-    """Finish the current bounded read/checkpoint before its source context can close."""
-    task = asyncio.create_task(operation)
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                continue
-        task.result()
-        raise
-
-
-class AcquisitionBudgetExceeded(RuntimeError):
-    """The next read was not attempted because the frozen elapsed budget expired."""
 
 
 class AlphaPanelService:
@@ -200,7 +168,7 @@ class AlphaPanelService:
                     frame = await acquire("daily", symbol, plan.start, plan.end, plan.feed, plan.adjustment)
                     if "evidence" in frame.attrs:
                         inputs["receipts"][-1]["evidence"] = frame.attrs["evidence"]
-                    dataset = await asyncio.to_thread(_save_observations, frame, output)
+                    dataset = await asyncio.to_thread(save_observations, frame, output)
                     inputs["datasets"][symbol] = dataset
                     frames[symbol] = frame
                     checkpoint.update(status="observed", dataset=dataset)
@@ -222,10 +190,10 @@ class AlphaPanelService:
             )
 
         try:
-            sessions = await _drain_on_cancel(acquire_calendar())
+            sessions = await drain_on_cancel(acquire_calendar())
             clock = pd.DatetimeIndex([pd.Timestamp(s.date, tz=ET_TZ) for s in sessions])
             for index, symbol in enumerate(symbols):
-                await _drain_on_cancel(acquire_member(index, symbol))
+                await drain_on_cancel(acquire_member(index, symbol))
             batch = DailyStudyInputs(frames, inputs["failures"])
             result = await asyncio.to_thread(self.compute or _compute, batch, clock, plan, sessions)
             result.setdefault("status", PanelStudyStatus.COMPLETED)

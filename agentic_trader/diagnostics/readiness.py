@@ -23,6 +23,7 @@ class HealthComponent(StrEnum):
     ACCOUNTING = "accounting"
     ALPHA_OBSERVER = "alpha_observer"
     ALPHA_DECISIONS = "alpha_decisions"
+    ALPHA_DAILY_PANEL = "alpha_daily_panel"
 
 
 class ReadinessService:
@@ -78,6 +79,8 @@ class ReadinessService:
             limits[HealthComponent.ALPHA_OBSERVER] = self.config.alpha_pipeline.observations.max_age_seconds
         if self.config.alpha_pipeline.decisions.enabled:
             limits[HealthComponent.ALPHA_DECISIONS] = self.config.alpha_pipeline.decisions.max_age_seconds
+        if self.config.alpha_pipeline.daily_panel.enabled:
+            limits[HealthComponent.ALPHA_DAILY_PANEL] = self.config.alpha_pipeline.daily_panel.max_age_seconds
         if self.accounting_enabled:
             limits[HealthComponent.ACCOUNTING] = self.config.accounting.max_age_seconds
         checks: dict[str, Any] = {"daemon_started": {"ready": self.started}}

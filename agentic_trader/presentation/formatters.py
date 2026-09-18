@@ -599,6 +599,28 @@ class TelegramHtmlFormatter:
             lines.append("No session candidates configured for these checks.")
         if evidence["truncated"]:
             lines.append("⚠ History limit reached: counts are lower bounds.")
+        daily = evidence.get("daily_panel")
+        if daily is not None:
+            decisions, outcomes = daily["decision_counts"], daily["outcome_counts"]
+            lines.extend(
+                [
+                    "",
+                    "<b>Daily panel</b> · "
+                    + ("collector enabled" if daily["worker_enabled"] else "collector disabled"),
+                    (
+                        f"Loaded sessions: {decisions['scored']:,}/{daily['decision_sessions']:,} scored · "
+                        f"Outcomes: {outcomes['complete']:,}/{daily['outcome_sessions']:,} complete."
+                    ),
+                    "Daily observations are diagnostic, not qualification or trading results.",
+                ]
+            )
+            failures = sum(decisions[status] for status in ("unavailable", "missed", "interrupted"))
+            if failures or outcomes["unavailable"]:
+                lines.append(
+                    f"Unavailable/missed sessions: {failures:,} · Unknown outcomes: {outcomes['unavailable']:,}"
+                )
+            if daily["truncated"]:
+                lines.append("⚠ Daily history limit reached: counts are lower bounds.")
         lines.extend(
             [
                 "Recorded evaluations do not establish complete coverage, profits or promotion readiness.",

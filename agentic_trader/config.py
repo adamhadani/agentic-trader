@@ -466,8 +466,36 @@ class DailyAcquisitionConfig(BaseModel):
     max_elapsed_seconds: float = Field(default=900, ge=1, le=7200, allow_inf_nan=False)
 
 
+class DailyPanelWorkerConfig(BaseModel):
+    """Opt-in native-daily collection; the frozen protocol owns feed and cohort."""
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    protocol_path: Path | None = None
+    poll_seconds: int = Field(default=60, ge=10, le=300, strict=True)
+    max_age_seconds: int = Field(default=1200, ge=60, le=3600, strict=True)
+    calendar_refresh_seconds: int = Field(default=300, ge=30, le=3600, strict=True)
+
+    @field_validator("protocol_path", mode="before")
+    @classmethod
+    def explicit_path(cls, value):
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("Explicit nonempty daily-panel protocol path required")
+        return value
+
+    @model_validator(mode="after")
+    def bounded_worker(self):
+        if self.enabled and self.protocol_path is None:
+            raise ValueError("Enabled daily-panel worker requires an explicit protocol path")
+        if self.max_age_seconds < self.poll_seconds:
+            raise ValueError("Daily-panel freshness must cover its polling interval")
+        return self
+
+
 class AlphaPipelineConfig(BaseModel):
     daily_research: DailyAcquisitionConfig = Field(default_factory=DailyAcquisitionConfig)
+    daily_panel: DailyPanelWorkerConfig = Field(default_factory=DailyPanelWorkerConfig)
     observations: SessionObservationConfig = Field(default_factory=SessionObservationConfig)
     decisions: SessionDecisionConfig = Field(default_factory=SessionDecisionConfig)
     minimum_shadow_sessions: int = Field(default=20, ge=1)

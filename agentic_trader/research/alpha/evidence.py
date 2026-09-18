@@ -8,8 +8,9 @@ from datetime import UTC, datetime, timedelta
 
 import numpy as np
 
-from agentic_trader.market.bars import utc_timestamp
+from agentic_trader.market.bars import ObservationStatus, utc_timestamp
 from agentic_trader.research.alpha.models import DecisionStatus
+from agentic_trader.storage.alpha_daily import DailyCampaignRepository
 
 
 FORWARD_EVIDENCE_VERSION = "forward_evidence_v1"
@@ -17,6 +18,8 @@ DEFAULT_FORWARD_DAYS = 7
 MAX_FORWARD_DAYS = 31
 DEFAULT_FORWARD_LIMIT = 10_000
 MAX_FORWARD_LIMIT = 50_000
+DAILY_PANEL_EVIDENCE_VERSION = "daily_panel_evidence_v1"
+MAX_DAILY_EVIDENCE_LIMIT = 1000
 
 
 def _distribution(values):
@@ -194,4 +197,75 @@ async def load_forward_evidence(repository, *, days=DEFAULT_FORWARD_DAYS, limit=
         build_forward_evidence, snapshot, repository.policy.decisions, inputs, now=now, days=days
     )
     report["row_limit"] = limit
+    report["daily_panel"] = await load_daily_panel_evidence(repository, days=days, limit=limit, now=now)
     return snapshot, report
+
+
+def build_daily_panel_evidence(policy, inputs, *, now, days):
+    """Bounded latest journal projections; no forecasts, provider errors or private paths."""
+    now = utc_timestamp(now)
+    if not 1 <= days <= MAX_FORWARD_DAYS:
+        raise ValueError("Daily-panel evidence days outside supported bounds")
+    since = now - timedelta(days=days)
+    decisions, outcomes = inputs["decisions"], inputs["outcomes"]
+    campaigns = {row["campaign_id"]: row for row in inputs["campaigns"]}
+    identities = sorted(set(campaigns) | {row["campaign_id"] for row in (*decisions, *outcomes)})
+    decision_counts = Counter(DecisionStatus(row["status"]) for row in decisions)
+    outcome_counts = Counter(ObservationStatus(row["status"]) for row in outcomes)
+    summaries = []
+    for identity in identities:
+        campaign = campaigns.get(identity)
+        protocol = campaign["protocol"] if campaign else {}
+        summaries.append(
+            {
+                "campaign_id": identity,
+                "metadata_available": campaign is not None,
+                "protocol_hash": campaign["protocol_hash"] if campaign else None,
+                "enrolled_at": campaign["enrolled_at"] if campaign else None,
+                "last_session": campaign.get("last_session") if campaign else None,
+                "feed": protocol.get("feed"),
+                "symbols": len(protocol.get("symbols", [])),
+                "arms": len(protocol.get("models", [])),
+                "decision_sessions": sum(row["campaign_id"] == identity for row in decisions),
+                "outcome_sessions": sum(row["campaign_id"] == identity for row in outcomes),
+            }
+        )
+    return {
+        "version": DAILY_PANEL_EVIDENCE_VERSION,
+        "as_of": now.isoformat(),
+        "since": since.isoformat(),
+        "days": days,
+        "worker_enabled": policy.enabled,
+        "scope": "current_canonical_daily_campaign_projections",
+        "coverage_basis": "recorded_campaign_sessions",
+        "truncated": inputs["truncated"],
+        "rows_loaded": len(inputs["campaigns"]) + len(decisions) + len(outcomes),
+        "campaigns": summaries,
+        "decision_sessions": len(decisions),
+        "outcome_sessions": len(outcomes),
+        "decision_counts": {status.value: decision_counts[status] for status in DecisionStatus},
+        "outcome_counts": {status.value: outcome_counts[status] for status in ObservationStatus},
+        "authorizes_promotion": False,
+        "limitations": [
+            "Counts are campaign sessions, not individual model/symbol forecasts or qualified shadow decisions.",
+            "The window uses latest projection event times, not a historical as-of reconstruction or complete scheduled coverage.",
+            "Truncated counts are lower bounds; campaign metadata may be outside the loaded rows.",
+            "A complete outcome is research evidence, not a fill, profit claim or qualification.",
+            "Worker readiness, usable forecasts and matured outcomes are separate observations.",
+        ],
+    }
+
+
+async def load_daily_panel_evidence(repository, *, days=DEFAULT_FORWARD_DAYS, limit=MAX_DAILY_EVIDENCE_LIMIT, now=None):
+    """Shared passive daily summary for CLI and Telegram, bounded independently of intraday history."""
+    now = utc_timestamp(now if now is not None else datetime.now(UTC))
+    if not 1 <= days <= MAX_FORWARD_DAYS or not 1 <= limit <= MAX_FORWARD_LIMIT:
+        raise ValueError("Daily-panel evidence query outside supported bounds")
+    row_limit = min(limit, MAX_DAILY_EVIDENCE_LIMIT)
+    daily_repository = DailyCampaignRepository(repository.store, policy=repository.policy)
+    inputs = await daily_repository.report(since=now - timedelta(days=days), now=now, limit=row_limit)
+    report = await asyncio.to_thread(
+        build_daily_panel_evidence, repository.policy.daily_panel, inputs, now=now, days=days
+    )
+    report["row_limit"] = row_limit
+    return report

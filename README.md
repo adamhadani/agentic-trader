@@ -157,7 +157,7 @@ Read docs as Markdown or preview with `cd docs && bundle install && bundle exec 
 Historical design notes and the reference PDF are source material, not runtime guarantees.
 
 The daemon's [prospective session-data observer](docs/alpha-forward-observations.md)
-records live REST availability and revisions for SPY/15m on the configured feed.
+records live REST availability and revisions for SPY/QQQ 15m on the configured feed.
 Use `copilot alpha forward --days 7` or Telegram `/alphas` for [recorded candidate outcomes and receipt timing](docs/alpha-forward-evidence.md); missing/truncated history stays explicit.
 
 Inspect `copilot alpha status` for capture quality; it provides no promotion credit
@@ -277,3 +277,8 @@ The [54-comparison factor study](docs/alpha-factor-controls-2026-09-18.md) is co
 and independently audited. Residual momentum adds no consistent improvement over
 the existing blend; support loss, concentration and nonzero factor exposures remain
 visible. Active mined alphas remain zero; prospective evidence is the next stage.
+
+The [prospective daily panel](docs/alpha-daily-panel.md) follows four fixed equity
+forecast controls with receipt-stamped inputs and immutable H20 outcomes. It runs
+in the existing daemon as research only; active mined alphas and paper-trading
+authorization remain governed by the separate qualification pipeline.

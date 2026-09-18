@@ -160,8 +160,8 @@ Frozen identities:
 1. Preserve this negative/mixed incremental result. Do not reverse signs, tune the
    window, weaken source rules or choose acceptance thresholds on these years.
 2. Follow the [active roadmap](alpha-roadmap.md): use the completed power diagnosis
-   and build source-qualified prospective daily Ridge/style observations
-   with frozen predictions and mature outcomes. Retained factor controls can be
+   and collect evidence with the now-implemented [prospective daily collector](alpha-daily-panel.md),
+   with source-qualified labels, frozen predictions and mature outcomes. Retained factor controls can be
    explicit comparators; this study grants no promotion authority to them.
 3. Evaluate separately identified delayed-SIP coverage alongside IEX and widen the
    declared equity cohort through the existing journal. Keep unavailable members;

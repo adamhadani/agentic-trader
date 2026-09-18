@@ -182,3 +182,8 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
   Preserve strictly prior residual fits, original parent forecasts, common causal
   support and unknown held outcomes. Charge/exclude before any parent read; source
   hashes and assumed daily completion are not historical receipt/PIT evidence.
+
+- Native-daily panel forecasts use actual receipts after the New York day ends.
+  Preserve fixed H20 calendar anchors, strict mature training, immutable missed
+  residual innovations and first outcomes. Its journal claims/state CAS cannot
+  replay expired captures or authorize trading; see [daily panel](docs/alpha-daily-panel.md).

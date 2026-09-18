@@ -180,6 +180,7 @@ async def test_accounting_readiness_requires_current_run_evidence(store, app_con
     [
         (HealthComponent.ALPHA_OBSERVER, "observations"),
         (HealthComponent.ALPHA_DECISIONS, "decisions"),
+        (HealthComponent.ALPHA_DAILY_PANEL, "daily_panel"),
     ],
 )
 async def test_session_readiness_uses_current_run_progress(store, app_config, mode, component, policy):

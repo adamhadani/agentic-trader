@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pandas as pd
 import pytest
 
-from agentic_trader.config import SessionDecisionConfig
+from agentic_trader.config import AlphaPipelineConfig, SessionDecisionConfig
 from agentic_trader.market.bars import SessionClockPolicy
 from agentic_trader.research.alpha import evidence as evidence_module
 from agentic_trader.research.alpha.evidence import build_forward_evidence, load_forward_evidence
@@ -158,10 +158,18 @@ async def test_evidence_statistics_leave_event_loop_responsive(monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(evidence_module, "build_forward_evidence", slow_statistics)
+    monkeypatch.setattr(
+        evidence_module,
+        "DailyCampaignRepository",
+        lambda store, policy: SimpleNamespace(
+            report=AsyncMock(return_value={"campaigns": [], "decisions": [], "outcomes": [], "truncated": False})
+        ),
+    )
     repository = SimpleNamespace(
         snapshot=AsyncMock(return_value=RegistrySnapshot(0, (), ())),
         forward_records=AsyncMock(return_value={"decisions": [], "cursors": {}, "truncated": False}),
-        policy=SimpleNamespace(decisions=SessionDecisionConfig()),
+        store=object(),
+        policy=AlphaPipelineConfig(),
     )
     task = asyncio.create_task(load_forward_evidence(repository))
     try:

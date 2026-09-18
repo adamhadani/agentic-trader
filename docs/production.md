@@ -544,3 +544,12 @@ It reserves trials/exclusions before reading observations, while issuing no prov
 requests, broker orders or Telegram messages. Neither command starts a daemon or
 poller, qualifies an alpha or grants shadow credit. Run substantial studies in a
 separate process with bounded numerical threads and monitor the existing daemon.
+
+## Prospective native-daily research
+
+The [daily panel collector](alpha-daily-panel.md) is an independently configured
+worker in the existing daemon. `alpha_daily_panel` readiness tracks completed
+worker checks (including idle); usable forecast/outcome counts are separate in
+`alpha status` and `alpha forward`. It neither starts a Telegram poller nor submits
+orders. Its protocol path and campaign identity are explicit and immutable after
+enrollment. Day-close timing, expiry and private-artifact recovery are in the guide.

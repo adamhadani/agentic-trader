@@ -38,6 +38,7 @@ from agentic_trader.research.alpha.evidence import (
     DEFAULT_FORWARD_LIMIT,
     MAX_FORWARD_DAYS,
     MAX_FORWARD_LIMIT,
+    load_daily_panel_evidence,
     load_forward_evidence,
 )
 from agentic_trader.research.alpha.forecast_policy import MAX_SIDE_COST_BPS, DailyLongFlatPolicy
@@ -491,7 +492,9 @@ async def alpha_portfolio_cmd(snapshot_path, output):
 async def alpha_status_cmd():
     """Show installed registry acknowledgment and latest research observation."""
     async with alpha_repository() as repository:
-        click.echo(json.dumps(await repository.status(), indent=2))
+        report = await repository.status()
+        report["daily_panel"] = await load_daily_panel_evidence(repository)
+        click.echo(json.dumps(report, indent=2, allow_nan=False))
 
 
 @alpha_group.command("forward")

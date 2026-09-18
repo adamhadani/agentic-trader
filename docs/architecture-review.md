@@ -436,3 +436,17 @@ plan when computation reports completion. The audited factor result contains all
 Follow up with an explicit computed-completion contract and rejection of mismatched
 counts, retaining partial artifacts and the full charged denominator. Add this at
 the existing study boundary, without a second campaign ledger or compatibility shim.
+
+## Prospective daily diagnostics — September 18
+
+The [daily-panel observer](alpha-daily-panel.md) keeps math, application orchestration,
+SDK acquisition, journal concurrency and presentation in separate modules. It reuses
+alpha projections/events, the shared poll loop, daily artifacts and model/basket
+kernels. A separate aggregate is justified by immutable first outcomes and one
+residual-state lineage; it is not a new retry queue or trading pipeline.
+
+Remaining follow-ups: isolate research CPU capacity from latency-sensitive workers;
+measure the daily capture duration and provider revision rate; aggregate mature
+paired IC/basket evidence without dropping missed dates; obtain instrument/corporate
+action/borrow history before portfolio deployment. Keep the separately recorded
+GLD provider deadline investigation in the operational follow-up queue.
