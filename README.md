@@ -271,3 +271,9 @@ No threshold change or new alpha activation follows from this diagnostic.
 on verified retained equity/ETF data. It preserves original Ridge forecasts,
 adds causal residual momentum, and reports matched support, costs and factor
 exposures. These are charged historical diagnostics; they cannot activate alphas.
+
+
+The [54-comparison factor study](docs/alpha-factor-controls-2026-09-18.md) is complete
+and independently audited. Residual momentum adds no consistent improvement over
+the existing blend; support loss, concentration and nonzero factor exposures remain
+visible. Active mined alphas remain zero; prospective evidence is the next stage.

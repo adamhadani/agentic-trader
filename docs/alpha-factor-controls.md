@@ -1,8 +1,9 @@
 # Retained factor controls
 
-**Implementation under final verification — September 18, 2026.** The bounded
-[factor plan](alpha-factor-research-plan.md) is implemented; the full retained-data
-experiment has not yet run. This is historical development, not qualification.
+**Completed — September 18, 2026.** All 54 frozen retained-data comparisons completed;
+the [results and independent audit](alpha-factor-controls-2026-09-18.md) found no
+numerical discrepancy within the audited scope, but no consistent incremental
+residual-factor edge. This is historical development, not qualification.
 
 ## Shared architecture
 
@@ -74,5 +75,6 @@ boundaries, future-prefix invariance, invalid endpoints, rank/conditioning failu
 and numerical residual degeneracy. Shared-kernel regressions preserve original
 forecast-controls output. SQLite/PostgreSQL integration exercises actual retained
 artifacts, charging/exclusions before reads, unknown held outcomes, source tampering,
-replay and no activation. Tiny fixtures verify mechanics; the 54-comparison run
-and deployed service verification are separate evidence.
+replay and no activation. The [completed 54-comparison run](alpha-factor-controls-2026-09-18.md)
+records measured support, outcomes and audit scope. Tiny fixtures, actual-data
+research and deployed-service verification remain separate evidence.

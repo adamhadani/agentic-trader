@@ -295,3 +295,9 @@ reserve/exclude the whole parent before artifact access. Keep original Ridge
 forecasts, past-only residual fits/common support, and strict future outcome masks.
 HAC20 and descriptive basket differences do not correct repeated research. ETF
 loadings are explanatory proxies, not a factor-neutral or executable portfolio.
+
+
+The [54-comparison factor study](docs/alpha-factor-controls-2026-09-18.md) is complete
+and independently audited. Residual momentum adds no consistent improvement over
+the existing blend; support loss, concentration and nonzero factor exposures remain
+visible. Active mined alphas remain zero; prospective evidence is the next stage.
