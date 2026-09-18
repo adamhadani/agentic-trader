@@ -64,3 +64,5 @@ current artifact reads; the hash-bound parent preserves original provider receip
 and raw evidence references. Current read timestamps must not be presented as new
 market observations. Pure forecast preparation, basket accounting and cost curves
 are shared with the original forecast study, whose version-1 semantics remain intact.
+
+See the [first completed 90-comparison exercise](alpha-forecast-controls-2026-09-18.md) for results, endpoint gaps and independent verification.
