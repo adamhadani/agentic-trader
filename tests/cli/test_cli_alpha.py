@@ -15,6 +15,7 @@ from agentic_trader.cli.commands.alpha import alpha_repository, download_bars
 from agentic_trader.cli.main import cli
 from agentic_trader.data.evidence import BarAcquisitionError
 from agentic_trader.research.alpha.data import save_dataset
+from agentic_trader.research.alpha.lifetime_attribution import LifetimeAttributionProtocol
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.study import MarketScenario, PanelScenario, StudyProtocol
 from agentic_trader.research.alpha.validation import DatasetManifest, ValidationPolicy
@@ -206,6 +207,38 @@ def test_study_cli_runs_actual_calculation_without_runtime_services(monkeypatch,
     assert summary["status"] == "criteria_not_met"
     assert summary["authorizes_promotion"] is False
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in destination.rglob("*.json"))
+
+
+def test_lifetime_plan_cli_freezes_protocol_without_runtime_services(tmp_path):
+    output = tmp_path / "lifetime-protocol.json"
+    result = CliRunner().invoke(cli, ["alpha", "lifetime-plan", "--seed", "441", "--output", str(output)])
+    assert result.exit_code == 0, result.output
+    protocol = LifetimeAttributionProtocol.from_document(json.loads(output.read_text()))
+    assert protocol.seed == 441 and protocol.document()["contracts"]["synthetic_only"]
+
+
+def test_lifetime_study_cli_runs_paired_artifacts_without_runtime_services(monkeypatch, tmp_path):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Lifetime study cannot access runtime services")
+
+    for name in ("load_config", "SignalDatabase", "AlpacaDataProvider"):
+        monkeypatch.setattr(f"agentic_trader.cli.commands.alpha.{name}", forbidden)
+    protocol = LifetimeAttributionProtocol(
+        seed=442,
+        development_replicates=1,
+        null_replicates=1,
+        edge_replicates=1,
+        generated_candidates=1,
+        observations=600,
+        search_timeout_seconds=5,
+    )
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(protocol.document()))
+    output = tmp_path / "run"
+    result = CliRunner().invoke(cli, ["alpha", "lifetime-study", str(protocol_path), "--output", str(output)])
+    assert result.exit_code == 0, result.output
+    summary = json.loads((output / "completion.json").read_text())
+    assert summary["status"] == "completed" and summary["recorded_jobs"] == summary["expected_jobs"]
 
 
 def test_session_replay_cli_persists_failed_attempt_without_broker_or_notifier(monkeypatch, tmp_path):

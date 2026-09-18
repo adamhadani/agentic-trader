@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 import pandas as pd
 import pytest
 
-from agentic_trader.execution.lifetime_policy import TradeLifetimePolicy
-from agentic_trader.market.bars import SessionClockPolicy
+from agentic_trader.execution.lifetime_policy import TRADE_LIFETIME_VERSION_INDEPENDENT, TradeLifetimePolicy
+from agentic_trader.market.bars import FixedDailyClockPolicy, SessionClockPolicy
 from agentic_trader.research.alpha.models import AlphaDefinition, AlphaEvaluationMetrics
 from agentic_trader.research.alpha.simulation import BracketIntent, return_statistics, simulate_execution
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, TimedAlphaExecutionPolicy
@@ -109,6 +109,29 @@ def test_fixed_duration_simulation_cannot_silently_use_session_lifetimes(timed_p
     with pytest.raises(ValueError, match="session"):
         AlphaDefinition("timed", "Timed", "returns", execution=timed_policy)
     assert AlphaExecutionPolicy().to_dict().get("lifetime") is None
+
+
+def test_independent_lifetime_policy_roundtrips_and_preserves_disabled_side():
+    policy = TradeLifetimePolicy(None, 86400, version=TRADE_LIFETIME_VERSION_INDEPENDENT)
+    assert policy.holding_deadline(datetime(2026, 9, 17, tzinfo=UTC)) == datetime(2026, 9, 18, tzinfo=UTC)
+    assert policy.entry_deadline(datetime(2026, 9, 17, tzinfo=UTC)) is None
+
+
+def test_fixed_daily_timed_definition_roundtrips_and_is_simulatable():
+    definition = AlphaDefinition(
+        "timed_daily",
+        "Timed daily",
+        "returns",
+        timeframe="1d",
+        semantics_version=4,
+        clock=FixedDailyClockPolicy(),
+        data_feed="synthetic",
+        execution=TimedAlphaExecutionPolicy(
+            lifetime=TradeLifetimePolicy(None, 86400, version=TRADE_LIFETIME_VERSION_INDEPENDENT),
+            trail_trigger_r=100,
+        ),
+    )
+    assert AlphaDefinition.from_dict(definition.to_dict()) == definition
 
 
 @pytest.mark.parametrize("direction", [-1, 1])

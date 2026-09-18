@@ -8,7 +8,12 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from agentic_trader.market.bars import SessionClockPolicy
+from agentic_trader.market.bars import (
+    FIXED_DAILY_CLOCK_LAYOUT,
+    SESSION_BAR_LAYOUT,
+    FixedDailyClockPolicy,
+    SessionClockPolicy,
+)
 from agentic_trader.research.alpha.dsl import compile_expression
 from agentic_trader.research.alpha.strategy import (
     NORMALIZATION_WINDOW,
@@ -55,7 +60,7 @@ class AlphaDefinition:
     semantics_version: int = 2
     data_feed: str = "unverified"
     adjustment: str = "raw"
-    clock: SessionClockPolicy | None = None
+    clock: SessionClockPolicy | FixedDailyClockPolicy | None = None
 
     def __post_init__(self):
         compile_expression(self.expression)
@@ -68,18 +73,33 @@ class AlphaDefinition:
             type(self.normalization_window) is not int
             or not 2 <= self.normalization_window <= 252
             or type(self.semantics_version) is not int
-            or self.semantics_version not in (2, 3)
+            or self.semantics_version not in (2, 3, 4)
         ):
             raise ValueError("Invalid normalization or semantics version")
-        if (self.semantics_version == 2 and self.clock is not None) or (
-            self.semantics_version == 3
-            and (
-                not isinstance(self.clock, SessionClockPolicy)
-                or self.data_feed not in ("alpaca:iex", "alpaca:sip")
-                or self.adjustment != "raw"
+        if (
+            (self.semantics_version == 2 and self.clock is not None)
+            or (
+                self.semantics_version == 3
+                and (
+                    not isinstance(self.clock, SessionClockPolicy)
+                    or self.data_feed not in ("alpaca:iex", "alpaca:sip")
+                    or self.adjustment != "raw"
+                )
+            )
+            or (
+                self.semantics_version == 4
+                and (
+                    not isinstance(self.clock, FixedDailyClockPolicy)
+                    or self.timeframe != "1d"
+                    or self.data_feed != "synthetic"
+                    or self.adjustment != "raw"
+                )
             )
         ):
-            raise ValueError("Version 3 requires an explicit raw Alpaca session clock; version 2 is fixed-duration")
+            raise ValueError(
+                "Version 3 requires an explicit raw Alpaca session clock; "
+                "version 4 requires an explicit raw synthetic fixed-daily clock; version 2 is fixed-duration"
+            )
         if isinstance(self.execution, TimedAlphaExecutionPolicy) and self.clock is None:
             raise ValueError("Timed execution requires a versioned session clock")
         if self.eligible_symbols is not None:
@@ -110,6 +130,16 @@ class AlphaDefinition:
     def from_dict(cls, data: dict[str, Any]) -> AlphaDefinition:
         symbols_raw = data.get("eligible_symbols")
         eligible_symbols = tuple(str(s).upper() for s in symbols_raw) if symbols_raw else None
+        clock_data = data.get("clock")
+        clock: SessionClockPolicy | FixedDailyClockPolicy | None
+        if clock_data is None:
+            clock = None
+        elif clock_data.get("bar_layout", SESSION_BAR_LAYOUT) == SESSION_BAR_LAYOUT:
+            clock = SessionClockPolicy(**clock_data)
+        elif clock_data.get("bar_layout") == FIXED_DAILY_CLOCK_LAYOUT:
+            clock = FixedDailyClockPolicy(**clock_data)
+        else:
+            raise ValueError("Unsupported alpha clock layout")
         return cls(
             alpha_id=str(data["alpha_id"]),
             name=str(data.get("name", data["alpha_id"])),
@@ -125,7 +155,7 @@ class AlphaDefinition:
             semantics_version=data.get("semantics_version", 2),
             data_feed=str(data.get("data_feed", "unverified")),
             adjustment=str(data.get("adjustment", "raw")),
-            clock=SessionClockPolicy(**data["clock"]) if data.get("clock") is not None else None,
+            clock=clock,
         )
 
 

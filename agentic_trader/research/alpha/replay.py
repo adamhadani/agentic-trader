@@ -12,7 +12,7 @@ from enum import StrEnum
 import numpy as np
 import pandas as pd
 
-from agentic_trader.market.bars import SESSION_BAR_LAYOUT, SessionBars, utc_timestamp
+from agentic_trader.market.bars import SESSION_BAR_LAYOUT, SessionBars, SessionClockPolicy, utc_timestamp
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.simulation import entry_intents, simulate_execution
@@ -46,6 +46,8 @@ def simulate_session_strategy(
     """
     if definition.clock is None:
         raise ValueError("Session replay requires a versioned session clock")
+    if not isinstance(definition.clock, SessionClockPolicy):
+        raise TypeError("Session replay requires the regular-session clock")
     policy = definition.clock
     data.validate(definition.timeframe)
     signals = data.signals

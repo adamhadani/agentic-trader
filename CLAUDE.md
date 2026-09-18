@@ -288,6 +288,13 @@ unexamined. Measurement reuse changes no valid qualification thresholds. Missing
 nonfinite sampling evidence is unavailable and fails closed. Synthetic diagnostics
 cannot authorize promotion, journal production trials or earn shadow credit.
 
+`alpha lifetime-plan`/`lifetime-study` use the same artifact lifecycle for the
+paired P0/P1/P2 execution counterfactual. The fixed-daily clock and
+`elapsed_utc_v2` policy are diagnostic-only; selection and scores are frozen once,
+independent disabled deadlines are explicit, and each selection is checkpointed
+before replay. No lifetime attribution result can qualify an alpha or alter the
+running paper service.
+
 
 [Factor controls](docs/alpha-factor-controls.md) share `AlphaPanelService`, retained
 parent hashes and the existing journal. Freeze all six arms before reading prices;

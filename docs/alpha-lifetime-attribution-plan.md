@@ -1,9 +1,11 @@
 # Alpha lifetime attribution: proposed design
 
-**Status — September 18, 2026: design only.** No executable protocol, fresh seed,
-family snapshot or run is frozen for this study. The matrix below is the intended
-contract to implement, test and review before freezing. It grants no qualification
-or deployment authority and does not change production thresholds. The
+**Status — September 18, 2026: contract implemented; experiment not frozen.** The
+shared independent lifetime policy (`elapsed_utc_v2`), diagnostic fixed-daily clock
+(`fixed_daily_v1`), and pure paired P0/P1/P2 replay harness are implemented and
+covered by focused tests. No executable protocol, fresh seed, family snapshot or
+full run is frozen for this study. The matrix below remains the intended contract
+to review and freeze. It grants no qualification or deployment authority and does not change production thresholds. The
 [roadmap](alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns ordering.
 
 ## Question and bounded comparison
@@ -33,20 +35,28 @@ does not establish real exchange timing or a broker fill.
 
 This cannot run through existing configuration alone:
 
-- `AlphaDefinition` permits timed execution only with a version-3 session clock;
-  `simulate_strategy` rejects session-clock definitions.
+- `AlphaDefinition` permits timed execution with either the version-3 session clock
+  or the diagnostic-only version-4 fixed-daily clock; `simulate_strategy` still
+  rejects version-3 session-clock definitions and accepts only the fixed-daily
+  diagnostic clock.
 - `TradeLifetimePolicy` version `elapsed_utc_v1` requires both deadlines to be
-  positive. It cannot represent P1's disabled holding expiry.
+  positive. Version `elapsed_utc_v2` represents P1's disabled holding expiry with
+  an explicit `None` while retaining the same exact deadline functions.
 
-Add an explicit versioned fixed-daily observation/execution clock and a shared
-lifetime version with independently disabled deadlines represented explicitly,
-such as `None`. Never substitute a very large timeout or bypass clock validation
-inside the study runner. Preserve existing lifetime serialization, alpha version-2/3
-hashes and numerical results. Prove P0 parity with the original simulator behavior.
-Reuse the shared deadline functions and `simulate_execution` state machine; keep
-the new clock diagnostic-only until its qualification/execution evidence is supported.
+Never substitute a very large timeout or bypass clock validation inside the study
+runner. Preserve existing lifetime serialization, alpha version-2/3 hashes and
+numerical results. Prove P0 parity with the original simulator behavior. Reuse the
+shared deadline functions and `simulate_execution` state machine; keep the new
+clock diagnostic-only until its qualification/execution evidence is supported.
 The synthetic clock must not impersonate the receipt-qualified New York native-day
 clock of the [prospective collector](alpha-daily-panel.md).
+
+The implementation is exposed through two isolated CLI stages. `alpha lifetime-plan
+--seed SEED --output PATH` writes a new immutable protocol. `alpha lifetime-study
+PROTOCOL --output DIRECTORY` runs it through the existing private artifact lifecycle,
+checkpointing each discovery selection before paired replay. Both commands are
+synthetic-only and never open the runtime database, market provider, broker or
+Telegram notifier.
 
 ## Intended matrix and evidence accounting
 

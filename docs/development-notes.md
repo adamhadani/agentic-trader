@@ -306,6 +306,17 @@ calculation failures. Trace-on/off tests prove identical execution results. See
 scientific experiment. Deployment verification must still be recorded separately.
 
 
+## Lifetime attribution contract (September 18)
+
+The horizon-alignment follow-up now has a shared `elapsed_utc_v2` policy with
+independently disabled entry/holding deadlines, an explicit diagnostic
+`fixed_daily_v1` clock, and a pure paired P0/P1/P2 replay. `alpha lifetime-plan`
+freezes its bounded synthetic protocol; `alpha lifetime-study` retains selection
+checkpoints and per-variant traces through the existing artifact lifecycle. The
+runner reuses the current miner and bracket simulator, never reselects under a
+counterfactual, and constructs no runtime DB, provider, broker or notifier. No
+protocol has been run for production evidence and no result can authorize promotion.
+
 ## Factor-controls verification
 
 The [factor comparison](alpha-factor-controls.md) uses RED-first causal feature and

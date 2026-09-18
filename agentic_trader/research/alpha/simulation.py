@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from agentic_trader.market.bars import utc_timestamp
+from agentic_trader.market.bars import FixedDailyClockPolicy, utc_timestamp
 from agentic_trader.research.alpha.metrics import observed_return_values
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.strategy import (
@@ -87,7 +87,7 @@ def simulate_strategy(
     scores: pd.Series | None = None,
     trace: bool = False,
 ) -> dict:
-    if definition.clock is not None:
+    if definition.clock is not None and not isinstance(definition.clock, FixedDailyClockPolicy):
         raise ValueError("Versioned session strategies require session/minute replay")
     end = len(bars) if end is None else end
     if not 0 <= start < end <= len(bars):

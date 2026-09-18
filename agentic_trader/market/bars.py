@@ -25,6 +25,7 @@ BAR_DURATIONS = {
 EXECUTION_BAR_DURATION = pd.Timedelta(minutes=1)
 SESSION_BAR_LAYOUT = "rth_open_v1"
 FIXED_BAR_LAYOUT = "fixed_duration_v1"
+FIXED_DAILY_CLOCK_LAYOUT = "fixed_daily_v1"
 OHLCV = ("open", "high", "low", "close", "volume")
 MAX_DECISION_SECONDS = 86400
 
@@ -48,6 +49,18 @@ class SessionClockPolicy:
     def windows(self, closes: pd.DatetimeIndex) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
         available = closes + pd.Timedelta(seconds=self.decision_delay_seconds)
         return available, available + pd.Timedelta(seconds=self.max_lateness_seconds)
+
+
+@dataclass(frozen=True)
+class FixedDailyClockPolicy:
+    """Explicit UTC day clock reserved for causal synthetic diagnostics."""
+
+    bar_layout: str = FIXED_DAILY_CLOCK_LAYOUT
+    timezone: str = "UTC"
+
+    def __post_init__(self):
+        if self.bar_layout != FIXED_DAILY_CLOCK_LAYOUT or self.timezone != "UTC":
+            raise ValueError("Fixed daily diagnostics require the UTC fixed_daily_v1 clock")
 
 
 class ObservationStatus(StrEnum):

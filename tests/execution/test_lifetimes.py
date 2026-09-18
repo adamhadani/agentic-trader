@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from agentic_trader.execution.durable import OrderObservation
-from agentic_trader.execution.lifetime_policy import TradeLifetimePolicy
+from agentic_trader.execution.lifetime_policy import TRADE_LIFETIME_VERSION_INDEPENDENT, TradeLifetimePolicy
 from agentic_trader.execution.lifetimes import EntryIdentity, LifetimeAction, assess_lifetime
 
 
@@ -56,3 +56,35 @@ def test_lifetime_action_requires_exact_broker_evidence(lifetime_order, changes,
     now, identity, order, policy = lifetime_order
     order = order.model_copy(update={"filled_at": now - timedelta(seconds=180), **changes})
     assert assess_lifetime(policy, identity, order, now).action == expected
+
+
+@pytest.mark.parametrize(
+    ("resting_seconds", "holding_seconds", "reason"),
+    [
+        (None, 180, "resting_lifetime_disabled"),
+        (120, None, "holding_lifetime_disabled"),
+    ],
+)
+def test_independent_v2_deadlines_can_be_disabled(lifetime_order, resting_seconds, holding_seconds, reason):
+    now, identity, order, _ = lifetime_order
+    policy = TradeLifetimePolicy(
+        resting_seconds=resting_seconds,
+        holding_seconds=holding_seconds,
+        version=TRADE_LIFETIME_VERSION_INDEPENDENT,
+    )
+    if holding_seconds is None:
+        order = order.model_copy(update={"status": "filled", "filled_quantity": order.quantity, "filled_at": now})
+    decision = assess_lifetime(policy, identity, order, now + timedelta(days=31))
+    assert decision.action == LifetimeAction.NONE and decision.reason == reason and decision.deadline is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"resting_seconds": None, "holding_seconds": None},
+        {"resting_seconds": None, "holding_seconds": 0},
+    ],
+)
+def test_independent_v2_requires_one_positive_deadline(fields):
+    with pytest.raises(ValueError):
+        TradeLifetimePolicy(version=TRADE_LIFETIME_VERSION_INDEPENDENT, **fields)

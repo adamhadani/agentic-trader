@@ -81,6 +81,8 @@ def assess_lifetime(
         if order.filled_at is None or aware_utc(order.filled_at) > now:
             return LifetimeDecision(LifetimeAction.REVIEW, "missing_or_future_fill_time")
         deadline = policy.holding_deadline(order.filled_at)
+        if deadline is None:
+            return LifetimeDecision(LifetimeAction.NONE, "holding_lifetime_disabled")
         return LifetimeDecision(
             LifetimeAction.CLOSE_POSITION if now >= deadline else LifetimeAction.NONE, "holding_lifetime", deadline
         )
@@ -93,6 +95,8 @@ def assess_lifetime(
     if order.submitted_at is None or aware_utc(order.submitted_at) > now:
         return LifetimeDecision(LifetimeAction.REVIEW, "missing_or_future_submission_time")
     deadline = policy.entry_deadline(order.submitted_at)
+    if deadline is None:
+        return LifetimeDecision(LifetimeAction.NONE, "resting_lifetime_disabled")
     return LifetimeDecision(
         LifetimeAction.CANCEL_ENTRY if now >= deadline else LifetimeAction.NONE, "resting_lifetime", deadline
     )

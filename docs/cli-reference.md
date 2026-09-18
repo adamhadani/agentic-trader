@@ -496,6 +496,22 @@ incomplete evidence exits nonzero. No runtime DB, provider, notifier or broker i
 constructed; no trial is charged to production and no synthetic result can promote.
 
 
+### Synthetic lifetime attribution
+
+```bash
+uv run copilot alpha lifetime-plan --seed FRESH_INTEGER --output /private/path/lifetime.json
+uv run copilot alpha lifetime-study /private/path/lifetime.json --output /private/path/lifetime-run
+```
+
+This paired P0/P1/P2 diagnostic freezes selection once, then replays the same
+observations and scores with the original GTC policy, entry-only expiry and
+entry-plus-holding expiry. `elapsed_utc_v2` represents a disabled side explicitly
+with `null`; it never substitutes a large timeout. Selection checkpoints are saved
+before replay. The fixed-daily clock is synthetic-only, so this command creates no
+runtime DB/provider/broker/notifier state, cannot qualify or promote an alpha, and
+does not change the live paper service.
+
+
 ### Retained factor controls
 
 ```bash

@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from agentic_trader.market.bars import BAR_DURATIONS, completed_fixed_bars, fixed_bar_closes, utc_timestamp
+from agentic_trader.market.bars import (
+    BAR_DURATIONS,
+    SessionClockPolicy,
+    completed_fixed_bars,
+    fixed_bar_closes,
+    utc_timestamp,
+)
 from agentic_trader.research.alpha.strategy import TIMEFRAME_FIELDS
 
 
@@ -54,6 +60,8 @@ def closed_alpha_bars(
             raise ValueError("future_session_receipt")
         if (bars.closed_at > snapshot.received_at).any():
             raise ValueError("session_close_after_receipt")
+        if not isinstance(definition.clock, SessionClockPolicy):
+            raise ValueError("Live/session observation requires the regular-session clock")
         available, expires = definition.clock.windows(bars.closed_at)
         if bars.signals.empty:
             raise ValueError("missing_timeframe")
