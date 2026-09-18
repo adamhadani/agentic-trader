@@ -1,10 +1,13 @@
 # Bounded factor research plan
 
-**September 18, 2026 — proposal, not executed.** Keep the
-[power diagnosis](alpha-power-ablation-plan.md) as the immediate research task.
-The next useful factor experiment is a small test of information beyond our
-existing reversal/volatility styles. Prospective collection can proceed separately.
-This document adds no model, provider acquisition, journal write or promotion.
+**September 18, 2026 — implemented and executed: 54/54 comparisons completed.** The
+[results and independent audit](alpha-factor-controls-2026-09-18.md) preserve the
+mixed/negative incremental evidence; no alpha was promoted. This document retains
+the scientific rationale and frozen design, not a new invitation to rerun or tune
+the same years. Follow the [power diagnosis](alpha-power-ablation-plan.md) and
+[active roadmap](alpha-roadmap.md) for subsequent priorities; prospective collection
+remains separate. The [implementation contract](alpha-factor-controls.md) describes
+the fixed features and shared workflow.
 
 ## What our evidence supports
 
@@ -43,10 +46,10 @@ today's financial statements or sector labels cannot be backdated. Downloaded
 factor returns can support separately labelled ex-post attribution, but cannot
 stand in for point-in-time firm characteristics. [Five-factor construction](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/f-f_5_factors_2x3.html).
 
-## One proposed retained-data experiment
+## Frozen retained-data experiment
 
-Freeze a new protocol before reading retained prices. Bind the original forecast
-result, input, calendar, source and universe hashes; use its 64 equities and nine
+The completed protocol was frozen before reading retained prices. It binds the original forecast
+result, input, calendar, source and universe hashes and uses its 64 equities and nine
 sector ETFs, IEX `adjustment=all`, 2021–2025 history and 2023/2024/2025 folds.
 There is no SPY in that retained parent. The nine ETF returns are explicit common
 return proxies, not inferred stock sectors, Fama–French factors or a market index.
@@ -58,7 +61,7 @@ Three are raw skipped-month momentum, residual momentum, and a fixed equal-rank
 blend of the existing blend with residual momentum. These are related controls and
 combinations, not six independent economic hypotheses. No parameter or sign search.
 
-Proposed causal residual feature, to freeze and test before execution:
+Implemented causal residual feature, frozen and tested before execution:
 
 1. At each historical return date `s`, fit a stock's daily return on an intercept
    and the nine ETF daily returns using exactly the preceding 126 sessions, ending
@@ -125,21 +128,21 @@ all of them, including ETF controls and warmup, before the first retained read.
 Current artifact reads retain their identity separately from original provider
 receipts. No new acquisition or research engine is required.
 
-Missing: a typed frozen factor-controls plan, the causal rolling residual feature,
-and its saved fit/support evidence. `PanelForecastPlan` currently rejects
+Implemented: `FactorControlsPlan`, the causal rolling residual feature, and its
+saved fit/support evidence. `PanelForecastPlan` currently rejects
 `beta_window`; the older panel beta adjustment is not this feature contract.
 `orthogonalization.factor_neutralize` provides a projection primitive, but its WLS
 residuals are not portfolio weights. Do not reuse legacy `residual_validation`'s
 ordinary correlation p-value for overlapping panel targets.
 
-The proposed application API is
+The application API is
 `compute_factor_controls(batch, clock, plan, sessions, *, parent_result)` composed
 through `AlphaPanelService(..., compute=...).run(...)`, following
 `cli/commands/alpha_controls.py`. Share the retained-parent binding instead of
 copying its hash verifier; share evaluation kernels instead of rewriting IC/costs.
-There is **no existing CLI/config-only path for this exact experiment today**.
-A same-turn run would require those small additions, tests, review and a committed
-protocol first; the present task delivers the plan only.
+The `alpha factor-controls` CLI composes that application API through the existing
+retained-data workflow. Tests, review and a committed protocol preceded the
+[completed run](alpha-factor-controls-2026-09-18.md).
 
 Minimal RED tests: hand-computed rolling residuals; future-price/volume invariance
 of prior fits and decisions; rank-deficient/missing fits; exact skipped-month

@@ -10,19 +10,27 @@ from click.testing import CliRunner
 from agentic_trader.cli.commands import alpha_controls as command
 from agentic_trader.cli.main import cli
 from agentic_trader.config import DailyAcquisitionConfig
+from agentic_trader.research.alpha.factor_controls_plan import FactorControlsPlan
 from agentic_trader.research.alpha.forecast_controls_plan import ForecastControlsPlan
 from agentic_trader.research.alpha.panel_forecast_plan import PanelForecastPlan
 
 
+@pytest.mark.parametrize("kind", ["forecast", "factor"])
 @pytest.mark.parametrize("invalid", [None, "promotion", "cost_order"])
-def test_retained_cli_composition(tmp_path, monkeypatch, invalid):
+def test_retained_cli_composition(tmp_path, monkeypatch, invalid, kind):
 
     parent = PanelForecastPlan.from_document(
         json.loads((Path(__file__).parents[2] / "config/research/screened-equity-forecast-iex-v1.json").read_text())[
             "plan"
         ]
     )
-    plan = ForecastControlsPlan(parent, "equities", "a" * 64)
+    plan = (
+        ForecastControlsPlan(parent, "equities", "a" * 64)
+        if kind == "forecast"
+        else FactorControlsPlan(
+            parent, "equities", "a" * 64, next(c.symbols for c in parent.cohorts if c.name == "sector_etfs")
+        )
+    )
     acquisition = DailyAcquisitionConfig(min_request_interval_seconds=0)
     doc = {"plan": plan.document(), "acquisition": acquisition.model_dump(mode="json")}
     if invalid == "promotion":
@@ -51,7 +59,7 @@ def test_retained_cli_composition(tmp_path, monkeypatch, invalid):
             assert actual == plan and directory == output
             assert environment["input_origin"]["kind"] == "retained_artifacts"
             directory.mkdir()
-            result = {"status": "completed", "authorizes_promotion": False, "charged_trials": 90}
+            result = {"status": "completed", "authorizes_promotion": False, "charged_trials": plan.trial_count}
             (directory / "result.json").write_text(json.dumps(result))
             calls.append("run")
             return result
@@ -60,7 +68,7 @@ def test_retained_cli_composition(tmp_path, monkeypatch, invalid):
     monkeypatch.setattr(command, "research_environment", lambda: {"fixture": True})
     monkeypatch.setattr(command, "AlphaPanelService", Service)
     response = CliRunner().invoke(
-        cli, ["alpha", "forecast-controls", str(protocol), "--parent", str(retained), "--output", str(output)]
+        cli, ["alpha", f"{kind}-controls", str(protocol), "--parent", str(retained), "--output", str(output)]
     )
     assert response.exit_code == int(bool(invalid)), response.output
     assert calls == ([] if invalid else ["repository", "run"])

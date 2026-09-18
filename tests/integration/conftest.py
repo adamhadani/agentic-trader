@@ -20,6 +20,7 @@ from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import ExecutionMode, SignalStatus
+from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.migrations import downgrade_migrations
@@ -294,6 +295,31 @@ def postgres_test_db():
     downgrade_migrations("base", url)
     yield url
     downgrade_migrations("base", url)
+
+
+@pytest.fixture(
+    params=[
+        "sqlite",
+        pytest.param(
+            "postgres",
+            marks=[
+                pytest.mark.postgres,
+                pytest.mark.enable_socket,
+                pytest.mark.allow_hosts(["127.0.0.1", "localhost"]),
+            ],
+        ),
+    ]
+)
+async def controls_repository(request, temp_db):
+    """Shared retained-research journal over isolated SQLite or gated PostgreSQL."""
+    database = (
+        temp_db if request.param == "sqlite" else SignalDatabase(db_url=request.getfixturevalue("postgres_test_db"))
+    )
+    await database.init_db()
+    try:
+        yield AlphaRepository(database.workflows)
+    finally:
+        await database.engine.dispose()
 
 
 @pytest.fixture

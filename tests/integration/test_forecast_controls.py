@@ -25,33 +25,7 @@ from agentic_trader.research.alpha.panel_study import PanelFold, PanelHypothesis
 from agentic_trader.research.alpha.panel_workflow import AlphaPanelService
 from agentic_trader.research.alpha.retained_panel import RetainedPanelSource
 from agentic_trader.research.alpha.targets import ForecastLabel, ForecastTarget
-from agentic_trader.storage.alpha import AlphaRepository
-from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import DomainEventRecord
-
-
-@pytest.fixture(
-    params=[
-        "sqlite",
-        pytest.param(
-            "postgres",
-            marks=[
-                pytest.mark.postgres,
-                pytest.mark.enable_socket,
-                pytest.mark.allow_hosts(["127.0.0.1", "localhost"]),
-            ],
-        ),
-    ]
-)
-async def controls_repository(request, temp_db):
-    database = (
-        temp_db if request.param == "sqlite" else SignalDatabase(db_url=request.getfixturevalue("postgres_test_db"))
-    )
-    await database.init_db()
-    try:
-        yield AlphaRepository(database.workflows)
-    finally:
-        await database.engine.dispose()
 
 
 @pytest.fixture

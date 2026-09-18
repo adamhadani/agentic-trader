@@ -394,11 +394,11 @@ simulator supplies observation-only traces. No alternative simulator, journal,
 provider adapter or queue was introduced. Missing/nonfinite evidence now fails
 closed explicitly; valid thresholds and decisions remain unchanged.
 
-The next [factor-controls experiment](alpha-factor-research-plan.md) should reuse
-retained-panel provenance, the study reservation boundary and existing IC/basket
+The [completed factor-controls experiment](alpha-factor-controls-2026-09-18.md)
+reuses retained-panel provenance, the study reservation boundary and existing IC/basket
 kernels. Distinguish explanatory risk exposures from predictive characteristics
 and executable portfolios; a residual score alone supplies none of the missing
-borrow, protection or portfolio-order contracts. The plan is not an executed study.
+borrow, protection or portfolio-order contracts. All 54 comparisons completed, with mixed incremental evidence and no promotion.
 
 
 ### Measured power loss
@@ -409,3 +409,30 @@ forecast from poor conversion into trades: persistent pending orders suppress ab
 different target; lifetime DSR and trade-count failures coexist. Reuse immutable
 execution-policy identities and timed lifetimes for a fresh causal comparison.
 Do not introduce a second simulator, rewrite prior evidence or tune away joint gates.
+
+### Retained factor implementation
+
+[Factor controls](alpha-factor-controls.md) now share one retained-study CLI
+composition and a structural parent-binding interface with forecast controls.
+Parent validation, original Ridge accounting checks and paired comparisons live
+in `retained_forecasts.py`; expected-clock HAC is shared through `information.py`.
+The causal feature kernel performs one checked SVD per return date and reuses it
+across symbols with complete support. There is no second optimizer, acquisition
+engine or execution path. All risk exposures remain diagnostic. Missing source
+history reduces reported breadth; it cannot shorten the frozen fit window.
+
+
+### Follow-up from completed factor controls
+
+The [independently audited factor run](alpha-factor-controls-2026-09-18.md) found
+no discrepancy in the checked provenance/numerics. Residual ranking still carries
+ETF exposures; strict historical support roughly halves the 2023 sample, and some
+2025 gains are concentrated in one stock. Prospectively persist forecasts and source
+availability before widening adaptive search or introducing optimized orders.
+
+The shared `AlphaPanelService` currently assigns `completed_comparisons` from the
+plan when computation reports completion. The audited factor result contains all
+54 declared comparisons, but a future generic adapter could mislabel partial output.
+Follow up with an explicit computed-completion contract and rejection of mismatched
+counts, retaining partial artifacts and the full charged denominator. Add this at
+the existing study boundary, without a second campaign ledger or compatibility shim.

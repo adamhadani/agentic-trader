@@ -89,7 +89,8 @@ measurement, criterion, trace and completion record. Some null winners have no f
 predictor/outcome pairs; their descriptive forecast metric is explicitly unavailable,
 not zero. This does not make their measured policy-gate result unavailable.
 
-- Source: `5d93f45e7358413d3c645a9b6d732564e013826a`.
+- Source: `5d93f45e7358413d3c645a9b6d732564e013826a`, preserved by tag
+  `research/power-diagnosis-v1-20260918`.
 - Protocol identity: `4e319f808a1e66d86fdaa24a3be947eb16dbefed4b37f51200dd646aab23937b`.
 - Completion SHA-256: `7fa70f1b3775d4af2dbfbe8e06f8e55fe8896c5677b5390d622b429d99c1bd94`.
 - Manifest SHA-256: `f317317d016c6ee880f9c2b1fbe7d18cc48f837980df593cba1fdf50e975bf3a`.

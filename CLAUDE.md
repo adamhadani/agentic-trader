@@ -133,7 +133,7 @@ Schema 008 adds alpha projections and optional signal attribution. The original
 [alpha-stack review](docs/alpha-stack-review.md) remains historical evidence;
 its strict expected failures have become passing regression tests.
 
-The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. Account drawdown and [broker entry capacity](docs/entry-capacity.md) now share the existing FIFO/ledger boundaries: funding, borrowing, exact protection, observed-equity sizing and aggregate planned stop risk are rechecked before submission. Pre-reservation research acquisition, [gate-power diagnosis](docs/alpha-power-ablation-plan.md) and measured portfolio volatility/tail constraints remain research priorities. The [800-search result](docs/alpha-power-diagnosis-2026-09-18.md) identifies GTC entry conversion and joint-gate power losses; distinguish it from the separately delivered [factor controls](docs/alpha-factor-research-plan.md). The convex allocator remains shadow-only. Update milestones and evidence when completing work.
+The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. Account drawdown and [broker entry capacity](docs/entry-capacity.md) now share the existing FIFO/ledger boundaries: funding, borrowing, exact protection, observed-equity sizing and aggregate planned stop risk are rechecked before submission. Pre-reservation research acquisition, horizon-aligned gate calibration and measured portfolio volatility/tail constraints remain research priorities. The [800-search result](docs/alpha-power-diagnosis-2026-09-18.md) identifies GTC entry conversion and joint-gate power losses; distinguish it from the separately delivered [factor results](docs/alpha-factor-controls-2026-09-18.md). The convex allocator remains shadow-only. Update milestones and evidence when completing work.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
@@ -287,3 +287,17 @@ selection before holdout; mechanical development failures must leave validation
 unexamined. Measurement reuse changes no valid qualification thresholds. Missing or
 nonfinite sampling evidence is unavailable and fails closed. Synthetic diagnostics
 cannot authorize promotion, journal production trials or earn shadow credit.
+
+
+[Factor controls](docs/alpha-factor-controls.md) share `AlphaPanelService`, retained
+parent hashes and the existing journal. Freeze all six arms before reading prices;
+reserve/exclude the whole parent before artifact access. Keep original Ridge
+forecasts, past-only residual fits/common support, and strict future outcome masks.
+HAC20 and descriptive basket differences do not correct repeated research. ETF
+loadings are explanatory proxies, not a factor-neutral or executable portfolio.
+
+
+The [54-comparison factor study](docs/alpha-factor-controls-2026-09-18.md) is complete
+and independently audited. Residual momentum adds no consistent improvement over
+the existing blend; support loss, concentration and nonzero factor exposures remain
+visible. Active mined alphas remain zero; prospective evidence is the next stage.

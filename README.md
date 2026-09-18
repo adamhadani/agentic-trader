@@ -259,10 +259,21 @@ no new alpha is qualified by these risk controls.
 `alpha power-plan` / `alpha power-study` diagnose predictor, search, execution and
 qualification gates with paired synthetic controls and a sourced family snapshot.
 They share the existing artifact workflow and cannot promote strategies or send
-orders. See the [power diagnosis](docs/alpha-power-ablation-plan.md) and the next
-[bounded factor experiment](docs/alpha-factor-research-plan.md).
+orders. See the [completed power diagnosis](docs/alpha-power-diagnosis-2026-09-18.md) and
+[completed factor experiment](docs/alpha-factor-controls-2026-09-18.md).
 
 
 The [800-search power diagnosis](docs/alpha-power-diagnosis-2026-09-18.md) found strong
 planted forecasts but poor GTC entry conversion and inadequate promotion power.
 No threshold change or new alpha activation follows from this diagnostic.
+
+`alpha factor-controls` runs a fixed [six-arm factor comparison](docs/alpha-factor-controls.md)
+on verified retained equity/ETF data. It preserves original Ridge forecasts,
+adds causal residual momentum, and reports matched support, costs and factor
+exposures. These are charged historical diagnostics; they cannot activate alphas.
+
+
+The [54-comparison factor study](docs/alpha-factor-controls-2026-09-18.md) is complete
+and independently audited. Residual momentum adds no consistent improvement over
+the existing blend; support loss, concentration and nonzero factor exposures remain
+visible. Active mined alphas remain zero; prospective evidence is the next stage.

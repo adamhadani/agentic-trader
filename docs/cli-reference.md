@@ -483,3 +483,18 @@ calculation failures. A missing snapshot leaves current-family endpoints unavail
 there is no historical substitution. Complete scientific rejection exits successfully;
 incomplete evidence exits nonzero. No runtime DB, provider, notifier or broker is
 constructed; no trial is charged to production and no synthetic result can promote.
+
+
+### Retained factor controls
+
+```bash
+uv run copilot alpha factor-controls config/research/equity-factor-controls-iex-v1.json \
+  --parent /private/path/original-forecast-study --output /private/path/new-factor-study
+```
+
+The [factor contract](alpha-factor-controls.md) freezes six arms, three original
+annual folds and 1/5 bp costs: 54 charged comparisons. The parent directory must
+match the exact hash-bound protocol. The shared research journal reserves the
+budget and excludes all parent members before reads. Retained files supply data;
+there are no provider calls, supervised refits, orders, notifications or promotion.
+An incomplete/failed study exits nonzero while retaining its charge and artifacts.

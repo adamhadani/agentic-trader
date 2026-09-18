@@ -177,3 +177,8 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
   keep current-family provenance distinct from historical sensitivity, and stop
   before validation after mechanical development failures. Synthetic output never
   grants promotion/shadow credit or charges the live trial ledger.
+
+- [Factor controls](docs/alpha-factor-controls.md) reuse the retained-panel workflow.
+  Preserve strictly prior residual fits, original parent forecasts, common causal
+  support and unknown held outcomes. Charge/exclude before any parent read; source
+  hashes and assumed daily completion are not historical receipt/PIT evidence.
