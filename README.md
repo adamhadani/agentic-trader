@@ -240,3 +240,7 @@ immutable member checkpoints and fail-closed selection. IEX activity is source-s
 this development screen neither establishes historical membership nor qualifies alphas.
 
 `alpha forecast-study` now separates explicit-horizon forecast evidence from deployment gates over the [screened equities and ETF controls](docs/alpha-panel-forecasts.md). It preserves past-only eligibility, mature training labels, all model outcomes and cost sensitivity; current membership remains survivor-conditioned development evidence.
+
+`alpha forecast-controls` replays the [matched style and endpoint-evidence study](docs/alpha-forecast-controls.md) from verified retained artifacts. It uses the existing trial journal, makes no provider calls and cannot activate a strategy.
+
+The [September 18 matched-control result](docs/alpha-forecast-controls-2026-09-18.md) reproduces Ridge but finds comparable simple-style performance and unknown 2023 endpoints. No active alpha was added; prospective evidence with fixed controls is next.

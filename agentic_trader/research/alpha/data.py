@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 import numpy as np
 import pandas as pd
@@ -40,7 +41,7 @@ def save_dataset(frame: pd.DataFrame, directory: Path, digest: str) -> Path:
     return path
 
 
-def load_dataset(path: Path) -> pd.DataFrame:
+def load_dataset(path: Path | BinaryIO) -> pd.DataFrame:
 
     with np.load(path, allow_pickle=False) as saved:
         index = pd.DatetimeIndex(pd.to_datetime(saved["timestamps"], unit=str(saved["index_unit"]), utc=True))

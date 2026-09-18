@@ -4,7 +4,7 @@ Current-cohort development only. Missing historical observations remain on the
 clock; future outcomes never determine forecasts or basket membership.
 """
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ from agentic_trader.research.alpha.diagnostics import forecast_diagnostics
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 from agentic_trader.research.alpha.forecast_policy import BASIS_POINTS
 from agentic_trader.research.alpha.information import cross_sectional_ic
-from agentic_trader.research.alpha.panel import align_daily_panel
+from agentic_trader.research.alpha.panel import DailyResearchPanel, align_daily_panel
 from agentic_trader.research.alpha.panel_forecast_plan import MODEL_CONTROLS, PANEL_FORECAST_VERSION, PanelForecastPlan
 from agentic_trader.research.alpha.panel_study import PanelStudyStatus, basket_weights
 from agentic_trader.research.alpha.targets import forecast_labels
@@ -97,7 +97,7 @@ def _predictions(features, eligible, labels, positions, clock, cohort, plan):
     return frames, fits
 
 
-def _baskets(scores, labels, cohort, plan):
+def _baskets(scores, labels, cohort, plan, weight_builder=None):
     dates = scores.index
     horizon = plan.target.horizon_bars
     observations = []
@@ -107,7 +107,15 @@ def _baskets(scores, labels, cohort, plan):
         weights = pd.Series(0.0, index=cohort.symbols)
         enough = len(available) >= cohort.min_assets
         if enough:
-            weights.loc[available.index] = basket_weights(available, cohort.top_k)
+            chosen = basket_weights(available, cohort.top_k) if weight_builder is None else weight_builder(available)
+            if (
+                not isinstance(chosen, pd.Series)
+                or not chosen.index.equals(available.index)
+                or not np.isfinite(chosen.to_numpy()).all()
+                or (chosen.abs().sum() > 1 and not np.isclose(chosen.abs().sum(), 1))
+            ):
+                raise ValueError("Basket policy must preserve finite symbol weights and unit gross bounds")
+            weights.loc[available.index] = chosen
         # Only after immutable weights exist do outcome values enter evaluation.
         outcomes = labels.iloc[offset]
         held = weights.ne(0)
@@ -189,7 +197,8 @@ def _cost_summaries(baskets, costs):
     return summaries
 
 
-def _trial(scores, labels, cohort, fold, plan):
+def evaluate_forecast_trial(scores, labels, cohort, fold, plan, *, weight_builder=None):
+    """Evaluate a frozen score panel using one shared IC and basket accounting contract."""
     horizon = plan.target.horizon_bars
     mature = scores.index[:-horizon]
     predicted, target = scores.loc[mature], labels.loc[mature]
@@ -206,7 +215,7 @@ def _trial(scores, labels, cohort, fold, plan):
         expected_index=mature,
         target=plan.target,
     )
-    baskets = _baskets(scores, labels, cohort, plan)
+    baskets = _baskets(scores, labels, cohort, plan, weight_builder)
     return {
         "cohort": cohort.name,
         "fold": fold.name,
@@ -229,8 +238,19 @@ def _trial(scores, labels, cohort, fold, plan):
     }
 
 
-def compute_panel_forecast(batch: DailyStudyInputs, clock, plan: PanelForecastPlan, sessions):
-    """Run a complete declared matrix, retaining unavailable support within each cell."""
+@dataclass(frozen=True)
+class ForecastPanelInputs:
+    panel: DailyResearchPanel
+    features: dict[str, pd.DataFrame]
+    observed: pd.DataFrame
+    history: pd.DataFrame
+    finite: pd.DataFrame
+    eligible: pd.DataFrame
+    labels: pd.DataFrame
+
+
+def prepare_forecast_inputs(batch: DailyStudyInputs, clock, plan: PanelForecastPlan, sessions):
+    """Validate native sources and derive the shared causal feature/label support."""
     SessionSchedule(plan.start, plan.end, sessions, "observed_exchange_calendar")
     expected = pd.DatetimeIndex([pd.Timestamp(s.date, tz=ET_TZ) for s in sessions])
     if not isinstance(clock, pd.DatetimeIndex) or not clock.equals(expected):
@@ -255,6 +275,14 @@ def compute_panel_forecast(batch: DailyStudyInputs, clock, plan: PanelForecastPl
         finite &= np.isfinite(frame)
     eligible = history & finite
     all_labels = pd.DataFrame({symbol: forecast_labels(frame, plan.target) for symbol, frame in panel.frames.items()})
+    return ForecastPanelInputs(panel, features, observed, history, finite, eligible, all_labels)
+
+
+def compute_panel_forecast(batch: DailyStudyInputs, clock, plan: PanelForecastPlan, sessions):
+    """Run a complete declared matrix, retaining unavailable support within each cell."""
+    inputs = prepare_forecast_inputs(batch, clock, plan, sessions)
+    panel, features, eligible, all_labels = inputs.panel, inputs.features, inputs.eligible, inputs.labels
+    observed, history, finite = inputs.observed, inputs.history, inputs.finite
     supports, trials = [], []
     for cohort in plan.cohorts:
         columns = list(cohort.symbols)
@@ -291,7 +319,7 @@ def compute_panel_forecast(batch: DailyStudyInputs, clock, plan: PanelForecastPl
                 }
             )
             for model, scores in predicted.items():
-                result = _trial(scores, outcomes, cohort, fold, plan)
+                result = evaluate_forecast_trial(scores, outcomes, cohort, fold, plan)
                 result["model"] = model
                 if model in MODEL_CONTROLS:
                     mature = dates[: -plan.target.horizon_bars]

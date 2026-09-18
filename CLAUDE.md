@@ -275,3 +275,5 @@ immutable member checkpoints and fail-closed selection. IEX activity is source-s
 this development screen neither establishes historical membership nor qualifies alphas.
 
 [Screened panel forecasts](docs/alpha-panel-forecasts.md) reuse the daily acquisition/journal service. Keep all frozen members on the exchange clock, derive eligibility only from past bars, and train Ridge only on strictly mature labels with training-only scaling. Freeze weights before inspecting outcomes; missing held outcomes withhold the full curve. The old complete-panel and production qualification contracts remain unchanged. No active alpha or calibrated promotion power is implied by a completed diagnostic.
+
+[Retained forecast controls](docs/alpha-forecast-controls.md) reuse the same daily workflow and payoff kernels. Charge and exclude all parent members before reading artifacts; preserve source hashes and original receipt times. Strict endpoint volume masks outcomes only. Never change decisions based on future availability, refit the frozen parent, compound paired return differences, or present long-only context as matched market-neutral risk.

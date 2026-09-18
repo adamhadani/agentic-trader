@@ -566,20 +566,21 @@ intraday limitation does not block the next native-daily equity liquidity/foreca
 
 ### Next work after the screened-equity forecast study
 
-1. Freeze an exposure/concentration and endpoint-evidence diagnostic before further
-   candidate selection: compare the Ridge lead with matched passive/style controls,
-   distinguish high-volatility reversal exposure from incremental forecasting skill,
-   and define unknown/zero-volume execution endpoints without outcome-based basket
-   substitution. Current results are numerically verified but five names supply
-   74.23% of net arithmetic gain; 2024 loses without its best original basket.
-   The training-mean control is not an exposure benchmark. Retained-data follow-ups
-   remain development evidence, with separately declared/charged comparisons.
-2. Freeze prospective daily panel observations for the equity Ridge lead using
-   the existing observation/journal infrastructure. Persist the exact eligible
-   universe, mature training cutoff, fitted artifact, forecast and frozen basket
-   before outcomes arrive. Keep it diagnostic until complete horizon labels,
-   stability and execution/borrow evidence exist. Historical results from today's
-   surviving/liquid cohort cannot be promoted through the formula/bracket path.
+1. **Completed:** the [matched-control and endpoint study](alpha-forecast-controls-2026-09-18.md)
+   ran all 90 frozen comparisons. Ridge's original result reproduces, but the
+   volatility style has higher mean IC in every year; incremental learning is
+   unproven. Strict endpoint evidence withholds four 2023 Ridge baskets. Preserve
+   the original result semantics and all comparison/inspection accounting.
+2. Build prospective daily panel observations with fixed Ridge and simple-style
+   controls using the existing observation/journal infrastructure. First freeze
+   a source-qualified label contract for both training and evaluation; the retained
+   study intentionally did not refit its original finite-price labels. Any changed
+   historical fit is a separately charged diagnostic, not a rewrite of this run.
+   Persist the eligible universe, strictly mature training cutoff, fitted artifact,
+   forecasts and frozen baskets before outcomes arrive. Do not privilege Ridge
+   solely for its original absolute return. Keep every model diagnostic until
+   complete horizon labels, stability, risk/exposure and execution/borrow evidence
+   exist. Current-cohort results cannot enter the formula/bracket promotion path.
 3. Run the predeclared fresh-seed power ablation: known predictor versus learned
    winner, forecast skill versus actual bracket conversion, full and drop-one-gate
    diagnostics. Migrate legacy one-step IC only with horizon-aligned evidence.
@@ -591,4 +592,4 @@ intraday limitation does not block the next native-daily equity liquidity/foreca
    executable portfolio ownership before any panel allocation can trade.
 
 No additional genetic/DSL search is justified merely by the previous zero-promotion
-count: this fixed simple model now provides a concrete lead to investigate.
+count: fixed simple styles and a model now provide concrete leads for prospective comparison.
