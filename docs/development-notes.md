@@ -311,6 +311,6 @@ scientific experiment. Deployment verification must still be recorded separately
 The [factor comparison](alpha-factor-controls.md) uses RED-first causal feature and
 protocol tests, existing forecast-controls regression checks, and real retained-file
 SQLite/PostgreSQL integration. The shared fixture preserves guarded disposable DBs.
-Integration covers pre-read charging/exclusion, immutable parent data, full126-row
+Integration covers pre-read charging/exclusion, immutable parent data, full 126-row
 fits, unknown held outcomes, replay and no activation. Full historical results and
 service deployment checks remain separate from these synthetic mechanical fixtures.

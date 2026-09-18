@@ -1,12 +1,11 @@
 # Alpha power diagnosis plan
 
-**Harness implemented; full study pending — September 18, 2026.** `alpha power-plan`
-and `alpha power-study` now compose this diagnosis through the existing synthetic
-artifact workflow. Review fixes and final verification are in progress; this document
-does not claim a completed 800-search run. Freeze the protocol/source revision before
-validation. Follow the [canonical roadmap](alpha-roadmap.md); prospective collection
-is separate, and the [54-comparison factor experiment](alpha-factor-research-plan.md)
-is the following retained-data research priority. No promotion gate changes.
+**Completed — September 18, 2026.** `alpha power-plan` and `alpha power-study`
+compose the diagnosis through the existing synthetic artifact workflow. The frozen
+[800-search result](alpha-power-diagnosis-2026-09-18.md) passed its null bounds but
+failed positive-control power. The subsequent [54-comparison factor study](alpha-factor-controls-2026-09-18.md)
+is also complete. This document retains the predeclared protocol; the
+[canonical roadmap](alpha-roadmap.md) owns next work. No promotion gate changed.
 
 ## Question and existing evidence
 
