@@ -171,3 +171,9 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
   reservations under the trading lock. Use the lesser of mandate and observed equity;
   missing funding/borrow/protection evidence blocks new risk. Planned stop risk is not
   a gap-loss or CVaR guarantee. Keep research gate-power diagnostics separate from promotion.
+
+- [Power diagnosis](docs/alpha-power-ablation-plan.md) reuses immutable statistical
+  measurements and the existing artifact runner. Freeze selection before holdout,
+  keep current-family provenance distinct from historical sensitivity, and stop
+  before validation after mechanical development failures. Synthetic output never
+  grants promotion/shadow credit or charges the live trial ledger.

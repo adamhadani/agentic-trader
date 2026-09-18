@@ -21,8 +21,8 @@ The next risk tranche adds [broker entry capacity](entry-capacity.md), retaining
 FIFO, journal and lock order. Tests include real SDK HTTP evidence and independent
 PostgreSQL writers, including stale evidence after lock waits. Funding, borrowing,
 protected exposure and planned stop-risk budgets are checked before POST. The
-[power-ablation plan](alpha-power-ablation-plan.md) records the next research experiment;
-planning evidence is not a completed run or promotion.
+[power diagnosis](alpha-power-diagnosis-2026-09-18.md) records all 800 completed
+searches and the pending-order/forecast mismatch; no gate change or promotion follows.
 
 Alpha closure/clock checks now live in `market/bars.py`, shared by research,
 screening and shadow. Fixed-duration versions reject explicit session/unknown
@@ -293,3 +293,14 @@ this development screen neither establishes historical membership nor qualifies 
 [Screened panel forecasts](alpha-panel-forecasts.md) compose a versioned pure computation through `AlphaPanelService`; plan validation binds the complete prior liquidity result, manifest and input evidence. Shared forecast estimator construction serves both single-symbol and panel diagnostics. No additional journal/schema or execution path is introduced. Test causal eligibility, strict label maturity, future perturbations and held/unheld missing outcomes separately from actual data and deployed verification.
 
 Retained-data follow-ups use `alpha forecast-controls` and the shared daily workflow. Its [contract](alpha-forecast-controls.md) requires tests for source/hash tampering, reservation before reads, exact parent forecast reconstruction, unchanged decisions under future-volume perturbations, and unknown paired denominators. Unit fixtures contain synthetic artifacts; integration tests replay the real journal on SQLite and opt-in disposable PostgreSQL without market APIs.
+
+
+## Power-diagnosis changes (September 18)
+
+`alpha power-plan`/`power-study` are artifact-only synthetic commands. Their CLI
+integration test forbids runtime config/storage/provider construction and exercises
+real mining, selection checkpoints, measurements and summaries. Fault-injection
+regressions preserve completed evidence and prevent validation after development
+calculation failures. Trace-on/off tests prove identical execution results. See
+[protocol and budget](alpha-power-ablation-plan.md); a test fixture is not the full
+scientific experiment. Deployment verification must still be recorded separately.

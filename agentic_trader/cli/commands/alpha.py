@@ -53,6 +53,8 @@ from agentic_trader.research.alpha.panel_study import (
 from agentic_trader.research.alpha.panel_workflow import AlphaPanelService
 from agentic_trader.research.alpha.persistent_study import PersistentStudyPlan, compute_persistent_study
 from agentic_trader.research.alpha.portfolio import PortfolioPolicy, PortfolioSnapshot, build_shadow_portfolio
+from agentic_trader.research.alpha.power_artifacts import execute_power_study
+from agentic_trader.research.alpha.power_study import FamilySnapshot, PowerProtocol
 from agentic_trader.research.alpha.promotion import AlphaPromotionService, read_alpha_definitions
 from agentic_trader.research.alpha.replay import (
     ReplayPlan,
@@ -603,6 +605,56 @@ async def alpha_study_cmd(protocol_path, output):
     click.echo("Diagnostic only; neither study completion nor passing criteria authorizes promotion.")
     if result["status"] == StudyStatus.INCOMPLETE:
         raise click.ClickException("Incomplete study; inspect retained failures. Validation may remain unexamined.")
+
+
+@alpha_group.command("power-plan")
+@click.option("--seed", type=click.IntRange(0, 2**128 - 1), required=True)
+@click.option("--family-snapshot", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True)
+@coro
+async def alpha_power_plan_cmd(seed, family_snapshot, output):
+    """Freeze paired control/winner diagnosis; no observations evaluated."""
+    try:
+        snapshot = (
+            FamilySnapshot.model_validate_json(await asyncio.to_thread(family_snapshot.read_text))
+            if family_snapshot
+            else None
+        )
+        protocol = PowerProtocol(seed=seed, family_snapshot_hash=snapshot.identity if snapshot else None)
+        await asyncio.to_thread(save_json_report, protocol.document(), output)
+    except (ValueError, TypeError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Power protocol {protocol.identity}: {output}")
+    if snapshot is None:
+        click.echo("Current-family comparisons will remain unavailable without a sourced snapshot.")
+
+
+@alpha_group.command("power-study")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--family-snapshot", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True)
+@coro
+async def alpha_power_study_cmd(protocol_path, family_snapshot, output):
+    """Diagnose search, execution and individual gates using synthetic paired controls."""
+    try:
+        protocol = PowerProtocol.from_document(json.loads(await asyncio.to_thread(protocol_path.read_text)))
+        snapshot = (
+            FamilySnapshot.model_validate_json(await asyncio.to_thread(family_snapshot.read_text))
+            if family_snapshot
+            else None
+        )
+        environment = await asyncio.to_thread(research_environment)
+        result = await asyncio.to_thread(
+            execute_power_study, protocol, output, environment, snapshot, progress=click.echo
+        )
+    except (TypeError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Power study {result['status']}; {result['recorded_jobs']}/{result['expected_jobs']} searches retained."
+    )
+    click.echo("Synthetic diagnosis only; no promotion permission or runtime state changed.")
+    if result["status"] == StudyStatus.INCOMPLETE:
+        raise click.ClickException("Incomplete power diagnosis; inspect retained missing/failed comparisons.")
 
 
 @alpha_group.command("replay")

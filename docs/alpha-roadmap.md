@@ -43,18 +43,20 @@ research run or runtime policy change was made for this review.
    Legacy CVaR signs/units and unsupported Sharpe annualization are corrected (S4);
    the IID report remains descriptive, not live protection. Source/test completion
    and installed-service verification are recorded separately.
-2. **Two research tracks in parallel.** (a) Fresh-seed known-predictor → search-winner
-   → execution → individual-gate ablation; version horizon/dependence-aware IC and
-   residual evidence, and calibrate statistical families without erasing trial history.
-   (b) Start prospective native-daily Ridge/style observations with source-qualified
-   training/evaluation labels and frozen decisions; evaluate explicit delayed-SIP
-   daily coverage alongside separately identified IEX. Do not wait for a complete
-   historical point-in-time database to begin valid prospective evidence.
-3. **One bounded wider experiment.** Expand the forecast-specific limit from 64
-   toward the 150 currently eligible names and then a declared 150–300 cohort, with
-   performance/missing-support tests and unchanged older complete-book contracts.
-   Add a small set of economically different residual/overnight/liquidity hypotheses,
-   matched controls and incremental portfolio-value tests. Freeze before acquisition.
+2. **Power diagnosis completed; fix horizon-to-execution alignment next.** The
+   [800-search result](alpha-power-diagnosis-2026-09-18.md) meets the frozen null
+   bounds but fails positive-control power. The known forecast works; GTC pending
+   orders suppress about 90% of later opportunities. Search objectives and joint
+   gates add distinct losses. Freeze a fresh horizon/lifetime-aligned experiment
+   using existing execution contracts; keep gates and lifetime history unchanged.
+   Start prospective native-daily style observations alongside this work, with
+   source-qualified labels, actual receipts and frozen decisions before outcomes.
+3. **Bounded factor comparison, then broader coverage.** The
+   [54-comparison retained-data plan](alpha-factor-research-plan.md) tests skipped-month
+   and causal residual momentum against existing Ridge/reversal/volatility styles,
+   including incremental net value. The implementation and actual-data follow-up
+   are delivered separately. Broader adaptive search waits for measured diagnosis;
+   expand forecast breadth only with explicit membership/missing-support contracts.
 4. **Consolidate ongoing campaigns before increasing cadence (S2).** Scheduled
    `alpha mine` still fetches before reservation and remains ETF32; migrate to the
    predeclared journal/acquisition boundary. Add an explicit stage/rejection/maturity
@@ -72,19 +74,20 @@ survey. Zero promotions alone proves neither correct pruning nor absence of alph
 
 ### September 18 progress — isolate the loss of detection power
 
-The [bounded power-ablation plan](alpha-power-ablation-plan.md) is now persisted.
-The immediate research focus is known predictor → selected winner → bracket
-execution → individual criteria, before increasing adaptive search budgets or
-adding algorithms. Prospective daily collection remains a separate accumulating
-track; it need not wait for statistical diagnosis.
+The [power-ablation harness](alpha-power-ablation-plan.md) implements 800 searches
+over 400 datasets (12,800 expression evaluations), with 16 primary current-family
+full-policy endpoints. A read-only snapshot confirms 7,826 prior global attempts
+and an existing current native-daily projection containing zero Sharpe samples. Each separate 16-trial counterfactual
+therefore uses count 7,842 and that run's evaluated Sharpe samples; it does not infer
+variance from 7,826 independent hypotheses. A2a's 7,065 reference stays historical.
 
-This is a docs-only planning milestone: no new runner, RED/GREEN test result,
-validation run or acceptance tolerance is claimed. The proposed finite matrix
-requires a fresh seed, committed protocol and sourced current count/variance
-snapshot first. A2a's 7,065-trial reference is historical; 7,826 is the last reported
-current count, not a refreshed snapshot. Retain all history, unavailable comparisons
-and diagnostic-only boundaries. No threshold change or promotion follows from this
-plan, and the proposed full search matrix is not promised for the current turn.
+Review and tests verified mechanical development stopping, predictor/execution
+boundaries, frozen bootstrap settings and stratified cofailures. The completed
+[800-search diagnosis](alpha-power-diagnosis-2026-09-18.md) has no failed jobs or
+unavailable full-policy endpoints, but fails every positive-power criterion.
+The [factor follow-up](alpha-factor-research-plan.md) is a concrete 54-comparison
+next experiment; prospective collection remains separate. No threshold reduction,
+promotion or paper allocation follows from either diagnostic.
 
 ## Ordered work queue
 
@@ -643,9 +646,10 @@ intraday limitation does not block the next native-daily equity liquidity/foreca
    solely for its original absolute return. Keep every model diagnostic until
    complete horizon labels, stability, risk/exposure and execution/borrow evidence
    exist. Current-cohort results cannot enter the formula/bracket promotion path.
-3. Run the predeclared fresh-seed power ablation: known predictor versus learned
-   winner, forecast skill versus actual bracket conversion, full and drop-one-gate
-   diagnostics. Migrate legacy one-step IC only with horizon-aligned evidence.
+3. The [fresh-seed power ablation](alpha-power-diagnosis-2026-09-18.md) is complete.
+   Next test horizon-aligned entry/holding lifetimes against the frozen GTC baseline,
+   with constant-exposure/null controls and fresh seeds. Migrate legacy one-step IC
+   only with horizon-aligned evidence.
    Keep lifetime accounting; calibrate the decision rule rather than lowering
    thresholds to pass the newly inspected lead. Nominal test level and acceptable
    false-positive bound must be distinct protocol parameters.

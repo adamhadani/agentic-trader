@@ -380,4 +380,32 @@ it. No fallback account model, protection inference by symbol, or second workflo
 was added. S2, calibrated gate power, measured portfolio volatility/tail constraints
 and executable portfolio plans remain open. The [power-ablation plan](alpha-power-ablation-plan.md)
 separates planted-predictor recovery, selected winner, execution and individual gates;
-it is a pending diagnostic experiment, not evidence that production gates are valid.
+its [completed diagnosis](alpha-power-diagnosis-2026-09-18.md) finds poor positive
+power and a concrete GTC entry-lifetime mismatch; production gates remain unchanged.
+
+
+### Power diagnosis and factor research (September 18)
+
+The [power harness](alpha-power-ablation-plan.md) composes pure jobs and summaries
+through the existing synthetic artifact lifecycle. Qualification splits expensive
+immutable measurements from cheap criteria assessment; this avoids rerunning
+bootstrap or novelty calculations for count/variance sensitivities. The shared
+simulator supplies observation-only traces. No alternative simulator, journal,
+provider adapter or queue was introduced. Missing/nonfinite evidence now fails
+closed explicitly; valid thresholds and decisions remain unchanged.
+
+The next [factor-controls experiment](alpha-factor-research-plan.md) should reuse
+retained-panel provenance, the study reservation boundary and existing IC/basket
+kernels. Distinguish explanatory risk exposures from predictive characteristics
+and executable portfolios; a residual score alone supplies none of the missing
+borrow, protection or portfolio-order contracts. The plan is not an executed study.
+
+
+### Measured power loss
+
+The [800-search diagnosis](alpha-power-diagnosis-2026-09-18.md) separates a functioning
+forecast from poor conversion into trades: persistent pending orders suppress about
+90% of known-control pulses. Search ranks bracket economics while one-step IC tests a
+different target; lifetime DSR and trade-count failures coexist. Reuse immutable
+execution-policy identities and timed lifetimes for a fresh causal comparison.
+Do not introduce a second simulator, rewrite prior evidence or tune away joint gates.

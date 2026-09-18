@@ -1,10 +1,12 @@
 # Alpha power diagnosis plan
 
-**Planning status — September 18, 2026.** This document specifies the next bounded
-research diagnosis. No runner, frozen execution protocol, new study, statistical
-tolerance or production gate change is delivered by this documentation change.
-Follow the [canonical roadmap](alpha-roadmap.md); prospective collection is a
-separate track that can accumulate evidence while this diagnosis is developed.
+**Harness implemented; full study pending — September 18, 2026.** `alpha power-plan`
+and `alpha power-study` now compose this diagnosis through the existing synthetic
+artifact workflow. Review fixes and final verification are in progress; this document
+does not claim a completed 800-search run. Freeze the protocol/source revision before
+validation. Follow the [canonical roadmap](alpha-roadmap.md); prospective collection
+is separate, and the [54-comparison factor experiment](alpha-factor-research-plan.md)
+is the following retained-data research priority. No promotion gate changes.
 
 ## Question and existing evidence
 
@@ -19,7 +21,7 @@ holdout-only alternative accepted 12–28 of 64. That comparator removes multipl
 criteria at once; it cannot attribute failure to one threshold. Original protocols,
 artifacts, failures and decisions remain immutable.
 
-Three confounders need explicit controls:
+The new harness separates three confounders in that earlier study:
 
 - `study.search_comparison` follows only the discovery-selected winner through
   holdout, although `study_catalog` includes the known volume predictor.
@@ -38,15 +40,16 @@ exact A2a generator, search family and selected-winner pipeline.
 
 **7,065 is a historical sensitivity reference, not the current lifetime count.**
 A2a used 7,049 historical attempts plus its 16-trial search, with variance
-`0.0028764548818829777`. The [September 18 survey](alpha-stack-survey-2026-09-18.md)
-last recorded **7,826 attempts**; neither that count nor a current variance has
-been refreshed for this plan. Attempts are not independent economic hypotheses.
+`0.0028764548818829777`. A read-only projection snapshot now confirms **7,826 global
+attempts and an empty native-daily Sharpe sample** in the current-timeline
+projection (the projection itself exists). Confirmed empty observations mean zero prior samples; an unavailable or failed source read
+must never be interpreted as an empty family.
 
 Before any validation run, freeze a read-only, explicitly sourced snapshot of the
 current global trial count and applicable native-daily/return-timeline variance
-family. Retain source journal revision, capture time, family identity, variance
-observation count, variance value and artifact hash. A historical scalar or the
-last documented count cannot silently substitute for missing current evidence.
+family. Retain source journal revision, capture time, family identity, underlying
+Sharpe observations and artifact hash. A historical scalar cannot substitute for
+missing current evidence.
 If unavailable, mark the current-family comparison unavailable and retain only
 explicitly labelled historical/local sensitivity results.
 
@@ -55,21 +58,27 @@ Production qualification obtains global count and narrower variance evidence in
 journal**, so do not invoke it to export a diagnostic snapshot. The offline runner
 must consume an immutable snapshot artifact without runtime DB construction.
 
-The frozen protocol must state whether a counterfactual adds the 16 newly searched
-candidates to its starting count and how it updates variance. An exact replay of
-that update requires sufficient frozen variance-family evidence; simply adding 16
-to a count while holding variance fixed is a labelled sensitivity approximation.
-Each synthetic replicate is an independent counterfactual; synthetic trials remain
-in local study accounting and never increment the production research ledger.
+Each current-family counterfactual appends that search exactly once, reproducing
+`record_run`: all 16 attempts enter the count, and evaluated candidates' per-bar
+Sharpes enter the variance sample. Thus the sourced case has **7,842 attempts** and
+variance estimated from that run's evaluated samples only; fewer than two samples
+leaves variance unavailable. It is not a variance estimate from 7,826 independent
+hypotheses. Replicates are separate counterfactuals against the same frozen prior,
+not cumulative updates. Synthetic accounting never increments the production ledger.
 
-## Proposed finite matrix
+## Implemented protocol and finite matrix
 
-This is an implementation target, not a promise to execute the matrix this turn.
-Review numerical budgets and freeze the complete protocol and source revision
-before running it. Development may reveal mechanical defects; changing a scientific
-choice requires a new protocol, and inspected validation seeds cannot be reused.
+`alpha power-plan --seed FRESH_SEED --family-snapshot SNAPSHOT --output PROTOCOL`
+creates the immutable contract without observations. `alpha power-study PROTOCOL
+--family-snapshot SNAPSHOT --output NEW_DIRECTORY` verifies that same snapshot and
+runs the artifact-only study off the event loop. These are schematic arguments;
+the fresh seed and private artifact paths belong to the committed run record.
+Neither command constructs runtime storage, a provider, broker or notifier.
 
-| Dimension | Proposed fixed design |
+Development may reveal mechanical defects; changing a scientific choice requires a
+new protocol, and inspected validation seeds cannot be reused.
+
+| Dimension | Default frozen design |
 | --- | --- |
 | Profiles | Dense pulses every 8 bars with independent volatility; sparse pulses every 20 bars with clustered volatility |
 | Effects | Matched null/positive pairs: 0/.004 dense and 0/.02 sparse, retaining A2a effect sizes |
@@ -79,29 +88,33 @@ choice requires a new protocol, and inspected validation seeds cannot be reused.
 | Search | Existing random and genetic methods; existing 16-expression budget and discovery-only selection |
 | Routes | Known volume control and selected winner from each same search run |
 | Execution | Existing bracket/limit policy, complete cash-inclusive return clock and doubled-cost stress |
-| Sensitivity | Cross local versus historical count with local versus historical variance, varying one factor at a time; add separately identified current-family evidence only when sourced |
+| Sensitivity | Four local/historical count × variance cells, plus the separately sourced current-family counterfactual |
 
-The proposed acquisition-free budget is **400 datasets, 800 searches and 12,800
-expression evaluations**. Known controls are already inside each search catalog;
-their additional held-out evaluations and all gate comparisons must also appear
-in the frozen compute budget. Do not rerun a control as an independent one-trial
-search or count its matched outcomes as independent discoveries. Fixed-return-panel
-comparisons from A2a are outside this diagnosis.
+The acquisition-free budget is **400 datasets, 800 searches and 12,800 expression
+evaluations**, with at most 1,600 route evaluations and 8,000 family assessments.
+Known controls are already inside each search; coincident control/winner routes
+reuse measurements. Never rerun the control as a one-trial family or count matched
+outcomes as independent discoveries. A2a's fixed-return panels are outside scope.
 
 Use a fresh root seed and versioned namespaces. Null/positive cases share innovations
 within their profile; random/genetic methods share the same generated dataset.
-Development, validation, search and resampling have separate streams. Current
-`evaluate_job` derives seeds from scenario names, so paired effects need an explicit
-coupling identity rather than two independently named scenarios.
+There are **264 distinct innovation streams**. Development, validation, search and
+resampling use separate namespaces; explicit profile identities couple effects.
 
-Freeze the set of primary endpoints, interval multiplicity correction, missing-job
-semantics and resampling settings. The nominal statistical test level, confidence
-level for estimated error/power, maximum tolerable false-positive rate and minimum
-useful power are **different protocol parameters**. Their scientific tolerances
-remain pending protocol review; this plan approves no new `.10` or other error
-bound. The earlier nominal `.05` and dense/sparse power targets `.80/.50` are
-reference choices, not newly calibrated conclusions. Calculate attainable interval
-precision before freezing; an inconclusive bound is not proof of miscalibration.
+There are **16 primary endpoints**: current-family full-policy acceptance for each
+profile × null/planted effect × method × route. Exact one-sided binomial bounds use
+Bonferroni allocation of `.05/16`, giving simultaneous 95% coverage for the selected
+primary bounds. Retain the earlier reference criteria: null upper bound at most
+`.05`, dense power lower bound at least `.80`, sparse at least `.50`. These are
+diagnostic reference criteria, not newly accepted live thresholds. The null rule is
+stringent: with 128 replicates it requires zero false accepts; failing it does not
+prove the underlying false-positive probability exceeds `.05`.
+
+The unchanged qualification bootstrap is separately frozen: moving blocks of
+10 observations, 1,000 samples, and `.025/.975` mean-return quantiles. Its nominal
+two-sided 95% interval is distinct from the across-replicate confidence level and
+maximum false-positive bound. Unavailable comparisons keep their full denominators
+and pessimistic bounds; they cannot become rejections or silent successes.
 
 Full-policy outcomes are primary; each individual-gate counterfactual is descriptive.
 Do not choose a replacement decision rule on the validation outcomes. Such a rule
@@ -143,16 +156,21 @@ behavior for the proposed alternative on untouched controls. A low acceptance ra
 profitable synthetic path, or post-hoc drop-one pass alone establishes none of these.
 Synthetic results never qualify an alpha, create shadow dates or authorize trading.
 
-## Minimal implementation and RED tests
+## Implementation and review acceptance
 
-Reuse `study.py`, `AlphaMiner`, `simulation.py`, `promotion.assess_statistical_evidence`
-and `study_artifacts.py`; keep pure computation separate from artifact I/O. Factor
-shared measurements from criterion evaluation so family sensitivities do not need
-another simulator or repeated bootstrap computation. Preserve existing full-policy
-decisions exactly. Extend the existing bounded artifact workflow through injected
-job/evaluation/summary functions instead of a parallel journal or campaign queue.
+`power_study.py` reuses the causal generator, `AlphaMiner` and shared scientific
+measurements; `power_trace.py` observes the existing execution engine.
+`power_artifacts.py` injects jobs/evaluation/summary into `study_artifacts.py`.
+Family sensitivities reuse immutable measurements without another bootstrap or
+execution policy. No parallel journal or campaign queue is introduced.
 
-Write the smallest failing behavioral tests first, parameterized where appropriate:
+Accepted review fixes must be verified before full execution: mechanically
+unavailable development measurements prevent access to validation; predictor and
+execution windows include the same first decision; bootstrap settings enter the
+protocol identity; and cofailure summaries separate phase, profile, effect, method
+and route, with unavailable criteria distinguished from scientific failures.
+
+RED-first regression coverage and tiny integration fixtures address:
 
 - Future-bar mutation leaves discovery selection unchanged; synthetic prefixes are
   causal; matching innovations and independent phase/role streams are reproducible.
@@ -169,8 +187,10 @@ Write the smallest failing behavioral tests first, parameterized where appropria
 - A small CLI/artifact integration fixture exercises the actual miner, simulator and
   gates while runtime config, DB, provider, broker and notifier construction fails.
 
-After implementation, report RED/GREEN tests, tiny mechanical integration results,
-the committed frozen protocol and any actual study execution separately. The full
-matrix is research work with an explicit run record, not part of this docs-only
-delivery. Keep prospective observations collecting under their separate contracts;
-broader adaptive search waits for the diagnosis and its recorded next decision.
+Record final test results, the committed protocol and actual study completion
+separately. The [full run completed all 800 searches](alpha-power-diagnosis-2026-09-18.md),
+with no unavailable endpoints and insufficient positive-control power. Proceed to the
+[bounded factor comparison](alpha-factor-research-plan.md): 54 retained-data
+comparisons of existing styles, skipped-month momentum, causal residual momentum
+and incremental blend value. Prospective collection remains separate; a reused
+historical lead still needs fresh observations before paper allocation.
