@@ -131,7 +131,8 @@ boundaries, frozen bootstrap settings and stratified cofailures. The completed
 unavailable full-policy endpoints, but fails every positive-power criterion.
 The [factor follow-up](alpha-factor-controls-2026-09-18.md) completed all 54
 comparisons and its independent numerical audit; prospective collection remains
-separate. Lifetime attempts are now 7,880 (7,826 + 54); registry generation 16,
+separate. At that study's completion, lifetime attempts were 7,880 (7,826 + 54);
+subsequent daily-panel enrollments add their own immutable reservations. Registry generation 16,
 active 0/shadow 16 are unchanged. No threshold reduction,
 promotion or paper allocation follows from either diagnostic.
 
