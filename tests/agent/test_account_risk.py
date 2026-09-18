@@ -1,5 +1,6 @@
 """Exercise drawdown through scan orchestration, not only the sizing helper."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,7 +10,9 @@ import pytest
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.constants import ExecutionMode
+from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
 from agentic_trader.research.alpha.models import RegistrySnapshot
+from agentic_trader.telemetry.collector import MetricsCollector
 
 
 @pytest.fixture
@@ -75,3 +78,42 @@ async def test_empty_dry_scan_does_not_read_broker_risk(risk_desk):
     await risk_desk.run_scan(use_llm=False, dry_run=True, symbols=["SPY"])
     assert risk_desk.evaluator.evaluate_candidate.await_args.kwargs["current_drawdown_pct"] == 0
     risk_desk.ledger.current_risk.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("session_open", "macro_lockout", "bypass_session", "detail"),
+    [
+        (False, False, False, "Session gate checked: Closed"),
+        (True, True, False, "Macro gate checked: Scheduled event; entry alerts paused"),
+        (False, True, True, "Macro gate checked: Scheduled event; entry alerts paused"),
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_entry_policy_gates_record_scan_progress_without_scoring(
+    risk_desk, session_open, macro_lockout, bypass_session, detail, dry_run
+):
+    risk_desk.readiness = ReadinessService(risk_desk.db.workflows, risk_desk.config, MetricsCollector())
+    risk_desk.session_provider.is_session_active.return_value = (session_open, "Closed")
+    risk_desk.calendar.is_in_lockout_window.return_value = (
+        macro_lockout,
+        SimpleNamespace(title="Scheduled event", timestamp=datetime(2026, 9, 18, 13, 30, tzinfo=UTC)),
+    )
+
+    await risk_desk.run_scan(use_llm=False, symbols=["SPY"], bypass_session_filter=bypass_session, dry_run=dry_run)
+
+    checks = (await risk_desk.readiness.report())["checks"]
+    assert checks[HealthComponent.SCAN]["ready"] is not dry_run
+    assert checks[HealthComponent.SCAN]["detail"] == ("No observation in this run" if dry_run else detail)
+    assert not checks[HealthComponent.RECONCILIATION]["ready"]  # Other observations stay independent.
+    risk_desk.data_fetcher.fetch_data.assert_not_called()
+    risk_desk.strategy_engine.scan_contract.assert_not_called()
+    risk_desk.evaluator.evaluate_candidate.assert_not_awaited()
+    risk_desk.alpha_shadow.observe.assert_not_awaited()
+
+
+async def test_failed_macro_check_does_not_record_healthy_scan(risk_desk):
+    risk_desk.calendar.is_in_lockout_window.side_effect = RuntimeError("Calendar unavailable")
+    with pytest.raises(RuntimeError, match="Calendar unavailable"):
+        await risk_desk.run_scan(use_llm=False, symbols=["SPY"])
+    risk_desk.readiness.observe.assert_not_awaited()
+    risk_desk.evaluator.evaluate_candidate.assert_not_awaited()

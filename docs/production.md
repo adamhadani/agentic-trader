@@ -89,6 +89,12 @@ current-run freshness. `copilot doctor` and `launchd.sh health` perform active C
 diagnostics, including migrations and an LLM request. HTTP `/healthcheck` is removed. A separate
 `copilot metrics` instance does not contain the running daemon's metrics.
 
+A completed session or macro policy check records scan progress even when it
+pauses entry alerts. Read the scan detail to distinguish a policy-gated check from
+instrument evaluation; this does not establish price/calendar freshness or waive
+entry restrictions. Failed macro checks and dry scans cannot record healthy scan
+progress. Reconciliation, broker stream and Telegram freshness remain independent.
+
 ```bash
 uv run copilot scan --dry-run --no-llm --symbols IWM
 uv run copilot test-alert
