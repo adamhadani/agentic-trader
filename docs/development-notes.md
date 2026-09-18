@@ -1,6 +1,6 @@
 # Development and debugging handoff
 
-Updated **2026-09-17**. Read [CLAUDE.md](../CLAUDE.md), [operations](production.md)
+Updated **2026-09-18**. Read [CLAUDE.md](../CLAUDE.md), [operations](production.md)
 and the [architecture review](architecture-review.md). Detailed workflow contracts
 live in [durable execution](durable-execution.md), [accounting](account-ledger.md)
 and [operational monitoring](operational-monitoring.md).
@@ -8,8 +8,13 @@ and [operational monitoring](operational-monitoring.md).
 Read the [forecast-to-fill review](forecast-to-fill-review.md) before extending joint
 allocation. Legacy scheduled retuning is now retired. The review records reproduced shadow/legacy research
 defects and the PR #52 recent-SIP entitlement/deadline findings. Ordered remediation
-lives in the [alpha roadmap](alpha-roadmap.md#forecast-to-fill-follow-up); the current
+lives in the [alpha roadmap](alpha-roadmap.md#current-priorities-after-the-whole-stack-survey); the current
 allocator has no execution authority.
+
+The [whole-stack survey](alpha-stack-survey-2026-09-18.md) records newly confirmed,
+still-open drawdown wiring and legacy CVaR reporting defects, inadequate measured
+qualification power, and the missing portfolio deployment lane. Zero active mined
+alphas does not disable built-in screeners or prove that rejection gates are calibrated.
 
 Alpha closure/clock checks now live in `market/bars.py`, shared by research,
 screening and shadow. Fixed-duration versions reject explicit session/unknown
@@ -37,7 +42,7 @@ version does not establish the installed local server version.
 | Macro briefing | Weekdays 12:30, scheduler/system timezone |
 | External watchdog | Every 60 seconds: process check, readiness incidents and due compaction |
 | Session candidate decisions | 30-second wall-clock polls; fixed SPY/QQQ diagnostic controls, durable per-candle claims; no promotion credit |
-| Session data observer | 30-second wall-clock polls; SPY/15m captures only within three minutes of observed closes; no scoring/trading |
+| Session data observer | 30-second wall-clock polls; configured SPY/QQQ 15m captures only within three minutes of observed closes; no scoring/trading |
 | Alpha miner | Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol; no promotion |
 
 Trading scan intervals are not candle-close aligned. The independent

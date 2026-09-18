@@ -88,7 +88,11 @@ request permission, **not** fresh prices. No IEX substitution is inferred. Curre
 See [Alpaca access semantics](https://docs.alpaca.markets/us/docs/market-data-faq) and
 [Python executor shutdown semantics](https://docs.python.org/3/library/concurrent.futures.html).
 
-## Remaining priorities
+## Priorities recorded at the original delivery
+
+Raw capture, source evaluation and persistent-book studies have since been completed.
+Use the [current survey and ordered work](alpha-roadmap.md#current-priorities-after-the-whole-stack-survey)
+for remaining priorities; the list below is historical context.
 
 1. Automated lossless provider/normalization evidence. The [SPY postmortem](alpha-spy-minute-postmortem-2026-09-17.md)
    found the same four minutes absent from fresh raw responses; routine capture remains open.
