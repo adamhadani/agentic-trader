@@ -15,9 +15,13 @@ from agentic_trader.data.evidence import BarAcquisitionError
 from agentic_trader.market.bars import ObservationStatus, SessionSchedule, utc_timestamp
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.acquisition import AcquisitionBudgetExceeded, drain_on_cancel, save_observations
-from agentic_trader.research.alpha.daily_forecasts import compute_daily_forecasts, evaluate_daily_outcomes
+from agentic_trader.research.alpha.daily_forecasts import (
+    compute_daily_forecast_bundle,
+    evaluate_daily_outcome_bundle,
+    validate_daily_comparison_forecast,
+)
 from agentic_trader.research.alpha.daily_inputs import DailyStudyInputs, validate_daily_window
-from agentic_trader.research.alpha.daily_plan import CALENDAR_FORWARD_DAYS
+from agentic_trader.research.alpha.daily_plan import CALENDAR_FORWARD_DAYS, MAX_DAILY_COMPARISONS, DailyComparisonPlan
 from agentic_trader.research.alpha.equity_universe import document_hash
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.storage.artifacts import save_json_report
@@ -41,15 +45,41 @@ def _load(ref, directory):
     return json.loads(raw)
 
 
+def _has_scored_forecast(decision):
+    """Outcome ownership follows committed forecasts, including independent companions."""
+    return decision["status"] == DecisionStatus.SCORED or any(
+        row["status"] == DecisionStatus.SCORED and "forecast" in row
+        for row in decision.get("evidence", {}).get("comparisons", [])
+    )
+
+
 class DailyPanelService:
     def __init__(
-        self, repository, source, plan, policy, *, acquisition, directory, runtime, clock=None, on_progress=None
+        self,
+        repository,
+        source,
+        plan,
+        policy,
+        *,
+        acquisition,
+        directory,
+        runtime,
+        clock=None,
+        on_progress=None,
+        comparisons=(),
     ):
         self.repository, self.source, self.plan, self.policy = repository, source, plan, policy
         self.acquisition = acquisition.model_copy(deep=True)
         self.directory, self.runtime = Path(directory), dict(runtime)
         self.clock = clock or (lambda: datetime.now(UTC))
         self.on_progress = on_progress
+        self.comparisons = tuple(comparisons)
+        if len(self.comparisons) > MAX_DAILY_COMPARISONS or len({p.comparison_id for p in self.comparisons}) != len(
+            self.comparisons
+        ):
+            raise ValueError("Bounded unique daily comparison enrollments required")
+        for comparison in self.comparisons:
+            comparison.validate_parent(plan)
         self._lock = asyncio.Lock()
         self._calendar = None
         self._calendar_at = None
@@ -103,6 +133,10 @@ class DailyPanelService:
             enrolled = not self._enrolled
             if enrolled:
                 await self.repository.enroll(self.plan.campaign_id, self.plan.document(), self.plan.identity)
+                for comparison in self.comparisons:
+                    await self.repository.enroll_comparison(
+                        self.plan.campaign_id, comparison.document(), comparison.identity
+                    )
                 self._enrolled = True
             await self.repository.expire(self.plan.campaign_id)
             sessions = await self._sessions(now)
@@ -122,7 +156,7 @@ class DailyPanelService:
                     if old["context"]["decision_window"] != window.document():
                         raise ValueError("Observed calendar changed frozen daily endpoints")
                     if (
-                        old["status"] == DecisionStatus.SCORED
+                        _has_scored_forecast(old)
                         and old["decision_id"] not in outcomes
                         and now >= window.outcome_available_at
                     ):
@@ -135,6 +169,7 @@ class DailyPanelService:
                 "outcomes": 0,
                 "campaign_id": self.plan.campaign_id,
                 "terminal_counts": {},
+                "comparison_counts": {},
             }
             for _, kind, old, window in sorted(due, key=lambda row: (row[0], row[1])):
                 if kind == "decision":
@@ -168,6 +203,9 @@ class DailyPanelService:
                     result["outcomes"] += 1
                 key = f"{kind}:{terminal['status']}"
                 result["terminal_counts"][key] = result["terminal_counts"].get(key, 0) + 1
+                for comparison in terminal.get("evidence", {}).get("comparisons", []):
+                    key = f"{kind}:{comparison['status']}"
+                    result["comparison_counts"][key] = result["comparison_counts"].get(key, 0) + 1
                 if terminal["status"] not in (DecisionStatus.SCORED, ObservationStatus.COMPLETE):
                     result["status"] = "unavailable"
                 elif result["status"] != "unavailable":
@@ -253,8 +291,10 @@ class DailyPanelService:
     async def _decision(self, claim, window, sessions, calendar):
         directory = self.directory / self.plan.identity / claim["decision_id"] / claim["claim_id"]
         evidence: dict = {"authorizes_promotion": False}
+        completion: dict = {}
         state_ref, status = None, DecisionStatus.UNAVAILABLE
         try:
+            comparisons = self._pinned_comparisons(claim)
             await asyncio.to_thread(
                 _save,
                 {"claim": claim, "protocol": self.plan.document(), "runtime": self.runtime},
@@ -268,9 +308,9 @@ class DailyPanelService:
                 if claim.get("parent_state")
                 else None
             )
-            forecast = await drain_on_cancel(
+            bundle = await drain_on_cancel(
                 asyncio.to_thread(
-                    compute_daily_forecasts,
+                    compute_daily_forecast_bundle,
                     batch,
                     sessions,
                     self.plan,
@@ -278,45 +318,116 @@ class DailyPanelService:
                     fit_cutoff=utc_timestamp(self.clock()),
                     receipts=receipts,
                     previous_residual_state=previous,
+                    comparisons=comparisons,
                 )
             )
-            evidence["forecast"] = await asyncio.to_thread(_save, forecast, directory / "forecast.json")
+            forecast = bundle["primary"]
+            if set(bundle["companions"]) != {comparison.comparison_id for comparison in comparisons}:
+                raise ValueError("Daily forecast bundle differs from its pinned comparisons")
+            for comparison in comparisons:
+                await asyncio.to_thread(
+                    validate_daily_comparison_forecast,
+                    bundle["companions"][comparison.comparison_id],
+                    forecast,
+                    comparison,
+                    self.plan,
+                )
+            completion["forecast"] = await asyncio.to_thread(_save, forecast, directory / "forecast.json")
+            completion["comparisons"] = []
+            for comparison in comparisons:
+                artifact = bundle["companions"][comparison.comparison_id]
+                reference = await asyncio.to_thread(
+                    _save, artifact, directory / f"comparison-{comparison.comparison_id}.json"
+                )
+                completion["comparisons"].append(
+                    {
+                        "comparison_id": comparison.comparison_id,
+                        "protocol_hash": comparison.identity,
+                        "status": artifact["status"],
+                        "forecast": reference,
+                    }
+                )
             if forecast.get("residual_state") is not None:
                 state_ref = await asyncio.to_thread(
                     _save, forecast["residual_state"], directory / "residual-state.json"
                 )
+            completion["models"] = [{"model": arm["model"], "status": arm["status"]} for arm in forecast["arms"]]
             status = (
                 DecisionStatus.SCORED if forecast.get("status") == DecisionStatus.SCORED else DecisionStatus.UNAVAILABLE
             )
-            evidence["models"] = [{"model": arm["model"], "status": arm["status"]} for arm in forecast["arms"]]
+            evidence.update(completion)
         except Exception as exc:
+            state_ref = None
+            status = DecisionStatus.UNAVAILABLE
             evidence["error_type"] = type(exc).__name__
             evidence["failure"] = await asyncio.to_thread(
-                _save, {"error_type": type(exc).__name__, "error": str(exc)}, directory / "failure.json"
+                _save,
+                {"error_type": type(exc).__name__, "error": str(exc), "incomplete_artifacts": completion},
+                directory / "failure.json",
             )
         terminal = await self.repository.finish_decision(claim, status=status, evidence=evidence, state_ref=state_ref)
         if self.on_progress is not None:
             await self.on_progress()
         return terminal
 
+    def _pinned_comparisons(self, claim):
+        enrollments = claim.get("comparisons", [])
+        if len(enrollments) > MAX_DAILY_COMPARISONS:
+            raise ValueError("Pinned daily comparisons exceed protocol bounds")
+        comparisons = tuple(DailyComparisonPlan.from_document(row["protocol"]) for row in enrollments)
+        if len({comparison.comparison_id for comparison in comparisons}) != len(comparisons):
+            raise ValueError("Duplicate pinned daily comparison")
+        for comparison, enrollment in zip(comparisons, enrollments, strict=True):
+            comparison.validate_parent(self.plan)
+            if (
+                comparison.identity != enrollment["protocol_hash"]
+                or comparison.comparison_id != enrollment["comparison_id"]
+            ):
+                raise ValueError("Pinned daily comparison identity mismatch")
+        return comparisons
+
     async def _outcome(self, claim, decision, window, sessions, calendar):
         directory = self.directory / self.plan.identity / claim["decision_id"] / f"outcome-{claim['claim_id']}"
         evidence: dict = {"authorizes_promotion": False}
+        completion: dict = {}
         status = ObservationStatus.UNAVAILABLE
         try:
+            comparisons = self._pinned_comparisons(claim)
+            if claim["decision_id"] != decision["decision_id"]:
+                raise ValueError("Daily outcome decision identity mismatch")
             await asyncio.to_thread(
                 _save,
                 {"claim": claim, "decision_id": decision["decision_id"], "runtime": self.runtime},
                 directory / "manifest.json",
             )
             forecast = await asyncio.to_thread(_load, decision["evidence"]["forecast"], self.directory)
+            rows = decision["evidence"].get("comparisons", [])
+            if len(rows) != len(comparisons) or {row["comparison_id"] for row in rows} != {
+                comparison.comparison_id for comparison in comparisons
+            }:
+                raise ValueError("Daily outcome forecasts differ from pinned comparisons")
+            companions = {
+                row["comparison_id"]: await asyncio.to_thread(_load, row["forecast"], self.directory) for row in rows
+            }
+            for comparison in comparisons:
+                row = next(row for row in rows if row["comparison_id"] == comparison.comparison_id)
+                if row["protocol_hash"] != comparison.identity:
+                    raise ValueError("Daily outcome comparison hash mismatch")
+                await asyncio.to_thread(
+                    validate_daily_comparison_forecast,
+                    companions[comparison.comparison_id],
+                    forecast,
+                    comparison,
+                    self.plan,
+                )
             batch, receipts, evidence["inputs"] = await self._capture(
                 window.exit_date, directory, sessions, calendar, window.outcome_expires_at
             )
-            outcome = await drain_on_cancel(
+            bundle = await drain_on_cancel(
                 asyncio.to_thread(
-                    evaluate_daily_outcomes,
+                    evaluate_daily_outcome_bundle,
                     forecast,
+                    companions,
                     batch,
                     sessions,
                     self.plan,
@@ -324,16 +435,36 @@ class DailyPanelService:
                     observed_at=utc_timestamp(self.clock()),
                 )
             )
-            evidence["outcome"] = await asyncio.to_thread(_save, outcome, directory / "outcome.json")
+            outcome = bundle["primary"]
+            if set(bundle["companions"]) != set(companions):
+                raise ValueError("Daily outcome bundle differs from pinned comparisons")
+            completion["outcome"] = await asyncio.to_thread(_save, outcome, directory / "outcome.json")
+            completion["comparisons"] = []
+            for row in rows:
+                identity = row["comparison_id"]
+                artifact = bundle["companions"][identity]
+                reference = await asyncio.to_thread(_save, artifact, directory / f"comparison-{identity}.json")
+                completion["comparisons"].append(
+                    {
+                        "comparison_id": identity,
+                        "protocol_hash": row["protocol_hash"],
+                        "status": artifact["status"],
+                        "outcome": reference,
+                    }
+                )
             status = (
                 ObservationStatus.COMPLETE
                 if outcome.get("status") == ObservationStatus.COMPLETE
                 else ObservationStatus.UNAVAILABLE
             )
+            evidence.update(completion)
         except Exception as exc:
+            status = ObservationStatus.UNAVAILABLE
             evidence["error_type"] = type(exc).__name__
             evidence["failure"] = await asyncio.to_thread(
-                _save, {"error_type": type(exc).__name__, "error": str(exc)}, directory / "failure.json"
+                _save,
+                {"error_type": type(exc).__name__, "error": str(exc), "incomplete_artifacts": completion},
+                directory / "failure.json",
             )
         terminal = await self.repository.finish_outcome(claim, status=status, evidence=evidence)
         if self.on_progress is not None:

@@ -114,7 +114,8 @@ async def test_forward_dashboard_stays_compact_as_registry_grows():
         assert definition.version_id[:12] not in card
 
 
-def test_daily_panel_dashboard_is_compact_and_separate_from_intraday_and_qualification():
+@pytest.mark.parametrize("models,protocols", [(3, 1), (24, 8), (None, 2)])
+def test_daily_panel_dashboard_is_compact_and_separate_from_intraday_and_qualification(models, protocols):
     report = {
         "days": 7,
         "truncated": False,
@@ -127,9 +128,43 @@ def test_daily_panel_dashboard_is_compact_and_separate_from_intraday_and_qualifi
             "outcome_sessions": 3,
             "decision_counts": {"scored": 7, "unavailable": 1, "missed": 1, "interrupted": 0, "claimed": 0},
             "outcome_counts": {"complete": 2, "unavailable": 1, "capturing": 0},
+            "comparison_totals": {
+                "protocols": protocols,
+                "models": models,
+                "metadata_missing": int(models is None),
+                "decision_sessions": 4,
+                "outcome_sessions": 3,
+                "decision_counts": {"scored": 2},
+                "outcome_counts": {"complete": 1},
+                "decision_missing_summaries": 2,
+                "outcome_missing_summaries": 1,
+            },
         },
     }
     card = TelegramHtmlFormatter.format_alphas_dashboard_html(RegistrySnapshot(1, (), ()), evidence=report)
     assert "Daily panel" in card and "7/9" in card and "2/3" in card
     assert "lower bounds" in card and "not qualification" in card
     assert "private" not in card and len(card) < 1800
+    assert "Primary sessions: 7/9 scored" in card
+    assert "Baselines" in card and "2/4 pinned sessions scored" in card and "1/3 complete" in card
+    assert "Baseline summaries missing: 2 decisions · 1 outcomes" in card
+    assert (f"{models} models" if models is not None else "model count unknown") in card
+
+
+def test_daily_dashboard_without_enrolled_comparisons_does_not_invent_baselines():
+    report = {
+        "days": 7,
+        "truncated": False,
+        "candidates": [],
+        "daily_panel": {
+            "worker_enabled": False,
+            "truncated": False,
+            "decision_sessions": 0,
+            "outcome_sessions": 0,
+            "decision_counts": {"scored": 0, "unavailable": 0, "missed": 0, "interrupted": 0},
+            "outcome_counts": {"complete": 0, "unavailable": 0},
+            "comparison_totals": {"protocols": 0},
+        },
+    }
+    card = TelegramHtmlFormatter.format_alphas_dashboard_html(RegistrySnapshot(1, (), ()), evidence=report)
+    assert "Baselines" not in card and "collector disabled" in card

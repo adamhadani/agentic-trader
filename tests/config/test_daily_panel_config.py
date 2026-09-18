@@ -14,11 +14,36 @@ def test_daily_panel_defaults_do_not_start_collection_or_select_a_protocol():
     assert not policy.enabled and policy.protocol_path is None
     assert policy.poll_seconds == 60 and policy.max_age_seconds == 1200
     assert policy.calendar_refresh_seconds == 300
+    assert policy.comparison_protocol_paths == ()
 
 
 def test_daily_panel_enrollment_requires_an_explicit_protocol_path():
     policy = DailyPanelWorkerConfig(enabled=True, protocol_path="config/research/example.json")
     assert policy.protocol_path == Path("config/research/example.json")
+
+
+@pytest.mark.parametrize("count", [0, 1, 8])
+def test_comparison_protocol_paths_are_explicit_ordered_and_bounded(count):
+    paths = [f"config/research/comparison-{i}.json" for i in range(count)]
+    policy = DailyPanelWorkerConfig(comparison_protocol_paths=paths)
+    assert policy.comparison_protocol_paths == tuple(Path(path) for path in paths)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        [""],
+        ["   "],
+        [None],
+        [False],
+        ["same.json", Path("./same.json")],
+        [f"comparison-{i}.json" for i in range(9)],
+        "comparison.json",
+    ],
+)
+def test_comparison_protocol_paths_reject_blank_duplicate_or_unbounded_values(paths):
+    with pytest.raises(ValidationError):
+        DailyPanelWorkerConfig(comparison_protocol_paths=paths)
 
 
 @pytest.mark.parametrize(

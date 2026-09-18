@@ -47,8 +47,11 @@ research run or runtime policy change was made for this review.
    [800-search result](alpha-power-diagnosis-2026-09-18.md) meets the frozen null
    bounds but fails positive-control power. The known forecast works; GTC pending
    orders suppress about 90% of later opportunities. Search objectives and joint
-   gates add distinct losses. Freeze a fresh horizon/lifetime-aligned experiment
-   using existing execution contracts; keep gates and lifetime history unchanged.
+   gates add distinct losses. Implement and test the
+   [proposed lifetime-attribution design](alpha-lifetime-attribution-plan.md), then
+   freeze its fresh experiment. A versioned fixed-daily clock and independently
+   disabled deadlines are prerequisites; this is not an existing configuration
+   switch. Keep gates and lifetime history unchanged.
    The [native-daily collector](alpha-daily-panel.md) now implements parallel
    observation with source-qualified labels, actual receipts and frozen decisions.
    Actual forward forecasts and mature outcomes remain separately measured evidence.
@@ -62,9 +65,12 @@ research run or runtime policy change was made for this review.
    outcomes use the existing journal. Enrollment/worker health are distinct from
    successful forecasts and 20-session outcomes. The new stress tests show one
    missed residual innovation can suppress the strict shared comparison for 231
-   later decisions. Next freeze three additional baseline-support variants, with
-   separate hypothesis accounting and unchanged primary/missing-data semantics;
-   reuse captures/fits/outcomes and preserve pending outcomes across campaign updates. Investigate missing-history/IEX
+   later decisions. Three [independent baseline variants](alpha-daily-panel.md#independent-baseline-portfolios)
+   now share captures/fits/outcomes with the primary while retaining separate
+   reservations, immutable enrollment pins and outcome ownership after configuration
+   removal. Their prospective coverage remains unobserved until the first window.
+   Parent-campaign retirement/outcome draining remains required before replacement;
+   it is separate from companion enrollment. Investigate missing-history/IEX
    support separately and evaluate delayed SIP under its own source identity.
    Expand forecast breadth toward 150–300 only with bounded resource and dynamic
    membership tests. Historical current-cohort returns grant no qualification.
@@ -125,7 +131,8 @@ boundaries, frozen bootstrap settings and stratified cofailures. The completed
 unavailable full-policy endpoints, but fails every positive-power criterion.
 The [factor follow-up](alpha-factor-controls-2026-09-18.md) completed all 54
 comparisons and its independent numerical audit; prospective collection remains
-separate. Lifetime attempts are now 7,880 (7,826 + 54); registry generation 16,
+separate. At that study's completion, lifetime attempts were 7,880 (7,826 + 54);
+subsequent daily-panel enrollments add their own immutable reservations. Registry generation 16,
 active 0/shadow 16 are unchanged. No threshold reduction,
 promotion or paper allocation follows from either diagnostic.
 

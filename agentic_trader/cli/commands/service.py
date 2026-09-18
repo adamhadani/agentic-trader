@@ -16,7 +16,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import artifact_directory, coro, get_copilot_and_config, session_source
 from agentic_trader.config import AppConfig, load_config
-from agentic_trader.constants import AuditEventType
+from agentic_trader.constants import MAX_DAILY_COMPARISONS, AuditEventType
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 from agentic_trader.diagnostics.monitor import OperationsMonitor
 from agentic_trader.diagnostics.probe import probe_readiness
@@ -25,7 +25,7 @@ from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.research.alpha.daily_observations import DailyPanelService
-from agentic_trader.research.alpha.daily_plan import DailyPanelPlan
+from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyPanelPlan
 from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.observation import SessionObservationService
@@ -103,15 +103,31 @@ DAILY_TERMINAL_LABELS = {
 }
 
 
-def load_daily_panel_plan(path: Path | None) -> DailyPanelPlan:
-    """Read exactly one explicit bounded protocol; never infer it from the trading configuration."""
+def _load_daily_protocol_document(path: Path | None):
+    """Bound protocol reads before parsing or constructing any provider clients."""
     if path is None:
         raise ValueError("Explicit daily-panel protocol path required")
     with path.expanduser().open("rb") as source:
         payload = source.read(MAX_DAILY_PROTOCOL_BYTES + 1)
     if len(payload) > MAX_DAILY_PROTOCOL_BYTES:
         raise ValueError("Daily-panel protocol exceeds the bounded document size")
-    return DailyPanelPlan.from_document(json.loads(payload))
+    return json.loads(payload)
+
+
+def load_daily_panel_plan(path: Path | None) -> DailyPanelPlan:
+    """Read exactly one explicit parent protocol; never infer it from trading configuration."""
+    return DailyPanelPlan.from_document(_load_daily_protocol_document(path))
+
+
+def load_daily_comparison_plans(paths: tuple[Path, ...], parent: DailyPanelPlan) -> tuple[DailyComparisonPlan, ...]:
+    if len(paths) > MAX_DAILY_COMPARISONS:
+        raise ValueError("Daily comparison enrollment exceeds its bounded protocol count")
+    comparisons = tuple(DailyComparisonPlan.from_document(_load_daily_protocol_document(path)) for path in paths)
+    if len({comparison.comparison_id for comparison in comparisons}) != len(comparisons):
+        raise ValueError("Daily comparison identities must be unique")
+    for comparison in comparisons:
+        comparison.validate_parent(parent)
+    return comparisons
 
 
 def _record_research_results(results, metrics, component):
@@ -119,16 +135,19 @@ def _record_research_results(results, metrics, component):
         if results["status"] not in ("idle", "enrolled", "recorded", "unavailable"):
             raise ValueError("Unknown daily-panel worker status")
         terminal_counts = results["terminal_counts"]
-        if not isinstance(terminal_counts, dict) or any(
-            key not in DAILY_TERMINAL_LABELS or type(count) is not int or count < 0
-            for key, count in terminal_counts.items()
-        ):
-            raise ValueError("Invalid daily-panel terminal counts")
+        comparison_counts = results["comparison_counts"]
+        for counts in (terminal_counts, comparison_counts):
+            if not isinstance(counts, dict) or any(
+                key not in DAILY_TERMINAL_LABELS or type(count) is not int or count < 0 for key, count in counts.items()
+            ):
+                raise ValueError("Invalid daily-panel terminal counts")
         metrics.inc_counter("alpha_daily_panel_polls_total", labels={"status": results["status"]})
         for key in ("decisions", "outcomes"):
             metrics.inc_counter(f"alpha_daily_panel_{key}_total", value=results[key])
         for key, count in terminal_counts.items():
             metrics.inc_counter("alpha_daily_panel_terminals_total", value=count, labels=DAILY_TERMINAL_LABELS[key])
+        for key, count in comparison_counts.items():
+            metrics.inc_counter("alpha_daily_panel_comparisons_total", value=count, labels=DAILY_TERMINAL_LABELS[key])
         if results["status"] != "idle":
             logger.info(
                 "Daily panel progress: %s %s",
@@ -141,6 +160,7 @@ def _record_research_results(results, metrics, component):
                     "decisions": results["decisions"],
                     "outcomes": results["outcomes"],
                     "terminal_counts": terminal_counts,
+                    "comparison_counts": comparison_counts,
                 },
             )
         return
@@ -237,6 +257,7 @@ async def run_daily_panel_worker(config, repository, readiness, metrics, shutdow
     component = HealthComponent.ALPHA_DAILY_PANEL
     try:
         plan = await asyncio.to_thread(load_daily_panel_plan, policy.protocol_path)
+        comparisons = await asyncio.to_thread(load_daily_comparison_plans, policy.comparison_protocol_paths, plan)
         daily_repository = DailyCampaignRepository(repository.store, policy=config.alpha_pipeline)
         with session_source(config, plan.feed.removeprefix("alpaca:")) as source:
             worker = DailyPanelService(
@@ -248,6 +269,7 @@ async def run_daily_panel_worker(config, repository, readiness, metrics, shutdow
                 directory=artifact_directory() / "daily-panel",
                 runtime=await asyncio.to_thread(runtime_identity),
                 on_progress=lambda: readiness.observe(component, True),
+                comparisons=comparisons,
             )
             await _poll_research_worker(
                 worker, readiness, metrics, shutdown, component=component, poll_seconds=policy.poll_seconds

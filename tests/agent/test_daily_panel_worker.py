@@ -13,6 +13,7 @@ import pytest
 from agentic_trader.cli.commands import service
 from agentic_trader.config import DailyPanelWorkerConfig
 from agentic_trader.diagnostics.readiness import HealthComponent
+from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan
 
 
 @pytest.mark.parametrize(
@@ -24,25 +25,29 @@ from agentic_trader.diagnostics.readiness import HealthComponent
         {"outcome:complete": 1},
     ],
 )
-def test_daily_progress_metrics_and_logs_report_actual_bounded_terminals(caplog, terminal_counts):
+@pytest.mark.parametrize("field", ["terminal_counts", "comparison_counts"])
+def test_daily_progress_metrics_and_logs_report_actual_bounded_terminals(caplog, terminal_counts, field):
     results = {
         "status": "recorded",
         "decisions": 3,
         "outcomes": 3,
         "campaign_id": "fixture",
-        "terminal_counts": terminal_counts,
+        "terminal_counts": {},
+        "comparison_counts": {},
     }
+    results[field] = terminal_counts
     metrics = MagicMock()
     with caplog.at_level("INFO", logger="copilot"):
         service._record_research_results(results, metrics, HealthComponent.ALPHA_DAILY_PANEL)
-    terminal_calls = [c for c in metrics.inc_counter.call_args_list if c.args == ("alpha_daily_panel_terminals_total",)]
+    metric = (
+        "alpha_daily_panel_terminals_total" if field == "terminal_counts" else "alpha_daily_panel_comparisons_total"
+    )
+    terminal_calls = [c for c in metrics.inc_counter.call_args_list if c.args == (metric,)]
     assert len(terminal_calls) == len(terminal_counts)
     for key, count in terminal_counts.items():
         kind, status = key.split(":")
-        metrics.inc_counter.assert_any_call(
-            "alpha_daily_panel_terminals_total", value=count, labels={"kind": kind, "status": status}
-        )
-    assert caplog.records[-1].terminal_counts == terminal_counts
+        metrics.inc_counter.assert_any_call(metric, value=count, labels={"kind": kind, "status": status})
+    assert getattr(caplog.records[-1], field) == terminal_counts
 
 
 @pytest.mark.parametrize(
@@ -56,15 +61,18 @@ def test_daily_progress_metrics_and_logs_report_actual_bounded_terminals(caplog,
         None,
     ],
 )
-def test_daily_progress_rejects_unknown_or_invalid_terminal_labels_before_metrics(terminal_counts):
+@pytest.mark.parametrize("field", ["terminal_counts", "comparison_counts"])
+def test_daily_progress_rejects_unknown_or_invalid_terminal_labels_before_metrics(terminal_counts, field):
     metrics = MagicMock()
     results = {
         "status": "recorded",
         "decisions": 1,
         "outcomes": 0,
         "campaign_id": "fixture",
-        "terminal_counts": terminal_counts,
+        "terminal_counts": {},
+        "comparison_counts": {},
     }
+    results[field] = terminal_counts
     with pytest.raises(ValueError):
         service._record_research_results(results, metrics, HealthComponent.ALPHA_DAILY_PANEL)
     metrics.inc_counter.assert_not_called()
@@ -90,6 +98,30 @@ def test_protocol_loader_requires_exact_bounded_direct_document(tmp_path, defect
             service.load_daily_panel_plan(path)
     else:
         assert service.load_daily_panel_plan(path).document() == document
+
+
+@pytest.mark.parametrize("defect", [None, "parent", "duplicate", "oversized", "tampered"])
+def test_comparison_loader_binds_complete_frozen_companions_before_source_construction(tmp_path, defect):
+    parent = service.load_daily_panel_plan(
+        Path(__file__).parents[2] / "config/research/prospective-equity-panel-iex-v1.json"
+    )
+    comparison = DailyComparisonPlan(
+        "baseline-support", parent.campaign_id, "c" * 64 if defect == "parent" else parent.identity, parent.start_date
+    )
+    document = comparison.document()
+    if defect == "tampered":
+        document["charged_trials"] = 0
+    path = tmp_path / "comparison.json"
+    path.write_text(json.dumps(document))
+    if defect == "oversized":
+        path.write_bytes(b" " * (service.MAX_DAILY_PROTOCOL_BYTES + 1))
+    paths = (path, path) if defect == "duplicate" else (path,)
+    if defect:
+        with pytest.raises(ValueError):
+            service.load_daily_comparison_plans(paths, parent)
+    else:
+        assert service.load_daily_comparison_plans(paths, parent) == (comparison,)
+        assert service.load_daily_comparison_plans((), parent) == ()
 
 
 async def test_disabled_daily_worker_does_not_read_protocol_or_construct_clients(config, monkeypatch):
@@ -125,10 +157,13 @@ async def test_daily_worker_pins_protocol_feed_and_drains_capture_before_closing
     monkeypatch.setattr(service, "artifact_directory", lambda: tmp_path)
 
     class Collector:
-        def __init__(self, repo, reader, actual_plan, policy, *, acquisition, directory, runtime, on_progress):
+        def __init__(
+            self, repo, reader, actual_plan, policy, *, acquisition, directory, runtime, on_progress, comparisons
+        ):
             assert repo is daily_repository and reader == "owned-reader" and actual_plan is plan
             assert policy is config.alpha_pipeline.daily_panel and acquisition is config.alpha_pipeline.daily_research
             assert directory == tmp_path / "daily-panel" and runtime
+            assert comparisons == ()
             self.on_progress = on_progress
 
         async def run_once(self):
@@ -144,6 +179,7 @@ async def test_daily_worker_pins_protocol_feed_and_drains_capture_before_closing
                 "outcomes": 0,
                 "campaign_id": "fixture",
                 "terminal_counts": {"decision:scored": 1} if outcome == "recorded" else {},
+                "comparison_counts": {},
             }
 
     monkeypatch.setattr(service, "DailyPanelService", Collector)

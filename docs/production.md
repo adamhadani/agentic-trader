@@ -559,3 +559,10 @@ worker checks (including idle); usable forecast/outcome counts are separate in
 `alpha status` and `alpha forward`. It neither starts a Telegram poller nor submits
 orders. Its protocol path and campaign identity are explicit and immutable after
 enrollment. Day-close timing, expiry and private-artifact recovery are in the guide.
+
+`comparison_protocol_paths` predeclares independent daily baseline portfolios using
+that same worker and data capture. Each companion enrollment charges its declared
+hypotheses once and becomes immutable; removing its file from configuration does
+not withdraw the enrollment or abandon pending outcomes. Primary and baseline
+results have separate counts in `alpha forward` and `/alphas`. Keep the parent
+protocol fixed until a supported campaign retirement/draining workflow exists.

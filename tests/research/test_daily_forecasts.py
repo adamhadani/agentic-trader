@@ -2,6 +2,7 @@
 
 import copy
 import json
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -9,9 +10,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import agentic_trader.research.alpha.daily_forecasts as daily_module
 from agentic_trader.market.bars import TradingSession
-from agentic_trader.research.alpha.daily_forecasts import compute_daily_forecasts, evaluate_daily_outcomes
+from agentic_trader.research.alpha.daily_forecasts import (
+    compute_daily_forecast_bundle,
+    compute_daily_forecasts,
+    evaluate_daily_outcome_bundle,
+    evaluate_daily_outcomes,
+)
 from agentic_trader.research.alpha.daily_inputs import DailyStudyInputs
+from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyPanelPlan
+from agentic_trader.research.alpha.equity_universe import document_hash
 from agentic_trader.research.alpha.factor_features import (
     ResidualMomentumSpec,
     factor_residuals_at,
@@ -113,6 +122,8 @@ def daily_case():
         )
 
     plan = SimpleNamespace(
+        campaign_id="daily-fixture",
+        end_date=clock[-1].date(),
         start_date=clock[680].date(),
         symbols=symbols,
         factor_symbols=factors,
@@ -390,3 +401,265 @@ def test_sdk_object_ohlcv_is_canonical_numeric_without_fabricating_coverage(obse
     assert panel.coverage["AAA"]["observed"] == observed
     assert panel.coverage["AAA"]["missing_dates"] == [t.date().isoformat() for t in clock[observed:]]
     pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.fixture(scope="module")
+def comparison_case(daily_case):
+    clock = pd.bdate_range(daily_case.clock[0], periods=800)
+    sessions = tuple(
+        TradingSession(t.date(), t + pd.Timedelta(hours=9, minutes=30), t + pd.Timedelta(hours=16)) for t in clock
+    )
+    comparison = DailyComparisonPlan(
+        "baselines", daily_case.plan.campaign_id, daily_case.plan.identity, daily_case.clock[700].date()
+    )
+    return SimpleNamespace(**{**daily_case.__dict__, "sessions": sessions}, comparison=comparison)
+
+
+def forecast_bundle(case, position, previous=None, *, frames=None, comparisons=None):
+    batch, receipts, cutoff = capture(case, position, frames=frames)
+    return compute_daily_forecast_bundle(
+        batch,
+        case.sessions,
+        case.plan,
+        decision_date=case.clock[position].date(),
+        fit_cutoff=cutoff,
+        receipts=receipts,
+        previous_residual_state=previous,
+        comparisons=(case.comparison,) if comparisons is None else comparisons,
+    )
+
+
+@pytest.fixture(scope="module")
+def baseline_bundle(comparison_case, initial_forecast):
+    return forecast_bundle(comparison_case, 720, initial_forecast["residual_state"])
+
+
+def test_baselines_score_on_their_own_support_when_primary_residuals_are_missing(comparison_case, baseline_bundle):
+    primary = baseline_bundle["primary"]
+    companion = baseline_bundle["companions"]["baselines"]
+    assert primary["status"] == "unavailable" and not any(primary["common_support"].values())
+    assert companion["status"] == "scored" and sum(companion["common_support"].values()) == 18
+    assert [a["model"] for a in companion["arms"]] == ["rank_blend", "volatility20", "ridge"]
+    assert companion["comparison_plan"] == comparison_case.comparison.document()
+    assert companion["comparison_plan_id"] == comparison_case.comparison.identity
+    assert companion["primary_forecast_id"] == primary["forecast_id"]
+    for field in ("receipts", "vintage_id", "ridge_fit", "entry_date", "exit_date", "fit_cutoff"):
+        assert companion[field] == primary[field]
+    assert "residual_state" not in companion
+    assert all(
+        a["status"] == "scored" and sum(abs(w) for w in a["weights"].values()) == pytest.approx(1)
+        for a in companion["arms"]
+    )
+    assert not companion["authorizes_promotion"]
+    json.dumps(baseline_bundle, allow_nan=False)
+
+
+def test_bundle_preserves_primary_forecast_and_computes_expensive_inputs_once(
+    comparison_case, initial_forecast, monkeypatch
+):
+    c = comparison_case
+    expected = forecast(c, 720, initial_forecast["residual_state"])
+    calls = {}
+    for name in ("build_forecast_estimator", "_features", "_residual_state"):
+        original = getattr(daily_module, name)
+
+        def tracked(*args, _original=original, _name=name, **kwargs):
+            calls[_name] = calls.get(_name, 0) + 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(daily_module, name, tracked)
+    actual = forecast_bundle(c, 720, initial_forecast["residual_state"])
+    assert actual["primary"] == expected
+    assert calls == dict.fromkeys(calls, 1) and len(calls) == 3
+
+
+@pytest.mark.parametrize("failure", ["before_first_date", "duplicate", "too_many", "wrong_parent"])
+def test_bundle_refuses_unbound_comparisons_before_computation(comparison_case, initial_forecast, failure, monkeypatch):
+    c = comparison_case
+    comparisons = (c.comparison,)
+    if failure == "before_first_date":
+        comparisons = (replace(c.comparison, first_decision_date=c.clock[721].date()),)
+    elif failure == "duplicate":
+        comparisons = (c.comparison, c.comparison)
+    elif failure == "too_many":
+        comparisons = tuple(replace(c.comparison, comparison_id=f"b{i}") for i in range(9))
+    else:
+        comparisons = (replace(c.comparison, parent_protocol_hash="b" * 64),)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid comparison reached fitting")
+
+    monkeypatch.setattr(daily_module, "build_forecast_estimator", forbidden)
+    with pytest.raises(ValueError):
+        forecast_bundle(c, 720, initial_forecast["residual_state"], comparisons=comparisons)
+
+
+def test_companion_scores_rerank_on_baseline_support_and_ignore_future_prices(
+    comparison_case, initial_forecast, baseline_bundle
+):
+    c = comparison_case
+    companion = baseline_bundle["companions"]["baselines"]
+    scores = {row["model"]: pd.Series(row["scores"]) for row in companion["arms"]}
+    reversal = pd.Series(
+        {
+            symbol: -((c.frames[symbol].close.iloc[720] / c.frames[symbol].close.iloc[660]) - 1)
+            for symbol in c.plan.symbols
+        }
+    )
+    expected = (reversal.rank(method="average", pct=True) + scores["volatility20"].rank(method="average", pct=True)) / 2
+    pd.testing.assert_series_equal(scores["rank_blend"], expected, check_names=False)
+    frames = {s: f.copy() for s, f in c.frames.items()}
+    for frame in frames.values():
+        frame.loc[c.clock[721] :, ["open", "high", "low", "close"]] *= 8
+    assert forecast_bundle(c, 720, initial_forecast["residual_state"], frames=frames) == baseline_bundle
+
+
+@pytest.mark.parametrize("missing", [None, "held", "unheld"])
+def test_one_outcome_measurement_preserves_companion_unknowns_and_primary_abstention(
+    comparison_case, baseline_bundle, missing, monkeypatch
+):
+    c = comparison_case
+    companion = baseline_bundle["companions"]["baselines"]
+    arm = next(a for a in companion["arms"] if a["model"] == "volatility20")
+    frames = {s: f.copy() for s, f in c.frames.items()}
+    affected = None
+    if missing:
+        affected = next(s for s, w in arm["weights"].items() if bool(w) == (missing == "held"))
+        frames[affected].loc[c.clock[740], "volume"] = 0
+    batch, receipts, observed = capture(c, 740, frames=frames)
+    count = []
+    original = daily_module._panel
+
+    def measured(*args, **kwargs):
+        count.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(daily_module, "_panel", measured)
+    result = evaluate_daily_outcome_bundle(
+        baseline_bundle["primary"],
+        baseline_bundle["companions"],
+        batch,
+        c.sessions,
+        c.plan,
+        receipts=receipts,
+        observed_at=observed,
+    )
+    assert len(count) == 1
+    assert result["primary"]["status"] == "unavailable"
+    assert all(row["basket"] is None for row in result["primary"]["arms"])
+    outcome = result["companions"]["baselines"]
+    assert outcome["status"] == ("unavailable" if missing else "complete")
+    row = next(a for a in outcome["arms"] if a["model"] == "volatility20")
+    assert (row["ic"] is None) == bool(missing)
+    assert (row["basket"]["gross_return"] is None) == (missing == "held")
+    assert row["missing_label_symbols"] == ([affected] if missing else [])
+    assert outcome["labels"] == result["primary"]["labels"]
+
+
+def test_unscored_companion_never_claims_cash_payoff(comparison_case, initial_forecast):
+    c = comparison_case
+    frames = {s: f.iloc[:721].iloc[-50:].copy() for s, f in c.frames.items()}
+    bundle = forecast_bundle(c, 720, initial_forecast["residual_state"], frames=frames)
+    assert bundle["companions"]["baselines"]["status"] == "unavailable"
+    batch, receipts, observed = capture(c, 740)
+    result = evaluate_daily_outcome_bundle(
+        bundle["primary"], bundle["companions"], batch, c.sessions, c.plan, receipts=receipts, observed_at=observed
+    )
+    assert all(a["basket"] is None for a in result["companions"]["baselines"]["arms"])
+
+
+@pytest.mark.parametrize(
+    "field,value", [("primary_forecast_id", "b" * 64), ("comparison_plan_id", "c" * 64), ("comparison_id", "other")]
+)
+def test_companion_outcome_rejects_detached_binding_even_with_resealed_document(
+    comparison_case, baseline_bundle, field, value
+):
+    c = comparison_case
+    companions = copy.deepcopy(baseline_bundle["companions"])
+    companions["baselines"][field] = value
+    document = companions["baselines"]
+    document["forecast_id"] = document_hash({k: v for k, v in document.items() if k != "forecast_id"})
+    batch, receipts, observed = capture(c, 740)
+    with pytest.raises(ValueError):
+        evaluate_daily_outcome_bundle(
+            baseline_bundle["primary"], companions, batch, c.sessions, c.plan, receipts=receipts, observed_at=observed
+        )
+
+
+@pytest.mark.parametrize("position,primary_scored", [(420, True), (421, False), (651, False), (652, True)])
+def test_one_missed_innovation_has_exact_231_decision_effect_without_disabling_baselines(
+    daily_case, position, primary_scored
+):
+    original_case = daily_case
+    plan = DailyPanelPlan(
+        "gap-boundary",
+        original_case.plan.symbols,
+        original_case.plan.factor_symbols,
+        original_case.clock[400].date(),
+        original_case.clock[729].date(),
+        original_case.clock[0].date(),
+        "a" * 64,
+        "b" * 64,
+    )
+    c = SimpleNamespace(
+        **{**original_case.__dict__, "plan": plan},
+        comparison=DailyComparisonPlan("baseline", plan.campaign_id, plan.identity, plan.start_date),
+    )
+    prior_clock = c.clock[:position][-252:]
+    received = c.plan.decision_window(c.clock[position - 1].date(), c.sessions).available_at.isoformat()
+    rows = [
+        {
+            "date": t.date().isoformat(),
+            "values": {
+                s: None if t == c.clock[400] else float(np.sin(i / 7 + j)) for j, s in enumerate(c.plan.symbols)
+            },
+            "kind": "missed"
+            if t == c.clock[400]
+            else "historical_bootstrap"
+            if t.date() < plan.start_date
+            else "prospective",
+            "observed_at": None if t == c.clock[400] else received,
+            "source_hash": None if t == c.clock[400] else "a" * 64,
+        }
+        for i, t in enumerate(prior_clock)
+    ]
+    state = {
+        "version": daily_module.DAILY_RESIDUAL_VERSION,
+        "plan_id": plan.identity,
+        "symbols": list(plan.symbols),
+        "through_date": prior_clock[-1].date().isoformat(),
+        "rows": rows,
+        "authorizes_promotion": False,
+    }
+    state["state_id"] = document_hash(state)
+    original = copy.deepcopy(state)
+    result = forecast_bundle(c, position, state)
+    assert (result["primary"]["status"] == "scored") == primary_scored
+    assert result["companions"]["baseline"]["status"] == "scored"
+    assert state == original
+    retained = {row["date"]: row for row in result["primary"]["residual_state"]["rows"]}
+    missing_date = c.clock[400].date().isoformat()
+    if position <= 651:
+        assert retained[missing_date] == next(row for row in rows if row["date"] == missing_date)
+    else:
+        assert missing_date not in retained
+
+
+@pytest.mark.parametrize("changed_first_date", [False, True])
+def test_public_companion_validator_requires_authoritative_enrollment_pin(
+    comparison_case, baseline_bundle, changed_first_date
+):
+    c = comparison_case
+    companion = copy.deepcopy(baseline_bundle["companions"]["baselines"])
+    if changed_first_date:
+        changed = replace(c.comparison, first_decision_date=c.clock[701].date())
+        companion["comparison_plan"] = changed.document()
+        companion["comparison_plan_id"] = changed.identity
+        companion["forecast_id"] = document_hash({k: v for k, v in companion.items() if k != "forecast_id"})
+        with pytest.raises(ValueError, match="pinned"):
+            daily_module.validate_daily_comparison_forecast(companion, baseline_bundle["primary"], c.comparison, c.plan)
+    else:
+        assert (
+            daily_module.validate_daily_comparison_forecast(companion, baseline_bundle["primary"], c.comparison, c.plan)
+            is None
+        )

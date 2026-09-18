@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
+from agentic_trader.constants import MAX_DAILY_COMPARISONS as MAX_DAILY_COMPARISONS  # noqa: PLC0414
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.equity_universe import document_hash
 from agentic_trader.research.alpha.factor_features import FACTOR_COUNT, ResidualMomentumSpec
@@ -210,3 +211,67 @@ class DailyPanelPlan:
             outcome_close + pd.Timedelta(seconds=NATIVE_DEADLINE_SECONDS),
             (position - anchor) % self.target.horizon_bars == 0,
         )
+
+
+DAILY_COMPARISON_VERSION = "daily_baseline_comparison_v1"
+DAILY_BASELINE_MODELS = ("rank_blend", "volatility20", "ridge")
+DAILY_BASELINE_SUPPORT = "baseline_common_v1"
+
+
+@dataclass(frozen=True)
+class DailyComparisonPlan:
+    """A separately enrolled companion inherits every source/clock contract by hash."""
+
+    comparison_id: str
+    campaign_id: str
+    parent_protocol_hash: str
+    first_decision_date: date
+
+    def __post_init__(self):
+        if (
+            any(
+                not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,95}", value)
+                for value in (self.comparison_id, self.campaign_id)
+            )
+            or not isinstance(self.parent_protocol_hash, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", self.parent_protocol_hash)
+            or type(self.first_decision_date) is not date
+        ):
+            raise ValueError("Complete frozen daily comparison identity required")
+
+    def validate_parent(self, parent):
+        if (
+            self.parent_protocol_hash != parent.identity
+            or self.campaign_id != parent.campaign_id
+            or not parent.start_date <= self.first_decision_date <= parent.end_date
+        ):
+            raise ValueError("Daily comparison must bind its exact parent campaign and date range")
+
+    @property
+    def identity(self):
+        return document_hash(self.document())
+
+    def document(self):
+        return {
+            "version": DAILY_COMPARISON_VERSION,
+            "comparison_id": self.comparison_id,
+            "campaign_id": self.campaign_id,
+            "parent_protocol_hash": self.parent_protocol_hash,
+            "first_decision_date": self.first_decision_date.isoformat(),
+            "models": list(DAILY_BASELINE_MODELS),
+            "support": DAILY_BASELINE_SUPPORT,
+            "charged_trials": len(DAILY_BASELINE_MODELS),
+            "authorizes_promotion": False,
+        }
+
+    @classmethod
+    def from_document(cls, document):
+        try:
+            fields = {name: document[name] for name in cls.__dataclass_fields__}
+            fields["first_decision_date"] = date.fromisoformat(fields["first_decision_date"])
+            plan = cls(**fields)
+            if plan.document() != document:
+                raise ValueError("Exact frozen daily comparison document required")
+            return plan
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError("Complete daily comparison document required") from exc

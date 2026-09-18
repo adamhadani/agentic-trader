@@ -322,3 +322,10 @@ equities and nine ETF proxies, inside the existing daemon. Collection starts at
 00:30 New York time after each decision day. The existing alpha journal owns
 exactly-once enrollment, exclusive claims, late-result retention and atomic residual
 state; outcomes mature after 20 sessions. No extra poller, schema or order route.
+
+Its independent baseline companion reuses one capture/fit/outcome acquisition and
+charges three additional hypotheses. Pin exact comparison protocols at decision
+claim time; never use current configuration to reinterpret a pending outcome.
+Removing an enrollment path preserves both future eligible claims and old outcomes.
+Keep primary status separate, including when only baselines score. Failed artifact
+writes cannot publish partial comparison successes or advance the residual pointer.

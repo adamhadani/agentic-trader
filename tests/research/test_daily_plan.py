@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from agentic_trader.market.bars import TradingSession
-from agentic_trader.research.alpha.daily_plan import DailyPanelPlan
+from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyPanelPlan
 
 
 @pytest.fixture
@@ -86,3 +86,67 @@ def test_calendar_must_include_anchor_and_future_outcome(daily_plan, daily_sessi
     for sessions in (daily_sessions[1:], daily_sessions[:20], tuple(reversed(daily_sessions))):
         with pytest.raises(ValueError):
             daily_plan.decision_window(daily_sessions[1].date, sessions)
+
+
+@pytest.fixture
+def comparison_plan(daily_plan):
+    return DailyComparisonPlan("baseline", daily_plan.campaign_id, daily_plan.identity, daily_plan.start_date)
+
+
+def test_companion_roundtrip_binds_parent_without_changing_primary(daily_plan, comparison_plan):
+    original = daily_plan.document()
+    assert daily_plan.identity == "2bd897e95052fc1b08faf27ea2a02873a1ff3a16e581e248a28d8520fa7808e4"
+    comparison_plan.validate_parent(daily_plan)
+    document = comparison_plan.document()
+    assert DailyComparisonPlan.from_document(document) == comparison_plan
+    assert document["models"] == ["rank_blend", "volatility20", "ridge"]
+    assert document["support"] == "baseline_common_v1"
+    assert document["charged_trials"] == 3 and document["authorizes_promotion"] is False
+    assert daily_plan.document() == original
+    assert comparison_plan.identity != daily_plan.identity
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"comparison_id": ""},
+        {"campaign_id": "unsafe/path"},
+        {"parent_protocol_hash": "unknown"},
+        {"first_decision_date": "2026-10-30"},
+    ],
+)
+def test_companion_rejects_malformed_identity(comparison_plan, change):
+    with pytest.raises(ValueError):
+        replace(comparison_plan, **change)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"campaign_id": "other"},
+        {"parent_protocol_hash": "c" * 64},
+        {"first_decision_date": date(2026, 10, 29)},
+        {"first_decision_date": date(2027, 10, 30)},
+    ],
+)
+def test_companion_rejects_unbound_or_out_of_campaign_plan(daily_plan, comparison_plan, change):
+    with pytest.raises(ValueError):
+        replace(comparison_plan, **change).validate_parent(daily_plan)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("charged_trials", 0),
+        ("models", ["ridge"]),
+        ("support", "future_complete"),
+        ("authorizes_promotion", True),
+        ("version", "unfrozen"),
+        ("extra", "unknown"),
+    ],
+)
+def test_companion_document_must_match_exact_contract(comparison_plan, field, value):
+    document = comparison_plan.document()
+    document[field] = value
+    with pytest.raises(ValueError):
+        DailyComparisonPlan.from_document(document)

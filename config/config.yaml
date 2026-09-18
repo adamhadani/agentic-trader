@@ -265,6 +265,8 @@ alpha_pipeline:
   daily_panel:
     enabled: true
     protocol_path: config/research/prospective-equity-panel-iex-v1.json
+    comparison_protocol_paths:
+      - config/research/prospective-equity-baselines-iex-v1.json
     poll_seconds: 60
     max_age_seconds: 1200
     calendar_refresh_seconds: 300

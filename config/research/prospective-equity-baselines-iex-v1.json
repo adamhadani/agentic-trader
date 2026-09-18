@@ -1,0 +1,15 @@
+{
+  "version": "daily_baseline_comparison_v1",
+  "comparison_id": "baseline-support-v1",
+  "campaign_id": "prospective-equity-panel-iex-v1",
+  "parent_protocol_hash": "fa72a0e3d6772862b7b29a33e0fa26360bfd928a4e356c6ac6e38afdb3c57a17",
+  "first_decision_date": "2026-09-18",
+  "models": [
+    "rank_blend",
+    "volatility20",
+    "ridge"
+  ],
+  "support": "baseline_common_v1",
+  "charged_trials": 3,
+  "authorizes_promotion": false
+}
