@@ -262,6 +262,12 @@ database:
 
 # Read-only prospective session clock evidence; no alpha activation or alerts.
 alpha_pipeline:
+  daily_panel:
+    enabled: true
+    protocol_path: config/research/prospective-equity-panel-iex-v1.json
+    poll_seconds: 60
+    max_age_seconds: 1200
+    calendar_refresh_seconds: 300
   observations:
     enabled: true
     feed: alpaca:iex

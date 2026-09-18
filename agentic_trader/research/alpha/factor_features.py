@@ -159,6 +159,117 @@ def _factor_inverse(values, spec):
     return ((right.T / singular) @ left.T if reason is None else None), evidence, reason
 
 
+@dataclass(frozen=True)
+class FactorResidualObservation:
+    residuals: pd.Series
+    loadings: pd.DataFrame
+    fits: list[dict]
+
+
+def _residual_at(clock, prices, amounts, values, symbols, factors, position, spec):
+    timestamp = clock[position]
+    width, columns = len(symbols), (*symbols, *factors)
+    factor_values = values[:, width:]
+    residuals = pd.Series(np.nan, index=symbols, dtype=float)
+    loadings = pd.DataFrame(np.nan, index=symbols, columns=("intercept", *factors))
+    fits = []
+    first = max(1, position - spec.fit_sessions)
+    factors_known = np.isfinite(factor_values[first:position]).all(axis=1)
+    inverse, factor_reason = None, None
+    numerical: dict[str, object] = {"rank": None, "singular_values": [], "condition": None}
+    if position > spec.fit_sessions and factors_known.all():
+        try:
+            inverse, numerical, factor_reason = _factor_inverse(factor_values[first:position], spec)
+        except np.linalg.LinAlgError:
+            factor_reason = FitReason.NUMERICAL
+    for number, symbol in enumerate(symbols):
+        observed = np.isfinite(values[first:position, number]) & factors_known
+        reason = (
+            FitReason.WARMUP
+            if position <= spec.fit_sessions
+            else FitReason.MISSING
+            if not observed.all()
+            else factor_reason
+        )
+        source_columns = [number, *range(width, len(columns))]
+        record = {
+            "symbol": symbol,
+            "return_bar": timestamp.isoformat(),
+            "training_start": clock[first].isoformat() if first < position else None,
+            "training_end": clock[position - 1].isoformat() if first < position else None,
+            "assumed_training_available_at": (clock[position - 1] + pd.DateOffset(days=1)).isoformat()
+            if first < position
+            else None,
+            "assumed_residual_available_at": (timestamp + pd.DateOffset(days=1)).isoformat(),
+            "training_rows": int(observed.sum()),
+            "required_training_rows": spec.fit_sessions,
+            "coefficient_names": ["intercept", *factors],
+            "coefficients": None,
+            "training_source_hash": _source_hash(
+                clock, prices, amounts, slice(first - 1, position), source_columns, (symbol, *factors)
+            ),
+            "evaluation_source_hash": _source_hash(
+                clock,
+                prices,
+                amounts,
+                slice(max(0, position - 1), position + 1),
+                source_columns,
+                (symbol, *factors),
+            ),
+            **numerical,
+            "fit_status": "unavailable",
+            "reason": reason,
+            "residual": None,
+            "residual_reason": reason,
+        }
+        if reason is None and inverse is not None:
+            beta = inverse @ values[first:position, number]
+            if np.isfinite(beta).all():
+                loadings.loc[symbol] = beta
+                record.update(fit_status="fitted", coefficients=beta.tolist())
+                current = values[position, source_columns]
+                if np.isfinite(current).all():
+                    residual = float(current[0] - beta[0] - beta[1:] @ current[1:])
+                    if np.isfinite(residual):
+                        residuals.iloc[number] = residual
+                        record.update(residual=residual, residual_reason=None)
+                    else:
+                        record["residual_reason"] = FitReason.NUMERICAL
+                else:
+                    record["residual_reason"] = FitReason.OUTCOME
+            else:
+                record.update(reason=FitReason.NUMERICAL, residual_reason=FitReason.NUMERICAL)
+        fits.append(record)
+    return FactorResidualObservation(residuals, loadings, fits)
+
+
+def factor_residuals_at(
+    closes: pd.DataFrame,
+    volumes: pd.DataFrame,
+    *,
+    symbols: tuple[str, ...],
+    factors: tuple[str, ...],
+    feed: str,
+    position: int,
+    spec: ResidualMomentumSpec = DEFAULT_RESIDUAL_MOMENTUM_SPEC,
+) -> FactorResidualObservation:
+    """Compute one preceding-only fit and innovation without rewriting older residuals."""
+    _validate(closes, volumes, symbols, factors, feed, spec)
+    if type(position) is not int or not 0 <= position < len(closes):
+        raise ValueError("Observed residual position required")
+    columns = [*symbols, *factors]
+    return _residual_at(
+        closes.index,
+        closes.loc[:, columns].to_numpy(dtype=float),
+        volumes.loc[:, columns].to_numpy(dtype=float),
+        _source_returns(closes, volumes).loc[:, columns].to_numpy(),
+        symbols,
+        factors,
+        position,
+        spec,
+    )
+
+
 def residual_momentum_features(
     closes: pd.DataFrame,
     volumes: pd.DataFrame,
@@ -182,79 +293,16 @@ def residual_momentum_features(
     amounts = volumes.loc[:, list(columns)].to_numpy(dtype=float)
     returns = _source_returns(closes, volumes).loc[:, list(columns)]
     values = returns.to_numpy()
-    clock, width = closes.index, len(symbols)
-    factor_values = values[:, width:]
+    clock = closes.index
     residuals = pd.DataFrame(np.nan, index=clock, columns=symbols)
     loadings = {s: pd.DataFrame(np.nan, index=clock, columns=("intercept", *factors)) for s in symbols}
     fits = []
-    for position, timestamp in enumerate(clock):
-        first = max(1, position - spec.fit_sessions)
-        factors_known = np.isfinite(factor_values[first:position]).all(axis=1)
-        inverse, factor_reason = None, None
-        numerical: dict[str, object] = {"rank": None, "singular_values": [], "condition": None}
-        if position > spec.fit_sessions and factors_known.all():
-            try:
-                inverse, numerical, factor_reason = _factor_inverse(factor_values[first:position], spec)
-            except np.linalg.LinAlgError:
-                factor_reason = FitReason.NUMERICAL
-        for number, symbol in enumerate(symbols):
-            observed = np.isfinite(values[first:position, number]) & factors_known
-            reason = (
-                FitReason.WARMUP
-                if position <= spec.fit_sessions
-                else FitReason.MISSING
-                if not observed.all()
-                else factor_reason
-            )
-            source_columns = [number, *range(width, len(columns))]
-            record = {
-                "symbol": symbol,
-                "return_bar": timestamp.isoformat(),
-                "training_start": clock[first].isoformat() if first < position else None,
-                "training_end": clock[position - 1].isoformat() if first < position else None,
-                "assumed_training_available_at": (clock[position - 1] + pd.DateOffset(days=1)).isoformat()
-                if first < position
-                else None,
-                "assumed_residual_available_at": (timestamp + pd.DateOffset(days=1)).isoformat(),
-                "training_rows": int(observed.sum()),
-                "required_training_rows": spec.fit_sessions,
-                "coefficient_names": ["intercept", *factors],
-                "coefficients": None,
-                "training_source_hash": _source_hash(
-                    clock, prices, amounts, slice(first - 1, position), source_columns, (symbol, *factors)
-                ),
-                "evaluation_source_hash": _source_hash(
-                    clock,
-                    prices,
-                    amounts,
-                    slice(max(0, position - 1), position + 1),
-                    source_columns,
-                    (symbol, *factors),
-                ),
-                **numerical,
-                "fit_status": "unavailable",
-                "reason": reason,
-                "residual": None,
-                "residual_reason": reason,
-            }
-            if reason is None and inverse is not None:
-                beta = inverse @ values[first:position, number]
-                if np.isfinite(beta).all():
-                    loadings[symbol].iloc[position] = beta
-                    record.update(fit_status="fitted", coefficients=beta.tolist())
-                    current = values[position, source_columns]
-                    if np.isfinite(current).all():
-                        residual = float(current[0] - beta[0] - beta[1:] @ current[1:])
-                        if np.isfinite(residual):
-                            residuals.iloc[position, number] = residual
-                            record.update(residual=residual, residual_reason=None)
-                        else:
-                            record["residual_reason"] = FitReason.NUMERICAL
-                    else:
-                        record["residual_reason"] = FitReason.OUTCOME
-                else:
-                    record.update(reason=FitReason.NUMERICAL, residual_reason=FitReason.NUMERICAL)
-            fits.append(record)
+    for position in range(len(clock)):
+        current = _residual_at(clock, prices, amounts, values, symbols, factors, position, spec)
+        residuals.iloc[position] = current.residuals.to_numpy()
+        for symbol in symbols:
+            loadings[symbol].iloc[position] = current.loadings.loc[symbol].to_numpy()
+        fits.extend(current.fits)
     window = spec.lookback_sessions - spec.skip_sessions
     observed_window = returns.loc[:, list(symbols)].shift(spec.skip_sessions).rolling(window, min_periods=window)
     raw = (

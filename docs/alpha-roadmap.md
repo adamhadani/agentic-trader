@@ -49,16 +49,22 @@ research run or runtime policy change was made for this review.
    orders suppress about 90% of later opportunities. Search objectives and joint
    gates add distinct losses. Freeze a fresh horizon/lifetime-aligned experiment
    using existing execution contracts; keep gates and lifetime history unchanged.
-   Start prospective native-daily style observations alongside this work, with
-   source-qualified labels, actual receipts and frozen decisions before outcomes.
-3. **Factor comparison completed; prospective daily evidence next.** The
+   The [native-daily collector](alpha-daily-panel.md) now implements parallel
+   observation with source-qualified labels, actual receipts and frozen decisions.
+   Actual forward forecasts and mature outcomes remain separately measured evidence.
+3. **Factor comparison and prospective daily collector implemented; gather evidence.** The
    [54-comparison study](alpha-factor-controls-2026-09-18.md) and independent audit
    found mixed residual-momentum results, no consistent incremental winner, major
-   early support loss and some concentrated gains. Freeze an existing rank-blend
-   benchmark, volatility control and residual-blend challenger for prospective
-   comparison; retain Ridge as a fixed model comparator, not a privileged winner.
-   Persist actual source receipts, eligible universe, mature training cutoff,
-   predictions and decisions before outcomes. Investigate missing-history/IEX
+   early support loss and some concentrated gains. The fixed rank-blend benchmark,
+   volatility control, residual-blend challenger and declared daily Ridge refit now
+   share the [frozen prospective protocol](alpha-daily-panel.md). Receipt-stamped
+   inputs, mature training, immutable forecasts/residual state and terminal first
+   outcomes use the existing journal. Enrollment/worker health are distinct from
+   successful forecasts and 20-session outcomes. The new stress tests show one
+   missed residual innovation can suppress the strict shared comparison for 231
+   later decisions. Next freeze three additional baseline-support variants, with
+   separate hypothesis accounting and unchanged primary/missing-data semantics;
+   reuse captures/fits/outcomes and preserve pending outcomes across campaign updates. Investigate missing-history/IEX
    support separately and evaluate delayed SIP under its own source identity.
    Expand forecast breadth toward 150–300 only with bounded resource and dynamic
    membership tests. Historical current-cohort returns grant no qualification.
@@ -78,6 +84,9 @@ No threshold was lowered, alpha promoted or trading configuration changed by thi
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.
 
 ### Prospective daily acceptance boundary
+
+Implemented by the [daily panel collector](alpha-daily-panel.md); retain these
+contracts when interpreting its still-maturing observations or extending its universe.
 
 The current session observer cannot become a native-daily panel collector by
 changing its timeframe. Reuse its journal, conditional claims and retained-read
@@ -129,7 +138,7 @@ promotion or paper allocation follows from either diagnostic.
 | A2 | A2a implemented — [PR #37](https://github.com/adamhadani/agentic-trader/pull/37); A2b replay groundwork — [PR #38](https://github.com/adamhadani/agentic-trader/pull/38) | [Replay contract](alpha-session-replay.md) and [four-run evidence](alpha-session-replay-2026-09-16.md): SIP coverage complete, IEX incomplete in both windows. Live signal-clock migration and broker execution observations remain; intraday promotion stays blocked. |
 | A3 | Forecast benchmark prerequisite — [PR #43](https://github.com/adamhadani/agentic-trader/pull/43); [PR #44](https://github.com/adamhadani/agentic-trader/pull/44) timing/cost screen complete; standalone open-gap policy paused; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
 | A4 | 64-equity forecasts and matched controls completed; broader/prospective evidence next | Broader economic hypotheses and point-in-time universe/data coverage. |
-| A5 | SPY/QQQ session diagnostics implemented; daily panel collection and campaign orchestration remain | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
+| A5 | SPY/QQQ session diagnostics and native-daily panel collection implemented; first daily forward evidence and broader campaign orchestration remain | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
 
 A1a makes A1b reproducible. A2 can follow those foundations while any longer A1b
 forward experiment accumulates evidence. A3–A5 may need small prerequisite adapters;
@@ -668,11 +677,12 @@ intraday limitation does not block the next native-daily equity liquidity/foreca
    unproven. Strict endpoint evidence withholds four 2023 Ridge baskets. Preserve
    the original result semantics and all comparison/inspection accounting.
 2. The [54-comparison factor follow-up](alpha-factor-controls-2026-09-18.md) is
-   also complete, with no consistent incremental winner. Build prospective daily
-   panel observations with the fixed blend, volatility and residual-blend controls
-   plus the frozen Ridge comparator, using existing observation/journal infrastructure. First freeze
-   a source-qualified label contract for both training and evaluation; the retained
-   study intentionally did not refit its original finite-price labels. Any changed
+   also complete, with no consistent incremental winner. The
+   [prospective daily panel](alpha-daily-panel.md) implements receipt-qualified
+   collection with the fixed blend, volatility and residual-blend controls
+   plus a newly declared daily Ridge refit, using the existing journal. The source-qualified
+   label contract requires positive endpoint volume for training and evaluation; the retained
+   historical study did not refit its original finite-price labels. Any changed
    historical fit is a separately charged diagnostic, not a rewrite of this run.
    Persist the eligible universe, strictly mature training cutoff, fitted artifact,
    forecasts and frozen baskets before outcomes arrive. Do not privilege Ridge

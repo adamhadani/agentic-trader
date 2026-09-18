@@ -112,3 +112,24 @@ async def test_forward_dashboard_stays_compact_as_registry_grows():
     for definition in definitions:
         assert definition.expression not in card
         assert definition.version_id[:12] not in card
+
+
+def test_daily_panel_dashboard_is_compact_and_separate_from_intraday_and_qualification():
+    report = {
+        "days": 7,
+        "truncated": False,
+        "candidates": [],
+        "daily_panel": {
+            "worker_enabled": True,
+            "truncated": True,
+            "campaigns": [{"campaign_id": "private"}] * 100,
+            "decision_sessions": 9,
+            "outcome_sessions": 3,
+            "decision_counts": {"scored": 7, "unavailable": 1, "missed": 1, "interrupted": 0, "claimed": 0},
+            "outcome_counts": {"complete": 2, "unavailable": 1, "capturing": 0},
+        },
+    }
+    card = TelegramHtmlFormatter.format_alphas_dashboard_html(RegistrySnapshot(1, (), ()), evidence=report)
+    assert "Daily panel" in card and "7/9" in card and "2/3" in card
+    assert "lower bounds" in card and "not qualification" in card
+    assert "private" not in card and len(card) < 1800

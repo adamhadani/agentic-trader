@@ -15,7 +15,7 @@ from agentic_trader.research.alpha.baselines import build_forecast_estimator, fi
 from agentic_trader.research.alpha.daily_inputs import DailyStudyInputs
 from agentic_trader.research.alpha.diagnostics import forecast_diagnostics
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
-from agentic_trader.research.alpha.forecast_policy import BASIS_POINTS
+from agentic_trader.research.alpha.forecast_policy import BASIS_POINTS, DailyLongFlatPolicy
 from agentic_trader.research.alpha.information import cross_sectional_ic
 from agentic_trader.research.alpha.panel import DailyResearchPanel, align_daily_panel
 from agentic_trader.research.alpha.panel_forecast_plan import MODEL_CONTROLS, PANEL_FORECAST_VERSION, PanelForecastPlan
@@ -97,6 +97,41 @@ def _predictions(features, eligible, labels, positions, clock, cohort, plan):
     return frames, fits
 
 
+def evaluate_frozen_basket(weights: pd.Series, outcomes: pd.Series, *, costs_bps):
+    """Evaluate immutable holdings; unavailable held outcomes never become cash."""
+    costs_bps = DailyLongFlatPolicy(costs_bps).costs_bps
+    if (
+        not weights.index.is_unique
+        or not weights.index.equals(outcomes.index)
+        or not np.isfinite(weights.to_numpy()).all()
+        or np.isinf(outcomes.to_numpy()).any()
+        or (weights.abs().sum() > 1 and not np.isclose(weights.abs().sum(), 1))
+    ):
+        raise ValueError("Aligned finite frozen weights with bounded gross and explicit outcomes required")
+    held = weights.ne(0)
+    missing = list(outcomes.index[held & ~np.isfinite(outcomes)])
+    known = not missing
+    gross = float(weights.loc[held] @ outcomes.loc[held]) if known else None
+    entered = float(weights.abs().sum())
+    exited = float(weights.loc[held].abs() @ (1 + outcomes.loc[held])) if known else None
+    turnover = entered + exited if exited is not None else None
+    return {
+        "missing_held_symbols": missing,
+        "gross_return": gross,
+        "entry_gross": entered,
+        "exit_gross": exited,
+        "turnover": turnover,
+        "costs": [
+            {
+                "cost_bps": cost,
+                "fees": cost / BASIS_POINTS * turnover if turnover is not None else None,
+                "net_return": gross - cost / BASIS_POINTS * turnover if turnover is not None else None,
+            }
+            for cost in costs_bps
+        ],
+    }
+
+
 def _baskets(scores, labels, cohort, plan, weight_builder=None):
     dates = scores.index
     horizon = plan.target.horizon_bars
@@ -117,14 +152,8 @@ def _baskets(scores, labels, cohort, plan, weight_builder=None):
                 raise ValueError("Basket policy must preserve finite symbol weights and unit gross bounds")
             weights.loc[available.index] = chosen
         # Only after immutable weights exist do outcome values enter evaluation.
-        outcomes = labels.iloc[offset]
-        held = weights.ne(0)
-        missing = list(outcomes.index[held & ~np.isfinite(outcomes)])
-        known = not missing
-        gross = float(weights.loc[held] @ outcomes.loc[held]) if known else None
-        entered = float(weights.abs().sum())
-        exited = float(weights.loc[held].abs() @ (1 + outcomes.loc[held])) if known else None
-        turnover = entered + exited if exited is not None else None
+        payoff = evaluate_frozen_basket(weights, labels.iloc[offset], costs_bps=plan.costs_bps)
+        known = not payoff["missing_held_symbols"]
         observations.append(
             {
                 "decision_bar": dates[offset].isoformat(),
@@ -135,19 +164,7 @@ def _baskets(scores, labels, cohort, plan, weight_builder=None):
                 "weights": weights.to_dict(),
                 "status": "unavailable" if not known else "observed" if enough else "abstained",
                 "reason": "missing_held_outcome" if not known else None if enough else "insufficient_forecast_breadth",
-                "missing_held_symbols": missing,
-                "gross_return": gross,
-                "entry_gross": entered,
-                "exit_gross": exited,
-                "turnover": turnover,
-                "costs": [
-                    {
-                        "cost_bps": cost,
-                        "fees": cost / BASIS_POINTS * turnover if turnover is not None else None,
-                        "net_return": gross - cost / BASIS_POINTS * turnover if turnover is not None else None,
-                    }
-                    for cost in plan.costs_bps
-                ],
+                **payoff,
             }
         )
     return observations

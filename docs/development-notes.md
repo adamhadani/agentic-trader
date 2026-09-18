@@ -314,3 +314,11 @@ SQLite/PostgreSQL integration. The shared fixture preserves guarded disposable D
 Integration covers pre-read charging/exclusion, immutable parent data, full 126-row
 fits, unknown held outcomes, replay and no activation. Full historical results and
 service deployment checks remain separate from these synthetic mechanical fixtures.
+
+## Native-daily panel campaign
+
+The [daily panel](alpha-daily-panel.md) runs four frozen diagnostic models on 64
+equities and nine ETF proxies, inside the existing daemon. Collection starts at
+00:30 New York time after each decision day. The existing alpha journal owns
+exactly-once enrollment, exclusive claims, late-result retention and atomic residual
+state; outcomes mature after 20 sessions. No extra poller, schema or order route.

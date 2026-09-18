@@ -8,7 +8,7 @@ import pytest
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.cli.commands import service
-from agentic_trader.config import load_config
+from agentic_trader.config import DailyPanelWorkerConfig, load_config
 from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 
@@ -49,10 +49,15 @@ async def test_blocking_dependencies_leave_event_loop_responsive(operation, monk
 
 
 @pytest.mark.asyncio
-async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch, config):
+@pytest.mark.parametrize("daily_enabled", [False, True])
+async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch, config, tmp_path, daily_enabled):
     config.scheduler.intraday_scan_enabled = False
     config.scheduler.macro_briefing_enabled = False
     scan_ran, monitor_ran, initialized = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    daily_started, daily_drained = asyncio.Event(), asyncio.Event()
+    config.alpha_pipeline.daily_panel = DailyPanelWorkerConfig(
+        enabled=daily_enabled, protocol_path=tmp_path / "frozen-protocol.json"
+    )
     copilot = MagicMock()
     copilot.broker.connect = AsyncMock(return_value=True)
     copilot.broker.supports_trade_stream = False
@@ -82,6 +87,15 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
     copilot.monitor_positions = monitor
     monkeypatch.setattr(service, "get_copilot_and_config", lambda: (copilot, config))
     monkeypatch.setattr(service, "monitor_event_loop", AsyncMock())
+
+    async def daily_worker(actual_config, repository, readiness, metrics, shutdown):
+        assert actual_config is config and shutdown is copilot._shutdown_event
+        daily_started.set()
+        await shutdown.wait()
+        await asyncio.sleep(0)
+        daily_drained.set()
+
+    monkeypatch.setattr(service, "run_daily_panel_worker", daily_worker)
     task = asyncio.create_task(service.daemon.callback.__wrapped__(no_llm=True))
     try:
         await asyncio.wait_for(asyncio.gather(scan_ran.wait(), monitor_ran.wait()), timeout=5)
@@ -89,6 +103,8 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
         task.cancel()
         await task
     copilot.notifier.stop_polling.assert_awaited_once()
+    assert daily_started.is_set() is daily_enabled
+    assert daily_drained.is_set() is daily_enabled
 
 
 @pytest.mark.parametrize(

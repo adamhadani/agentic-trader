@@ -301,3 +301,10 @@ The [54-comparison factor study](docs/alpha-factor-controls-2026-09-18.md) is co
 and independently audited. Residual momentum adds no consistent improvement over
 the existing blend; support loss, concentration and nonzero factor exposures remain
 visible. Active mined alphas remain zero; prospective evidence is the next stage.
+
+The [prospective native-daily panel](docs/alpha-daily-panel.md) freezes four diagnostic
+controls over 64 equities plus nine ETF proxies. Its existing-daemon worker uses
+next-New-York-midnight windows, actual receipts, strictly mature training, atomic
+residual-state/forecast claims and terminal first outcomes. Missed sessions stay
+missing. Readiness is worker progress, not forecast/outcome quality. No promotion
+or trading authority follows from this experiment.

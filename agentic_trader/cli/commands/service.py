@@ -24,9 +24,13 @@ from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
+from agentic_trader.research.alpha.daily_observations import DailyPanelService
+from agentic_trader.research.alpha.daily_plan import DailyPanelPlan
 from agentic_trader.research.alpha.decisions import SessionDecisionService
+from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.observation import SessionObservationService
 from agentic_trader.runtime import runtime_identity
+from agentic_trader.storage.alpha_daily import DailyCampaignRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.maintenance import RetentionService
 from agentic_trader.storage.operations import OperationsStore
@@ -86,8 +90,118 @@ async def listen() -> None:
         await copilot.notifier.stop_polling()
 
 
+MAX_DAILY_PROTOCOL_BYTES = 1_000_000
+DAILY_TERMINAL_LABELS = {
+    **{
+        f"decision:{status}": {"kind": "decision", "status": status}
+        for status in (DecisionStatus.SCORED, DecisionStatus.UNAVAILABLE, DecisionStatus.INTERRUPTED)
+    },
+    **{
+        f"outcome:{status}": {"kind": "outcome", "status": status}
+        for status in (ObservationStatus.COMPLETE, ObservationStatus.UNAVAILABLE)
+    },
+}
+
+
+def load_daily_panel_plan(path: Path | None) -> DailyPanelPlan:
+    """Read exactly one explicit bounded protocol; never infer it from the trading configuration."""
+    if path is None:
+        raise ValueError("Explicit daily-panel protocol path required")
+    with path.expanduser().open("rb") as source:
+        payload = source.read(MAX_DAILY_PROTOCOL_BYTES + 1)
+    if len(payload) > MAX_DAILY_PROTOCOL_BYTES:
+        raise ValueError("Daily-panel protocol exceeds the bounded document size")
+    return DailyPanelPlan.from_document(json.loads(payload))
+
+
+def _record_research_results(results, metrics, component):
+    if component == HealthComponent.ALPHA_DAILY_PANEL:
+        if results["status"] not in ("idle", "enrolled", "recorded", "unavailable"):
+            raise ValueError("Unknown daily-panel worker status")
+        terminal_counts = results["terminal_counts"]
+        if not isinstance(terminal_counts, dict) or any(
+            key not in DAILY_TERMINAL_LABELS or type(count) is not int or count < 0
+            for key, count in terminal_counts.items()
+        ):
+            raise ValueError("Invalid daily-panel terminal counts")
+        metrics.inc_counter("alpha_daily_panel_polls_total", labels={"status": results["status"]})
+        for key in ("decisions", "outcomes"):
+            metrics.inc_counter(f"alpha_daily_panel_{key}_total", value=results[key])
+        for key, count in terminal_counts.items():
+            metrics.inc_counter("alpha_daily_panel_terminals_total", value=count, labels=DAILY_TERMINAL_LABELS[key])
+        if results["status"] != "idle":
+            logger.info(
+                "Daily panel progress: %s %s",
+                results["campaign_id"],
+                results["status"],
+                extra={
+                    "event": "alpha_daily_panel",
+                    "campaign_id": results["campaign_id"],
+                    "status": results["status"],
+                    "decisions": results["decisions"],
+                    "outcomes": results["outcomes"],
+                    "terminal_counts": terminal_counts,
+                },
+            )
+        return
+    for result in results:
+        labels = {"symbol": result["symbol"], "timeframe": result["timeframe"], "feed": result["feed"]}
+        if component == HealthComponent.ALPHA_DECISIONS:
+            metrics.inc_counter("alpha_session_decisions_total", labels={**labels, "status": result["status"]})
+            logger.info(
+                "Session decision retained: %s %s %s",
+                result["symbol"],
+                result["closed_at"],
+                result["status"],
+                extra={
+                    "event": "alpha_session_decision",
+                    "decision_id": result["decision_id"],
+                    "status": result["status"],
+                    "artifact_hash": result.get("artifact_hash"),
+                },
+            )
+            continue
+        complete = result["status"] == ObservationStatus.COMPLETE
+        metrics.set_gauge("alpha_observation_complete", float(complete), labels=labels)
+        metrics.set_gauge("alpha_observation_timestamp_seconds", datetime.now(UTC).timestamp(), labels=labels)
+        if complete:
+            metrics.set_gauge(
+                "alpha_observation_availability_upper_bound_seconds",
+                result["availability_upper_bound_seconds"],
+                labels=labels,
+            )
+        logger.info(
+            "Session observation retained: %s %s %s",
+            result["symbol"],
+            result["closed_at"],
+            result["status"],
+            extra={
+                "event": "alpha_session_observation",
+                "observation_id": result["observation_id"],
+                "status": result["status"],
+                "artifact_hash": result["artifact_hash"],
+            },
+        )
+
+
+async def _poll_research_worker(worker, readiness, metrics, shutdown, *, component, poll_seconds, offset=0):
+    """Shared wall-clock polling; shutdown drains current work before the caller closes readers."""
+    while not shutdown.is_set():
+        try:
+            results = await worker.run_once()
+            _record_research_results(results, metrics, component)
+            # Durable worker progress is separate from usable data or forecast outcomes.
+            await readiness.observe(component, True)
+        except Exception as exc:
+            logger.exception("Research diagnostic worker failed: %s", component)
+            await readiness.observe(component, False, type(exc).__name__)
+        delay = poll_seconds - ((datetime.now(UTC).timestamp() - offset) % poll_seconds)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(shutdown.wait(), timeout=delay)
+
+
 async def run_session_worker(config, repository, readiness, metrics, shutdown, *, component):
-    """One read-only consumer; finish in-flight reads before closing owned clients."""
+    """Compose one session observer using its own source policy and owned readers."""
     factory, policy, folder = {
         HealthComponent.ALPHA_OBSERVER: (
             SessionObservationService,
@@ -97,69 +211,52 @@ async def run_session_worker(config, repository, readiness, metrics, shutdown, *
         HealthComponent.ALPHA_DECISIONS: (SessionDecisionService, config.alpha_pipeline.decisions, "forward-decisions"),
     }[component]
     with session_source(config, policy.feed.removeprefix("alpaca:")) as source:
-        observer = factory(
+        worker = factory(
             repository,
             source,
             policy,
             directory=artifact_directory() / folder,
             runtime=await asyncio.to_thread(runtime_identity),
         )
-        while not shutdown.is_set():
-            try:
-                results = await observer.run_once()
-                for result in results:
-                    labels = {"symbol": result["symbol"], "timeframe": result["timeframe"], "feed": result["feed"]}
-                    if component == HealthComponent.ALPHA_DECISIONS:
-                        metrics.inc_counter(
-                            "alpha_session_decisions_total", labels={**labels, "status": result["status"]}
-                        )
-                        logger.info(
-                            "Session decision retained: %s %s %s",
-                            result["symbol"],
-                            result["closed_at"],
-                            result["status"],
-                            extra={
-                                "event": "alpha_session_decision",
-                                "decision_id": result["decision_id"],
-                                "status": result["status"],
-                                "artifact_hash": result.get("artifact_hash"),
-                            },
-                        )
-                        continue
-                    complete = result["status"] == ObservationStatus.COMPLETE
-                    metrics.set_gauge("alpha_observation_complete", float(complete), labels=labels)
-                    metrics.set_gauge(
-                        "alpha_observation_timestamp_seconds", datetime.now(UTC).timestamp(), labels=labels
-                    )
-                    if complete:
-                        metrics.set_gauge(
-                            "alpha_observation_availability_upper_bound_seconds",
-                            result["availability_upper_bound_seconds"],
-                            labels=labels,
-                        )
-                    logger.info(
-                        "Session observation retained: %s %s %s",
-                        result["symbol"],
-                        result["closed_at"],
-                        result["status"],
-                        extra={
-                            "event": "alpha_session_observation",
-                            "observation_id": result["observation_id"],
-                            "status": result["status"],
-                            "artifact_hash": result["artifact_hash"],
-                        },
-                    )
-                # This checks the collector's durable progress, not feed completeness.
-                await readiness.observe(component, True)
-            except Exception as exc:
-                logger.exception("Session diagnostic worker failed: %s", component)
-                await readiness.observe(component, False, type(exc).__name__)
-            # Align polls to the wall clock, independent of daemon startup drift.
-            # A configured offset leaves a small initial publication window.
-            offset = policy.poll_offset_seconds
-            delay = policy.poll_seconds - ((datetime.now(UTC).timestamp() - offset) % policy.poll_seconds)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(shutdown.wait(), timeout=delay)
+        await _poll_research_worker(
+            worker,
+            readiness,
+            metrics,
+            shutdown,
+            component=component,
+            poll_seconds=policy.poll_seconds,
+            offset=policy.poll_offset_seconds,
+        )
+
+
+async def run_daily_panel_worker(config, repository, readiness, metrics, shutdown):
+    """Load one frozen daily protocol; no hot reload, notifier, broker writes or second daemon."""
+    policy = config.alpha_pipeline.daily_panel
+    if not policy.enabled:
+        return
+    component = HealthComponent.ALPHA_DAILY_PANEL
+    try:
+        plan = await asyncio.to_thread(load_daily_panel_plan, policy.protocol_path)
+        daily_repository = DailyCampaignRepository(repository.store, policy=config.alpha_pipeline)
+        with session_source(config, plan.feed.removeprefix("alpaca:")) as source:
+            worker = DailyPanelService(
+                daily_repository,
+                source,
+                plan,
+                policy,
+                acquisition=config.alpha_pipeline.daily_research,
+                directory=artifact_directory() / "daily-panel",
+                runtime=await asyncio.to_thread(runtime_identity),
+                on_progress=lambda: readiness.observe(component, True),
+            )
+            await _poll_research_worker(
+                worker, readiness, metrics, shutdown, component=component, poll_seconds=policy.poll_seconds
+            )
+    except Exception as exc:
+        logger.exception("Daily-panel worker initialization failed")
+        await readiness.observe(component, False, type(exc).__name__)
+        # Invalid configuration stays visibly failed until a controlled restart.
+        await shutdown.wait()
 
 
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")
@@ -211,6 +308,15 @@ async def daemon(no_llm: bool) -> None:
         )
         if policy.enabled
     ]
+
+    if config.alpha_pipeline.daily_panel.enabled:
+        session_tasks.append(
+            asyncio.create_task(
+                run_daily_panel_worker(
+                    config, copilot.alpha_repository, copilot.readiness, copilot.metrics, copilot._shutdown_event
+                )
+            )
+        )
 
     scheduler = AsyncIOScheduler(
         job_defaults={

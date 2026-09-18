@@ -412,6 +412,13 @@ Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel
 
 ### Native daily panel diagnostics
 
+`copilot alpha status` and `copilot alpha forward --days 7` include separately
+counted [prospective daily campaigns](alpha-daily-panel.md), decisions and first
+matured outcomes. Telegram `/alphas` shows compact totals. These counts describe
+recorded research sessions, not active strategies, fills or qualified shadow credit.
+Collection is configured under `alpha_pipeline.daily_panel` in the existing daemon;
+there is no manual command that can replay an expired daily forecast.
+
 `alpha panel-study PROTOCOL --output DIRECTORY` requires a new output directory and
 a complete frozen plan/screen JSON. It charges the full hypothesis/fold/IC/cost matrix
 and excludes member/benchmark/warmup intervals before acquisition. It retains source

@@ -115,6 +115,9 @@ def align_daily_panel(
             or (frame.low > frame[["open", "high", "close"]].min(axis=1)).any()
         ):
             raise ValueError("Invalid observed daily OHLCV; do not drop malformed rows")
+        # SDK empty frames can have object columns. Normalize validated OHLCV
+        # before calendar reindexing so missing rows remain numeric NaNs.
+        frame = frame.astype(dict.fromkeys(required, float))
         frame.index = index
         missing = expected_index.difference(index)
         aligned[symbol] = frame.reindex(expected_index)

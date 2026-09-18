@@ -11,9 +11,10 @@ import pytest
 
 from agentic_trader.config import DailyAcquisitionConfig
 from agentic_trader.market.bars import SessionSchedule, TradingSession
+from agentic_trader.research.alpha.acquisition import save_observations
 from agentic_trader.research.alpha.forecast_controls_plan import ForecastControlsPlan
 from agentic_trader.research.alpha.panel_forecast_plan import PanelForecastPlan
-from agentic_trader.research.alpha.panel_workflow import AlphaPanelService, _save_observations
+from agentic_trader.research.alpha.panel_workflow import AlphaPanelService
 from agentic_trader.research.alpha.retained_panel import RetainedPanelSource
 
 
@@ -32,7 +33,7 @@ def retained_case(tmp_path):
         frame.attrs.update(feed=parent.feed, adjustment=parent.adjustment, timeframe="1d")
         frames[symbol] = frame
     inputs = {
-        "datasets": {symbol: _save_observations(frame, directory) for symbol, frame in frames.items()},
+        "datasets": {symbol: save_observations(frame, directory) for symbol, frame in frames.items()},
         "failures": {},
         "receipts": [{"requested_at": "2026-09-17T20:00:01Z", "received_at": "2026-09-17T20:01:00Z"}],
     }
