@@ -21,8 +21,8 @@ The next risk tranche adds [broker entry capacity](entry-capacity.md), retaining
 FIFO, journal and lock order. Tests include real SDK HTTP evidence and independent
 PostgreSQL writers, including stale evidence after lock waits. Funding, borrowing,
 protected exposure and planned stop-risk budgets are checked before POST. The
-[power-ablation plan](alpha-power-ablation-plan.md) records the next research experiment;
-planning evidence is not a completed run or promotion.
+[power diagnosis](alpha-power-diagnosis-2026-09-18.md) records all 800 completed
+searches and the pending-order/forecast mismatch; no gate change or promotion follows.
 
 Alpha closure/clock checks now live in `market/bars.py`, shared by research,
 screening and shadow. Fixed-duration versions reject explicit session/unknown

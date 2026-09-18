@@ -41,8 +41,8 @@ exact A2a generator, search family and selected-winner pipeline.
 **7,065 is a historical sensitivity reference, not the current lifetime count.**
 A2a used 7,049 historical attempts plus its 16-trial search, with variance
 `0.0028764548818829777`. A read-only projection snapshot now confirms **7,826 global
-attempts and no native-daily Sharpe projection** for the current return timeline.
-Confirmed absence means zero prior samples; an unavailable or failed source read
+attempts and an empty native-daily Sharpe sample** in the current-timeline
+projection (the projection itself exists). Confirmed empty observations mean zero prior samples; an unavailable or failed source read
 must never be interpreted as an empty family.
 
 Before any validation run, freeze a read-only, explicitly sourced snapshot of the
@@ -188,7 +188,8 @@ RED-first regression coverage and tiny integration fixtures address:
   gates while runtime config, DB, provider, broker and notifier construction fails.
 
 Record final test results, the committed protocol and actual study completion
-separately. The full run is still pending here. After diagnosis, proceed to the
+separately. The [full run completed all 800 searches](alpha-power-diagnosis-2026-09-18.md),
+with no unavailable endpoints and insufficient positive-control power. Proceed to the
 [bounded factor comparison](alpha-factor-research-plan.md): 54 retained-data
 comparisons of existing styles, skipped-month momentum, causal residual momentum
 and incremental blend value. Prospective collection remains separate; a reused

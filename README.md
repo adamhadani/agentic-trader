@@ -252,7 +252,7 @@ The [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) sep
 [Broker entry capacity](docs/entry-capacity.md) checks current funding, borrowing,
 exact protection and aggregate planned stop risk through the same durable FIFO.
 Sizing uses the lesser of mandate and observed equity. See the
-[power-ablation plan](docs/alpha-power-ablation-plan.md) for the next research diagnostic;
+[completed power diagnosis](docs/alpha-power-diagnosis-2026-09-18.md) for the measured research bottleneck;
 no new alpha is qualified by these risk controls.
 
 
@@ -261,3 +261,8 @@ qualification gates with paired synthetic controls and a sourced family snapshot
 They share the existing artifact workflow and cannot promote strategies or send
 orders. See the [power diagnosis](docs/alpha-power-ablation-plan.md) and the next
 [bounded factor experiment](docs/alpha-factor-research-plan.md).
+
+
+The [800-search power diagnosis](docs/alpha-power-diagnosis-2026-09-18.md) found strong
+planted forecasts but poor GTC entry conversion and inadequate promotion power.
+No threshold change or new alpha activation follows from this diagnostic.
