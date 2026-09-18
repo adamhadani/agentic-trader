@@ -248,7 +248,10 @@ argument and S4's all-positive-tail inconsistency. No new market-price acquisiti
 mining, qualification, activation, broker mutation or Telegram message occurred.
 The findings above were **open at the reviewed revision**. The subsequent
 [account-risk tranche](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission)
-implements S1 and corrects S4; S2/S3 and the research/deployment gaps remain.
+implements S1 and corrects S4. The later [entry-capacity tranche](entry-capacity.md)
+implements S3 funding/borrowability, observed-equity capital and aggregate planned
+stop-risk checks. S2, measured portfolio volatility/tail constraints and the
+research/deployment gaps remain; this dated survey is not rewritten as deployed evidence.
 Source/test completion does not itself establish deployed verification.
 Prior PR #63's 1,750 passing tests and 278 integration cases establish useful existing
 coverage, not proof that these newly identified missing contracts are implemented.

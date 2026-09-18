@@ -165,3 +165,9 @@ recent-SIP entitlement from throttling; historical SIP remains usable.
 - [Retained forecast controls](docs/alpha-forecast-controls.md) use hash-bound parent artifacts and the shared daily journal. Reserve/exclude before retained-price access. Future endpoint evidence cannot change decisions; unknown held outcomes withhold curves. Preserve original training semantics and distinguish artifact-read receipts from provider observations.
 
 - Alpaca entry risk uses the existing account ledger checkpoint and persistent cash-flow-adjusted high-water mark. Never default missing/stale risk to zero or reset it on restart. All tiers share the drawdown cap; final admission pins the fingerprint under trading → ledger lock order and rechecks lease expiry after waits. Read [account risk](docs/account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission).
+
+- [Entry capacity](docs/entry-capacity.md) uses typed broker account/book/quote evidence
+  and exact protection identities. Final admission rechecks freshness and all current
+  reservations under the trading lock. Use the lesser of mandate and observed equity;
+  missing funding/borrow/protection evidence blocks new risk. Planned stop risk is not
+  a gap-loss or CVaR guarantee. Keep research gate-power diagnostics separate from promotion.

@@ -108,7 +108,8 @@ DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
 
 
 class PortfolioConfig(BaseModel):
-    cash: float = 100000.0
+    cash: float = Field(default=100000.0, gt=0, allow_inf_nan=False)
+    max_stop_risk_pct: float = Field(default=0.02, gt=0, le=1, allow_inf_nan=False)
     max_notional_exposure: float = 60000.0
     max_concurrent_contracts: int = 2
     max_concurrent_positions: int = 4
@@ -266,6 +267,7 @@ class ExecutionConfig(BaseModel):
     entry_queue_max_age_seconds: float = Field(default=120, gt=0)
     signal_max_age_seconds: float = Field(default=14400, gt=0)
     entry_quote_max_age_seconds: float = Field(default=60, gt=0)
+    entry_evidence_max_age_seconds: float = Field(default=30, gt=0, le=120, allow_inf_nan=False)
     entry_max_price_drift_pct: float = Field(default=0.01, gt=0, le=0.1)
     worker_interval_seconds: float = Field(default=2, gt=0, le=60)
     worker_batch_size: int = Field(default=20, ge=1, le=100)

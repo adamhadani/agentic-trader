@@ -5,6 +5,7 @@ import math
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from http import HTTPStatus
 from typing import Any
 from uuid import uuid4
@@ -13,7 +14,7 @@ from alpaca.common.enums import Sort
 from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestTradeRequest
+from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     OrderClass as AlpacaOrderClass,
@@ -37,7 +38,11 @@ from alpaca.trading.stream import TradingStream
 from agentic_trader.accounting.ledger import AccountSnapshot
 from agentic_trader.broker.base import (
     BaseBroker,
+    BrokerEntryContext,
     BrokerPosition,
+    EntryAccountEvidence,
+    EntryAssetEvidence,
+    EntryQuoteEvidence,
     OrderRequest,
     OrderResult,
     PositionCloseRequest,
@@ -47,6 +52,7 @@ from agentic_trader.config import AppConfig
 from agentic_trader.constants import (
     ALPACA_MAX_ORDERS_PER_PAGE,
     ALPACA_MAX_REPLACEMENT_CHAIN,
+    BROKER_CLOCK_SKEW_TOLERANCE_SECONDS,
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
     AssetClass,
@@ -354,15 +360,180 @@ class AlpacaBroker(BaseBroker):
             source=source,
         )
 
-    async def entry_market_context(self, request: OrderRequest) -> dict[str, Any]:
+    @staticmethod
+    def _entry_decimal(value: Any) -> Decimal:
+        try:
+            number = Decimal(str(value))
+        except InvalidOperation as exc:
+            raise ValueError("Invalid entry financial evidence") from exc
+        if not number.is_finite():
+            raise ValueError("Nonfinite entry financial evidence")
+        return number
+
+    async def _entry_account(self) -> EntryAccountEvidence:
+        assert self.client is not None
+        raw = await asyncio.to_thread(self.client.get, "/account")
+        if not isinstance(raw, dict):
+            raise TypeError("Invalid entry account response")
+        try:
+            return EntryAccountEvidence.model_validate(
+                {name: raw.get("id" if name == "account_id" else name) for name in EntryAccountEvidence.model_fields}
+            )
+        except ValueError as exc:
+            raise ValueError("Incomplete or invalid entry account evidence") from exc
+
+    async def _entry_positions(self) -> tuple[tuple[BrokerPosition, ...], tuple]:
+        assert self.client is not None
+        raw = await asyncio.to_thread(self.client.get, "/positions")
+        if not isinstance(raw, list):
+            raise TypeError("Invalid entry positions response")
+        positions: list[BrokerPosition] = []
+        identities = []
+        symbols: set[str] = set()
+        for row in raw:
+            if not isinstance(row, dict):
+                raise TypeError("Invalid entry position evidence")
+            symbol, asset_class, side = row.get("symbol"), row.get("asset_class"), row.get("side")
+            if (
+                not isinstance(symbol, str)
+                or not symbol
+                or symbol in symbols
+                or asset_class not in ("us_equity", "crypto")
+                or side not in ("long", "short")
+                or not isinstance(row.get("asset_id"), str)
+                or not row["asset_id"]
+            ):
+                raise ValueError("Ambiguous entry position identity")
+            qty, basis, entry, mark = (
+                self._entry_decimal(row.get(key)) for key in ("qty", "cost_basis", "avg_entry_price", "current_price")
+            )
+            if qty == 0 or entry <= 0 or mark <= 0 or (qty > 0) != (side == "long"):
+                raise ValueError("Invalid entry position quantity or price")
+            symbols.add(symbol)
+            identities.append((symbol, row["asset_id"], asset_class, side, qty, basis, entry))
+            positions.append(
+                BrokerPosition(
+                    symbol=symbol,
+                    asset_class=AssetClass.EQUITY if asset_class == "us_equity" else AssetClass.CRYPTO,
+                    direction=Direction.LONG if side == "long" else Direction.SHORT,
+                    quantity=float(abs(qty)),
+                    entry_price=float(entry),
+                    current_price=float(mark),
+                )
+            )
+        return tuple(sorted(positions, key=lambda position: position.symbol)), tuple(sorted(identities))
+
+    async def _entry_orders(self, entry_order_ids: tuple[str, ...]) -> tuple[OrderObservation, ...]:
+        assert self.client is not None
+        open_orders = await asyncio.to_thread(
+            self.client.get_orders,
+            GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True, limit=ALPACA_MAX_ORDERS_PER_PAGE),
+        )
+        if not isinstance(open_orders, list):
+            raise TypeError("Invalid entry orders response")
+        if len(open_orders) >= ALPACA_MAX_ORDERS_PER_PAGE:
+            raise ValueError("Open-order snapshot is truncated; entry refused")
+        roots: list[Any] = list(open_orders)
+        for identity in entry_order_ids:
+            root = await asyncio.to_thread(self.client.get_order_by_id, identity, GetOrderByIdRequest(nested=True))
+            if str(self._field(root, "id")) != identity:
+                raise ValueError("Broker returned a different entry ID")
+            roots.append(root)
+        observations: dict[str, OrderObservation] = {}
+        for root in roots:
+            legs = self._field(root, "legs") or []
+            if len(legs) >= ALPACA_BRACKET_ORDER_COUNT or any(self._field(leg, "legs") for leg in legs):
+                raise ValueError("Entry order group exceeds supported bracket structure")
+            root_id = str(self._field(root, "id"))
+            for order, parent in [(root, None), *((leg, root_id) for leg in legs)]:
+                if any(
+                    self._field(order, key) is None
+                    for key in ("id", "client_order_id", "symbol", "qty", "filled_qty", "updated_at")
+                ):
+                    raise ValueError("Incomplete entry order evidence")
+                observation = self._observation(order, parent=parent, source="entry_preflight")
+                quantity, filled = (
+                    self._entry_decimal(observation.quantity),
+                    self._entry_decimal(observation.filled_quantity),
+                )
+                if (
+                    quantity <= 0
+                    or filled < 0
+                    or filled > quantity
+                    or not observation.symbol
+                    or observation.side not in ("buy", "sell")
+                    or observation.updated_at.tzinfo is None
+                    or observation.order_id == parent
+                ):
+                    raise ValueError("Invalid entry order evidence")
+                for price in (observation.average_fill_price, observation.limit_price, observation.stop_price):
+                    if price is not None and self._entry_decimal(price) <= 0:
+                        raise ValueError("Invalid entry order price")
+                previous = observations.get(observation.order_id)
+                if previous:
+                    if previous.model_dump(exclude={"parent_order_id"}) != observation.model_dump(
+                        exclude={"parent_order_id"}
+                    ) or (previous.parent_order_id and parent and previous.parent_order_id != parent):
+                        raise ValueError("Conflicting duplicate entry order evidence")
+                    if previous.parent_order_id:
+                        observation = previous
+                observations[observation.order_id] = observation
+        return tuple(observations[identity] for identity in sorted(observations))
+
+    async def entry_market_context(
+        self, request: OrderRequest, *, entry_order_ids: tuple[str, ...] = ()
+    ) -> BrokerEntryContext:
+        requested_at = datetime.now(UTC)
+        if (
+            len(entry_order_ids) > ALPACA_MAX_ORDERS_PER_PAGE
+            or len(set(entry_order_ids)) != len(entry_order_ids)
+            or any(not isinstance(identity, str) or not identity for identity in entry_order_ids)
+        ):
+            raise ValueError("Invalid or unbounded entry identity set")
         if not self.client and not await self.connect():
             raise RuntimeError("Alpaca entry preflight connection failed")
         assert self.client is not None
         clock = await asyncio.to_thread(self.client.get_clock)
-        if not self._field(clock, "is_open"):
+        timestamp = self._field(clock, "timestamp")
+        is_open = self._field(clock, "is_open")
+        if not isinstance(timestamp, datetime) or timestamp.tzinfo is None or type(is_open) is not bool:
+            raise ValueError("Broker session clock is incomplete")
+        clock_age = (datetime.now(UTC) - timestamp).total_seconds()
+        if (
+            clock_age < -BROKER_CLOCK_SKEW_TOLERANCE_SECONDS
+            or clock_age > self.config.execution.entry_quote_max_age_seconds
+        ):
+            raise ValueError("Broker session clock is stale or clock-skewed")
+        if not is_open:
             raise ValueError("Equity entry session is closed; request a new approval during market hours")
         if request.asset_class != AssetClass.EQUITY:
             raise ValueError("Fresh entry admission currently supports Alpaca equities only")
+        # Read raw account/asset fields: SDK optional defaults and its deprecated
+        # easy_to_borrow model cannot supply the required current wire evidence.
+        raw_asset = await asyncio.to_thread(self.client.get, f"/assets/{request.symbol}")
+        if not isinstance(raw_asset, dict):
+            raise TypeError("Invalid entry asset response")
+        try:
+            asset = EntryAssetEvidence.model_validate(
+                {
+                    name: raw_asset.get({"asset_id": "id", "asset_class": "class"}.get(name, name))
+                    for name in EntryAssetEvidence.model_fields
+                }
+            )
+        except ValueError as exc:
+            raise ValueError("Incomplete or invalid entry asset evidence") from exc
+        if asset.symbol != request.symbol or asset.asset_class != "us_equity":
+            raise ValueError("Broker returned a different entry asset")
+        account_before = await self._entry_account()
+        _, inventory_before = await self._entry_positions()
+        orders_before = await self._entry_orders(entry_order_ids)
+        positions, inventory = await self._entry_positions()
+        orders = await self._entry_orders(entry_order_ids)
+        account = await self._entry_account()
+        if account_before.inventory_identity() != account.inventory_identity():
+            raise ValueError("Account restrictions or cash changed during entry capture")
+        if inventory_before != inventory or orders_before != orders:
+            raise ValueError("Broker inventory or orders changed during entry capture")
         if self.data_client is None:
             self.data_client = BoundedStockDataClient(
                 self.api_key, self.api_secret, request_timeout=self.config.execution.broker_request_timeout_seconds
@@ -371,23 +542,30 @@ class AlpacaBroker(BaseBroker):
             self.data_client.get_stock_latest_trade,
             StockLatestTradeRequest(symbol_or_symbols=request.symbol, feed=DataFeed(self.config.alpaca_data_feed)),
         )
-        trade = trades[request.symbol]
-        orders = await asyncio.to_thread(
-            self.client.get_orders,
-            GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True, limit=ALPACA_MAX_ORDERS_PER_PAGE),
+        quotes = await asyncio.to_thread(
+            self.data_client.get_stock_latest_quote,
+            StockLatestQuoteRequest(symbol_or_symbols=request.symbol, feed=DataFeed(self.config.alpaca_data_feed)),
         )
-        if len(orders) >= ALPACA_MAX_ORDERS_PER_PAGE:
-            raise ValueError("Open-order snapshot is truncated; entry refused")
-        positions = await self.get_positions()
-        return {
-            "positions": [p.model_dump(mode="json") for p in positions],
-            "orders": [self._observation(o).model_dump(mode="json") for o in orders],
-            "price": float(trade.price),
-            "quote_timestamp": trade.timestamp,
-            "session_closes_at": self._field(clock, "next_close"),
-            "observed_at": datetime.now(UTC),
-            "simulated": False,
-        }
+        trade, quote = trades[request.symbol], quotes[request.symbol]
+        return BrokerEntryContext(
+            positions=positions,
+            orders=orders,
+            account_before=account_before,
+            account=account,
+            asset=asset,
+            quote=EntryQuoteEvidence(
+                symbol=quote.symbol,
+                bid_price=self._entry_decimal(quote.bid_price),
+                ask_price=self._entry_decimal(quote.ask_price),
+                timestamp=quote.timestamp,
+                feed=self.config.alpaca_data_feed,
+            ),
+            price=self._entry_decimal(trade.price),
+            trade_timestamp=trade.timestamp,
+            session_closes_at=self._field(clock, "next_close"),
+            requested_at=requested_at,
+            observed_at=datetime.now(UTC),
+        )
 
     async def find_entry_order(self, request: OrderRequest) -> OrderResult | None:
         if not self.client and not await self.connect():

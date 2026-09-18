@@ -518,3 +518,18 @@ this development screen neither establishes historical membership nor qualifies 
 ## Account risk on deployment
 
 The first reconciled checkpoint after enabling [account risk](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission) establishes its dated baseline; historical peaks are not inferred. Verify `db ledger` risk availability and the passive runtime verifier after restart. Accounting readiness includes risk validity. Derived drawdown can block new entries without setting the emergency halt; `/resume` cannot waive it. Broker-held protection, closes and reconciliation continue. Preserve the journal when investigating corrections or transfer-classification failures.
+
+### Broker capacity admission
+
+[Entry capacity](entry-capacity.md) adds no migration or daemon. Configured planned
+stop risk defaults to 2% of the lesser of mandate and observed equity, with the
+drawdown multiplier; evidence defaults to a 30-second age from the first read.
+Missing funding, current borrow status or exact working protection refuses new risk.
+An unrelated order or partially reconciled fill requires review, not a blind retry.
+Use retained entry result/submission evidence and the existing outbox to diagnose it.
+
+Deployment verification checks passive readiness, current revision, broker positions,
+protection and Telegram polling/menu registration. It does not submit a test trade.
+A closed regular session prevents live entry preflight; loopback SDK and disposable
+PostgreSQL tests separately exercise success, refusal and race behavior. Record these
+limits independently of a healthy service or current market-data connection.

@@ -130,8 +130,9 @@ an invalidation. [Alpaca activity definitions](https://docs.alpaca.markets/us/do
 
 Alpaca scans require fresh reconciled risk before evaluating candidates. The drawdown
 multiplier applies to **every sizing tier and the hard per-trade cap**, including
-explicit operator quantities. Configured `portfolio.cash` remains a separate capital
-mandate. The current policy starts reducing size above 3% drawdown, retains the
+explicit operator quantities. Configured `portfolio.cash` is a mandate ceiling:
+risk capital uses the lesser of this mandate and observed equity, without an
+artificial capital floor. The current policy starts reducing size above 3% drawdown, retains the
 configured 10% minimum multiplier until the 6% threshold, then blocks new entries.
 These values come from `sizing.drawdown_*` and `max_drawdown_stop_pct`; they are not
 broker-side orders or a guarantee against gap losses. Nonpositive observed equity
@@ -153,5 +154,6 @@ do not claim this broker-account drawdown protection.
 The existing accounting readiness check now includes risk availability for Alpaca.
 `db ledger` displays risk without account/transfer identifiers; `db events` retains
 private evidence. The passive runtime verifier includes current risk and separately
-reports whether the drawdown gate permits new entries. Funding/borrowability and
-aggregate portfolio risk remain separate open admission work (survey S3).
+reports whether the drawdown gate permits new entries. [Broker entry capacity](entry-capacity.md)
+also checks funding/borrowability and exact protection, and bounds aggregate planned
+stop risk. These checks do not establish a portfolio volatility or tail-loss bound.

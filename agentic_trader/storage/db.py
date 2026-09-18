@@ -362,6 +362,7 @@ class SignalDatabase:
     async def quarantine_signal(self, signal_id: int, reason: str, expected: dict[str, Any]) -> bool:
         """Preserve a confirmed contaminant and its evidence, excluding it from operational queries."""
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
             rec = await session.get(SignalRecord, signal_id, with_for_update=True)
             if rec is None or rec.is_quarantined:
                 return False
@@ -512,6 +513,7 @@ class SignalDatabase:
     async def update_signal_status(self, signal_id: int, status: str):
         """Update signal status (e.g. SUBMITTING, EXECUTED, DISMISSED, FAILED)."""
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
             stmt = (
                 update(SignalRecord)
                 .where(*self._scope())
@@ -534,6 +536,7 @@ class SignalDatabase:
     ):
         """Record broker order ID and execution status, optionally updating fill price, quantity, and notional."""
         async with self.session_factory() as session:
+            await self.workflows.lock(session)
             vals: dict[str, Any] = {
                 "status": str(status),
                 "broker_order_id": broker_order_id,

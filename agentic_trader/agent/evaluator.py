@@ -107,6 +107,7 @@ class RiskEvaluator:
         current_open_notional: float = 0.0,
         current_drawdown_pct: float = 0.0,
         macro_risk_multiplier: float = 1.0,
+        current_equity: float | None = None,
     ) -> DeterministicLevels:
         """
         Calculate structural stop loss, 2:1 profit target, and dynamic position sizing deterministically.
@@ -181,6 +182,7 @@ class RiskEvaluator:
             current_open_notional=current_open_notional,
             current_drawdown_pct=current_drawdown_pct,
             macro_risk_multiplier=macro_risk_multiplier,
+            current_equity=current_equity,
         )
         quantity = sizing_result.default_tier.quantity
         risk_dollars = sizing_result.default_tier.risk_dollars
@@ -209,6 +211,7 @@ class RiskEvaluator:
         use_llm: bool = True,
         active_positions: list[dict[str, Any]] | None = None,
         current_drawdown_pct: float = 0.0,
+        current_equity: float | None = None,
     ) -> LLMTradeEvaluation:
         # Fetch current volatility and macro regime
         regime = await self.regime_detector.get_regime()
@@ -219,6 +222,7 @@ class RiskEvaluator:
             current_open_notional=current_open_notional,
             current_drawdown_pct=current_drawdown_pct,
             macro_risk_multiplier=regime.risk_multiplier,
+            current_equity=current_equity,
         )
         stop_loss = levels.stop_loss
         take_profit = levels.take_profit

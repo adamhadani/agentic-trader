@@ -30,13 +30,16 @@ The [September 18 survey](alpha-stack-survey-2026-09-18.md) distinguishes produc
 from shadow infrastructure and supersedes older next-step ordering below. No new
 research run or runtime policy change was made for this review.
 
-1. **Risk wiring delivered; funding/aggregate work remains (S1/S3).** The first
+1. **Account risk and entry-capacity tranches implemented (S1/S3).** The first
    [account-risk tranche](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission)
    connects persisted drawdown to sizing, authorization and final submission, with
-   every tier bounded and concurrent checkpoint/lease fencing. Add buying
-   power, tradability/borrowability and aggregate risk observations through the same
-   boundary; preserve static mandates and existing FIFO/close services. TDD must
-   exercise the production call chain, restart, stale inputs and concurrent approvals.
+   every tier bounded and concurrent checkpoint/lease fencing. The
+   [entry-capacity tranche](entry-capacity.md) adds current buying power,
+   tradability/borrowability, exact working protection, observed-equity capital and
+   aggregate planned stop risk through that same FIFO/lock boundary. TDD and SDK/PG
+   integrations cover stale inputs, changed brackets and concurrent economic writers.
+   Measured portfolio volatility, factor and tail constraints remain future work;
+   a stop-loss budget is not a guaranteed loss bound.
    Legacy CVaR signs/units and unsupported Sharpe annualization are corrected (S4);
    the IID report remains descriptive, not live protection. Source/test completion
    and installed-service verification are recorded separately.
@@ -66,6 +69,22 @@ research run or runtime policy change was made for this review.
 
 No threshold was lowered, alpha promoted or trading configuration changed by this
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.
+
+### September 18 progress — isolate the loss of detection power
+
+The [bounded power-ablation plan](alpha-power-ablation-plan.md) is now persisted.
+The immediate research focus is known predictor → selected winner → bracket
+execution → individual criteria, before increasing adaptive search budgets or
+adding algorithms. Prospective daily collection remains a separate accumulating
+track; it need not wait for statistical diagnosis.
+
+This is a docs-only planning milestone: no new runner, RED/GREEN test result,
+validation run or acceptance tolerance is claimed. The proposed finite matrix
+requires a fresh seed, committed protocol and sourced current count/variance
+snapshot first. A2a's 7,065-trial reference is historical; 7,826 is the last reported
+current count, not a refreshed snapshot. Retain all history, unavailable comparisons
+and diagnostic-only boundaries. No threshold change or promotion follows from this
+plan, and the proposed full search matrix is not promised for the current turn.
 
 ## Ordered work queue
 

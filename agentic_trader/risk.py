@@ -11,6 +11,17 @@ def requires_account_risk(config: AppConfig) -> bool:
     return config.execution_mode == ExecutionMode.ALPACA
 
 
+def risk_capital(mandate: float, current_equity: float | None = None) -> float:
+    """Configured capital is a ceiling; observed capital cannot increase it."""
+    if not math.isfinite(mandate) or mandate <= 0:
+        raise ValueError("Configured risk capital must be finite and positive")
+    if current_equity is None:
+        return mandate
+    if not math.isfinite(current_equity) or current_equity <= 0:
+        raise ValueError("Observed equity must be finite and positive")
+    return min(mandate, current_equity)
+
+
 def drawdown_risk_factor(drawdown_pct: float, policy: PositionSizingConfig) -> float:
     if not math.isfinite(drawdown_pct) or drawdown_pct < 0:
         raise ValueError("Drawdown must be a finite nonnegative ratio")
