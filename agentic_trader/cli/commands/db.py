@@ -178,9 +178,17 @@ async def ledger(sync_broker: bool, rebuild: bool) -> None:
         status = await store.status()
         # Account identity and raw broker evidence remain in private DB inspection.
         status.pop("snapshot", None)
+        if status.get("risk"):
+            status["risk"] = {
+                key: value
+                for key, value in status["risk"].items()
+                if key not in ("account_id", "cash_transfer_fingerprints", "baseline_cash_journal_fingerprints")
+            }
         click.echo(json.dumps(status, indent=2))
-        if sync_broker and (status.get("error") or status.get("report", {}).get("issues")):
-            raise click.ClickException("Account reconciliation failed; inspect the reported issues")
+        if sync_broker and (status.get("error") or status.get("risk_error") or status.get("report", {}).get("issues")):
+            raise click.ClickException(
+                "Account reconciliation or risk evidence unavailable; inspect the reported issues"
+            )
     finally:
         await db.engine.dispose()
 

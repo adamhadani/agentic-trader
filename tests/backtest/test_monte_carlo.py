@@ -1,4 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from agentic_trader.backtest.models import (
     BacktestResult,
@@ -8,6 +10,7 @@ from agentic_trader.backtest.models import (
 from agentic_trader.backtest.monte_carlo import run_monte_carlo_simulation
 from agentic_trader.backtest.reporting import format_backtest_report
 from agentic_trader.constants import AssetClass, Direction, ExitReason, StrategyType
+from agentic_trader.presentation.formatters import TelegramHtmlFormatter
 
 
 def make_trade(symbol: str, pnl: float, pnl_pct: float) -> BacktestTrade:
@@ -60,7 +63,7 @@ def test_monte_carlo_simulation_metrics():
     assert mc.median_equity >= mc.ci_5th_equity
     assert mc.ci_95th_equity >= mc.median_equity
     assert mc.ci_95th_drawdown_pct >= mc.median_drawdown_pct
-    assert mc.median_sharpe >= mc.ci_5th_sharpe
+    assert mc.median_sharpe is None and mc.ci_5th_sharpe is None
     assert 0.0 <= mc.risk_of_ruin_10pct <= 100.0
     assert 0.0 <= mc.risk_of_ruin_20pct <= 100.0
     assert mc.var_95_pct >= 0.0
@@ -86,7 +89,8 @@ def test_monte_carlo_determinism():
     assert mc1.median_equity != mc3.median_equity or mc1.median_drawdown_pct != mc3.median_drawdown_pct
 
 
-def test_monte_carlo_reporting_output():
+@pytest.mark.parametrize("sharpe", [1.75, None])
+def test_monte_carlo_reporting_output(sharpe):
     mc = MonteCarloResult(
         n_simulations=1000,
         median_equity=108500.0,
@@ -94,8 +98,8 @@ def test_monte_carlo_reporting_output():
         ci_95th_equity=114200.0,
         median_drawdown_pct=3.45,
         ci_95th_drawdown_pct=6.80,
-        median_sharpe=1.75,
-        ci_5th_sharpe=0.85,
+        median_sharpe=sharpe,
+        ci_5th_sharpe=0.85 if sharpe is not None else None,
         risk_of_ruin_10pct=0.20,
         risk_of_ruin_20pct=0.00,
         var_95_pct=0.45,
@@ -126,15 +130,76 @@ def test_monte_carlo_reporting_output():
     )
 
     report = format_backtest_report(result, symbols=["SPY", "QQQ"], lookback="1y")
-    assert "MONTE CARLO RISK RESAMPLING (1,000 Bootstrap Iterations)" in report
-    assert "Final Portfolio Equity (Median):" in report
+    assert "IID CLOSED-TRADE RESAMPLING (1,000 Iterations)" in report
+    assert "Final Resampled Equity (Median):" in report
     assert "108,500.00" in report
-    assert "90% Confidence Interval (Equity): [$102,100.00 .. $114,200.00]" in report
-    assert "95th Pctile Worst Drawdown:" in report
+    assert "5th–95th Equity Percentiles: [$102,100.00 .. $114,200.00]" in report
+    assert "95th Percentile Drawdown:" in report
     assert "6.80%" in report
-    assert "Risk of Ruin (Drawdown >= 10%):" in report
+    assert "Paths with Drawdown >= 10%:" in report
     assert "0.20%" in report
-    assert "95% Value at Risk (VaR):" in report
+    assert "95% Per-Trade Loss VaR:" in report
     assert "0.45%" in report
-    assert "95% Conditional VaR (CVaR):" in report
+    assert "95% Per-Trade Loss CVaR:" in report
     assert "0.62%" in report
+    assert "starting cash" in report
+    assert "serial dependence" in report
+    if sharpe is None:
+        assert "unavailable" in report and "observed portfolio-return clock" in report
+    telegram = TelegramHtmlFormatter.format_backtest_html(result)
+    assert "IID trade paths" in telegram and "loss / starting cash" in telegram
+
+
+@pytest.mark.parametrize(
+    "pnls,var,cvar",
+    [
+        ([1000.0] * 30, 0.0, 0.0),
+        ([0.0] * 30, 0.0, 0.0),
+        ([-1000.0] * 30, 1.0, 1.0),
+        ([-3000.0, -1000.0] + [1000.0] * 28, 1.0, 2.33),
+    ],
+    ids=["all_positive", "all_zero", "all_losses", "fractional_tail_mass"],
+)
+def test_loss_metrics_have_consistent_nonnegative_loss_signs(pnls, var, cvar):
+    trades = [make_trade("SPY", pnl, pnl / 1000) for pnl in pnls]
+    result = run_monte_carlo_simulation(trades, 100_000.0, n_simulations=25)
+    assert result.var_95_pct == var
+    assert result.cvar_95_pct == cvar
+    assert result.median_sharpe is None and result.ci_5th_sharpe is None
+
+
+@pytest.mark.parametrize("percentages", [[-90.0, None, 500.0], [None, None, None]])
+def test_loss_units_always_use_starting_capital_not_optional_position_percentages(percentages):
+    trades = [
+        make_trade("SPY", pnl, percent) for pnl, percent in zip([-1000.0, 500.0, 100.0], percentages, strict=True)
+    ]
+    result = run_monte_carlo_simulation(trades, 100_000.0, n_simulations=25)
+    assert result.var_95_pct == result.cvar_95_pct == 1.0
+
+
+@pytest.mark.parametrize("days", [1, 365, 3650])
+def test_trade_timestamps_do_not_invent_an_observed_portfolio_return_clock(days):
+    trades = [make_trade("SPY", pnl, 1.0) for pnl in [100.0, 200.0, -100.0, 50.0]]
+    for trade in trades:
+        trade.exit_timestamp = trade.entry_timestamp + timedelta(days=days)
+    result = run_monte_carlo_simulation(trades, 100_000.0, n_simulations=25)
+    assert result.median_sharpe is None and result.ci_5th_sharpe is None
+    assert result.sharpe_unavailable_reason == "missing_observed_portfolio_return_clock"
+
+
+@pytest.mark.parametrize(
+    "cash,simulations,pnl",
+    [
+        (0.0, 10, 1.0),
+        (-1.0, 10, 1.0),
+        (float("inf"), 10, 1.0),
+        (100.0, 0, 1.0),
+        (100.0, 1.5, 1.0),
+        (100.0, 10, float("nan")),
+        (100.0, 10, float("inf")),
+    ],
+)
+def test_invalid_resampling_inputs_fail_explicitly(cash, simulations, pnl):
+    trades = [make_trade("SPY", pnl, 0.0) for _ in range(3)]
+    with pytest.raises(ValueError):
+        run_monte_carlo_simulation(trades, cash, n_simulations=simulations)

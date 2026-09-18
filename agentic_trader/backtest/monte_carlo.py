@@ -9,7 +9,6 @@ from agentic_trader.constants import (
     DEFAULT_RUIN_THRESHOLD_HIGH_PCT,
     DEFAULT_RUIN_THRESHOLD_LOW_PCT,
     DEFAULT_VAR_CONFIDENCE_PCT,
-    FLOAT_EPSILON,
     MIN_TRADES_FOR_MONTE_CARLO,
 )
 
@@ -23,11 +22,21 @@ def run_monte_carlo_simulation(
     n_simulations: int = DEFAULT_MONTE_CARLO_SIMULATIONS,
     random_seed: int = DEFAULT_RANDOM_SEED,
 ) -> MonteCarloResult | None:
-    """Run bootstrap Monte Carlo resampling across historical executed trades.
+    """IID resampling of closed-trade dollar P&L, conditional on the observed trades.
 
-    Resamples trade sequences with replacement to evaluate final equity, drawdown
-    distributions, risk of ruin, and Value at Risk (VaR / CVaR) bounds.
+    Paths add fixed dollar outcomes without resizing or reinvestment. They do not
+    preserve serial dependence, overlapping exposure, or portfolio return timing.
+    VaR/CVaR are empirical per-trade losses relative to the same starting capital,
+    floored at zero for reporting; they are not portfolio-horizon risk limits.
     """
+    if (
+        isinstance(starting_cash, bool)
+        or not np.isfinite(starting_cash)
+        or starting_cash <= 0
+        or type(n_simulations) is not int
+        or n_simulations < 1
+    ):
+        raise ValueError("Positive finite starting capital and integer simulation count required")
     closed_trades = [t for t in trades if t.pnl_dollars is not None]
     if len(closed_trades) < MIN_TRADES_FOR_MONTE_CARLO:
         logger.warning(
@@ -38,13 +47,11 @@ def run_monte_carlo_simulation(
         return None
 
     pnls = np.array([t.pnl_dollars for t in closed_trades], dtype=float)
-    pnl_pcts = np.array(
-        [
-            t.pnl_pct if t.pnl_pct is not None else ((t.pnl_dollars or 0.0) / starting_cash * 100.0)
-            for t in closed_trades
-        ],
-        dtype=float,
-    )
+    if not np.isfinite(pnls).all():
+        raise ValueError("Closed trades require finite observed dollar P&L")
+    loss_pcts = -pnls / starting_cash * 100.0
+    if not np.isfinite(loss_pcts).all():
+        raise ValueError("Per-trade loss percentages exceed finite numeric range")
     n_trades = len(pnls)
 
     rng = np.random.default_rng(random_seed)
@@ -57,27 +64,15 @@ def run_monte_carlo_simulation(
     equity_paths = np.empty((n_simulations, n_trades + 1), dtype=float)
     equity_paths[:, 0] = starting_cash
     equity_paths[:, 1:] = starting_cash + np.cumsum(resampled_pnls, axis=1)
+    if not np.isfinite(equity_paths).all():
+        raise ValueError("Resampled equity exceeds finite numeric range")
 
     # Calculate Max Drawdown for each simulation path
     running_maxes = np.maximum.accumulate(equity_paths, axis=1)
-    # Avoid zero-division if starting cash were zero
-    drawdown_paths = np.where(
-        running_maxes > 0,
-        ((running_maxes - equity_paths) / running_maxes) * 100.0,
-        0.0,
-    )
+    drawdown_paths = ((running_maxes - equity_paths) / running_maxes) * 100.0
     max_drawdowns = np.max(drawdown_paths, axis=1)  # shape (n_simulations,)
 
     ending_equities = equity_paths[:, -1]
-
-    # Calculate Sharpe for each simulation path (assuming annualized rate based on trade frequency)
-    sim_means = np.mean(resampled_pnls, axis=1)
-    sim_stds = np.std(resampled_pnls, axis=1)
-    # Annualization factor approximation (assume ~50 trades/year if not specified)
-    annual_factor = np.sqrt(max(10, n_trades))
-    valid_mask = sim_stds > FLOAT_EPSILON
-    sim_sharpes = np.zeros_like(sim_means)
-    sim_sharpes[valid_mask] = (sim_means[valid_mask] / sim_stds[valid_mask]) * annual_factor
 
     # Percentiles
     median_equity = round(float(np.percentile(ending_equities, 50)), 2)
@@ -87,20 +82,20 @@ def run_monte_carlo_simulation(
     median_dd = round(float(np.percentile(max_drawdowns, 50)), 2)
     ci_95th_dd = round(float(np.percentile(max_drawdowns, 95)), 2)
 
-    median_sharpe = round(float(np.percentile(sim_sharpes, 50)), 2)
-    ci_5th_sharpe = round(float(np.percentile(sim_sharpes, 5)), 2)
-
     # Risk of ruin (percentage of paths reaching DD >= threshold)
     ror_10 = round(float(np.mean(max_drawdowns >= DEFAULT_RUIN_THRESHOLD_LOW_PCT) * 100.0), 2)
     ror_20 = round(float(np.mean(max_drawdowns >= DEFAULT_RUIN_THRESHOLD_HIGH_PCT) * 100.0), 2)
 
-    # Value at Risk (VaR 95%) and Conditional VaR (CVaR 95% / Expected Shortfall) on trade returns
-    var_tail_pct = 100.0 - DEFAULT_VAR_CONFIDENCE_PCT
-    pnl_5th = float(np.percentile(pnl_pcts, var_tail_pct))
-    var_95 = round(abs(min(0.0, pnl_5th)), 2)
-
-    tail_losses = pnl_pcts[pnl_pcts <= pnl_5th]
-    cvar_95 = round(abs(float(np.mean(tail_losses))) if len(tail_losses) > 0 else var_95, 2)
+    # Empirical quantile and exact upper-tail mass, including a fractional boundary
+    # observation. Averaging every value tied at an interpolated cutoff changes
+    # the intended tail probability for small/discrete samples.
+    loss_quantile = float(np.percentile(loss_pcts, DEFAULT_VAR_CONFIDENCE_PCT, method="inverted_cdf"))
+    tail_mass = n_trades * (100.0 - DEFAULT_VAR_CONFIDENCE_PCT) / 100.0
+    whole = int(tail_mass)
+    ordered = np.sort(loss_pcts)[::-1]
+    expected_shortfall = float((ordered[:whole].sum() + (tail_mass - whole) * ordered[whole]) / tail_mass)
+    var_95 = round(max(0.0, loss_quantile), 2)
+    cvar_95 = round(max(0.0, expected_shortfall), 2)
 
     return MonteCarloResult(
         n_simulations=n_simulations,
@@ -109,10 +104,11 @@ def run_monte_carlo_simulation(
         ci_95th_equity=ci_95th_equity,
         median_drawdown_pct=median_dd,
         ci_95th_drawdown_pct=ci_95th_dd,
-        median_sharpe=median_sharpe,
-        ci_5th_sharpe=ci_5th_sharpe,
+        median_sharpe=None,
+        ci_5th_sharpe=None,
         risk_of_ruin_10pct=ror_10,
         risk_of_ruin_20pct=ror_20,
         var_95_pct=var_95,
         cvar_95_pct=cvar_95,
+        sharpe_unavailable_reason="missing_observed_portfolio_return_clock",
     )

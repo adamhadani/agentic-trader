@@ -43,7 +43,11 @@ class EquityPoint:
 
 @dataclass
 class MonteCarloResult:
-    """Statistical distribution of performance metrics across bootstrap resamplings."""
+    """Descriptive IID closed-trade paths and nonnegative per-trade capital losses.
+
+    Sharpe remains unavailable without an observed portfolio-return clock. Tail
+    metrics are percentages of starting cash, not position return percentages.
+    """
 
     n_simulations: int
     median_equity: float
@@ -51,12 +55,15 @@ class MonteCarloResult:
     ci_95th_equity: float
     median_drawdown_pct: float
     ci_95th_drawdown_pct: float
-    median_sharpe: float
-    ci_5th_sharpe: float
+    median_sharpe: float | None
+    ci_5th_sharpe: float | None
     risk_of_ruin_10pct: float
     risk_of_ruin_20pct: float
     var_95_pct: float
     cvar_95_pct: float
+    sampling_method: str = "iid_closed_trade_pnl"
+    loss_basis: str = "starting_cash_per_closed_trade"
+    sharpe_unavailable_reason: str | None = None
 
 
 @dataclass

@@ -45,7 +45,7 @@ stateDiagram-v2
     queued --> checking: oldest eligible command, fenced lease
     checking --> checking: expired preflight reclaimed with new token
     checking --> rejected: conditions changed or evidence unavailable
-    checking --> submitting: valid token and halt recheck, commit before POST
+    checking --> submitting: valid lease, halt and risk evidence, commit before POST
     submitting --> accepted: broker acknowledgement with exact order ID
     submitting --> rejected: definitive broker rejection
     submitting --> unknown: ambiguous transport outcome
@@ -64,7 +64,11 @@ broker activity or existing close orders cannot run concurrently.
 Before POST, the service rechecks the signal, halt, authorization age, signal age,
 broker regular session, current broker positions and working orders, fresh
 Alpaca trade price, configured price drift, economic-event lockout and the combined
-macro/volatility risk policy. Approval, signal, quote and session deadlines are
+macro/volatility risk policy. Alpaca admission also refreshes the reconciled
+[account risk snapshot](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission).
+Final submission pins its exact fingerprint under the ledger lock and rechecks the
+lease after waiting. Every tier and explicit quantity shares the drawdown cap.
+Approval, signal, quote and session deadlines are
 checked again after preflight work so a slow admission check cannot use expired
 authorization. Existing risk limitations around daily macro feed
 age remain; the quote-age check does not certify freshness of all macro feeds.

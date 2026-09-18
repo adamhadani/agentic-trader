@@ -6,9 +6,12 @@ from typing import Any
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import AssetClass, Direction
+from agentic_trader.risk import drawdown_risk_factor
 
 
-def reservation_rejection(request: OrderRequest, positions: list[dict[str, Any]], config: AppConfig) -> str | None:
+def reservation_rejection(
+    request: OrderRequest, positions: list[dict[str, Any]], config: AppConfig, *, current_drawdown_pct: float = 0.0
+) -> str | None:
     numbers = (request.quantity, request.entry_price, request.stop_loss, request.take_profit)
     if any(n is None or not math.isfinite(n) or n <= 0 for n in numbers):
         return "Quantity and bracket prices must be finite and positive."
@@ -24,7 +27,12 @@ def reservation_rejection(request: OrderRequest, positions: list[dict[str, Any]]
     multiplier = info.multiplier if info else 1
     notional = request.entry_price * request.quantity * multiplier
     policy, sizing = config.portfolio, config.sizing
-    if risk * request.quantity * multiplier > policy.cash * sizing.max_risk_pct_cap:
+    factor = drawdown_risk_factor(current_drawdown_pct, sizing)
+    if factor == 0:
+        return f"Account drawdown {current_drawdown_pct:.1%} reaches the configured sizing halt; new entries blocked."
+    if risk * request.quantity * multiplier > policy.cash * sizing.max_risk_pct_cap * factor:
+        if factor < 1:
+            return "Order exceeds the drawdown-adjusted per-trade risk cap; request a fresh scan for smaller sizing."
         return "Order exceeds the configured per-trade risk cap."
     if notional > sizing.max_trade_notional_cap:
         return "Order exceeds the configured per-trade notional cap."

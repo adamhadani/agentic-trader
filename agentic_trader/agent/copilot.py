@@ -60,6 +60,7 @@ from agentic_trader.presentation.formatters import (
 from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
+from agentic_trader.risk import requires_account_risk
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
@@ -194,16 +195,6 @@ class TradingCopilot:
                 chat_handler=self.ask_copilot,
             )
         )
-        self.entry_service = (
-            entry_service
-            if entry_service is not None
-            else EntryExecutionService(
-                config, self.db.workflows, self.broker, self.execution_engine, self._entry_macro_check
-            )
-        )
-        self.outbox = (
-            outbox if outbox is not None else NotificationDispatcher(self.db.workflows, self.notifier, config.execution)
-        )
         self.ledger = (
             ledger
             if ledger is not None
@@ -212,6 +203,21 @@ class TradingCopilot:
                 if self.broker.supports_activity_ledger
                 else None
             )
+        )
+        self.entry_service = (
+            entry_service
+            if entry_service is not None
+            else EntryExecutionService(
+                config,
+                self.db.workflows,
+                self.broker,
+                self.execution_engine,
+                self._entry_macro_check,
+                ledger=self.ledger,
+            )
+        )
+        self.outbox = (
+            outbox if outbox is not None else NotificationDispatcher(self.db.workflows, self.notifier, config.execution)
         )
         self.metrics = global_metrics
         self.readiness = ReadinessService(
@@ -427,11 +433,28 @@ class TradingCopilot:
                             continue
 
                         # Risk evaluation
+                        account_risk = None
+                        if not dry_run and requires_account_risk(self.config):
+                            try:
+                                if self.ledger is None:
+                                    raise ValueError("Observed account risk service is unavailable")
+                                account_risk = await self.ledger.current_risk()
+                                if account_risk.equity <= 0:
+                                    raise ValueError("Observed account equity is nonpositive; new entries blocked")
+                            except ValueError as exc:
+                                scan_errors += 1
+                                logger.warning(
+                                    "Candidate blocked: account risk unavailable: %s",
+                                    exc,
+                                    extra={"event": "candidate_risk_unavailable", "contract": candidate.contract},
+                                )
+                                continue
                         eval_res = await self.evaluator.evaluate_candidate(
                             candidate,
                             current_open_notional=current_exposure,
                             use_llm=use_llm,
                             active_positions=active_positions,
+                            current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
                         )
 
                         if not eval_res.approved:
@@ -467,6 +490,7 @@ class TradingCopilot:
                                 "candle_timestamp": candidate.candle_timestamp,
                                 "alpha_score": candidate.alpha_score,
                                 "contributors": candidate.contributors,
+                                "account_risk_fingerprint": account_risk.fingerprint if account_risk else None,
                             },
                             contract=eval_res.contract,
                             strategy=candidate.strategy,
@@ -1300,6 +1324,8 @@ class TradingCopilot:
             report = await self.ledger.refresh()
             if not report.ready:
                 raise ValueError("; ".join(report.issues))
+            if requires_account_risk(self.config):
+                await self.ledger.current_risk()
 
     async def _run_worker(
         self, component: HealthComponent, action: Callable[[], Awaitable[Any]], *, interval: float | None = None

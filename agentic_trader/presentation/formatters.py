@@ -504,7 +504,11 @@ class TelegramHtmlFormatter:
 
         mc = getattr(res, "monte_carlo", None)
         if not mc_line and mc is not None:
-            mc_line = f"\n• <b>95% Worst DD (Monte Carlo):</b> <code>{mc.ci_95th_drawdown_pct:.1f}%</code> (95% VaR: {mc.var_95_pct:.1f}%)"
+            mc_line = (
+                f"\n• <b>IID trade paths, 95th-percentile DD:</b> <code>{mc.ci_95th_drawdown_pct:.1f}%</code>"
+                f"\n• <b>Per-trade loss / starting cash:</b> VaR95 {mc.var_95_pct:.1f}%, CVaR95 {mc.cvar_95_pct:.1f}%"
+                "\n<i>Fixed-dollar resampling; omits serial dependence and overlapping exposure.</i>"
+            )
 
         if not attr_line and res.attribution and res.attribution.factors:
             top_f = max(res.attribution.factors, key=lambda f: f.pnl_dollars)

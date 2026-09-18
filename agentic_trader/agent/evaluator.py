@@ -169,7 +169,7 @@ class RiskEvaluator:
             )
             stop_distance, target_distance = abs(entry - stop_loss), abs(take_profit - entry)
 
-        # Position sizing: dynamic calculation supporting static, volatility-targeted, and fractional Kelly modes
+        # Both supported modes use stop-distance sizing and the shared hard caps.
         sizing_result = calculate_dynamic_sizing(
             entry=entry,
             stop_distance=stop_distance,

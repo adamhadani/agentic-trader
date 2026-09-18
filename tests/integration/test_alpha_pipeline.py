@@ -241,7 +241,7 @@ async def test_independent_registry_and_submission_clients_have_a_commit_boundar
         claim = await first.workflows.claim_entry(lease_seconds=60)
         if demote_first:
             await invalidate()
-        assert await first.workflows.begin_submission(claim) == (not demote_first)
+        assert (await first.workflows.begin_submission(claim, app_config) is None) == (not demote_first)
         if not demote_first:
             await invalidate()
             assert (await second.workflows.get_work(item.id)).status == WorkStatus.SUBMITTING

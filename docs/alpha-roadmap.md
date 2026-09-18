@@ -30,13 +30,16 @@ The [September 18 survey](alpha-stack-survey-2026-09-18.md) distinguishes produc
 from shadow infrastructure and supersedes older next-step ordering below. No new
 research run or runtime policy change was made for this review.
 
-1. **Risk wiring first (S1/S3).** Persist a fresh, cash-flow-aware account/mandate risk
-   snapshot and use it in sizing and final entry admission. Production currently
-   omits the drawdown input despite configured haircut/halt settings. Add buying
+1. **Risk wiring delivered; funding/aggregate work remains (S1/S3).** The first
+   [account-risk tranche](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission)
+   connects persisted drawdown to sizing, authorization and final submission, with
+   every tier bounded and concurrent checkpoint/lease fencing. Add buying
    power, tradability/borrowability and aggregate risk observations through the same
    boundary; preserve static mandates and existing FIFO/close services. TDD must
    exercise the production call chain, restart, stale inputs and concurrent approvals.
-   Correct the separate legacy CVaR/reporting semantics (S4); it is not live protection.
+   Legacy CVaR signs/units and unsupported Sharpe annualization are corrected (S4);
+   the IID report remains descriptive, not live protection. Source/test completion
+   and installed-service verification are recorded separately.
 2. **Two research tracks in parallel.** (a) Fresh-seed known-predictor → search-winner
    → execution → individual-gate ablation; version horizon/dependence-aware IC and
    residual evidence, and calibrate statistical families without erasing trial history.

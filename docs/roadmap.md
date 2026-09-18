@@ -324,30 +324,44 @@ Prevent hyperparameter overfitting and quantify strategy parameter stability ove
 
 ---
 
-## Phase 12: Monte Carlo Risk Simulation & Confidence Intervals in Backtester
+## Phase 12: Descriptive closed-trade bootstrap diagnostics
 
 ### Objective
-Quantify tail risk, drawdown distributions, and risk of ruin beyond single historical execution paths using bootstrap resampling.
+Describe the resampling distribution conditional on recorded closed-trade dollar P&L.
+This is not a calibrated portfolio risk model, live CVaR limit or confidence guarantee.
 
 ### Key Deliverables
 1. **Bootstrap Resampling Engine (`agentic_trader/backtest/monte_carlo.py`)**:
-   - Resample historical trades with replacement across $N$ iterations (default 1,000).
-   - Compute full simulated equity and drawdown curves.
-2. **Quant Risk & Ruin Metrics**:
-   - 90% Confidence Interval on ending portfolio equity (5th vs 95th percentile).
-   - 95th Percentile Worst-Case Drawdown.
-   - Risk of Ruin (% simulations experiencing $\ge 10\%$ or $\ge 20\%$ drawdowns).
-   - 95% Value at Risk (VaR) and 95% Conditional Value at Risk (CVaR / Expected Shortfall).
+   - Resample historical closed trades independently with replacement across $N$ iterations (default 1,000).
+   - Add fixed dollar P&Ls to starting capital; no resizing, reinvestment or liquidation model.
+2. **Descriptive metrics**:
+   - 5th/median/95th percentiles of resampled ending equity.
+   - Median and 95th-percentile drawdown; frequency of paths breaching 10%/20% drawdown.
+   - 95% empirical per-trade loss VaR and CVaR, consistently measured as
+     `-pnl_dollars / starting_cash × 100`. Optional position-return percentages are
+     never mixed with starting-capital contributions. Gains-only tails report zero loss.
+   - VaR uses the inverse empirical CDF; CVaR averages exactly the worst 5% probability
+     mass, including a fractional boundary observation for small or discrete samples.
+   - Annualized Monte Carlo Sharpe is unavailable, with a retained reason code.
+     Trade count or first/last fill dates cannot establish an observed portfolio-return
+     clock, idle intervals, or overlapping exposures. No annual trading frequency is guessed.
 3. **CLI & Mobile Integration**:
    - Added `--monte-carlo` and `--mc-sims` flags to `copilot backtest`.
    - Integrated into Telegram `/backtest` response cards.
 
 ### Implementation Summary
 - **Data Models (`agentic_trader/backtest/models.py`, `agentic_trader/backtest/__init__.py`)**: Added `MonteCarloResult` dataclass and `monte_carlo` attribute to `BacktestResult`.
-- **Simulation Engine (`agentic_trader/backtest/monte_carlo.py`)**: Implemented `run_monte_carlo_simulation()` with vectorized NumPy matrix operations and zero-division protections.
+- **Simulation Engine (`agentic_trader/backtest/monte_carlo.py`)**: Vectorized NumPy resampling validates positive finite starting capital, integer simulation counts and finite dollar outcomes.
 - **Reporting (`agentic_trader/backtest/reporting.py`)**: Formatted dedicated Monte Carlo risk attribution section in institutional ASCII backtest report.
-- **CLI & Telegram (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: Added `--monte-carlo` flag to `backtest` command and embedded worst-case drawdown / VaR into Telegram `/backtest` summaries.
-- **Test Suite (`tests/test_monte_carlo.py`, `tests/test_backtest.py`)**: 4 unit tests verifying sample sizing, metric calculations, random seed determinism, report formatting, and CLI arguments.
+- **CLI & Telegram (`agentic_trader/agent/copilot.py` and `agentic_trader/cli/commands/`)**: `--monte-carlo` and `/backtest` label IID trade-path percentiles and per-trade capital-loss metrics explicitly.
+- **Test Suite (`tests/backtest/test_monte_carlo.py`)**: Parameterized positive/zero/losing/mixed tails, fractional tail mass, consistent units with missing position percentages, unavailable Sharpe, invalid inputs, deterministic resampling and CLI/Telegram rendering.
+
+September 18 correction: the previous CVaR calculation turned profitable lower-tail
+returns into positive losses and guessed annualization from trade count. Those outputs
+are superseded for new computations; retained historical artifacts are not rewritten.
+IID trade sampling still discards serial and cross-position dependence and intratrade
+mark-to-market losses. Extending it requires an explicit observed return clock and
+dependence-aware scenarios; these diagnostics do not enforce live risk limits.
 
 ---
 

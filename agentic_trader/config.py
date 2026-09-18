@@ -221,9 +221,16 @@ class PositionSizingConfig(BaseModel):
     max_risk_pct_cap: float = 0.01  # Hard ceiling: no single trade or tier can exceed 1.0% capital risk
     max_trade_notional_cap: float = 30000.0  # Max notional for a single trade (50% of $60k portfolio cap)
     drawdown_gating_enabled: bool = True  # Dynamically haircut sizes during portfolio drawdown
-    drawdown_haircut_threshold_pct: float = 0.03  # Begin haircut if drawdown > 3.0%
-    max_drawdown_stop_pct: float = 0.06  # Halt new sizing if drawdown >= 6.0%
+    drawdown_haircut_threshold_pct: float = Field(default=0.03, ge=0, lt=1, allow_inf_nan=False)
+    max_drawdown_stop_pct: float = Field(default=0.06, gt=0, le=1, allow_inf_nan=False)
+    drawdown_min_risk_multiplier: float = Field(default=0.10, gt=0, le=1, allow_inf_nan=False)
     suggest_tiers_enabled: bool = True  # Suggest Half, Base, and Max sizing tiers in Telegram
+
+    @model_validator(mode="after")
+    def validate_drawdown_thresholds(self):
+        if self.drawdown_haircut_threshold_pct >= self.max_drawdown_stop_pct:
+            raise ValueError("Drawdown haircut threshold must be below the sizing halt")
+        return self
 
 
 class OperationsConfig(BaseModel):

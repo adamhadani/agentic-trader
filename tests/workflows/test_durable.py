@@ -34,8 +34,8 @@ async def test_fifo_and_expired_preflight_fencing(store, entry, app_config):
     assert await store.claim_entry(lease_seconds=1, now=now) is None
     replacement = await store.claim_entry(lease_seconds=1, now=now + timedelta(seconds=2))
     assert replacement.id == first.id and replacement.token != claimed.token
-    assert not await store.begin_submission(claimed)
-    assert await store.begin_submission(replacement)
+    assert await store.begin_submission(claimed, app_config) is not None
+    assert await store.begin_submission(replacement, app_config) is None
     assert await store.claim_entry(lease_seconds=1, now=now + timedelta(days=1)) is None
     assert second.status == WorkStatus.QUEUED
 

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from agentic_trader.constants import AssetClass, SizingMode
+from agentic_trader.risk import drawdown_risk_factor
 
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ def calculate_dynamic_sizing(
     current_drawdown_pct: float = 0.0,
     macro_risk_multiplier: float = 1.0,
 ) -> PositionSizingResult:
-    """Calculate dynamic position sizing with Drawdown, VaR, Macro, and Notional gating,
+    """Calculate stop-distance sizing with drawdown, macro and notional limits,
     producing tiered sizing choices (Half, Base, Max).
     """
     sizing_cfg = config.sizing
@@ -60,20 +61,15 @@ def calculate_dynamic_sizing(
         gating_reasons.append(f"Macro stress risk scaling applied: {macro_factor * 100:.0f}% risk budget")
 
     # 1. Drawdown Haircut Gating
-    drawdown_factor = 1.0
-    if sizing_cfg.drawdown_gating_enabled and current_drawdown_pct > 0:
-        if current_drawdown_pct >= sizing_cfg.max_drawdown_stop_pct:
-            drawdown_factor = 0.0
-            gating_reasons.append(
-                f"Drawdown halt active ({current_drawdown_pct * 100:.1f}% >= {sizing_cfg.max_drawdown_stop_pct * 100:.1f}%)"
-            )
-        elif current_drawdown_pct > sizing_cfg.drawdown_haircut_threshold_pct:
-            span = max(0.001, sizing_cfg.max_drawdown_stop_pct - sizing_cfg.drawdown_haircut_threshold_pct)
-            excess = current_drawdown_pct - sizing_cfg.drawdown_haircut_threshold_pct
-            drawdown_factor = max(0.10, 1.0 - (excess / span))
-            gating_reasons.append(
-                f"Drawdown haircut applied: {drawdown_factor * 100:.0f}% sizing (DD: {current_drawdown_pct * 100:.1f}%)"
-            )
+    drawdown_factor = drawdown_risk_factor(current_drawdown_pct, sizing_cfg)
+    if drawdown_factor == 0:
+        gating_reasons.append(
+            f"Drawdown halt active ({current_drawdown_pct * 100:.1f}% >= {sizing_cfg.max_drawdown_stop_pct * 100:.1f}%)"
+        )
+    elif drawdown_factor < 1:
+        gating_reasons.append(
+            f"Drawdown haircut applied: {drawdown_factor * 100:.0f}% sizing (DD: {current_drawdown_pct * 100:.1f}%)"
+        )
 
     effective_adjustment = drawdown_factor * macro_factor
 
@@ -87,7 +83,7 @@ def calculate_dynamic_sizing(
     unit_notional = max(entry * multiplier, 0.01)
 
     # 3. Maximum Permissible Quantity (Hard Risk & Notional Gates)
-    max_risk_dollars = portfolio_cash * sizing_cfg.max_risk_pct_cap  # e.g., 1.0% = $1,000
+    max_risk_dollars = portfolio_cash * sizing_cfg.max_risk_pct_cap * drawdown_factor
     qty_by_risk = max_risk_dollars / per_unit_risk
     qty_by_notional = trade_notional_ceiling / unit_notional
 

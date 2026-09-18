@@ -24,6 +24,7 @@ from agentic_trader.config import load_config
 from agentic_trader.constants import AuditEventType, ExecutionMode, RuntimeEnvironment, SystemStateKey
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter, TerminalFormatter
+from agentic_trader.risk import drawdown_risk_factor
 from agentic_trader.runtime import runtime_identity
 from agentic_trader.storage.db import SignalDatabase
 
@@ -133,6 +134,7 @@ async def main() -> None:
         if copilot.ledger is None:
             raise RuntimeError("Account ledger is not configured")
         ledger_report = await verified_account_report(copilot.ledger)
+        account_risk = await copilot.ledger.current_risk()
         if not readiness["checks"].get("accounting", {}).get("ready"):
             raise RuntimeError("Daemon accounting worker is not fresh and healthy")
         stats = await db.get_closed_positions_stats()
@@ -149,6 +151,9 @@ async def main() -> None:
                     "commands": sorted(commands),
                     "positions_match_broker": True,
                     "account_ledger": ledger_report.model_dump(mode="json"),
+                    "account_risk": account_risk.model_dump(mode="json"),
+                    "new_entry_drawdown_allowed": account_risk.equity > 0
+                    and drawdown_risk_factor(float(account_risk.drawdown_pct), config.sizing) > 0,
                     "source": report.source,
                     "as_of": report.as_of,
                     "positions": [p.model_dump(mode="json") for p in broker.snapshot],

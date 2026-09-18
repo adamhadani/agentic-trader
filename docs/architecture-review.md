@@ -369,4 +369,8 @@ remain separate; legacy CVaR reporting has sign/time-basis defects and supplies 
 live tail-risk protection. Qualification power, overlapping residual significance
 and statistical-family mapping also need calibrated evidence. Keep one journal and
 execution path, and follow the [revised canonical ordering](alpha-roadmap.md#current-priorities-after-the-whole-stack-survey).
-These findings are documented, not fixed by this review.
+The survey itself changed no behavior. The subsequent
+[account-risk tranche](account-ledger.md#cash-flow-adjusted-drawdown-and-entry-admission)
+connects S1 through scan/reservation/submission using the existing ledger projection
+and fixes S4 report semantics. S2, S3 funding/aggregate controls, gate calibration
+and executable portfolio plans remain open.

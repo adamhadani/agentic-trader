@@ -35,18 +35,26 @@ def format_backtest_report(result: BacktestResult, symbols: list[str], lookback:
     mc_section = ""
     if result.monte_carlo:
         mc = result.monte_carlo
+        sharpe = (
+            f"{mc.median_sharpe:.2f} / {mc.ci_5th_sharpe:.2f}"
+            if mc.median_sharpe is not None and mc.ci_5th_sharpe is not None
+            else "unavailable — no observed portfolio-return clock"
+        )
         mc_section = f"""{sub_border}
-MONTE CARLO RISK RESAMPLING ({mc.n_simulations:,d} Bootstrap Iterations)
+IID CLOSED-TRADE RESAMPLING ({mc.n_simulations:,d} Iterations)
 {sub_border}
-• Final Portfolio Equity (Median): ${mc.median_equity:12,.2f}
-• 90% Confidence Interval (Equity): [${mc.ci_5th_equity:,.2f} .. ${mc.ci_95th_equity:,.2f}]
+• Final Resampled Equity (Median): ${mc.median_equity:12,.2f}
+• 5th–95th Equity Percentiles: [${mc.ci_5th_equity:,.2f} .. ${mc.ci_95th_equity:,.2f}]
 • Maximum Drawdown (Median):       {mc.median_drawdown_pct:12.2f}%
-• 95th Pctile Worst Drawdown:      {mc.ci_95th_drawdown_pct:12.2f}%
-• Sharpe Ratio (Median / 5th%):    {mc.median_sharpe:6.2f} / {mc.ci_5th_sharpe:6.2f}
-• Risk of Ruin (Drawdown >= 10%):  {mc.risk_of_ruin_10pct:12.2f}%
-• Risk of Ruin (Drawdown >= 20%):  {mc.risk_of_ruin_20pct:12.2f}%
-• 95% Value at Risk (VaR):         {mc.var_95_pct:12.2f}%
-• 95% Conditional VaR (CVaR):     {mc.cvar_95_pct:12.2f}%
+• 95th Percentile Drawdown:       {mc.ci_95th_drawdown_pct:12.2f}%
+• Annualized Sharpe (Median / 5th%): {sharpe}
+• Paths with Drawdown >= 10%:     {mc.risk_of_ruin_10pct:12.2f}%
+• Paths with Drawdown >= 20%:     {mc.risk_of_ruin_20pct:12.2f}%
+• 95% Per-Trade Loss VaR:         {mc.var_95_pct:12.2f}%
+• 95% Per-Trade Loss CVaR:        {mc.cvar_95_pct:12.2f}%
+Loss percentages use starting cash; profitable tails report zero loss.
+Fixed-dollar IID paths omit serial dependence, overlapping exposure and resizing.
+These are conditional resampling percentiles, not portfolio risk limits or confidence guarantees.
 """
 
     attribution_section = ""

@@ -7,13 +7,13 @@ from uuid import uuid4
 
 from sqlalchemy import delete, select
 
-from agentic_trader.execution.durable import EventKind
+from agentic_trader.accounting.risk import advance_risk_checkpoint
+from agentic_trader.execution.durable import LEDGER_LOCK, EventKind
 from agentic_trader.storage.models import ActivityProjectionRecord, DomainEventRecord, LedgerCheckpointRecord
 from agentic_trader.storage.workflow import WorkflowStore, encode
 
 
 LEDGER_STREAM = "account/ledger"
-LEDGER_LOCK = "ledger"
 
 
 class LedgerStore:
@@ -97,6 +97,9 @@ class LedgerStore:
                 )
                 await session.delete(current[activity_id])
             payload = {**checkpoint, "error": None, "checked_at": datetime.now(UTC).isoformat()}
+            payload.update(
+                advance_risk_checkpoint(json.loads(row.payload), payload, activities, account_id=row.account_id)
+            )
             await self.store.append(session, stream=LEDGER_STREAM, kind=EventKind.LEDGER_CHECKPOINT, payload=payload)
             row.payload = encode(payload)
             return True

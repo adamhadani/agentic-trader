@@ -14,7 +14,10 @@ from requests import Response
 from requests.adapters import BaseAdapter
 from sqlalchemy.engine import make_url
 
+from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.broker.alpaca import AlpacaBroker
+from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.migrations import downgrade_migrations
 from agentic_trader.transport.alpaca import BoundedStockDataClient, BoundedTradingClient
 
@@ -245,3 +248,47 @@ def postgres_test_db():
 @pytest.fixture
 def broker_order_payload():
     return order_payload
+
+
+@pytest.fixture
+async def ledger_desk(alpaca_http, temp_db, app_config, request):
+    """Real SDK/HTTP ledger evidence with isolated SQLite or explicit disposable PostgreSQL."""
+    venue, broker = alpaca_http
+    db = (
+        SignalDatabase(db_url=request.getfixturevalue("postgres_test_db"))
+        if getattr(request, "param", "sqlite") == "postgres"
+        else temp_db
+    )
+    activities = [{"id": "deposit", "activity_type": "CSD", "net_amount": "10000"}]
+    # Individual partial executions, all tied to one exact order.
+    activities += [
+        {
+            "id": f"fill-{i:03}",
+            "activity_type": "FILL",
+            "symbol": "SPY",
+            "order_id": venue.entry["id"],
+            "side": "buy",
+            "qty": "0.1",
+            "price": "100",
+            "transaction_time": datetime.now(UTC).isoformat(),
+        }
+        for i in range(100)
+    ]
+    state = {"account": {"id": "account", "cash": "9000", "currency": "USD"}, "activities": activities, "failure": None}
+
+    def dispatch(method, path, query, body):
+        if path == "/v2/account":
+            return 200, state["account"]
+        if path == "/v2/account/activities":
+            if state["failure"]:
+                return state["failure"]
+            token = query.get("page_token", [None])[0]
+            rows = state["activities"]
+            start = next(i + 1 for i, a in enumerate(rows) if a["id"] == token) if token else 0
+            return 200, rows[start : start + int(query["page_size"][0])]
+        return None
+
+    venue.override = dispatch
+    service = AccountLedgerService(broker, LedgerStore(db.workflows), app_config.accounting)
+    yield service, venue, state
+    await db.engine.dispose()
