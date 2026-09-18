@@ -131,7 +131,7 @@ Schema 008 adds alpha projections and optional signal attribution. The original
 [alpha-stack review](docs/alpha-stack-review.md) remains historical evidence;
 its strict expected failures have become passing regression tests.
 
-The [active alpha roadmap](docs/alpha-roadmap.md) owns the ordered long-horizon plan: calibration, session-correct replay, forecast/strategy separation, broader data, and forward observation. Update its milestones and evidence when completing work.
+The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. Open findings include the missing production drawdown input, pre-reservation acquisition in legacy mining, uncalibrated gate power and legacy CVaR reporting semantics. The convex allocator remains shadow-only. Update milestones and evidence when completing work.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
@@ -174,7 +174,7 @@ silently reinterpret an old alpha version as using session-derived bars.
 Preserve historical study evidence and use fresh validation after policy changes.
 
 A2b's [prospective data observer](docs/alpha-forward-observations.md) runs in the
-existing daemon, independently of scans/halt state. The desk observes SPY/15m on
+existing daemon, independently of scans/halt state. The desk observes SPY/QQQ 15m on
 its configured feed. Read `alpha status` for retained capture quality; `alpha_observer`
 readiness means collector progress, including idle session waits, not complete data.
 Raw receipts/revisions use the existing journal/private artifacts and earn no trial,

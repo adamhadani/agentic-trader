@@ -1,6 +1,6 @@
 # Alpha research roadmap
 
-**Active long-horizon plan — updated 2026-09-17.** This is the canonical alpha work
+**Active long-horizon plan — updated 2026-09-18.** This is the canonical alpha work
 queue. [Pipeline contracts](alpha-pipeline.md) describe current behavior; the
 [architecture review](architecture-review.md) retains broader operational priorities.
 The [original alpha review](alpha-stack-review.md) is historical defect evidence.
@@ -24,6 +24,46 @@ also recognize controlled positive cases and quantify its statistical power.
 - Each change starts with behavioral tests; retain RED → GREEN evidence, then review,
   relevant integrations, pre-commit/CI and a controlled deployment if code changes.
 
+## Current priorities after the whole-stack survey
+
+The [September 18 survey](alpha-stack-survey-2026-09-18.md) distinguishes production
+from shadow infrastructure and supersedes older next-step ordering below. No new
+research run or runtime policy change was made for this review.
+
+1. **Risk wiring first (S1/S3).** Persist a fresh, cash-flow-aware account/mandate risk
+   snapshot and use it in sizing and final entry admission. Production currently
+   omits the drawdown input despite configured haircut/halt settings. Add buying
+   power, tradability/borrowability and aggregate risk observations through the same
+   boundary; preserve static mandates and existing FIFO/close services. TDD must
+   exercise the production call chain, restart, stale inputs and concurrent approvals.
+   Correct the separate legacy CVaR/reporting semantics (S4); it is not live protection.
+2. **Two research tracks in parallel.** (a) Fresh-seed known-predictor → search-winner
+   → execution → individual-gate ablation; version horizon/dependence-aware IC and
+   residual evidence, and calibrate statistical families without erasing trial history.
+   (b) Start prospective native-daily Ridge/style observations with source-qualified
+   training/evaluation labels and frozen decisions; evaluate explicit delayed-SIP
+   daily coverage alongside separately identified IEX. Do not wait for a complete
+   historical point-in-time database to begin valid prospective evidence.
+3. **One bounded wider experiment.** Expand the forecast-specific limit from 64
+   toward the 150 currently eligible names and then a declared 150–300 cohort, with
+   performance/missing-support tests and unchanged older complete-book contracts.
+   Add a small set of economically different residual/overnight/liquidity hypotheses,
+   matched controls and incremental portfolio-value tests. Freeze before acquisition.
+4. **Consolidate ongoing campaigns before increasing cadence (S2).** Scheduled
+   `alpha mine` still fetches before reservation and remains ETF32; migrate to the
+   predeclared journal/acquisition boundary. Add an explicit stage/rejection/maturity
+   scoreboard; daily outcomes, bounded discovery and prospective collection serve
+   different purposes. Repeated same-history jobs are not new evidence.
+5. **Complete the portfolio deployment lane when evidence warrants it.** Version
+   qualification for the actual forecast/holding policy, observed factor/cost/risk
+   inputs and target-to-rounded-order plans. Test pending/partial-fill exposure,
+   exact protection and contributor attribution through existing execution services.
+   Add scenario CVaR/hard volatility constraints against measured needs; keep MPC,
+   advanced impact/RL search and options/futures later.
+
+No threshold was lowered, alpha promoted or trading configuration changed by this
+survey. Zero promotions alone proves neither correct pruning nor absence of alpha.
+
 ## Ordered work queue
 
 | ID | Status | Milestone / acceptance boundary |
@@ -32,8 +72,8 @@ also recognize controlled positive cases and quantify its statistical power.
 | A1b | Implemented — [PR #36](https://github.com/adamhadani/agentic-trader/pull/36), [study results](alpha-study-2026-09-16.md) | All 1,952 jobs retained; scientific status incomplete (22 unavailable comparisons). No replacement gate accepted. |
 | A2 | A2a implemented — [PR #37](https://github.com/adamhadani/agentic-trader/pull/37); A2b replay groundwork — [PR #38](https://github.com/adamhadani/agentic-trader/pull/38) | [Replay contract](alpha-session-replay.md) and [four-run evidence](alpha-session-replay-2026-09-16.md): SIP coverage complete, IEX incomplete in both windows. Live signal-clock migration and broker execution observations remain; intraday promotion stays blocked. |
 | A3 | Forecast benchmark prerequisite — [PR #43](https://github.com/adamhadani/agentic-trader/pull/43); [PR #44](https://github.com/adamhadani/agentic-trader/pull/44) timing/cost screen complete; standalone open-gap policy paused; combined execution shadow-only | Distinguish forecast components from a fully specified tradable strategy; validate combinations causally. |
-| A4 | ETF/panel/source groundwork implemented; individual-equity evidence next | Broader economic hypotheses and point-in-time universe/data coverage. |
-| A5 | Forward diagnostics implemented; campaign orchestration remains | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
+| A4 | 64-equity forecasts and matched controls completed; broader/prospective evidence next | Broader economic hypotheses and point-in-time universe/data coverage. |
+| A5 | SPY/QQQ session diagnostics implemented; daily panel collection and campaign orchestration remain | Bounded research campaigns and a shadow observation universe independent of trading permissions. |
 
 A1a makes A1b reproducible. A2 can follow those foundations while any longer A1b
 forward experiment accumulates evidence. A3–A5 may need small prerequisite adapters;
@@ -477,7 +517,7 @@ qualification/forward evidence remain required before portfolio execution.
    as a control. Widen the current 64-symbol panel bound only with bounded acquisition,
    memory/CPU tests and a dynamic membership/missing-data contract; simply increasing
    this constant does not implement a valid historical equity panel.
-3. **First matched-budget stock/ETF forecast campaign completed; exposure/endpoint controls pending.** Predeclare a few economically
+3. **First matched-budget stock/ETF forecasts and exposure/endpoint controls completed.** Predeclare a few economically
    distinct families (sector/market-residual momentum, short-horizon reversal with
    liquidity conditioning, overnight/session decomposition), constant/Ridge controls,
    purged walk-forward folds, turnover/cost/borrow stress and factor-neutral incremental
