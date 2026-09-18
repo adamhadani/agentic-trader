@@ -398,3 +398,15 @@ retained-panel provenance, the study reservation boundary and existing IC/basket
 kernels. Distinguish explanatory risk exposures from predictive characteristics
 and executable portfolios; a residual score alone supplies none of the missing
 borrow, protection or portfolio-order contracts. The plan is not an executed study.
+
+
+### Retained factor implementation
+
+[Factor controls](alpha-factor-controls.md) now share one retained-study CLI
+composition and a structural parent-binding interface with forecast controls.
+Parent validation, original Ridge accounting checks and paired comparisons live
+in `retained_forecasts.py`; expected-clock HAC is shared through `information.py`.
+The causal feature kernel performs one checked SVD per return date and reuses it
+across symbols with complete support. There is no second optimizer, acquisition
+engine or execution path. All risk exposures remain diagnostic. Missing source
+history reduces reported breadth; it cannot shorten the frozen fit window.

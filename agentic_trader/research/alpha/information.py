@@ -93,8 +93,14 @@ class ICReport:
         }
 
 
-def _fold_statistics(observations: list[ICObservation], policy: ICPolicy):
-    values = np.array([o.ic for o in observations if o.ic is not None], dtype=float)
+def summarize_expected_values(observations: list[float | None], policy: ICPolicy):
+    """Describe an expected scalar clock; missing dates withhold inference, never compress it."""
+    if any(
+        value is not None and (isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value))
+        for value in observations
+    ):
+        raise ValueError("Finite scalar observations or explicit unavailable dates required")
+    values = np.array([value for value in observations if value is not None], dtype=float)
     n = len(values)
     mean = float(values.mean()) if n else None
     std = float(values.std(ddof=1)) if n > 1 else None
@@ -104,11 +110,11 @@ def _fold_statistics(observations: list[ICObservation], policy: ICPolicy):
     result: dict[str, Any] = {
         "expected": len(observations),
         "observed": n,
-        "coverage": n / len(observations),
-        "mean_ic": mean,
-        "sample_std_ic": std,
-        "icir_per_observation": mean / std if mean is not None and std is not None and std > 0 else None,
-        "icir_annualized_iid": None,
+        "coverage": n / len(observations) if observations else 0.0,
+        "mean": mean,
+        "sample_std": std,
+        "ratio_per_observation": mean / std if mean is not None and std is not None and std > 0 else None,
+        "ratio_annualized_iid": None,
         "iid_t": None,
         "iid_p_two_sided": None,
         "hac_standard_error": None,
@@ -125,11 +131,11 @@ def _fold_statistics(observations: list[ICObservation], policy: ICPolicy):
     elif constant:
         result["inference_unavailable"] = "zero_variance"
     else:
-        ratio = result["icir_per_observation"]
+        ratio = result["ratio_per_observation"]
         result["iid_t"] = ratio * np.sqrt(n)
         result["iid_p_two_sided"] = float(2 * stats.t.sf(abs(result["iid_t"]), n - 1))
         if policy.observations_per_year is not None:
-            result["icir_annualized_iid"] = ratio * np.sqrt(policy.observations_per_year)
+            result["ratio_annualized_iid"] = ratio * np.sqrt(policy.observations_per_year)
         fitted = OLS(values, np.ones((n, 1))).fit(
             cov_type="HAC", cov_kwds={"maxlags": policy.hac_lags, "use_correction": True}, use_t=False
         )
@@ -146,6 +152,17 @@ def _fold_statistics(observations: list[ICObservation], policy: ICPolicy):
                 hac_ci_high=float(ci[1]),
             )
     return result
+
+
+def _fold_statistics(observations: list[ICObservation], policy: ICPolicy):
+    result = summarize_expected_values([observation.ic for observation in observations], policy)
+    names = {
+        "mean": "mean_ic",
+        "sample_std": "sample_std_ic",
+        "ratio_per_observation": "icir_per_observation",
+        "ratio_annualized_iid": "icir_annualized_iid",
+    }
+    return {names.get(name, name): value for name, value in result.items()}
 
 
 def cross_sectional_ic(

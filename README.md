@@ -261,3 +261,9 @@ qualification gates with paired synthetic controls and a sourced family snapshot
 They share the existing artifact workflow and cannot promote strategies or send
 orders. See the [power diagnosis](docs/alpha-power-ablation-plan.md) and the next
 [bounded factor experiment](docs/alpha-factor-research-plan.md).
+
+
+`alpha factor-controls` runs a fixed [six-arm factor comparison](docs/alpha-factor-controls.md)
+on verified retained equity/ETF data. It preserves original Ridge forecasts,
+adds causal residual momentum, and reports matched support, costs and factor
+exposures. These are charged historical diagnostics; they cannot activate alphas.

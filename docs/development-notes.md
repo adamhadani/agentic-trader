@@ -304,3 +304,13 @@ regressions preserve completed evidence and prevent validation after development
 calculation failures. Trace-on/off tests prove identical execution results. See
 [protocol and budget](alpha-power-ablation-plan.md); a test fixture is not the full
 scientific experiment. Deployment verification must still be recorded separately.
+
+
+## Factor-controls verification
+
+The [factor comparison](alpha-factor-controls.md) uses RED-first causal feature and
+protocol tests, existing forecast-controls regression checks, and real retained-file
+SQLite/PostgreSQL integration. The shared fixture preserves guarded disposable DBs.
+Integration covers pre-read charging/exclusion, immutable parent data, full126-row
+fits, unknown held outcomes, replay and no activation. Full historical results and
+service deployment checks remain separate from these synthetic mechanical fixtures.

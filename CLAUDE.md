@@ -287,3 +287,11 @@ selection before holdout; mechanical development failures must leave validation
 unexamined. Measurement reuse changes no valid qualification thresholds. Missing or
 nonfinite sampling evidence is unavailable and fails closed. Synthetic diagnostics
 cannot authorize promotion, journal production trials or earn shadow credit.
+
+
+[Factor controls](docs/alpha-factor-controls.md) share `AlphaPanelService`, retained
+parent hashes and the existing journal. Freeze all six arms before reading prices;
+reserve/exclude the whole parent before artifact access. Keep original Ridge
+forecasts, past-only residual fits/common support, and strict future outcome masks.
+HAC20 and descriptive basket differences do not correct repeated research. ETF
+loadings are explanatory proxies, not a factor-neutral or executable portfolio.
