@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import platform
+import re
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -886,9 +887,35 @@ async def alpha_book_study_cmd(protocol_path, output):
 async def alpha_panel_study_cmd(protocol_path, output):
     """Run a frozen native-daily panel diagnostic; charge trials and exclude inspected periods."""
     protocol = json.loads(await asyncio.to_thread(protocol_path.read_text))
-    if set(protocol) != {"plan", "triage"}:
+    if set(protocol) not in (
+        {"plan", "triage"},
+        {"plan", "triage", "diagnostics"},
+        {"plan", "triage", "diagnostics", "universe_source"},
+        {"plan", "triage", "diagnostics", "universe_source", "study_scope"},
+    ):
         raise click.ClickException("Explicit plan and triage protocol required")
+    diagnostics = protocol.get("diagnostics")
+    if diagnostics is not None and diagnostics != {
+        "version": "matched_panel_diagnostics_v1",
+        "market_exposure_window": 60,
+        "turnover": "absolute_weight_change",
+    }:
+        raise click.ClickException("Matched-panel diagnostics must use the frozen causal exposure/turnover contract")
     plan = PanelStudyPlan.from_document(protocol["plan"])
+    source = protocol.get("universe_source")
+    if source is not None and (
+        not isinstance(source, dict)
+        or source.get("kind") != "equity_liquidity_screen_v1"
+        or source.get("feed") != plan.feed
+        or source.get("selected_count") != len(plan.symbols)
+        or not isinstance(source.get("result_sha256"), str)
+        or not re.fullmatch(r"[a-f0-9]{64}", source["result_sha256"])
+    ):
+        raise click.ClickException("Matched panel universe source must identify the complete source-specific cohort")
+    if "study_scope" in protocol and (
+        not isinstance(protocol["study_scope"], str) or not protocol["study_scope"].strip()
+    ):
+        raise click.ClickException("Study scope must be a non-empty frozen statement")
     triage = PanelTriagePolicy(**protocol["triage"])
     if any(c not in plan.costs_bps for c in (triage.primary_cost_bps, triage.stress_cost_bps)):
         raise click.ClickException("Triage costs must appear in the frozen study")

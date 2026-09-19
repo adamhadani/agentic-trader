@@ -1,0 +1,178 @@
+{
+  "plan": {
+    "version": "native_daily_panel_diagnostics_v1",
+    "campaign_id": "screened-equity-matched-dsl-iex-v1",
+    "symbols": [
+      "ADBE",
+      "AEM",
+      "AFL",
+      "AMKR",
+      "ATKR",
+      "AUB",
+      "AUGO",
+      "AVT",
+      "BALL",
+      "BRZE",
+      "BTDR",
+      "CAG",
+      "CART",
+      "CHYM",
+      "COLB",
+      "COMP",
+      "CR",
+      "CSX",
+      "DHT",
+      "EXE",
+      "FRO",
+      "FTNT",
+      "FTS",
+      "FULT",
+      "GEHC",
+      "GPOR",
+      "HII",
+      "HMY",
+      "HXL",
+      "IBP",
+      "KNF",
+      "KVYO",
+      "LAZ",
+      "LII",
+      "LYB",
+      "MMM",
+      "NSC",
+      "NTR",
+      "NVTS",
+      "NWG",
+      "NWSA",
+      "OVV",
+      "PEG",
+      "PFGC",
+      "PM",
+      "PNC",
+      "PRGO",
+      "REGN",
+      "RYTM",
+      "SEIC",
+      "SKY",
+      "SLG",
+      "SSRM",
+      "STNE",
+      "TALO",
+      "TAP",
+      "TDS",
+      "TNL",
+      "TPR",
+      "TTEK",
+      "VNT",
+      "VRNS",
+      "XPO",
+      "YUMC"
+    ],
+    "benchmark": "SPY",
+    "start": "2021-01-01",
+    "end": "2025-12-31",
+    "feed": "alpaca:iex",
+    "folds": [
+      {
+        "name": "2023",
+        "start": "2023-01-01",
+        "end": "2023-12-31"
+      },
+      {
+        "name": "2024",
+        "start": "2024-01-01",
+        "end": "2024-12-31"
+      },
+      {
+        "name": "2025",
+        "start": "2025-01-01",
+        "end": "2025-12-31"
+      }
+    ],
+    "hypotheses": [
+      {
+        "name": "constant",
+        "expression": "1",
+        "beta_window": null
+      },
+      {
+        "name": "market_residual",
+        "expression": "roc(close, 20)",
+        "beta_window": 60
+      },
+      {
+        "name": "volatility20",
+        "expression": "realized_vol(returns, 20)",
+        "beta_window": null
+      },
+      {
+        "name": "vol_scaled_trend",
+        "expression": "roc(close, 20) / (realized_vol(returns, 20) + 1e-06)",
+        "beta_window": null
+      },
+      {
+        "name": "range_location",
+        "expression": "(close - ts_min(low, 20)) / (ts_max(high, 20) - ts_min(low, 20) + 1e-06)",
+        "beta_window": null
+      },
+      {
+        "name": "signed_volume",
+        "expression": "sign(returns) * zscore(volume, 20)",
+        "beta_window": null
+      },
+      {
+        "name": "serial_dependence",
+        "expression": "ts_corr(returns, delay(returns, 1), 20)",
+        "beta_window": null
+      },
+      {
+        "name": "slope_zscore",
+        "expression": "zscore(ts_slope(close, 20), 20)",
+        "beta_window": null
+      }
+    ],
+    "horizon_sessions": 20,
+    "costs_bps": [
+      0.0,
+      1.0,
+      5.0
+    ],
+    "top_k": 8,
+    "ic": {
+      "min_assets": 16,
+      "min_observations": 200,
+      "hac_lags": 20,
+      "observations_per_year": 252,
+      "confidence": 0.95
+    },
+    "charged_trials": 96,
+    "target": {
+      "timeframe": "1d",
+      "horizon_bars": 20,
+      "label": "observed_next_open_to_close_v1"
+    },
+    "authorizes_promotion": false,
+    "availability": "Historical native daily completion assumed by next local midnight; receipts are not backdated",
+    "universe_scope": "Fixed curated cohort; not historical point-in-time membership or execution eligibility",
+    "payoff_scope": "Gross at most one, half-long/half-short rank baskets; flat between disjoint fixed-horizon proxies"
+  },
+  "triage": {
+    "primary_cost_bps": 1.0,
+    "stress_cost_bps": 5.0,
+    "minimum_mean_ic": 0.03,
+    "minimum_ic_dates_per_fold": 200,
+    "minimum_baskets": 30,
+    "maximum_positive_basket_share": 0.5
+  },
+  "diagnostics": {
+    "version": "matched_panel_diagnostics_v1",
+    "market_exposure_window": 60,
+    "turnover": "absolute_weight_change"
+  },
+  "universe_source": {
+    "kind": "equity_liquidity_screen_v1",
+      "result_sha256": "508e70fb62103720568c923440b0d0e47cdcc735941eb8e904afa83026d75ae1",
+    "selected_count": 64,
+    "feed": "alpaca:iex"
+  }
+}

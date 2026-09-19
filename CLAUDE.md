@@ -148,6 +148,13 @@ before provider I/O, preserving charged failure evidence. Read
 [alpha-mining-universe](docs/alpha-mining-universe.md) before widening campaigns;
 current membership does not create point-in-time historical eligibility.
 
+The matched screened-equity panel is recorded in
+[the September 19 report](docs/alpha-matched-panel-2026-09-19.md). It compares
+the expanded causal DSL families with constant, volatility and benchmark-residual
+controls on one complete declared cohort, and records turnover plus signal-bar
+market beta. A full-history run fails closed when current members lack bars; the
+short recent diagnostic is descriptive only and cannot promote an alpha.
+
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
 now bound traded notional, reject pending inventory, require matching forecast/risk

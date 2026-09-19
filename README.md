@@ -216,6 +216,13 @@ Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrate
 gains. All formulas remain research-only; active alphas remain zero. The [persistent-book follow-up](docs/alpha-persistent-book-2026-09-17.md) is also complete;
 use the [current roadmap](docs/alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities) for next work. [Automatic Alpaca bar evidence](docs/market-data-evidence.md) now retains raw pages and normalization outcomes.
 
+The [matched screened-equity DSL panel](docs/alpha-matched-panel-2026-09-19.md)
+compares the expanded causal families with constant, volatility and
+benchmark-residual controls while retaining turnover and signal-bar factor
+exposure. Its full-history 64-name attempt failed closed on missing historical
+members; a separately declared recent diagnostic completed 32/32 comparisons
+but had insufficient outcome coverage and no promotion candidate.
+
 The [forecast contract hardening](docs/forecast-contract-hardening.md) records causal calibration,
 trade participation bounds, forecast-error penalties and bounded provider reads. The
 legacy `optimize`/`retune` and uncalibrated Kelly sizing paths have been retired.

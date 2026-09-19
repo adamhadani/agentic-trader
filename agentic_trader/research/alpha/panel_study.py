@@ -32,6 +32,8 @@ MAX_PANEL_TRIALS = 128
 MAX_PANEL_SYMBOLS = 64
 MAX_PANEL_DAYS = 3660
 MAX_BETA_WINDOW = 252
+PANEL_EXPOSURE_WINDOW = 60
+PANEL_DIAGNOSTICS_VERSION = "matched_panel_diagnostics_v1"
 
 
 class PanelStudyStatus(StrEnum):
@@ -223,9 +225,26 @@ def panel_scores(panel: DailyResearchPanel, plan: PanelStudyPlan, hypothesis: Pa
     return scores
 
 
-def _payoffs(plan, scores, labels, dates):
+def _market_factor_betas(close: pd.DataFrame, benchmark: str, dates: pd.DatetimeIndex):
+    """Return trailing benchmark betas known at each decision date.
+
+    This is a descriptive risk diagnostic only.  The rolling fit ends at the
+    signal bar and never reads an outcome endpoint, so it cannot change basket
+    membership or leak future prices into the report.
+    """
+    returns = close.pct_change(fill_method=None)
+    market = returns[benchmark]
+    variance = market.rolling(PANEL_EXPOSURE_WINDOW, min_periods=PANEL_EXPOSURE_WINDOW).var()
+    covariance = (
+        returns.drop(columns=benchmark).rolling(PANEL_EXPOSURE_WINDOW, min_periods=PANEL_EXPOSURE_WINDOW).cov(market)
+    )
+    return covariance.div(variance, axis=0).reindex(dates)
+
+
+def _payoffs(plan, scores, labels, dates, market_betas=None):
     horizon = plan.target.horizon_bars
     observations = []
+    previous = pd.Series(0.0, index=plan.symbols)
     # Positions start after decisions, last exactly H session bars and never overlap.
     for offset in range(0, len(dates) - horizon, horizon):
         stamp = dates[offset]
@@ -238,6 +257,27 @@ def _payoffs(plan, scores, labels, dates):
         gross = float(weights @ outcomes)
         entered = float(weights.abs().sum())
         exited = float(weights.abs() @ (1 + outcomes))
+        rebalance_turnover = float((weights - previous).abs().sum())
+        previous = weights
+        if market_betas is None:
+            market_exposure = None
+            absolute_market_exposure = None
+            exposure_status = "unavailable"
+        else:
+            betas = market_betas.loc[stamp, list(plan.symbols)]
+            held = weights.ne(0)
+            if not held.any():
+                market_exposure = 0.0
+                absolute_market_exposure = 0.0
+                exposure_status = "abstained"
+            elif np.isfinite(betas.loc[held]).all():
+                market_exposure = float(weights[held] @ betas[held])
+                absolute_market_exposure = float(weights[held].abs() @ betas[held].abs())
+                exposure_status = "observed"
+            else:
+                market_exposure = None
+                absolute_market_exposure = None
+                exposure_status = "unavailable"
         benchmark = float(outcomes.mean())
         costs = []
         for cost in plan.costs_bps:
@@ -261,6 +301,10 @@ def _payoffs(plan, scores, labels, dates):
                 "gross_return": gross,
                 "entry_gross": entered,
                 "exit_gross": exited,
+                "rebalance_turnover": rebalance_turnover,
+                "market_factor_exposure": market_exposure,
+                "absolute_market_factor_exposure": absolute_market_exposure,
+                "factor_exposure_status": exposure_status,
                 "costs": costs,
             }
         )
@@ -286,6 +330,34 @@ def _payoff_summary(observations, cost):
         "largest_positive_basket_share_of_net_log_gain": float(log.max() / total) if total > 0 else None,
         "missing_features": sum(not o["features_available"] for o in observations),
         "mean_entry_gross": float(np.mean([o["entry_gross"] for o in observations])),
+        "total_rebalance_turnover": float(sum(o["rebalance_turnover"] for o in observations)),
+        "mean_rebalance_turnover": float(np.mean([o["rebalance_turnover"] for o in observations])),
+        "exposure_observed": sum(o["market_factor_exposure"] is not None for o in observations),
+        "exposure_missing": sum(o["market_factor_exposure"] is None for o in observations),
+        "mean_absolute_market_factor_exposure": (
+            float(
+                np.mean(
+                    [
+                        o["absolute_market_factor_exposure"]
+                        for o in observations
+                        if o["absolute_market_factor_exposure"] is not None
+                    ]
+                )
+            )
+            if any(o["absolute_market_factor_exposure"] is not None for o in observations)
+            else None
+        ),
+        "maximum_absolute_market_factor_exposure": (
+            float(
+                max(
+                    o["absolute_market_factor_exposure"]
+                    for o in observations
+                    if o["absolute_market_factor_exposure"] is not None
+                )
+            )
+            if any(o["absolute_market_factor_exposure"] is not None for o in observations)
+            else None
+        ),
     }
 
 
@@ -295,6 +367,7 @@ def compute_panel_study(panel: DailyResearchPanel, plan: PanelStudyPlan):
     if not panel.complete:
         raise PanelCoverageError(panel.coverage)
     trials = []
+    market_betas = _market_factor_betas(panel.close, plan.benchmark, panel.close.index)
     for hypothesis in plan.hypotheses:
         scores = panel_scores(panel, plan, hypothesis)
         for fold in plan.folds:
@@ -312,7 +385,7 @@ def compute_panel_study(panel: DailyResearchPanel, plan: PanelStudyPlan):
                 expected_index=mature,
                 target=plan.target,
             )
-            observations = _payoffs(plan, scores, labels, dates)
+            observations = _payoffs(plan, scores, labels, dates, market_betas)
             trials.append(
                 {
                     "hypothesis": hypothesis.name,
@@ -329,6 +402,12 @@ def compute_panel_study(panel: DailyResearchPanel, plan: PanelStudyPlan):
         "charged_trials": plan.trial_count,
         "trials": trials,
         "coverage": panel.coverage,
+        "diagnostics": {
+            "version": PANEL_DIAGNOSTICS_VERSION,
+            "market_exposure_window": PANEL_EXPOSURE_WINDOW,
+            "scope": "Trailing close-to-close benchmark beta through each signal bar; descriptive risk attribution only",
+            "turnover": "Absolute weight change between disjoint fixed-horizon baskets; entry/exit costs remain separate",
+        },
         "authorizes_promotion": False,
         "limitations": [
             "Curated historical cohort is not survivorship-free or untouched confirmation.",
