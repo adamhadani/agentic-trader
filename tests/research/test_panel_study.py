@@ -135,3 +135,29 @@ def test_ic_report_carries_its_explicit_forecast_target(panel_study_input):
     frames, clock, plan = panel_study_input
     trial = compute_panel_study(align_daily_panel(frames, clock, feed=plan.feed), plan)["trials"][0]
     assert trial["ic"]["target"] == plan.target.document()
+
+
+def test_matched_diagnostics_record_turnover_and_past_only_market_exposure(panel_study_input):
+    frames, clock, plan = panel_study_input
+    result = compute_panel_study(align_daily_panel(frames, clock, feed=plan.feed), plan)
+    trial = result["trials"][0]
+    payoffs = trial["payoffs"]
+    assert result["diagnostics"]["version"] == "matched_panel_diagnostics_v1"
+    assert payoffs[0]["rebalance_turnover"] == pytest.approx(sum(abs(w) for w in payoffs[0]["weights"].values()))
+    assert all("market_factor_exposure" in payoff for payoff in payoffs)
+    summary = trial["cost_summaries"][0]
+    assert summary["total_rebalance_turnover"] == pytest.approx(sum(payoff["rebalance_turnover"] for payoff in payoffs))
+    assert summary["exposure_observed"] > 0
+
+
+def test_market_exposure_is_causal_and_does_not_change_weights(panel_study_input):
+    frames, clock, plan = panel_study_input
+    original = compute_panel_study(align_daily_panel(frames, clock, feed=plan.feed), plan)
+    for frame in frames.values():
+        frame.iloc[120:, :4] *= 3
+    changed = compute_panel_study(align_daily_panel(frames, clock, feed=plan.feed), plan)
+    first_original = original["trials"][0]["payoffs"]
+    first_changed = changed["trials"][0]["payoffs"]
+    for before, after in zip(first_original, first_changed, strict=True):
+        assert before["weights"] == after["weights"]
+        assert before["market_factor_exposure"] == after["market_factor_exposure"]

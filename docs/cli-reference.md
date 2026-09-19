@@ -431,6 +431,12 @@ report. Failed acquisition/coverage exits nonzero without refunding attempts; ex
 outputs are never overwritten. This is intentional research persistence, not a dry
 run or permission to submit a basket. See [panel contracts](alpha-sector-panel.md).
 
+The optional frozen `diagnostics` block records causal 60-session benchmark beta
+and disjoint-basket turnover. `universe_source` can bind a complete source-specific
+liquidity-screen cohort, and `study_scope` records a declared coverage limitation.
+The [matched screened-equity protocol](alpha-matched-panel-2026-09-19.md) uses
+these fields; its diagnostics never grant promotion credit.
+
 ### Persistent ETF book research
 
 `copilot alpha book-study PROTOCOL.json --output NEW_DIRECTORY` runs the frozen

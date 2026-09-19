@@ -409,6 +409,14 @@ completion claim or automatic replay. Freeze a new attempt before another acquis
 
 `alpha forecast-controls` evaluates fixed reversal/volatility/blended controls against frozen panel Ridge forecasts with identical decision support. The [contract](alpha-forecast-controls.md) keeps source-price and positive-endpoint-volume outcomes separate, reuses shared basket accounting, and charges all comparisons through the existing journal. No refit, qualification, new market observation or allocation authority is implied.
 
+The matched screened-equity panel reuses this journal-backed daily service for
+the expanded causal DSL families and explicit constant, volatility and
+benchmark-residual controls. Its frozen report adds disjoint-basket turnover and
+signal-bar-only benchmark beta as descriptive risk diagnostics. A complete
+declared cohort is required; missing historical members or endpoint outcomes
+fail closed rather than being intersected away. See the
+[September 19 matched-panel report](alpha-matched-panel-2026-09-19.md).
+
 
 ### Paired gate-power diagnosis
 
