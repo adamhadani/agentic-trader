@@ -79,12 +79,11 @@ not safe to make `active` conditional on the account being paper.
 1. **Fix the acquisition boundary and add a campaign scoreboard.** Reserve the
    research attempt before acquisition, persist stage/rejection/maturity counts,
    and make repeated same-history searches visible as such.
-2. **Broaden the existing causal grammar before adding a new search engine.** The
-   DSL already supports `vwap`, range/gap fields and volatility operators, but the
-   miner's random templates and genetic seeds mostly use six common fields and do
-   not exercise that breadth. Add bounded feature-family quotas, novelty tracking
-   and causal tests for `hl_spread`, `oc_spread`, `open_gap`, realized volatility,
-   and volume surprise. Preserve equal-budget random/genetic controls.
+2. **Continue improving the existing causal grammar before adding a new search
+   engine.** PR #77 now exercises range/gap fields, realized volatility and
+   volume-history mutations with acquisition-aware generation. Next add bounded
+   feature-family quotas, stronger novelty tracking and equal-budget random/genetic
+   controls; keep `vwap` behind an explicit provider-column contract.
 3. **Expand the point-in-time equity cohort.** The current funnel is bounded by a
    64-name panel after the larger metadata/liquidity screen. Move toward 150–300
    names only with versioned membership, missing-bar accounting, resource limits
@@ -96,3 +95,27 @@ not safe to make `active` conditional on the account being paper.
 5. **Defer advanced ML/genetic variants.** More model complexity or mining cadence
    will increase selection burden until source alignment, breadth and prospective
    outcome power are measured.
+
+## Expanded grammar follow-up
+
+After the first campaign, the miner was run again with the broadened causal
+grammar from PR #77. The isolated campaign used the same four source-correct
+symbols (`AAPL`, `AMD`, `IWM`, `SPY`), 57 trials per symbol (seven catalog plus
+50 generated), and the same deliberately relaxed discovery display gates. It
+produced 21–26 discovery finalists per symbol, compared with 9–18 in the earlier
+27-trial run. The added expressions exercised nested volatility, gap, spread and
+volume-history features; no provider or production state changed.
+
+The best discovery finalist per symbol was then qualified once:
+
+| Symbol | Validation Sharpe | Holdout Sharpe | Holdout DSR | Result |
+| --- | ---: | ---: | ---: | --- |
+| AAPL | 1.200 | 1.306 | 0.247 | Rejected: DSR, fold stability, trade count and bootstrap |
+| IWM | 1.096 | 1.021 | 0.164 | Rejected: recursive initialization, DSR, IC, fold stability and trade count |
+| AMD | 1.043 | -0.321 | 0.014 | Rejected: holdout loss, drawdown, costs and DSR |
+| SPY | 1.601 | -1.429 | 0.000 | Rejected: holdout loss, costs, IC, trade count and DSR |
+
+The source contract passed for all four. This demonstrates useful search breadth,
+not a reason to lower DSR or other qualification gates. The positive AAPL/IWM
+holdout Sharpe values are post-selection diagnostics with weak DSR and insufficient
+trade support; they are not paper strategy approvals.
