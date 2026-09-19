@@ -236,6 +236,7 @@ async def alpha_mine_cmd(
     max_seconds,
 ):
     """Persist every trial. Mining never consumes holdout or promotes an alpha."""
+    config = load_config()
     try:
         mining_universe = await asyncio.to_thread(
             resolve_mining_universe,
@@ -244,11 +245,11 @@ async def alpha_mine_cmd(
             symbols=symbols,
             snapshot_path=universe_file,
             max_symbols=max_symbols,
+            expected_feed=f"alpaca:{config.market_data.alpaca_feed}" if feed == "alpaca" else "yfinance",
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     symbol_universe = mining_universe.symbols
-    config = load_config()
     failures = 0
     async with alpha_repository() as repository:
         for research_symbol in symbol_universe:

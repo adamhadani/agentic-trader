@@ -29,7 +29,9 @@ to a bounded discovery run. It accepts only a completed
 preserves the screen's deterministic activity ranking, and records
 `screen:<result-hash>:cap:<n>` in each dataset manifest. The screen measures the
 declared feed (the current 64-name result is IEX activity), not consolidated
-capacity, borrowability or point-in-time historical membership.
+capacity, borrowability or point-in-time historical membership. Mining fails
+closed if the requested Alpaca feed does not equal the screen's feed; yfinance
+cannot consume a source-qualified Alpaca screen.
 
 Example after creating a private snapshot with `alpha universe-snapshot`:
 
