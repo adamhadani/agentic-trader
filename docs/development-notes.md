@@ -1,6 +1,6 @@
 # Development and debugging handoff
 
-Updated **2026-09-18**. Read [CLAUDE.md](../CLAUDE.md), [operations](production.md)
+Updated **2026-09-19**. Read [CLAUDE.md](../CLAUDE.md), [operations](production.md)
 and the [architecture review](architecture-review.md). Detailed workflow contracts
 live in [durable execution](durable-execution.md), [accounting](account-ledger.md)
 and [operational monitoring](operational-monitoring.md).
@@ -51,7 +51,7 @@ version does not establish the installed local server version.
 | External watchdog | Every 60 seconds: process check, readiness incidents and due compaction |
 | Session candidate decisions | 30-second wall-clock polls; fixed SPY/QQQ diagnostic controls, durable per-candle claims; no promotion credit |
 | Session data observer | 30-second wall-clock polls; configured SPY/QQQ 15m captures only within three minutes of observed closes; no scoring/trading |
-| Alpha miner | Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol; no promotion |
+| Alpha miner | Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol; no promotion. Manual `alpha mine --universe snapshot --universe-file ...` supports a verified capped equity cohort. |
 
 Trading scan intervals are not candle-close aligned. The independent
 [forward observer](alpha-forward-observations.md) samples around observed session-bar
@@ -60,6 +60,12 @@ the scheduler timezone. Market sessions use exchange time; DB/log timestamps use
 UTC. Configuration loads at construction and requires restart after external edits.
 The journal-backed alpha registry reloads atomically between scans. Telegram/metrics initialize before immediate jobs; scheduler
 jobs coalesce delays and allow one instance each.
+
+The mining CLI charges each symbol's reserved trial budget before market-data
+acquisition. See [the mining-universe contract](alpha-mining-universe.md) for
+snapshot identity, caps and failure accounting. This keeps the scheduled ETF
+benchmark reproducible while allowing reviewed 32–64-name equity campaigns at
+the top of the funnel.
 
 Never start another daemon, `listen` or Compose stack alongside the installed bot.
 Use a worktree for supervisor changes. Unload watchdog before daemon for maintenance;

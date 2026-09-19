@@ -80,6 +80,39 @@ def test_mining_failure_keeps_raw_evidence_in_existing_journal(monkeypatch):
     asyncio.run(check())
 
 
+def test_mining_reserves_before_provider_io(monkeypatch):
+    events = []
+
+    class Repository:
+        async def snapshot(self):
+            return SimpleNamespace(active=[])
+
+        async def reserve_run(self, *args, **kwargs):
+            events.append("reserve")
+
+        async def record_failure(self, *args, **kwargs):
+            events.append("failure")
+
+    class Context:
+        async def __aenter__(self):
+            return Repository()
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.alpha_repository", lambda: Context())
+
+    def failed(*args, **kwargs):
+        events.append("download")
+        raise ValueError("injected provider failure")
+
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.download_bars", failed)
+    result = CliRunner().invoke(cli, ["alpha", "mine", "--symbol", "SPY", "--iterations", "0"])
+
+    assert result.exit_code != 0
+    assert events == ["reserve", "download", "failure"]
+
+
 def test_diagnostic_command_records_exposure_before_a_failed_evaluation(monkeypatch):
     frame = pd.DataFrame(
         {"Open": [100.0] * 80, "High": [101.0] * 80, "Low": [99.0] * 80, "Close": [100.0] * 80},

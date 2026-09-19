@@ -13,6 +13,7 @@ Python **3.14** · `uv` · SQLAlchemy/Alembic · `alpaca-py` · pytest · Ruff �
 - [Development handoff](docs/development-notes.md) and [assistant instructions](CLAUDE.md).
 - [Architecture review and priorities](docs/architecture-review.md).
 - [Active alpha research roadmap](docs/alpha-roadmap.md).
+- [Alpha mining universe and campaign contract](docs/alpha-mining-universe.md).
 - [Forecast-to-fill tutorial comparison and allocation gaps](docs/forecast-to-fill-review.md).
 - [Entry queue, broker events and outbox](docs/durable-execution.md).
 - [Account activity ledger](docs/account-ledger.md).
@@ -141,6 +142,10 @@ edits require a restart; alpha registry changes load between scans. Allocation
 weights/convex optimization are not yet integrated into live sizing.
 The [alpha pipeline](docs/alpha-pipeline.md) documents causal validation, versioned
 journal-backed promotion, shadow gates and research-only portfolio targets.
+`alpha mine --universe snapshot --universe-file ...` can widen discovery over a
+verified prospective equity cohort; the ETF32 scheduled benchmark remains the
+default until a snapshot campaign is reviewed. Each symbol is journal-reserved
+before provider I/O, so failed acquisitions remain charged evidence.
 Historical YAML metrics do not authorize deployment. The [original review](docs/alpha-stack-review.md)
 and [implementation evidence](docs/alpha-pipeline-implementation.md) separate defects,
 regression verification and actual trading evidence.

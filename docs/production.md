@@ -26,6 +26,9 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
   inherit scheduler/system timezone. Intervals are not candle-close aligned.
 - Alpha miner: Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol,
   5y daily Alpaca data, 120s compute/symbol; no automatic qualification or promotion.
+  Reviewed prospective equity cohorts are available only through the manual,
+  capped `alpha mine --universe snapshot --universe-file ...` path; the scheduled
+  job remains ETF32 until a snapshot campaign is explicitly enrolled.
 
 Scans stage suggestions; an operator approves entry orders. Configuration loads at construction. The journal-backed alpha registry reloads
 atomically between scans; external config edits still require restart.

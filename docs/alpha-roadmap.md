@@ -1,6 +1,6 @@
 # Alpha research roadmap
 
-**Active long-horizon plan — updated 2026-09-18.** This is the canonical alpha work
+**Active long-horizon plan — updated 2026-09-19.** This is the canonical alpha work
 queue. [Pipeline contracts](alpha-pipeline.md) describe current behavior; the
 [architecture review](architecture-review.md) retains broader operational priorities.
 The [original alpha review](alpha-stack-review.md) is historical defect evidence.
@@ -75,10 +75,17 @@ research run or runtime policy change was made for this review.
    Expand forecast breadth toward 150–300 only with bounded resource and dynamic
    membership tests. Historical current-cohort returns grant no qualification.
 4. **Consolidate ongoing campaigns before increasing cadence (S2).** Scheduled
-   `alpha mine` still fetches before reservation and remains ETF32; migrate to the
-   predeclared journal/acquisition boundary. Add an explicit stage/rejection/maturity
-   scoreboard; daily outcomes, bounded discovery and prospective collection serve
-   different purposes. Repeated same-history jobs are not new evidence.
+   `alpha mine` remains the reproducible ETF32 benchmark, while the manual CLI now
+   accepts a verified, capped prospective equity snapshot (`alpha-mining-universe.md`).
+   Every symbol is reserved before provider I/O, so entitlement/timeouts are charged
+   failures. Run a matched 32–64-name IEX campaign next, then add an explicit
+   stage/rejection/maturity scoreboard before scaling to all 300 names. Daily
+   outcomes, bounded discovery and prospective collection serve different purposes;
+   repeated same-history jobs are not new evidence.
+   The first [32-name prospective campaign](alpha-equity-mining-2026-09-19.md)
+   charged all 1,024 reserved trials, completed 30 symbols and found no leader
+   meeting both policy gates. Its short-history/special-share failures make a
+   coverage and liquidity scoreboard the next prerequisite before a 300-name run.
 5. **Complete the portfolio deployment lane when evidence warrants it.** Version
    qualification for the actual forecast/holding policy, observed factor/cost/risk
    inputs and target-to-rounded-order plans. Test pending/partial-fill exposure,
