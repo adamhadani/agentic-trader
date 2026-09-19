@@ -13,6 +13,8 @@ import random
 from agentic_trader.research.alpha.dsl import AlphaDSLSyntaxError, compile_expression
 
 
+# Keep seeds causal and single-series.  Cross-sectional operators belong to the
+# panel language, while these expressions are valid for the per-instrument miner.
 SEED_EXPRESSIONS = (
     "roc(close,5)",
     "ts_residual(close,20)",
@@ -20,8 +22,28 @@ SEED_EXPRESSIONS = (
     "ts_corr(close,volume,10)",
     "ts_slope(close,20)",
     "ts_rank(volume,10)",
+    "zscore(close,20)",
+    "ts_corr(hl_spread,returns,10)",
+    "-open_gap*ts_rank(volume,10)",
+    "zscore(realized_vol(returns,10),20)",
+    "ts_rank(oc_spread,10)",
+    "ts_slope(returns,20)",
 )
 WINDOWS = (3, 5, 8, 10, 14, 20, 30, 60)
+MUTATION_OPERATORS = (
+    "ts_mean",
+    "delta",
+    "ts_rank",
+    "ts_residual",
+    "decay_linear",
+    "zscore",
+    "ts_std",
+    "ts_slope",
+    "ts_mad",
+    "ts_sum",
+    "delay",
+    "ema",
+)
 
 
 def canonical_expression(expression):
@@ -101,7 +123,7 @@ class TypedGeneticSearch:
                 self.rng.choice(windows).value = self.rng.choice(WINDOWS)
                 proposed = ast.unparse(tree)
             else:
-                op = self.rng.choice(("ts_mean", "delta", "ts_rank", "ts_residual", "decay_linear"))
+                op = self.rng.choice(MUTATION_OPERATORS)
                 proposed = f"{op}({expression},{self.rng.choice(WINDOWS)})"
             try:
                 canonical = canonical_expression(proposed)

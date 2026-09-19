@@ -34,6 +34,10 @@ from agentic_trader.research.alpha.validation import ValidationPolicy, frame_dig
 logger = logging.getLogger(__name__)
 
 
+SEARCH_FIELDS = ("close", "volume", "open", "high", "low", "returns", "hl_spread", "oc_spread", "open_gap", "vwap")
+SEARCH_WINDOWS = (3, 5, 8, 10, 14, 20, 30, 60)
+
+
 class AlphaMiner:
     """
     Quantitative Formulaic Alpha Mining & Genetic Search Engine.
@@ -55,12 +59,16 @@ class AlphaMiner:
         self.evaluator = evaluator or AlphaExpressionEvaluator()
         self.catalog = catalog or AlphaCatalog()
 
-    def generate_candidate_expression(self, seed: int | None = None) -> AlphaDefinition:
+    def generate_candidate_expression(
+        self, seed: int | None = None, *, available_fields: set[str] | None = None
+    ) -> AlphaDefinition:
         """Generate a syntactically valid randomized formulaic alpha expression."""
         rng = random.Random(seed) if seed is not None else self.rng
 
-        fields = ["close", "volume", "open", "high", "low", "returns"]
-        lookbacks = [3, 5, 8, 10, 14, 20, 30]
+        fields = [field for field in SEARCH_FIELDS if available_fields is None or field in available_fields]
+        if len(fields) < 2:
+            raise ValueError("At least two causal research fields are required")
+        lookbacks = SEARCH_WINDOWS
 
         f1 = rng.choice(fields)
         f2 = rng.choice(fields)
@@ -111,6 +119,45 @@ class AlphaMiner:
                 "long",
                 0.6,
             ),
+            # Overnight gap reversal, measured only from the prior close.
+            (
+                f"-1.0 * open_gap * ts_rank(volume, {d1})",
+                "Overnight gap reversal conditioned on volume",
+                "bi_directional",
+                0.8,
+            ),
+            # Intraday range and close-to-close return dependence.
+            (
+                f"ts_corr(hl_spread, returns, {d1})",
+                "Range-return dependence",
+                "bi_directional",
+                0.6,
+            ),
+            # Volatility shock, normalized by its own causal history.
+            (
+                f"zscore(realized_vol(returns, {d1}), {d2})",
+                "Realized-volatility shock",
+                "bi_directional",
+                1.0,
+            ),
+            # Open-close spread and participation alignment.
+            (
+                f"ts_rank(oc_spread, {d1}) * ts_rank(volume, {d2})",
+                "Open-close participation alignment",
+                "bi_directional",
+                0.6,
+            ),
+        ]
+
+        # Derived-field templates are only valid when the acquisition supplied
+        # the necessary OHLCV columns.  Keep random discovery fail-closed rather
+        # than spending its budget on expressions that cannot be evaluated.
+        templates = [
+            template
+            for template in templates
+            if set(
+                {field for field in ("volume", "open_gap", "hl_spread", "returns", "oc_spread") if field in template[0]}
+            ).issubset(fields)
         ]
 
         expr, desc, direction, thresh = rng.choice(templates)
@@ -257,6 +304,7 @@ class AlphaMiner:
         folds = purged_folds(len(df), self.policy)
         holdout_start = int(len(df) * (1 - self.policy.holdout_fraction))
         discovery = df.iloc[:holdout_start]
+        available_fields = set(self.evaluator.prepare_data_fields(discovery))
         definitions = (
             [
                 replace(
@@ -301,7 +349,7 @@ class AlphaMiner:
                         )
                     else:
                         definition = replace(
-                            self.generate_candidate_expression(),
+                            self.generate_candidate_expression(available_fields=available_fields),
                             timeframe=timeframe,
                             eligible_symbols=(symbol,) if symbol else None,
                         )

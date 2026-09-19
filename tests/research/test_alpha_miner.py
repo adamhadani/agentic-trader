@@ -44,6 +44,26 @@ def test_generate_candidate_expression():
     assert defn.timeframe == "4h"
 
 
+@pytest.mark.parametrize("seed", range(16))
+def test_generated_candidates_use_only_acquired_causal_fields(synthetic_ohlcv: pd.DataFrame, seed: int):
+    miner = AlphaMiner()
+    available = set(miner.evaluator.prepare_data_fields(synthetic_ohlcv))
+    definition = miner.generate_candidate_expression(seed=seed, available_fields=available)
+
+    assert miner.evaluator.validate(definition.expression)
+    result = miner.evaluator.evaluate(definition.expression, synthetic_ohlcv)
+    assert result.index.equals(synthetic_ohlcv.index)
+    assert definition.expression.count("vwap") == 0
+
+
+def test_generated_candidates_fail_closed_when_derived_fields_are_unavailable():
+    miner = AlphaMiner()
+    definition = miner.generate_candidate_expression(seed=123, available_fields={"close", "volume"})
+
+    assert miner.evaluator.validate(definition.expression)
+    assert all(field not in definition.expression for field in ("open_gap", "hl_spread", "oc_spread", "returns"))
+
+
 def test_evaluate_alpha(synthetic_ohlcv: pd.DataFrame):
     miner = AlphaMiner()
     defn = AlphaDefinition(
