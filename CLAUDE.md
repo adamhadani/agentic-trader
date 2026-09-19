@@ -138,6 +138,11 @@ The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-wh
 The mining funnel now has one canonical cohort resolver. `alpha mine --universe
 snapshot --universe-file SNAPSHOT/snapshot.json --max-symbols N` verifies a
 prospective equity snapshot and records its hash/cap in each manifest. The
+`screen --universe-file SCREEN/result.json --max-symbols N` path consumes a
+completed source-specific liquidity screen and records its result hash/cap,
+preserving the screen's deterministic ranking. The per-symbol DSL includes
+causal volatility-scaled trend, range location, signed-volume, serial-return
+and standardized-slope families; all are research-only and prefix-tested. The
 scheduled ETF32 job remains the benchmark. Each symbol reserves its trial budget
 before provider I/O, preserving charged failure evidence. Read
 [alpha-mining-universe](docs/alpha-mining-universe.md) before widening campaigns;

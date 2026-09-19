@@ -11,7 +11,7 @@ import pandas as pd
 
 from agentic_trader.market.bars import FIXED_BAR_LAYOUT, fixed_bar_closes
 from agentic_trader.research.alpha.catalog import AlphaCatalog
-from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
+from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator, compile_expression
 from agentic_trader.research.alpha.forecasts import ForecastCalibration, ForecastContract
 from agentic_trader.research.alpha.metrics import (
     calculate_cross_strategy_correlations,
@@ -147,17 +147,52 @@ class AlphaMiner:
                 "bi_directional",
                 0.6,
             ),
+            # Scale trend by only the volatility known at the same bar.
+            (
+                f"roc(close, {d1}) / (realized_vol(returns, {d2}) + 1e-6)",
+                "Volatility-scaled trend impulse",
+                "bi_directional",
+                0.6,
+            ),
+            # Where the close sits in the preceding observed range.  High and
+            # low are complete at a bar close; no future extrema are used.
+            (
+                f"(close - ts_min(low, {d1})) / (ts_max(high, {d1}) - ts_min(low, {d1}) + 1e-6)",
+                "Causal range location",
+                "bi_directional",
+                0.6,
+            ),
+            # Directional participation is dimensionless and keeps volume
+            # normalized by its own trailing history.
+            (
+                f"sign(returns) * zscore(volume, {d1})",
+                "Signed volume pressure",
+                "bi_directional",
+                0.6,
+            ),
+            # Short-memory return dependence, with the lagged return observed
+            # before the current close.
+            (
+                f"ts_corr(returns, delay(returns, 1), {d1})",
+                "Serial return dependence",
+                "bi_directional",
+                0.6,
+            ),
+            # Smooth the price slope before standardizing it against its own
+            # causal history; this is distinct from raw displacement.
+            (
+                f"zscore(ts_slope(close, {d1}), {d2})",
+                "Standardized trend slope",
+                "bi_directional",
+                0.6,
+            ),
         ]
 
         # Derived-field templates are only valid when the acquisition supplied
         # the necessary OHLCV columns.  Keep random discovery fail-closed rather
         # than spending its budget on expressions that cannot be evaluated.
         templates = [
-            template
-            for template in templates
-            if set(
-                {field for field in ("volume", "open_gap", "hl_spread", "returns", "oc_spread") if field in template[0]}
-            ).issubset(fields)
+            template for template in templates if compile_expression(template[0]).required_fields.issubset(fields)
         ]
 
         expr, desc, direction, thresh = rng.choice(templates)

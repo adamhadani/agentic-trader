@@ -51,7 +51,7 @@ version does not establish the installed local server version.
 | External watchdog | Every 60 seconds: process check, readiness incidents and due compaction |
 | Session candidate decisions | 30-second wall-clock polls; fixed SPY/QQQ diagnostic controls, durable per-candle claims; no promotion credit |
 | Session data observer | 30-second wall-clock polls; configured SPY/QQQ 15m captures only within three minutes of observed closes; no scoring/trading |
-| Alpha miner | Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol; no promotion. Manual `alpha mine --universe snapshot --universe-file ...` supports a verified capped equity cohort. |
+| Alpha miner | Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol; no promotion. Manual `alpha mine --universe snapshot` supports a verified capped equity cohort, and `--universe screen` consumes a completed source-specific liquidity cohort. |
 
 Trading scan intervals are not candle-close aligned. The independent
 [forward observer](alpha-forward-observations.md) samples around observed session-bar

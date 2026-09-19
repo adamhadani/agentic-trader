@@ -198,11 +198,11 @@ async def alpha_list_cmd():
 @click.option("--iterations", type=click.IntRange(0, 10000), default=25)
 @click.option("--seed", type=int, default=20260916)
 @click.option("--method", type=click.Choice(["random", "genetic"]), default="random")
-@click.option("--universe", type=click.Choice(["explicit", "etf32", "snapshot"]), default="explicit")
+@click.option("--universe", type=click.Choice(["explicit", "etf32", "snapshot", "screen"]), default="explicit")
 @click.option(
     "--universe-file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Immutable prospective equity snapshot JSON (used with --universe snapshot)",
+    help="Immutable prospective snapshot or completed liquidity screen JSON (used with --universe snapshot/screen)",
 )
 @click.option(
     "--max-symbols",

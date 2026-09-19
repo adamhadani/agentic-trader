@@ -28,6 +28,11 @@ SEED_EXPRESSIONS = (
     "zscore(realized_vol(returns,10),20)",
     "ts_rank(oc_spread,10)",
     "ts_slope(returns,20)",
+    "roc(close,10)/(realized_vol(returns,20)+1e-6)",
+    "(close-ts_min(low,20))/(ts_max(high,20)-ts_min(low,20)+1e-6)",
+    "sign(returns)*zscore(volume,20)",
+    "ts_corr(returns,delay(returns,1),10)",
+    "zscore(ts_slope(close,20),10)",
 )
 WINDOWS = (3, 5, 8, 10, 14, 20, 30, 60)
 MUTATION_OPERATORS = (
@@ -57,6 +62,11 @@ class TypedGeneticSearch:
         self.archive_size = archive_size
         self.archive: dict[str, float] = {}
         self.seen: set[str] = set()
+        # Evaluate every declared family once before spending the remaining
+        # budget on mutations/crossovers.  Previously ``ask`` immediately
+        # wrapped a seed in a mutation, so newly added DSL families could be
+        # absent from an otherwise successful genetic campaign.
+        self.seed_queue = [canonical_expression(expression) for expression in SEED_EXPRESSIONS]
         self.crossover_count = 0
         self.mutation_count = 0
 
@@ -134,6 +144,11 @@ class TypedGeneticSearch:
         return self.rng.choice(SEED_EXPRESSIONS)
 
     def ask(self):
+        while self.seed_queue:
+            proposed = self.seed_queue.pop(0)
+            if proposed not in self.seen:
+                self.seen.add(proposed)
+                return proposed
         for _ in range(100):
             parents = sorted(self.archive) or list(SEED_EXPRESSIONS)
             if len(parents) > 1 and self.rng.random() < 0.5:
