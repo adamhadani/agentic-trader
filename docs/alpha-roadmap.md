@@ -86,6 +86,16 @@ research run or runtime policy change was made for this review.
    Add scenario CVaR/hard volatility constraints against measured needs; keep MPC,
    advanced impact/RL search and options/futures later.
 
+6. **Design a paper-probe lane without weakening qualification.** The IEX-native
+   smoke campaign ([record](alpha-iex-mining-2026-09-19.md)) shows that the source
+   contract passes while current candidates fail statistical/economic gates. A
+   paper probe may be useful for testing execution and data alignment, but it must
+   be a separate durable registry status with an explicit paper-account guard,
+   tiny predeclared risk/expiry limits, source-qualified raw Alpaca evidence and
+   `paper_probe` audit/notification tags. Probe outcomes cannot earn shadow,
+   holdout or production promotion credit. Specify and test this boundary before
+   implementing it; do not make `active` depend on the broker being paper.
+
 No threshold was lowered, alpha promoted or trading configuration changed by this
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.
 
