@@ -33,6 +33,7 @@ requests emergency exits. Order acceptance is not a confirmed fill.
 - [Active alpha research roadmap](alpha-roadmap.md).
 - [Alpha mining universe and charged campaign contract](alpha-mining-universe.md).
 - [Prospective equity mining campaign — 2026-09-19](alpha-equity-mining-2026-09-19.md).
+- [Screened equity breadth and DSL coverage — 2026-09-19](alpha-screened-equity-dsl-2026-09-19.md).
 - [Durable entry queue, events and outbox](durable-execution.md).
 - [Alpaca contracts and real transport coverage](alpaca-integration-review.md).
 - [September 15 incident and remediation](incident-2026-09-15.md).

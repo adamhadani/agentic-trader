@@ -86,6 +86,13 @@ research run or runtime policy change was made for this review.
    charged all 1,024 reserved trials, completed 30 symbols and found no leader
    meeting both policy gates. Its short-history/special-share failures make a
    coverage and liquidity scoreboard the next prerequisite before a 300-name run.
+   The completed IEX screen is now consumable directly through
+   `alpha mine --universe screen`, retaining its result hash and deterministic
+   ranking. The [screened breadth/DSL campaign](alpha-screened-equity-dsl-2026-09-19.md)
+   ran 64 names (2,048 trials) and a 16-name seed-coverage rerun (512 trials);
+   neither produced a gate-passing candidate. Genetic discovery now evaluates
+   every declared DSL seed before evolution, so adding causal families widens
+   the funnel without silently spending the budget on mutated variants only.
 5. **Complete the portfolio deployment lane when evidence warrants it.** Version
    qualification for the actual forecast/holding policy, observed factor/cost/risk
    inputs and target-to-rounded-order plans. Test pending/partial-fill exposure,

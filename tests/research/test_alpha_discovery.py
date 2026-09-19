@@ -4,7 +4,7 @@ import pytest
 
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 from agentic_trader.research.alpha.panel import cross_sectional_rank, group_neutralize
-from agentic_trader.research.alpha.search import TypedGeneticSearch
+from agentic_trader.research.alpha.search import SEED_EXPRESSIONS, TypedGeneticSearch, canonical_expression
 from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 
 
@@ -19,13 +19,25 @@ from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
         "clip(zscore(close, 20), -2, 2)",
         "ts_sum(close*volume,10)",
         "open_gap",
+        "roc(close,10)/(realized_vol(returns,20)+1e-6)",
+        "(close-ts_min(low,20))/(ts_max(high,20)-ts_min(low,20)+1e-6)",
+        "sign(returns)*zscore(volume,20)",
+        "ts_corr(returns,delay(returns,1),10)",
+        "zscore(ts_slope(close,20),10)",
     ],
 )
 def test_extended_operators_are_causal(expression):
     rng = np.random.default_rng(19)
     close = 100 + rng.normal(size=100).cumsum()
     frame = pd.DataFrame(
-        {"open": close + 0.2, "close": close, "volume": 1000}, index=pd.date_range("2025-01-01", periods=100)
+        {
+            "open": close + 0.2,
+            "high": close + 0.8,
+            "low": close - 0.8,
+            "close": close,
+            "volume": 1000 + rng.integers(0, 100, 100),
+        },
+        index=pd.date_range("2025-01-01", periods=100),
     )
     evaluator = AlphaExpressionEvaluator()
     full = evaluator.evaluate(expression, frame)
@@ -48,6 +60,15 @@ def test_genetic_search_is_seeded_bounded_and_actually_crosses_parents():
     child = first.crossover("ts_mean(delta(close,3),10)", "ts_mean(delta(open,5),20)")
     assert AlphaExpressionEvaluator().validate(child)
     assert first.crossover_count > 0
+
+
+def test_genetic_search_evaluates_each_declared_seed_before_evolution():
+    search = TypedGeneticSearch(seed=23)
+
+    proposals = [search.ask() for _ in SEED_EXPRESSIONS]
+
+    assert {canonical_expression(p) for p in proposals} == {canonical_expression(p) for p in SEED_EXPRESSIONS}
+    assert search.mutation_count == 0
 
 
 def test_panel_rank_is_cross_sectional_and_label_aligned():
