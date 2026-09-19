@@ -46,6 +46,7 @@ from agentic_trader.research.alpha.forecasts import CombinedForecast, ForecastCo
 from agentic_trader.research.alpha.lifetime_artifacts import execute_lifetime_study
 from agentic_trader.research.alpha.lifetime_attribution import LifetimeAttributionProtocol
 from agentic_trader.research.alpha.miner import AlphaMiner
+from agentic_trader.research.alpha.mining_universe import resolve_mining_universe
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.panel_study import (
     PanelStudyPlan,
@@ -68,7 +69,6 @@ from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, TimedAl
 from agentic_trader.research.alpha.study import StudyProtocol, StudyStatus
 from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
-from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_volume_study
 from agentic_trader.runtime import runtime_identity, state_directory
@@ -144,6 +144,19 @@ def download_bars(symbol, lookback, interval, *, feed="yfinance", config=None):
     return completed_fixed_bars(frame, interval)
 
 
+def _research_failure_code(exc: Exception) -> str:
+    """Persist a useful, non-sensitive reason code in the research journal."""
+    if isinstance(exc, BarAcquisitionError):
+        return "bar_acquisition_failed"
+    if isinstance(exc, ValueError) and str(exc) == "Insufficient data for predeclared purged validation folds":
+        return "insufficient_validation_history"
+    if isinstance(exc, ValueError):
+        return "validation_or_discovery_failed"
+    if isinstance(exc, OSError):
+        return "research_io_failed"
+    return "research_worker_failed"
+
+
 @click.group("alpha", help="Causal formula research and journal-backed promotion")
 def alpha_group():
     pass
@@ -185,7 +198,17 @@ async def alpha_list_cmd():
 @click.option("--iterations", type=click.IntRange(0, 10000), default=25)
 @click.option("--seed", type=int, default=20260916)
 @click.option("--method", type=click.Choice(["random", "genetic"]), default="random")
-@click.option("--universe", type=click.Choice(["explicit", "etf32"]), default="explicit")
+@click.option("--universe", type=click.Choice(["explicit", "etf32", "snapshot"]), default="explicit")
+@click.option(
+    "--universe-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Immutable prospective equity snapshot JSON (used with --universe snapshot)",
+)
+@click.option(
+    "--max-symbols",
+    type=click.IntRange(min=1, max=500),
+    help="Bound the selected cohort while retaining its deterministic order",
+)
 @click.option("--feed", type=click.Choice(["yfinance", "alpaca"]), default="yfinance")
 @click.option(
     "--max-seconds",
@@ -197,21 +220,51 @@ async def alpha_list_cmd():
 @click.option("--min-dsr", type=click.FloatRange(0, 1), default=0.95)
 @coro
 async def alpha_mine_cmd(
-    symbol, symbols, lookback, interval, iterations, seed, min_sharpe, min_dsr, method, universe, feed, max_seconds
+    symbol,
+    symbols,
+    lookback,
+    interval,
+    iterations,
+    seed,
+    min_sharpe,
+    min_dsr,
+    method,
+    universe,
+    universe_file,
+    max_symbols,
+    feed,
+    max_seconds,
 ):
     """Persist every trial. Mining never consumes holdout or promotes an alpha."""
-    symbol_universe = (
-        ETF_RESEARCH_UNIVERSE.symbols
-        if universe == "etf32"
-        else tuple(sorted({s.strip().upper() for s in (symbols or symbol).split(",") if s.strip()}))
-    )
+    try:
+        mining_universe = await asyncio.to_thread(
+            resolve_mining_universe,
+            universe=universe,
+            symbol=symbol,
+            symbols=symbols,
+            snapshot_path=universe_file,
+            max_symbols=max_symbols,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    symbol_universe = mining_universe.symbols
     config = load_config()
     failures = 0
     async with alpha_repository() as repository:
         for research_symbol in symbol_universe:
             snapshot = await repository.snapshot()
             run_id = uuid4().hex
+            miner = AlphaMiner(seed=seed)
             try:
+                # Charge the immutable attempt before provider I/O.  A timeout,
+                # entitlement failure or process crash must remain visible in the
+                # journal rather than becoming an uncharged missing experiment.
+                await repository.reserve_run(
+                    run_id,
+                    symbol=research_symbol,
+                    timeframe=interval,
+                    trials=iterations + len(miner.catalog.list_alphas()),
+                )
                 frame = await asyncio.to_thread(
                     download_bars, research_symbol, lookback, interval, feed=feed, config=config
                 )
@@ -221,18 +274,9 @@ async def alpha_mine_cmd(
                     timeframe=interval,
                     feed="yfinance" if feed == "yfinance" else f"alpaca:{config.market_data.alpaca_feed}",
                     adjustment="raw",
-                    universe_version=ETF_RESEARCH_UNIVERSE.version_id
-                    if universe == "etf32"
-                    else "explicit:" + ",".join(symbol_universe),
+                    universe_version=mining_universe.version,
                 )
                 path = await asyncio.to_thread(save_dataset, frame, artifact_directory(), manifest.content_hash)
-                miner = AlphaMiner(seed=seed)
-                await repository.reserve_run(
-                    run_id,
-                    symbol=research_symbol,
-                    timeframe=interval,
-                    trials=iterations + len(miner.catalog.list_alphas()),
-                )
                 candidates = await asyncio.to_thread(
                     miner.mine,
                     frame,
@@ -270,7 +314,7 @@ async def alpha_mine_cmd(
                     run_id,
                     symbol=research_symbol,
                     timeframe=interval,
-                    error=f"{type(exc).__name__}: data_or_discovery_failed",
+                    error=f"{type(exc).__name__}: {_research_failure_code(exc)}",
                     evidence=exc.evidence if isinstance(exc, BarAcquisitionError) else None,
                 )
                 click.echo(f"{research_symbol}: failed ({type(exc).__name__}); rejection persisted", err=True)

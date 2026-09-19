@@ -135,6 +135,14 @@ its strict expected failures have become passing regression tests.
 
 The [active alpha roadmap](docs/alpha-roadmap.md#current-priorities-after-the-whole-stack-survey) owns the ordered long-horizon plan. Read the [September 18 whole-stack survey](docs/alpha-stack-survey-2026-09-18.md) before further risk or mining changes. Account drawdown and [broker entry capacity](docs/entry-capacity.md) now share the existing FIFO/ledger boundaries: funding, borrowing, exact protection, observed-equity sizing and aggregate planned stop risk are rechecked before submission. Pre-reservation research acquisition, horizon-aligned gate calibration and measured portfolio volatility/tail constraints remain research priorities. The [800-search result](docs/alpha-power-diagnosis-2026-09-18.md) identifies GTC entry conversion and joint-gate power losses; distinguish it from the separately delivered [factor results](docs/alpha-factor-controls-2026-09-18.md). The convex allocator remains shadow-only. Update milestones and evidence when completing work.
 
+The mining funnel now has one canonical cohort resolver. `alpha mine --universe
+snapshot --universe-file SNAPSHOT/snapshot.json --max-symbols N` verifies a
+prospective equity snapshot and records its hash/cap in each manifest. The
+scheduled ETF32 job remains the benchmark. Each symbol reserves its trial budget
+before provider I/O, preserving charged failure evidence. Read
+[alpha-mining-universe](docs/alpha-mining-universe.md) before widening campaigns;
+current membership does not create point-in-time historical eligibility.
+
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
 now bound traded notional, reject pending inventory, require matching forecast/risk
