@@ -61,7 +61,7 @@ def _load_snapshot(path: Path, *, observed_at: datetime) -> tuple[tuple[str, ...
     return symbols, str(snapshot_id)
 
 
-def _load_liquidity_screen(path: Path) -> tuple[tuple[str, ...], str]:
+def _load_liquidity_screen(path: Path) -> tuple[tuple[str, ...], str, str]:
     """Load only a completed, source-qualified liquidity selection.
 
     The screen result is a research cohort identity, not a new eligibility
@@ -74,6 +74,7 @@ def _load_liquidity_screen(path: Path) -> tuple[tuple[str, ...], str]:
     except (OSError, ValueError) as exc:
         raise ValueError(f"Unable to read liquidity screen: {path}") from exc
     selected = result.get("selected")
+    source_feed = result.get("feed")
     if (
         result.get("version") != "equity_liquidity_screen_v1"
         or result.get("status") != "completed"
@@ -82,6 +83,7 @@ def _load_liquidity_screen(path: Path) -> tuple[tuple[str, ...], str]:
         or result.get("point_in_time_historical_membership") is not False
         or result.get("common_stock_classification") is not False
         or result.get("market_capacity_estimate") is not False
+        or source_feed not in {"alpaca:iex", "alpaca:sip"}
         or not isinstance(selected, list)
         or not 1 <= len(selected) <= MAX_MINING_SYMBOLS
         or result.get("selected_count") != len(selected)
@@ -107,7 +109,7 @@ def _load_liquidity_screen(path: Path) -> tuple[tuple[str, ...], str]:
         raise ValueError("Liquidity screen selection must contain unique uppercase symbols and asset identities")
     # The screen itself is already deterministically ranked. Preserve that
     # order when a cap is requested; re-sorting would change the frozen cohort.
-    return symbols, document_hash(result)
+    return symbols, document_hash(result), source_feed
 
 
 def resolve_mining_universe(
@@ -118,6 +120,7 @@ def resolve_mining_universe(
     snapshot_path: Path | None = None,
     max_symbols: int | None = None,
     observed_at: datetime | None = None,
+    expected_feed: str | None = None,
 ) -> MiningUniverse:
     """Resolve one explicit, ETF, or prospective-snapshot mining cohort.
 
@@ -139,7 +142,9 @@ def resolve_mining_universe(
             selected, source_id = _load_snapshot(snapshot_path, observed_at=observed_at or datetime.now(UTC))
             version_prefix = "snapshot"
         else:
-            selected, source_id = _load_liquidity_screen(snapshot_path)
+            selected, source_id, screen_feed = _load_liquidity_screen(snapshot_path)
+            if expected_feed is not None and screen_feed != expected_feed:
+                raise ValueError(f"Liquidity screen feed {screen_feed} does not match requested feed {expected_feed}")
             version_prefix = "screen"
         selected = selected if max_symbols is None else selected[:max_symbols]
         return MiningUniverse(

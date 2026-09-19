@@ -81,6 +81,7 @@ def test_screen_universe_preserves_screen_identity_and_order(tmp_path):
         "point_in_time_historical_membership": False,
         "common_stock_classification": False,
         "market_capacity_estimate": False,
+        "feed": "alpaca:iex",
         "selected_count": 2,
         "selected": [
             {"asset_id": "00000000-0000-0000-0000-000000000001", "symbol": "AAA"},
@@ -90,7 +91,7 @@ def test_screen_universe_preserves_screen_identity_and_order(tmp_path):
     path = tmp_path / "screen.json"
     path.write_text(json.dumps(screen))
 
-    result = resolve_mining_universe(universe="screen", snapshot_path=path, max_symbols=2)
+    result = resolve_mining_universe(universe="screen", snapshot_path=path, max_symbols=2, expected_feed="alpaca:iex")
 
     assert result.name == "screened_equity_cohort"
     assert result.symbols == ("AAA", "BBB")
@@ -103,3 +104,23 @@ def test_screen_universe_rejects_incomplete_result(tmp_path):
 
     with pytest.raises(ValueError, match="incomplete"):
         resolve_mining_universe(universe="screen", snapshot_path=path)
+
+
+def test_screen_universe_rejects_feed_mismatch(tmp_path):
+    screen = {
+        "version": "equity_liquidity_screen_v1",
+        "status": "completed",
+        "selection_available": True,
+        "authorizes_promotion": False,
+        "point_in_time_historical_membership": False,
+        "common_stock_classification": False,
+        "market_capacity_estimate": False,
+        "feed": "alpaca:iex",
+        "selected_count": 1,
+        "selected": [{"asset_id": "00000000-0000-0000-0000-000000000001", "symbol": "AAA"}],
+    }
+    path = tmp_path / "screen.json"
+    path.write_text(json.dumps(screen))
+
+    with pytest.raises(ValueError, match="does not match"):
+        resolve_mining_universe(universe="screen", snapshot_path=path, expected_feed="alpaca:sip")
