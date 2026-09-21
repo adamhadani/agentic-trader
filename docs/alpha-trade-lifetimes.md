@@ -120,7 +120,9 @@ After deploying this change the operator must run
 `--entry-policy gtc`; otherwise the scheduled ETF32 benchmark would silently adopt
 the new `session` default for daily mining.
 
-**Known limits.** The journaled RUN/manifest record now also carries the requested
+## Known limits
+
+The journaled RUN/manifest record now also carries the requested
 `entry_policy` (`"session"` or `"gtc"`) at run level; each trial's persisted
 `definition` (`execution`/`semantics_version`) and its `evidence.execution_model`
 label (`gtc_limit_conservative_brackets_v2` or `session_limit_conservative_brackets_v1`)

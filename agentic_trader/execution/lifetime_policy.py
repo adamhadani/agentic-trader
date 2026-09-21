@@ -8,9 +8,11 @@ MAX_TRADE_LIFETIME_SECONDS = int(timedelta(days=31).total_seconds())
 TRADE_LIFETIME_VERSION = "elapsed_utc_v1"
 TRADE_LIFETIME_VERSION_INDEPENDENT = "elapsed_utc_v2"
 
-# One regular trading session. Research stamps a daily order at its New York midnight
-# label and live stamps it at submission inside 09:30-16:00; +16 h expires both before
-# the next session can fill them. 86,400 would give a live order two partial sessions.
+# One regular trading session. Research stamps a daily order at its entry bar's label, and
+# validate_sampling guarantees consecutive daily labels are at least 24 h apart, so label + 16 h
+# always expires before the next bar's fill check. Live stamps the order at submission inside
+# 09:30-16:00 New York, so + 16 h expires before the next open. 86,400 would give a live order
+# two partial sessions; anything under 23,400 would not survive its own session.
 DAILY_ENTRY_LIFETIME_SECONDS = 57_600
 
 
