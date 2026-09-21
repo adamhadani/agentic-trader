@@ -1676,7 +1676,15 @@ class TradingCopilot:
         """Format the compact registry and forward-evidence summary for Telegram /alphas."""
 
         snapshot, evidence = await load_forward_evidence(self.alpha_repository)
-        return TelegramHtmlFormatter.format_alphas_dashboard_html(snapshot, evidence=evidence)
+        probes: list[dict] | None = None
+        try:
+            probes = await self.alpha_repository.probe_report()
+        except Exception:
+            logger.exception(
+                "Paper-probe forward report failed; rendering dashboard without probe detail",
+                extra={"event": "probe_report_failed"},
+            )
+        return TelegramHtmlFormatter.format_alphas_dashboard_html(snapshot, evidence=evidence, probes=probes)
 
     async def broadcast_macro_briefing(self) -> None:
         """Broadcast morning macro intelligence card to Telegram."""

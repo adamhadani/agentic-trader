@@ -211,9 +211,18 @@ Probe candidates are risk-capped to `AlphaPipelineConfig.probe_risk_dollars`
 one share's risk blocks the signal rather than rounding up. Telegram entry and
 exit cards for probe signals are tagged `🧪 PAPER PROBE`; an unreadable exit-card
 tag fails open (untagged, with a warning) rather than blocking a close. Probes
-earn no shadow, holdout or promotion credit. `/perf` is unchanged; `alpha
-status` and `/alphas` show the separate probe forward record (term remaining,
-trades, cumulative R, kill distance).
+earn no shadow, holdout or promotion credit. `/perf` is unchanged.
+
+`AlphaRepository.probe_report(*, now=None)` adds two computed fields to each raw
+enrolment/forward row: `days_remaining` (days until `expires_at`, floored at
+`0.0`) and `kill_distance_r` (`cumulative_r - kill_r`; `0` or negative means
+killed). `copilot alpha list` appends `| expires <expires_at>` to probe rows.
+`copilot alpha status` includes the full `probe_report()` array under
+`"probes"` in its JSON output. `/alphas` renders one line per **live** probe —
+`• <alpha_id> (<symbols>) — <days_remaining>d left · <trades> trades ·
+<cumulative_r>R · <kill_distance_r>R to kill` — from that same call; if the
+report fails, the error is logged and the dashboard still renders without the
+probe detail lines.
 
 ## Multiple alphas and portfolio constraints
 

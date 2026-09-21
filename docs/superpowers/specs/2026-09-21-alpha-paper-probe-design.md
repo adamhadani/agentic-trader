@@ -180,12 +180,21 @@ contribute nothing; they neither kill nor protect a probe. Killed means
 - `copilot alpha probe <version_id> --generation N [--days 90] [--renew]`.
   On refusal it prints every failed `ProbePolicy` criterion with observed value and
   threshold.
-- `copilot alpha list` shows `probe` with expiry; `alpha status` and `/alphas` add a
-  probe section: term remaining, trades, cumulative R, kill distance.
+- `probe_report(*, now=None)` (`storage/alpha.py`) adds two computed fields to each
+  raw enrolment/forward row: `days_remaining` (days until `expires_at`, floored at
+  `0.0`) and `kill_distance_r` (`cumulative_r - kill_r`; `0` or negative means
+  killed).
+- `copilot alpha list` shows `probe` rows with `| expires <expires_at>` appended.
+  `copilot alpha status` includes the full `probe_report()` array verbatim (every
+  field above) under `"probes"` in its JSON output. `/alphas` renders one line per
+  **live** probe — `• <alpha_id> (<symbols>) — <days_remaining>d left ·
+  <trades> trades · <cumulative_r>R · <kill_distance_r>R to kill` — built from the
+  same `probe_report()` call; a report failure is logged and the dashboard still
+  renders without the probe detail lines.
 - Telegram entry cards for probe signals are titled `🧪 PAPER PROBE` and state the
   risk cap. Exit cards carry the same tag. `/perf` is unchanged in this version;
-  the probe forward record in `alpha status` and `/alphas` is the separate view of
-  probe outcomes.
+  `alpha status` and `/alphas` are the separate views of probe outcomes described
+  above.
 - Enrolment, renewal, expiry and kill each emit one durable outbox notice in the
   same transaction as the state change.
 

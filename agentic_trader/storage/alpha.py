@@ -471,6 +471,7 @@ class AlphaRepository:
                     datetime.fromisoformat(enrolment["first_enrolled_at"]),
                     self.probe_policy,
                 )
+                expires_at = datetime.fromisoformat(enrolment["expires_at"])
                 report.append(
                     {
                         "version_id": version_id,
@@ -481,6 +482,8 @@ class AlphaRepository:
                         "live": reason is None,
                         "blocked_reason": reason,
                         "forward": forward,
+                        "days_remaining": round(max(0.0, (expires_at - now).total_seconds() / 86400), 1),
+                        "kill_distance_r": round(forward["cumulative_r"] - forward["kill_r"], 2),
                     }
                 )
             return report

@@ -126,14 +126,15 @@ research run or runtime policy change was made for this review.
    GTC limit entries were measured to fill mainly when the forecast is wrong,
    an adverse-selection bias that a probe's forward record cannot distinguish
    from genuine edge.
-7. **Advisory exit cards (A2, approved September 21).** The engine proposes
+7. **Advisory exit cards (A2, approved September 21).** The engine will propose
    Close/Keep when the reason to hold goes away: the owning alpha is demoted, its
    probe expires or is killed, or (later) the allocator's target reaches zero. The
-   bracket's target and stop remain the default exit. Close routes only through
-   `PositionCloseService` (exclusive intent, exact bracket-leg cancellation, submit
-   once); Keep is a no-op. Full closes only. Signal-driven exits are a strategy
-   rule: they must be versioned in the execution policy and mined under it, and are
-   deferred until the entry-expiry confirmation run.
+   bracket's target and stop will remain the default exit. Close will route only
+   through `PositionCloseService` (exclusive intent, exact bracket-leg
+   cancellation, submit once); Keep will be a no-op. Full closes only. Signal-driven
+   exits are a strategy rule: they must be versioned in the execution policy and
+   mined under it, and are deferred until the entry-expiry confirmation run. Not
+   yet implemented.
 
 No threshold was lowered, alpha promoted or trading configuration changed by this
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.

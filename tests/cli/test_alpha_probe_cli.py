@@ -61,6 +61,8 @@ def test_probe_command_enrols_and_lists(tmp_path, monkeypatch):
     assert "paper probe" in result.output.lower() and "generation 1" in result.output
     listing = runner.invoke(cli, ["alpha", "list"])
     assert f"{definition.version_id} | probe" in listing.output
+    matched = next(line for line in listing.output.splitlines() if definition.version_id in line)
+    assert " | expires " in matched
 
 
 def test_probe_command_reports_each_unmet_criterion(tmp_path, monkeypatch):

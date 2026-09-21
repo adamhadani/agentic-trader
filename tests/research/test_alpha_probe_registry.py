@@ -348,3 +348,23 @@ async def test_retiring_a_probe_leaves_its_open_position_untouched(db, repositor
     async with db.session_factory() as session:
         row = await session.get(SignalRecord, sid)
         assert (row.status, row.broker_order_id, row.stop_loss, row.take_profit) == before
+
+
+async def test_probe_report_computes_days_remaining_and_kill_distance(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=30, now=NOW)
+    for _ in range(2):
+        await close_trade(db, definition, -100.0, when=NOW + timedelta(days=1))
+    report = await repository.probe_report(now=NOW + timedelta(days=10))
+    row = report[0]
+    assert row["days_remaining"] == 20.0
+    assert row["kill_distance_r"] == 2.0
+
+
+async def test_probe_report_days_remaining_floors_at_zero_once_expired(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=1, now=NOW)
+    report = await repository.probe_report(now=NOW + timedelta(days=5))
+    assert report[0]["days_remaining"] == 0.0

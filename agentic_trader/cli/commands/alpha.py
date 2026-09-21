@@ -189,9 +189,12 @@ async def alpha_list_cmd():
                 if definition.version_id in shadow
                 else "inactive"
             )
-            click.echo(
-                f"{definition.alpha_id} {definition.version_id} | {status} | {definition.timeframe} | {','.join(definition.eligible_symbols or ()) or 'unqualified universe'}"
-            )
+            line = f"{definition.alpha_id} {definition.version_id} | {status} | {definition.timeframe} | {','.join(definition.eligible_symbols or ()) or 'unqualified universe'}"
+            if status == "probe":
+                record = await repository.get(f"probe/{definition.version_id}")
+                if record:
+                    line += f" | expires {record['expires_at']}"
+            click.echo(line)
 
 
 @alpha_group.command("mine")

@@ -277,8 +277,10 @@ qualified-or-not version into a time-boxed, risk-capped Alpaca-paper-only trial,
 applying `ProbePolicy` to its stored qualification decision; `--days` defaults to
 `alpha_pipeline.probe_term_days` and `--renew` extends a current, unkilled probe
 from now. It consumes no holdout and charges no trial, earns no shadow or
-promotion credit, and refuses outside the Alpaca paper scope. See
-[paper probes](alpha-pipeline.md#paper-probes).
+promotion credit, and refuses outside the Alpaca paper scope. `alpha list` shows
+`probe` rows with their expiry appended; `alpha status` and `/alphas` show each
+live probe's days remaining, trade count, cumulative R and distance to the kill
+rule. See [paper probes](alpha-pipeline.md#paper-probes).
 
 `calibrate` is synthetic-only, with no runtime config, DB or network access. It writes
 a private report, never promotion evidence. Explicit family count/variance parameters
