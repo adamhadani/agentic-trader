@@ -1,6 +1,6 @@
 # Alpha lifetime attribution: proposed design
 
-**Status — September 18, 2026: contract implemented; experiment not frozen.** The
+**Status — September 21, 2026: mechanistic run complete ([result](alpha-lifetime-attribution-2026-09-21.md)); the confirmatory full-policy endpoint below is not yet implemented or evaluated.** Earlier status — September 18, 2026: contract implemented; experiment not frozen. The
 shared independent lifetime policy (`elapsed_utc_v2`), diagnostic fixed-daily clock
 (`fixed_daily_v1`), and pure paired P0/P1/P2 replay harness are implemented and
 covered by focused tests. No executable protocol, fresh seed, family snapshot or
