@@ -333,8 +333,11 @@ class AlphaMiner:
         All trials, including failures, are retained in last_run for journal persistence.
         Relaxing display gates changes discovery output, never promotion policy.
         """
-        if isinstance(execution, TimedAlphaExecutionPolicy) and timeframe != "1d":
-            raise ValueError("Session-bounded entries require native daily bars")
+        if isinstance(execution, TimedAlphaExecutionPolicy):
+            if timeframe != "1d":
+                raise ValueError("Session-bounded entries require native daily bars")
+            if getattr(df.index, "tz", None) is None:
+                raise ValueError("Session-bounded entries require a timezone-aware bar index")
         validate_sampling(df, timeframe)
         if method not in ("random", "genetic"):
             raise ValueError("Unknown discovery method")

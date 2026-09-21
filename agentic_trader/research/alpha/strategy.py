@@ -7,6 +7,7 @@ observations, never fabricated backtest promises.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
@@ -83,10 +84,15 @@ def execution_policy_from_dict(document: dict) -> AlphaExecutionPolicy:
 
 
 def session_entry_policy(base: AlphaExecutionPolicy | None = None) -> TimedAlphaExecutionPolicy:
-    """Bracket economics of ``base`` with a one-session resting entry and no holding deadline."""
-    fields = (base or AlphaExecutionPolicy()).to_dict()
-    fields.pop("lifetime", None)
-    return TimedAlphaExecutionPolicy(**fields, lifetime=daily_entry_lifetime())
+    """Bracket economics of ``base`` with a one-session resting entry and no holding deadline.
+
+    Reads ``base``'s own attributes directly rather than round-tripping through
+    ``to_dict()``/``asdict()``, which recurses into nested dataclasses (``lifetime``)
+    and would silently hand a future nested-dataclass field back as a plain dict.
+    """
+    policy = base or AlphaExecutionPolicy()
+    values = {f.name: getattr(policy, f.name) for f in dataclasses.fields(AlphaExecutionPolicy)}
+    return TimedAlphaExecutionPolicy(**values, lifetime=daily_entry_lifetime())
 
 
 def normalize_scores(raw: pd.Series, window: int = NORMALIZATION_WINDOW) -> pd.Series:

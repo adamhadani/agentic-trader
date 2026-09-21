@@ -106,3 +106,13 @@ def test_intraday_mining_rejects_the_daily_policy(frame):
     miner = AlphaMiner(seed=5, catalog=study_catalog(), policy=ValidationPolicy())
     with pytest.raises(ValueError, match="native daily"):
         miner.mine(intraday, iterations=1, timeframe="4h", execution=session_entry_policy())
+
+
+def test_session_bounded_mining_rejects_a_naive_index_before_charging_any_trial(frame):
+    naive = frame.copy()
+    naive.index = naive.index.tz_localize(None)
+    naive.attrs.update(frame.attrs)
+    miner = AlphaMiner(seed=5, catalog=study_catalog(), policy=ValidationPolicy())
+    with pytest.raises(ValueError, match="timezone-aware bar index"):
+        miner.mine(naive, iterations=3, symbol="SYNTH", execution=session_entry_policy(), max_seconds=60)
+    assert miner.last_run == {}
