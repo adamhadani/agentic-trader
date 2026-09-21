@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
+from agentic_trader.constants import SignalStatus
 from agentic_trader.execution.durable import EventKind, WorkKind
 from agentic_trader.research.alpha.probe import policy_document
 from agentic_trader.research.alpha.validation import ValidationPolicy
@@ -319,3 +320,31 @@ async def test_demote_removes_a_probe(repository):
     await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
     await repository.demote(definition.version_id, actor="op", expected_generation=1)
     assert not (await repository.snapshot(now=NOW)).probe
+
+
+async def test_retiring_a_probe_leaves_its_open_position_untouched(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=1, now=NOW)
+    sid = await db.record_signal(
+        "AAPL",
+        definition.alpha_id,
+        "LONG",
+        100,
+        98,
+        104,
+        100.0,
+        asset_class="EQUITY",
+        quantity=1,
+        timeframe="1d",
+        alpha_version=definition.version_id,
+        alpha_policy=definition.execution.to_dict(),
+    )
+    async with db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, sid)
+        row.status, row.broker_order_id = SignalStatus.EXECUTED, "entry-1"
+        before = (row.status, row.broker_order_id, row.stop_loss, row.take_profit)
+    await repository.sweep_probes(now=NOW + timedelta(days=2))
+    async with db.session_factory() as session:
+        row = await session.get(SignalRecord, sid)
+        assert (row.status, row.broker_order_id, row.stop_loss, row.take_profit) == before
