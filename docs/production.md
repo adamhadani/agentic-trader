@@ -129,6 +129,10 @@ production signals merely to check connectivity.
    verify `/healthz`, recent reconciliation, Alpaca paper account access, Telegram
    bot identity/command registration, and the shared position report.
 
+Notifications enqueued by this revision carry a `probe_risk_cap` argument, so
+rolling BACK to an earlier revision with such a notice still queued would
+dead-letter it; drain or inspect `copilot db outbox` before a rollback.
+
 Do not restore old code against a newer schema without checking compatibility.
 Quarantined records can be reviewed/restored with an audited migration; they were
 not deleted. Keep broker-held protective orders in place during a daemon restart.

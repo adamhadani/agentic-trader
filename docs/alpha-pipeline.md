@@ -183,10 +183,12 @@ qualification criteria; it consumes no holdout and charges no trial.
 
 `probe → active` is deliberately absent: a probe that performs well keeps
 trading by renewal (`--renew`); `active` is reached only through the unchanged
-qualification/shadow gates above. A version is in at most one of `active`,
-`shadow`, `probe`. A probe is retired to `inactive` by expiry, by its kill rule
-(cumulative realized R at or below `kill_r`, measured from its first
-enrolment), or by `alpha demote`; a killed version is terminal — neither
+qualification/shadow gates above. `active → probe` is absent too: enrolling a
+version whose `alpha_id` is already active is refused, so demote it first rather
+than have the supersession loop quietly retire a live alpha. A version is in at
+most one of `active`, `shadow`, `probe`. A probe is retired to `inactive` by
+expiry, by its kill rule (cumulative realized R at or below `kill_r`, measured
+from its first enrolment), or by `alpha demote`; a killed version is terminal — neither
 renewal nor fresh enrolment is accepted for that version identity. Leaving
 `probe` never touches the broker: an open position keeps its broker-held
 bracket and closes normally through `PositionCloseService`.
@@ -201,6 +203,27 @@ bracket and closes normally through `PositionCloseService`.
 | `min_holdout_trades` | `5` | Closed holdout trades |
 | `max_term_days` | `180` | Upper bound for `--days` |
 | `kill_r` | `-4.0` | Cumulative realized R at which a probe stops signalling |
+
+Renewal increments `renewals` and keeps `first_enrolled_at`. A fresh enrolment
+after a term lapses resets `renewals` to `0` but inherits the original
+`first_enrolled_at`, so letting a probe expire does not reset its forward record
+or its distance from the kill rule.
+
+Enrolment and renewal each enqueue one durable Telegram notice in the same
+transaction as the registry change — naming the alpha, actor, symbols, expiry and
+configured risk cap — as retirement already does; a refused enrolment rolls back
+and sends nothing. The enrolment record also pins `limits` (`max_probes`,
+`probe_risk_dollars`) as evidence of the configuration in force. Those pinned
+limits are evidence only: they sit outside `policy`, so they do not participate
+in the liveness identity check, and the risk cap is enforced at sizing time.
+Making the pinned cap an admission invariant is a recorded follow-up.
+
+A probe whose liveness cannot be evaluated — unreadable or incomplete enrolment
+evidence — is logged and treated as not live: it never scans, never admits an
+entry, and is never retired by the sweep on that evidence alone. One such probe
+does not hide the rest of the registry: `snapshot()` and `probe_report()` return
+the remaining probes, and `probe_report()` reports the bad one as a blocked row
+with null computed fields.
 
 Enrolment also requires an unclocked native-daily definition, an explicit
 Alpaca IEX/SIP deployment feed, an explicit symbol universe, and no unexpired

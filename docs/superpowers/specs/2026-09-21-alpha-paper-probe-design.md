@@ -53,6 +53,11 @@ stateDiagram-v2
     shadow --> inactive: alpha demote
 ```
 
+`active → probe` is absent as deliberately as `probe → active`: enrolling a
+version whose `alpha_id` is in `registry["active"]` is refused ("Alpha is active;
+demote it before enrolling a paper probe") rather than silently demoting the live
+alpha through the supersession loop. Demote it first.
+
 Every state has an exit, and no transition depends on in-memory state:
 
 | State | Produces orders | Exits |
@@ -123,7 +128,21 @@ bootstrap, Rank IC, and the shadow-session wait.
   term_days, renewals}` and the registry in one transaction, appending the usual
   `ALPHA_REGISTRY` event.
 - Renewal is the same call with `renew=True`: requires current membership, a policy
-  identity equal to the current `ProbePolicy`, and an unkilled forward record.
+  identity equal to the current `ProbePolicy`, and an unkilled forward record. It
+  increments `renewals` and keeps `first_enrolled_at`. A **fresh** enrolment after
+  expiry resets `renewals` to `0` but still inherits the original
+  `first_enrolled_at`, so the forward record and the kill rule are not reset by
+  letting a term lapse.
+- The enrolment record also pins `limits` (`max_probes`, `probe_risk_dollars`) as
+  evidence of the operator configuration in force. It sits outside `policy` so it
+  cannot affect the liveness identity check. Enforcing the pinned risk cap as an
+  admission invariant is a recorded follow-up, not current behaviour: the cap is
+  applied at sizing time only.
+- A probe whose liveness cannot be evaluated — unreadable or incomplete enrolment
+  evidence — is logged and treated as **not live**: it is never installed for
+  scanning, never admitted, and never retired by the sweep on that evidence alone.
+  One such probe does not hide the rest of the registry from `snapshot()`,
+  `probe_report()`, `alpha list` or `/alphas`.
 - `sweep_probes(now)` moves expired or killed versions to inactive in one
   transaction per version and enqueues one durable outbox notice each. It is
   idempotent. Ownership and slot checks ignore expired enrolments regardless of
@@ -168,12 +187,17 @@ signal rather than rounding up.
 
 ### 6. Forward record and kill rule (`research/alpha/probe.py`)
 
-`probe_forward_record(version_id)` is a read model over closed signals whose
-`alpha_version` matches and whose provenance is `paper_probe`, reporting per-trade
-realized R (realized P&L ÷ planned stop risk), cumulative R, and trade count from
-reconciled fills only. Unknown or unreconciled outcomes are reported as unknown and
-contribute nothing; they neither kill nor protect a probe. Killed means
-`cumulative_r <= kill_r`.
+`load_forward_record` (`storage/probe_state.py`) is a read model over **closed
+signals of that `alpha_version`, in this environment and execution mode, not
+quarantined, with `exit_timestamp >= first_enrolled_at`**. Provenance is not the
+selector, so the record also counts trades the same version made while it was
+`active` in the paper scope. The environment and execution mode are matched by
+exact equality rather than `db._scope()`, because evidence that cannot be
+attributed to this paper scope must neither kill nor protect a probe.
+
+It reports per-trade realized R (realized P&L ÷ planned stop risk), cumulative R,
+and trade count from reconciled fills only. Unknown or unreconciled outcomes are
+reported as unknown and contribute nothing. Killed means `cumulative_r <= kill_r`.
 
 ### 7. Operator surface
 
@@ -196,7 +220,11 @@ contribute nothing; they neither kill nor protect a probe. Killed means
   `alpha status` and `/alphas` are the separate views of probe outcomes described
   above.
 - Enrolment, renewal, expiry and kill each emit one durable outbox notice in the
-  same transaction as the state change.
+  same transaction as the state change, so a rolled-back enrolment sends nothing.
+  Enrolment and renewal name the alpha, the actor, the symbols, the expiry and the
+  configured risk cap; retirement names the reason. Because enrolment takes the
+  trading admission lock (which `add_notification` belongs to) before the alpha
+  lock, the project-wide lock order is unchanged.
 
 ## End-to-end workflow
 

@@ -125,7 +125,10 @@ research run or runtime policy change was made for this review.
    should be enrolled from that population rather than GTC-entry candidates:
    GTC limit entries were measured to fill mainly when the forecast is wrong,
    an adverse-selection bias that a probe's forward record cannot distinguish
-   from genuine edge.
+   from genuine edge. Recorded follow-up: make the probe risk cap an admission
+   invariant — check the signal's `risk_dollars` against the enrolment's pinned
+   cap in `_alpha_entry_rejection`. Today the cap is applied when the candidate
+   is sized, and the enrolment record pins it only as evidence.
 7. **Advisory exit cards (A2, approved September 21).** The engine will propose
    Close/Keep when the reason to hold goes away: the owning alpha is demoted, its
    probe expires or is killed, or (later) the allocator's target reaches zero. The
