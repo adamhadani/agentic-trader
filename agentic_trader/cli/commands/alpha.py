@@ -177,11 +177,14 @@ async def alpha_list_cmd():
         snapshot = await repository.snapshot()
         active = {d.version_id for d in snapshot.active}
         shadow = {d.version_id for d in snapshot.shadow}
+        probe = {d.version_id for d in snapshot.probe}
         click.echo(f"ALPHA REGISTRY — generation {snapshot.generation}")
         for definition in await repository.versions():
             status = (
                 "active"
                 if definition.version_id in active
+                else "probe"
+                if definition.version_id in probe
                 else "shadow"
                 if definition.version_id in shadow
                 else "inactive"
@@ -388,6 +391,34 @@ for _name in ("promote", "shadow", "demote"):
     lifecycle_command(_name)
 
 
+@alpha_group.command("probe")
+@click.argument("version_id")
+@click.option("--generation", type=int, required=True, help="Observed registry generation; stale changes are rejected")
+@click.option(
+    "--days", type=click.IntRange(1, 180), default=None, help="Probe term; defaults to alpha_pipeline.probe_term_days"
+)
+@click.option("--renew", is_flag=True, help="Extend a current, unkilled probe from now")
+@coro
+async def alpha_probe_cmd(version_id, generation, days, renew):
+    """Enrol a relaxed-bar candidate as a capped, expiring Alpaca paper probe."""
+    async with alpha_repository() as repository:
+        try:
+            updated = await repository.enrol_probe(
+                version_id, actor="cli_operator", expected_generation=generation, days=days, renew=renew
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        record = await repository.get(f"probe/{version_id}")
+        click.echo(
+            f"{'Renewed' if renew else 'Enrolled'} paper probe {version_id}; registry generation {updated}; "
+            f"expires {record['expires_at']}. Effective next scan."
+        )
+        click.echo(
+            "Paper account only; risk-capped; earns no shadow, holdout or promotion credit. "
+            "Leaving probe never closes or modifies a position."
+        )
+
+
 @alpha_group.command("inspect")
 @click.argument("identity")
 @coro
@@ -542,6 +573,7 @@ async def alpha_status_cmd():
     async with alpha_repository() as repository:
         report = await repository.status()
         report["daily_panel"] = await load_daily_panel_evidence(repository)
+        report["probes"] = await repository.probe_report()
         click.echo(json.dumps(report, indent=2, allow_nan=False))
 
 

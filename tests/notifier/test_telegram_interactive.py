@@ -335,3 +335,36 @@ def test_format_exit_card_equity_and_futures():
     assert "2x /MES" in futures_exit
     assert "STOP LOSS TRIGGERED" in futures_exit
     assert "-$150.00" in futures_exit
+
+
+@pytest.fixture
+def eval_res():
+    return LLMTradeEvaluation(
+        approved=True,
+        rejection_reason=None,
+        contract="AAPL",
+        direction="LONG",
+        entry_price=190.0,
+        stop_loss=186.0,
+        take_profit=198.0,
+        stop_distance_points=4.0,
+        target_distance_points=8.0,
+        risk_reward_ratio=2.0,
+        risk_dollars=100.0,
+        reward_dollars=200.0,
+        notional_value=1900.0,
+        effective_leverage=0.19,
+        macro_clearance=True,
+        thesis_summary="Probe thesis",
+        quantity=10.0,
+        asset_class=AssetClass.EQUITY,
+    )
+
+
+def test_probe_card_is_tagged_and_states_the_cap(eval_res):
+    plain = format_alert_card(eval_res, "alpha_x")
+    tagged = format_alert_card(eval_res, "alpha_x", probe_risk_cap=100.0)
+    assert "PAPER PROBE" not in plain
+    assert tagged.startswith("🧪 <b>PAPER PROBE</b>")
+    assert "$100" in tagged and "no promotion credit" in tagged
+    assert tagged.endswith(plain)

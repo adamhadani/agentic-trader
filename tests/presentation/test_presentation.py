@@ -273,6 +273,14 @@ def test_format_alphas_dashboard_html_universe():
     assert "--auto-promote" not in card
 
 
+def test_dashboard_counts_paper_probes():
+    snapshot = RegistrySnapshot(3, (), (), (AlphaDefinition("alpha_p", "P", "close", timeframe="1d"),))
+    text = TelegramHtmlFormatter.format_alphas_dashboard_html(
+        snapshot, evidence={"days": 7, "candidates": [], "truncated": False}
+    )
+    assert "1 paper probe" in text
+
+
 def test_telegram_html_sanitizer():
     # 1. Unexpected closing tags (the exact error user hit)
     bad_tags = "<b>Hello</i></b></b>"

@@ -565,6 +565,12 @@ class TelegramHtmlFormatter:
             "🧪 <b>ALPHA RESEARCH</b>",
             f"<b>{len(snapshot.active)} enabled for signals</b> · {len(snapshot.shadow)} research candidates",
         ]
+        if snapshot.probe:
+            count = len(snapshot.probe)
+            lines.append(
+                f"🧪 <b>{count} paper probe{'s' if count != 1 else ''}</b> trading with capped risk on the paper account: "
+                + html.escape(", ".join(d.alpha_id for d in snapshot.probe))
+            )
         if not snapshot.active:
             lines.append("No alpha strategies enabled. Other configured strategies may still suggest trades.")
         lines.extend(

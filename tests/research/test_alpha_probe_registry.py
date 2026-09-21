@@ -4,40 +4,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from agentic_trader.config import AppConfig
 from agentic_trader.execution.durable import EventKind, WorkKind
-from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.probe import policy_document
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.alpha import AlphaRepository
-from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import SignalRecord, WorkItemRecord
+from tests.research.probe_fixtures import criterion, make_definition, paper_database, qualification, seed
 
 
 NOW = datetime(2026, 9, 21, 15, 0, tzinfo=UTC)
-
-
-def criterion(value, status="pass"):
-    return {"value": value, "status": status}
-
-
-def qualification(**overrides):
-    criteria = {
-        "holdout_available": criterion(True),
-        "holdout_sharpe": criterion(1.2, "fail"),
-        "holdout_trade_count": criterion(8, "fail"),
-        "cost_stress": criterion(3.0),
-        "deployment_data_contract": criterion({}),
-        "intraday_session_execution_unverified": criterion("1d"),
-        "recursive_feature_requires_shared_initialization": criterion(False),
-    }
-    criteria.update(overrides)
-    return {"qualified": False, "reasons": ["holdout_dsr"], "policy": asdict(ValidationPolicy()), "criteria": criteria}
-
-
-def paper_database(tmp_path, *, paper=True, mode="alpaca"):
-    config = AppConfig(execution_mode=mode, alpaca_paper=paper)
-    return SignalDatabase(db_path=str(tmp_path / "probe.db"), config=config)
 
 
 @pytest.fixture
@@ -51,25 +26,6 @@ async def db(tmp_path):
 @pytest.fixture
 def repository(db):
     return AlphaRepository(db.workflows)
-
-
-def make_definition(alpha_id="alpha_probe", symbol="AAPL", **changes):
-    defaults = {"timeframe": "1d", "eligible_symbols": (symbol,), "data_feed": "alpaca:iex"}
-    defaults.update(changes)
-    return AlphaDefinition(alpha_id, "Probe", "delta(close,3)", **defaults)
-
-
-async def seed(repository, definition, decision=None):
-    await repository.register(definition, actor="test")
-    async with repository.store.db.session_factory() as session, session.begin():
-        await repository.store.lock(session, resource="alpha")
-        await repository._append(
-            session,
-            f"qualification/{definition.version_id}",
-            decision or qualification(),
-            EventKind.ALPHA_RESEARCH,
-            "fixture",
-        )
 
 
 async def close_trade(db, definition, pnl, *, risk=100.0, when=NOW):

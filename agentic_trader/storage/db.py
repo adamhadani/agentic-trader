@@ -33,6 +33,7 @@ from agentic_trader.constants import (
     SignalStatus,
 )
 from agentic_trader.execution.durable import EventKind, NotificationKind
+from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.runtime import RUN_ID, validate_test_database
 from agentic_trader.storage.migrations import run_migrations_head
 from agentic_trader.storage.models import (
@@ -688,6 +689,12 @@ class SignalDatabase:
                         "exit_timestamp": exit_timestamp or now_utc,
                     },
                 )
+                if notification is not None and "strategy" in notification:
+                    provenance = await session.scalar(
+                        select(SignalRecord.decision_provenance).where(SignalRecord.id == signal_id)
+                    )
+                    if provenance and json.loads(provenance).get(PAPER_PROBE_TAG):
+                        notification = {**notification, "strategy": f"🧪 PAPER PROBE · {notification['strategy']}"}
                 if notification is not None:
                     await self.workflows.add_notification(
                         session, f"signal/{signal_id}/closed", NotificationKind.EXIT, notification
