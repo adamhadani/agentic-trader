@@ -59,8 +59,8 @@ async def test_enrolment_journals_state_and_snapshot_exposes_the_probe(repositor
     assert snapshot.probe == (definition,) and not snapshot.active and not snapshot.shadow
     record = await repository.get(f"probe/{definition.version_id}")
     assert record["policy"] == policy_document()
-    assert record["term_days"] == 90 and record["renewals"] == 0
-    assert record["expires_at"] == (NOW + timedelta(days=90)).isoformat()
+    assert record["term_days"] == 30 and record["renewals"] == 0
+    assert record["expires_at"] == (NOW + timedelta(days=30)).isoformat()
     assert record["first_enrolled_at"] == record["enrolled_at"] == NOW.isoformat()
     await repository.rebuild()
     assert (await repository.snapshot(now=NOW)).probe == (definition,)
@@ -218,7 +218,7 @@ async def qualify_for_promotion(repository, alpha_id, symbol, *, expected_genera
 async def test_live_probe_blocks_promotion_of_a_rival_on_the_same_symbol(repository):
     # promote() has no `now=` parameter: it always consults the REAL clock internally
     # (qualification-age check, `_live_probes`). Enrol at the real clock with the
-    # default 90-day term so the probe is unconditionally live moments later when
+    # default 30-day term so the probe is unconditionally live moments later when
     # promote() runs, regardless of what calendar date the suite happens to run on.
     real_now = datetime.now(UTC)
     probe_definition = make_definition()

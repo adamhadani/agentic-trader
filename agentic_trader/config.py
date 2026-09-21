@@ -522,7 +522,8 @@ class AlphaPipelineConfig(BaseModel):
     qualification_max_age_days: int = Field(default=45, ge=1)
     max_probes: int = Field(default=3, ge=0)
     probe_risk_dollars: float = Field(default=100.0, gt=0)
-    probe_term_days: int = Field(default=90, ge=1, le=MAX_PROBE_TERM_DAYS)
+    # Review checkpoint, not a risk bound: the -4R kill rule limits losses. Daily alphas trade ~once per 25-50 sessions.
+    probe_term_days: int = Field(default=30, ge=1, le=MAX_PROBE_TERM_DAYS)
 
 
 class AppConfig(BaseModel):

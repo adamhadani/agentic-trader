@@ -259,7 +259,7 @@ uv run copilot alpha qualify RUN_ID VERSION_ID
 uv run copilot alpha shadow VERSION_ID --generation N
 uv run copilot alpha promote VERSION_ID --generation N
 uv run copilot alpha demote VERSION_ID --generation N
-uv run copilot alpha probe VERSION_ID --generation N --days 90 --renew
+uv run copilot alpha probe VERSION_ID --generation N --days 30 --renew
 uv run copilot alpha portfolio /private/path/observed-snapshot.json --output /private/path/shadow-report.json
 uv run copilot alpha import config/promoted_alphas.yaml
 uv run copilot alpha test --symbol NVDA --interval 1d -- '-1.0 * delta(ts_rank(volume, 10), 5)'
@@ -275,9 +275,11 @@ commands separately when liquidation is intended. Portfolio solving is shadow-on
 `probe VERSION_ID --generation N [--days 1..180] [--renew]` enrols an already
 qualified-or-not version into a time-boxed, risk-capped Alpaca-paper-only trial,
 applying `ProbePolicy` to its stored qualification decision; `--days` defaults to
-`alpha_pipeline.probe_term_days` and `--renew` extends a current, unkilled probe
-from now. It consumes no holdout and charges no trial, earns no shadow or
-promotion credit, and refuses outside the Alpaca paper scope. `alpha list` shows
+`alpha_pipeline.probe_term_days` (30 days, maximum 180) and `--renew` extends a
+current, unkilled probe from now. The term is a review checkpoint, not a risk
+bound: the −4R kill rule limits losses. It consumes no holdout and charges no
+trial, earns no shadow or promotion credit, and refuses outside the Alpaca paper
+scope. `alpha list` shows
 `probe` rows with their expiry appended; `alpha status` and `/alphas` show each
 live probe's days remaining, trade count, cumulative R and distance to the kill
 rule. See [paper probes](alpha-pipeline.md#paper-probes).

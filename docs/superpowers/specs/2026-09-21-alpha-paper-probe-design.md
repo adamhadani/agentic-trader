@@ -201,7 +201,7 @@ reported as unknown and contribute nothing. Killed means `cumulative_r <= kill_r
 
 ### 7. Operator surface
 
-- `copilot alpha probe <version_id> --generation N [--days 90] [--renew]`.
+- `copilot alpha probe <version_id> --generation N [--days 30] [--renew]`.
   On refusal it prints every failed `ProbePolicy` criterion with observed value and
   threshold.
 - `probe_report(*, now=None)` (`storage/alpha.py`) adds two computed fields to each
@@ -287,3 +287,8 @@ the state machine without weakening `active`.
 
 Admission's exit-card tag fails open: unreadable provenance yields an untagged
 card and a warning, never a failed close.
+
+The default term was reduced from 90 to 30 days by the operator on September 21:
+it is a review checkpoint; the −4R kill rule, not the term, bounds losses, and a
+daily alpha is expected to complete roughly 0–1 trades in 30 days, so renewal
+decisions will often rest on little forward evidence.
