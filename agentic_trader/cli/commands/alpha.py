@@ -48,7 +48,7 @@ from agentic_trader.research.alpha.lifetime_artifacts import execute_lifetime_st
 from agentic_trader.research.alpha.lifetime_attribution import LifetimeAttributionProtocol
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.mining_universe import resolve_mining_universe
-from agentic_trader.research.alpha.models import AlphaDefinition
+from agentic_trader.research.alpha.models import DAILY_SESSION_SEMANTICS_VERSION, AlphaDefinition
 from agentic_trader.research.alpha.panel_study import (
     PanelStudyPlan,
     PanelStudyStatus,
@@ -67,7 +67,11 @@ from agentic_trader.research.alpha.replay import (
     ReplayStatus,
 )
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
-from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, TimedAlphaExecutionPolicy
+from agentic_trader.research.alpha.strategy import (
+    AlphaExecutionPolicy,
+    TimedAlphaExecutionPolicy,
+    session_entry_policy,
+)
 from agentic_trader.research.alpha.study import StudyProtocol, StudyStatus
 from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
@@ -159,6 +163,26 @@ def _research_failure_code(exc: Exception) -> str:
     return "research_worker_failed"
 
 
+ENTRY_POLICY_OPTION = click.option(
+    "--entry-policy",
+    type=click.Choice(["session", "gtc"]),
+    default=None,
+    help="Resting entry: 'session' expires after one regular session (default for 1d); "
+    "'gtc' rests until filled and reproduces earlier benchmarks.",
+)
+
+
+def resolve_entry_policy(interval: str, choice: str | None):
+    """None means the historical GTC execution policy; otherwise the deployed daily policy."""
+    if choice is None:
+        choice = "session" if interval == "1d" else "gtc"
+    if choice == "gtc":
+        return None
+    if interval != "1d":
+        raise click.ClickException("--entry-policy session requires native daily bars (--interval 1d)")
+    return session_entry_policy()
+
+
 @click.group("alpha", help="Causal formula research and journal-backed promotion")
 def alpha_group():
     pass
@@ -226,6 +250,7 @@ async def alpha_list_cmd():
 )
 @click.option("--min-sharpe", type=float, default=1.0)
 @click.option("--min-dsr", type=click.FloatRange(0, 1), default=0.95)
+@ENTRY_POLICY_OPTION
 @coro
 async def alpha_mine_cmd(
     symbol,
@@ -242,9 +267,12 @@ async def alpha_mine_cmd(
     max_symbols,
     feed,
     max_seconds,
+    entry_policy,
 ):
     """Persist every trial. Mining never consumes holdout or promotes an alpha."""
     config = load_config()
+    execution = resolve_entry_policy(interval, entry_policy)
+    click.echo(f"Entry policy: {'session (one regular session)' if execution else 'gtc'}")
     try:
         mining_universe = await asyncio.to_thread(
             resolve_mining_universe,
@@ -296,6 +324,7 @@ async def alpha_mine_cmd(
                     min_dsr=min_dsr,
                     method=method,
                     max_seconds=max_seconds,
+                    execution=execution,
                 )
                 await repository.record_run(
                     run_id,
@@ -449,10 +478,18 @@ async def alpha_inspect_cmd(identity):
 @click.option("--symbol", default="SPY")
 @click.option("--lookback", default="5y")
 @click.option("--interval", type=click.Choice(["1d", "4h", "1h", "15m"]), default="1d")
+@ENTRY_POLICY_OPTION
 @coro
-async def alpha_test_cmd(expression, symbol, lookback, interval):
+async def alpha_test_cmd(expression, symbol, lookback, interval, entry_policy):
     """Diagnostic expression test; cannot qualify or promote a version."""
-    definition = AlphaDefinition("alpha_diagnostic", "Diagnostic", expression, timeframe=interval)
+    execution = resolve_entry_policy(interval, entry_policy)
+    definition = AlphaDefinition(
+        "alpha_diagnostic",
+        "Diagnostic",
+        expression,
+        timeframe=interval,
+        **({"execution": execution, "semantics_version": DAILY_SESSION_SEMANTICS_VERSION} if execution else {}),
+    )
     frame = await asyncio.to_thread(download_bars, symbol, lookback, interval)
     async with alpha_repository() as repository:
         await repository.exclude_observed_interval(
