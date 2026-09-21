@@ -258,6 +258,13 @@ Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrate
 gains. All formulas remain research-only; active alphas remain zero. The [persistent-book follow-up](alpha-persistent-book-2026-09-17.md) is also complete;
 use the [current roadmap](alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities) for next work. [Automatic Alpaca bar evidence](market-data-evidence.md) now retains raw pages and normalization outcomes.
 
+The [matched screened-equity DSL panel](alpha-matched-panel-2026-09-19.md)
+extends the same journal-backed workflow with constant, volatility and
+benchmark-residual controls, causal turnover, and signal-bar beta diagnostics.
+Its complete 64-name full-history attempt failed closed on unavailable historical
+members; a separate recent diagnostic completed all 32 comparisons but failed
+coverage and sample gates. These results do not qualify or promote an alpha.
+
 ## September 17 contract fixes
 
 See [implementation boundaries and residual risks](forecast-contract-hardening.md).

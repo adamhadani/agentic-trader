@@ -74,6 +74,13 @@ research run or runtime policy change was made for this review.
    support separately and evaluate delayed SIP under its own source identity.
    Expand forecast breadth toward 150–300 only with bounded resource and dynamic
    membership tests. Historical current-cohort returns grant no qualification.
+   The [matched screened-equity DSL panel](alpha-matched-panel-2026-09-19.md)
+   compares the new causal families with constant, volatility and benchmark-
+   residual controls, including turnover and signal-bar beta. Its complete
+   64-name 2021–2025 protocol correctly failed closed on missing historical
+   members; a separately identified recent window completed all 32 comparisons
+   but failed coverage/sample gates. Carry volatility as a comparator only and
+   require an availability-bounded prospective cohort.
 4. **Consolidate ongoing campaigns before increasing cadence (S2).** Scheduled
    `alpha mine` remains the reproducible ETF32 benchmark, while the manual CLI now
    accepts a verified, capped prospective equity snapshot (`alpha-mining-universe.md`).

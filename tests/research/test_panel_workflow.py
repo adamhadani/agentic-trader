@@ -81,6 +81,36 @@ def test_panel_cli_retains_screen_and_registry_without_runtime_side_effects(
     assert evidence["generation"] == 0 and evidence["active"] == 0
 
 
+def test_panel_cli_requires_frozen_matched_diagnostic_contract(panel_study_input, panel_source, tmp_path, monkeypatch):
+    _frames, _clock, plan = panel_study_input
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.session_source", lambda *_: nullcontext(panel_source))
+    protocol = tmp_path / "protocol.json"
+    document = {
+        "plan": plan.document(),
+        "triage": asdict(PanelTriagePolicy()),
+        "diagnostics": {
+            "version": "matched_panel_diagnostics_v1",
+            "market_exposure_window": 60,
+            "turnover": "absolute_weight_change",
+        },
+        "universe_source": {
+            "kind": "equity_liquidity_screen_v1",
+            "result_sha256": "a" * 64,
+            "selected_count": len(plan.symbols),
+            "feed": plan.feed,
+        },
+    }
+    protocol.write_text(json.dumps(document))
+    output = tmp_path / "matched"
+    result = CliRunner().invoke(cli, ["alpha", "panel-study", str(protocol), "--output", str(output)])
+    assert result.exit_code == 0, result.output
+    assert json.loads((output / "result.json").read_text())["diagnostics"]["version"] == "matched_panel_diagnostics_v1"
+    document["diagnostics"]["market_exposure_window"] = 20
+    protocol.write_text(json.dumps(document))
+    rejected = CliRunner().invoke(cli, ["alpha", "panel-study", str(protocol), "--output", str(tmp_path / "bad")])
+    assert rejected.exit_code != 0 and "frozen causal" in rejected.output
+
+
 @pytest.mark.parametrize("fault", ["provider", "budget"])
 async def test_partial_acquisition_is_checkpointed_and_never_used_by_complete_study(
     panel_study_input, panel_source, temp_db, tmp_path, fault, monkeypatch

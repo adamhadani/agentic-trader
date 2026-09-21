@@ -72,6 +72,9 @@ discovery finalists and qualification results.
 Widening the symbol funnel does not weaken statistical or economic gates. A
 matched ETF32 versus screened 32–64-name campaign should record transfer,
 coverage, turnover, cost and failure rates before increasing to all 300 names.
+The [matched screened-equity panel report](alpha-matched-panel-2026-09-19.md)
+does this for the expanded DSL: the full-history cohort fails closed when current
+members lack historical bars, while a short recent window remains diagnostic only.
 
 The per-symbol DSL currently spans price/volume momentum and reversal, causal
 overnight/range features, volatility-scaled trend, range location, signed
