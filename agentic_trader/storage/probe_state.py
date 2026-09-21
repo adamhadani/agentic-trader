@@ -26,9 +26,13 @@ async def load_enrolment(session: AsyncSession, scope: str, version_id: str) -> 
 
 
 async def load_forward_record(session: AsyncSession, db, version_id: str, since: datetime, policy: ProbePolicy) -> dict:
+    # Deliberately not `db._scope()`: that also admits unknown-execution-mode rows.
+    # Evidence that cannot be attributed to this paper scope neither kills nor
+    # protects a probe, and a quarantined signal is not evidence at all.
     rows = await session.execute(
         select(SignalRecord.realized_pnl, SignalRecord.risk_dollars).where(
             SignalRecord.alpha_version == version_id,
+            SignalRecord.is_quarantined.is_(False),
             SignalRecord.environment == db.environment,
             SignalRecord.execution_mode == db.execution_mode,
             SignalRecord.status.in_(CLOSED_STATUSES),
