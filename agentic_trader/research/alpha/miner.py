@@ -279,7 +279,11 @@ class AlphaMiner:
                 "trial_count": total_trials,
                 "holdout_evaluated": False,
                 "calibration": calibration,
-                "execution_model": "gtc_limit_conservative_brackets_v2",
+                "execution_model": (
+                    "session_limit_conservative_brackets_v1"
+                    if isinstance(definition.execution, TimedAlphaExecutionPolicy)
+                    else "gtc_limit_conservative_brackets_v2"
+                ),
             },
         )
         return candidate, returns
