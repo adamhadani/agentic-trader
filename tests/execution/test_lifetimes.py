@@ -5,7 +5,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from agentic_trader.execution.durable import OrderObservation
-from agentic_trader.execution.lifetime_policy import TRADE_LIFETIME_VERSION_INDEPENDENT, TradeLifetimePolicy
+from agentic_trader.execution.lifetime_policy import (
+    DAILY_ENTRY_LIFETIME_SECONDS,
+    TRADE_LIFETIME_VERSION_INDEPENDENT,
+    TradeLifetimePolicy,
+    daily_entry_lifetime,
+)
 from agentic_trader.execution.lifetimes import EntryIdentity, LifetimeAction, assess_lifetime
 
 
@@ -88,3 +93,36 @@ def test_independent_v2_deadlines_can_be_disabled(lifetime_order, resting_second
 def test_independent_v2_requires_one_positive_deadline(fields):
     with pytest.raises(ValueError):
         TradeLifetimePolicy(version=TRADE_LIFETIME_VERSION_INDEPENDENT, **fields)
+
+
+def test_daily_entry_lifetime_cancels_after_one_session_and_never_holds():
+    """The version-5 lifetime (one fixed entry-only deadline, no holding deadline)."""
+    now = datetime(2026, 9, 17, 15, tzinfo=UTC)
+    identity = EntryIdentity("entry", "client", "SPY", "buy", "10")
+    policy = daily_entry_lifetime()
+    resting = OrderObservation(
+        order_id="entry",
+        client_order_id="client",
+        symbol="SPY",
+        side="buy",
+        status="new",
+        quantity="10",
+        filled_quantity="0",
+        order_type="limit",
+        order_class="bracket",
+        submitted_at=now - timedelta(seconds=DAILY_ENTRY_LIFETIME_SECONDS - 1),
+        updated_at=now,
+    )
+    before = assess_lifetime(policy, identity, resting, now)
+    assert before.action == LifetimeAction.NONE
+
+    expired = resting.model_copy(update={"submitted_at": now - timedelta(seconds=DAILY_ENTRY_LIFETIME_SECONDS)})
+    at_deadline = assess_lifetime(policy, identity, expired, now)
+    assert at_deadline.action == LifetimeAction.CANCEL_ENTRY
+
+    filled = resting.model_copy(
+        update={"status": "filled", "filled_quantity": "10", "filled_at": now - timedelta(days=365)}
+    )
+    held = assess_lifetime(policy, identity, filled, now)
+    assert held.action == LifetimeAction.NONE
+    assert held.reason == "holding_lifetime_disabled"
