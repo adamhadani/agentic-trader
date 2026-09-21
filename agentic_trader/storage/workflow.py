@@ -48,6 +48,7 @@ from agentic_trader.storage.models import (
     WorkflowLockRecord,
     WorkItemRecord,
 )
+from agentic_trader.storage.probe_state import probe_block_reason
 
 
 if TYPE_CHECKING:
@@ -388,18 +389,28 @@ class WorkflowStore:
         # changes use the alpha lock, so demotion cannot race submission commit.
         await self.lock(session, resource="alpha")
         registry = await session.get(AlphaProjectionRecord, (self.scope, "registry"))
-        if (
-            not signal.alpha_version
-            or not registry
-            or signal.alpha_version not in json.loads(registry.payload)["active"]
-        ):
+        listed = json.loads(registry.payload) if registry else {}
+        is_active = bool(signal.alpha_version) and signal.alpha_version in listed.get("active", [])
+        is_probe = bool(signal.alpha_version) and signal.alpha_version in listed.get("probe", [])
+        if not is_active and not is_probe:
             return "Alpha version is not active/qualified; request a fresh scan after qualification."
+        assert signal.alpha_version is not None  # guaranteed by is_active/is_probe above
         row = await session.get(AlphaProjectionRecord, (self.scope, f"version/{signal.alpha_version}"))
         if row is None:
             return "Alpha version evidence is missing."
-        qualification = await session.get(AlphaProjectionRecord, (self.scope, f"qualification/{signal.alpha_version}"))
-        if not qualification or json.loads(qualification.payload).get("policy") != asdict(ValidationPolicy()):
-            return "Alpha qualification policy is obsolete; fresh research and qualification are required."
+        if is_active:
+            qualification = await session.get(
+                AlphaProjectionRecord, (self.scope, f"qualification/{signal.alpha_version}")
+            )
+            if not qualification or json.loads(qualification.payload).get("policy") != asdict(ValidationPolicy()):
+                return "Alpha qualification policy is obsolete; fresh research and qualification are required."
+        else:
+            # A probe is never authorized by qualification; only by live, current enrolment.
+            blocked = await probe_block_reason(
+                session, scope=self.scope, db=self.db, version_id=signal.alpha_version, now=datetime.now(UTC)
+            )
+            if blocked:
+                return f"Paper probe blocked: {blocked}."
         definition = json.loads(row.payload)["definition"]
         if definition.get("clock") is not None:
             return "Alpha session-clock execution remains diagnostic; new risk is disabled."
