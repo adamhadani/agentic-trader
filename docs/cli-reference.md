@@ -519,7 +519,11 @@ omitted from the frozen protocol document, so every existing frozen protocol kee
 its identity and still loads unmodified, while `session` mines the known control
 and every generated trial under the native-daily one-session entry contract (see
 [trade lifetimes](alpha-trade-lifetimes.md)) for a like-for-like comparison with
-the GTC reference run.
+the GTC reference run. A hand-written protocol document containing
+`"entry_policy": "gtc"` explicitly will not load (`PowerProtocol.from_document`
+rejects it), because the default is omitted from the frozen document so that
+previously frozen protocols keep their identity; this is by design, not
+corruption.
 The [power protocol](alpha-power-ablation-plan.md) binds the snapshot hash, seeds,
 bootstrap, policy and finite budget. The runner requires a new output directory,
 retains selection before holdout and stops before validation after development

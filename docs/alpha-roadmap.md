@@ -61,7 +61,11 @@ research run or runtime policy change was made for this review.
    operator changes that pin. Next: freeze and run the confirmatory
    `alpha power-plan --entry-policy session` protocol with a fresh seed and a newly
    sourced read-only family snapshot, per the [attribution plan](alpha-lifetime-attribution-plan.md)'s
-   unchanged endpoint and bounds. Keep gates and lifetime history unchanged. Paper
+   unchanged endpoint and bounds. The simulator grants a session-bounded entry the
+   entire next session including its opening print and can never take the open
+   live, so its fill rate is an upper bound and forward/probe execution evidence
+   is still required before attributing any improvement to live trading (see
+   [trade lifetimes](alpha-trade-lifetimes.md#known-limits)). Keep gates and lifetime history unchanged. Paper
    probes should not be enrolled under GTC entries; enrol version-5 candidates.
    The [native-daily collector](alpha-daily-panel.md) now implements parallel
    observation with source-qualified labels, actual receipts and frozen decisions.
@@ -146,7 +150,14 @@ research run or runtime policy change was made for this review.
    should be enrolled from that population rather than GTC-entry candidates:
    GTC limit entries were measured to fill mainly when the forecast is wrong,
    an adverse-selection bias that a probe's forward record cannot distinguish
-   from genuine edge. Recorded follow-up: make the probe risk cap an admission
+   from genuine edge. Probe enrolment still requires a qualification record
+   (`assess_probe` reads `qualification/{version_id}`), and holdout consumption
+   is keyed by symbol and rejects overlapping intervals
+   (`storage/alpha.py:begin_holdout`), so a version-5 twin of an existing alpha is
+   a new identity that needs its own fresh qualification, and on a symbol whose
+   holdout is already consumed it cannot get one without a genuinely new
+   untouched period; switching the daily mining default to `session` does not by
+   itself unlock qualification on already-consumed ETF32 names. Recorded follow-up: make the probe risk cap an admission
    invariant — check the signal's `risk_dollars` against the enrolment's pinned
    cap in `_alpha_entry_rejection`. Today the cap is applied when the candidate
    is sized, and the enrolment record pins it only as evidence.

@@ -55,16 +55,16 @@ promotion already require a raw Alpaca deployment feed.
 
 **Why exactly 57,600 seconds.** Daily research cannot resolve time inside a bar, so
 the only entry lifetime it can represent honestly is "the session the order was
-submitted for". Research stamps the order at the entry bar's label (New York
-midnight); label + 16 h is 16:00 New York, before the next label, so the order
-expires at the next bar before its fill check: one session. Live measures from
-`submitted_at`; broker admission requires an open regular session (09:30–16:00 New
-York), so submission + 16 h falls between 01:30 and 08:00 the next day, before the
-next open: one session. A value of 86,400 gives research one session but live two
-partial sessions. Daylight-saving changes fall on non-trading days, so consecutive
-daily labels are always at least 24 h apart and the arithmetic is unaffected. A
-single named constant, `DAILY_ENTRY_LIFETIME_SECONDS = 57_600`, lives beside
-`TradeLifetimePolicy`.
+submitted for". The research half holds because `validate_sampling`
+(`agentic_trader/research/alpha/validation.py`) rejects any daily frame whose
+consecutive labels are closer than 24 h, so label + 57,600 s always precedes the
+next label whatever the label convention is — 00:00 UTC under the `alpha mine`
+default `--feed yfinance`, or New York midnight under Alpaca: one session either
+way. Live measures from `submitted_at`; broker admission requires an open regular
+session (09:30–16:00 New York), so submission + 16 h falls between 01:30 and 08:00
+the next day, before the next open: one session. A value of 86,400 gives research
+one session but live two partial sessions. A single named constant,
+`DAILY_ENTRY_LIFETIME_SECONDS = 57_600`, lives beside `TradeLifetimePolicy`.
 
 **Identity.** No field is added to `AlphaDefinition`, and the version-2 `clock` pop
 in `to_dict` is untouched, so every existing hash stays byte-exact (pinned by the
