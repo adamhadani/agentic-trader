@@ -519,6 +519,9 @@ class AlphaPipelineConfig(BaseModel):
     minimum_shadow_sessions: int = Field(default=20, ge=1)
     minimum_shadow_decisions: int = Field(default=10, ge=1)
     qualification_max_age_days: int = Field(default=45, ge=1)
+    max_probes: int = Field(default=3, ge=0)
+    probe_risk_dollars: float = Field(default=100.0, gt=0)
+    probe_term_days: int = Field(default=90, ge=1, le=180)
 
 
 class AppConfig(BaseModel):

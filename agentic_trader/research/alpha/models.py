@@ -228,3 +228,4 @@ class RegistrySnapshot:
     generation: int
     active: tuple[AlphaDefinition, ...]
     shadow: tuple[AlphaDefinition, ...]
+    probe: tuple[AlphaDefinition, ...] = ()
