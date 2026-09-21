@@ -54,6 +54,7 @@ from agentic_trader.constants import (
     SizingMode,
 )
 from agentic_trader.market.bars import BAR_DURATIONS
+from agentic_trader.research.alpha.probe import MAX_PROBE_TERM_DAYS
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -521,7 +522,7 @@ class AlphaPipelineConfig(BaseModel):
     qualification_max_age_days: int = Field(default=45, ge=1)
     max_probes: int = Field(default=3, ge=0)
     probe_risk_dollars: float = Field(default=100.0, gt=0)
-    probe_term_days: int = Field(default=90, ge=1, le=180)
+    probe_term_days: int = Field(default=90, ge=1, le=MAX_PROBE_TERM_DAYS)
 
 
 class AppConfig(BaseModel):

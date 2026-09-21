@@ -396,6 +396,8 @@ class AlphaRepository:
             if current["definition"]["alpha_id"] == definition.alpha_id:
                 raise ValueError("Alpha is active; demote it before enrolling a paper probe")
         days = self.policy.probe_term_days if days is None else days
+        # `type(...) is not int` rather than isinstance: bool is an int subclass and
+        # `alpha probe --days True` is not a one-day term.
         if type(days) is not int or not 1 <= days <= self.probe_policy.max_term_days:
             raise ValueError(f"Probe term must be 1..{self.probe_policy.max_term_days} days")
         if definition.clock is not None or definition.timeframe != "1d":

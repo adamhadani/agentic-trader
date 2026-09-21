@@ -60,6 +60,7 @@ from agentic_trader.research.alpha.persistent_study import PersistentStudyPlan, 
 from agentic_trader.research.alpha.portfolio import PortfolioPolicy, PortfolioSnapshot, build_shadow_portfolio
 from agentic_trader.research.alpha.power_artifacts import execute_power_study
 from agentic_trader.research.alpha.power_study import FamilySnapshot, PowerProtocol
+from agentic_trader.research.alpha.probe import MAX_PROBE_TERM_DAYS
 from agentic_trader.research.alpha.promotion import AlphaPromotionService, read_alpha_definitions
 from agentic_trader.research.alpha.replay import (
     ReplayPlan,
@@ -398,7 +399,10 @@ for _name in ("promote", "shadow", "demote"):
 @click.argument("version_id")
 @click.option("--generation", type=int, required=True, help="Observed registry generation; stale changes are rejected")
 @click.option(
-    "--days", type=click.IntRange(1, 180), default=None, help="Probe term; defaults to alpha_pipeline.probe_term_days"
+    "--days",
+    type=click.IntRange(1, MAX_PROBE_TERM_DAYS),
+    default=None,
+    help="Probe term; defaults to alpha_pipeline.probe_term_days",
 )
 @click.option("--renew", is_flag=True, help="Extend a current, unkilled probe from now")
 @coro

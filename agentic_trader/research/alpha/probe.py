@@ -15,6 +15,9 @@ from typing import Any, TypeGuard
 
 
 PROBE_POLICY_VERSION = "probe_policy_v1"
+# One home for the probe term bound: the policy default, the CLI's --days range
+# and the validated operator config all read it.
+MAX_PROBE_TERM_DAYS = 180
 PAPER_PROBE_TAG = "paper_probe"
 PAPER_SCOPE_SUFFIX = "/alpaca:paper"
 
@@ -33,7 +36,7 @@ class ProbePolicy:
     min_holdout_sharpe: float = 0.0
     min_cost_stressed_return_pct: float = 0.0
     min_holdout_trades: int = 5
-    max_term_days: int = 180
+    max_term_days: int = MAX_PROBE_TERM_DAYS
     kill_r: float = -4.0
 
 
@@ -87,7 +90,7 @@ def assess_probe(qualification: dict | None, policy: ProbePolicy | None = None) 
             reasons.append(f"{code}_invalid")
             continue
         observations[code] = value
-        if value <= floor if strict else value < floor:
+        if (value <= floor) if strict else (value < floor):
             reasons.append(f"{code}_below_probe_floor")
     return ProbeAssessment(not reasons, tuple(reasons), observations)
 

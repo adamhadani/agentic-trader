@@ -463,9 +463,13 @@ class WorkflowStore:
                 or signal.asset_class != request.asset_class
                 or (signal.quantity, signal.entry_price, signal.stop_loss, signal.take_profit)
                 != (request.quantity, request.entry_price, request.stop_loss, request.take_profit)
-                or await self._alpha_entry_rejection(session, signal)
             ):
                 return "Signal or active alpha authorization changed. No order submitted."
+            # Hoisted out of the compound check above, whose other clauses are pure
+            # comparisons, so the operator sees which alpha gate refused rather than
+            # one message covering every clause. Same lock, same relative position.
+            if reason := await self._alpha_entry_rejection(session, signal):
+                return f"{reason} No order submitted."
             try:
                 risk = await self._entry_risk(session, config)
             except ValueError as exc:

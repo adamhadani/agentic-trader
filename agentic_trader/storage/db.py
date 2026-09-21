@@ -706,7 +706,7 @@ class SignalDatabase:
                 )
                 if notification is not None and "strategy" in notification:
                     provenance = await session.scalar(
-                        select(SignalRecord.decision_provenance).where(SignalRecord.id == signal_id)
+                        select(SignalRecord.decision_provenance).where(*self._scope(), SignalRecord.id == signal_id)
                     )
                     if _is_paper_probe(provenance, signal_id=signal_id):
                         notification = {**notification, "strategy": f"🧪 PAPER PROBE · {notification['strategy']}"}

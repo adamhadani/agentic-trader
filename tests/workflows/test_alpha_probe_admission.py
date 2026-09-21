@@ -11,12 +11,13 @@ from agentic_trader.accounting.ledger import AccountSnapshot, reconcile
 from agentic_trader.accounting.risk import advance_risk_checkpoint
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.config import AppConfig
+from agentic_trader.constants import SignalStatus
 from agentic_trader.execution.durable import EventKind, WorkStatus
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.probe import policy_document
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
-from agentic_trader.storage.models import LedgerCheckpointRecord
+from agentic_trader.storage.models import LedgerCheckpointRecord, SignalRecord
 from agentic_trader.storage.workflow import WorkflowStore
 
 
@@ -120,20 +121,75 @@ async def test_live_probe_passes_the_alpha_gate(tmp_path, app_config):
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "fragment"),
+    ("kwargs", "expected"),
     [
-        ({"record": enrolment(expires_in_days=-1)}, "expired"),
-        ({"record": enrolment(policy={"version": "old"})}, "policy changed"),
-        ({"record": None}, "evidence is missing"),
-        ({"record": enrolment(), "listed": False}, "not active"),
-        ({"record": enrolment(), "paper": False}, "Alpaca paper"),
+        (
+            {"record": enrolment(expires_in_days=-1)},
+            "Paper probe blocked: probe term expired; renew it or let it retire.",
+        ),
+        (
+            {"record": enrolment(policy={"version": "old"})},
+            "Paper probe blocked: probe policy changed; renew the probe under the current policy.",
+        ),
+        ({"record": None}, "Paper probe blocked: probe enrolment evidence is missing."),
+        (
+            {"record": enrolment(), "paper": False},
+            "Paper probe blocked: paper probes run only on the Alpaca paper account.",
+        ),
     ],
 )
-async def test_non_live_probe_cannot_reserve_risk(tmp_path, app_config, kwargs, fragment):
+async def test_non_live_probe_cannot_reserve_risk(tmp_path, app_config, kwargs, expected):
     db, store, _, _, request = await build(tmp_path, **kwargs)
     item, reason = await store.enqueue_entry(request, app_config)
     assert item is None
-    assert fragment in reason
+    # The probe gate must be distinguishable from every other admission refusal,
+    # and each of its reasons from the others.
+    assert reason.startswith("Paper probe blocked: ")
+    assert reason == expected
+    await db.engine.dispose()
+
+
+async def test_a_version_outside_the_registry_is_refused_as_unqualified(tmp_path, app_config):
+    db, store, _, _, request = await build(tmp_path, record=enrolment(), listed=False)
+    item, reason = await store.enqueue_entry(request, app_config)
+    assert item is None
+    assert reason == "Alpha version is not active/qualified; request a fresh scan after qualification."
+    await db.engine.dispose()
+
+
+async def close_at_full_loss(db, definition, when):
+    sid = await db.record_signal(
+        "SPY",
+        definition.alpha_id,
+        "LONG",
+        100,
+        98,
+        104,
+        100.0,
+        asset_class="EQUITY",
+        quantity=1,
+        timeframe="1d",
+        alpha_version=definition.version_id,
+        alpha_policy=definition.execution.to_dict(),
+    )
+    async with db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, sid)
+        row.status, row.realized_pnl, row.risk_dollars, row.exit_timestamp = (
+            SignalStatus.CLOSED_LOSS,
+            -100.0,
+            100.0,
+            when,
+        )
+
+
+async def test_a_killed_probe_cannot_reserve_new_risk(tmp_path, app_config):
+    db, store, _, definition, request = await build(tmp_path, record=enrolment())
+    closed_at = datetime.now(UTC) + timedelta(seconds=1)
+    for _ in range(4):
+        await close_at_full_loss(db, definition, closed_at)
+    item, reason = await store.enqueue_entry(request, app_config)
+    assert item is None
+    assert reason == "Paper probe blocked: probe kill rule reached (-4.00R <= -4.00R)."
     await db.engine.dispose()
 
 
@@ -146,4 +202,39 @@ async def test_probe_demoted_during_preflight_blocks_submission_commit(tmp_path,
     reason = await store.begin_submission(claim, app_config)
     assert reason is not None and "alpha" in reason.lower()
     assert (await store.get_work(item.id)).status == WorkStatus.CHECKING
+    await db.engine.dispose()
+
+
+async def test_a_demotion_after_the_claim_keeps_its_specific_refusal(tmp_path, app_config):
+    """The generic compound message hid which gate refused; it must not."""
+    db, store, repository, definition, request = await build(tmp_path, record=enrolment())
+    item, reason = await store.enqueue_entry(request, app_config)
+    assert item, reason
+    claim = await store.claim_entry(lease_seconds=60)
+    await repository.demote(definition.version_id, actor="test", expected_generation=1)
+    reason = await store.begin_submission(claim, app_config)
+    assert reason == (
+        "Alpha version is not active/qualified; request a fresh scan after qualification. No order submitted."
+    )
+    await db.engine.dispose()
+
+
+async def test_an_expiry_after_the_claim_names_the_probe_gate(tmp_path, app_config):
+    db, store, repository, definition, request = await build(tmp_path, record=enrolment())
+    item, reason = await store.enqueue_entry(request, app_config)
+    assert item, reason
+    claim = await store.claim_entry(lease_seconds=60)
+    async with db.session_factory() as session, session.begin():
+        await store.lock(session)
+        await store.lock(session, resource="alpha")
+        await repository._append(
+            session,
+            f"probe/{definition.version_id}",
+            enrolment(expires_in_days=-1),
+            EventKind.ALPHA_REGISTRY,
+            "fixture",
+        )
+    reason = await store.begin_submission(claim, app_config)
+    assert reason is not None and reason.startswith("Paper probe blocked: ")
+    assert reason == "Paper probe blocked: probe term expired; renew it or let it retire. No order submitted."
     await db.engine.dispose()
