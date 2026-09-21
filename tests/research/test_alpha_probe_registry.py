@@ -296,11 +296,110 @@ async def test_sweep_retires_expired_probes_once_with_one_notice(db, repository)
     assert await repository.sweep_probes(now=later) == []
     registry = await repository.get("registry")
     assert registry["probe"] == [] and registry["generation"] == 2
+    notices = await notification_payloads(db)
+    # Enrolment itself now emits one notice, so the sweep's retirement notice is
+    # the second and only other one however many times the sweep runs.
+    assert len(notices) == 2
+    retirements = [payload for payload in notices if "retired" in payload]
+    assert len(retirements) == 1 and "expired" in retirements[0]
+
+
+async def notification_payloads(db):
     async with db.session_factory() as session:
-        notices = (
-            await session.scalars(select(WorkItemRecord).where(WorkItemRecord.kind == WorkKind.NOTIFICATION))
+        rows = (
+            await session.scalars(
+                select(WorkItemRecord)
+                .where(WorkItemRecord.kind == WorkKind.NOTIFICATION)
+                .order_by(WorkItemRecord.sequence)
+            )
         ).all()
-    assert len(notices) == 1 and "expired" in notices[0].payload
+    return [row.payload for row in rows]
+
+
+async def test_enrolment_and_renewal_each_emit_one_durable_notice(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=30, now=NOW)
+    notices = await notification_payloads(db)
+    assert len(notices) == 1
+    assert "enrolled" in notices[0] and definition.alpha_id in notices[0] and "op" in notices[0]
+    assert (NOW + timedelta(days=30)).isoformat() in notices[0]
+    assert "AAPL" in notices[0] and "paper account only" in notices[0]
+    later = NOW + timedelta(days=10)
+    await repository.enrol_probe(
+        definition.version_id, actor="op2", expected_generation=1, days=30, renew=True, now=later
+    )
+    notices = await notification_payloads(db)
+    assert len(notices) == 2 and notices[0] != notices[1]
+    assert "renewed" in notices[1] and "op2" in notices[1]
+
+
+async def test_a_refused_enrolment_leaves_no_notice_and_no_journal(db, repository):
+    definition = make_definition(data_feed="yfinance")
+    await seed(repository, definition)
+    with pytest.raises(ValueError, match="deployment feed"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    assert await notification_payloads(db) == []
+    assert await repository.get(f"probe/{definition.version_id}") is None
+
+
+async def test_enrolment_pins_the_configured_limits_as_evidence(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    limits = {"max_probes": repository.policy.max_probes, "probe_risk_dollars": repository.policy.probe_risk_dollars}
+    assert (await repository.get(f"probe/{definition.version_id}"))["limits"] == limits
+    later = NOW + timedelta(days=1)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=1, renew=True, now=later)
+    record = await repository.get(f"probe/{definition.version_id}")
+    assert record["limits"] == limits and record["renewals"] == 1
+    # Pinned limits are evidence only; they must not join the policy identity check.
+    assert "limits" not in record["policy"]
+    assert (await repository.snapshot(now=later)).probe == (definition,)
+
+
+@pytest.mark.parametrize("call", ["enrol_probe", "sweep_probes", "probe_report", "snapshot"])
+async def test_a_naive_clock_is_refused_and_journals_nothing(repository, call):
+    definition = make_definition()
+    await seed(repository, definition)
+    naive = NOW.replace(tzinfo=None)
+    with pytest.raises(ValueError, match="Timezone-aware datetime required"):
+        if call == "enrol_probe":
+            await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=naive)
+        else:
+            await getattr(repository, call)(now=naive)
+    assert await repository.get(f"probe/{definition.version_id}") is None
+    assert await repository.get("registry") is None
+
+
+async def test_an_active_alpha_cannot_be_enrolled_as_a_probe(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    async with repository.store.db.session_factory() as session, session.begin():
+        await repository.store.lock(session, resource="alpha")
+        await repository._append(
+            session,
+            "registry",
+            {"generation": 5, "active": [definition.version_id], "shadow": [], "probe": []},
+            EventKind.ALPHA_REGISTRY,
+            "fixture",
+        )
+    with pytest.raises(ValueError, match="Alpha is active; demote it before enrolling a paper probe"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=5, now=NOW)
+    registry = await repository.get("registry")
+    assert registry == {"generation": 5, "active": [definition.version_id], "shadow": [], "probe": []}
+
+
+async def test_runtime_acknowledgment_records_probe_version_ids(repository):
+    # status() has no `now=`: it reads the real clock, so enrol at the real clock.
+    real_now = datetime.now(UTC)
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=real_now)
+    snapshot = await repository.snapshot(now=real_now)
+    await repository.acknowledge(snapshot, run_id="run-1")
+    assert (await repository.get("runtime/registry"))["probe"] == [definition.version_id]
+    assert (await repository.status(run_id="run-1"))["probe"] == 1
 
 
 async def test_legacy_registry_payload_without_probe_key_still_reads(repository):

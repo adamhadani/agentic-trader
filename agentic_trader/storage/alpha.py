@@ -48,6 +48,13 @@ def _normalized(registry):
     return {**_empty_registry(), **registry} if registry else _empty_registry()
 
 
+def _aware(now):
+    """A naive clock silently means local time; probe terms and kills cannot guess."""
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("Timezone-aware datetime required")
+    return now
+
+
 class AlphaRepository:
     def __init__(
         self,
@@ -55,12 +62,13 @@ class AlphaRepository:
         policy: AlphaPipelineConfig | None = None,
         *,
         validation_policy: ValidationPolicy | None = None,
-        probe_policy: ProbePolicy | None = None,
     ):
         self.store = store
         self.policy = policy or AlphaPipelineConfig()
         self.validation_policy = validation_policy or ValidationPolicy()
-        self.probe_policy = probe_policy or ProbePolicy()
+        # The probe policy is code-level and single-sourced: admission
+        # (storage/workflow.py) reads the same default, never an injected one.
+        self.probe_policy = ProbePolicy()
 
     def _variance_family_key(self, timeframe):
         return f"family/{timeframe}/{self.validation_policy.return_timeline}"
@@ -252,8 +260,12 @@ class AlphaRepository:
             )
 
     async def _change(self, version_id, *, actor, expected_generation, mode, days=None, renew=False, now=None):
-        now = now or datetime.now(UTC)
+        now = _aware(now) if now else datetime.now(UTC)
         async with self.store.db.session_factory() as session, session.begin():
+            if mode == "probe":
+                # Enrolment enqueues a notification, which belongs to the trading
+                # admission scope. Lock order everywhere: admission, then alpha.
+                await self.store.lock(session)
             await self.store.lock(session, resource="alpha")
             version = await self._get(session, f"version/{version_id}")
             if not version:
@@ -357,6 +369,12 @@ class AlphaRepository:
         version_id = definition.version_id
         if not is_paper_scope(self.store.scope):
             raise ValueError("Paper probes run only on the Alpaca paper account scope")
+        # active → probe is not a transition the state machine has; the supersession
+        # loop in _change would otherwise demote the live alpha without saying so.
+        for current_id in registry["active"]:
+            current = await self._get(session, f"version/{current_id}")
+            if current["definition"]["alpha_id"] == definition.alpha_id:
+                raise ValueError("Alpha is active; demote it before enrolling a paper probe")
         days = self.policy.probe_term_days if days is None else days
         if type(days) is not int or not 1 <= days <= self.probe_policy.max_term_days:
             raise ValueError(f"Probe term must be 1..{self.probe_policy.max_term_days} days")
@@ -384,17 +402,33 @@ class AlphaRepository:
             raise ValueError(f"All {self.policy.max_probes} probe slots are in use")
         if await self._symbol_owner_conflict(session, definition, (*registry["active"], *others)):
             raise ValueError("Instrument already has an alpha owner; demote it or wait for its probe to end")
+        expires_at = (now + timedelta(days=days)).isoformat()
         payload = {
             "policy": policy_document(self.probe_policy),
+            # Operator limits in force at enrolment, pinned as evidence only: they
+            # are deliberately outside `policy`, which is the liveness identity.
+            "limits": {"max_probes": self.policy.max_probes, "probe_risk_dollars": self.policy.probe_risk_dollars},
             "assessment": assessment.to_dict(),
             "first_enrolled_at": first.isoformat(),
             "enrolled_at": now.isoformat(),
-            "expires_at": (now + timedelta(days=days)).isoformat(),
+            "expires_at": expires_at,
             "term_days": days,
             "renewals": (previous["renewals"] + 1) if renew and previous else 0,
             "actor": actor,
         }
         await self._append(session, f"probe/{version_id}", payload, EventKind.ALPHA_REGISTRY, actor)
+        action = "renewed" if renew else "enrolled"
+        await self.store.add_notification(
+            session,
+            f"alpha-probe/{version_id}/{action}/{now.isoformat()}",
+            NotificationKind.MESSAGE,
+            {
+                "text": f"🧪 Paper probe {definition.alpha_id} {action} by {actor}: "
+                f"{', '.join(definition.eligible_symbols)}; expires {expires_at}; "
+                f"risk capped at ${self.policy.probe_risk_dollars:,.0f}; paper account only.",
+                "formatted": False,
+            },
+        )
 
     async def enrol_probe(self, version_id, *, actor, expected_generation, days=None, renew=False, now=None):
         return await self._change(
@@ -409,7 +443,7 @@ class AlphaRepository:
 
     async def sweep_probes(self, *, now=None) -> list[str]:
         """Make derived expiry/kill durable. Correctness never depends on this running."""
-        now = now or datetime.now(UTC)
+        now = _aware(now) if now else datetime.now(UTC)
         retired: list[str] = []
         async with self.store.db.session_factory() as session, session.begin():
             # Lock order everywhere: trading admission, then alpha registry.
@@ -447,7 +481,7 @@ class AlphaRepository:
         return retired
 
     async def probe_report(self, *, now=None) -> list[dict]:
-        now = now or datetime.now(UTC)
+        now = _aware(now) if now else datetime.now(UTC)
         async with self.store.db.session_factory() as session:
             registry = _normalized(await self._get(session, REGISTRY_KEY))
             report = []
@@ -489,7 +523,7 @@ class AlphaRepository:
             return report
 
     async def snapshot(self, *, now=None) -> RegistrySnapshot:
-        now = now or datetime.now(UTC)
+        now = _aware(now) if now else datetime.now(UTC)
         async with self.store.db.session_factory() as session:
             registry = _normalized(await self._get(session, REGISTRY_KEY))
             members = {
@@ -558,6 +592,8 @@ class AlphaRepository:
             "generation": snapshot.generation,
             "run_id": run_id,
             "active": [d.version_id for d in snapshot.active],
+            # Probes place orders, so the installed record must name them too.
+            "probe": [d.version_id for d in snapshot.probe],
         }
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session, resource="alpha")
@@ -577,6 +613,7 @@ class AlphaRepository:
             "generation": snapshot.generation,
             "active": len(snapshot.active),
             "shadow": len(snapshot.shadow),
+            "probe": len(snapshot.probe),
             "installed": installed,
             "latest_research": await self.get("research/latest"),
             "latest_observation": await self.get("observation/latest"),
