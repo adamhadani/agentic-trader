@@ -58,6 +58,7 @@ from agentic_trader.presentation.formatters import (
     TerminalFormatter,
 )
 from agentic_trader.research.alpha.evidence import load_forward_evidence
+from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
 from agentic_trader.risk import requires_account_risk
@@ -291,8 +292,16 @@ class TradingCopilot:
         timeframe: str | None = None,
     ):
         async with self._scan_lock:
+            if not dry_run:
+                # Durable visibility only; snapshot() already excludes non-live probes.
+                try:
+                    await self.alpha_repository.sweep_probes()
+                except Exception:
+                    logger.exception(
+                        "Paper-probe sweep failed; retrying next scan", extra={"event": "probe_sweep_failed"}
+                    )
             alpha_snapshot = await self.alpha_repository.snapshot()
-            self.strategy_engine.registry.install_alphas(alpha_snapshot.active)
+            self.strategy_engine.registry.install_alphas(alpha_snapshot.active, alpha_snapshot.probe)
             if not dry_run:
                 await self.alpha_repository.acknowledge(alpha_snapshot, run_id=RUN_ID)
             await self.check_halt_state()
@@ -497,6 +506,7 @@ class TradingCopilot:
                                 "alpha_score": candidate.alpha_score,
                                 "contributors": candidate.contributors,
                                 "account_risk_fingerprint": account_risk.fingerprint if account_risk else None,
+                                PAPER_PROBE_TAG: candidate.probe,
                             },
                             contract=eval_res.contract,
                             strategy=candidate.strategy,
@@ -515,6 +525,9 @@ class TradingCopilot:
                                 "eval_res": eval_res.model_dump(mode="json"),
                                 "strategy": candidate.strategy,
                                 "regime_summary": regime.summary_text,
+                                "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars
+                                if candidate.probe
+                                else None,
                             },
                         )
 

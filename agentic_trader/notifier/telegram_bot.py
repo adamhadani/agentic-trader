@@ -1029,6 +1029,7 @@ class TelegramNotifier:
         strategy: str,
         signal_id: int,
         regime_summary: str | None = None,
+        probe_risk_cap: float | None = None,
     ) -> int | None:
         # Always output to terminal/logs
         print(

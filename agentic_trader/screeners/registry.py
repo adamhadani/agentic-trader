@@ -95,7 +95,12 @@ class ConflictResolver:
             # alpha combination model; calibrated combinations remain shadow-only.
             winner = min(
                 sym_candidates,
-                key=lambda candidate: (candidate.strategy, candidate.timeframe, candidate.alpha_version or ""),
+                key=lambda candidate: (
+                    candidate.probe,
+                    candidate.strategy,
+                    candidate.timeframe,
+                    candidate.alpha_version or "",
+                ),
             )
             contributors = tuple(
                 sorted({f"{c.strategy}/{c.timeframe}/{c.alpha_version or 'builtin'}" for c in sym_candidates})
@@ -111,14 +116,17 @@ class StrategyRegistry:
     def __init__(self) -> None:
         self._strategies: dict[str, BaseStrategy] = {}
 
-    def install_alphas(self, definitions: tuple[AlphaDefinition, ...]) -> int:
+    def install_alphas(self, definitions: tuple[AlphaDefinition, ...], probes: tuple[AlphaDefinition, ...] = ()) -> int:
         """Build then atomically swap one complete registry snapshot between scans."""
         strategies = {sid: s for sid, s in self._strategies.items() if not isinstance(s, FormulaicAlphaStrategy)}
         for definition in definitions:
             strategy = FormulaicAlphaStrategy(definition)
             strategies[strategy.strategy_id] = strategy
+        for definition in probes:
+            strategy = FormulaicAlphaStrategy(definition, probe=True)
+            strategies[strategy.strategy_id] = strategy
         self._strategies = strategies
-        return len(definitions)
+        return len(definitions) + len(probes)
 
     def register(self, strategy: BaseStrategy) -> None:
         """Register a strategy instance into the registry."""
@@ -189,9 +197,10 @@ class StrategyRegistry:
             if strat and strat.is_enabled(config) and strat not in active_strats:
                 active_strats.append(strat)
 
-        # Include any active promoted formulaic alphas in parallel screening
-        for sid, strat in list(self._strategies.items()):
-            if sid.startswith("alpha_") and strat.is_enabled(config) and strat not in active_strats:
+        # Include every installed formulaic alpha (active and paper probe); the
+        # registry snapshot, not a naming convention, decides what is installed.
+        for strat in list(self._strategies.values()):
+            if isinstance(strat, FormulaicAlphaStrategy) and strat.is_enabled(config) and strat not in active_strats:
                 active_strats.append(strat)
 
         return active_strats
