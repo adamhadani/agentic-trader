@@ -273,6 +273,70 @@ def test_format_alphas_dashboard_html_universe():
     assert "--auto-promote" not in card
 
 
+def test_dashboard_counts_paper_probes():
+    snapshot = RegistrySnapshot(3, (), (), (AlphaDefinition("alpha_p", "P", "close", timeframe="1d"),))
+    text = TelegramHtmlFormatter.format_alphas_dashboard_html(
+        snapshot, evidence={"days": 7, "candidates": [], "truncated": False}
+    )
+    assert "1 paper probe" in text
+
+
+def _probe_row(**overrides):
+    row = {
+        "version_id": "v1",
+        "alpha_id": "alpha_p",
+        "symbols": ["AAPL"],
+        "expires_at": "2026-10-01T00:00:00+00:00",
+        "renewals": 0,
+        "live": True,
+        "blocked_reason": None,
+        "forward": {"trades": 3, "unknown": 0, "cumulative_r": -1.5, "kill_r": -4.0, "killed": False},
+        "days_remaining": 12.3,
+        "kill_distance_r": 2.5,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_dashboard_renders_a_line_per_live_probe_and_escapes_a_hostile_alpha_id():
+    snapshot = RegistrySnapshot(3, (), (), (AlphaDefinition("alpha_p", "P", "close", timeframe="1d"),))
+    probes = [_probe_row(alpha_id="<b>x</b>")]
+    text = TelegramHtmlFormatter.format_alphas_dashboard_html(
+        snapshot, evidence={"days": 7, "candidates": [], "truncated": False}, probes=probes
+    )
+    assert "&lt;b&gt;x&lt;/b&gt;" in text
+    assert "<b>x</b>" not in text
+    assert "12d left" in text
+    assert "3 trades" in text
+    assert "-1.50R" in text
+    assert "2.50R to kill" in text
+
+
+def test_dashboard_skips_a_non_live_probe_row():
+    snapshot = RegistrySnapshot(3, (), (), (AlphaDefinition("alpha_p", "P", "close", timeframe="1d"),))
+    probes = [_probe_row(live=False, blocked_reason="probe term expired; renew it or let it retire")]
+    text = TelegramHtmlFormatter.format_alphas_dashboard_html(
+        snapshot, evidence={"days": 7, "candidates": [], "truncated": False}, probes=probes
+    )
+    assert "d left" not in text
+
+
+def test_dashboard_html_identical_with_and_without_the_probes_argument():
+    snapshot = RegistrySnapshot(3, (), (), (AlphaDefinition("alpha_p", "P", "close", timeframe="1d"),))
+    evidence = {"days": 7, "candidates": [], "truncated": False}
+    omitted = TelegramHtmlFormatter.format_alphas_dashboard_html(snapshot, evidence=evidence)
+    explicit_none = TelegramHtmlFormatter.format_alphas_dashboard_html(snapshot, evidence=evidence, probes=None)
+    assert omitted == explicit_none
+
+
+def test_dashboard_html_unchanged_for_an_empty_registry_even_with_probes_given():
+    snapshot = RegistrySnapshot(3, (), ())
+    evidence = {"days": 7, "candidates": [], "truncated": False}
+    baseline = TelegramHtmlFormatter.format_alphas_dashboard_html(snapshot, evidence=evidence)
+    with_probes = TelegramHtmlFormatter.format_alphas_dashboard_html(snapshot, evidence=evidence, probes=[_probe_row()])
+    assert baseline == with_probes
+
+
 def test_telegram_html_sanitizer():
     # 1. Unexpected closing tags (the exact error user hit)
     bad_tags = "<b>Hello</i></b></b>"

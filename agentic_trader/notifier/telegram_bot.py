@@ -65,6 +65,7 @@ def format_alert_card(
     portfolio_cash: float = DEFAULT_PORTFOLIO_CASH,
     execution_mode: str = ExecutionMode.PAPER,
     regime_summary: str | None = None,
+    probe_risk_cap: float | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
@@ -170,7 +171,12 @@ def format_alert_card(
         f"⚡ <b>Execution ({execution_mode.upper()}):</b>\n"
         f"{exec_instr}"
     )
-    return text
+    if probe_risk_cap is None:
+        return text
+    return (
+        f"🧪 <b>PAPER PROBE</b> — risk capped at ${probe_risk_cap:,.0f}; paper account only; "
+        "earns no promotion credit\n\n" + text
+    )
 
 
 def format_terminal_card(
@@ -1029,6 +1035,7 @@ class TelegramNotifier:
         strategy: str,
         signal_id: int,
         regime_summary: str | None = None,
+        probe_risk_cap: float | None = None,
     ) -> int | None:
         # Always output to terminal/logs
         print(
@@ -1054,6 +1061,7 @@ class TelegramNotifier:
             self.portfolio_cash,
             execution_mode=self.execution_mode,
             regime_summary=regime_summary,
+            probe_risk_cap=probe_risk_cap,
         )
 
         mode_lower = self.execution_mode.lower()

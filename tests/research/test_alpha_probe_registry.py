@@ -1,0 +1,569 @@
+from dataclasses import asdict, replace
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from sqlalchemy import select
+
+from agentic_trader.constants import SignalStatus
+from agentic_trader.execution.durable import EventKind, WorkKind
+from agentic_trader.research.alpha.probe import policy_document
+from agentic_trader.research.alpha.validation import ValidationPolicy
+from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.models import SignalRecord, WorkItemRecord
+from tests.research.probe_fixtures import criterion, make_definition, paper_database, qualification, seed
+
+
+NOW = datetime(2026, 9, 21, 15, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+async def db(tmp_path):
+    database = paper_database(tmp_path)
+    await database.init_db()
+    yield database
+    await database.engine.dispose()
+
+
+@pytest.fixture
+def repository(db):
+    return AlphaRepository(db.workflows)
+
+
+async def close_trade(db, definition, pnl, *, risk=100.0, when=NOW):
+    sid = await db.record_signal(
+        definition.eligible_symbols[0],
+        definition.alpha_id,
+        "LONG",
+        100,
+        98,
+        104,
+        risk,
+        asset_class="EQUITY",
+        quantity=1,
+        timeframe="1d",
+        alpha_version=definition.version_id,
+        alpha_policy=definition.execution.to_dict(),
+    )
+    async with db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, sid)
+        row.status, row.realized_pnl, row.exit_timestamp = "CLOSED_LOSS" if pnl < 0 else "CLOSED_WIN", pnl, when
+    return sid
+
+
+async def test_enrolment_journals_state_and_snapshot_exposes_the_probe(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    generation = await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    assert generation == 1
+    snapshot = await repository.snapshot(now=NOW)
+    assert snapshot.probe == (definition,) and not snapshot.active and not snapshot.shadow
+    record = await repository.get(f"probe/{definition.version_id}")
+    assert record["policy"] == policy_document()
+    assert record["term_days"] == 30 and record["renewals"] == 0
+    assert record["expires_at"] == (NOW + timedelta(days=30)).isoformat()
+    assert record["first_enrolled_at"] == record["enrolled_at"] == NOW.isoformat()
+    await repository.rebuild()
+    assert (await repository.snapshot(now=NOW)).probe == (definition,)
+
+
+@pytest.mark.parametrize(("paper", "mode"), [(False, "alpaca"), (True, "paper")])
+async def test_only_the_brokerage_paper_scope_may_enrol(tmp_path, paper, mode):
+    database = paper_database(tmp_path, paper=paper, mode=mode)
+    await database.init_db()
+    repository = AlphaRepository(database.workflows)
+    definition = make_definition()
+    await seed(repository, definition)
+    with pytest.raises(ValueError, match="Alpaca paper"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    await database.engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("definition", "decision", "message"),
+    [
+        (make_definition(timeframe="4h"), qualification(), "native daily"),
+        (make_definition(data_feed="yfinance"), qualification(), "deployment feed"),
+        (make_definition(), qualification(cost_stress=criterion(-1.0, "fail")), "cost_stress_below_probe_floor"),
+        (make_definition(), None, "qualification_missing"),
+    ],
+)
+async def test_ineligible_candidates_are_refused_with_reasons(repository, definition, decision, message):
+    await repository.register(definition, actor="test")
+    if decision is not None:
+        async with repository.store.db.session_factory() as session, session.begin():
+            await repository._append(
+                session, f"qualification/{definition.version_id}", decision, EventKind.ALPHA_RESEARCH, "fixture"
+            )
+    with pytest.raises(ValueError, match=message):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    assert not (await repository.snapshot(now=NOW)).probe
+
+
+async def test_stale_generation_and_term_bounds_are_refused(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    with pytest.raises(ValueError, match="Registry changed"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=7, now=NOW)
+    for days in (0, 181):
+        with pytest.raises(ValueError, match="term"):
+            await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=days, now=NOW)
+
+
+async def test_symbol_ownership_and_slot_limit_ignore_expired_probes(repository):
+    first, rival = make_definition(), make_definition("alpha_rival")
+    await seed(repository, first)
+    await seed(repository, rival)
+    await repository.enrol_probe(first.version_id, actor="op", expected_generation=0, days=1, now=NOW)
+    with pytest.raises(ValueError, match="already has an alpha owner"):
+        await repository.enrol_probe(rival.version_id, actor="op", expected_generation=1, now=NOW)
+    later = NOW + timedelta(days=2)
+    # No sweep has run; the expired enrolment must not block the symbol.
+    assert await repository.enrol_probe(rival.version_id, actor="op", expected_generation=1, now=later) == 2
+    assert (await repository.snapshot(now=later)).probe == (rival,)
+
+
+async def test_slot_limit(repository):
+    repository.policy = repository.policy.model_copy(update={"max_probes": 1})
+    first, second = make_definition(), make_definition("alpha_second", "MSFT")
+    await seed(repository, first)
+    await seed(repository, second)
+    await repository.enrol_probe(first.version_id, actor="op", expected_generation=0, now=NOW)
+    with pytest.raises(ValueError, match="probe slots"):
+        await repository.enrol_probe(second.version_id, actor="op", expected_generation=1, now=NOW)
+
+
+async def test_a_version_lives_in_exactly_one_list_and_new_versions_supersede(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.set_shadow(definition.version_id, actor="op", expected_generation=0)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=1, now=NOW)
+    snapshot = await repository.snapshot(now=NOW)
+    assert snapshot.probe == (definition,) and not snapshot.shadow
+    successor = replace(definition, expression="delta(close,5)")
+    await seed(repository, successor)
+    await repository.set_shadow(successor.version_id, actor="op", expected_generation=2)
+    snapshot = await repository.snapshot(now=NOW)
+    assert snapshot.shadow == (successor,) and not snapshot.probe
+
+
+async def qualify_for_promotion(repository, alpha_id, symbol, *, expected_generation, incumbents=(), holdout=None):
+    """Build the same shadow/qualification/session/decision evidence as
+    test_alpha_journal.py::test_promotion_requires_decisions_and_frozen_incumbents_then_replays,
+    so only the symbol-ownership check can refuse the resulting promote().
+    """
+    rival = make_definition(alpha_id, symbol, data_feed="alpaca:sip")
+    await repository.register(rival, actor="test")
+    generation = await repository.set_shadow(rival.version_id, actor="test", expected_generation=expected_generation)
+    manifest = {
+        # Holdout consumption is keyed by symbol alone, so a second qualification on
+        # the same instrument needs its own untouched interval identity.
+        "symbol": holdout or symbol,
+        "timeframe": "1d",
+        "feed": "alpaca:sip",
+        "adjustment": "raw",
+        "holdout_start": "2025-01-01",
+        "end": "2025-06-01",
+        # Probes are not incumbents; only the active set is frozen here.
+        "incumbents": [d.to_dict() for d in incumbents],
+    }
+    run = {
+        "policy": asdict(ValidationPolicy()),
+        "trial_count": 1,
+        "trials": [{"definition": rival.to_dict(), "status": "evaluated"}],
+        "holdout_start": 600,
+    }
+    run_id = f"qualified-{rival.version_id}"
+    await repository.record_run(run_id, run, manifest)
+    await repository.begin_holdout(run_id, rival.version_id)
+    await repository.record_qualification(
+        run_id,
+        rival.version_id,
+        {
+            "qualified": True,
+            "reasons": [],
+            "eligible_symbols": [symbol],
+            "manifest": manifest,
+            "policy": asdict(ValidationPolicy()),
+        },
+    )
+    timestamp = NOW.isoformat()
+    for day in range(20):
+        timestamp = (NOW - timedelta(days=20 - day)).isoformat()
+        await repository.record_forecast(
+            f"{run_id}-session-{day}",
+            {
+                "version_id": rival.version_id,
+                "valid": True,
+                "symbol": symbol,
+                "observed_at": timestamp,
+                "completed_at": timestamp,
+                "decision": 0,
+            },
+        )
+    for decision in range(10):
+        await repository.record_forecast(
+            f"{run_id}-decision-{decision}",
+            {
+                "version_id": rival.version_id,
+                "valid": True,
+                "symbol": symbol,
+                "observed_at": timestamp,
+                "completed_at": timestamp,
+                "decision": 1,
+            },
+        )
+    return rival, generation
+
+
+async def test_live_probe_blocks_promotion_of_a_rival_on_the_same_symbol(repository):
+    # promote() has no `now=` parameter: it always consults the REAL clock internally
+    # (qualification-age check, `_live_probes`). Enrol at the real clock with the
+    # default 30-day term so the probe is unconditionally live moments later when
+    # promote() runs, regardless of what calendar date the suite happens to run on.
+    real_now = datetime.now(UTC)
+    probe_definition = make_definition()
+    await seed(repository, probe_definition)
+    await repository.enrol_probe(probe_definition.version_id, actor="op", expected_generation=0, now=real_now)
+    rival, generation = await qualify_for_promotion(repository, "alpha_rival", "AAPL", expected_generation=1)
+    with pytest.raises(ValueError, match=r"owned by a live paper probe \(alpha_probe\)"):
+        await repository.promote(rival.version_id, actor="test", expected_generation=generation)
+    assert not (await repository.snapshot(now=real_now)).active
+
+
+async def test_an_active_owner_keeps_the_original_promotion_refusal(repository):
+    real_now = datetime.now(UTC)
+    incumbent, generation = await qualify_for_promotion(repository, "alpha_incumbent", "AAPL", expected_generation=0)
+    await repository.promote(incumbent.version_id, actor="test", expected_generation=generation)
+    rival, generation = await qualify_for_promotion(
+        repository,
+        "alpha_rival",
+        "AAPL",
+        expected_generation=generation + 1,
+        incumbents=[incumbent],
+        holdout="AAPL-SECOND",
+    )
+    with pytest.raises(ValueError, match="evaluate a combined portfolio in shadow first"):
+        await repository.promote(rival.version_id, actor="test", expected_generation=generation)
+    assert (await repository.snapshot(now=real_now)).active == (incumbent,)
+
+
+async def test_expired_unswept_probe_does_not_block_promotion(repository):
+    # Same real-clock constraint as above: enrol a probe that is already expired
+    # relative to the real clock (started two days ago with a one-day term) so
+    # promote()'s internal `datetime.now(UTC)` sees it as expired regardless of
+    # the calendar date, with no monkeypatching required.
+    real_now = datetime.now(UTC)
+    probe_definition = make_definition()
+    await seed(repository, probe_definition)
+    await repository.enrol_probe(
+        probe_definition.version_id, actor="op", expected_generation=0, days=1, now=real_now - timedelta(days=2)
+    )
+    rival, generation = await qualify_for_promotion(repository, "alpha_rival", "AAPL", expected_generation=1)
+    # No sweep has run; the expired probe is still in the registry's probe list.
+    await repository.promote(rival.version_id, actor="test", expected_generation=generation)
+    snapshot = await repository.snapshot(now=real_now)
+    assert snapshot.active == (rival,) and not snapshot.probe
+
+
+async def test_renewal_extends_from_now_and_requires_membership(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    with pytest.raises(ValueError, match="not a current probe"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, renew=True, now=NOW)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=30, now=NOW)
+    later = NOW + timedelta(days=20)
+    await repository.enrol_probe(
+        definition.version_id, actor="op", expected_generation=1, days=30, renew=True, now=later
+    )
+    record = await repository.get(f"probe/{definition.version_id}")
+    assert record["renewals"] == 1
+    assert record["first_enrolled_at"] == NOW.isoformat()
+    assert record["expires_at"] == (later + timedelta(days=30)).isoformat()
+
+
+async def test_kill_rule_is_sticky_across_renewal_and_re_enrolment(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    for _ in range(4):
+        await close_trade(db, definition, -100.0, when=NOW + timedelta(days=1))
+    later = NOW + timedelta(days=2)
+    assert not (await repository.snapshot(now=later)).probe
+    with pytest.raises(ValueError, match="kill"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=1, renew=True, now=later)
+    assert await repository.sweep_probes(now=later) == [definition.version_id]
+    with pytest.raises(ValueError, match="kill"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=2, now=later)
+
+
+async def test_trades_before_first_enrolment_do_not_count(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    for _ in range(5):
+        await close_trade(db, definition, -100.0, when=NOW - timedelta(days=1))
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    report = await repository.probe_report(now=NOW)
+    assert report[0]["forward"]["trades"] == 0 and report[0]["live"] is True
+
+
+async def test_sweep_retires_expired_probes_once_with_one_notice(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=1, now=NOW)
+    assert await repository.sweep_probes(now=NOW) == []
+    later = NOW + timedelta(days=2)
+    assert await repository.sweep_probes(now=later) == [definition.version_id]
+    assert await repository.sweep_probes(now=later) == []
+    registry = await repository.get("registry")
+    assert registry["probe"] == [] and registry["generation"] == 2
+    notices = await notification_payloads(db)
+    # Enrolment itself now emits one notice, so the sweep's retirement notice is
+    # the second and only other one however many times the sweep runs.
+    assert len(notices) == 2
+    retirements = [payload for payload in notices if "retired" in payload]
+    assert len(retirements) == 1 and "expired" in retirements[0]
+
+
+async def notification_payloads(db):
+    async with db.session_factory() as session:
+        rows = (
+            await session.scalars(
+                select(WorkItemRecord)
+                .where(WorkItemRecord.kind == WorkKind.NOTIFICATION)
+                .order_by(WorkItemRecord.sequence)
+            )
+        ).all()
+    return [row.payload for row in rows]
+
+
+async def test_enrolment_and_renewal_each_emit_one_durable_notice(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=30, now=NOW)
+    notices = await notification_payloads(db)
+    assert len(notices) == 1
+    assert "enrolled" in notices[0] and definition.alpha_id in notices[0] and "op" in notices[0]
+    assert (NOW + timedelta(days=30)).isoformat() in notices[0]
+    assert "AAPL" in notices[0] and "paper account only" in notices[0]
+    later = NOW + timedelta(days=10)
+    await repository.enrol_probe(
+        definition.version_id, actor="op2", expected_generation=1, days=30, renew=True, now=later
+    )
+    notices = await notification_payloads(db)
+    assert len(notices) == 2 and notices[0] != notices[1]
+    assert "renewed" in notices[1] and "op2" in notices[1]
+
+
+async def test_a_refused_enrolment_leaves_no_notice_and_no_journal(db, repository):
+    definition = make_definition(data_feed="yfinance")
+    await seed(repository, definition)
+    with pytest.raises(ValueError, match="deployment feed"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    assert await notification_payloads(db) == []
+    assert await repository.get(f"probe/{definition.version_id}") is None
+
+
+async def test_enrolment_pins_the_configured_limits_as_evidence(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    limits = {"max_probes": repository.policy.max_probes, "probe_risk_dollars": repository.policy.probe_risk_dollars}
+    assert (await repository.get(f"probe/{definition.version_id}"))["limits"] == limits
+    later = NOW + timedelta(days=1)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=1, renew=True, now=later)
+    record = await repository.get(f"probe/{definition.version_id}")
+    assert record["limits"] == limits and record["renewals"] == 1
+    # Pinned limits are evidence only; they must not join the policy identity check.
+    assert "limits" not in record["policy"]
+    assert (await repository.snapshot(now=later)).probe == (definition,)
+
+
+@pytest.mark.parametrize("call", ["enrol_probe", "sweep_probes", "probe_report", "snapshot"])
+async def test_a_naive_clock_is_refused_and_journals_nothing(repository, call):
+    definition = make_definition()
+    await seed(repository, definition)
+    naive = NOW.replace(tzinfo=None)
+    with pytest.raises(ValueError, match="Timezone-aware datetime required"):
+        if call == "enrol_probe":
+            await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=naive)
+        else:
+            await getattr(repository, call)(now=naive)
+    assert await repository.get(f"probe/{definition.version_id}") is None
+    assert await repository.get("registry") is None
+
+
+async def test_an_active_alpha_cannot_be_enrolled_as_a_probe(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    async with repository.store.db.session_factory() as session, session.begin():
+        await repository.store.lock(session, resource="alpha")
+        await repository._append(
+            session,
+            "registry",
+            {"generation": 5, "active": [definition.version_id], "shadow": [], "probe": []},
+            EventKind.ALPHA_REGISTRY,
+            "fixture",
+        )
+    with pytest.raises(ValueError, match="Alpha is active; demote it before enrolling a paper probe"):
+        await repository.enrol_probe(definition.version_id, actor="op", expected_generation=5, now=NOW)
+    registry = await repository.get("registry")
+    assert registry == {"generation": 5, "active": [definition.version_id], "shadow": [], "probe": []}
+
+
+async def test_runtime_acknowledgment_records_probe_version_ids(repository):
+    # status() has no `now=`: it reads the real clock, so enrol at the real clock.
+    real_now = datetime.now(UTC)
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=real_now)
+    snapshot = await repository.snapshot(now=real_now)
+    await repository.acknowledge(snapshot, run_id="run-1")
+    assert (await repository.get("runtime/registry"))["probe"] == [definition.version_id]
+    assert (await repository.status(run_id="run-1"))["probe"] == 1
+
+
+async def test_legacy_registry_payload_without_probe_key_still_reads(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    async with repository.store.db.session_factory() as session, session.begin():
+        await repository._append(
+            session, "registry", {"generation": 3, "active": [], "shadow": []}, EventKind.ALPHA_REGISTRY, "fixture"
+        )
+    assert (await repository.snapshot(now=NOW)).probe == ()
+    assert await repository.enrol_probe(definition.version_id, actor="op", expected_generation=3, now=NOW) == 4
+
+
+async def test_demote_removes_a_probe(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    await repository.demote(definition.version_id, actor="op", expected_generation=1)
+    assert not (await repository.snapshot(now=NOW)).probe
+
+
+async def test_retiring_a_probe_leaves_its_open_position_untouched(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=1, now=NOW)
+    sid = await db.record_signal(
+        "AAPL",
+        definition.alpha_id,
+        "LONG",
+        100,
+        98,
+        104,
+        100.0,
+        asset_class="EQUITY",
+        quantity=1,
+        timeframe="1d",
+        alpha_version=definition.version_id,
+        alpha_policy=definition.execution.to_dict(),
+    )
+    async with db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, sid)
+        row.status, row.broker_order_id = SignalStatus.EXECUTED, "entry-1"
+        before = (row.status, row.broker_order_id, row.stop_loss, row.take_profit)
+    await repository.sweep_probes(now=NOW + timedelta(days=2))
+    async with db.session_factory() as session:
+        row = await session.get(SignalRecord, sid)
+        assert (row.status, row.broker_order_id, row.stop_loss, row.take_profit) == before
+
+
+async def test_probe_report_computes_days_remaining_and_kill_distance(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=30, now=NOW)
+    for _ in range(2):
+        await close_trade(db, definition, -100.0, when=NOW + timedelta(days=1))
+    report = await repository.probe_report(now=NOW + timedelta(days=10))
+    row = report[0]
+    assert row["days_remaining"] == 20.0
+    assert row["kill_distance_r"] == 2.0
+
+
+async def corrupt_enrolment(repository, definition, corruption):
+    record = await repository.get(f"probe/{definition.version_id}")
+    if corruption is None:
+        record.pop("first_enrolled_at")
+    else:
+        record.update(corruption)
+    async with repository.store.db.session_factory() as session, session.begin():
+        await repository.store.lock(session, resource="alpha")
+        await repository._append(session, f"probe/{definition.version_id}", record, EventKind.ALPHA_REGISTRY, "fixture")
+
+
+async def two_probes_one_corrupt(repository, corruption):
+    healthy, broken = make_definition("alpha_healthy", "MSFT"), make_definition("alpha_broken", "AAPL")
+    candidate = make_definition("alpha_candidate", "TSLA")
+    for each in (healthy, broken, candidate):
+        await seed(repository, each)
+    await repository.set_shadow(candidate.version_id, actor="op", expected_generation=0)
+    await repository.enrol_probe(healthy.version_id, actor="op", expected_generation=1, days=30, now=NOW)
+    # A longer term so the corrupt probe is still inside its term when the sweep
+    # runs: expiry is decided before the corrupt fields are ever read.
+    await repository.enrol_probe(broken.version_id, actor="op", expected_generation=2, days=120, now=NOW)
+    await corrupt_enrolment(repository, broken, corruption)
+    return healthy, broken, candidate
+
+
+@pytest.mark.parametrize("corruption", [{"expires_at": "not a date"}, None])
+async def test_one_unusable_enrolment_never_hides_the_rest_of_the_registry(repository, corruption):
+    healthy, broken, candidate = await two_probes_one_corrupt(repository, corruption)
+    snapshot = await repository.snapshot(now=NOW)
+    assert snapshot.probe == (healthy,) and snapshot.shadow == (candidate,) and not snapshot.active
+    rows = {row["alpha_id"]: row for row in await repository.probe_report(now=NOW)}
+    assert rows["alpha_healthy"]["live"] is True and rows["alpha_healthy"]["forward"]["trades"] == 0
+    bad = rows["alpha_broken"]
+    assert bad["live"] is False and bad["blocked_reason"]
+    assert bad["forward"] is None and bad["days_remaining"] is None and bad["kill_distance_r"] is None
+    assert bad["symbols"] == ["AAPL"] and bad["version_id"] == broken.version_id
+
+
+@pytest.mark.parametrize("corruption", [{"expires_at": "not a date"}, None])
+async def test_the_sweep_leaves_an_unusable_enrolment_in_place_and_keeps_going(repository, corruption):
+    healthy, broken, _ = await two_probes_one_corrupt(repository, corruption)
+    later = NOW + timedelta(days=40)
+    assert await repository.sweep_probes(now=later) == [healthy.version_id]
+    # A probe whose liveness cannot be evaluated is never retired on that evidence.
+    assert (await repository.get("registry"))["probe"] == [broken.version_id]
+
+
+async def test_probe_report_reports_a_missing_enrolment_instead_of_raising(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    async with repository.store.db.session_factory() as session, session.begin():
+        await repository.store.lock(session, resource="alpha")
+        await repository._append(
+            session,
+            "registry",
+            {"generation": 1, "active": [], "shadow": [], "probe": [definition.version_id]},
+            EventKind.ALPHA_REGISTRY,
+            "fixture",
+        )
+    row = (await repository.probe_report(now=NOW))[0]
+    assert row["live"] is False and "missing" in row["blocked_reason"]
+    assert (row["forward"], row["expires_at"], row["renewals"], row["days_remaining"]) == (None, None, None, None)
+
+
+async def test_quarantined_closes_neither_kill_nor_protect_a_probe(db, repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, now=NOW)
+    sids = [await close_trade(db, definition, -100.0, when=NOW + timedelta(days=1)) for _ in range(4)]
+    later = NOW + timedelta(days=2)
+    async with db.session_factory() as session, session.begin():
+        (await session.get(SignalRecord, sids[0])).is_quarantined = True
+    row = (await repository.probe_report(now=later))[0]
+    assert (row["forward"]["trades"], row["forward"]["killed"], row["live"]) == (3, False, True)
+    async with db.session_factory() as session, session.begin():
+        (await session.get(SignalRecord, sids[0])).is_quarantined = False
+    row = (await repository.probe_report(now=later))[0]
+    assert (row["forward"]["trades"], row["forward"]["killed"], row["live"]) == (4, True, False)
+
+
+async def test_probe_report_days_remaining_floors_at_zero_once_expired(repository):
+    definition = make_definition()
+    await seed(repository, definition)
+    await repository.enrol_probe(definition.version_id, actor="op", expected_generation=0, days=1, now=NOW)
+    report = await repository.probe_report(now=NOW + timedelta(days=5))
+    assert report[0]["days_remaining"] == 0.0

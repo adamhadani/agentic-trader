@@ -33,6 +33,7 @@ from agentic_trader.constants import (
     SignalStatus,
 )
 from agentic_trader.execution.durable import EventKind, NotificationKind
+from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.runtime import RUN_ID, validate_test_database
 from agentic_trader.storage.migrations import run_migrations_head
 from agentic_trader.storage.models import (
@@ -47,6 +48,21 @@ from agentic_trader.storage.workflow import WorkflowStore
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_paper_probe(provenance: str | None, *, signal_id: int | None = None) -> bool:
+    """Fail open: a cosmetic exit-card tag must never abort a real position close."""
+    if not provenance:
+        return False
+    try:
+        document = json.loads(provenance)
+    except json.JSONDecodeError, ValueError, TypeError:
+        logger.warning("Unreadable decision_provenance for signal %s; leaving exit notice untagged", signal_id)
+        return False
+    if not isinstance(document, dict):
+        logger.warning("Non-object decision_provenance for signal %s; leaving exit notice untagged", signal_id)
+        return False
+    return bool(document.get(PAPER_PROBE_TAG))
 
 
 class SignalDatabase:
@@ -688,6 +704,12 @@ class SignalDatabase:
                         "exit_timestamp": exit_timestamp or now_utc,
                     },
                 )
+                if notification is not None and "strategy" in notification:
+                    provenance = await session.scalar(
+                        select(SignalRecord.decision_provenance).where(*self._scope(), SignalRecord.id == signal_id)
+                    )
+                    if _is_paper_probe(provenance, signal_id=signal_id):
+                        notification = {**notification, "strategy": f"🧪 PAPER PROBE · {notification['strategy']}"}
                 if notification is not None:
                     await self.workflows.add_notification(
                         session, f"signal/{signal_id}/closed", NotificationKind.EXIT, notification

@@ -9,21 +9,26 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import delete, func, select
 
 from agentic_trader.config import AlphaPipelineConfig
-from agentic_trader.execution.durable import EventKind
+from agentic_trader.execution.durable import EventKind, NotificationKind
 from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.research.alpha.models import AlphaDefinition, DecisionStatus, RegistrySnapshot
+from agentic_trader.research.alpha.probe import ProbePolicy, assess_probe, is_paper_scope, policy_document
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.models import AlphaProjectionRecord, DomainEventRecord
+from agentic_trader.storage.probe_state import load_enrolment, load_forward_record, probe_block_reason
 from agentic_trader.storage.workflow import WorkflowStore, encode
 
+
+logger = logging.getLogger(__name__)
 
 ALPHA_EVENT_KINDS = (EventKind.ALPHA_RESEARCH, EventKind.ALPHA_REGISTRY, EventKind.ALPHA_FORECAST)
 REGISTRY_KEY = "registry"
@@ -38,6 +43,21 @@ def _forward_payloads(decisions, cursors, truncated):
     }
 
 
+def _empty_registry():
+    return {"generation": 0, "active": [], "shadow": [], "probe": []}
+
+
+def _normalized(registry):
+    return {**_empty_registry(), **registry} if registry else _empty_registry()
+
+
+def _aware(now):
+    """A naive clock silently means local time; probe terms and kills cannot guess."""
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("Timezone-aware datetime required")
+    return now
+
+
 class AlphaRepository:
     def __init__(
         self,
@@ -49,6 +69,9 @@ class AlphaRepository:
         self.store = store
         self.policy = policy or AlphaPipelineConfig()
         self.validation_policy = validation_policy or ValidationPolicy()
+        # The probe policy is code-level and single-sourced: admission
+        # (storage/workflow.py) reads the same default, never an injected one.
+        self.probe_policy = ProbePolicy()
 
     def _variance_family_key(self, timeframe):
         return f"family/{timeframe}/{self.validation_policy.return_timeline}"
@@ -239,16 +262,23 @@ class AlphaRepository:
                 session, f"qualification/{version_id}", payload, EventKind.ALPHA_RESEARCH, "qualification_service"
             )
 
-    async def _change(self, version_id, *, actor, expected_generation, mode):
+    async def _change(self, version_id, *, actor, expected_generation, mode, days=None, renew=False, now=None):
+        now = _aware(now) if now else datetime.now(UTC)
         async with self.store.db.session_factory() as session, session.begin():
+            if mode == "probe":
+                # Enrolment enqueues a notification, which belongs to the trading
+                # admission scope. Lock order everywhere: admission, then alpha.
+                await self.store.lock(session)
             await self.store.lock(session, resource="alpha")
             version = await self._get(session, f"version/{version_id}")
             if not version:
                 raise ValueError("Unknown alpha version")
-            registry = await self._get(session, REGISTRY_KEY) or {"generation": 0, "active": [], "shadow": []}
+            registry = _normalized(await self._get(session, REGISTRY_KEY))
             if registry["generation"] != expected_generation:
                 raise ValueError("Registry changed; refresh generation before retrying")
             definition = AlphaDefinition.from_dict(version["definition"])
+            if mode == "probe":
+                await self._authorize_probe(session, registry, definition, days=days, renew=renew, actor=actor, now=now)
             if mode == "active":
                 if definition.clock is not None:
                     raise ValueError("Session-clock activation requires live acquisition and execution evidence")
@@ -284,24 +314,27 @@ class AlphaRepository:
                     for symbol in definition.eligible_symbols
                 ):
                     raise ValueError("Insufficient observed shadow decisions")
-                for current_id in registry["active"]:
-                    current = await self._get(session, f"version/{current_id}")
-                    incumbent = AlphaDefinition.from_dict(current["definition"])
-                    if incumbent.alpha_id != definition.alpha_id and set(incumbent.eligible_symbols or ()) & set(
-                        definition.eligible_symbols
-                    ):
-                        raise ValueError(
-                            "Instrument already has an alpha owner; evaluate a combined portfolio in shadow first"
-                        )
+                owners = (*registry["active"], *await self._live_probes(session, registry, now))
+                conflict = await self._symbol_owner_conflict(session, definition, owners)
+                if conflict is not None and conflict in registry["probe"]:
+                    owner = await self._get(session, f"version/{conflict}")
+                    raise ValueError(
+                        f"Instrument is owned by a live paper probe ({owner['definition']['alpha_id']}); "
+                        "demote it or wait for its term to end"
+                    )
+                if conflict is not None:
+                    raise ValueError(
+                        "Instrument already has an alpha owner; evaluate a combined portfolio in shadow first"
+                    )
             # One current version per logical alpha, while immutable history remains.
-            for field in ("active", "shadow"):
+            for field in ("active", "shadow", "probe"):
                 keep = []
                 for existing in registry[field]:
                     old = await self._get(session, f"version/{existing}")
                     if old["definition"]["alpha_id"] != definition.alpha_id:
                         keep.append(existing)
                 registry[field] = keep
-            if mode in ("active", "shadow"):
+            if mode in ("active", "shadow", "probe"):
                 registry[mode].append(version_id)
                 registry[mode].sort()
             registry["generation"] += 1
@@ -317,21 +350,227 @@ class AlphaRepository:
     async def demote(self, version_id: str, *, actor: str, expected_generation: int):
         return await self._change(version_id, actor=actor, expected_generation=expected_generation, mode="inactive")
 
-    async def snapshot(self) -> RegistrySnapshot:
+    async def _symbol_owner_conflict(self, session, definition, owner_ids) -> str | None:
+        """The first of ``owner_ids`` with a different alpha_id sharing an eligible symbol."""
+        for current_id in owner_ids:
+            current = await self._get(session, f"version/{current_id}")
+            incumbent = AlphaDefinition.from_dict(current["definition"])
+            if incumbent.alpha_id != definition.alpha_id and set(incumbent.eligible_symbols or ()) & set(
+                definition.eligible_symbols
+            ):
+                return current_id
+        return None
+
+    async def _blocked(self, session, version_id, now):
+        return await probe_block_reason(
+            session,
+            scope=self.store.scope,
+            db=self.store.db,
+            version_id=version_id,
+            now=now,
+            policy=self.probe_policy,
+        )
+
+    async def _live_probes(self, session, registry, now):
+        live = []
+        for version_id in registry["probe"]:
+            try:
+                reason = await self._blocked(session, version_id, now)
+            except Exception:
+                # Fail closed for this probe, open for the scan: one unusable
+                # enrolment must not hide the whole registry from callers.
+                logger.exception("Probe %s liveness is unevaluable; treating it as not live", version_id)
+                continue
+            if reason is None:
+                live.append(version_id)
+        return live
+
+    async def _authorize_probe(self, session, registry, definition, *, days, renew, actor, now):
+        version_id = definition.version_id
+        if not is_paper_scope(self.store.scope):
+            raise ValueError("Paper probes run only on the Alpaca paper account scope")
+        # active → probe is not a transition the state machine has; the supersession
+        # loop in _change would otherwise demote the live alpha without saying so.
+        for current_id in registry["active"]:
+            current = await self._get(session, f"version/{current_id}")
+            if current["definition"]["alpha_id"] == definition.alpha_id:
+                raise ValueError("Alpha is active; demote it before enrolling a paper probe")
+        days = self.policy.probe_term_days if days is None else days
+        # `type(...) is not int` rather than isinstance: bool is an int subclass and
+        # `alpha probe --days True` is not a one-day term.
+        if type(days) is not int or not 1 <= days <= self.probe_policy.max_term_days:
+            raise ValueError(f"Probe term must be 1..{self.probe_policy.max_term_days} days")
+        if definition.clock is not None or definition.timeframe != "1d":
+            raise ValueError("Paper probes require an unclocked native daily definition")
+        if definition.data_feed not in ("alpaca:iex", "alpaca:sip"):
+            raise ValueError("Paper probes require an explicit deployment feed")
+        if not definition.eligible_symbols:
+            raise ValueError("Paper probes require an explicit symbol universe")
+        assessment = assess_probe(await self._get(session, f"qualification/{version_id}"), self.probe_policy)
+        if not assessment.eligible:
+            raise ValueError("Probe policy not met: " + ", ".join(assessment.reasons))
+        previous = await load_enrolment(session, self.store.scope, version_id)
+        first = datetime.fromisoformat(previous["first_enrolled_at"]) if previous else now
+        record = await load_forward_record(session, self.store.db, version_id, first, self.probe_policy)
+        if record["killed"]:
+            raise ValueError(
+                f"Probe kill rule reached ({record['cumulative_r']:.2f}R); this version cannot be enrolled again"
+            )
+        if renew and version_id not in registry["probe"]:
+            raise ValueError("Version is not a current probe; enrol it instead of renewing")
+        live = await self._live_probes(session, registry, now)
+        others = [v for v in live if v != version_id]
+        if len(others) >= self.policy.max_probes:
+            raise ValueError(f"All {self.policy.max_probes} probe slots are in use")
+        if await self._symbol_owner_conflict(session, definition, (*registry["active"], *others)) is not None:
+            raise ValueError("Instrument already has an alpha owner; demote it or wait for its probe to end")
+        expires_at = (now + timedelta(days=days)).isoformat()
+        payload = {
+            "policy": policy_document(self.probe_policy),
+            # Operator limits in force at enrolment, pinned as evidence only: they
+            # are deliberately outside `policy`, which is the liveness identity.
+            "limits": {"max_probes": self.policy.max_probes, "probe_risk_dollars": self.policy.probe_risk_dollars},
+            "assessment": assessment.to_dict(),
+            "first_enrolled_at": first.isoformat(),
+            "enrolled_at": now.isoformat(),
+            "expires_at": expires_at,
+            "term_days": days,
+            "renewals": (previous["renewals"] + 1) if renew and previous else 0,
+            "actor": actor,
+        }
+        await self._append(session, f"probe/{version_id}", payload, EventKind.ALPHA_REGISTRY, actor)
+        action = "renewed" if renew else "enrolled"
+        await self.store.add_notification(
+            session,
+            f"alpha-probe/{version_id}/{action}/{now.isoformat()}",
+            NotificationKind.MESSAGE,
+            {
+                "text": f"🧪 Paper probe {definition.alpha_id} {action} by {actor}: "
+                f"{', '.join(definition.eligible_symbols)}; expires {expires_at}; "
+                f"risk capped at ${self.policy.probe_risk_dollars:,.0f}; paper account only.",
+                "formatted": False,
+            },
+        )
+
+    async def enrol_probe(self, version_id, *, actor, expected_generation, days=None, renew=False, now=None):
+        return await self._change(
+            version_id,
+            actor=actor,
+            expected_generation=expected_generation,
+            mode="probe",
+            days=days,
+            renew=renew,
+            now=now,
+        )
+
+    async def sweep_probes(self, *, now=None) -> list[str]:
+        """Make derived expiry/kill durable. Correctness never depends on this running."""
+        now = _aware(now) if now else datetime.now(UTC)
+        retired: list[str] = []
+        async with self.store.db.session_factory() as session, session.begin():
+            # Lock order everywhere: trading admission, then alpha registry.
+            await self.store.lock(session)
+            await self.store.lock(session, resource="alpha")
+            registry = _normalized(await self._get(session, REGISTRY_KEY))
+            for version_id in list(registry["probe"]):
+                try:
+                    reason = await self._blocked(session, version_id, now)
+                except Exception:
+                    # Retirement needs positive evidence; an unevaluable probe
+                    # stays enrolled (and non-live) until an operator acts.
+                    logger.exception("Probe %s liveness is unevaluable; leaving it enrolled", version_id)
+                    continue
+                if reason is None:
+                    continue
+                registry["probe"].remove(version_id)
+                retired.append(version_id)
+                enrolment = await load_enrolment(session, self.store.scope, version_id) or {}
+                version = await self._get(session, f"version/{version_id}")
+                await self.store.add_notification(
+                    session,
+                    f"alpha-probe/{version_id}/retired/{enrolment.get('enrolled_at', 'unknown')}",
+                    NotificationKind.MESSAGE,
+                    {
+                        "text": f"🧪 Paper probe {version['definition']['alpha_id']} retired: {reason}. "
+                        "Open positions keep their broker-held protection.",
+                        "formatted": False,
+                    },
+                )
+            if retired:
+                registry["generation"] += 1
+                await self._append(session, REGISTRY_KEY, registry, EventKind.ALPHA_REGISTRY, "probe_sweep")
+        return retired
+
+    async def _probe_detail(self, session, version_id, enrolment, now) -> dict:
+        reason = await self._blocked(session, version_id, now)
+        forward = await load_forward_record(
+            session,
+            self.store.db,
+            version_id,
+            datetime.fromisoformat(enrolment["first_enrolled_at"]),
+            self.probe_policy,
+        )
+        expires_at = datetime.fromisoformat(enrolment["expires_at"])
+        return {
+            "expires_at": enrolment["expires_at"],
+            "renewals": enrolment["renewals"],
+            "live": reason is None,
+            "blocked_reason": reason,
+            "forward": forward,
+            "days_remaining": round(max(0.0, (expires_at - now).total_seconds() / 86400), 1),
+            "kill_distance_r": round(forward["cumulative_r"] - forward["kill_r"], 2),
+        }
+
+    async def probe_report(self, *, now=None) -> list[dict]:
+        """One row per enrolled probe. Unusable evidence is reported, never raised."""
+        now = _aware(now) if now else datetime.now(UTC)
         async with self.store.db.session_factory() as session:
-            registry = await self._get(session, REGISTRY_KEY) or {"generation": 0, "active": [], "shadow": []}
-            # The entire registry is one atomic value; immutable versions can be read
-            # afterwards without requiring a long transaction/screening lock.
-            groups = []
-            for field in ("active", "shadow"):
+            registry = _normalized(await self._get(session, REGISTRY_KEY))
+            report = []
+            for version_id in registry["probe"]:
+                version = await self._get(session, f"version/{version_id}")
+                row = {
+                    "version_id": version_id,
+                    "alpha_id": version["definition"]["alpha_id"],
+                    "symbols": version["definition"].get("eligible_symbols") or [],
+                    "expires_at": None,
+                    "renewals": None,
+                    "live": False,
+                    "blocked_reason": "probe enrolment evidence is missing",
+                    "forward": None,
+                    "days_remaining": None,
+                    "kill_distance_r": None,
+                }
+                enrolment = await load_enrolment(session, self.store.scope, version_id)
+                if enrolment is not None:
+                    try:
+                        row.update(await self._probe_detail(session, version_id, enrolment, now))
+                    except Exception:
+                        logger.exception("Probe %s enrolment evidence is unusable; reporting it as blocked", version_id)
+                        row["blocked_reason"] = "probe enrolment evidence is unusable"
+                report.append(row)
+            return report
+
+    async def snapshot(self, *, now=None) -> RegistrySnapshot:
+        now = _aware(now) if now else datetime.now(UTC)
+        async with self.store.db.session_factory() as session:
+            registry = _normalized(await self._get(session, REGISTRY_KEY))
+            members = {
+                "active": registry["active"],
+                "shadow": registry["shadow"],
+                # Only probes that may take new risk are ever installed for scanning.
+                "probe": await self._live_probes(session, registry, now),
+            }
+            groups = {}
+            for field, version_ids in members.items():
                 versions = []
-                for version_id in registry[field]:
+                for version_id in version_ids:
                     row = await self._get(session, f"version/{version_id}")
                     if not row:
                         raise ValueError("Registry references missing immutable version")
                     versions.append(AlphaDefinition.from_dict(row["definition"]))
-                groups.append(tuple(versions))
-            return RegistrySnapshot(registry["generation"], groups[0], groups[1])
+                groups[field] = tuple(versions)
+            return RegistrySnapshot(registry["generation"], groups["active"], groups["shadow"], groups["probe"])
 
     async def versions(self):
         async with self.store.db.session_factory() as session:
@@ -382,6 +621,8 @@ class AlphaRepository:
             "generation": snapshot.generation,
             "run_id": run_id,
             "active": [d.version_id for d in snapshot.active],
+            # Probes place orders, so the installed record must name them too.
+            "probe": [d.version_id for d in snapshot.probe],
         }
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session, resource="alpha")
@@ -401,6 +642,7 @@ class AlphaRepository:
             "generation": snapshot.generation,
             "active": len(snapshot.active),
             "shadow": len(snapshot.shadow),
+            "probe": len(snapshot.probe),
             "installed": installed,
             "latest_research": await self.get("research/latest"),
             "latest_observation": await self.get("observation/latest"),

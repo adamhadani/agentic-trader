@@ -559,12 +559,30 @@ class TelegramHtmlFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def format_alphas_dashboard_html(snapshot: RegistrySnapshot, *, evidence: dict) -> str:
+    def format_alphas_dashboard_html(
+        snapshot: RegistrySnapshot, *, evidence: dict, probes: list[dict] | None = None
+    ) -> str:
         """Compact operator overview; full immutable definitions/evidence stay in CLI."""
         lines = [
             "🧪 <b>ALPHA RESEARCH</b>",
             f"<b>{len(snapshot.active)} enabled for signals</b> · {len(snapshot.shadow)} research candidates",
         ]
+        if snapshot.probe:
+            count = len(snapshot.probe)
+            lines.append(
+                f"🧪 <b>{count} paper probe{'s' if count != 1 else ''}</b> trading with capped risk on the paper account: "
+                + html.escape(", ".join(d.alpha_id for d in snapshot.probe))
+            )
+            for row in probes or ():
+                if not row.get("live"):
+                    continue
+                forward = row["forward"]
+                symbols = html.escape(", ".join(row.get("symbols") or []))
+                lines.append(
+                    f"• {html.escape(row['alpha_id'])} ({symbols}) — {row['days_remaining']:.0f}d left · "
+                    f"{forward['trades']} trades · {forward['cumulative_r']:+.2f}R · "
+                    f"{row['kill_distance_r']:.2f}R to kill"
+                )
         if not snapshot.active:
             lines.append("No alpha strategies enabled. Other configured strategies may still suggest trades.")
         lines.extend(

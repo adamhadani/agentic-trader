@@ -35,6 +35,8 @@ class FormulaicAlphaStrategy(BaseStrategy):
         config: AppConfig | None = None,
         evaluator: AlphaExpressionEvaluator | None = None,
         clock: Callable[[], datetime] | None = None,
+        *,
+        probe: bool = False,
     ) -> None:
         super().__init__(config=config)
         self.definition = definition
@@ -44,6 +46,7 @@ class FormulaicAlphaStrategy(BaseStrategy):
         self.supported_asset_classes = (AssetClass.FUTURES, AssetClass.EQUITY, AssetClass.CRYPTO)
         self.evaluator = evaluator or AlphaExpressionEvaluator()
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.probe = probe
 
     def is_enabled(self, config: AppConfig | None = None) -> bool:
         """Determines whether this alpha is enabled."""
@@ -146,6 +149,7 @@ class FormulaicAlphaStrategy(BaseStrategy):
             alpha_version=self.definition.version_id,
             alpha_score=latest_z,
             alpha_policy=self.definition.execution.to_dict(),
+            probe=self.probe,
         )
 
         return [candidate]

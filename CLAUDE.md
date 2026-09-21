@@ -58,6 +58,13 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    requires fresh journaled account drawdown; every tier shares its cap. Final
    submission pins the risk fingerprint and rechecks the lease after ledger locking. Rejected/unfilled
    terminal evidence releases capacity; acceptance is not a fill.
+
+   **Paper probes:** `probe` is a third registry list, valid only in the `…/alpaca:paper`
+   scope. `probe_block_reason` is the single liveness rule for snapshot, sweep and
+   admission. Probes are risk-capped, expiring, renewable only while unkilled (−4R
+   from first enrolment, sticky per version), and earn no shadow, holdout or promotion
+   credit. Never make `active` depend on the account being paper; leaving `probe`
+   never touches the broker.
 2. **Closure:** `PositionCloseService` persists exclusive intent, confirms exact
    order-group cancellation, revalidates position/session and submits once.
    `/flatten` previews by default and preserves halt state. Partial/ambiguous

@@ -54,6 +54,7 @@ from agentic_trader.constants import (
     SizingMode,
 )
 from agentic_trader.market.bars import BAR_DURATIONS
+from agentic_trader.research.alpha.probe import MAX_PROBE_TERM_DAYS
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -519,6 +520,10 @@ class AlphaPipelineConfig(BaseModel):
     minimum_shadow_sessions: int = Field(default=20, ge=1)
     minimum_shadow_decisions: int = Field(default=10, ge=1)
     qualification_max_age_days: int = Field(default=45, ge=1)
+    max_probes: int = Field(default=3, ge=0)
+    probe_risk_dollars: float = Field(default=100.0, gt=0)
+    # Review checkpoint, not a risk bound: the -4R kill rule limits losses. Daily alphas trade ~once per 25-50 sessions.
+    probe_term_days: int = Field(default=30, ge=1, le=MAX_PROBE_TERM_DAYS)
 
 
 class AppConfig(BaseModel):

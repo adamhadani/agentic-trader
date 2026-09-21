@@ -100,6 +100,9 @@ research run or runtime policy change was made for this review.
    neither produced a gate-passing candidate. Genetic discovery now evaluates
    every declared DSL seed before evolution, so adding causal families widens
    the funnel without silently spending the budget on mutated variants only.
+   Holdout consumption is keyed by symbol alone (`storage/alpha.py:begin_holdout`),
+   so one qualification attempt by any alpha locks that symbol for roughly one
+   holdout length; measure consumed-symbol coverage before scaling campaigns.
 5. **Complete the portfolio deployment lane when evidence warrants it.** Version
    qualification for the actual forecast/holding policy, observed factor/cost/risk
    inputs and target-to-rounded-order plans. Test pending/partial-fill exposure,
@@ -107,15 +110,34 @@ research run or runtime policy change was made for this review.
    Add scenario CVaR/hard volatility constraints against measured needs; keep MPC,
    advanced impact/RL search and options/futures later.
 
-6. **Design a paper-probe lane without weakening qualification.** The IEX-native
-   smoke campaign ([record](alpha-iex-mining-2026-09-19.md)) shows that the source
-   contract passes while current candidates fail statistical/economic gates. A
-   paper probe may be useful for testing execution and data alignment, but it must
-   be a separate durable registry status with an explicit paper-account guard,
-   tiny predeclared risk/expiry limits, source-qualified raw Alpaca evidence and
-   `paper_probe` audit/notification tags. Probe outcomes cannot earn shadow,
-   holdout or production promotion credit. Specify and test this boundary before
-   implementing it; do not make `active` depend on the broker being paper.
+6. **Paper-probe lane implemented (September 21).** The IEX-native smoke campaign
+   ([record](alpha-iex-mining-2026-09-19.md)) shows that the source contract passes
+   while current candidates fail statistical/economic gates. The
+   [paper-probe design](superpowers/specs/2026-09-21-alpha-paper-probe-design.md)
+   is now built and tested: a third durable registry status (`probe`), an explicit
+   paper-account guard, predeclared risk/expiry/kill limits and `🧪 PAPER PROBE`
+   card/notification tags. Probe outcomes earn no shadow, holdout or production
+   promotion credit, and `active` does not depend on the broker being paper. See
+   [paper probes](alpha-pipeline.md#paper-probes) for the current state machine and
+   policy defaults. Deployment (enrolling an actual candidate on the paper service)
+   is separate, operator-approved evidence and is not recorded here. Once
+   session-bounded-entry (semantics version 5) candidates exist, paper probes
+   should be enrolled from that population rather than GTC-entry candidates:
+   GTC limit entries were measured to fill mainly when the forecast is wrong,
+   an adverse-selection bias that a probe's forward record cannot distinguish
+   from genuine edge. Recorded follow-up: make the probe risk cap an admission
+   invariant — check the signal's `risk_dollars` against the enrolment's pinned
+   cap in `_alpha_entry_rejection`. Today the cap is applied when the candidate
+   is sized, and the enrolment record pins it only as evidence.
+7. **Advisory exit cards (A2, approved September 21).** The engine will propose
+   Close/Keep when the reason to hold goes away: the owning alpha is demoted, its
+   probe expires or is killed, or (later) the allocator's target reaches zero. The
+   bracket's target and stop will remain the default exit. Close will route only
+   through `PositionCloseService` (exclusive intent, exact bracket-leg
+   cancellation, submit once); Keep will be a no-op. Full closes only. Signal-driven
+   exits are a strategy rule: they must be versioned in the execution policy and
+   mined under it, and are deferred until the entry-expiry confirmation run. Not
+   yet implemented.
 
 No threshold was lowered, alpha promoted or trading configuration changed by this
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.

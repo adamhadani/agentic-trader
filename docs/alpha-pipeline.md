@@ -166,6 +166,87 @@ allocation weights and promoted labels are not trusted. Import retains definitio
 as unqualified shadow versions; it cannot activate orders. Existing positions keep
 broker protection and historical ownership while new formulaic risk is gated.
 
+## Paper probes
+
+A paper probe is a time-boxed, risk-capped Alpaca-paper-only trial: `copilot alpha
+probe VERSION_ID --generation N` applies `ProbePolicy` to an already-stored
+qualification decision and, on pass, enrols the version into a third registry
+list (`probe`), alongside `active` and `shadow`. Enrolment reads stored
+qualification criteria; it consumes no holdout and charges no trial.
+
+| State | Produces orders | Exits |
+| --- | --- | --- |
+| inactive | no | shadow, probe |
+| shadow | no (forecast observations only) | probe, active, inactive |
+| probe | yes, capped, paper scope only | renew, inactive |
+| active | yes | inactive |
+
+`probe → active` is deliberately absent: a probe that performs well keeps
+trading by renewal (`--renew`); `active` is reached only through the unchanged
+qualification/shadow gates above. `active → probe` is absent too: enrolling a
+version whose `alpha_id` is already active is refused, so demote it first rather
+than have the supersession loop quietly retire a live alpha. A version is in at
+most one of `active`, `shadow`, `probe`. A probe is retired to `inactive` by
+expiry, by its kill rule (cumulative realized R at or below `kill_r`, measured
+from its first enrolment), or by `alpha demote`; a killed version is terminal — neither
+renewal nor fresh enrolment is accepted for that version identity. Leaving
+`probe` never touches the broker: an open position keeps its broker-held
+bracket and closes normally through `PositionCloseService`.
+
+`ProbePolicy` (`agentic_trader.research.alpha.probe`) defaults:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `version` | `probe_policy_v1` | Identity pinned into every enrolment |
+| `min_holdout_sharpe` | `0.0` (strict `>`) | Holdout Sharpe floor |
+| `min_cost_stressed_return_pct` | `0.0` (strict `>`) | Cost-stressed holdout return floor |
+| `min_holdout_trades` | `5` | Closed holdout trades |
+| `max_term_days` | `180` | Upper bound for `--days` |
+| `kill_r` | `-4.0` | Cumulative realized R at which a probe stops signalling |
+
+Renewal increments `renewals` and keeps `first_enrolled_at`. A fresh enrolment
+after a term lapses resets `renewals` to `0` but inherits the original
+`first_enrolled_at`, so letting a probe expire does not reset its forward record
+or its distance from the kill rule.
+
+Enrolment and renewal each enqueue one durable Telegram notice in the same
+transaction as the registry change — naming the alpha, actor, symbols, expiry and
+configured risk cap — as retirement already does; a refused enrolment rolls back
+and sends nothing. The enrolment record also pins `limits` (`max_probes`,
+`probe_risk_dollars`) as evidence of the configuration in force. Those pinned
+limits are evidence only: they sit outside `policy`, so they do not participate
+in the liveness identity check, and the risk cap is enforced at sizing time.
+Making the pinned cap an admission invariant is a recorded follow-up.
+
+A probe whose liveness cannot be evaluated — unreadable or incomplete enrolment
+evidence — is logged and treated as not live: it never scans, never admits an
+entry, and is never retired by the sweep on that evidence alone. One such probe
+does not hide the rest of the registry: `snapshot()` and `probe_report()` return
+the remaining probes, and `probe_report()` reports the bad one as a blocked row
+with null computed fields.
+
+Enrolment also requires an unclocked native-daily definition, an explicit
+Alpaca IEX/SIP deployment feed, an explicit symbol universe, and no unexpired
+probe or active alpha with a different `alpha_id` owning any eligible symbol.
+`AlphaPipelineConfig.max_probes` (default 3) bounds concurrent live probes.
+Probe candidates are risk-capped to `AlphaPipelineConfig.probe_risk_dollars`
+(default $100) before Telegram's half/base/max tiers are derived; a cap below
+one share's risk blocks the signal rather than rounding up. Telegram entry and
+exit cards for probe signals are tagged `🧪 PAPER PROBE`; an unreadable exit-card
+tag fails open (untagged, with a warning) rather than blocking a close. Probes
+earn no shadow, holdout or promotion credit. `/perf` is unchanged.
+
+`AlphaRepository.probe_report(*, now=None)` adds two computed fields to each raw
+enrolment/forward row: `days_remaining` (days until `expires_at`, floored at
+`0.0`) and `kill_distance_r` (`cumulative_r - kill_r`; `0` or negative means
+killed). `copilot alpha list` appends `| expires <expires_at>` to probe rows.
+`copilot alpha status` includes the full `probe_report()` array under
+`"probes"` in its JSON output. `/alphas` renders one line per **live** probe —
+`• <alpha_id> (<symbols>) — <days_remaining>d left · <trades> trades ·
+<cumulative_r>R · <kill_distance_r>R to kill` — from that same call; if the
+report fails, the error is logged and the dashboard still renders without the
+probe detail lines.
+
 ## Multiple alphas and portfolio constraints
 
 One instrument has one formulaic execution owner. Overlapping alpha universes

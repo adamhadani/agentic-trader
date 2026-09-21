@@ -48,6 +48,7 @@ from agentic_trader.storage.models import (
     WorkflowLockRecord,
     WorkItemRecord,
 )
+from agentic_trader.storage.probe_state import probe_block_reason
 
 
 if TYPE_CHECKING:
@@ -388,18 +389,30 @@ class WorkflowStore:
         # changes use the alpha lock, so demotion cannot race submission commit.
         await self.lock(session, resource="alpha")
         registry = await session.get(AlphaProjectionRecord, (self.scope, "registry"))
-        if (
-            not signal.alpha_version
-            or not registry
-            or signal.alpha_version not in json.loads(registry.payload)["active"]
-        ):
+        listed = json.loads(registry.payload) if registry else {}
+        is_active = bool(signal.alpha_version) and signal.alpha_version in listed.get("active", [])
+        is_probe = bool(signal.alpha_version) and signal.alpha_version in listed.get("probe", [])
+        if not is_active and not is_probe:
             return "Alpha version is not active/qualified; request a fresh scan after qualification."
+        assert signal.alpha_version is not None  # guaranteed by is_active/is_probe above
         row = await session.get(AlphaProjectionRecord, (self.scope, f"version/{signal.alpha_version}"))
         if row is None:
             return "Alpha version evidence is missing."
-        qualification = await session.get(AlphaProjectionRecord, (self.scope, f"qualification/{signal.alpha_version}"))
-        if not qualification or json.loads(qualification.payload).get("policy") != asdict(ValidationPolicy()):
-            return "Alpha qualification policy is obsolete; fresh research and qualification are required."
+        if is_active:
+            qualification = await session.get(
+                AlphaProjectionRecord, (self.scope, f"qualification/{signal.alpha_version}")
+            )
+            if not qualification or json.loads(qualification.payload).get("policy") != asdict(ValidationPolicy()):
+                return "Alpha qualification policy is obsolete; fresh research and qualification are required."
+        else:
+            # A probe is never authorized by qualification; only by live, current
+            # enrolment. The probe policy is code-level and single-sourced: this
+            # omits `policy=` so admission and the registry read the same default.
+            blocked = await probe_block_reason(
+                session, scope=self.scope, db=self.db, version_id=signal.alpha_version, now=datetime.now(UTC)
+            )
+            if blocked:
+                return f"Paper probe blocked: {blocked}."
         definition = json.loads(row.payload)["definition"]
         if definition.get("clock") is not None:
             return "Alpha session-clock execution remains diagnostic; new risk is disabled."
@@ -452,9 +465,13 @@ class WorkflowStore:
                 or signal.asset_class != request.asset_class
                 or (signal.quantity, signal.entry_price, signal.stop_loss, signal.take_profit)
                 != (request.quantity, request.entry_price, request.stop_loss, request.take_profit)
-                or await self._alpha_entry_rejection(session, signal)
             ):
                 return "Signal or active alpha authorization changed. No order submitted."
+            # Hoisted out of the compound check above, whose other clauses are pure
+            # comparisons, so the operator sees which alpha gate refused rather than
+            # one message covering every clause. Same lock, same relative position.
+            if reason := await self._alpha_entry_rejection(session, signal):
+                return f"{reason} No order submitted."
             try:
                 risk = await self._entry_risk(session, config)
             except ValueError as exc:
