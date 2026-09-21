@@ -737,9 +737,10 @@ async def alpha_study_cmd(protocol_path, output):
 @alpha_group.command("power-plan")
 @click.option("--seed", type=click.IntRange(0, 2**128 - 1), required=True)
 @click.option("--family-snapshot", type=click.Path(exists=True, path_type=Path))
+@click.option("--entry-policy", type=click.Choice(["gtc", "session"]), default="gtc")
 @click.option("--output", type=click.Path(path_type=Path), required=True)
 @coro
-async def alpha_power_plan_cmd(seed, family_snapshot, output):
+async def alpha_power_plan_cmd(seed, family_snapshot, entry_policy, output):
     """Freeze paired control/winner diagnosis; no observations evaluated."""
     try:
         snapshot = (
@@ -747,11 +748,14 @@ async def alpha_power_plan_cmd(seed, family_snapshot, output):
             if family_snapshot
             else None
         )
-        protocol = PowerProtocol(seed=seed, family_snapshot_hash=snapshot.identity if snapshot else None)
+        protocol = PowerProtocol(
+            seed=seed, family_snapshot_hash=snapshot.identity if snapshot else None, entry_policy=entry_policy
+        )
         await asyncio.to_thread(save_json_report, protocol.document(), output)
     except (ValueError, TypeError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Power protocol {protocol.identity}: {output}")
+    click.echo(f"Entry policy: {entry_policy}")
     if snapshot is None:
         click.echo("Current-family comparisons will remain unavailable without a sourced snapshot.")
 
