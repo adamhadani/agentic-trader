@@ -299,15 +299,11 @@ class AlphaRepository:
                     for symbol in definition.eligible_symbols
                 ):
                     raise ValueError("Insufficient observed shadow decisions")
-                for current_id in (*registry["active"], *await self._live_probes(session, registry, now)):
-                    current = await self._get(session, f"version/{current_id}")
-                    incumbent = AlphaDefinition.from_dict(current["definition"])
-                    if incumbent.alpha_id != definition.alpha_id and set(incumbent.eligible_symbols or ()) & set(
-                        definition.eligible_symbols
-                    ):
-                        raise ValueError(
-                            "Instrument already has an alpha owner; evaluate a combined portfolio in shadow first"
-                        )
+                owners = (*registry["active"], *await self._live_probes(session, registry, now))
+                if await self._symbol_owner_conflict(session, definition, owners):
+                    raise ValueError(
+                        "Instrument already has an alpha owner; evaluate a combined portfolio in shadow first"
+                    )
             # One current version per logical alpha, while immutable history remains.
             for field in ("active", "shadow", "probe"):
                 keep = []
@@ -331,6 +327,17 @@ class AlphaRepository:
 
     async def demote(self, version_id: str, *, actor: str, expected_generation: int):
         return await self._change(version_id, actor=actor, expected_generation=expected_generation, mode="inactive")
+
+    async def _symbol_owner_conflict(self, session, definition, owner_ids) -> bool:
+        """True if any of ``owner_ids`` is a different alpha_id sharing an eligible symbol."""
+        for current_id in owner_ids:
+            current = await self._get(session, f"version/{current_id}")
+            incumbent = AlphaDefinition.from_dict(current["definition"])
+            if incumbent.alpha_id != definition.alpha_id and set(incumbent.eligible_symbols or ()) & set(
+                definition.eligible_symbols
+            ):
+                return True
+        return False
 
     async def _live_probes(self, session, registry, now):
         reasons = [
@@ -375,13 +382,8 @@ class AlphaRepository:
         others = [v for v in live if v != version_id]
         if len(others) >= self.policy.max_probes:
             raise ValueError(f"All {self.policy.max_probes} probe slots are in use")
-        for current_id in (*registry["active"], *others):
-            current = await self._get(session, f"version/{current_id}")
-            incumbent = AlphaDefinition.from_dict(current["definition"])
-            if incumbent.alpha_id != definition.alpha_id and set(incumbent.eligible_symbols or ()) & set(
-                definition.eligible_symbols
-            ):
-                raise ValueError("Instrument already has an alpha owner; demote it or wait for its probe to end")
+        if await self._symbol_owner_conflict(session, definition, (*registry["active"], *others)):
+            raise ValueError("Instrument already has an alpha owner; demote it or wait for its probe to end")
         payload = {
             "policy": policy_document(self.probe_policy),
             "assessment": assessment.to_dict(),

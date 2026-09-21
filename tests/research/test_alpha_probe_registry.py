@@ -1,5 +1,6 @@
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from agentic_trader.execution.durable import EventKind, WorkKind
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.probe import policy_document
 from agentic_trader.research.alpha.validation import ValidationPolicy
+from agentic_trader.storage import alpha as alpha_module
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import SignalRecord, WorkItemRecord
@@ -187,6 +189,97 @@ async def test_a_version_lives_in_exactly_one_list_and_new_versions_supersede(re
     await repository.set_shadow(successor.version_id, actor="op", expected_generation=2)
     snapshot = await repository.snapshot(now=NOW)
     assert snapshot.shadow == (successor,) and not snapshot.probe
+
+
+async def qualify_for_promotion(repository, alpha_id, symbol, *, expected_generation):
+    """Build the same shadow/qualification/session/decision evidence as
+    test_alpha_journal.py::test_promotion_requires_decisions_and_frozen_incumbents_then_replays,
+    so only the symbol-ownership check can refuse the resulting promote().
+    """
+    rival = make_definition(alpha_id, symbol, data_feed="alpaca:sip")
+    await repository.register(rival, actor="test")
+    generation = await repository.set_shadow(rival.version_id, actor="test", expected_generation=expected_generation)
+    manifest = {
+        "symbol": symbol,
+        "timeframe": "1d",
+        "feed": "alpaca:sip",
+        "adjustment": "raw",
+        "holdout_start": "2025-01-01",
+        "end": "2025-06-01",
+        "incumbents": [],  # Probes are not incumbents; only the active set is frozen here.
+    }
+    run = {
+        "policy": asdict(ValidationPolicy()),
+        "trial_count": 1,
+        "trials": [{"definition": rival.to_dict(), "status": "evaluated"}],
+        "holdout_start": 600,
+    }
+    run_id = f"qualified-{rival.version_id}"
+    await repository.record_run(run_id, run, manifest)
+    await repository.begin_holdout(run_id, rival.version_id)
+    await repository.record_qualification(
+        run_id,
+        rival.version_id,
+        {
+            "qualified": True,
+            "reasons": [],
+            "eligible_symbols": [symbol],
+            "manifest": manifest,
+            "policy": asdict(ValidationPolicy()),
+        },
+    )
+    timestamp = NOW.isoformat()
+    for day in range(20):
+        timestamp = (NOW - timedelta(days=20 - day)).isoformat()
+        await repository.record_forecast(
+            f"{run_id}-session-{day}",
+            {
+                "version_id": rival.version_id,
+                "valid": True,
+                "symbol": symbol,
+                "observed_at": timestamp,
+                "completed_at": timestamp,
+                "decision": 0,
+            },
+        )
+    for decision in range(10):
+        await repository.record_forecast(
+            f"{run_id}-decision-{decision}",
+            {
+                "version_id": rival.version_id,
+                "valid": True,
+                "symbol": symbol,
+                "observed_at": timestamp,
+                "completed_at": timestamp,
+                "decision": 1,
+            },
+        )
+    return rival, generation
+
+
+async def test_live_probe_blocks_promotion_of_a_rival_on_the_same_symbol(repository):
+    probe_definition = make_definition()
+    await seed(repository, probe_definition)
+    await repository.enrol_probe(probe_definition.version_id, actor="op", expected_generation=0, now=NOW)
+    rival, generation = await qualify_for_promotion(repository, "alpha_rival", "AAPL", expected_generation=1)
+    with pytest.raises(ValueError, match="already has an alpha owner"):
+        await repository.promote(rival.version_id, actor="test", expected_generation=generation)
+    assert not (await repository.snapshot(now=NOW)).active
+
+
+async def test_expired_unswept_probe_does_not_block_promotion(repository, monkeypatch):
+    probe_definition = make_definition()
+    await seed(repository, probe_definition)
+    await repository.enrol_probe(probe_definition.version_id, actor="op", expected_generation=0, days=1, now=NOW)
+    rival, generation = await qualify_for_promotion(repository, "alpha_rival", "AAPL", expected_generation=1)
+    later = NOW + timedelta(days=2)
+    clock = MagicMock(wraps=datetime)
+    clock.now.return_value = later
+    monkeypatch.setattr(alpha_module, "datetime", clock)
+    # No sweep has run; the expired probe is still in the registry's probe list.
+    await repository.promote(rival.version_id, actor="test", expected_generation=generation)
+    snapshot = await repository.snapshot(now=later)
+    assert snapshot.active == (rival,) and not snapshot.probe
 
 
 async def test_renewal_extends_from_now_and_requires_membership(repository):
