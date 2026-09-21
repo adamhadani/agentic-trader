@@ -43,18 +43,39 @@ research run or runtime policy change was made for this review.
    Legacy CVaR signs/units and unsupported Sharpe annualization are corrected (S4);
    the IID report remains descriptive, not live protection. Source/test completion
    and installed-service verification are recorded separately.
-2. **Power diagnosis completed; fix horizon-to-execution alignment next.** The
-   [800-search result](alpha-power-diagnosis-2026-09-18.md) meets the frozen null
+2. **Mechanistic lifetime run complete; confirmatory power run is the next action.**
+   The [800-search result](alpha-power-diagnosis-2026-09-18.md) meets the frozen null
    bounds but fails positive-control power. The known forecast works; GTC pending
    orders suppress about 90% of later opportunities. Search objectives and joint
-   gates add distinct losses. The versioned fixed-daily clock, independent lifetime
-   deadlines, paired P0/P1/P2 harness, artifact checkpoints and isolated CLI are
-   now implemented and tested. Next freeze a fresh protocol and run the declared
-   experiment after review; no result or configuration switch exists yet. Keep
-   gates and lifetime history unchanged.
+   gates add distinct losses. The [September 21 mechanistic lifetime run](alpha-lifetime-attribution-2026-09-21.md)
+   is complete: bounding the resting entry to one session restores trade conversion
+   for the planted forecast and separates it from the null by a wide margin; a
+   one-session holding expiry imposed after selection is strongly harmful. That run
+   does not itself evaluate current-family full-policy acceptance, so it is
+   exploratory, not confirmatory. Semantics version 5 (the unclocked, one-session,
+   entry-only native-daily contract) and policy-aware mining
+   (`AlphaMiner.mine(..., execution=)`, `alpha mine`/`alpha test --entry-policy
+   [session|gtc]`, `alpha power-plan --entry-policy [gtc|session]`) are now
+   implemented and tested; the scheduled ETF32 job is pinned to `--entry-policy gtc`
+   in `scripts/launchd.sh` so it keeps reproducing the historical benchmark until an
+   operator changes that pin. Next: freeze and run the confirmatory
+   `alpha power-plan --entry-policy session` protocol with a fresh seed and a newly
+   sourced read-only family snapshot, per the [attribution plan](alpha-lifetime-attribution-plan.md)'s
+   unchanged endpoint and bounds. Keep gates and lifetime history unchanged. Paper
+   probes should not be enrolled under GTC entries; enrol version-5 candidates.
    The [native-daily collector](alpha-daily-panel.md) now implements parallel
    observation with source-qualified labels, actual receipts and frozen decisions.
    Actual forward forecasts and mature outcomes remain separately measured evidence.
+
+   **Desk goal and measured supply constraint.** The overarching desk goal is one or
+   two reasonable trade suggestions per market session in Telegram on the paper
+   account; work above is ranked against that goal. A September 21 replay of the
+   built-in (non-alpha) strategies found the measured constraint is scan breadth,
+   not gates: about 0.8 candidates per session on today's 9 equity/ETF names, versus
+   about 6.6 candidates per session on ETF32 plus 65 mega-cap names. A wider scan
+   universe with a per-session suggestion budget is the next workstream after this
+   one. The confirmatory `alpha power-plan --entry-policy session` run above is a
+   separate, operator-decided next step — its result changes no gate.
 3. **Factor comparison and prospective daily collector implemented; gather evidence.** The
    [54-comparison study](alpha-factor-controls-2026-09-18.md) and independent audit
    found mixed residual-momentum results, no consistent incremental winner, major

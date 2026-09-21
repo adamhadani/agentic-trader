@@ -103,8 +103,9 @@ lifetime value per deadline was tested; this is not a lifetime grid.
 
 1. Freeze a confirmatory protocol with **P1 as the predeclared policy** and
    full-policy acceptance as the endpoint, using fresh seeds and the unchanged
-   bounds (null upper ≤5%; dense lower ≥80%; sparse lower ≥50%). This requires
-   wiring holdout measurement and family assessment into the lifetime harness.
+   bounds (null upper ≤5%; dense lower ≥80%; sparse lower ≥50%). Run it through
+   the existing power study (`alpha power-plan --entry-policy session`), which
+   already measures that endpoint.
 2. Evaluate a day-bounded entry for live alpha orders through the existing timed
    execution contract ([trade lifetimes](alpha-trade-lifetimes.md)); it creates new
    immutable version identities and needs the native-daily clock decision first.

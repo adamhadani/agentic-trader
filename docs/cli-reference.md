@@ -265,6 +265,14 @@ uv run copilot alpha import config/promoted_alphas.yaml
 uv run copilot alpha test --symbol NVDA --interval 1d -- '-1.0 * delta(ts_rank(volume, 10), 5)'
 ```
 
+`mine` and `test` accept `--entry-policy [session|gtc]`: `session` (the default for
+`--interval 1d`) rebuilds every trial with the one-session entry lifetime and
+`semantics_version=5`; `gtc` reproduces the historical unbounded-entry identity and
+is the only choice for other timeframes (`session` on an intraday interval is a CLI
+error). The scheduled ETF32 job pins `--entry-policy gtc` explicitly in
+`scripts/launchd.sh`, so it keeps mining the historical GTC contract until an
+operator changes that pin. See [trade lifetimes](alpha-trade-lifetimes.md).
+
 `mine` persists all trials and leaves holdout untouched. `qualify` consumes the
 frozen holdout once. Promotion requires exact version, generation, passing evidence,
 deployment data contract and observed shadow history. Import is shadow-only;
@@ -506,6 +514,12 @@ uv run copilot alpha power-study /private/path/new-protocol.json \
 ```
 
 Replace `FRESH_INTEGER` with a new explicit nonnegative integer below `2**128`.
+`power-plan` also accepts `--entry-policy [gtc|session]` (default `gtc`); `gtc` is
+omitted from the frozen protocol document, so every existing frozen protocol keeps
+its identity and still loads unmodified, while `session` mines the known control
+and every generated trial under the native-daily one-session entry contract (see
+[trade lifetimes](alpha-trade-lifetimes.md)) for a like-for-like comparison with
+the GTC reference run.
 The [power protocol](alpha-power-ablation-plan.md) binds the snapshot hash, seeds,
 bootstrap, policy and finite budget. The runner requires a new output directory,
 retains selection before holdout and stops before validation after development
