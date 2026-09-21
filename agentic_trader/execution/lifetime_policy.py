@@ -8,6 +8,11 @@ MAX_TRADE_LIFETIME_SECONDS = int(timedelta(days=31).total_seconds())
 TRADE_LIFETIME_VERSION = "elapsed_utc_v1"
 TRADE_LIFETIME_VERSION_INDEPENDENT = "elapsed_utc_v2"
 
+# One regular trading session. Research stamps a daily order at its New York midnight
+# label and live stamps it at submission inside 09:30-16:00; +16 h expires both before
+# the next session can fill them. 86,400 would give a live order two partial sessions.
+DAILY_ENTRY_LIFETIME_SECONDS = 57_600
+
 
 def aware_utc(value: datetime) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
@@ -45,3 +50,12 @@ class TradeLifetimePolicy:
         if self.holding_seconds is None:
             return None
         return aware_utc(filled_at) + timedelta(seconds=self.holding_seconds)
+
+
+def daily_entry_lifetime() -> TradeLifetimePolicy:
+    """The only lifetime a native-daily (semantics version 5) alpha may declare."""
+    return TradeLifetimePolicy(
+        resting_seconds=DAILY_ENTRY_LIFETIME_SECONDS,
+        holding_seconds=None,
+        version=TRADE_LIFETIME_VERSION_INDEPENDENT,
+    )

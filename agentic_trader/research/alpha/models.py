@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from agentic_trader.execution.lifetime_policy import daily_entry_lifetime
 from agentic_trader.market.bars import (
     FIXED_DAILY_CLOCK_LAYOUT,
     SESSION_BAR_LAYOUT,
@@ -22,6 +23,9 @@ from agentic_trader.research.alpha.strategy import (
     TimedAlphaExecutionPolicy,
     execution_policy_from_dict,
 )
+
+
+DAILY_SESSION_SEMANTICS_VERSION = 5
 
 
 class DecisionStatus(StrEnum):
@@ -73,7 +77,7 @@ class AlphaDefinition:
             type(self.normalization_window) is not int
             or not 2 <= self.normalization_window <= 252
             or type(self.semantics_version) is not int
-            or self.semantics_version not in (2, 3, 4)
+            or self.semantics_version not in (2, 3, 4, DAILY_SESSION_SEMANTICS_VERSION)
         ):
             raise ValueError("Invalid normalization or semantics version")
         if (
@@ -100,7 +104,20 @@ class AlphaDefinition:
                 "Version 3 requires an explicit raw Alpaca session clock; "
                 "version 4 requires an explicit raw synthetic fixed-daily clock; version 2 is fixed-duration"
             )
-        if isinstance(self.execution, TimedAlphaExecutionPolicy) and self.clock is None:
+        if self.semantics_version == DAILY_SESSION_SEMANTICS_VERSION and (
+            self.timeframe != "1d"
+            or self.clock is not None
+            or not isinstance(self.execution, TimedAlphaExecutionPolicy)
+            or self.execution.lifetime != daily_entry_lifetime()
+        ):
+            raise ValueError(
+                "Version 5 requires an unclocked native daily definition with the fixed one-session entry lifetime"
+            )
+        if (
+            isinstance(self.execution, TimedAlphaExecutionPolicy)
+            and self.clock is None
+            and self.semantics_version != DAILY_SESSION_SEMANTICS_VERSION
+        ):
             raise ValueError("Timed execution requires a versioned session clock")
         if self.eligible_symbols is not None:
             object.__setattr__(
