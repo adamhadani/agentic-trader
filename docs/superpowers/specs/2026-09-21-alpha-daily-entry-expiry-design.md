@@ -41,16 +41,17 @@ broker/cancellation machinery.
 
 `AlphaDefinition.semantics_version == 5` requires all of:
 
-- `timeframe == "1d"`, `data_feed in ("alpaca:iex", "alpaca:sip", "synthetic")`,
-  `adjustment == "raw"`, `clock is None`;
+- `timeframe == "1d"` and `clock is None`;
 - `execution` is a `TimedAlphaExecutionPolicy` whose lifetime is
   `TradeLifetimePolicy(resting_seconds=57_600, holding_seconds=None,
   version="elapsed_utc_v2")`.
 
 The rule "timed execution requires a versioned clock" narrows to "timed execution
-requires version 3, 4 or 5". Versions 2–4 keep their exact rules. `synthetic` is
-admitted so the power harness exercises the identical contract; production
-qualification and promotion already require an Alpaca feed.
+requires version 3, 4 or 5". Versions 2–4 keep their exact rules. Version 5 places
+no constraint on `data_feed` or `adjustment`, exactly like version 2: nothing in the
+contract depends on a provider calendar, discovery on a non-deployment feed and the
+synthetic power harness must exercise the identical contract, and qualification and
+promotion already require a raw Alpaca deployment feed.
 
 **Why exactly 57,600 seconds.** Daily research cannot resolve time inside a bar, so
 the only entry lifetime it can represent honestly is "the session the order was
@@ -100,21 +101,29 @@ GTC policy is adverse to correct forecasts; say so to reverse it.
 
 ## Confirmatory power run
 
-Extend the lifetime harness so the previously unimplemented endpoint is measured:
+Reuse the existing power study rather than extending the lifetime harness: it
+already measures the required endpoint, and running it under the new policy gives a
+like-for-like comparison with the [September 18 result](../../alpha-power-diagnosis-2026-09-18.md).
 
-- Protocol `alpha_lifetime_confirmation_v1`, fresh root seed, same generators,
-  replicate counts and search budget as the completed run.
+- `PowerProtocol` gains `entry_policy: Literal["gtc", "session"] = "gtc"`. The
+  field is omitted from the protocol document when it is `gtc`, so every existing
+  frozen protocol keeps its identity and still loads. With `session`,
+  `select_power_candidates` mines with the version-5 execution policy; the known
+  control and every generated trial are rebuilt under it by the miner, and all
+  downstream measurement, family composition, bootstrap and summarisation code is
+  unchanged because it reads the policy from each definition.
+- `alpha power-plan --entry-policy session` freezes the confirmation protocol with a
+  fresh root seed and a newly sourced read-only family snapshot; replicate counts,
+  generators and search budget are unchanged.
 - **Predeclared policy: session-bounded entry, no holding deadline.** Selection is
-  performed under that policy (not frozen under GTC and replayed), because the
-  question is whether the funnel works when mining and execution agree. GTC is
-  retained as the paired reference arm.
+  performed under that policy, because the question is whether the funnel works
+  when mining and execution agree. The September 18 run is the GTC reference.
 - Endpoint: current-family full-policy acceptance per profile × effect × method ×
-  route, reusing `power_study`'s measurement, family composition and exact binomial
-  bounds with Bonferroni allocation over the 16 primary endpoints: null upper bound
-  ≤ 5%, dense lower bound ≥ 80%, sparse lower bound ≥ 50%. Unavailable endpoints
-  stay in denominators.
-- Synthetic only; no runtime database, provider, broker or notifier; grants no
-  qualification or promotion authority. Persist selection before holdout.
+  route with the existing exact binomial bounds and Bonferroni allocation over the
+  16 primary endpoints: null upper bound ≤ 5%, dense lower bound ≥ 80%, sparse
+  lower bound ≥ 50%. Unavailable endpoints stay in denominators.
+- Synthetic only; no runtime database, provider, broker or notifier is constructed
+  by the study; it grants no qualification or promotion authority.
 
 If it passes, mining campaigns become meaningful and paper probes may be enrolled.
 If it fails, the per-criterion record identifies the next loss (search objective
@@ -145,15 +154,17 @@ contract: retain risk, fence new entries, recover by lookup only, never resend.
   `TradeLifetimeService` cancels an unfilled v5 entry after the deadline and never
   schedules a close for it; SDK and PostgreSQL siblings of the existing
   `tests/integration/test_trade_lifetimes.py` cases.
-- Confirmation harness: development failures leave validation unexamined; paired
-  seeds; artifacts replay; a tiny CLI run constructs no runtime services.
+- Power protocol: a `gtc` protocol document and identity are byte-identical to
+  before; a stored September 18 protocol still loads; a `session` protocol mines
+  version-5 definitions for the known control and every trial; a tiny CLI run
+  constructs no runtime services.
 
 ## Documentation
 
 `docs/alpha-trade-lifetimes.md` (version 5 contract and the 57,600 derivation),
 `docs/alpha-pipeline.md`, `docs/cli-reference.md`, `docs/alpha-roadmap.md` (C1
-delivered; next losses), `docs/alpha-lifetime-attribution-plan.md` (confirmation
-protocol supersedes the P2 endpoint), `CLAUDE.md`/`AGENTS.md`.
+delivered; next losses), `docs/alpha-lifetime-attribution-plan.md` (the power-study
+confirmation supersedes the unimplemented P2 endpoint), `CLAUDE.md`/`AGENTS.md`.
 
 ## Observed, out of scope
 
