@@ -62,6 +62,11 @@ Every state has an exit, and no transition depends on in-memory state:
 | probe | yes, capped, paper scope only | renew, inactive |
 | active | yes | inactive |
 
+A killed version is terminal for that version: neither renewal nor fresh
+enrolment is accepted, because the forward record is measured from
+`first_enrolled_at`, which survives retirement. A newly mined version is a new
+identity.
+
 `probe → active` is deliberately absent. A probe that performs well keeps trading
 by renewal; `active` stays reachable only through statistical qualification, so
 its meaning is unchanged. A version is in at most one of `active`, `shadow`,
@@ -107,7 +112,9 @@ bootstrap, Rank IC, and the shadow-session wait.
 
 - The registry payload gains `"probe": []`. Readers use `.get("probe", [])`, so
   existing journaled payloads stay valid and **no Alembic revision is needed**.
-- `RegistrySnapshot` gains `probe: tuple[AlphaDefinition, ...]`.
+- `RegistrySnapshot` gains `probe: tuple[AlphaDefinition, ...]`. `snapshot()`
+  returns only live probes, so a non-live probe is never installed for scanning
+  even if the sweep has not run.
 - `_change` gains `mode="probe"`. Under the existing alpha lock and generation
   check it requires: scope ends with `alpaca:paper`; `assess_probe` passes; no
   unexpired probe or active alpha with a different `alpha_id` owns any eligible
@@ -155,7 +162,9 @@ For a probe candidate the dollar-risk input is
 `min(existing computed risk, probe_risk_dollars)` before tiers are derived, so the
 half/base/max Telegram buttons work unchanged inside the cap. Probes draw on the
 existing notional, stop-risk and concurrent-position budgets; there is no separate
-pool to reconcile.
+pool to reconcile. The cap is applied to the maximum permissible risk before tiers
+are derived, so every tier is inside it; a cap below one share's risk blocks the
+signal rather than rounding up.
 
 ### 6. Forward record and kill rule (`research/alpha/probe.py`)
 
@@ -174,8 +183,9 @@ contribute nothing; they neither kill nor protect a probe. Killed means
 - `copilot alpha list` shows `probe` with expiry; `alpha status` and `/alphas` add a
   probe section: term remaining, trades, cumulative R, kill distance.
 - Telegram entry cards for probe signals are titled `🧪 PAPER PROBE` and state the
-  risk cap. Exit cards carry the same tag. `/perf` reports probe trades in a
-  separate section from other tracked closes.
+  risk cap. Exit cards carry the same tag. `/perf` is unchanged in this version;
+  the probe forward record in `alpha status` and `/alphas` is the separate view of
+  probe outcomes.
 - Enrolment, renewal, expiry and kill each emit one durable outbox notice in the
   same transaction as the state change.
 
@@ -237,3 +247,6 @@ That note proposed that probes earn no credit of any kind and did not define wha
 happens to a probe that performs well. This design keeps "no shadow, holdout or
 promotion credit" and adds **renewal gated by an unkilled forward record**, closing
 the state machine without weakening `active`.
+
+Admission's exit-card tag fails open: unreadable provenance yields an untagged
+card and a warning, never a failed close.

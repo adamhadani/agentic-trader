@@ -259,6 +259,7 @@ uv run copilot alpha qualify RUN_ID VERSION_ID
 uv run copilot alpha shadow VERSION_ID --generation N
 uv run copilot alpha promote VERSION_ID --generation N
 uv run copilot alpha demote VERSION_ID --generation N
+uv run copilot alpha probe VERSION_ID --generation N --days 90 --renew
 uv run copilot alpha portfolio /private/path/observed-snapshot.json --output /private/path/shadow-report.json
 uv run copilot alpha import config/promoted_alphas.yaml
 uv run copilot alpha test --symbol NVDA --interval 1d -- '-1.0 * delta(ts_rank(volume, 10), 5)'
@@ -270,6 +271,14 @@ deployment data contract and observed shadow history. Import is shadow-only;
 `--auto-promote`, allocation metadata and symbol/timeframe-changing promotion flags
 are removed. Demotion changes future screening only; use the shared close/flatten
 commands separately when liquidation is intended. Portfolio solving is shadow-only.
+
+`probe VERSION_ID --generation N [--days 1..180] [--renew]` enrols an already
+qualified-or-not version into a time-boxed, risk-capped Alpaca-paper-only trial,
+applying `ProbePolicy` to its stored qualification decision; `--days` defaults to
+`alpha_pipeline.probe_term_days` and `--renew` extends a current, unkilled probe
+from now. It consumes no holdout and charges no trial, earns no shadow or
+promotion credit, and refuses outside the Alpaca paper scope. See
+[paper probes](alpha-pipeline.md#paper-probes).
 
 `calibrate` is synthetic-only, with no runtime config, DB or network access. It writes
 a private report, never promotion evidence. Explicit family count/variance parameters
