@@ -462,6 +462,9 @@ def test_default_daily_mine_journals_session_semantics(monkeypatch):
             for definition in versions:
                 assert definition.semantics_version == 5
                 assert isinstance(definition.execution, TimedAlphaExecutionPolicy)
+            latest = await repository.get("research/latest")
+            run = await repository.get(f"run/{latest['run_id']}")
+            assert run["manifest"]["entry_policy"] == "session"
 
     asyncio.run(check())
 
@@ -479,5 +482,8 @@ def test_gtc_entry_policy_journals_no_lifetime(monkeypatch):
             assert versions
             for definition in versions:
                 assert not isinstance(definition.execution, TimedAlphaExecutionPolicy)
+            latest = await repository.get("research/latest")
+            run = await repository.get(f"run/{latest['run_id']}")
+            assert run["manifest"]["entry_policy"] == "gtc"
 
     asyncio.run(check())

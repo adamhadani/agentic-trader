@@ -8,7 +8,7 @@ import json
 import platform
 import re
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -172,7 +172,7 @@ ENTRY_POLICY_OPTION = click.option(
 )
 
 
-def resolve_entry_policy(interval: str, choice: str | None):
+def resolve_entry_policy(interval: str, choice: str | None) -> TimedAlphaExecutionPolicy | None:
     """None means the historical GTC execution policy; otherwise the deployed daily policy."""
     if choice is None:
         choice = "session" if interval == "1d" else "gtc"
@@ -334,6 +334,7 @@ async def alpha_mine_cmd(
                         "artifact": str(path),
                         "holdout_start": str(frame.index[miner.last_run["holdout_start"]]),
                         "incumbents": [d.to_dict() for d in snapshot.active],
+                        "entry_policy": "session" if execution else "gtc",
                     },
                 )
                 for trial in miner.last_run["trials"]:
@@ -483,13 +484,9 @@ async def alpha_inspect_cmd(identity):
 async def alpha_test_cmd(expression, symbol, lookback, interval, entry_policy):
     """Diagnostic expression test; cannot qualify or promote a version."""
     execution = resolve_entry_policy(interval, entry_policy)
-    definition = AlphaDefinition(
-        "alpha_diagnostic",
-        "Diagnostic",
-        expression,
-        timeframe=interval,
-        **({"execution": execution, "semantics_version": DAILY_SESSION_SEMANTICS_VERSION} if execution else {}),
-    )
+    definition = AlphaDefinition("alpha_diagnostic", "Diagnostic", expression, timeframe=interval)
+    if execution is not None:
+        definition = replace(definition, execution=execution, semantics_version=DAILY_SESSION_SEMANTICS_VERSION)
     frame = await asyncio.to_thread(download_bars, symbol, lookback, interval)
     async with alpha_repository() as repository:
         await repository.exclude_observed_interval(
