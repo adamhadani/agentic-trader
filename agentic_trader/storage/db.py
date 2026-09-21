@@ -50,6 +50,21 @@ from agentic_trader.storage.workflow import WorkflowStore
 logger = logging.getLogger(__name__)
 
 
+def _is_paper_probe(provenance: str | None, *, signal_id: int | None = None) -> bool:
+    """Fail open: a cosmetic exit-card tag must never abort a real position close."""
+    if not provenance:
+        return False
+    try:
+        document = json.loads(provenance)
+    except json.JSONDecodeError, ValueError, TypeError:
+        logger.warning("Unreadable decision_provenance for signal %s; leaving exit notice untagged", signal_id)
+        return False
+    if not isinstance(document, dict):
+        logger.warning("Non-object decision_provenance for signal %s; leaving exit notice untagged", signal_id)
+        return False
+    return bool(document.get(PAPER_PROBE_TAG))
+
+
 class SignalDatabase:
     """
     SQLAlchemy 2.0 Async ORM Persistence Layer.
@@ -693,7 +708,7 @@ class SignalDatabase:
                     provenance = await session.scalar(
                         select(SignalRecord.decision_provenance).where(SignalRecord.id == signal_id)
                     )
-                    if provenance and json.loads(provenance).get(PAPER_PROBE_TAG):
+                    if _is_paper_probe(provenance, signal_id=signal_id):
                         notification = {**notification, "strategy": f"🧪 PAPER PROBE · {notification['strategy']}"}
                 if notification is not None:
                     await self.workflows.add_notification(
