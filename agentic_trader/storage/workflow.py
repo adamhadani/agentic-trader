@@ -405,7 +405,9 @@ class WorkflowStore:
             if not qualification or json.loads(qualification.payload).get("policy") != asdict(ValidationPolicy()):
                 return "Alpha qualification policy is obsolete; fresh research and qualification are required."
         else:
-            # A probe is never authorized by qualification; only by live, current enrolment.
+            # A probe is never authorized by qualification; only by live, current
+            # enrolment. The probe policy is code-level and single-sourced: this
+            # omits `policy=` so admission and the registry read the same default.
             blocked = await probe_block_reason(
                 session, scope=self.scope, db=self.db, version_id=signal.alpha_version, now=datetime.now(UTC)
             )
