@@ -1,6 +1,5 @@
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -10,7 +9,6 @@ from agentic_trader.execution.durable import EventKind, WorkKind
 from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.probe import policy_document
 from agentic_trader.research.alpha.validation import ValidationPolicy
-from agentic_trader.storage import alpha as alpha_module
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import SignalRecord, WorkItemRecord
@@ -258,27 +256,35 @@ async def qualify_for_promotion(repository, alpha_id, symbol, *, expected_genera
 
 
 async def test_live_probe_blocks_promotion_of_a_rival_on_the_same_symbol(repository):
+    # promote() has no `now=` parameter: it always consults the REAL clock internally
+    # (qualification-age check, `_live_probes`). Enrol at the real clock with the
+    # default 90-day term so the probe is unconditionally live moments later when
+    # promote() runs, regardless of what calendar date the suite happens to run on.
+    real_now = datetime.now(UTC)
     probe_definition = make_definition()
     await seed(repository, probe_definition)
-    await repository.enrol_probe(probe_definition.version_id, actor="op", expected_generation=0, now=NOW)
+    await repository.enrol_probe(probe_definition.version_id, actor="op", expected_generation=0, now=real_now)
     rival, generation = await qualify_for_promotion(repository, "alpha_rival", "AAPL", expected_generation=1)
     with pytest.raises(ValueError, match="already has an alpha owner"):
         await repository.promote(rival.version_id, actor="test", expected_generation=generation)
-    assert not (await repository.snapshot(now=NOW)).active
+    assert not (await repository.snapshot(now=real_now)).active
 
 
-async def test_expired_unswept_probe_does_not_block_promotion(repository, monkeypatch):
+async def test_expired_unswept_probe_does_not_block_promotion(repository):
+    # Same real-clock constraint as above: enrol a probe that is already expired
+    # relative to the real clock (started two days ago with a one-day term) so
+    # promote()'s internal `datetime.now(UTC)` sees it as expired regardless of
+    # the calendar date, with no monkeypatching required.
+    real_now = datetime.now(UTC)
     probe_definition = make_definition()
     await seed(repository, probe_definition)
-    await repository.enrol_probe(probe_definition.version_id, actor="op", expected_generation=0, days=1, now=NOW)
+    await repository.enrol_probe(
+        probe_definition.version_id, actor="op", expected_generation=0, days=1, now=real_now - timedelta(days=2)
+    )
     rival, generation = await qualify_for_promotion(repository, "alpha_rival", "AAPL", expected_generation=1)
-    later = NOW + timedelta(days=2)
-    clock = MagicMock(wraps=datetime)
-    clock.now.return_value = later
-    monkeypatch.setattr(alpha_module, "datetime", clock)
     # No sweep has run; the expired probe is still in the registry's probe list.
     await repository.promote(rival.version_id, actor="test", expected_generation=generation)
-    snapshot = await repository.snapshot(now=later)
+    snapshot = await repository.snapshot(now=real_now)
     assert snapshot.active == (rival,) and not snapshot.probe
 
 
