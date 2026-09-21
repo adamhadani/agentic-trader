@@ -171,6 +171,7 @@ class RiskEvaluator:
             stop_distance, target_distance = abs(entry - stop_loss), abs(take_profit - entry)
 
         # Both supported modes use stop-distance sizing and the shared hard caps.
+        risk_dollars_cap = self.config.alpha_pipeline.probe_risk_dollars if candidate.probe else None
         sizing_result = calculate_dynamic_sizing(
             entry=entry,
             stop_distance=stop_distance,
@@ -183,6 +184,7 @@ class RiskEvaluator:
             current_drawdown_pct=current_drawdown_pct,
             macro_risk_multiplier=macro_risk_multiplier,
             current_equity=current_equity,
+            risk_dollars_cap=risk_dollars_cap,
         )
         quantity = sizing_result.default_tier.quantity
         risk_dollars = sizing_result.default_tier.risk_dollars

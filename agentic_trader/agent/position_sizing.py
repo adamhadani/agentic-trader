@@ -47,6 +47,7 @@ def calculate_dynamic_sizing(
     current_drawdown_pct: float = 0.0,
     macro_risk_multiplier: float = 1.0,
     current_equity: float | None = None,
+    risk_dollars_cap: float | None = None,
 ) -> PositionSizingResult:
     """Calculate stop-distance sizing with drawdown, macro and notional limits,
     producing tiered sizing choices (Half, Base, Max).
@@ -55,6 +56,9 @@ def calculate_dynamic_sizing(
     portfolio_cash = risk_capital(config.portfolio.cash, current_equity)
     max_portfolio_notional = config.portfolio.max_notional_exposure
     gating_reasons: list[str] = []
+
+    if risk_dollars_cap is not None and not risk_dollars_cap > 0:
+        raise ValueError("Positive risk cap required")
 
     # 0. Macro Stress Risk Scaling
     macro_factor = max(0.10, min(1.0, float(macro_risk_multiplier)))
@@ -85,6 +89,10 @@ def calculate_dynamic_sizing(
 
     # 3. Maximum Permissible Quantity (Hard Risk & Notional Gates)
     max_risk_dollars = portfolio_cash * sizing_cfg.max_risk_pct_cap * drawdown_factor
+    if risk_dollars_cap is not None and risk_dollars_cap < max_risk_dollars:
+        # A paper probe may only ever reduce risk. Base/half tiers clamp to max_qty below.
+        max_risk_dollars = risk_dollars_cap
+        gating_reasons.append(f"Paper probe risk cap applied: ${risk_dollars_cap:,.0f}")
     qty_by_risk = max_risk_dollars / per_unit_risk
     qty_by_notional = trade_notional_ceiling / unit_notional
 

@@ -36,6 +36,7 @@ class ScreenerCandidate(BaseModel):
     alpha_score: float | None = None
     alpha_policy: dict[str, Any] | None = None
     contributors: tuple[str, ...] = ()
+    probe: bool = False
 
     def model_post_init(self, context: Any, /) -> None:
         if not self.symbol:
