@@ -149,6 +149,48 @@ async def test_swing_scan_still_fetches_fifteen_minutes_when_a_15m_alpha_is_inst
     assert scan_desk.data_fetcher.fetch_data.call_args.kwargs.get("include_fifteen_min") is True
 
 
+def hourly_frame(days=12, bars_per_day=7, volume=1000):
+    idx = pd.date_range("2026-08-03 09:30", periods=days * 24, freq="h", tz="America/New_York")
+    idx = idx[idx.indexer_between_time("09:30", "15:30")][: days * bars_per_day]
+    return pd.DataFrame({"Close": 100.0, "Volume": volume}, index=idx)
+
+
+async def test_coverage_gate_excludes_thin_names_from_strategy_scanning(scan_desk, app_config):
+    """Task 3: a name with far fewer active hourly bars than the reference (SPY) must
+    still be observed by alpha_shadow (evidence on thin names remains valid) but must
+    never reach strategy_engine.scan_contract, and must be reported in the summary."""
+    app_config.contracts = {"SPY": instrument("SPY"), "THIN": instrument("THIN")}
+
+    def fetch(contract, ticker, include_fifteen_min=True):
+        volume = 1000 if contract == "SPY" else 0
+        return SimpleNamespace(contract=contract, daily=frame(), four_hour=frame(), hourly=hourly_frame(volume=volume))
+
+    scan_desk.data_fetcher.fetch_data.side_effect = fetch
+    await scan_desk.run_scan(use_llm=False, dry_run=False)
+
+    scanned_contracts = {call.args[0].contract for call in scan_desk.strategy_engine.scan_contract.call_args_list}
+    assert scanned_contracts == {"SPY"}
+    observed_contracts = {call.args[1].contract for call in scan_desk.alpha_shadow.observe.call_args_list}
+    assert observed_contracts == {"SPY", "THIN"}  # both still get shadow evidence
+    assert scan_desk.last_scan_summary["coverage_excluded"] == ["THIN"]
+
+
+async def test_coverage_gate_failure_never_fails_the_scan(scan_desk, app_config, monkeypatch):
+    """The gate must never raise out of run_scan: any exception computing exclusions
+    is treated as a skipped gate (empty exclusions, a note set), not a scan failure."""
+    app_config.contracts = {"SPY": instrument("SPY"), "THIN": instrument("THIN")}
+    scan_desk.data_fetcher.fetch_data.return_value = SimpleNamespace(daily=frame(), four_hour=frame(), hourly=frame())
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("coverage gate exploded")
+
+    monkeypatch.setattr("agentic_trader.agent.copilot.coverage_exclusions", boom)
+    await scan_desk.run_scan(use_llm=False, dry_run=False)
+    assert scan_desk.last_scan_summary["coverage_excluded"] == []
+    assert scan_desk.last_scan_summary["coverage_note"]
+    assert scan_desk.strategy_engine.scan_contract.call_count == 2
+
+
 async def test_last_scan_summary_is_reset_before_an_early_return(scan_desk, app_config):
     """Minor: a halted/blocked scan must not leave a previous scan's counts visible."""
     app_config.contracts = {"AAA": instrument("AAA")}

@@ -65,6 +65,7 @@ from agentic_trader.research.alpha.strategy import execution_policy_from_dict, t
 from agentic_trader.resilience.reads import BoundedReadExecutor
 from agentic_trader.risk import requires_account_risk
 from agentic_trader.runtime import RUN_ID
+from agentic_trader.screeners.coverage import coverage_exclusions
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
@@ -419,6 +420,30 @@ class TradingCopilot:
 
             datasets, receipts = await self._fetch_universe(selected, include_fifteen_min=include_fifteen_min)
 
+            equities = {
+                c
+                for c, i in selected
+                if normalize_asset_class(str(getattr(i, "asset_class", ""))) == normalize_asset_class("equity")
+            }
+            try:
+                excluded, coverage_note = coverage_exclusions(
+                    datasets,
+                    reference=self.config.scan.coverage_reference_symbol,
+                    sessions=self.config.scan.coverage_sessions,
+                    min_ratio=self.config.scan.min_bar_coverage,
+                    equities=equities,
+                )
+            except Exception:
+                logger.exception(
+                    "Coverage gate raised; skipping the gate for this scan",
+                    extra={"event": "coverage_gate_error"},
+                )
+                excluded, coverage_note = set(), "Coverage gate skipped: gate raised an exception"
+            summary["coverage_excluded"] = sorted(excluded)
+            summary["coverage_note"] = coverage_note
+            if coverage_note:
+                logger.warning(coverage_note, extra={"event": "coverage_gate_skipped"})
+
             for contract, info in selected:
                 data = datasets.get(contract)
                 if isinstance(data, BaseException) or data is None:
@@ -441,6 +466,15 @@ class TradingCopilot:
                         summary["insufficient"].append(contract)
                         logger.warning(f"Insufficient data for {contract}, skipping.")
                         continue
+
+                    if contract in excluded:
+                        logger.info(
+                            "Coverage gate excluded %s from strategy scanning",
+                            contract,
+                            extra={"event": "coverage_excluded", "contract": contract},
+                        )
+                        continue
+
                     summary["scanned"] += 1
 
                     candidates = await asyncio.to_thread(
