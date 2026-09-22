@@ -21,6 +21,7 @@ from agentic_trader.data.providers import (
 )
 from agentic_trader.market.bars import SessionSnapshot
 from agentic_trader.resilience.fallback import RetryPolicy
+from agentic_trader.resilience.reads import BoundedReadExecutor
 from agentic_trader.runtime import state_directory
 from agentic_trader.screeners.indicators import (
     calculate_atr,
@@ -96,7 +97,13 @@ class MarketDataFetcher:
                 backoff_factor=md_cfg.retry_backoff_factor if md_cfg else DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
                 timeout_seconds=md_cfg.timeout_seconds if md_cfg else DEFAULT_DATA_TIMEOUT_SECONDS,
             )
-            self.provider = CompositeMarketDataProvider(providers, retry_policy=retry_policy)
+            # Dedicated read-capacity pool sized to the scan's own concurrency bound, so
+            # the scan's fetches can never fail-fast against the shared global pool (which
+            # stays free for calendar/doctor reads that run concurrently with a scan).
+            scan_read_executor = BoundedReadExecutor(workers=md_cfg.scan_concurrency if md_cfg else 8)
+            self.provider = CompositeMarketDataProvider(
+                providers, retry_policy=retry_policy, read_executor=scan_read_executor
+            )
 
     def _clean_yfinance_df(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:

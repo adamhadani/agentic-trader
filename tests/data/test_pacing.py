@@ -1,5 +1,9 @@
 import threading
+from datetime import UTC, datetime, timedelta
 
+import pandas as pd
+
+from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.pacing import RequestPacer
 
 
@@ -52,3 +56,33 @@ def test_pacer_is_safe_across_threads():
     for t in threads:
         t.join()
     assert len(clock.slept) >= 1
+
+
+class FakeProvider:
+    def fetch_bars(self, symbol, timeframe, start=None, end=None, period=None):
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        index = pd.DatetimeIndex([base + timedelta(hours=i) for i in range(3)])
+        return pd.DataFrame(
+            {"Open": [1.0] * 3, "High": [1.0] * 3, "Low": [1.0] * 3, "Close": [1.0] * 3, "Volume": [100] * 3},
+            index=index,
+        )
+
+
+class RecordingPacer:
+    def __init__(self):
+        self.calls = 0
+
+    def acquire(self):
+        self.calls += 1
+
+
+def test_fetch_data_acquires_the_pacer_once_per_provider_read():
+    pacer = RecordingPacer()
+    fetcher = MarketDataFetcher(provider=FakeProvider(), pacer=pacer)
+
+    fetcher.fetch_data(contract="X", ticker="X", include_fifteen_min=False)
+    assert pacer.calls == 2  # daily + hourly, no 15m read
+
+    pacer.calls = 0
+    fetcher.fetch_data(contract="X", ticker="X", include_fifteen_min=True)
+    assert pacer.calls == 3  # daily + hourly + 15m

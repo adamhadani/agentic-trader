@@ -34,6 +34,7 @@ from agentic_trader.resilience.fallback import (
     RetryPolicy,
     RunnableWithFallbacks,
 )
+from agentic_trader.resilience.reads import BoundedReadExecutor
 from agentic_trader.transport.alpaca import (
     BoundedCryptoDataClient,
     BoundedStockDataClient,
@@ -417,11 +418,13 @@ class CompositeMarketDataProvider:
         self,
         providers: list[MarketDataProvider],
         retry_policy: RetryPolicy | None = None,
+        read_executor: BoundedReadExecutor | None = None,
     ):
         if not providers:
             raise ValueError("CompositeMarketDataProvider requires at least one provider")
         self.providers = providers
         self.retry_policy = retry_policy or RetryPolicy()
+        self.read_executor = read_executor
 
     @property
     def name(self) -> str:
@@ -458,6 +461,7 @@ class CompositeMarketDataProvider:
             retry_policy=self.retry_policy,
             primary_name=primary.name,
             fallback_names=[f.name for f in fallbacks],
+            read_executor=self.read_executor,
         )
 
         try:
@@ -496,6 +500,7 @@ class CompositeMarketDataProvider:
             retry_policy=self.retry_policy,
             primary_name=primary.name,
             fallback_names=[f.name for f in fallbacks],
+            read_executor=self.read_executor,
         )
 
         try:

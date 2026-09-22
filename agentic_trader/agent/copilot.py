@@ -295,6 +295,7 @@ class TradingCopilot:
         include_fifteen_min: bool | None = None,
     ):
         async with self._scan_lock:
+            self.last_scan_summary = {}
             if not dry_run:
                 # Durable visibility only; snapshot() already excludes non-live probes.
                 try:
@@ -368,7 +369,10 @@ class TradingCopilot:
 
             started = time.monotonic()
             if include_fifteen_min is None:
-                include_fifteen_min = (timeframe or "").strip().lower() == "15m"
+                include_fifteen_min = (timeframe or "").strip().lower() == "15m" or any(
+                    getattr(d, "timeframe", None) == "15m"
+                    for d in (*alpha_snapshot.active, *alpha_snapshot.shadow, *alpha_snapshot.probe)
+                )
             summary: dict[str, Any] = {
                 "scanned": 0,
                 "fetch_failed": [],
@@ -405,31 +409,31 @@ class TradingCopilot:
                     continue
                 selected.append((contract, info))
 
-            datasets = await self._fetch_universe(selected, include_fifteen_min=include_fifteen_min)
+            datasets, receipts = await self._fetch_universe(selected, include_fifteen_min=include_fifteen_min)
 
             for contract, info in selected:
                 data = datasets.get(contract)
                 if isinstance(data, BaseException) or data is None:
                     summary["fetch_failed"].append(contract)
                     logger.warning(
-                        "Fetch failed for %s: %s",
+                        "Fetch failed for %s: %r",
                         contract,
                         data,
                         extra={"event": "scan_fetch_failed", "contract": contract},
                     )
                     continue
 
-                if data.daily.empty or data.four_hour.empty:
-                    summary["insufficient"].append(contract)
-                    logger.warning(f"Insufficient data for {contract}, skipping.")
-                    continue
-                summary["scanned"] += 1
-
                 inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
                 logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
                 try:
                     if not dry_run:
-                        await self.alpha_shadow.observe(alpha_snapshot, data)
+                        await self.alpha_shadow.observe(alpha_snapshot, data, as_of=receipts.get(contract))
+
+                    if data.daily.empty or data.four_hour.empty:
+                        summary["insufficient"].append(contract)
+                        logger.warning(f"Insufficient data for {contract}, skipping.")
+                        continue
+                    summary["scanned"] += 1
 
                     candidates = await asyncio.to_thread(
                         self.strategy_engine.scan_contract,
@@ -630,27 +634,48 @@ class TradingCopilot:
                     **{k: (len(v) if isinstance(v, list) else v) for k, v in summary.items()},
                 },
             )
+            # Fetch/insufficient-data failures are scan errors too: a scan where every
+            # name failed to fetch must not report SCAN readiness as healthy.
+            n_fetch_failed = len(summary["fetch_failed"])
+            n_insufficient = len(summary["insufficient"])
+            scan_errors += n_fetch_failed + n_insufficient
             if not dry_run:
-                await self.readiness.observe(HealthComponent.SCAN, scan_errors == 0, f"{scan_errors} instrument errors")
+                await self.readiness.observe(
+                    HealthComponent.SCAN,
+                    scan_errors == 0,
+                    f"{scan_errors} instrument errors ({n_fetch_failed} fetch failed, {n_insufficient} insufficient)",
+                )
             # Monitor any active positions for stop loss or take profit crossings
             if not dry_run:
                 await self.monitor_positions()
 
-    async def _fetch_universe(self, instruments: list[tuple[str, Any]], *, include_fifteen_min: bool) -> dict[str, Any]:
-        """Fetch every instrument's bars with bounded concurrency; failures are returned, not raised."""
+    async def _fetch_universe(
+        self, instruments: list[tuple[str, Any]], *, include_fifteen_min: bool
+    ) -> tuple[dict[str, Any], dict[str, datetime]]:
+        """Fetch every instrument's bars with bounded concurrency; failures are returned, not raised.
+
+        Returns the fetched dataset per contract alongside each contract's own fetch
+        *receipt* time (when its individual fetch resolved), so the sequential phase can
+        stamp its shadow observation with that receipt instead of a scan-wide timestamp
+        taken after the whole (potentially minutes-long) fetch phase completes.
+        """
         semaphore = asyncio.Semaphore(self.config.market_data.scan_concurrency)
+        receipts: dict[str, datetime] = {}
 
         async def one(contract: str, info: Any):
             async with semaphore:
-                return await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     self.data_fetcher.fetch_data,
                     contract,
                     info.ticker,
                     include_fifteen_min=include_fifteen_min,
                 )
+                receipts[contract] = datetime.now(UTC)
+                return result
 
         results = await asyncio.gather(*(one(c, i) for c, i in instruments), return_exceptions=True)
-        return {contract: result for (contract, _), result in zip(instruments, results, strict=True)}
+        datasets = {contract: result for (contract, _), result in zip(instruments, results, strict=True)}
+        return datasets, receipts
 
     async def process_reconciliation_event(
         self, ev: ReconciliationEvent, active_positions: list[dict[str, Any]] | None = None
