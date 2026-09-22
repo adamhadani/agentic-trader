@@ -7,7 +7,7 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time as dt_time
 from tempfile import TemporaryDirectory
 from typing import Any
 
@@ -19,7 +19,7 @@ from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
-from agentic_trader.config import AppConfig
+from agentic_trader.config import AppConfig, ScanBudget
 from agentic_trader.constants import (
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
@@ -42,7 +42,7 @@ from agentic_trader.execution.durable import OrderObservation, WorkKind, WorkSta
 from agentic_trader.execution.engine import SlicedExecutionEngine
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.market.session import CompositeMarketSessionProvider
+from agentic_trader.market.session import ET_TZ, CompositeMarketSessionProvider
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
@@ -254,6 +254,7 @@ class TradingCopilot:
         self.is_halted: bool = False
         self.halt_reason: str | None = None
         self.last_scan_summary: dict[str, Any] = {}
+        self._session_scan_stats: dict[str, list[dict[str, Any]]] = {}
         self._shutdown_event = asyncio.Event()
         self._scan_lock = asyncio.Lock()
 
@@ -291,6 +292,36 @@ class TradingCopilot:
             )
         return self.is_halted
 
+    def session_start_et(self, now: datetime | None = None) -> datetime:
+        """New York midnight of the current New York date: the per-session card budget's window."""
+        current = (now or datetime.now(UTC)).astimezone(ET_TZ)
+        return datetime.combine(current.date(), dt_time(0, 0), ET_TZ)
+
+    def correlation_groups_of(self, symbol: str) -> set[str]:
+        """Configured correlation groups this symbol belongs to, matching root and slashed spellings."""
+        keys = {symbol.upper(), symbol.strip("/").upper()}
+        groups = set()
+        for name, members in self.config.portfolio.correlation_groups.items():
+            norm = {m.strip("/").upper() for m in members} | {m.upper() for m in members}
+            if keys & norm:
+                groups.add(name)
+        return groups
+
+    @staticmethod
+    def _setup_quality(candidate: Any) -> float:
+        """A candidate's ranking score; screeners that predate ``setup_quality`` rank last."""
+        return float(getattr(candidate, "setup_quality", 0.0) or 0.0)
+
+    @classmethod
+    def _runner_up(cls, candidate: Any, reason: str) -> dict[str, Any]:
+        return {
+            "contract": candidate.contract,
+            "strategy": candidate.strategy,
+            "direction": candidate.direction,
+            "setup_quality": cls._setup_quality(candidate),
+            "reason": reason,
+        }
+
     async def run_scan(
         self,
         use_llm: bool = True,
@@ -302,9 +333,14 @@ class TradingCopilot:
         strategy_mode: str | None = None,
         timeframe: str | None = None,
         include_fifteen_min: bool | None = None,
+        budget: ScanBudget = ScanBudget.SESSION,
     ):
         async with self._scan_lock:
             self.last_scan_summary = {}
+            if dry_run:
+                # A dry scan owns an empty simulated portfolio and sends nothing; it must
+                # neither read nor spend the live session's card budget.
+                budget = ScanBudget.NONE
             if not dry_run:
                 # Durable visibility only; snapshot() already excludes non-live probes.
                 try:
@@ -399,6 +435,11 @@ class TradingCopilot:
 
             total_candidates = 0
             total_alerts = 0
+            # COLLECT: every deduplicated candidate that clears the deterministic risk
+            # gate, as (candidate, evaluation, account_risk). RANK-AND-SEND follows the
+            # sequential per-contract phase so the whole universe competes for the few
+            # cards this session may still spend.
+            approved_candidates: list[tuple[Any, Any, Any]] = []
 
             target_syms = [s.strip().upper() for s in symbols] if symbols else None
 
@@ -552,116 +593,192 @@ class TradingCopilot:
                                     extra={"event": "candidate_risk_unavailable", "contract": candidate.contract},
                                 )
                                 continue
-                        eval_res = await self.evaluator.evaluate_candidate(
+                        # Deterministic pass: it decides which candidates may compete for
+                        # a card. The winners are re-evaluated below with the caller's
+                        # use_llm, and that second result is the one recorded.
+                        det_res = await self.evaluator.evaluate_candidate(
                             candidate,
                             current_open_notional=current_exposure,
-                            use_llm=use_llm,
+                            use_llm=False,
                             active_positions=active_positions,
                             current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
                             current_equity=float(account_risk.equity) if account_risk else None,
                         )
 
-                        if not eval_res.approved:
+                        if not det_res.approved:
                             logger.info(
                                 "Candidate rejected by risk engine: %s",
-                                eval_res.rejection_reason,
+                                det_res.rejection_reason,
                                 extra={
                                     "event": "candidate_rejected",
                                     "contract": candidate.contract,
-                                    "rejection_reason": eval_res.rejection_reason,
+                                    "rejection_reason": det_res.rejection_reason,
                                 },
                             )
                             continue
 
-                        if dry_run:
-                            logger.info("[DRY RUN] Approved signal would be emitted:")
-                            print(
-                                format_terminal_card(
-                                    eval_res,
-                                    candidate.strategy,
-                                    self.config.portfolio.cash,
-                                    regime_summary=regime.summary_text,
-                                )
-                            )
-                            continue
-
-                        # Record to database
-                        sig_id = await self.db.record_signal(
-                            timeframe=candidate.timeframe,
-                            alpha_version=candidate.alpha_version,
-                            alpha_policy=candidate.alpha_policy,
-                            decision_provenance={
-                                "candle_timestamp": candidate.candle_timestamp,
-                                "alpha_score": candidate.alpha_score,
-                                "contributors": candidate.contributors,
-                                "account_risk_fingerprint": account_risk.fingerprint if account_risk else None,
-                                PAPER_PROBE_TAG: candidate.probe,
-                            },
-                            contract=eval_res.contract,
-                            strategy=candidate.strategy,
-                            direction=eval_res.direction,
-                            entry_price=eval_res.entry_price,
-                            stop_loss=eval_res.stop_loss,
-                            take_profit=eval_res.take_profit,
-                            risk_dollars=eval_res.risk_dollars,
-                            reward_dollars=eval_res.reward_dollars,
-                            notional_value=eval_res.notional_value,
-                            status=SignalStatus.PENDING,
-                            raw_response=eval_res.model_dump_json(),
-                            asset_class=str(eval_res.asset_class),
-                            quantity=eval_res.quantity,
-                            notification={
-                                "eval_res": eval_res.model_dump(mode="json"),
-                                "strategy": candidate.strategy,
-                                "regime_summary": regime.summary_text,
-                                "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars
-                                if candidate.probe
-                                else None,
-                            },
-                        )
-
-                        logger.info(
-                            "Signal #%d approved and recorded: %s %s via %s (risk: $%.2f, notional: $%.2f)",
-                            sig_id,
-                            eval_res.contract,
-                            eval_res.direction,
-                            candidate.strategy,
-                            eval_res.risk_dollars,
-                            eval_res.notional_value,
-                            extra={
-                                "event": "signal_approved",
-                                "signal_id": sig_id,
-                                "contract": eval_res.contract,
-                                "direction": eval_res.direction,
-                                "strategy": candidate.strategy,
-                                "risk_dollars": eval_res.risk_dollars,
-                                "notional_value": eval_res.notional_value,
-                                "quantity": eval_res.quantity,
-                                "entry_price": eval_res.entry_price,
-                            },
-                        )
-
-                        total_alerts += 1
-                        # Update exposure in memory for subsequent checks in this run
-                        current_exposure += eval_res.notional_value
-                        active_positions.append(
-                            {
-                                "contract": eval_res.contract,
-                                "symbol": eval_res.contract,
-                                "direction": eval_res.direction,
-                                "asset_class": str(eval_res.asset_class),
-                                "notional_value": eval_res.notional_value,
-                            }
-                        )
+                        approved_candidates.append((candidate, det_res, account_risk))
 
                 except Exception:
                     scan_errors += 1
                     logger.exception(f"Error scanning {contract}")
 
+            # RANK AND SEND: best setup first, ties broken deterministically so a rerun
+            # of the same universe spends the budget on the same names.
+            ranked = sorted(
+                approved_candidates,
+                key=lambda item: (-self._setup_quality(item[0]), item[0].contract, item[0].strategy),
+            )
+            summary["approved"] = len(ranked)
+            cfg = self.config.scan
+            groups_used: dict[str, int] = {}
+            if budget == ScanBudget.NONE:
+                remaining_scan = remaining_session = len(ranked)
+            else:
+                # Durable, derived budget: a restart mid-session must not hand out a
+                # fresh allowance, so today's spend is read back from recorded signals.
+                today = await self.db.signals_since(self.session_start_et())
+                remaining_session = max(0, cfg.max_cards_per_session - len(today))
+                remaining_scan = cfg.max_cards_per_scan if budget == ScanBudget.FULL else len(ranked)
+                for row in today:
+                    for group in self.correlation_groups_of(row["contract"]):
+                        groups_used[group] = groups_used.get(group, 0) + 1
+            llm_budget = cfg.max_llm_evaluations_per_scan
+            for rank, (candidate, _det_res, account_risk) in enumerate(ranked, 1):
+                reason = None
+                if remaining_scan <= 0:
+                    reason = "per-scan budget spent"
+                elif remaining_session <= 0:
+                    reason = "per-session budget spent"
+                elif budget != ScanBudget.NONE and any(
+                    groups_used.get(g, 0) >= cfg.max_cards_per_group_per_session
+                    for g in self.correlation_groups_of(candidate.contract)
+                ):
+                    reason = "correlation group already has a card this session"
+                elif llm_budget <= 0:
+                    reason = "LLM evaluation budget spent"
+                if reason:
+                    summary["runners_up"].append(self._runner_up(candidate, reason))
+                    continue
+
+                llm_budget -= 1
+                eval_res = await self.evaluator.evaluate_candidate(
+                    candidate,
+                    current_open_notional=current_exposure,
+                    use_llm=use_llm,
+                    active_positions=active_positions,
+                    current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
+                    current_equity=float(account_risk.equity) if account_risk else None,
+                )
+
+                if not eval_res.approved:
+                    summary["runners_up"].append(self._runner_up(candidate, f"rejected: {eval_res.rejection_reason}"))
+                    logger.info(
+                        "Candidate rejected by risk engine: %s",
+                        eval_res.rejection_reason,
+                        extra={
+                            "event": "candidate_rejected",
+                            "contract": candidate.contract,
+                            "rejection_reason": eval_res.rejection_reason,
+                        },
+                    )
+                    continue
+
+                if dry_run:
+                    logger.info("[DRY RUN] Approved signal would be emitted:")
+                    print(
+                        format_terminal_card(
+                            eval_res,
+                            candidate.strategy,
+                            self.config.portfolio.cash,
+                            regime_summary=regime.summary_text,
+                        )
+                    )
+                    continue
+
+                # Record to database
+                sig_id = await self.db.record_signal(
+                    timeframe=candidate.timeframe,
+                    alpha_version=candidate.alpha_version,
+                    alpha_policy=candidate.alpha_policy,
+                    decision_provenance={
+                        "candle_timestamp": candidate.candle_timestamp,
+                        "alpha_score": candidate.alpha_score,
+                        "contributors": candidate.contributors,
+                        "account_risk_fingerprint": account_risk.fingerprint if account_risk else None,
+                        PAPER_PROBE_TAG: candidate.probe,
+                        "setup_quality": self._setup_quality(candidate),
+                        "rank": rank,
+                        "candidates_considered": len(ranked),
+                        "budget": str(budget),
+                    },
+                    contract=eval_res.contract,
+                    strategy=candidate.strategy,
+                    direction=eval_res.direction,
+                    entry_price=eval_res.entry_price,
+                    stop_loss=eval_res.stop_loss,
+                    take_profit=eval_res.take_profit,
+                    risk_dollars=eval_res.risk_dollars,
+                    reward_dollars=eval_res.reward_dollars,
+                    notional_value=eval_res.notional_value,
+                    status=SignalStatus.PENDING,
+                    raw_response=eval_res.model_dump_json(),
+                    asset_class=str(eval_res.asset_class),
+                    quantity=eval_res.quantity,
+                    notification={
+                        "eval_res": eval_res.model_dump(mode="json"),
+                        "strategy": candidate.strategy,
+                        "regime_summary": regime.summary_text,
+                        "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars if candidate.probe else None,
+                    },
+                )
+
+                logger.info(
+                    "Signal #%d approved and recorded: %s %s via %s (risk: $%.2f, notional: $%.2f)",
+                    sig_id,
+                    eval_res.contract,
+                    eval_res.direction,
+                    candidate.strategy,
+                    eval_res.risk_dollars,
+                    eval_res.notional_value,
+                    extra={
+                        "event": "signal_approved",
+                        "signal_id": sig_id,
+                        "contract": eval_res.contract,
+                        "direction": eval_res.direction,
+                        "strategy": candidate.strategy,
+                        "risk_dollars": eval_res.risk_dollars,
+                        "notional_value": eval_res.notional_value,
+                        "quantity": eval_res.quantity,
+                        "entry_price": eval_res.entry_price,
+                        "setup_quality": self._setup_quality(candidate),
+                        "rank": rank,
+                    },
+                )
+
+                total_alerts += 1
+                remaining_scan -= 1
+                remaining_session -= 1
+                for group in self.correlation_groups_of(candidate.contract):
+                    groups_used[group] = groups_used.get(group, 0) + 1
+                # Update exposure in memory for subsequent checks in this run
+                current_exposure += eval_res.notional_value
+                active_positions.append(
+                    {
+                        "contract": eval_res.contract,
+                        "symbol": eval_res.contract,
+                        "direction": eval_res.direction,
+                        "asset_class": str(eval_res.asset_class),
+                        "notional_value": eval_res.notional_value,
+                    }
+                )
+
             summary["candidates"] = total_candidates
             summary["sent"] = total_alerts
+            summary["budget"] = str(budget)
             summary["duration_seconds"] = round(time.monotonic() - started, 3)
             self.last_scan_summary = summary
+            self._session_scan_stats.setdefault(self.session_start_et().date().isoformat(), []).append(summary)
             self.metrics.observe_histogram(
                 "trader_scan_duration_seconds",
                 summary["duration_seconds"],

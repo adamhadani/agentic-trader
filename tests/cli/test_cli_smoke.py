@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from agentic_trader.cli.main import cli
+from agentic_trader.config import ScanBudget
 from agentic_trader.diagnostics.doctor import ComponentHealth, DiagnosticReport
 from agentic_trader.presentation.formatters import PanicReportView
 
@@ -86,6 +87,7 @@ def test_cli_scan_smoke(runner: CliRunner):
             asset_class="all",
             symbols=["SPY"],
             bypass_session_filter=True,
+            budget=ScanBudget.SESSION,
         )
 
 
@@ -119,9 +121,28 @@ def test_cli_scan_multi_strategy_smoke(runner: CliRunner):
             asset_class="all",
             symbols=["QQQ"],
             bypass_session_filter=False,
+            budget=ScanBudget.SESSION,
             strategy="trend_pullback",
             strategy_mode="single",
         )
+
+
+def test_cli_scan_no_budget_flag_disables_the_suggestion_budget(runner: CliRunner):
+    """--no-budget records every approved candidate; a plain scan keeps the session budget."""
+    for args, expected in (
+        (["scan", "--no-budget", "--dry-run"], ScanBudget.NONE),
+        (["scan", "--dry-run"], ScanBudget.SESSION),
+    ):
+        with patch("agentic_trader.cli.commands.scan.get_copilot_and_config") as mock_get:
+            mock_copilot = MagicMock()
+            mock_copilot.broker = MagicMock()
+            mock_copilot.broker.connect = AsyncMock()
+            mock_copilot.run_scan = AsyncMock()
+            mock_get.return_value = (mock_copilot, MagicMock())
+
+            result = runner.invoke(cli, args)
+            assert result.exit_code == 0, result.output
+            assert mock_copilot.run_scan.await_args.kwargs["budget"] is expected
 
 
 def test_cli_doctor_smoke(runner: CliRunner):

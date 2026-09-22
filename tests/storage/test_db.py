@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from agentic_trader.storage.models import SignalRecord
@@ -157,3 +159,17 @@ async def test_malformed_or_untagged_provenance_never_blocks_a_close(temp_db, ma
     item = await temp_db.workflows.claim_notification(lease_seconds=5, max_attempts=3)
     assert item is not None
     assert item.payload["arguments"]["strategy"] == "alpha_probe"
+
+
+async def test_signals_since_is_scoped_and_ignores_quarantined_rows(temp_db):
+    """The per-session card budget is derived from this helper: it must see only this
+    scope's non-quarantined rows recorded at or after the cutoff."""
+    await temp_db.init_db()
+    sid = await temp_db.record_signal("SPY", "s", "LONG", 100, 98, 104, 2, asset_class="EQUITY", quantity=1)
+    await temp_db.record_signal("QQQ", "s", "LONG", 100, 98, 104, 2, asset_class="EQUITY", quantity=1)
+    rows = await temp_db.signals_since(datetime.now(UTC) - timedelta(minutes=5))
+    assert {r["contract"] for r in rows} == {"SPY", "QQQ"}
+    assert await temp_db.quarantine_signal(sid, "test", {"contract": "SPY", "strategy": "s"})
+    rows = await temp_db.signals_since(datetime.now(UTC) - timedelta(minutes=5))
+    assert {r["contract"] for r in rows} == {"QQQ"}
+    assert await temp_db.signals_since(datetime.now(UTC) + timedelta(minutes=1)) == []

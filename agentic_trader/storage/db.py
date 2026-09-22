@@ -446,6 +446,24 @@ class SignalDatabase:
             res = await session.execute(stmt)
             return res.scalar_one_or_none() is not None
 
+    async def signals_since(self, cutoff: datetime) -> list[dict[str, Any]]:
+        """Signals recorded at or after ``cutoff`` in this scope; the per-session card budget is derived from them.
+
+        ``_scope()`` already excludes quarantined rows and other environments/execution
+        modes, exactly as ``is_duplicate_recent`` does. ``SignalRecord.timestamp`` is a
+        ``UTCDatetime``: an aware ``cutoff`` is normalized to naive UTC by the column's
+        bind processor, so a New York session start compares correctly on SQLite and
+        PostgreSQL alike.
+        """
+        async with self.session_factory() as session:
+            rows = await session.execute(
+                select(SignalRecord.contract, SignalRecord.strategy, SignalRecord.timestamp)
+                .where(*self._scope())
+                .where(SignalRecord.timestamp >= cutoff)
+                .order_by(SignalRecord.timestamp)
+            )
+            return [{"contract": c, "strategy": s, "timestamp": t} for c, s, t in rows]
+
     async def record_signal(
         self,
         contract: str,

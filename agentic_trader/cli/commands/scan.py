@@ -5,6 +5,7 @@ from typing import Any
 import click
 
 from agentic_trader.cli.utils import coro, get_copilot_and_config
+from agentic_trader.config import ScanBudget
 
 
 @click.command("scan", help="Scan watchlists and run LLM risk evaluation")
@@ -51,6 +52,12 @@ from agentic_trader.cli.utils import coro, get_copilot_and_config
     help="Strategy execution mode override ('single' or 'parallel')",
 )
 @click.option(
+    "--no-budget",
+    is_flag=True,
+    default=False,
+    help="Record every approved candidate; ignore the per-scan and per-session suggestion budget",
+)
+@click.option(
     "--timeframe",
     type=click.Choice(["15m", "1h", "4h", "1d"], case_sensitive=False),
     default=None,
@@ -66,6 +73,7 @@ async def scan(
     strategy: str | None = None,
     strategy_mode: str | None = None,
     timeframe: str | None = None,
+    no_budget: bool = False,
 ) -> None:
     """Scan watchlists and run LLM risk evaluation."""
     copilot, _config = get_copilot_and_config(dry_run=True) if dry_run else get_copilot_and_config()
@@ -81,6 +89,7 @@ async def scan(
         "asset_class": asset_class,
         "symbols": sym_list,
         "bypass_session_filter": bypass_session_filter,
+        "budget": ScanBudget.NONE if no_budget else ScanBudget.SESSION,
     }
     if strategy is not None:
         scan_kwargs["strategy"] = strategy
