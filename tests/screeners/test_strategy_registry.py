@@ -303,6 +303,7 @@ def test_strategy_engine_multi_strategy_scan(base_config: AppConfig):
     assert len(candidates) >= 1
     assert candidates[0].strategy == StrategyType.TREND_PULLBACK
     assert candidates[0].direction == Direction.LONG
+    assert 0.0 < candidates[0].setup_quality <= 1.0
 
     # In single mode selecting squeeze_breakout (which has no trigger on this data), should return empty
     single_candidates = engine.scan_contract(

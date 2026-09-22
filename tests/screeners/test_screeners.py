@@ -108,6 +108,7 @@ def test_trend_pullback_long_trigger(config):
     assert candidate.direction == "LONG"
     assert candidate.strategy == "TREND_PULLBACK"
     assert candidate.contract == "/MES"
+    assert 0.0 < candidate.setup_quality <= 1.0
 
 
 def test_trend_pullback_no_trigger_when_far_from_ema(config):
@@ -136,6 +137,7 @@ def test_squeeze_breakout_trigger(config):
     assert candidate is not None
     assert candidate.strategy == "SQUEEZE_BREAKOUT"
     assert candidate.direction == "LONG"
+    assert 0.0 < candidate.setup_quality <= 1.0
 
 
 def test_equity_screener_candidate(config):
@@ -159,3 +161,4 @@ def test_equity_screener_candidate(config):
     assert c.symbol == "SPY"
     assert c.asset_class == AssetClass.EQUITY
     assert c.direction == "LONG"
+    assert 0.0 < c.setup_quality <= 1.0
