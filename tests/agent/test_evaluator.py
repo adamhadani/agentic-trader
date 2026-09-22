@@ -393,3 +393,15 @@ async def test_blocked_sizing_cannot_reach_llm_approval(evaluator_factory, monke
     assert result.quantity == 0
     assert result.gating_reasons
     completion.assert_not_called()
+
+
+async def test_lockout_gate_and_prompt_summary_share_one_clock_and_window(evaluator_factory, config):
+    """The prompt's macro block restates the gate's verdict, so both must see the same clock and window."""
+    evaluator = evaluator_factory()
+    await evaluator.evaluate_candidate(create_candidate(), use_llm=False)
+    gate = evaluator.calendar.is_in_lockout_window.call_args.kwargs
+    summary = evaluator.calendar.get_macro_summary_for_prompt.call_args.kwargs
+    assert gate["now"] == summary["now"] and gate["now"].tzinfo is UTC
+    for kwargs in (gate, summary):
+        assert kwargs["pre_minutes"] == config.risk.lockout_pre_event_minutes
+        assert kwargs["post_minutes"] == config.risk.lockout_post_event_minutes

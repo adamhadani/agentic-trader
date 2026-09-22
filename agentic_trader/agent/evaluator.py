@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import litellm
@@ -215,6 +216,9 @@ class RiskEvaluator:
         current_drawdown_pct: float = 0.0,
         current_equity: float | None = None,
     ) -> LLMTradeEvaluation:
+        # One clock for the deterministic lockout gate and the prompt's macro block,
+        # so the LLM never sees a verdict that differs from the gate's.
+        evaluated_at = datetime.now(UTC)
         # Fetch current volatility and macro regime
         regime = await self.regime_detector.get_regime()
 
@@ -431,6 +435,7 @@ class RiskEvaluator:
         in_lockout, lock_event = await self.calendar.is_in_lockout_window(
             pre_minutes=self.config.risk.lockout_pre_event_minutes,
             post_minutes=self.config.risk.lockout_post_event_minutes,
+            now=evaluated_at,
         )
         if in_lockout and lock_event:
             return LLMTradeEvaluation(
@@ -536,6 +541,7 @@ class RiskEvaluator:
                 )
 
         macro_summary = await self.calendar.get_macro_summary_for_prompt(
+            now=evaluated_at,
             pre_minutes=self.config.risk.lockout_pre_event_minutes,
             post_minutes=self.config.risk.lockout_post_event_minutes,
         )

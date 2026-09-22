@@ -167,7 +167,7 @@ Telegram has shared transport retries, command/update correlation, polling
 observations and persistent delivery audits. Retry HTTP delivery, never handlers.
 `/macro` is the single combined market context; published feed dates and missing
 enrichment are explicit. The evaluator's LLM macro block now carries the evaluation
-time and the already-computed deterministic lockout verdict (CLEAR or LOCKOUT ACTIVE)
+time and the deterministic lockout verdict recomputed on the same captured clock as the gate (CLEAR or LOCKOUT ACTIVE)
 with full event dates, because an event time alone made the model refuse candidates
 on unverifiable macro timing. Missing VIX fails regime evaluation; missing enrichment
 can leave volatility-only policy. Daily-feed admission age remains a gap.
