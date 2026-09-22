@@ -1861,7 +1861,10 @@ class TradingCopilot:
         current_exposure = await self.db.get_active_notional_exposure()
         active_count = await self.db.get_active_contract_count()
         eff_leverage = current_exposure / self.config.portfolio.cash if self.config.portfolio.cash > 0 else 0.0
-        macro_summary = await self.calendar.get_macro_summary_for_prompt()
+        macro_summary = await self.calendar.get_macro_summary_for_prompt(
+            pre_minutes=self.config.risk.lockout_pre_event_minutes,
+            post_minutes=self.config.risk.lockout_post_event_minutes,
+        )
         regime = await self.regime_detector.get_regime()
         signals = await self.db.get_recent_signals(limit=10)
 

@@ -106,7 +106,7 @@ async def test_macro_summary_for_prompt():
     # 1. Clear macro
     calendar_clear = DummyCalendar([])
     summary = await calendar_clear.get_macro_summary_for_prompt(now=now)
-    assert "Macro Clear" in summary
+    assert "Lockout verified: CLEAR" in summary
 
     # 2. Upcoming macro outside lockout
     events_upcoming = [

@@ -535,7 +535,10 @@ class RiskEvaluator:
                     session_type=current_session_type,
                 )
 
-        macro_summary = await self.calendar.get_macro_summary_for_prompt()
+        macro_summary = await self.calendar.get_macro_summary_for_prompt(
+            pre_minutes=self.config.risk.lockout_pre_event_minutes,
+            post_minutes=self.config.risk.lockout_post_event_minutes,
+        )
         regime_summary = self.regime_detector.get_prompt_context(regime)
 
         # If LLM evaluation is disabled or no LLM keys provided, return deterministic evaluation
