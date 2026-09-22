@@ -62,6 +62,7 @@ from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
+from agentic_trader.resilience.reads import BoundedReadExecutor
 from agentic_trader.risk import requires_account_risk
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.strategies import StrategyEngine
@@ -102,7 +103,14 @@ class TradingCopilot:
         self._reconciliation_errors: list[str] = []
         self.config = config
         self.db = db if db is not None else SignalDatabase(db_url=config.resolved_db_url, config=config)
-        self.data_fetcher = data_fetcher if data_fetcher is not None else MarketDataFetcher(config=config)
+        if data_fetcher is not None:
+            self.data_fetcher = data_fetcher
+        else:
+            # One dedicated, scan-sized read-capacity pool, owned by the copilot for its
+            # lifetime; MarketDataFetcher never constructs its own (that would leak a
+            # ThreadPoolExecutor per ad hoc fetcher construction elsewhere, e.g. backtests).
+            self._scan_read_executor = BoundedReadExecutor(workers=config.market_data.scan_concurrency)
+            self.data_fetcher = MarketDataFetcher(config=config, read_executor=self._scan_read_executor)
         self.broker: BaseBroker = (
             broker if broker is not None else create_broker(config=config, data_fetcher=self.data_fetcher)
         )
@@ -634,11 +642,14 @@ class TradingCopilot:
                     **{k: (len(v) if isinstance(v, list) else v) for k, v in summary.items()},
                 },
             )
-            # Fetch/insufficient-data failures are scan errors too: a scan where every
-            # name failed to fetch must not report SCAN readiness as healthy.
+            # Fetch failures are scan errors too: a scan where every name failed to fetch
+            # must not report SCAN readiness as healthy. Insufficient data (an empty
+            # frame that was fetched successfully) is not an error on its own -- a wide
+            # universe legitimately contains thin names -- so it is surfaced in the
+            # detail string only, not counted toward scan_errors.
             n_fetch_failed = len(summary["fetch_failed"])
             n_insufficient = len(summary["insufficient"])
-            scan_errors += n_fetch_failed + n_insufficient
+            scan_errors += n_fetch_failed
             if not dry_run:
                 await self.readiness.observe(
                     HealthComponent.SCAN,

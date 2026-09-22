@@ -95,7 +95,7 @@ async def test_shadow_observes_even_insufficient_data_when_not_dry_run(scan_desk
 
 
 async def test_fetch_failures_degrade_scan_readiness(scan_desk, app_config):
-    """I3: fetch/insufficient counts must feed scan_errors so SCAN readiness reflects them."""
+    """I3: a fetch exception must feed scan_errors so SCAN readiness reflects it."""
     app_config.contracts = {"AAA": instrument("AAA")}
 
     def fetch(contract, ticker, include_fifteen_min=True):
@@ -107,6 +107,22 @@ async def test_fetch_failures_degrade_scan_readiness(scan_desk, app_config):
     assert len(scan_calls) == 1
     assert scan_calls[0].args[1] is False
     assert "1" in scan_calls[0].args[2]
+
+
+async def test_insufficient_data_alone_does_not_degrade_scan_readiness(scan_desk, app_config):
+    """I3 (controller ruling correction): pre-change, an empty-but-fetched frame never
+    incremented scan_errors -- only exceptions did. A wide universe legitimately
+    contains thin names, so an insufficient-data-only name must still report SCAN
+    readiness healthy; the count is surfaced in the detail string only."""
+    app_config.contracts = {"AAA": instrument("AAA")}
+    scan_desk.data_fetcher.fetch_data.return_value = SimpleNamespace(
+        daily=pd.DataFrame(), four_hour=pd.DataFrame(), hourly=pd.DataFrame()
+    )
+    await scan_desk.run_scan(use_llm=False, dry_run=False)
+    scan_calls = [c for c in scan_desk.readiness.observe.await_args_list if c.args[0] == HealthComponent.SCAN]
+    assert len(scan_calls) == 1
+    assert scan_calls[0].args[1] is True
+    assert "1 insufficient" in scan_calls[0].args[2]
 
 
 async def test_shadow_observe_uses_each_symbols_fetch_receipt_as_of(scan_desk, app_config):

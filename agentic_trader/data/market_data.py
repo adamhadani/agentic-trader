@@ -67,6 +67,7 @@ class MarketDataFetcher:
         config: AppConfig | None = None,
         provider: MarketDataProvider | None = None,
         pacer: RequestPacer | None = None,
+        read_executor: BoundedReadExecutor | None = None,
     ):
         self.cache_ttl_seconds = cache_ttl_seconds
         self.pacer = pacer or RequestPacer(
@@ -97,12 +98,14 @@ class MarketDataFetcher:
                 backoff_factor=md_cfg.retry_backoff_factor if md_cfg else DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
                 timeout_seconds=md_cfg.timeout_seconds if md_cfg else DEFAULT_DATA_TIMEOUT_SECONDS,
             )
-            # Dedicated read-capacity pool sized to the scan's own concurrency bound, so
-            # the scan's fetches can never fail-fast against the shared global pool (which
-            # stays free for calendar/doctor reads that run concurrently with a scan).
-            scan_read_executor = BoundedReadExecutor(workers=md_cfg.scan_concurrency if md_cfg else 8)
+            # read_executor is an injected dependency, not constructed here: a fresh
+            # BoundedReadExecutor owns its own ThreadPoolExecutor whose worker threads are
+            # never joined, so a new one per MarketDataFetcher construction (e.g. one per
+            # ad hoc BacktestEngine/PairsScreener) would leak threads. None keeps the
+            # composite on the shared global provider_reads pool (today's behaviour); the
+            # copilot owns and injects the one dedicated, scan-sized pool it needs.
             self.provider = CompositeMarketDataProvider(
-                providers, retry_policy=retry_policy, read_executor=scan_read_executor
+                providers, retry_policy=retry_policy, read_executor=read_executor
             )
 
     def _clean_yfinance_df(self, df: pd.DataFrame) -> pd.DataFrame:

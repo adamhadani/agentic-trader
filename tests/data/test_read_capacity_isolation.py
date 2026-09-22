@@ -1,4 +1,7 @@
-"""Pin the scan-fetch/global-read-pool collision this fix exists for (C1).
+"""Pin the scan-fetch/global-read-pool collision this fix exists for (C1), and the
+follow-up fix (round 2) that makes the dedicated pool an INJECTED dependency the
+copilot owns for its lifetime, rather than something MarketDataFetcher constructs
+(and leaks a ThreadPoolExecutor for) on every one of its own constructions.
 
 Every scan fetch runs through CompositeMarketDataProvider -> RunnableWithFallbacks
 -> BoundedReadExecutor.submit, which is non-blocking and fails fast with
@@ -17,8 +20,10 @@ from datetime import datetime
 
 import pandas as pd
 
+import agentic_trader.data.market_data as market_data_module
+from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import CompositeMarketDataProvider
-from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor
+from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor, provider_reads
 
 
 class SlowFakeProvider:
@@ -51,12 +56,43 @@ def _burst_fetch(provider: CompositeMarketDataProvider, burst: int) -> list[pd.D
 
 
 def test_dedicated_read_executor_sized_to_concurrency_never_fails_fast():
+    """The 8-slot case, injected explicitly through MarketDataFetcher's own
+    read_executor parameter (round 2) rather than only into the bare composite:
+    the composite it builds around a directly-supplied provider still carries the
+    dedicated pool, and the pinned semantics (no fail-fast under an 8-wide burst)
+    are unchanged."""
     dedicated = BoundedReadExecutor(workers=8)
-    provider = CompositeMarketDataProvider([SlowFakeProvider()], read_executor=dedicated)
+    composite = CompositeMarketDataProvider([SlowFakeProvider()], read_executor=dedicated)
+    fetcher = MarketDataFetcher(provider=composite)
+    assert fetcher.provider.read_executor is dedicated
 
-    frames = _burst_fetch(provider, 8)
+    frames = _burst_fetch(fetcher.provider, 8)
 
     assert all(not f.empty for f in frames)
+
+
+def test_market_data_fetcher_with_no_read_executor_defers_to_the_global_pool(app_config):
+    """(a) MarketDataFetcher(config=...) with no read_executor builds a composite
+    whose runner uses the process-global provider_reads pool (today's behaviour
+    for every caller that does not inject a dedicated pool, e.g. an ad hoc
+    BacktestEngine or PairsScreener)."""
+    fetcher = MarketDataFetcher(config=app_config)
+    assert fetcher.provider.read_executor is provider_reads
+
+
+def test_constructing_market_data_fetchers_creates_no_new_read_executor(app_config, monkeypatch):
+    """(b) MarketDataFetcher must never construct its own BoundedReadExecutor --
+    that owns a ThreadPoolExecutor whose worker threads are never joined, so a new
+    one per construction (BacktestEngine, PairsScreener, /backtest, etc.) leaks
+    threads. Two constructions must not touch BoundedReadExecutor at all."""
+
+    def boom(*args, **kwargs):
+        raise AssertionError("MarketDataFetcher must not construct its own BoundedReadExecutor")
+
+    monkeypatch.setattr(market_data_module, "BoundedReadExecutor", boom)
+
+    MarketDataFetcher(config=app_config)
+    MarketDataFetcher(config=app_config)
 
 
 def test_default_global_pool_fails_fast_under_a_burst_exceeding_its_width():
