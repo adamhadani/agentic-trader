@@ -2,6 +2,7 @@ import io
 import os
 import re
 from collections.abc import Mapping
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
@@ -10,6 +11,7 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.constants import (
+    CRYPTO_SYMBOL_PREFIXES,
     DEFAULT_ACTIVE_STRATEGIES,
     DEFAULT_ACTIVE_STRATEGY,
     DEFAULT_BACKTEST_LOOKBACK,
@@ -97,6 +99,67 @@ class ContractConfig(BaseModel):
 InstrumentConfig = ContractConfig
 
 
+class UniverseEntry(BaseModel):
+    symbol: str = Field(pattern=r"^[A-Z][A-Z.]{0,5}$")
+    sector: str = Field(default="unknown", pattern=r"^[a-z][a-z0-9_]{0,31}$")
+
+
+class UniverseConfig(BaseModel):
+    """Named groups of equity/ETF symbols expanded into contracts at load time."""
+
+    groups: dict[str, list[UniverseEntry]] = Field(default_factory=dict)
+    max_symbols: int = Field(default=250, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def validated(self):
+        owner: dict[str, str] = {}
+        for group, entries in self.groups.items():
+            for entry in entries:
+                if entry.symbol in owner:
+                    raise ValueError(f"Duplicate universe symbol {entry.symbol} in {group} and {owner[entry.symbol]}")
+                if entry.symbol.startswith(CRYPTO_SYMBOL_PREFIXES):
+                    raise ValueError(f"{entry.symbol} would be routed to the crypto session provider")
+                owner[entry.symbol] = group
+        if len(owner) > self.max_symbols:
+            raise ValueError(f"Universe has {len(owner)} symbols; max_symbols is {self.max_symbols}")
+        return self
+
+    @property
+    def symbols(self) -> tuple[str, ...]:
+        return tuple(sorted(entry.symbol for entries in self.groups.values() for entry in entries))
+
+    def contract_documents(self) -> dict[str, dict[str, Any]]:
+        return {
+            entry.symbol: {"ticker": entry.symbol, "name": entry.symbol, "asset_class": "equity"}
+            for entries in self.groups.values()
+            for entry in entries
+        }
+
+    def sector_groups(self) -> dict[str, list[str]]:
+        groups: dict[str, list[str]] = {}
+        for entries in self.groups.values():
+            for entry in entries:
+                if entry.sector != "unknown":
+                    groups.setdefault(f"sector_{entry.sector}", []).append(entry.symbol)
+        return {name: sorted(members) for name, members in sorted(groups.items())}
+
+
+class ScanBudget(StrEnum):
+    FULL = "full"  # scheduled scans: per-scan, per-session and per-group limits
+    SESSION = "session"  # operator scans: per-session and per-group limits only
+    NONE = "none"  # explicit --no-budget or dry runs
+
+
+class ScanConfig(BaseModel):
+    max_cards_per_scan: int = Field(default=1, ge=0)
+    max_cards_per_session: int = Field(default=2, ge=0)
+    max_cards_per_group_per_session: int = Field(default=1, ge=1)
+    max_llm_evaluations_per_scan: int = Field(default=4, ge=1)
+    min_bar_coverage: float = Field(default=0.8, ge=0, le=1)
+    coverage_sessions: int = Field(default=10, ge=1)
+    coverage_reference_symbol: str = Field(default="SPY", pattern=r"^[A-Z][A-Z.]{0,5}$")
+
+
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
     "us_broad_market": ["/MES", "/ES", "SPY", "VOO", "IVV"],
     "us_tech": ["/MNQ", "/NQ", "QQQ", "XLK"],
@@ -179,6 +242,18 @@ class SchedulerConfig(BaseModel):
     macro_briefing_minute: int = 30
     intraday_scan_enabled: bool = True
     intraday_interval_minutes: int = 15
+    suggestion_scan_times_et: list[str] = Field(default_factory=lambda: ["10:35", "14:35"])
+
+    @field_validator("suggestion_scan_times_et")
+    @classmethod
+    def valid_times(cls, value: list[str]) -> list[str]:
+        # An empty list is the documented operator off switch: no cron suggestion scans.
+        if len(set(value)) != len(value):
+            raise ValueError("suggestion_scan_times_et requires distinct HH:MM times")
+        for item in value:
+            if not re.fullmatch(r"^(?:[01]\d|2[0-3]):[0-5]\d$", item):
+                raise ValueError(f"Invalid HH:MM time: {item}")
+        return value
 
 
 class RegimeConfig(BaseModel):
@@ -390,6 +465,8 @@ class MarketDataConfig(BaseModel):
     timeout_seconds: float = Field(default=DEFAULT_DATA_TIMEOUT_SECONDS, gt=0, le=120, allow_inf_nan=False)
     max_retries: int = DEFAULT_DATA_MAX_RETRIES
     retry_backoff_factor: float = DEFAULT_DATA_RETRY_BACKOFF_FACTOR
+    scan_concurrency: int = Field(default=8, ge=1, le=32)
+    max_requests_per_minute: int = Field(default=150, ge=1, le=1000)
 
 
 class DatabaseConfig(BaseModel):
@@ -533,6 +610,9 @@ class AppConfig(BaseModel):
     environment: RuntimeEnvironment = RuntimeEnvironment.DEVELOPMENT
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
+    universe: UniverseConfig = Field(default_factory=UniverseConfig)
+    scan: ScanConfig = Field(default_factory=ScanConfig)
+    explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
@@ -582,6 +662,18 @@ class AppConfig(BaseModel):
         if self.llm_model.startswith(("gemini/", "vertex_ai/")):
             return self.gemini_api_key
         return self.openai_api_key
+
+    @property
+    def non_universe_contracts(self) -> list[str]:
+        """Instruments configured explicitly under contracts:, i.e. the pre-universe scan set.
+
+        `explicit_contracts` is `None` when an `AppConfig` is built directly (not via
+        `load_config`); every configured contract is then treated as explicit, so a
+        symbol that also appears in `universe` is never silently dropped.
+        """
+        explicit = set(self.contracts) if self.explicit_contracts is None else set(self.explicit_contracts)
+        universe_only = set(self.universe.symbols) - explicit
+        return sorted(k for k in self.contracts if k not in universe_only)
 
     # Broker Execution Configuration
     execution_mode: str = ExecutionMode.PAPER  # ExecutionMode.PAPER, "tradovate", ExecutionMode.ALPACA, "manual"
@@ -762,13 +854,25 @@ def load_config(
 
     strategies_config = StrategyConfig(**strat_kwargs)
 
+    universe = UniverseConfig(**(cfg_dict.get("universe") or {}))
+    explicit_contracts = dict(cfg_dict.get("contracts", {}))
+    contract_documents = {**universe.contract_documents(), **explicit_contracts}  # explicit wins
+    portfolio_dict = dict(cfg_dict.get("portfolio", {}))
+    groups = {k: list(v) for k, v in dict(portfolio_dict.get("correlation_groups", DEFAULT_CORRELATION_GROUPS)).items()}
+    for name, members in universe.sector_groups().items():
+        groups[name] = sorted(set(groups.get(name, [])) | set(members))
+    portfolio_dict["correlation_groups"] = groups
+
     config = AppConfig(
         alpha_pipeline=AlphaPipelineConfig(**cfg_dict.get("alpha_pipeline", {})),
         telegram=TelegramConfig(**cfg_dict.get("telegram", {})),
         environment=RuntimeEnvironment(environment),
         broker_stream=BrokerStreamConfig(**cfg_dict.get("broker_stream", {})),
-        portfolio=PortfolioConfig(**cfg_dict.get("portfolio", {})),
-        contracts={k: ContractConfig(**v) for k, v in cfg_dict.get("contracts", {}).items()},
+        portfolio=PortfolioConfig(**portfolio_dict),
+        contracts={k: ContractConfig(**v) for k, v in contract_documents.items()},
+        universe=universe,
+        scan=ScanConfig(**(cfg_dict.get("scan") or {})),
+        explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,
         scheduler=SchedulerConfig(**cfg_dict.get("scheduler", {})),

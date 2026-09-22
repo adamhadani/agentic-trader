@@ -249,8 +249,14 @@ def alpaca_http(app_config, request):
         base_url = f"http://127.0.0.1:{server.server_port}"
     else:
         base_url = "http://127.0.0.1:1"
-    client = BoundedTradingClient("fake-key", "fake-secret", url_override=base_url, request_timeout=0.2)
-    data_client = BoundedStockDataClient("fake-key", "fake-secret", url_override=base_url, request_timeout=0.2)
+    # Loopback venue round trips are under 10ms at p99, but this socket deadline must also
+    # clear CPython's own stop-the-world GC pauses: gen-2 collections of 0.20-0.27s were
+    # measured throughout a full-suite run, and any of them lands inside a request sooner or
+    # later. A deadline below that times out a healthy request, so reconciliation is skipped
+    # and the test observes stale rows. Tests that need a lost acknowledgement stall the venue
+    # past client.request_timeout instead of shortening the deadline.
+    client = BoundedTradingClient("fake-key", "fake-secret", url_override=base_url, request_timeout=1.0)
+    data_client = BoundedStockDataClient("fake-key", "fake-secret", url_override=base_url, request_timeout=1.0)
     if server is None:
 
         class VenueTransport(BaseAdapter):

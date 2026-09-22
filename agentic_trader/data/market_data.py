@@ -9,8 +9,10 @@ from agentic_trader.constants import (
     DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
     DEFAULT_DATA_TIMEOUT_SECONDS,
     DEFAULT_MARKET_DATA_CACHE_TTL_SECONDS,
+    DEFAULT_MAX_REQUESTS_PER_MINUTE,
 )
 from agentic_trader.data.evidence import BarEvidenceStore
+from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import (
     AlpacaDataProvider,
     CompositeMarketDataProvider,
@@ -19,6 +21,7 @@ from agentic_trader.data.providers import (
 )
 from agentic_trader.market.bars import SessionSnapshot
 from agentic_trader.resilience.fallback import RetryPolicy
+from agentic_trader.resilience.reads import BoundedReadExecutor
 from agentic_trader.runtime import state_directory
 from agentic_trader.screeners.indicators import (
     calculate_atr,
@@ -63,9 +66,13 @@ class MarketDataFetcher:
         cache_ttl_seconds: int = DEFAULT_MARKET_DATA_CACHE_TTL_SECONDS,
         config: AppConfig | None = None,
         provider: MarketDataProvider | None = None,
+        pacer: RequestPacer | None = None,
+        read_executor: BoundedReadExecutor | None = None,
     ):
         self.cache_ttl_seconds = cache_ttl_seconds
-        self._cache: dict[str, ContractMarketData] = {}
+        self.pacer = pacer or RequestPacer(
+            config.market_data.max_requests_per_minute if config else DEFAULT_MAX_REQUESTS_PER_MINUTE
+        )
 
         if provider:
             self.provider = provider
@@ -91,7 +98,15 @@ class MarketDataFetcher:
                 backoff_factor=md_cfg.retry_backoff_factor if md_cfg else DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
                 timeout_seconds=md_cfg.timeout_seconds if md_cfg else DEFAULT_DATA_TIMEOUT_SECONDS,
             )
-            self.provider = CompositeMarketDataProvider(providers, retry_policy=retry_policy)
+            # read_executor is an injected dependency, not constructed here: a fresh
+            # BoundedReadExecutor owns its own ThreadPoolExecutor whose worker threads are
+            # never joined, so a new one per MarketDataFetcher construction (e.g. one per
+            # ad hoc BacktestEngine/PairsScreener) would leak threads. None keeps the
+            # composite on the shared global provider_reads pool (today's behaviour); the
+            # copilot owns and injects the one dedicated, scan-sized pool it needs.
+            self.provider = CompositeMarketDataProvider(
+                providers, retry_policy=retry_policy, read_executor=read_executor
+            )
 
     def _clean_yfinance_df(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -190,10 +205,12 @@ class MarketDataFetcher:
     ) -> ContractMarketData:
         """Fetch market data via resilient providers and compute all indicators."""
         # 1. Daily
+        self.pacer.acquire()
         clean_daily = self.provider.fetch_bars(ticker, "1d", period=daily_period)
         df_daily = self.compute_daily_indicators(clean_daily)
 
         # 2. Hourly
+        self.pacer.acquire()
         clean_1h = self.provider.fetch_bars(ticker, "1h", period=hourly_period)
         df_1h = self.compute_intraday_indicators(clean_1h)
 
@@ -205,6 +222,7 @@ class MarketDataFetcher:
         df_15m = pd.DataFrame()
         if include_fifteen_min:
             try:
+                self.pacer.acquire()
                 clean_15m = self.provider.fetch_bars(ticker, "15m", period=fifteen_min_period)
                 df_15m = self.compute_intraday_indicators(clean_15m)
             except Exception as e:

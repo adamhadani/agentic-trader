@@ -56,6 +56,12 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
   retries delivery only; Telegram delivery is at least once. Preserve dead letters.
 - Order projections replay `domain_events`; do not fabricate fills or silently
   reset signal IDs while journal/work exists. Read [durable workflows](docs/durable-execution.md).
+- Suggestion scans run at configured New York times and spend a derived per-session
+  card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
+  the intraday job scans only `non_universe_contracts`; `setup_quality` orders cards
+  and is stored in provenance — it is not validated alpha. Never widen the intraday
+  job to the universe or store the budget in a counter.
+
 - `/readyz` and `doctor --readiness` are passive current-run freshness checks.
   Keep TCP/WebSocket and PostgreSQL integration verification separate from the
   optional in-process SDK transport used in restricted environments.

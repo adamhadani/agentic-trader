@@ -144,3 +144,16 @@ async def test_calibration_to_shadow_projection_keeps_contract_and_rejection_evi
         assert not combined["valid"]  # A combined estimate never earns independent promotion credit.
         assert combined["contract"]["target"]["horizon_bars"] == 1
         assert combined["calibration_ids"] == (model.calibration_id,)
+
+
+async def test_explicit_as_of_is_used_as_the_observation_time_not_the_live_clock(shadow_inputs):
+    """I4: a caller-supplied as_of must be the recorded observation time, so a scan's
+    per-symbol fetch-receipt timestamp (not a later scan-wide clock read) governs
+    staleness decisions for that symbol's observation."""
+    definition, data, _ = shadow_inputs
+    explicit = datetime(2019, 1, 1, tzinfo=UTC)
+    repository = AsyncMock()
+    repository.get.return_value = None
+    await AlphaShadowService(repository).observe(RegistrySnapshot(1, (), (definition,)), data, as_of=explicit)
+    payload = repository.record_forecast.call_args.args[1]
+    assert payload["observed_at"] == explicit.isoformat()

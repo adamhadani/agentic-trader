@@ -17,7 +17,8 @@ Runs the continuous steady-state trading service.
 uv run copilot daemon
 ```
 - **Components Executed**:
-  - APScheduler 4-hour swing scans and session-gated 15-minute intraday scans, relative to startup.
+  - APScheduler 4-hour swing scans and session-gated 15-minute intraday scans, relative to startup. The intraday scan covers only the explicitly configured `contracts:`, never the `universe:`.
+  - Cron suggestion scans on the New York clock (`scheduler.suggestion_scan_times_et`, default 10:35 and 14:35, weekdays); the last one publishes the end-of-session scan digest through the outbox.
   - 1-minute position reconciliation and bracket take-profit / stop-loss reconciler.
   - Alpaca WebSocket `TradingStream` wakeups (no latency guarantee).
   - Interactive two-way Telegram bot listener.
@@ -66,7 +67,32 @@ uv run copilot scan --symbols /MES,/MNQ,SPY
 
 # Bypass session hours and market closure check (e.g. testing off-hours)
 uv run copilot scan --bypass-session-filter --dry-run
+
+# Record every approved candidate, ignoring the per-scan and per-session card budget
+uv run copilot scan --no-budget
 ```
+
+**Suggestion budget.** A scan collects every candidate that passes the deterministic
+evaluation, ranks them by `setup_quality` (ties broken by symbol, then strategy), and
+only then sends. `copilot scan` and Telegram `/scan` bypass `scan.max_cards_per_scan`
+but respect `scan.max_cards_per_session` and `scan.max_cards_per_group_per_session`;
+the scheduled suggestion, swing and intraday scans apply all three. The per-session
+count is derived from the signals table since New York midnight, so a restart cannot
+reset it. `--no-budget` and `--dry-run` apply no budget at all — a dry run is always
+unbudgeted because it neither reads nor spends the live session's allowance.
+`setup_quality`, the candidate's rank and the number of candidates it beat are stored
+in `decision_provenance`; `setup_quality` is a transparent prioritisation heuristic,
+not validated alpha.
+
+**`--no-budget` over the full universe can emit many cards at once.** It records every
+approved candidate across ~160 names, so a trending session can produce a burst of
+Telegram cards and consume the session's ranking discipline in one run. Scope it
+(`--symbols`) or rehearse it with `--dry-run` unless a wide sweep is what you want;
+the cards are `PENDING` suggestions and reserve no capacity, but each one is a
+recorded signal and counts toward the day's derived per-session total.
+
+Telegram `/scan` refuses while another scan is in flight (`Scan Already Running`)
+rather than queueing behind it; the running scan's cards still arrive in the chat.
 
 ### `copilot execute <signal_id>`
 Authorizes a signal through the durable entry queue. Fresh admission supports Alpaca equities and local simulation; other adapters fail closed until they implement that contract.

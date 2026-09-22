@@ -305,8 +305,10 @@ def test_storage_failures_never_return_unaudited_bars(captured_provider, monkeyp
 
 def test_crypto_capture_preserves_its_own_endpoint_and_feed(captured_provider):
     venue, broker, provider = captured_provider
+    # 1.0s clears CPython gen-2 GC pauses on this healthy loopback fetch; see the deadline
+    # rationale in tests/integration/conftest.py near the BoundedTradingClient construction.
     client = BoundedCryptoDataClient(
-        "fake-key", "fake-secret", url_override=broker.data_client._base_url, request_timeout=0.2
+        "fake-key", "fake-secret", url_override=broker.data_client._base_url, request_timeout=1.0
     )
     # Reuse the fixture session so both TCP and optional in-process transports work.
     client._session.close()

@@ -170,6 +170,27 @@ research run or runtime policy change was made for this review.
    exits are a strategy rule: they must be versioned in the execution policy and
    mined under it, and are deferred until the entry-expiry confirmation run. Not
    yet implemented.
+8. **Scan universe and suggestion budget implemented (September 22).** The
+   [design](superpowers/specs/2026-09-21-scan-universe-and-suggestion-budget-design.md)
+   is built: a validated `universe:` of 159 equity/ETF names in three groups
+   (etf32, mega_caps, research_cohort) whose sectors merge into the correlation
+   groups; a paced, bounded fetch phase with failure accounting and a scan-duration
+   histogram; a reference-relative hourly-coverage gate that skips strategy scanning
+   for thin names while alpha-shadow observation still records them; COLLECT → RANK →
+   SEND with a derived per-session card budget; two New York cron suggestion scans
+   and an end-of-session digest. The north-star metric is unchanged and is now
+   directly measurable: **one or two reasonable suggestions per market session in
+   Telegram**, counted as cards recorded per New York trading day. `setup_quality`
+   is a transparent prioritisation heuristic stored in `decision_provenance` with
+   the rank and the candidate count it beat — it is **not validated alpha** and must
+   be evaluated against realised R before it is trusted. Follow-ups, none started:
+   session-bounded entries for the built-in strategies (after the entry-expiry
+   confirmation run); universe-wide mined alphas over the same names; evaluating
+   `setup_quality` against realised R; fixing the interval scan's drift from candle
+   closes. Deployment and the first two sessions' digests are separate evidence
+   (see [production operations](production.md#suggestion-scans)). Further recorded
+   follow-ups: process-wide per-feed pacer; `setup_quality` cross-strategy scale
+   calibration.
 
 No threshold was lowered, alpha promoted or trading configuration changed by this
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.

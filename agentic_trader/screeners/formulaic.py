@@ -9,7 +9,7 @@ from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.research.alpha.clock import closed_alpha_bars
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 from agentic_trader.research.alpha.strategy import alpha_scores, entry_directions, strategy_atr
-from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
+from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate, clamp01
 from agentic_trader.screeners.indicators import calculate_ema, calculate_rsi
 
 
@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 FIXED_CLOCK_MINIMUM_BARS = 15  # Preserve version-2 screening's existing warmup.
+
+
+def alpha_setup_quality(z: float) -> float:
+    """Transparent prioritisation heuristic in [0, 1]; not validated alpha."""
+    return clamp01(abs(z) / 3.0)
 
 
 class FormulaicAlphaStrategy(BaseStrategy):
@@ -150,6 +155,7 @@ class FormulaicAlphaStrategy(BaseStrategy):
             alpha_score=latest_z,
             alpha_policy=self.definition.execution.to_dict(),
             probe=self.probe,
+            setup_quality=alpha_setup_quality(latest_z),
         )
 
         return [candidate]

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import AssetClass, ConflictResolutionMode, Direction, StrategyType
-from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate
+from agentic_trader.screeners.base import BaseStrategy, ScreenerCandidate, clamp01
 from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 from agentic_trader.screeners.indicators import calculate_ema
 from agentic_trader.screeners.registry import ConflictResolver, StrategyRegistry
@@ -24,6 +24,30 @@ __all__ = [
     "StrategyEngine",
     "TrendPullbackStrategy",
 ]
+
+
+def trend_pullback_setup_quality(
+    *,
+    daily_fast: float,
+    daily_slow: float,
+    dist_to_trigger: float,
+    tolerance: float,
+    rsi_now: float,
+    rsi_extreme: float,
+    recovery_span: float,
+) -> float:
+    """Transparent prioritisation heuristic in [0, 1]; not validated alpha."""
+    trend = clamp01(abs(daily_fast - daily_slow) / max(abs(daily_slow), 1e-9) / 0.10)
+    proximity = clamp01(1.0 - dist_to_trigger / max(tolerance, 1e-9))
+    recovery = clamp01(abs(rsi_now - rsi_extreme) / max(recovery_span, 1e-9))
+    return round((trend + proximity + recovery) / 3.0, 4)
+
+
+def squeeze_setup_quality(*, squeeze_bars: int, volume_ratio: float, volume_factor: float) -> float:
+    """Transparent prioritisation heuristic in [0, 1]; not validated alpha."""
+    length = clamp01(squeeze_bars / 20.0)
+    expansion = clamp01((volume_ratio - volume_factor) / 1.7)
+    return round((length + expansion) / 2.0, 4)
 
 
 class TrendPullbackStrategy(BaseStrategy):
@@ -144,6 +168,15 @@ class TrendPullbackStrategy(BaseStrategy):
                             f"Daily Close > {cfg.daily_ema_fast} > {cfg.daily_ema_slow} EMA. "
                             f"4h RSI dipped to {min_recent_rsi:.1f} and recovered to {rsi_current:.1f} near {cfg.trigger_ema_span} EMA."
                         ),
+                        setup_quality=trend_pullback_setup_quality(
+                            daily_fast=daily_fast,
+                            daily_slow=daily_slow,
+                            dist_to_trigger=dist_to_trigger,
+                            tolerance=cfg.trigger_atr_distance_mult * atr_4h,
+                            rsi_now=rsi_current,
+                            rsi_extreme=min_recent_rsi,
+                            recovery_span=15.0,
+                        ),
                     )
                 ]
 
@@ -171,6 +204,15 @@ class TrendPullbackStrategy(BaseStrategy):
                         trigger_detail=(
                             f"Daily Close < {cfg.daily_ema_fast} < {cfg.daily_ema_slow} EMA. "
                             f"4h RSI surged to {max_recent_rsi:.1f} and fell to {rsi_current:.1f} near {cfg.trigger_ema_span} EMA."
+                        ),
+                        setup_quality=trend_pullback_setup_quality(
+                            daily_fast=daily_fast,
+                            daily_slow=daily_slow,
+                            dist_to_trigger=dist_to_trigger,
+                            tolerance=cfg.trigger_atr_distance_mult * atr_4h,
+                            rsi_now=rsi_current,
+                            rsi_extreme=max_recent_rsi,
+                            recovery_span=15.0,
                         ),
                     )
                 ]
@@ -257,6 +299,11 @@ class SqueezeBreakoutStrategy(BaseStrategy):
                 recent_swing_low=round(recent_swing_low, 2),
                 recent_swing_high=round(recent_swing_high, 2),
                 trigger_detail=f"Squeeze fired after {prior_squeeze_count} bars. Candle closed above BB Upper with {volume / volume_sma:.1f}x volume surge.",
+                setup_quality=squeeze_setup_quality(
+                    squeeze_bars=prior_squeeze_count,
+                    volume_ratio=volume / volume_sma,
+                    volume_factor=cfg.volume_factor,
+                ),
             )
 
         # Bearish Breakdown: Closed below BB Lower while previous close was above/at BB Lower
@@ -278,6 +325,11 @@ class SqueezeBreakoutStrategy(BaseStrategy):
                 recent_swing_low=round(recent_swing_low, 2),
                 recent_swing_high=round(recent_swing_high, 2),
                 trigger_detail=f"Squeeze fired after {prior_squeeze_count} bars. Candle closed below BB Lower with {volume / volume_sma:.1f}x volume surge.",
+                setup_quality=squeeze_setup_quality(
+                    squeeze_bars=prior_squeeze_count,
+                    volume_ratio=volume / volume_sma,
+                    volume_factor=cfg.volume_factor,
+                ),
             )
 
         return None

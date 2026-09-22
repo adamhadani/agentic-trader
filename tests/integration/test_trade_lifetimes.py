@@ -132,7 +132,8 @@ async def test_exact_cancel_once_across_clients_and_restarts(lifecycle_case, out
                     filled_at=datetime.now(UTC).isoformat(),
                 )
             if outcome == "lost_reply":
-                time.sleep(0.3)  # SDK timeout is .2s. Mutation occurred, acknowledgement was lost.
+                # Outlast the SDK socket deadline. Mutation occurred, acknowledgement was lost.
+                time.sleep(c.broker.client.request_timeout + 0.5)
             return 204, None
         return None
 

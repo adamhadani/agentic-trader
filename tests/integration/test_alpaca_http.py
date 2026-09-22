@@ -146,7 +146,9 @@ async def test_ambiguous_entry_never_replays_and_halts_new_risk(desk, failure):
     def fail(method, path, query, body):
         if method == "POST":
             if failure == "socket-timeout":
-                time.sleep(0.3)
+                # Outlast the SDK socket deadline: the submission reached the venue and the
+                # acknowledgement was lost.
+                time.sleep(copilot.broker.client.request_timeout + 0.5)
             return 504, {"code": 50410000, "message": "unknown outcome"}
 
     venue.override = fail
@@ -473,7 +475,8 @@ async def test_close_failure_notice_tracks_mutation_phase_and_hides_raw_broker_e
             elif failure == "broker_read_error":
                 return 403, {"code": 40310000, "message": "private broker payload <secret>"}
         if failure == "cancel_ack_lost" and method == "DELETE":
-            time.sleep(0.3)  # The real SDK socket deadline is 0.2s; cancellation already reached venue.
+            # Outlast the real SDK socket deadline; cancellation already reached the venue.
+            time.sleep(copilot.broker.client.request_timeout + 0.5)
         if failure == "submit_ack_lost" and method == "POST":
             return 504, {"code": 50410000, "message": "private broker payload <secret>"}
         return response
