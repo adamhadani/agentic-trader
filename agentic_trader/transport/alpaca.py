@@ -68,7 +68,8 @@ class BoundedTransport:
             # Only idempotent GETs retry here: the SDK's own `retry` only covers
             # HTTP 429/504 status codes, never a transport-level reset raised by
             # `requests` (e.g. a pooled connection that idled for minutes and was
-            # reset by peer on reuse). Retrying immediately is safe because the
+            # reset by peer on reuse; `ConnectTimeout` also inherits it, so a hung
+            # GET can take up to twice the request timeout). Retrying immediately is safe because the
             # underlying connection pool opens a fresh socket for the next
             # attempt rather than reusing the dead one, so there is nothing to
             # wait out; POST/PATCH/PUT/DELETE are never retried automatically
