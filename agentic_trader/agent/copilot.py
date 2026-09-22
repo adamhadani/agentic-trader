@@ -33,6 +33,7 @@ from agentic_trader.constants import (
     StopAdjustmentReason,
     StrategyType,
     SystemStateKey,
+    executes_asset_class,
     normalize_asset_class,
 )
 from agentic_trader.data.market_data import MarketDataFetcher
@@ -432,6 +433,7 @@ class TradingCopilot:
                 "fetch_failed": [],
                 "insufficient": [],
                 "skipped_closed_session": [],
+                "skipped_not_executable": [],
                 "coverage_excluded": [],
                 "candidates": 0,
                 "approved": 0,
@@ -462,6 +464,10 @@ class TradingCopilot:
                 inst_class_norm = normalize_asset_class(str(inst_class))
                 req_class_norm = normalize_asset_class(asset_class)
                 if asset_class and asset_class.lower() != "all" and inst_class_norm != req_class_norm:
+                    continue
+                if not executes_asset_class(self.config.execution_mode, inst_class_norm):
+                    # A card the broker's entry admission would refuse cannot be accepted.
+                    summary["skipped_not_executable"].append(contract)
                     continue
                 if inst_class_norm == normalize_asset_class("equity") and not equity_open:
                     summary["skipped_closed_session"].append(contract)

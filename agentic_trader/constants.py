@@ -393,6 +393,18 @@ def normalize_asset_class(value: str) -> str:
     return aliases.get(value.lower(), value.lower())
 
 
+# Asset classes an execution mode's entry admission accepts; unlisted modes accept all.
+EXECUTION_MODE_ASSET_CLASSES: dict[ExecutionMode, frozenset[AssetClass]] = {
+    ExecutionMode.ALPACA: frozenset({AssetClass.EQUITY}),
+}
+
+
+def executes_asset_class(mode: str, asset_class: str) -> bool:
+    """Whether entries of `asset_class` (any case or CLI plural) can be admitted under `mode`."""
+    allowed = EXECUTION_MODE_ASSET_CLASSES.get(ExecutionMode(mode)) if mode in ExecutionMode else None
+    return allowed is None or normalize_asset_class(str(asset_class)).upper() in allowed
+
+
 APP_DISPLAY_NAME = "Agentic Trader"
 DEFAULT_RESEARCH_SYMBOL = "SPY"
 # Symbol prefixes the session router treats as crypto; equity tickers must not collide.

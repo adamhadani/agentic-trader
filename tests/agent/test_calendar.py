@@ -50,6 +50,19 @@ def test_is_tier_1_classification():
     assert calendar.is_tier_1("Crude Oil Inventories", "USD") is False
 
 
+def test_tier_1_fomc_covers_the_decision_not_speeches_or_minutes():
+    calendar = DummyCalendar()
+    # The scheduled rate decision and its same-day releases lock out entries.
+    assert calendar.is_tier_1("FOMC Statement", "USD") is True
+    assert calendar.is_tier_1("Federal Funds Rate", "USD") is True
+    assert calendar.is_tier_1("FOMC Economic Projections", "USD") is True
+    assert calendar.is_tier_1("FOMC Press Conference", "USD") is True
+    # Individual Fed speakers and the minutes are not tier-1 releases.
+    assert calendar.is_tier_1("FOMC Member Barr Speaks", "USD") is False
+    assert calendar.is_tier_1("FOMC Meeting Minutes", "USD") is False
+    assert calendar.is_tier_1("Fed Chair Powell Speaks", "USD") is False
+
+
 @pytest.mark.asyncio
 async def test_upcoming_tier1_events():
     now = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)

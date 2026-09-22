@@ -6,13 +6,25 @@ from typing import Any
 
 import pandas as pd
 
+from agentic_trader.market.session import ET_TZ
+
+
+# Hourly buckets that overlap the 09:30-16:00 regular session, by New York start hour.
+# The reference (SPY) also prints the 08:00 pre-market and 16:00 post-market buckets
+# that most names never do; counting them skews every name's ratio by time of day.
+REGULAR_SESSION_HOURS_NY = range(9, 16)
+
 
 def active_hourly_bars(frame: pd.DataFrame, sessions: int) -> int:
+    """Regular-session hourly bars with volume over the last ``sessions`` New York trading days."""
     if frame is None or frame.empty or "Volume" not in frame.columns:
         return 0
-    days = pd.DatetimeIndex(frame.index).normalize()
-    recent = sorted(set(days))[-sessions:]
-    mask = days.isin(recent) & (frame["Volume"].to_numpy() > 0)
+    index = pd.DatetimeIndex(frame.index)
+    local = (index if index.tz is not None else index.tz_localize("UTC")).tz_convert(ET_TZ)
+    regular = local.hour.isin(REGULAR_SESSION_HOURS_NY)
+    days = local.normalize()
+    recent = sorted(set(days[regular]))[-sessions:]
+    mask = regular & days.isin(recent) & (frame["Volume"].to_numpy() > 0)
     return int(mask.sum())
 
 

@@ -20,7 +20,11 @@ TIER_1_KEYWORDS = [
     "consumer price index",
     "ppi",
     "producer price index",
-    "fomc",
+    # The scheduled rate decision and its same-day releases; not individual Fed
+    # speakers ("FOMC Member ... Speaks") or the minutes.
+    "fomc statement",
+    "fomc economic projections",
+    "fomc press conference",
     "fed interest rate decision",
     "federal funds rate",
     "non-farm payrolls",

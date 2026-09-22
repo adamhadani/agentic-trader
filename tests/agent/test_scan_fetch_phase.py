@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 
+from agentic_trader.constants import ExecutionMode
 from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.research.alpha.models import AlphaDefinition, RegistrySnapshot
 
@@ -69,6 +70,27 @@ async def test_closed_equity_session_skips_equity_fetches_but_not_futures(scan_d
     fetched = {call.args[0] for call in scan_desk.data_fetcher.fetch_data.call_args_list}
     assert fetched == {"/MES"}
     assert scan_desk.last_scan_summary["skipped_closed_session"] == ["AAA"]
+
+
+async def test_alpaca_scan_skips_asset_classes_the_broker_cannot_admit(scan_desk, app_config):
+    """Alpaca admission accepts equities only, so a futures candidate could never be accepted."""
+    app_config.execution_mode = ExecutionMode.ALPACA
+    app_config.contracts = {"AAA": instrument("AAA"), "/MES": instrument("/MES", "FUTURES")}
+    scan_desk.data_fetcher.fetch_data.return_value = SimpleNamespace(daily=frame(), four_hour=frame(), hourly=frame())
+    await scan_desk.run_scan(use_llm=False, dry_run=False)
+    fetched = {call.args[0] for call in scan_desk.data_fetcher.fetch_data.call_args_list}
+    assert fetched == {"AAA"}
+    assert scan_desk.last_scan_summary["skipped_not_executable"] == ["/MES"]
+
+
+async def test_simulator_scan_still_fetches_futures(scan_desk, app_config):
+    app_config.execution_mode = ExecutionMode.PAPER
+    app_config.contracts = {"AAA": instrument("AAA"), "/MES": instrument("/MES", "FUTURES")}
+    scan_desk.data_fetcher.fetch_data.return_value = SimpleNamespace(daily=frame(), four_hour=frame(), hourly=frame())
+    await scan_desk.run_scan(use_llm=False, dry_run=True)
+    fetched = {call.args[0] for call in scan_desk.data_fetcher.fetch_data.call_args_list}
+    assert fetched == {"AAA", "/MES"}
+    assert scan_desk.last_scan_summary["skipped_not_executable"] == []
 
 
 async def test_scan_duration_is_recorded(scan_desk, app_config):
