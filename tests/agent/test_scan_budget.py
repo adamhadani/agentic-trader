@@ -70,14 +70,35 @@ def evaluation(candidate_, approved=True):
     )
 
 
+async def _plant_signal(db, contract, when):
+    """Write one recorded signal at an exact timestamp, bypassing run_scan."""
+    async with db.session_factory() as session, session.begin():
+        session.add(
+            SignalRecord(
+                timestamp=when,
+                contract=contract,
+                strategy="TREND_PULLBACK",
+                direction="LONG",
+                entry_price=100.0,
+                stop_loss=98.0,
+                take_profit=104.0,
+                risk_dollars=2.0,
+                environment=db.environment,
+                execution_mode=db.execution_mode,
+            )
+        )
+
+
 @pytest.fixture
 def budget_desk(scan_desk, app_config):
-    app_config.contracts = {s: instrument(s) for s in ("AAA", "BBB", "CCC", "DDD")}
+    app_config.contracts = {s: instrument(s) for s in ("AAA", "BBB", "CCC", "DDD", "EEE")}
     app_config.portfolio.correlation_groups = {"sector_x": ["AAA", "BBB"], "sector_y": ["CCC"]}
     scan_desk.data_fetcher.fetch_data.side_effect = lambda contract, ticker, include_fifteen_min=True: SimpleNamespace(
         contract=contract, daily=frame(), four_hour=frame(), hourly=frame()
     )
-    qualities = {"AAA": 0.9, "BBB": 0.8, "CCC": 0.7, "DDD": 0.6}
+    # Deliberately NOT alphabetical: the expected winner (DDD) is scanned last and sorts
+    # last by contract, so a ranking that ignored setup_quality could not pass these tests.
+    qualities = {"AAA": 0.6, "BBB": 0.7, "CCC": 0.8, "DDD": 0.9, "EEE": 0.5}
     scan_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: [
         candidate(data.contract, qualities[data.contract])
     ]
@@ -93,13 +114,13 @@ def budget_desk(scan_desk, app_config):
 async def test_full_budget_sends_only_the_top_card_and_calls_the_llm_only_for_it(budget_desk, temp_db):
     await budget_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL)
     sent = await temp_db.get_recent_signals(limit=10)
-    assert [s["contract"] for s in sent] == ["AAA"]
+    assert [s["contract"] for s in sent] == ["DDD"]
     calls = budget_desk.evaluator.evaluate_candidate.call_args_list
     assert sum(1 for c in calls if c.kwargs.get("use_llm")) == 1  # deterministic pass for all, LLM for the winner only
     provenance = sent[0]["decision_provenance"]
-    assert provenance["setup_quality"] == 0.9 and provenance["rank"] == 1 and provenance["candidates_considered"] == 4
+    assert provenance["setup_quality"] == 0.9 and provenance["rank"] == 1 and provenance["candidates_considered"] == 5
     assert provenance["budget"] == "full"
-    assert [r["contract"] for r in budget_desk.last_scan_summary["runners_up"]] == ["BBB", "CCC", "DDD"]
+    assert [r["contract"] for r in budget_desk.last_scan_summary["runners_up"]] == ["CCC", "BBB", "AAA", "EEE"]
 
 
 async def test_session_budget_is_derived_from_recorded_signals_and_survives_a_restart(budget_desk, temp_db, app_config):
@@ -116,17 +137,17 @@ async def test_one_card_per_correlation_group_per_session(budget_desk, temp_db, 
     app_config.scan.max_cards_per_session = 5
     await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
     sent = [s["contract"] for s in await temp_db.get_recent_signals(limit=10)]
-    assert set(sent) == {"AAA", "CCC", "DDD"}  # BBB shares sector_x with AAA
-    assert any(r["contract"] == "BBB" and "group" in r["reason"] for r in budget_desk.last_scan_summary["runners_up"])
+    assert set(sent) == {"DDD", "CCC", "BBB", "EEE"}  # AAA shares sector_x with the better-ranked BBB
+    assert any(r["contract"] == "AAA" and "group" in r["reason"] for r in budget_desk.last_scan_summary["runners_up"])
 
 
 async def test_llm_rejection_falls_through_to_the_next_ranked_candidate(budget_desk, temp_db):
     async def evaluate(cand, use_llm=False, **kwargs):
-        return evaluation(cand, approved=not (use_llm and cand.contract == "AAA"))
+        return evaluation(cand, approved=not (use_llm and cand.contract == "DDD"))
 
     budget_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=evaluate)
     await budget_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL)
-    assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["BBB"]
+    assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["CCC"]
 
 
 async def test_llm_evaluation_budget_bounds_the_fallthrough(budget_desk, temp_db, app_config):
@@ -142,8 +163,10 @@ async def test_llm_evaluation_budget_bounds_the_fallthrough(budget_desk, temp_db
 
 
 async def test_no_budget_records_every_approved_candidate(budget_desk, temp_db):
+    # Five candidates against max_llm_evaluations_per_scan=4: a deterministic scan must
+    # not be capped by an LLM budget it never spends.
     await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.NONE)
-    assert len(await temp_db.get_recent_signals(limit=10)) == 4
+    assert len(await temp_db.get_recent_signals(limit=10)) == 5
 
 
 async def test_session_budget_ignores_the_per_scan_cap(budget_desk, temp_db):
@@ -175,31 +198,31 @@ async def test_a_dry_run_never_spends_the_budget_and_records_nothing(budget_desk
         )
 
     budget_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=evaluate)
+    budget_desk.db.signals_since = AsyncMock(return_value=[])
     await budget_desk.run_scan(use_llm=False, dry_run=True, budget=ScanBudget.FULL)
     assert await temp_db.get_recent_signals(limit=10) == []
-    assert budget_desk.last_scan_summary["approved"] == 4
+    assert budget_desk.last_scan_summary["approved"] == 5
+    budget_desk.db.signals_since.assert_not_awaited()  # a dry run never reads the session budget
 
 
-async def test_signals_from_a_previous_session_do_not_spend_this_session_budget(budget_desk, temp_db):
-    stale = budget_desk.session_start_et() - timedelta(days=1)
-    async with temp_db.session_factory() as session, session.begin():
-        session.add(
-            SignalRecord(
-                timestamp=stale,
-                contract="AAA",
-                strategy="TREND_PULLBACK",
-                direction="LONG",
-                entry_price=100.0,
-                stop_loss=98.0,
-                take_profit=104.0,
-                risk_dollars=2.0,
-                environment=temp_db.environment,
-                execution_mode=temp_db.execution_mode,
-            )
-        )
+async def test_the_session_window_boundary_is_new_york_midnight_not_utc_midnight(budget_desk, temp_db):
+    """Both sides of the boundary, two hours apart, straddling UTC midnight.
+
+    22:00 ET yesterday is 02:00 UTC *today*, so a UTC-midnight or naive-string cutoff
+    would wrongly count the stale row and starve this session; a cutoff that never
+    converted at all would wrongly drop the fresh one.
+    """
+    start = budget_desk.session_start_et()
+    await _plant_signal(temp_db, "OLD", start - timedelta(hours=2))
+    await _plant_signal(temp_db, "NEW", start + timedelta(minutes=1))
+
+    rows = await temp_db.signals_since(start)
+    assert {r["contract"] for r in rows} == {"NEW"}
+
     await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.SESSION)
-    # Yesterday's row is outside the session window, so this session still sends two cards.
-    assert len(await temp_db.get_recent_signals(limit=10)) == 3
+    # max_cards_per_session=2 with exactly one row already inside the window: one card.
+    fresh = [s["contract"] for s in await temp_db.get_recent_signals(limit=10) if s["contract"] not in ("OLD", "NEW")]
+    assert fresh == ["DDD"]
 
 
 def test_session_start_is_new_york_midnight(scan_desk):
@@ -220,7 +243,7 @@ async def test_digest_summarises_the_session_and_is_published_once(budget_desk, 
     budget_desk.outbox = AsyncMock()
     await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
     text = await budget_desk.publish_scan_digest()
-    assert "1 card" in text and "3 runners-up" in text and "BBB" in text
+    assert "1 card" in text and "4 runners-up" in text and "BBB" in text
     budget_desk.outbox.publish_message.assert_awaited_once()
     assert budget_desk.outbox.publish_message.call_args.kwargs["key"].startswith("scan-digest/")
 
@@ -236,3 +259,38 @@ async def test_session_scan_stats_keep_only_the_current_new_york_date(budget_des
     await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
     today = budget_desk.session_start_et().date().isoformat()
     assert list(budget_desk._session_scan_stats) == [today]
+
+
+async def test_equal_quality_ties_break_by_contract_ascending(budget_desk, temp_db, app_config):
+    """Collection order here is reverse-alphabetical, so a tie resolved by scan order
+    would pick DDD; the documented tie-break is contract ascending, so BBB wins."""
+    app_config.contracts = {s: instrument(s) for s in ("DDD", "CCC", "BBB", "AAA")}
+    app_config.portfolio.correlation_groups = {}
+    qualities = {"DDD": 0.8, "CCC": 0.4, "BBB": 0.8, "AAA": 0.4}
+    budget_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: [
+        candidate(data.contract, qualities[data.contract])
+    ]
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["BBB"]
+
+
+async def test_a_failed_send_falls_through_to_the_next_rank_and_still_completes_the_scan(budget_desk, temp_db):
+    """A failure while sending one card must not abort the scan: the next rank still
+    gets its chance, and the summary, session stats and readiness observation still run."""
+    original_record_signal = temp_db.record_signal
+
+    async def flaky_record_signal(*args, **kwargs):
+        if kwargs["contract"] == "DDD":
+            raise RuntimeError("record boom")
+        return await original_record_signal(*args, **kwargs)
+
+    budget_desk.db.record_signal = flaky_record_signal
+
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+
+    assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["CCC"]
+    assert budget_desk.last_scan_summary["sent"] == 1
+    assert budget_desk.last_scan_summary["approved"] == 5
+    assert "duration_seconds" in budget_desk.last_scan_summary
+    assert budget_desk._session_scan_stats[budget_desk.session_start_et().date().isoformat()]
+    budget_desk.readiness.observe.assert_awaited()
