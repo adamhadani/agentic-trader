@@ -5,6 +5,7 @@ import contextlib
 import html
 import logging
 import math
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
@@ -243,6 +244,7 @@ class TradingCopilot:
         )
         self.is_halted: bool = False
         self.halt_reason: str | None = None
+        self.last_scan_summary: dict[str, Any] = {}
         self._shutdown_event = asyncio.Event()
         self._scan_lock = asyncio.Lock()
 
@@ -290,6 +292,7 @@ class TradingCopilot:
         strategy: str | None = None,
         strategy_mode: str | None = None,
         timeframe: str | None = None,
+        include_fifteen_min: bool | None = None,
     ):
         async with self._scan_lock:
             if not dry_run:
@@ -363,11 +366,30 @@ class TradingCopilot:
                 )
                 return
 
+            started = time.monotonic()
+            if include_fifteen_min is None:
+                include_fifteen_min = (timeframe or "").strip().lower() == "15m"
+            summary: dict[str, Any] = {
+                "scanned": 0,
+                "fetch_failed": [],
+                "insufficient": [],
+                "skipped_closed_session": [],
+                "coverage_excluded": [],
+                "candidates": 0,
+                "approved": 0,
+                "sent": 0,
+                "runners_up": [],
+            }
+            equity_open = True
+            if not dry_run and not bypass_session_filter:
+                equity_open, _ = await self.session_provider.is_session_active(instrument_type="equity")
+
             total_candidates = 0
             total_alerts = 0
 
             target_syms = [s.strip().upper() for s in symbols] if symbols else None
 
+            selected: list[tuple[str, Any]] = []
             for contract, info in self.config.contracts.items():
                 clean_contract = contract.strip("/").upper()
                 if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
@@ -378,15 +400,36 @@ class TradingCopilot:
                 req_class_norm = normalize_asset_class(asset_class)
                 if asset_class and asset_class.lower() != "all" and inst_class_norm != req_class_norm:
                     continue
+                if inst_class_norm == normalize_asset_class("equity") and not equity_open:
+                    summary["skipped_closed_session"].append(contract)
+                    continue
+                selected.append((contract, info))
 
+            datasets = await self._fetch_universe(selected, include_fifteen_min=include_fifteen_min)
+
+            for contract, info in selected:
+                data = datasets.get(contract)
+                if isinstance(data, BaseException) or data is None:
+                    summary["fetch_failed"].append(contract)
+                    logger.warning(
+                        "Fetch failed for %s: %s",
+                        contract,
+                        data,
+                        extra={"event": "scan_fetch_failed", "contract": contract},
+                    )
+                    continue
+
+                if data.daily.empty or data.four_hour.empty:
+                    summary["insufficient"].append(contract)
+                    logger.warning(f"Insufficient data for {contract}, skipping.")
+                    continue
+                summary["scanned"] += 1
+
+                inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
                 logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
                 try:
-                    data = await asyncio.to_thread(self.data_fetcher.fetch_data, contract, info.ticker)
                     if not dry_run:
                         await self.alpha_shadow.observe(alpha_snapshot, data)
-                    if data.daily.empty or data.four_hour.empty:
-                        logger.warning(f"Insufficient data for {contract}, skipping.")
-                        continue
 
                     candidates = await asyncio.to_thread(
                         self.strategy_engine.scan_contract,
@@ -569,14 +612,45 @@ class TradingCopilot:
                     scan_errors += 1
                     logger.exception(f"Error scanning {contract}")
 
+            summary["candidates"] = total_candidates
+            summary["sent"] = total_alerts
+            summary["duration_seconds"] = round(time.monotonic() - started, 3)
+            self.last_scan_summary = summary
+            self.metrics.observe_histogram(
+                "trader_scan_duration_seconds",
+                summary["duration_seconds"],
+                help_text="Wall-clock duration of one universe scan",
+            )
             logger.info(
-                f"=== Scan Complete: {total_candidates} candidates evaluated, {total_alerts} alerts emitted ==="
+                "=== Scan Complete: %d candidates evaluated, %d alerts emitted ===",
+                summary["candidates"],
+                summary["sent"],
+                extra={
+                    "event": "scan_completed",
+                    **{k: (len(v) if isinstance(v, list) else v) for k, v in summary.items()},
+                },
             )
             if not dry_run:
                 await self.readiness.observe(HealthComponent.SCAN, scan_errors == 0, f"{scan_errors} instrument errors")
             # Monitor any active positions for stop loss or take profit crossings
             if not dry_run:
                 await self.monitor_positions()
+
+    async def _fetch_universe(self, instruments: list[tuple[str, Any]], *, include_fifteen_min: bool) -> dict[str, Any]:
+        """Fetch every instrument's bars with bounded concurrency; failures are returned, not raised."""
+        semaphore = asyncio.Semaphore(self.config.market_data.scan_concurrency)
+
+        async def one(contract: str, info: Any):
+            async with semaphore:
+                return await asyncio.to_thread(
+                    self.data_fetcher.fetch_data,
+                    contract,
+                    info.ticker,
+                    include_fifteen_min=include_fifteen_min,
+                )
+
+        results = await asyncio.gather(*(one(c, i) for c, i in instruments), return_exceptions=True)
+        return {contract: result for (contract, _), result in zip(instruments, results, strict=True)}
 
     async def process_reconciliation_event(
         self, ev: ReconciliationEvent, active_positions: list[dict[str, Any]] | None = None

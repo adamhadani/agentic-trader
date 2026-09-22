@@ -9,8 +9,10 @@ from agentic_trader.constants import (
     DEFAULT_DATA_RETRY_BACKOFF_FACTOR,
     DEFAULT_DATA_TIMEOUT_SECONDS,
     DEFAULT_MARKET_DATA_CACHE_TTL_SECONDS,
+    DEFAULT_MAX_REQUESTS_PER_MINUTE,
 )
 from agentic_trader.data.evidence import BarEvidenceStore
+from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import (
     AlpacaDataProvider,
     CompositeMarketDataProvider,
@@ -63,9 +65,12 @@ class MarketDataFetcher:
         cache_ttl_seconds: int = DEFAULT_MARKET_DATA_CACHE_TTL_SECONDS,
         config: AppConfig | None = None,
         provider: MarketDataProvider | None = None,
+        pacer: RequestPacer | None = None,
     ):
         self.cache_ttl_seconds = cache_ttl_seconds
-        self._cache: dict[str, ContractMarketData] = {}
+        self.pacer = pacer or RequestPacer(
+            config.market_data.max_requests_per_minute if config else DEFAULT_MAX_REQUESTS_PER_MINUTE
+        )
 
         if provider:
             self.provider = provider
@@ -190,10 +195,12 @@ class MarketDataFetcher:
     ) -> ContractMarketData:
         """Fetch market data via resilient providers and compute all indicators."""
         # 1. Daily
+        self.pacer.acquire()
         clean_daily = self.provider.fetch_bars(ticker, "1d", period=daily_period)
         df_daily = self.compute_daily_indicators(clean_daily)
 
         # 2. Hourly
+        self.pacer.acquire()
         clean_1h = self.provider.fetch_bars(ticker, "1h", period=hourly_period)
         df_1h = self.compute_intraday_indicators(clean_1h)
 
@@ -205,6 +212,7 @@ class MarketDataFetcher:
         df_15m = pd.DataFrame()
         if include_fifteen_min:
             try:
+                self.pacer.acquire()
                 clean_15m = self.provider.fetch_bars(ticker, "15m", period=fifteen_min_period)
                 df_15m = self.compute_intraday_indicators(clean_15m)
             except Exception as e:
