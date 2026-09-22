@@ -80,8 +80,8 @@ async def test_real_sdk_daily_forecast_and_outcome_preserve_claims_and_source_ga
     native_panel, alpaca_http, temp_db, tmp_path, monkeypatch, fault, with_comparison
 ):
     c, (venue, broker) = native_panel, alpaca_http
-    # This is a large-response functional contract test. The shared 200ms fixture
-    # deadline is for small order/timeout tests; retain a bounded budget here too.
+    # This is a large-response functional contract test. The shared fixture deadline is
+    # sized for small order/timeout tests; retain a wider but still bounded budget here.
     broker.client.request_timeout = 2.0
     broker.data_client.request_timeout = 2.0
     await temp_db.init_db()
