@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -15,13 +16,14 @@ import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import artifact_directory, coro, get_copilot_and_config, session_source
-from agentic_trader.config import AppConfig, load_config
+from agentic_trader.config import AppConfig, ScanBudget, load_config
 from agentic_trader.constants import MAX_DAILY_COMPARISONS, AuditEventType
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 from agentic_trader.diagnostics.monitor import OperationsMonitor
 from agentic_trader.diagnostics.probe import probe_readiness
 from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.market.bars import ObservationStatus
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.research.alpha.daily_observations import DailyPanelService
@@ -281,6 +283,77 @@ async def run_daily_panel_worker(config, repository, readiness, metrics, shutdow
         await shutdown.wait()
 
 
+def make_suggestion_scan(copilot: Any, *, use_llm: bool):
+    """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest."""
+
+    async def run_suggestion_scan(digest: bool = False) -> None:
+        active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
+        if active:
+            await copilot.run_scan(use_llm=use_llm, dry_run=False, asset_class="equity", budget=ScanBudget.FULL)
+        else:
+            logger.info(
+                "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}
+            )
+        # A closed session is still a reportable session: the digest always runs.
+        if digest:
+            await copilot.publish_scan_digest()
+
+    return run_suggestion_scan
+
+
+def register_suggestion_scans(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
+    """Register one cron job per configured New York suggestion-scan time (weekdays only)."""
+    job = make_suggestion_scan(copilot, use_llm=use_llm)
+    times = config.scheduler.suggestion_scan_times_et
+    for index, item in enumerate(times):
+        hour, minute = (int(part) for part in item.split(":"))
+        scheduler.add_job(
+            job,
+            "cron",
+            day_of_week="mon-fri",
+            hour=hour,
+            minute=minute,
+            timezone=ET_TZ,
+            id=f"suggestion_scan_{index}",
+            kwargs={"digest": index == len(times) - 1},
+            # A scan still running at the next trigger is skipped and logged rather than
+            # overlapped; a late start within ten minutes still runs exactly once.
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=600,
+        )
+    logger.info("Scheduled suggestion scans at %s New York on weekdays.", ", ".join(times))
+
+
+def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
+    """Register the 15-minute intraday scan, scoped to the explicitly configured contracts."""
+
+    async def run_intraday_scan(*, symbols: list[str]) -> None:
+        session_active, reason = await copilot.session_provider.is_session_active(instrument_type="all")
+        if session_active:
+            await copilot.run_scan(
+                use_llm=use_llm,
+                dry_run=False,
+                asset_class="all",
+                timeframe="15m",
+                symbols=symbols,
+                budget=ScanBudget.FULL,
+            )
+        else:
+            logger.debug("Intraday scan skipped outside market session: %s", reason)
+
+    symbols = config.non_universe_contracts
+    if not symbols:
+        logger.info("Intraday scanner has no explicitly configured contracts; the universe is scanned on the cron.")
+    scheduler.add_job(
+        functools.partial(run_intraday_scan, symbols=symbols),
+        "interval",
+        minutes=config.scheduler.intraday_interval_minutes,
+        id="intraday_scan",
+        next_run_time=datetime.now(UTC),
+    )
+
+
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")
 @click.option(
     "--no-llm",
@@ -354,36 +427,19 @@ async def daemon(no_llm: bool) -> None:
         "interval",
         hours=interval,
         args=[not no_llm, False],
+        kwargs={"budget": ScanBudget.FULL},
         id="swing_scan",
         next_run_time=datetime.now(UTC),
     )
     # Schedule intraday 15-minute scans during active market sessions
     if config.scheduler.intraday_scan_enabled:
-        intraday_interval = config.scheduler.intraday_interval_minutes
-
-        async def run_intraday_scan() -> None:
-            session_active, reason = await copilot.session_provider.is_session_active(instrument_type="all")
-            if session_active:
-                await copilot.run_scan(
-                    use_llm=not no_llm,
-                    dry_run=False,
-                    asset_class="all",
-                    timeframe="15m",
-                )
-            else:
-                logger.debug("Intraday scan skipped outside market session: %s", reason)
-
-        scheduler.add_job(
-            run_intraday_scan,
-            "interval",
-            minutes=intraday_interval,
-            id="intraday_scan",
-            next_run_time=datetime.now(UTC),
-        )
+        register_intraday_scan(scheduler, copilot, config, use_llm=not no_llm)
         logger.info(
             "Scheduled intraday scanner every %d minutes (session-gated).",
-            intraday_interval,
+            config.scheduler.intraday_interval_minutes,
         )
+    # Session-aligned suggestion scans on the New York clock; the last one publishes the digest.
+    register_suggestion_scans(scheduler, copilot, config, use_llm=not no_llm)
     # Schedule automated position monitoring & broker reconciliation every 1 minute
     scheduler.add_job(
         copilot.monitor_positions,

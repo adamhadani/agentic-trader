@@ -778,7 +778,10 @@ class TradingCopilot:
             summary["budget"] = str(budget)
             summary["duration_seconds"] = round(time.monotonic() - started, 3)
             self.last_scan_summary = summary
-            self._session_scan_stats.setdefault(self.session_start_et().date().isoformat(), []).append(summary)
+            # Only the current New York session is retained, so a long-running daemon
+            # cannot accumulate one summary list per calendar day.
+            et_today = self.session_start_et().date().isoformat()
+            self._session_scan_stats = {et_today: [*self._session_scan_stats.get(et_today, []), summary]}
             self.metrics.observe_histogram(
                 "trader_scan_duration_seconds",
                 summary["duration_seconds"],
@@ -1841,6 +1844,34 @@ class TradingCopilot:
         """Format HTML status message for Telegram /status."""
         report = await self.get_status_report()
         return TelegramHtmlFormatter.format_status_html(report)
+
+    async def publish_scan_digest(self, et_date: str | None = None) -> str:
+        """Publish exactly one end-of-session digest of this New York date's suggestion scans.
+
+        `publish_message` marks the text as formatted HTML. Every interpolated value is
+        either one of our own literals or a contract symbol matching ``^[A-Z][A-Z.]{0,5}$``
+        (plus an optional leading ``/`` for futures), so no escaping is needed here.
+        """
+        et_date = et_date or self.session_start_et().date().isoformat()
+        scans = self._session_scan_stats.get(et_date, [])
+        if not scans:
+            text = f"📋 Scan digest {et_date}: no suggestion scans ran this session."
+        else:
+            candidates = sum(s.get("candidates", 0) for s in scans)
+            sent = sum(s.get("sent", 0) for s in scans)
+            runners = [r for s in scans for r in s.get("runners_up", [])]
+            failed = sorted({c for s in scans for c in s.get("fetch_failed", [])})
+            excluded = sorted({c for s in scans for c in s.get("coverage_excluded", [])})
+            durations = ", ".join(f"{s.get('duration_seconds', 0):.0f}s" for s in scans)
+            top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in runners[:5])
+            text = (
+                f"📋 Scan digest {et_date}: {len(scans)} scan(s), {candidates} candidates, {sent} card(s) sent, "
+                f"{len(runners)} runners-up" + (f" — top: {top}" if top else "") + ". "
+                f"Fetch failures: {len(failed)}" + (f" ({', '.join(failed[:8])})" if failed else "") + "; "
+                f"coverage excluded: {len(excluded)}; scan durations: {durations}."
+            )
+        await self.outbox.publish_message(text, key=f"scan-digest/{et_date}")
+        return text
 
     async def run_scan_summary_html(self) -> str:
         await self.check_halt_state()

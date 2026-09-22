@@ -214,3 +214,25 @@ def test_correlation_groups_match_root_and_slashed_symbols(scan_desk, app_config
     assert scan_desk.correlation_groups_of("/MES") == {"us_broad_market"}
     assert scan_desk.correlation_groups_of("MES") == {"us_broad_market"}
     assert scan_desk.correlation_groups_of("AAPL") == set()
+
+
+async def test_digest_summarises_the_session_and_is_published_once(budget_desk, app_config):
+    budget_desk.outbox = AsyncMock()
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    text = await budget_desk.publish_scan_digest()
+    assert "1 card" in text and "3 runners-up" in text and "BBB" in text
+    budget_desk.outbox.publish_message.assert_awaited_once()
+    assert budget_desk.outbox.publish_message.call_args.kwargs["key"].startswith("scan-digest/")
+
+
+async def test_digest_without_scans_says_so(scan_desk):
+    scan_desk.outbox = AsyncMock()
+    text = await scan_desk.publish_scan_digest()
+    assert "no suggestion scans" in text.lower()
+
+
+async def test_session_scan_stats_keep_only_the_current_new_york_date(budget_desk):
+    budget_desk._session_scan_stats["2020-01-01"] = [{"candidates": 99, "sent": 9, "runners_up": []}]
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    today = budget_desk.session_start_et().date().isoformat()
+    assert list(budget_desk._session_scan_stats) == [today]
