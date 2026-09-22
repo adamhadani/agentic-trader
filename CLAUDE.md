@@ -348,3 +348,10 @@ Journal claims pin immutable companion enrollments before price reads. Removing
 configuration paths does not retire enrollment or cancel outcomes. Validate saved
 artifacts against those pins; publish completion only after every required artifact
 is saved. Parent campaign retirement/draining remains unimplemented.
+
+Semantics version 5 is the production native-daily contract: no clock, exactly
+`DAILY_ENTRY_LIFETIME_SECONDS = 57,600` resting and no holding deadline, so
+research (bar label) and live (`submitted_at`) both mean one regular session.
+Never relax it to a configurable value, add a holding deadline to it, or re-fence
+it on `semantics_version`; the miner's `--entry-policy session` default and the
+scheduled `--entry-policy gtc` pin are deliberate.

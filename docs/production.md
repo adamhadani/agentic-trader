@@ -133,6 +133,15 @@ Notifications enqueued by this revision carry a `probe_risk_cap` argument, so
 rolling BACK to an earlier revision with such a notice still queued would
 dead-letter it; drain or inspect `copilot db outbox` before a rollback.
 
+Deploying the native-daily entry-expiry change (`--entry-policy` on `alpha mine`)
+is a case of step 4's plist rule: editing `scripts/launchd.sh` does not regenerate
+the installed plist. After updating the installed checkout, run
+`./scripts/launchd.sh install-miner` and verify that
+`~/Library/LaunchAgents/com.agentictrader.alphaminer.plist` contains
+`--entry-policy gtc`; otherwise the scheduled ETF32 benchmark would silently adopt
+the new `session` default for daily mining instead of keeping its pinned GTC
+identity. See [trade lifetimes](alpha-trade-lifetimes.md#native-daily-one-session-entries-semantics-version-5).
+
 Do not restore old code against a newer schema without checking compatibility.
 Quarantined records can be reviewed/restored with an audited migration; they were
 not deleted. Keep broker-held protective orders in place during a daemon restart.

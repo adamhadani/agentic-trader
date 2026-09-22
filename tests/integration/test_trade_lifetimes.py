@@ -4,6 +4,7 @@ Fixtures seed already-accepted timed orders; session-alpha admission stays disab
 """
 
 import asyncio
+import json
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -14,9 +15,9 @@ from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import EventKind, WorkKind, WorkStatus
-from agentic_trader.execution.lifetime_policy import TradeLifetimePolicy
+from agentic_trader.execution.lifetime_policy import DAILY_ENTRY_LIFETIME_SECONDS, TradeLifetimePolicy
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.research.alpha.strategy import TimedAlphaExecutionPolicy
+from agentic_trader.research.alpha.strategy import TimedAlphaExecutionPolicy, session_entry_policy
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.lifetimes import LifetimeRepository
 from agentic_trader.storage.models import SignalRecord, WorkItemRecord
@@ -372,3 +373,42 @@ async def test_inflight_cancel_recovery_does_not_halt_a_healthy_owner(lifecycle_
     (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
     assert item.status == WorkStatus.ACCEPTED
     assert len([call for call in c.venue.calls if call[0] == "DELETE"]) == 1
+
+
+async def use_daily_entry_policy(c, *, submitted_seconds_ago):
+    policy = session_entry_policy().to_dict()
+    async with c.db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, c.signal_id)
+        row.alpha_policy, row.timeframe = json.dumps(policy, allow_nan=False), "1d"
+    c.venue.entry.update(submitted_at=(datetime.now(UTC) - timedelta(seconds=submitted_seconds_ago)).isoformat())
+
+
+async def test_daily_entry_only_policy_cancels_after_one_session_and_not_before(lifecycle_case):
+    c = lifecycle_case
+    await use_daily_entry_policy(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS - 60)
+    await c.services[0].reconcile()
+    assert not any(call[0] == "DELETE" for call in c.venue.calls)
+    await use_daily_entry_policy(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1)
+
+    def response(method, path, query, body):
+        if method == "DELETE":
+            complete_cancel(c)
+            return 204, None
+        return None
+
+    c.venue.override = response
+    await asyncio.gather(*(service.reconcile() for service in c.services))
+    cancels = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert len(cancels) == 1 and cancels[0].status == WorkStatus.ACCEPTED
+    assert len([call for call in c.venue.calls if call[0] == "DELETE"]) == 1
+    assert not any(call[0] in ("POST", "PATCH") for call in c.venue.calls)
+
+
+async def test_daily_entry_only_policy_never_schedules_a_holding_close(lifecycle_case):
+    c = lifecycle_case
+    await use_daily_entry_policy(c, submitted_seconds_ago=10 * 86_400)
+    filled_position(c)
+    c.venue.entry.update(filled_at=(datetime.now(UTC) - timedelta(days=9)).isoformat())
+    await asyncio.gather(*(service.reconcile() for service in c.services))
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"

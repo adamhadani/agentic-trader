@@ -4,20 +4,23 @@ import asyncio
 import json
 from contextlib import nullcontext
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
+import click
 import numpy as np
 import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from agentic_trader.cli.commands.alpha import alpha_repository, download_bars
+from agentic_trader.cli.commands.alpha import alpha_repository, download_bars, resolve_entry_policy
 from agentic_trader.cli.main import cli
 from agentic_trader.data.evidence import BarAcquisitionError
 from agentic_trader.research.alpha.data import save_dataset
 from agentic_trader.research.alpha.lifetime_attribution import LifetimeAttributionProtocol
 from agentic_trader.research.alpha.models import AlphaDefinition
-from agentic_trader.research.alpha.study import MarketScenario, PanelScenario, StudyProtocol
+from agentic_trader.research.alpha.strategy import TimedAlphaExecutionPolicy
+from agentic_trader.research.alpha.study import MarketScenario, PanelScenario, StudyProtocol, market_bars
 from agentic_trader.research.alpha.validation import DatasetManifest, ValidationPolicy
 
 
@@ -409,3 +412,78 @@ def test_replay_requires_both_lifetimes_before_provider_access(option):
 def test_workflow_queue_cli_supports_read_only_cancellation_inspection(kind):
     result = CliRunner().invoke(cli, ["db", "queue", "--kind", kind])
     assert result.exit_code == 0, result.output
+
+
+def resolve(interval, choice):
+    return resolve_entry_policy(interval, choice)
+
+
+def test_entry_policy_defaults_to_session_for_daily_and_gtc_otherwise():
+    assert isinstance(resolve("1d", None), TimedAlphaExecutionPolicy)
+    assert isinstance(resolve("1d", "session"), TimedAlphaExecutionPolicy)
+    assert resolve("1d", "gtc") is None
+    assert resolve("4h", None) is None and resolve("4h", "gtc") is None
+
+
+def test_session_entry_policy_rejects_intraday_intervals():
+    with pytest.raises(click.ClickException, match="native daily"):
+        resolve("4h", "session")
+
+
+def test_mine_help_documents_the_entry_policy():
+    result = CliRunner().invoke(cli, ["alpha", "mine", "--help"])
+    assert result.exit_code == 0 and "--entry-policy" in result.output
+    result = CliRunner().invoke(cli, ["alpha", "test", "--help"])
+    assert result.exit_code == 0 and "--entry-policy" in result.output
+
+
+def test_scheduled_benchmark_is_pinned_to_gtc():
+    script = Path(__file__).resolve().parents[2] / "scripts" / "launchd.sh"
+    lines = [line for line in script.read_text().splitlines() if "copilot alpha mine --universe etf32" in line]
+    assert len(lines) == 2 and all("--entry-policy gtc" in line for line in lines)
+
+
+def _daily_cli_frame():
+    scenario = MarketScenario(name="cli_daily", observations=600, interval=8, effect=0.004, volatility_persistence=0.0)
+    return market_bars(scenario, seed=17)
+
+
+def test_default_daily_mine_journals_session_semantics(monkeypatch):
+    frame = _daily_cli_frame()
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.download_bars", lambda *a, **kw: frame)
+    result = CliRunner().invoke(cli, ["alpha", "mine", "--symbol", "SPY", "--iterations", "0"])
+    assert result.exit_code == 0, result.output
+    assert "Entry policy: session" in result.output
+
+    async def check():
+        async with alpha_repository() as repository:
+            versions = await repository.versions()
+            assert versions
+            for definition in versions:
+                assert definition.semantics_version == 5
+                assert isinstance(definition.execution, TimedAlphaExecutionPolicy)
+            latest = await repository.get("research/latest")
+            run = await repository.get(f"run/{latest['run_id']}")
+            assert run["manifest"]["entry_policy"] == "session"
+
+    asyncio.run(check())
+
+
+def test_gtc_entry_policy_journals_no_lifetime(monkeypatch):
+    frame = _daily_cli_frame()
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.download_bars", lambda *a, **kw: frame)
+    result = CliRunner().invoke(cli, ["alpha", "mine", "--symbol", "SPY", "--iterations", "0", "--entry-policy", "gtc"])
+    assert result.exit_code == 0, result.output
+    assert "Entry policy: gtc" in result.output
+
+    async def check():
+        async with alpha_repository() as repository:
+            versions = await repository.versions()
+            assert versions
+            for definition in versions:
+                assert not isinstance(definition.execution, TimedAlphaExecutionPolicy)
+            latest = await repository.get("research/latest")
+            run = await repository.get(f"run/{latest['run_id']}")
+            assert run["manifest"]["entry_policy"] == "gtc"
+
+    asyncio.run(check())

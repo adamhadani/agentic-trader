@@ -121,6 +121,13 @@ diagnostics, not promotion gates; see [report contracts](docs/alpha-forecast-ben
 
 - [Timed alpha policies](docs/alpha-trade-lifetimes.md) share elapsed-UTC deadlines with broker execution. Never retrofit historical policies, release entry risk before exact cancellation-group confirmation, replay a cancellation, or retry a failed deterministic holding close. Use the existing journal/outbox and `PositionCloseService`; session activation remains gated.
 
+- Semantics version 5 is the production native-daily contract: no clock, exactly
+  `DAILY_ENTRY_LIFETIME_SECONDS = 57,600` resting and no holding deadline, so
+  research (bar label) and live (`submitted_at`) both mean one regular session.
+  Never relax it to a configurable value, add a holding deadline to it, or re-fence
+  it on `semantics_version`; the miner's `--entry-policy session` default and the
+  scheduled `--entry-policy gtc` pin are deliberate.
+
 - Pair research-semantic changes with bounded actual-data experiments per the [roadmap cadence](docs/alpha-roadmap.md#research-delivery-cadence-and-progress-september-17). Continuous replay chunks only acquisition: never reset features, pending orders or positions at chunk boundaries. Preserve inclusive SDK/exclusive internal range semantics, failed receipts and promotion gates.
 
 - The [IC review](docs/alpha-information-coefficient.md) distinguishes single-symbol rolling IC from cross-sectional IC. Existing ICIR is unannualized and overlapping; never apply IID t-statistics or cross-sectional reference thresholds directly. New metric semantics require versioned evidence and predeclared tests/studies.

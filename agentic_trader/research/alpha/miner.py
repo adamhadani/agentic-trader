@@ -19,6 +19,7 @@ from agentic_trader.research.alpha.metrics import (
     calculate_rank_ic,
 )
 from agentic_trader.research.alpha.models import (
+    DAILY_SESSION_SEMANTICS_VERSION,
     AlphaCandidate,
     AlphaDefinition,
     AlphaEvaluationMetrics,
@@ -26,7 +27,7 @@ from agentic_trader.research.alpha.models import (
 )
 from agentic_trader.research.alpha.search import TypedGeneticSearch
 from agentic_trader.research.alpha.simulation import return_statistics, simulate_strategy
-from agentic_trader.research.alpha.strategy import alpha_scores
+from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, TimedAlphaExecutionPolicy, alpha_scores
 from agentic_trader.research.alpha.targets import ForecastTarget
 from agentic_trader.research.alpha.validation import ValidationPolicy, frame_digest, purged_folds, validate_sampling
 
@@ -278,7 +279,11 @@ class AlphaMiner:
                 "trial_count": total_trials,
                 "holdout_evaluated": False,
                 "calibration": calibration,
-                "execution_model": "gtc_limit_conservative_brackets_v2",
+                "execution_model": (
+                    "session_limit_conservative_brackets_v1"
+                    if isinstance(definition.execution, TimedAlphaExecutionPolicy)
+                    else "gtc_limit_conservative_brackets_v2"
+                ),
             },
         )
         return candidate, returns
@@ -321,12 +326,18 @@ class AlphaMiner:
         symbol: str | None = None,
         method: str = "random",
         max_seconds: float = 300,
+        execution: AlphaExecutionPolicy | None = None,
     ) -> list[AlphaCandidate]:
         """Seeded discovery over purged validation folds; never inspect the holdout.
 
         All trials, including failures, are retained in last_run for journal persistence.
         Relaxing display gates changes discovery output, never promotion policy.
         """
+        if isinstance(execution, TimedAlphaExecutionPolicy):
+            if timeframe != "1d":
+                raise ValueError("Session-bounded entries require native daily bars")
+            if getattr(df.index, "tz", None) is None:
+                raise ValueError("Session-bounded entries require a timezone-aware bar index")
         validate_sampling(df, timeframe)
         if method not in ("random", "genetic"):
             raise ValueError("Unknown discovery method")
@@ -398,6 +409,15 @@ class AlphaMiner:
             definition = replace(
                 definition, data_feed=df.attrs.get("feed", "unverified"), adjustment=df.attrs.get("adjustment", "raw")
             )
+            if execution is not None:
+                # Evaluate, select and journal the policy that will actually trade.
+                definition = replace(
+                    definition,
+                    execution=execution,
+                    semantics_version=DAILY_SESSION_SEMANTICS_VERSION
+                    if isinstance(execution, TimedAlphaExecutionPolicy)
+                    else definition.semantics_version,
+                )
             try:
                 scores = alpha_scores(definition, discovery).round(10)
                 signature = hashlib.sha256(pd.util.hash_pandas_object(scores, index=True).values.tobytes()).hexdigest()

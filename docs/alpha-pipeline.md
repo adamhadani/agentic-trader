@@ -49,6 +49,15 @@ a deployed definition. Changing any trading semantics requires a new version and
 new evidence. Historical signals retain their original metadata; missing historical
 versions are not invented.
 
+`AlphaMiner.mine(..., execution=)` rebuilds every mined native-daily candidate with
+the requested execution policy and stamps it `semantics_version=5`, so `alpha mine
+--interval 1d` defaults to mining under the deployed session-bounded one-session
+entry contract (see [trade lifetimes](alpha-trade-lifetimes.md)); `--entry-policy
+gtc` reproduces the historical unbounded-entry identity. A timed execution policy —
+version 5 included — is a new immutable identity: it requires fresh research,
+holdout and qualification of its own, never a reinterpretation of an existing GTC
+version's evidence.
+
 - Expressions accept observed OHLCV, returns, VWAP when supplied, and open gaps.
   Global `rank`/`scale`, negative lags, unknown functions/fields, invalid arity,
   arbitrary Python access and unsupported arithmetic are rejected.

@@ -8,7 +8,8 @@ from sqlalchemy import select
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.execution.durable import EventKind, WorkStatus
 from agentic_trader.market.bars import SessionClockPolicy
-from agentic_trader.research.alpha.models import AlphaDefinition
+from agentic_trader.research.alpha.models import DAILY_SESSION_SEMANTICS_VERSION, AlphaDefinition
+from agentic_trader.research.alpha.strategy import session_entry_policy
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.models import SignalRecord
@@ -126,3 +127,15 @@ async def test_session_clock_cannot_reserve_risk_even_with_corrupt_active_projec
     item, reason = await store.enqueue_entry(request, app_config)
     assert item is None
     assert "session" in reason.lower()
+
+
+@pytest.mark.parametrize(
+    "alpha_entry",
+    [{"semantics_version": DAILY_SESSION_SEMANTICS_VERSION, "execution": session_entry_policy()}],
+    indirect=True,
+)
+async def test_active_daily_session_entry_alpha_reserves_risk_with_its_exact_policy(store, app_config, alpha_entry):
+    _, definition, request = alpha_entry
+    assert definition.execution.lifetime.resting_seconds == 57_600
+    item, reason = await store.enqueue_entry(request, app_config)
+    assert item, reason

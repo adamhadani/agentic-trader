@@ -8,7 +8,7 @@ import json
 import platform
 import re
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -48,7 +48,7 @@ from agentic_trader.research.alpha.lifetime_artifacts import execute_lifetime_st
 from agentic_trader.research.alpha.lifetime_attribution import LifetimeAttributionProtocol
 from agentic_trader.research.alpha.miner import AlphaMiner
 from agentic_trader.research.alpha.mining_universe import resolve_mining_universe
-from agentic_trader.research.alpha.models import AlphaDefinition
+from agentic_trader.research.alpha.models import DAILY_SESSION_SEMANTICS_VERSION, AlphaDefinition
 from agentic_trader.research.alpha.panel_study import (
     PanelStudyPlan,
     PanelStudyStatus,
@@ -67,7 +67,11 @@ from agentic_trader.research.alpha.replay import (
     ReplayStatus,
 )
 from agentic_trader.research.alpha.replay_workflow import AlphaReplayService
-from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, TimedAlphaExecutionPolicy
+from agentic_trader.research.alpha.strategy import (
+    AlphaExecutionPolicy,
+    TimedAlphaExecutionPolicy,
+    session_entry_policy,
+)
 from agentic_trader.research.alpha.study import StudyProtocol, StudyStatus
 from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
@@ -159,6 +163,26 @@ def _research_failure_code(exc: Exception) -> str:
     return "research_worker_failed"
 
 
+ENTRY_POLICY_OPTION = click.option(
+    "--entry-policy",
+    type=click.Choice(["session", "gtc"]),
+    default=None,
+    help="Resting entry: 'session' expires after one regular session (default for 1d); "
+    "'gtc' rests until filled and reproduces earlier benchmarks.",
+)
+
+
+def resolve_entry_policy(interval: str, choice: str | None) -> TimedAlphaExecutionPolicy | None:
+    """None means the historical GTC execution policy; otherwise the deployed daily policy."""
+    if choice is None:
+        choice = "session" if interval == "1d" else "gtc"
+    if choice == "gtc":
+        return None
+    if interval != "1d":
+        raise click.ClickException("--entry-policy session requires native daily bars (--interval 1d)")
+    return session_entry_policy()
+
+
 @click.group("alpha", help="Causal formula research and journal-backed promotion")
 def alpha_group():
     pass
@@ -226,6 +250,7 @@ async def alpha_list_cmd():
 )
 @click.option("--min-sharpe", type=float, default=1.0)
 @click.option("--min-dsr", type=click.FloatRange(0, 1), default=0.95)
+@ENTRY_POLICY_OPTION
 @coro
 async def alpha_mine_cmd(
     symbol,
@@ -242,9 +267,12 @@ async def alpha_mine_cmd(
     max_symbols,
     feed,
     max_seconds,
+    entry_policy,
 ):
     """Persist every trial. Mining never consumes holdout or promotes an alpha."""
     config = load_config()
+    execution = resolve_entry_policy(interval, entry_policy)
+    click.echo(f"Entry policy: {'session (one regular session)' if execution else 'gtc'}")
     try:
         mining_universe = await asyncio.to_thread(
             resolve_mining_universe,
@@ -296,6 +324,7 @@ async def alpha_mine_cmd(
                     min_dsr=min_dsr,
                     method=method,
                     max_seconds=max_seconds,
+                    execution=execution,
                 )
                 await repository.record_run(
                     run_id,
@@ -305,6 +334,7 @@ async def alpha_mine_cmd(
                         "artifact": str(path),
                         "holdout_start": str(frame.index[miner.last_run["holdout_start"]]),
                         "incumbents": [d.to_dict() for d in snapshot.active],
+                        "entry_policy": "session" if execution else "gtc",
                     },
                 )
                 for trial in miner.last_run["trials"]:
@@ -449,10 +479,14 @@ async def alpha_inspect_cmd(identity):
 @click.option("--symbol", default="SPY")
 @click.option("--lookback", default="5y")
 @click.option("--interval", type=click.Choice(["1d", "4h", "1h", "15m"]), default="1d")
+@ENTRY_POLICY_OPTION
 @coro
-async def alpha_test_cmd(expression, symbol, lookback, interval):
+async def alpha_test_cmd(expression, symbol, lookback, interval, entry_policy):
     """Diagnostic expression test; cannot qualify or promote a version."""
+    execution = resolve_entry_policy(interval, entry_policy)
     definition = AlphaDefinition("alpha_diagnostic", "Diagnostic", expression, timeframe=interval)
+    if execution is not None:
+        definition = replace(definition, execution=execution, semantics_version=DAILY_SESSION_SEMANTICS_VERSION)
     frame = await asyncio.to_thread(download_bars, symbol, lookback, interval)
     async with alpha_repository() as repository:
         await repository.exclude_observed_interval(
@@ -700,9 +734,10 @@ async def alpha_study_cmd(protocol_path, output):
 @alpha_group.command("power-plan")
 @click.option("--seed", type=click.IntRange(0, 2**128 - 1), required=True)
 @click.option("--family-snapshot", type=click.Path(exists=True, path_type=Path))
+@click.option("--entry-policy", type=click.Choice(["gtc", "session"]), default="gtc")
 @click.option("--output", type=click.Path(path_type=Path), required=True)
 @coro
-async def alpha_power_plan_cmd(seed, family_snapshot, output):
+async def alpha_power_plan_cmd(seed, family_snapshot, entry_policy, output):
     """Freeze paired control/winner diagnosis; no observations evaluated."""
     try:
         snapshot = (
@@ -710,11 +745,14 @@ async def alpha_power_plan_cmd(seed, family_snapshot, output):
             if family_snapshot
             else None
         )
-        protocol = PowerProtocol(seed=seed, family_snapshot_hash=snapshot.identity if snapshot else None)
+        protocol = PowerProtocol(
+            seed=seed, family_snapshot_hash=snapshot.identity if snapshot else None, entry_policy=entry_policy
+        )
         await asyncio.to_thread(save_json_report, protocol.document(), output)
     except (ValueError, TypeError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Power protocol {protocol.identity}: {output}")
+    click.echo(f"Entry policy: {entry_policy}")
     if snapshot is None:
         click.echo("Current-family comparisons will remain unavailable without a sourced snapshot.")
 

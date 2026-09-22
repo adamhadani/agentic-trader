@@ -64,3 +64,75 @@ Intrabar fills are located only to their minute bar; simulated holding time star
 `entry_cancellation` readiness reports unresolved durable intents. Close/cancel requests and transitions use the existing transactional notification outbox; no synthetic production messages are sent by tests/replay. An explicit halt remains until reviewed and resumed. Session activation is still blocked; this implementation alone supplies no qualification or live execution evidence.
 
 Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation.
+
+## Native-daily one-session entries (semantics version 5)
+
+`AlphaDefinition.semantics_version == 5` is the production native-daily contract:
+no clock at all, and exactly one fixed entry-only lifetime.
+
+- Requires `timeframe == "1d"` and `clock is None`.
+- `execution` must be a `TimedAlphaExecutionPolicy` whose lifetime is exactly
+  `TradeLifetimePolicy(resting_seconds=57_600, holding_seconds=None,
+  version="elapsed_utc_v2")` — no holding deadline.
+- The existing "timed execution requires a versioned clock" rule narrows to
+  "timed execution requires version 3, 4 or 5"; versions 2-4 keep their exact
+  rules unchanged.
+- Version 5 places no constraint on `data_feed` or `adjustment`, exactly like
+  version 2: discovery may run on a non-deployment feed, while qualification and
+  promotion still separately require a raw Alpaca deployment feed.
+- No field is added to `AlphaDefinition`, and the version-2 `clock` pop in
+  `to_dict` is untouched, so every existing hash stays byte-exact. A version-5
+  document serialises `"clock": null` plus a `lifetime`, so it cannot collide with
+  a version-2 hash. A timed policy — including version 5 — is a new immutable
+  identity requiring fresh research, holdout and qualification; no existing alpha,
+  position or study is reinterpreted.
+
+**Why exactly 57,600 seconds.** Daily research cannot resolve time inside a bar, so
+the only entry lifetime it can represent honestly is "the session the order was
+submitted for". The research half holds because `validate_sampling`
+(`agentic_trader/research/alpha/validation.py`) rejects any daily frame whose
+consecutive labels are closer than 24 h, so label + 57,600 s always precedes the
+next label whatever the label convention is — 00:00 UTC under the `alpha mine`
+default `--feed yfinance`, or New York midnight under Alpaca: one session either
+way. Live measures from `submitted_at`; broker admission requires an open regular
+session (09:30–16:00 New York), so submission + 16 h falls between 01:30 and 08:00
+the next day, before the next open: one session. A value of 86,400 gives research
+one session but live two partial sessions. A single named constant,
+`DAILY_ENTRY_LIFETIME_SECONDS = 57_600`, lives beside `TradeLifetimePolicy`.
+
+**Live precondition.** A version-5 alpha only submits an entry when a scan lands
+while (a) the previous daily bar is complete, (b) the signal is within its
+four-hour validity (`config.execution.signal_max_age_seconds`, default 14,400 s),
+and (c) the regular session is open (`AlpacaBroker.entry_market_context` requires
+the broker clock's `is_open`). Verify the scan schedule satisfies this before
+enrolling any version-5 paper probe.
+
+After this change, "timed execution is diagnostic-only" is enforced solely by the
+version rules in `research/alpha/models.py`: versions 3 and 4 remain diagnostic;
+version 5 is production-eligible because it has no clock and every production
+fence keys on the clock.
+
+**Deployment note.** Editing `scripts/launchd.sh` does not regenerate the installed
+launchd plist (see [controlled restart](production.md#controlled-maintenance-and-restart)).
+After deploying this change the operator must run
+`./scripts/launchd.sh install-miner` and verify that
+`~/Library/LaunchAgents/com.agentictrader.alphaminer.plist` contains
+`--entry-policy gtc`; otherwise the scheduled ETF32 benchmark would silently adopt
+the new `session` default for daily mining.
+
+## Known limits
+
+The journaled RUN/manifest record now also carries the requested
+`entry_policy` (`"session"` or `"gtc"`) at run level; each trial's persisted
+`definition` (`execution`/`semantics_version`) and its `evidence.execution_model`
+label (`gtc_limit_conservative_brackets_v2` or `session_limit_conservative_brackets_v1`)
+independently record the policy it was actually evaluated under. Built-in
+(non-alpha) strategies still submit GTC limit entries at the observed price:
+`TradeLifetimeService` only reconciles signals carrying `alpha_policy.lifetime`, so
+this contract changes nothing about built-in strategy execution. The simulator
+grants a session-bounded entry the entire next session including its opening
+print; live, the order is submitted inside the session and sees only the
+remainder of it and can never take the open. The research fill rate is therefore
+an upper bound. The September 18 GTC reference shares this bias, so the paired
+comparison remains valid, but forward/probe execution evidence is required before
+attributing any improvement to live trading.

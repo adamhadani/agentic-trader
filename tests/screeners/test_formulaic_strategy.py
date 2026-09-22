@@ -7,9 +7,11 @@ import pytest
 from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.research.alpha.models import (
+    DAILY_SESSION_SEMANTICS_VERSION,
     AlphaDefinition,
     AlphaOrigin,
 )
+from agentic_trader.research.alpha.strategy import session_entry_policy
 from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
 from agentic_trader.screeners.registry import StrategyRegistry
 
@@ -74,6 +76,31 @@ def test_formulaic_strategy_evaluation():
     assert cand.rsi_14 > 0
     assert cand.atr_14 > 0
     assert "Alpha alpha_wq_006 triggered" in cand.trigger_detail
+
+
+def test_formulaic_strategy_stamps_the_daily_session_entry_policy_into_the_candidate():
+    """A version-5 (native-daily, unclocked) alpha stamps its exact timed entry policy."""
+    definition = AlphaDefinition(
+        alpha_id="alpha_daily_session",
+        name="Daily Session Momentum",
+        expression="-1.0 * ts_corr(open, volume, 10)",
+        description="Correlation between open and volume",
+        origin=AlphaOrigin.WORLDQUANT_101,
+        direction="bi_directional",
+        entry_threshold=0.1,
+        timeframe="1d",
+        semantics_version=DAILY_SESSION_SEMANTICS_VERSION,
+        execution=session_entry_policy(),
+    )
+
+    strat = FormulaicAlphaStrategy(definition=definition)
+    md = create_mock_market_data(n_candles=60)
+    candidates = strat.evaluate(md, asset_class=AssetClass.CRYPTO)
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.alpha_policy == definition.execution.to_dict()
+    assert candidate.alpha_policy["lifetime"]["resting_seconds"] == 57_600
 
 
 @pytest.mark.parametrize("defect", ["bar_layout", "unknown_timestamp", "timeframe"])

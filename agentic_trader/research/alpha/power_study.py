@@ -25,7 +25,7 @@ from agentic_trader.research.alpha.promotion import (
     assess_statistical_measurements,
     measure_statistical_evidence,
 )
-from agentic_trader.research.alpha.strategy import alpha_scores, entry_directions
+from agentic_trader.research.alpha.strategy import alpha_scores, entry_directions, session_entry_policy
 from agentic_trader.research.alpha.study import (
     DAILY_NOISE,
     INTRABAR_STEPS,
@@ -101,6 +101,7 @@ class PowerProtocol(FrozenModel):
     null_upper: float = Field(default=0.05, gt=0, lt=1)
     dense_lower: float = Field(default=0.80, gt=0, lt=1)
     sparse_lower: float = Field(default=0.50, gt=0, lt=1)
+    entry_policy: Literal["gtc", "session"] = "gtc"
 
     @model_validator(mode="after")
     def bounded(self):
@@ -114,8 +115,11 @@ class PowerProtocol(FrozenModel):
 
     def document(self):
         jobs = list(power_jobs(self))
+        fields = self.model_dump(mode="json")
+        if self.entry_policy == "gtc":
+            fields.pop("entry_policy")
         return {
-            **self.model_dump(mode="json"),
+            **fields,
             "contracts": {
                 "policy": asdict(ValidationPolicy()),
                 "catalog": [d.to_dict() for d in study_catalog().list_alphas()],
@@ -207,6 +211,7 @@ def select_power_candidates(bars, protocol, *, search_seed, method):
         min_dsr=0,
         min_ic=-math.inf,
         max_seconds=protocol.search_timeout_seconds,
+        execution=session_entry_policy() if protocol.entry_policy == "session" else None,
     )
     run = miner.last_run
     known: dict[str, Any] = next((t for t in run["trials"] if t["definition"]["alpha_id"] == "synthetic_pulse"), {})
