@@ -1,6 +1,6 @@
 # Wider scan universe and a daily suggestion budget — design
 
-Status: proposed, September 21, 2026. Serves the desk's overarching goal: **one or
+Status: implemented September 22, 2026 (designed September 21). Serves the desk's overarching goal: **one or
 two reasonable trade suggestions per market session in Telegram**, executable on the
 Alpaca paper account.
 
@@ -40,6 +40,8 @@ headroom, so ranking quality matters more than raw supply.
 - Paper caps: `max_concurrent_positions` 4 → **8** and `sizing.max_trade_notional_cap`
   $30,000 → **$7,500**; the $60,000 notional ceiling, asset-class caps and the 2 %
   aggregate stop-risk budget are unchanged.
+- Budget scope: `--no-budget` records every approved candidate; dry runs always run
+  without a budget.
 
 ## Goal and non-goals
 
@@ -64,6 +66,9 @@ names. `sector` becomes the symbol's correlation group, merged with the configur
 `correlation_groups`, because an unlisted symbol currently matches no group and escapes
 `max_correlated_positions` entirely. Futures stay in `contracts:` as they are.
 
+Sectors are authored once from yfinance metadata and reviewed by eye; a name whose
+sector is unknown joins no correlation group.
+
 ### 2. Session-aligned suggestion scans (`cli/commands/service.py`)
 
 Two APScheduler **cron** jobs in `America/New_York`, default 10:35 and 14:35
@@ -73,8 +78,13 @@ trading days (existing `CompositeMarketCalendar`). The times follow completed 09
 session that broker admission requires. The existing interval scan is kept for futures
 but no longer fetches equities when the equity session is closed; today it would spend
 every overnight scan fetching the whole universe to have each candidate rejected by the
-per-candidate session gate. The 15-minute intraday job keeps its current, explicitly
-configured symbol scope and is not widened.
+per-candidate session gate. The 15-minute intraday job has no symbol scope of its own
+today; it scans every configured contract. It is therefore restricted to the contracts
+configured explicitly under `contracts:` (`AppConfig.non_universe_contracts`), so
+widening the universe does not multiply its request rate.
+
+The interval swing scan continues to cover the whole universe whenever it lands inside
+the equity session; the budget governs what it may send.
 
 ### 3. Fetch scaling and visibility (`data/market_data.py`, `agent/copilot.py`)
 
@@ -164,6 +174,25 @@ unmodified. Deployment verification is separate evidence.
 Deploy with the full universe but `max_cards_per_session: 2`. Watch the first two
 sessions' digests for scan duration, failures and coverage exclusions before changing
 anything. Rollback is a config edit (`universe: {}` restores today's 13 instruments).
+
+## Implementation notes (September 22)
+
+Deviations from the design above, ruled during execution and now the built behaviour:
+
+- The coverage gate applies to **strategy scanning only**. A thin name is still fetched
+  and still recorded by alpha-shadow observation; only `scan_contract` is skipped for it.
+- The LLM evaluation budget (`max_llm_evaluations_per_scan`) applies only when the LLM
+  is in use. A `--no-llm` scan and a dry run are bounded by the card budget alone.
+- Send-phase failures are counted as scan errors and do **not** consume the card budget:
+  a card that was never recorded leaves `remaining_session` untouched.
+- The interval swing scan remains. It covers the universe whenever it lands inside the
+  equity session and can therefore spend the session budget before the digest is
+  published; it is not a second suggestion schedule, and its cards count the same.
+- The digest is in-memory per daemon run (`_session_scan_stats`, trimmed to the current
+  ET date). A mid-session restart truncates it; the *budget* itself is unaffected,
+  because it is derived from the signals table.
+- `summary["approved"]` counts deterministic approvals eligible for ranking, not cards
+  sent. The budget, the send-phase LLM evaluation and send failures all thin it down.
 
 ## Follow-ups (not in this change)
 

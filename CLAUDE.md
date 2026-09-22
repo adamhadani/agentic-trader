@@ -96,6 +96,11 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `doctor --monitor` persists debounced incidents and uses the existing outbox;
    it never polls Telegram or consumes entry work. Degraded readiness alerts; it
    does not blindly restart or automatically change the trading halt.
+   Suggestion scans run at configured New York times and spend a derived per-session
+   card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
+   the intraday job scans only `non_universe_contracts`; `setup_quality` orders cards
+   and is stored in provenance — it is not validated alpha. Never widen the intraday
+   job to the universe or store the budget in a counter.
 9. **Language:** `/macro` owns combined volatility/macro context; no `/regime` alias.
    Render configured policy and real feed dates. GEX is a research estimate with
    quality notes, never fabricated spot data or measured dealer inventory.
