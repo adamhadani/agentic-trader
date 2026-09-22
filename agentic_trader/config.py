@@ -611,7 +611,7 @@ class AppConfig(BaseModel):
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
     scan: ScanConfig = Field(default_factory=ScanConfig)
-    explicit_contracts: tuple[str, ...] = ()
+    explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
@@ -664,9 +664,15 @@ class AppConfig(BaseModel):
 
     @property
     def non_universe_contracts(self) -> list[str]:
-        """Instruments configured explicitly under contracts:, i.e. the pre-universe scan set."""
-        universe = set(self.universe.symbols) - set(self.explicit_contracts)
-        return sorted(key for key in self.contracts if key not in universe)
+        """Instruments configured explicitly under contracts:, i.e. the pre-universe scan set.
+
+        `explicit_contracts` is `None` when an `AppConfig` is built directly (not via
+        `load_config`); every configured contract is then treated as explicit, so a
+        symbol that also appears in `universe` is never silently dropped.
+        """
+        explicit = set(self.contracts) if self.explicit_contracts is None else set(self.explicit_contracts)
+        universe_only = set(self.universe.symbols) - explicit
+        return sorted(k for k in self.contracts if k not in universe_only)
 
     # Broker Execution Configuration
     execution_mode: str = ExecutionMode.PAPER  # ExecutionMode.PAPER, "tradovate", ExecutionMode.ALPACA, "manual"
@@ -847,7 +853,7 @@ def load_config(
 
     strategies_config = StrategyConfig(**strat_kwargs)
 
-    universe = UniverseConfig(**cfg_dict.get("universe", {}))
+    universe = UniverseConfig(**(cfg_dict.get("universe") or {}))
     explicit_contracts = dict(cfg_dict.get("contracts", {}))
     contract_documents = {**universe.contract_documents(), **explicit_contracts}  # explicit wins
     portfolio_dict = dict(cfg_dict.get("portfolio", {}))
@@ -864,7 +870,7 @@ def load_config(
         portfolio=PortfolioConfig(**portfolio_dict),
         contracts={k: ContractConfig(**v) for k, v in contract_documents.items()},
         universe=universe,
-        scan=ScanConfig(**cfg_dict.get("scan", {})),
+        scan=ScanConfig(**(cfg_dict.get("scan") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,

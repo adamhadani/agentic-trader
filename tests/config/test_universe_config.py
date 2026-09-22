@@ -2,7 +2,17 @@ import textwrap
 
 import pytest
 
-from agentic_trader.config import ScanBudget, ScanConfig, SchedulerConfig, UniverseConfig, UniverseEntry, load_config
+from agentic_trader.config import (
+    AppConfig,
+    ContractConfig,
+    MarketDataConfig,
+    ScanBudget,
+    ScanConfig,
+    SchedulerConfig,
+    UniverseConfig,
+    UniverseEntry,
+    load_config,
+)
 from agentic_trader.constants import AssetClass
 
 
@@ -56,6 +66,35 @@ def test_scan_config_defaults_match_the_spec():
     assert [b.value for b in ScanBudget] == ["full", "session", "none"]
 
 
+def test_market_data_and_universe_defaults_match_the_spec():
+    assert MarketDataConfig().scan_concurrency == 8
+    assert MarketDataConfig().max_requests_per_minute == 150
+    assert UniverseConfig().max_symbols == 250
+
+
+def test_non_universe_contracts_default_treats_every_contract_as_explicit():
+    config = AppConfig(
+        contracts={
+            "SPY": ContractConfig(ticker="SPY", name="SPY", asset_class="equity"),
+            "/MES": ContractConfig(ticker="MES=F", name="Micro E-mini S&P 500", multiplier=5.0, tick_size=0.25),
+        },
+        universe=UniverseConfig(
+            groups={"a": [UniverseEntry(symbol="SPY"), UniverseEntry(symbol="AAPL")]},
+        ),
+    )
+    assert config.non_universe_contracts == ["/MES", "SPY"]
+
+
+def test_non_universe_contracts_with_no_universe_returns_all_contracts():
+    config = AppConfig(
+        contracts={
+            "SPY": ContractConfig(ticker="SPY", name="SPY", asset_class="equity"),
+            "/MES": ContractConfig(ticker="MES=F", name="Micro E-mini S&P 500", multiplier=5.0, tick_size=0.25),
+        }
+    )
+    assert config.non_universe_contracts == ["/MES", "SPY"]
+
+
 def write(tmp_path, body):
     path = tmp_path / "config.yaml"
     path.write_text(textwrap.dedent(body))
@@ -106,7 +145,25 @@ def test_load_config_without_universe_is_unchanged(tmp_path):
     assert config.non_universe_contracts == ["SPY"]
 
 
+def test_load_config_tolerates_a_bare_universe_and_scan_key(tmp_path):
+    path = write(
+        tmp_path,
+        """
+        contracts:
+          "SPY":
+            ticker: "SPY"
+            name: "SPY"
+            asset_class: "equity"
+        universe:
+        scan:
+        """,
+    )
+    config = load_config(path, environ={"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""})
+    assert config.universe.symbols == ()
+    assert config.scan == ScanConfig()
+
+
 @pytest.mark.parametrize("times", [["25:00"], ["9:5"], ["10:35", "10:35"], []])
-def test_invalid_suggestion_scan_times_are_rejected(times, tmp_path):
+def test_invalid_suggestion_scan_times_are_rejected(times):
     with pytest.raises(ValueError):
         SchedulerConfig(suggestion_scan_times_et=times)

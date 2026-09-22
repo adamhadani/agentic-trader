@@ -99,17 +99,17 @@ universe:
       - {symbol: IWM, sector: etf_broad_equity}
       - {symbol: DIA, sector: etf_broad_equity}
       - {symbol: VTI, sector: etf_broad_equity}
-      - {symbol: XLB, sector: etf_sector}
-      - {symbol: XLC, sector: etf_sector}
-      - {symbol: XLE, sector: etf_sector}
-      - {symbol: XLF, sector: etf_sector}
-      - {symbol: XLI, sector: etf_sector}
-      - {symbol: XLK, sector: etf_sector}
-      - {symbol: XLP, sector: etf_sector}
-      - {symbol: XLRE, sector: etf_sector}
-      - {symbol: XLU, sector: etf_sector}
-      - {symbol: XLV, sector: etf_sector}
-      - {symbol: XLY, sector: etf_sector}
+      - {symbol: XLB, sector: basic_materials}
+      - {symbol: XLC, sector: communication_services}
+      - {symbol: XLE, sector: energy}
+      - {symbol: XLF, sector: financial_services}
+      - {symbol: XLI, sector: industrials}
+      - {symbol: XLK, sector: technology}
+      - {symbol: XLP, sector: consumer_defensive}
+      - {symbol: XLRE, sector: real_estate}
+      - {symbol: XLU, sector: utilities}
+      - {symbol: XLV, sector: healthcare}
+      - {symbol: XLY, sector: consumer_cyclical}
       - {symbol: EFA, sector: etf_international}
       - {symbol: EEM, sector: etf_international}
       - {symbol: EWJ, sector: etf_international}
