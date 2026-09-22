@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import agentic_trader.agent.copilot as copilot_module
 from agentic_trader.agent.copilot import TradingCopilot
-from agentic_trader.resilience.reads import provider_reads
+from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, provider_reads
 
 
 def test_copilot_owns_one_dedicated_scan_sized_read_pool(app_config, temp_db, mock_notifier):
@@ -25,7 +25,10 @@ def test_copilot_owns_one_dedicated_scan_sized_read_pool(app_config, temp_db, mo
     read_executor = copilot.data_fetcher.provider.read_executor
     assert read_executor is not provider_reads
     assert read_executor is copilot._scan_read_executor
-    assert read_executor._executor._max_workers == app_config.market_data.scan_concurrency
+    # F2: the pool carries headroom over scan_concurrency -- the primary leg can hold
+    # every scan slot for its whole timeout while the fallback leg and the one-minute
+    # position monitor still need slots of their own.
+    assert read_executor._executor._max_workers == 2 * app_config.market_data.scan_concurrency + DEFAULT_READ_WORKERS
 
 
 def test_copilot_with_injected_data_fetcher_creates_no_read_pool(app_config, temp_db, mock_notifier, monkeypatch):

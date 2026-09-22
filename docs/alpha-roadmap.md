@@ -188,7 +188,9 @@ research run or runtime policy change was made for this review.
    confirmation run); universe-wide mined alphas over the same names; evaluating
    `setup_quality` against realised R; fixing the interval scan's drift from candle
    closes. Deployment and the first two sessions' digests are separate evidence
-   (see [production operations](production.md#suggestion-scans)).
+   (see [production operations](production.md#suggestion-scans)). Further recorded
+   follow-ups: process-wide per-feed pacer; `setup_quality` cross-strategy scale
+   calibration.
 
 No threshold was lowered, alpha promoted or trading configuration changed by this
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.

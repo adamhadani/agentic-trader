@@ -84,6 +84,16 @@ unbudgeted because it neither reads nor spends the live session's allowance.
 in `decision_provenance`; `setup_quality` is a transparent prioritisation heuristic,
 not validated alpha.
 
+**`--no-budget` over the full universe can emit many cards at once.** It records every
+approved candidate across ~160 names, so a trending session can produce a burst of
+Telegram cards and consume the session's ranking discipline in one run. Scope it
+(`--symbols`) or rehearse it with `--dry-run` unless a wide sweep is what you want;
+the cards are `PENDING` suggestions and reserve no capacity, but each one is a
+recorded signal and counts toward the day's derived per-session total.
+
+Telegram `/scan` refuses while another scan is in flight (`Scan Already Running`)
+rather than queueing behind it; the running scan's cards still arrive in the chat.
+
 ### `copilot execute <signal_id>`
 Authorizes a signal through the durable entry queue. Fresh admission supports Alpaca equities and local simulation; other adapters fail closed until they implement that contract.
 ```bash

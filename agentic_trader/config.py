@@ -247,8 +247,9 @@ class SchedulerConfig(BaseModel):
     @field_validator("suggestion_scan_times_et")
     @classmethod
     def valid_times(cls, value: list[str]) -> list[str]:
-        if not value or len(set(value)) != len(value):
-            raise ValueError("suggestion_scan_times_et requires at least one distinct HH:MM time")
+        # An empty list is the documented operator off switch: no cron suggestion scans.
+        if len(set(value)) != len(value):
+            raise ValueError("suggestion_scan_times_et requires distinct HH:MM times")
         for item in value:
             if not re.fullmatch(r"^(?:[01]\d|2[0-3]):[0-5]\d$", item):
                 raise ValueError(f"Invalid HH:MM time: {item}")

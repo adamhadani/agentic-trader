@@ -62,6 +62,25 @@ def test_intraday_scan_is_restricted_to_non_universe_contracts(config):
     assert job.keywords["symbols"] == ["/MES", "SPY"]
 
 
+def test_no_configured_times_disables_the_suggestion_scans(config):
+    """F7: an empty suggestion_scan_times_et is the documented operator off switch."""
+    config.scheduler.suggestion_scan_times_et = []
+    scheduler = MagicMock()
+    service.register_suggestion_scans(scheduler, MagicMock(), config, use_llm=True)
+    scheduler.add_job.assert_not_called()
+
+
+def test_intraday_scan_is_not_registered_without_explicit_contracts(config):
+    """F3: run_scan(symbols=[]) selects the whole universe, so an empty scope must
+    register no job at all rather than a 15-minute universe scan."""
+    config.universe = UniverseConfig(groups={"g": [UniverseEntry(symbol="AAPL")]})
+    config.contracts = {"AAPL": MagicMock()}
+    config.explicit_contracts = ()
+    scheduler = MagicMock()
+    service.register_intraday_scan(scheduler, MagicMock(), config, use_llm=True)
+    scheduler.add_job.assert_not_called()
+
+
 async def test_intraday_scan_runs_only_inside_a_session_and_keeps_its_symbols(config):
     config.contracts = {"SPY": MagicMock()}
     config.explicit_contracts = ("SPY",)

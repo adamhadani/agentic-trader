@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from datetime import UTC, datetime
@@ -113,16 +114,50 @@ async def test_insufficient_data_alone_does_not_degrade_scan_readiness(scan_desk
     """I3 (controller ruling correction): pre-change, an empty-but-fetched frame never
     incremented scan_errors -- only exceptions did. A wide universe legitimately
     contains thin names, so an insufficient-data-only name must still report SCAN
-    readiness healthy; the count is surfaced in the detail string only."""
-    app_config.contracts = {"AAA": instrument("AAA")}
+    readiness healthy; the count is surfaced in the detail string only. At least one
+    name must still reach strategy scanning -- a scan that scanned nothing at all is
+    covered by the zero-scanned test below."""
+    app_config.contracts = {"AAA": instrument("AAA"), "THIN": instrument("THIN")}
+
+    def fetch(contract, ticker, include_fifteen_min=True):
+        if contract == "THIN":
+            return SimpleNamespace(daily=pd.DataFrame(), four_hour=pd.DataFrame(), hourly=pd.DataFrame())
+        return SimpleNamespace(daily=frame(), four_hour=frame(), hourly=frame())
+
+    scan_desk.data_fetcher.fetch_data.side_effect = fetch
+    await scan_desk.run_scan(use_llm=False, dry_run=False)
+    scan_calls = [c for c in scan_desk.readiness.observe.await_args_list if c.args[0] == HealthComponent.SCAN]
+    assert len(scan_calls) == 1
+    assert scan_calls[0].args[1] is True
+    assert "1 insufficient" in scan_calls[0].args[2]
+
+
+async def test_a_selection_that_scans_nothing_degrades_scan_readiness(scan_desk, app_config):
+    """F1: the selection was non-empty but nothing reached strategy scanning (every
+    frame came back empty). That is a silent whole-scan failure, so SCAN readiness
+    must be degraded and must say how many of how many instruments were scanned."""
+    app_config.contracts = {"AAA": instrument("AAA"), "BBB": instrument("BBB")}
     scan_desk.data_fetcher.fetch_data.return_value = SimpleNamespace(
         daily=pd.DataFrame(), four_hour=pd.DataFrame(), hourly=pd.DataFrame()
     )
     await scan_desk.run_scan(use_llm=False, dry_run=False)
     scan_calls = [c for c in scan_desk.readiness.observe.await_args_list if c.args[0] == HealthComponent.SCAN]
     assert len(scan_calls) == 1
-    assert scan_calls[0].args[1] is True
-    assert "1 insufficient" in scan_calls[0].args[2]
+    assert scan_calls[0].args[1] is False
+    assert "0 of 2 instruments scanned" in scan_calls[0].args[2]
+    assert "2 insufficient" in scan_calls[0].args[2]
+
+
+async def test_futures_only_selection_skips_the_coverage_gate_silently(scan_desk, app_config, caplog):
+    """F8: the equity coverage reference is irrelevant to a futures-only selection, so
+    an absent SPY must not raise a coverage WARNING on every futures scan."""
+    app_config.contracts = {"/MES": instrument("/MES", "FUTURES")}
+    scan_desk.data_fetcher.fetch_data.return_value = SimpleNamespace(daily=frame(), four_hour=frame(), hourly=frame())
+    with caplog.at_level(logging.WARNING):
+        await scan_desk.run_scan(use_llm=False, dry_run=False)
+    assert not [r for r in caplog.records if getattr(r, "event", None) == "coverage_gate_skipped"]
+    assert scan_desk.last_scan_summary["coverage_note"] is None
+    assert scan_desk.last_scan_summary["coverage_excluded"] == []
 
 
 async def test_shadow_observe_uses_each_symbols_fetch_receipt_as_of(scan_desk, app_config):

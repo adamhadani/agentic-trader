@@ -4,6 +4,7 @@ portfolio:
   max_notional_exposure: 60000.0
   max_concurrent_contracts: 2
   max_concurrent_positions: 8 # paper desk cap (September 22)
+  max_correlated_positions: 2 # open positions per correlation group (universe sectors)
   default_equity_risk_dollars: 250.0
 
 contracts:

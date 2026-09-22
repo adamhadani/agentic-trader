@@ -254,6 +254,59 @@ async def test_digest_without_scans_says_so(scan_desk):
     assert "no suggestion scans" in text.lower()
 
 
+async def test_digest_reports_how_many_instruments_were_scanned(budget_desk, app_config):
+    """F1: candidates alone cannot distinguish a quiet universe from a universe that
+    was never scanned, so the digest carries the scanned and insufficient totals."""
+    budget_desk.outbox = AsyncMock()
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    text = await budget_desk.publish_scan_digest()
+    assert "5 scanned" in text and "0 insufficient" in text
+
+
+async def test_digest_counts_universe_scans_only(scan_desk):
+    """F6: the 15-minute intraday job and symbol-restricted scans are not suggestion
+    scans; a session in which only those ran reports no suggestion scans."""
+    scan_desk.outbox = AsyncMock()
+    et_today = scan_desk.session_start_et().date().isoformat()
+    scan_desk._session_scan_stats = {
+        et_today: [
+            {
+                "scope": {"asset_class": "all", "timeframe": "15m", "restricted": True},
+                "scanned": 1,
+                "insufficient": [],
+                "candidates": 99,
+                "sent": 3,
+                "runners_up": [],
+                "fetch_failed": [],
+                "coverage_excluded": [],
+                "duration_seconds": 1.0,
+            }
+        ]
+    }
+    text = await scan_desk.publish_scan_digest()
+    assert "no suggestion scans" in text.lower()
+    assert "99" not in text
+
+
+async def test_scan_summary_records_its_scope(scan_desk, app_config):
+    """F6: every summary says what it covered, so the digest can filter."""
+    app_config.contracts = {"AAA": instrument("AAA")}
+    await scan_desk.run_scan(use_llm=False, dry_run=False)
+    assert scan_desk.last_scan_summary["scope"] == {"asset_class": "all", "timeframe": None, "restricted": False}
+    await scan_desk.run_scan(use_llm=False, dry_run=False, timeframe="15m", symbols=["AAA"])
+    assert scan_desk.last_scan_summary["scope"] == {"asset_class": "all", "timeframe": "15m", "restricted": True}
+
+
+async def test_telegram_scan_refuses_while_a_scan_is_running(scan_desk):
+    """F5: /scan must never queue behind a running universe scan on the Telegram
+    handler; it reports that a scan is in flight and returns immediately."""
+    scan_desk.run_scan = AsyncMock()
+    async with scan_desk._scan_lock:
+        text = await scan_desk.run_scan_summary_html()
+    assert "running" in text.lower()
+    scan_desk.run_scan.assert_not_awaited()
+
+
 async def test_session_scan_stats_keep_only_the_current_new_york_date(budget_desk):
     budget_desk._session_scan_stats["2020-01-01"] = [{"candidates": 99, "sent": 9, "runners_up": []}]
     await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)

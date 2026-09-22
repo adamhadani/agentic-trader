@@ -194,6 +194,28 @@ Deviations from the design above, ruled during execution and now the built behav
 - `summary["approved"]` counts deterministic approvals eligible for ranking, not cards
   sent. The budget, the send-phase LLM evaluation and send failures all thin it down.
 
+Post-review fix wave (September 22):
+
+- Every summary carries `scope` (`asset_class`, `timeframe`, `restricted`). The digest
+  aggregates **universe suggestion scans only** — no timeframe filter and no symbol
+  restriction — so the 15-minute intraday job and `--symbols` scans are excluded; if
+  only excluded scans ran, the digest says no suggestion scans ran. The digest also
+  reports the scanned and insufficient totals, and a non-empty selection that scanned
+  nothing degrades `scan` readiness instead of reporting healthy.
+- An empty `scheduler.suggestion_scan_times_et` is now valid and disables the cron
+  suggestion scans (and therefore the digest); all other validation is unchanged. The
+  intraday job likewise registers nothing when no explicit contracts are configured,
+  because `run_scan(symbols=[])` would otherwise select the whole universe.
+- The copilot's read pool is sized `2 * scan_concurrency + DEFAULT_READ_WORKERS`: the
+  primary leg can hold every scan slot for its full timeout while the fallback leg and
+  the one-minute position monitor still need slots.
+- The evaluator's correlation check and Execute admission remain deliberately
+  different: admission counts any position in the group, the evaluator only
+  same-direction ones, because `test_correlation_group_opposite_direction_allowed`
+  pins the opposite-direction hedge as allowed at suggestion time. Sector groups now
+  cover every equity, so the gap is bounded by `portfolio.max_correlated_positions: 2`
+  in the paper config and documented in production.md rather than closed in code.
+
 ## Follow-ups (not in this change)
 
 Session-bounded entries for built-in strategies; evaluating `setup_quality` against

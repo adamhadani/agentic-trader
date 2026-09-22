@@ -163,7 +163,12 @@ def test_load_config_tolerates_a_bare_universe_and_scan_key(tmp_path):
     assert config.scan == ScanConfig()
 
 
-@pytest.mark.parametrize("times", [["25:00"], ["9:5"], ["10:35", "10:35"], []])
+@pytest.mark.parametrize("times", [["25:00"], ["9:5"], ["10:35", "10:35"]])
 def test_invalid_suggestion_scan_times_are_rejected(times):
     with pytest.raises(ValueError):
         SchedulerConfig(suggestion_scan_times_et=times)
+
+
+def test_an_empty_suggestion_scan_time_list_disables_the_cron_scans():
+    """F7: the operator off switch -- no times means no suggestion-scan cron jobs."""
+    assert SchedulerConfig(suggestion_scan_times_et=[]).suggestion_scan_times_et == []

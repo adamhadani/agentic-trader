@@ -50,12 +50,29 @@ end-of-session **digest** through the durable outbox under the key
 `scan-digest/{et_date}`; the digest runs even when the session was closed, so a quiet
 day still reports.
 
-The digest reports: number of scans, candidates found, cards sent, runners-up with
-their `setup_quality` scores (top five), fetch failures (count and up to eight
-symbols), the count of names excluded by the coverage gate, and each scan's duration.
-It is assembled from in-memory per-run statistics trimmed to the current New York
-date, so a mid-session daemon restart truncates the digest — the card budget itself is
-unaffected because it is derived from the signals table, not from a counter.
+The digest reports: number of scans, instruments actually scanned, names with
+insufficient data, candidates found, cards sent, runners-up with their
+`setup_quality` scores (top five), fetch failures (count and up to eight symbols),
+the count of names excluded by the coverage gate, and each scan's duration.
+It aggregates **universe suggestion scans only**: a run carrying a timeframe filter
+(the 15-minute intraday job) or a symbol restriction (`copilot scan --symbols`,
+Telegram `/scan` of named contracts) is excluded, and a session in which only those
+ran reports that no suggestion scans ran. It is assembled from in-memory per-run
+statistics trimmed to the current New York date, so a mid-session daemon restart
+truncates the digest — the card budget itself is unaffected because it is derived
+from the signals table, not from a counter.
+
+**Disabling the cron scans** is a config edit: `scheduler.suggestion_scan_times_et: []`
+registers no cron job, so neither an automatic suggestion scan nor the end-of-session
+digest runs (`Suggestion scans disabled (no times configured)` at startup). Manual
+`copilot scan` and Telegram `/scan` are unaffected. Like every config change it takes
+effect only on daemon restart.
+
+A scan whose selection was non-empty but which scanned nothing (every name failed to
+fetch, came back with empty frames, or was excluded by the coverage gate) records
+**degraded** `scan` readiness with a `0 of N instruments scanned` detail rather than a
+healthy observation — a silent whole-universe data failure must be visible in
+`/readyz` and `doctor`, not only in the digest.
 
 `scan:` keys and their shipped defaults:
 
@@ -73,10 +90,21 @@ Fetch scaling lives under `market_data:`: `scan_concurrency` (8) bounds the copi
 read pool and `max_requests_per_minute` (150) paces provider reads below the 200/minute
 IEX limit.
 
-Paper desk caps that ship with this universe: `portfolio.max_concurrent_positions: 8`
-and `sizing.max_trade_notional_cap: 7500.0`. The total notional ceiling, asset-class
-caps and the 2% aggregate stop-risk budget are unchanged. A `PENDING` card reserves no
-capacity; these caps are enforced at Execute.
+Paper desk caps that ship with this universe: `portfolio.max_concurrent_positions: 8`,
+`portfolio.max_correlated_positions: 2` and `sizing.max_trade_notional_cap: 7500.0`.
+The total notional ceiling, asset-class caps and the 2% aggregate stop-risk budget are
+unchanged. A `PENDING` card reserves no capacity; these caps are enforced at Execute.
+
+**Sector correlation groups now bound the book per sector.** Every universe entry
+carries a sector, and those sectors are merged into `portfolio.correlation_groups` at
+load, so each group is a sector rather than a handful of index proxies. Entry
+admission counts *any* open position in the group (direction-agnostic) against
+`max_correlated_positions`, so the paper cap of 2 means at most two open positions per
+sector; with `max_concurrent_positions: 8` that spreads a full book across at least
+four sectors. The evaluator's own correlation check, which gates the suggestion card,
+counts only same-direction positions (an opposite-direction hedge is allowed there by
+design and by test), so a card can still be approved and then refused at Execute with
+`Configured correlated-position limit reached` — the cap of 2 is what keeps that rare.
 
 **Rollback** is a config edit: `universe: {}` restores the 13 explicitly configured
 contracts, and `non_universe_contracts` then equals the whole contract set.
@@ -94,7 +122,17 @@ universe:
   set means entitlement or throttling, not data quality;
 - coverage exclusions — thin names correctly dropped from strategy scanning;
   alpha-shadow observation still records them;
-- cards sent versus runners-up — whether the budget or the gates are binding.
+- cards sent versus runners-up — whether the budget or the gates are binding;
+- instruments scanned versus selected — the digest's `N scanned` and the `scan`
+  readiness detail; `0 of N instruments scanned` is a data failure, not a quiet market.
+
+`market_data.max_requests_per_minute` paces **the scan fetcher only**. Other workers
+share the same provider feed — the prospective daily-panel worker, the forward
+observers and the one-minute position monitor — so the real per-feed request rate is
+the sum of all of them, and the 150/minute setting is headroom under the 200/minute
+IEX limit rather than a process-wide ceiling. A process-wide per-feed pacer is a
+[roadmap follow-up](alpha-roadmap.md); until then, treat a burst of provider
+throttling during a scan as evidence about the *combined* rate.
 
 ## Configuration and state
 

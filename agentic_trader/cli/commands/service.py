@@ -302,9 +302,16 @@ def make_suggestion_scan(copilot: Any, *, use_llm: bool):
 
 
 def register_suggestion_scans(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
-    """Register one cron job per configured New York suggestion-scan time (weekdays only)."""
-    job = make_suggestion_scan(copilot, use_llm=use_llm)
+    """Register one cron job per configured New York suggestion-scan time (weekdays only).
+
+    An empty ``suggestion_scan_times_et`` is the operator off switch: no cron job, and
+    therefore no automatic suggestion scan and no end-of-session digest.
+    """
     times = config.scheduler.suggestion_scan_times_et
+    if not times:
+        logger.info("Suggestion scans disabled (no times configured).")
+        return
+    job = make_suggestion_scan(copilot, use_llm=use_llm)
     for index, item in enumerate(times):
         hour, minute = (int(part) for part in item.split(":"))
         scheduler.add_job(
@@ -344,7 +351,10 @@ def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, u
 
     symbols = config.non_universe_contracts
     if not symbols:
+        # run_scan(symbols=[]) selects the whole universe, so an empty scope must
+        # register no job at all rather than a 15-minute universe scan.
         logger.info("Intraday scanner has no explicitly configured contracts; the universe is scanned on the cron.")
+        return
     scheduler.add_job(
         functools.partial(run_intraday_scan, symbols=symbols),
         "interval",

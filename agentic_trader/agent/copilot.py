@@ -62,7 +62,7 @@ from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
-from agentic_trader.resilience.reads import BoundedReadExecutor
+from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor
 from agentic_trader.risk import requires_account_risk
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.coverage import coverage_exclusions
@@ -110,7 +110,12 @@ class TradingCopilot:
             # One dedicated, scan-sized read-capacity pool, owned by the copilot for its
             # lifetime; MarketDataFetcher never constructs its own (that would leak a
             # ThreadPoolExecutor per ad hoc fetcher construction elsewhere, e.g. backtests).
-            self._scan_read_executor = BoundedReadExecutor(workers=config.market_data.scan_concurrency)
+            # Headroom over scan_concurrency: the primary leg can hold every scan slot
+            # for its full timeout while the fallback leg and the one-minute position
+            # monitor still need slots of their own.
+            self._scan_read_executor = BoundedReadExecutor(
+                workers=2 * config.market_data.scan_concurrency + DEFAULT_READ_WORKERS
+            )
             self.data_fetcher = MarketDataFetcher(config=config, read_executor=self._scan_read_executor)
         self.broker: BaseBroker = (
             broker if broker is not None else create_broker(config=config, data_fetcher=self.data_fetcher)
@@ -419,6 +424,10 @@ class TradingCopilot:
                     for d in (*alpha_snapshot.active, *alpha_snapshot.shadow, *alpha_snapshot.probe)
                 )
             summary: dict[str, Any] = {
+                # What this run covered, so the digest can aggregate suggestion scans
+                # only: the 15-minute intraday job carries a timeframe, and an operator
+                # or Telegram scan of named symbols is restricted.
+                "scope": {"asset_class": asset_class, "timeframe": timeframe, "restricted": bool(symbols)},
                 "scanned": 0,
                 "fetch_failed": [],
                 "insufficient": [],
@@ -467,13 +476,20 @@ class TradingCopilot:
                 if normalize_asset_class(str(getattr(i, "asset_class", ""))) == normalize_asset_class("equity")
             }
             try:
-                excluded, coverage_note = coverage_exclusions(
-                    datasets,
-                    reference=self.config.scan.coverage_reference_symbol,
-                    sessions=self.config.scan.coverage_sessions,
-                    min_ratio=self.config.scan.min_bar_coverage,
-                    equities=equities,
-                )
+                if not equities:
+                    # The gate only ever excludes equities against an equity reference;
+                    # a futures-only selection has nothing to measure and must not warn
+                    # that the (unfetched) reference is unavailable.
+                    excluded, coverage_note = set[str](), None
+                else:
+                    excluded, coverage_note = await asyncio.to_thread(
+                        coverage_exclusions,
+                        datasets,
+                        reference=self.config.scan.coverage_reference_symbol,
+                        sessions=self.config.scan.coverage_sessions,
+                        min_ratio=self.config.scan.min_bar_coverage,
+                        equities=equities,
+                    )
             except Exception:
                 logger.exception(
                     "Coverage gate raised; skipping the gate for this scan",
@@ -747,6 +763,15 @@ class TradingCopilot:
                         },
                     )
 
+                    # The card exists from here on, so charge the budget before any
+                    # further bookkeeping: an exception later in this iteration must
+                    # never leave a recorded card uncharged.
+                    total_alerts += 1
+                    remaining_scan -= 1
+                    remaining_session -= 1
+                    for group in self.correlation_groups_of(candidate.contract):
+                        groups_used[group] = groups_used.get(group, 0) + 1
+
                     logger.info(
                         "Signal #%d approved and recorded: %s %s via %s (risk: $%.2f, notional: $%.2f)",
                         sig_id,
@@ -770,11 +795,6 @@ class TradingCopilot:
                         },
                     )
 
-                    total_alerts += 1
-                    remaining_scan -= 1
-                    remaining_session -= 1
-                    for group in self.correlation_groups_of(candidate.contract):
-                        groups_used[group] = groups_used.get(group, 0) + 1
                     # Update exposure in memory for subsequent checks in this run
                     current_exposure += eval_res.notional_value
                     active_positions.append(
@@ -823,12 +843,21 @@ class TradingCopilot:
             n_fetch_failed = len(summary["fetch_failed"])
             n_insufficient = len(summary["insufficient"])
             scan_errors += n_fetch_failed
+            # A selection that reached strategy scanning for nothing at all is a silent
+            # whole-scan failure even when every individual name looked merely thin.
+            scanned_nothing = bool(selected) and summary["scanned"] == 0
             if not dry_run:
-                await self.readiness.observe(
-                    HealthComponent.SCAN,
-                    scan_errors == 0,
-                    f"{scan_errors} instrument errors ({n_fetch_failed} fetch failed, {n_insufficient} insufficient)",
-                )
+                if scanned_nothing:
+                    detail = (
+                        f"0 of {len(selected)} instruments scanned ({n_fetch_failed} fetch failed, "
+                        f"{n_insufficient} insufficient, {len(summary['coverage_excluded'])} coverage excluded)"
+                    )
+                else:
+                    detail = (
+                        f"{scan_errors} instrument errors ({n_fetch_failed} fetch failed, "
+                        f"{n_insufficient} insufficient)"
+                    )
+                await self.readiness.observe(HealthComponent.SCAN, scan_errors == 0 and not scanned_nothing, detail)
             # Monitor any active positions for stop loss or take profit crossings
             if not dry_run:
                 await self.monitor_positions()
@@ -1864,27 +1893,41 @@ class TradingCopilot:
         report = await self.get_status_report()
         return TelegramHtmlFormatter.format_status_html(report)
 
+    @staticmethod
+    def _is_suggestion_scan(summary: dict[str, Any]) -> bool:
+        """A universe scan: no timeframe filter and no symbol restriction."""
+        scope = summary.get("scope") or {}
+        return scope.get("timeframe") is None and not scope.get("restricted")
+
     async def publish_scan_digest(self, et_date: str | None = None) -> str:
         """Publish exactly one end-of-session digest of this New York date's suggestion scans.
+
+        Only *universe* suggestion scans are aggregated: a summary with a timeframe (the
+        15-minute intraday job) or a symbol restriction (an operator or Telegram scan of
+        named contracts) is not a suggestion scan and is excluded. If only excluded scans
+        ran, the digest says no suggestion scans ran.
 
         `publish_message` marks the text as formatted HTML. Every interpolated value is
         either one of our own literals or a contract symbol matching ``^[A-Z][A-Z.]{0,5}$``
         (plus an optional leading ``/`` for futures), so no escaping is needed here.
         """
         et_date = et_date or self.session_start_et().date().isoformat()
-        scans = self._session_scan_stats.get(et_date, [])
+        scans = [s for s in self._session_scan_stats.get(et_date, []) if self._is_suggestion_scan(s)]
         if not scans:
             text = f"📋 Scan digest {et_date}: no suggestion scans ran this session."
         else:
             candidates = sum(s.get("candidates", 0) for s in scans)
             sent = sum(s.get("sent", 0) for s in scans)
+            scanned = sum(s.get("scanned", 0) for s in scans)
+            insufficient = sum(len(s.get("insufficient", [])) for s in scans)
             runners = [r for s in scans for r in s.get("runners_up", [])]
             failed = sorted({c for s in scans for c in s.get("fetch_failed", [])})
             excluded = sorted({c for s in scans for c in s.get("coverage_excluded", [])})
             durations = ", ".join(f"{s.get('duration_seconds', 0):.0f}s" for s in scans)
             top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in runners[:5])
             text = (
-                f"📋 Scan digest {et_date}: {len(scans)} scan(s), {candidates} candidates, {sent} card(s) sent, "
+                f"📋 Scan digest {et_date}: {len(scans)} scan(s), {scanned} scanned, "
+                f"{insufficient} insufficient, {candidates} candidates, {sent} card(s) sent, "
                 f"{len(runners)} runners-up" + (f" — top: {top}" if top else "") + ". "
                 f"Fetch failures: {len(failed)}" + (f" ({', '.join(failed[:8])})" if failed else "") + "; "
                 f"coverage excluded: {len(excluded)}; scan durations: {durations}."
@@ -1893,6 +1936,13 @@ class TradingCopilot:
         return text
 
     async def run_scan_summary_html(self) -> str:
+        if self._scan_lock.locked():
+            # A universe scan takes minutes; queueing /scan behind it would block the
+            # Telegram handler and then report counts from the other run.
+            return (
+                "⏳ <b>Scan Already Running:</b> a universe scan is in flight; "
+                "its cards will arrive here. Try /scan again shortly."
+            )
         await self.check_halt_state()
         if self.is_halted:
             return (
