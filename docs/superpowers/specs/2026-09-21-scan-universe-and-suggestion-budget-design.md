@@ -222,3 +222,11 @@ Session-bounded entries for built-in strategies; evaluating `setup_quality` agai
 realised R; universe-wide mined alphas over the same names; fixing the crypto-prefix
 provider heuristic rather than validating around it; the interval scan's drift from
 candle closes.
+
+Funnel audit fixes (September 22, after the first deployed scans):
+
+- The coverage gate counts **regular-session hourly buckets only** (New York 09:00–15:00
+  starts). Counting SPY's 08:00 and 16:00 extended-hours buckets excluded about 100
+  liquid names at 10:35 and after the close (ratio ≈ 0.795 < 0.8); see `production.md`.
+- Scans skip asset classes the execution mode cannot admit (`skipped_not_executable`);
+  on Alpaca that is everything but equities.

@@ -58,8 +58,10 @@ from agentic_trader.constants import (
     AssetClass,
     CloseRequestStatus,
     Direction,
+    ExecutionMode,
     ExitReason,
     OrderType,
+    executes_asset_class,
 )
 from agentic_trader.execution.durable import OrderObservation
 from agentic_trader.transport.alpaca import BoundedStockDataClient, BoundedTradingClient
@@ -506,7 +508,7 @@ class AlpacaBroker(BaseBroker):
             raise ValueError("Broker session clock is stale or clock-skewed")
         if not is_open:
             raise ValueError("Equity entry session is closed; request a new approval during market hours")
-        if request.asset_class != AssetClass.EQUITY:
+        if not executes_asset_class(ExecutionMode.ALPACA, request.asset_class):
             raise ValueError("Fresh entry admission currently supports Alpaca equities only")
         # Read raw account/asset fields: SDK optional defaults and its deprecated
         # easy_to_borrow model cannot supply the required current wire evidence.

@@ -62,6 +62,18 @@ statistics trimmed to the current New York date, so a mid-session daemon restart
 truncates the digest — the card budget itself is unaffected because it is derived
 from the signals table, not from a counter.
 
+The gate counts **regular-session buckets only**. SPY also prints the 08:00
+pre-market and 16:00 post-market buckets that most names never do; counting them put
+every seven-bucket name at about 0.79–0.80 of the reference, so the result flipped
+with the time of day (roughly 100 liquid names, VTI and XLI among them, excluded at
+10:35 and after the close, September 22).
+
+Every scan also skips contracts whose asset class the configured execution mode
+cannot admit (`skipped_not_executable` in the scan summary). Alpaca entry admission
+accepts equities only, so on the Alpaca paper desk futures are not scanned: a futures
+card could never be accepted. The simulator (`EXECUTION_MODE=paper`, including dry
+scans) still scans every configured class.
+
 **Disabling the cron scans** is a config edit: `scheduler.suggestion_scan_times_et: []`
 registers no cron job, so neither an automatic suggestion scan nor the end-of-session
 digest runs (`Suggestion scans disabled (no times configured)` at startup). Manual
@@ -82,7 +94,7 @@ healthy observation — a silent whole-universe data failure must be visible in
 | `max_cards_per_session` | 2 | Cards per New York trading day, derived from recorded signals since New York midnight (this environment and execution mode, excluding quarantined rows). |
 | `max_cards_per_group_per_session` | 1 | Cards per correlation group per session; universe sectors are merged into `portfolio.correlation_groups` at load. |
 | `max_llm_evaluations_per_scan` | 4 | LLM re-evaluations per scan; spent only when the LLM is in use, so a lower-ranked candidate can replace an LLM rejection. |
-| `min_bar_coverage` | 0.8 | Fraction of the reference's active hourly bars a name needs to be scanned by strategies. |
+| `min_bar_coverage` | 0.8 | Fraction of the reference's active regular-session hourly bars (New York 09:00–15:00 buckets) a name needs to be scanned by strategies. |
 | `coverage_sessions` | 10 | Sessions of hourly bars the coverage gate counts. |
 | `coverage_reference_symbol` | `SPY` | Reference name; if it is unavailable the gate is skipped and the summary says so. |
 

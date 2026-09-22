@@ -45,3 +45,36 @@ def test_failed_reference_frame_skips_the_gate():
         datasets, reference="SPY", sessions=10, min_ratio=0.8, equities={"GOOD", "SPY"}
     )
     assert excluded == set() and note
+
+
+def utc_hourly_buckets(days, ny_hours):
+    """Top-of-hour UTC bars as the Alpaca 1h feed labels them, at the given New York hours."""
+    sessions = pd.bdate_range("2026-09-08", periods=days, tz="America/New_York")
+    idx = pd.DatetimeIndex([s + pd.Timedelta(hours=h) for s in sessions for h in ny_hours]).tz_convert("UTC")
+    return pd.DataFrame({"Close": 100.0, "Volume": 1000}, index=idx)
+
+
+def test_extended_hours_reference_bars_do_not_exclude_regular_session_names():
+    # SPY prints the 08:00 pre-market and 16:00 post-market buckets; most names do not.
+    # Counting them made 70/88 = 0.795 < 0.8 and excluded XLI, VTI and ~100 others.
+    regular = list(range(9, 16))
+    spy = utc_hourly_buckets(10, [8, *regular, 16])
+    xli = utc_hourly_buckets(10, regular)
+    assert active_hourly_bars(spy, sessions=10) == active_hourly_bars(xli, sessions=10) == 70
+    excluded, note = coverage_exclusions(
+        {"SPY": SimpleNamespace(hourly=spy), "XLI": SimpleNamespace(hourly=xli)},
+        reference="SPY",
+        sessions=10,
+        min_ratio=0.8,
+        equities={"SPY", "XLI"},
+    )
+    assert excluded == set() and note is None
+
+
+def test_morning_partial_session_counts_the_same_buckets_for_both():
+    # 10:35 New York: SPY has 08:00, 09:00 and 10:00 buckets today; XLI has 09:00 and 10:00.
+    spy = pd.concat(
+        [utc_hourly_buckets(9, [8, *range(9, 16), 16]), utc_hourly_buckets(1, [8, 9, 10]).shift(9, freq="B")]
+    )
+    xli = pd.concat([utc_hourly_buckets(9, list(range(9, 16))), utc_hourly_buckets(1, [9, 10]).shift(9, freq="B")])
+    assert active_hourly_bars(spy, sessions=10) == active_hourly_bars(xli, sessions=10) == 9 * 7 + 2
