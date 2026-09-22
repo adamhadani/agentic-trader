@@ -394,6 +394,8 @@ def normalize_asset_class(value: str) -> str:
 
 APP_DISPLAY_NAME = "Agentic Trader"
 DEFAULT_RESEARCH_SYMBOL = "SPY"
+# Symbol prefixes the session router treats as crypto; equity tickers must not collide.
+CRYPTO_SYMBOL_PREFIXES: tuple[str, ...] = ("BTC", "ETH", "SOL", "DOGE")
 MAX_DAILY_COMPARISONS = 8
 TELEGRAM_MESSAGE_CHUNK_LENGTH = 4000
 

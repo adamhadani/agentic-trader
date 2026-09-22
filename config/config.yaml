@@ -3,7 +3,7 @@ portfolio:
   max_stop_risk_pct: 0.02 # aggregate planned stop risk; not a gap-loss guarantee
   max_notional_exposure: 60000.0
   max_concurrent_contracts: 2
-  max_concurrent_positions: 4
+  max_concurrent_positions: 8 # paper desk cap (September 22)
   default_equity_risk_dollars: 250.0
 
 contracts:
@@ -91,6 +91,171 @@ contracts:
     tick_size: 0.01
     asset_class: "equity"
 
+universe:
+  groups:
+    etf32:
+      - {symbol: SPY, sector: etf_broad_equity}
+      - {symbol: QQQ, sector: etf_broad_equity}
+      - {symbol: IWM, sector: etf_broad_equity}
+      - {symbol: DIA, sector: etf_broad_equity}
+      - {symbol: VTI, sector: etf_broad_equity}
+      - {symbol: XLB, sector: etf_sector}
+      - {symbol: XLC, sector: etf_sector}
+      - {symbol: XLE, sector: etf_sector}
+      - {symbol: XLF, sector: etf_sector}
+      - {symbol: XLI, sector: etf_sector}
+      - {symbol: XLK, sector: etf_sector}
+      - {symbol: XLP, sector: etf_sector}
+      - {symbol: XLRE, sector: etf_sector}
+      - {symbol: XLU, sector: etf_sector}
+      - {symbol: XLV, sector: etf_sector}
+      - {symbol: XLY, sector: etf_sector}
+      - {symbol: EFA, sector: etf_international}
+      - {symbol: EEM, sector: etf_international}
+      - {symbol: EWJ, sector: etf_international}
+      - {symbol: EWG, sector: etf_international}
+      - {symbol: EWU, sector: etf_international}
+      - {symbol: EWC, sector: etf_international}
+      - {symbol: SHY, sector: etf_rates_credit}
+      - {symbol: IEF, sector: etf_rates_credit}
+      - {symbol: TLT, sector: etf_rates_credit}
+      - {symbol: TIP, sector: etf_rates_credit}
+      - {symbol: LQD, sector: etf_rates_credit}
+      - {symbol: HYG, sector: etf_rates_credit}
+      - {symbol: BIL, sector: etf_rates_credit}
+      - {symbol: AGG, sector: etf_rates_credit}
+      - {symbol: GLD, sector: etf_metals}
+      - {symbol: SLV, sector: etf_metals}
+    mega_caps:
+      - {symbol: AAPL, sector: technology}
+      - {symbol: MSFT, sector: technology}
+      - {symbol: NVDA, sector: technology}
+      - {symbol: AMZN, sector: consumer_cyclical}
+      - {symbol: GOOGL, sector: communication_services}
+      - {symbol: META, sector: communication_services}
+      - {symbol: TSLA, sector: consumer_cyclical}
+      - {symbol: AVGO, sector: technology}
+      - {symbol: JPM, sector: financial_services}
+      - {symbol: V, sector: financial_services}
+      - {symbol: MA, sector: financial_services}
+      - {symbol: UNH, sector: healthcare}
+      - {symbol: XOM, sector: energy}
+      - {symbol: LLY, sector: healthcare}
+      - {symbol: JNJ, sector: healthcare}
+      - {symbol: PG, sector: consumer_defensive}
+      - {symbol: HD, sector: consumer_cyclical}
+      - {symbol: COST, sector: consumer_defensive}
+      - {symbol: ABBV, sector: healthcare}
+      - {symbol: MRK, sector: healthcare}
+      - {symbol: CVX, sector: energy}
+      - {symbol: KO, sector: consumer_defensive}
+      - {symbol: PEP, sector: consumer_defensive}
+      - {symbol: WMT, sector: consumer_defensive}
+      - {symbol: BAC, sector: financial_services}
+      - {symbol: CRM, sector: technology}
+      - {symbol: ORCL, sector: technology}
+      - {symbol: AMD, sector: technology}
+      - {symbol: NFLX, sector: communication_services}
+      - {symbol: ADBE, sector: technology}
+      - {symbol: CSCO, sector: technology}
+      - {symbol: TMO, sector: healthcare}
+      - {symbol: ACN, sector: technology}
+      - {symbol: MCD, sector: consumer_cyclical}
+      - {symbol: ABT, sector: healthcare}
+      - {symbol: LIN, sector: basic_materials}
+      - {symbol: DHR, sector: healthcare}
+      - {symbol: TXN, sector: technology}
+      - {symbol: QCOM, sector: technology}
+      - {symbol: INTC, sector: technology}
+      - {symbol: INTU, sector: technology}
+      - {symbol: AMGN, sector: healthcare}
+      - {symbol: IBM, sector: technology}
+      - {symbol: GE, sector: industrials}
+      - {symbol: CAT, sector: industrials}
+      - {symbol: HON, sector: industrials}
+      - {symbol: UNP, sector: industrials}
+      - {symbol: LOW, sector: consumer_cyclical}
+      - {symbol: SPGI, sector: financial_services}
+      - {symbol: GS, sector: financial_services}
+      - {symbol: MS, sector: financial_services}
+      - {symbol: BLK, sector: financial_services}
+      - {symbol: AXP, sector: financial_services}
+      - {symbol: BKNG, sector: consumer_cyclical}
+      - {symbol: NKE, sector: consumer_cyclical}
+      - {symbol: SBUX, sector: consumer_cyclical}
+      - {symbol: DIS, sector: communication_services}
+      - {symbol: PFE, sector: healthcare}
+      - {symbol: T, sector: communication_services}
+      - {symbol: VZ, sector: communication_services}
+      - {symbol: CMCSA, sector: communication_services}
+      - {symbol: BA, sector: industrials}
+      - {symbol: C, sector: financial_services}
+      - {symbol: WFC, sector: financial_services}
+      - {symbol: PM, sector: consumer_defensive}
+    research_cohort:
+      - {symbol: AEM, sector: basic_materials}
+      - {symbol: AFL, sector: financial_services}
+      - {symbol: AMKR, sector: technology}
+      - {symbol: ATKR, sector: industrials}
+      - {symbol: AUB, sector: financial_services}
+      - {symbol: AUGO, sector: basic_materials}
+      - {symbol: AVT, sector: technology}
+      - {symbol: BALL, sector: consumer_cyclical}
+      - {symbol: BRZE, sector: technology}
+      - {symbol: BTDR, sector: technology}
+      - {symbol: CAG, sector: consumer_defensive}
+      - {symbol: CART, sector: consumer_cyclical}
+      - {symbol: CHYM, sector: technology}
+      - {symbol: COLB, sector: financial_services}
+      - {symbol: COMP, sector: real_estate}
+      - {symbol: CR, sector: industrials}
+      - {symbol: CSX, sector: industrials}
+      - {symbol: DHT, sector: energy}
+      - {symbol: EXE, sector: energy}
+      - {symbol: FRO, sector: energy}
+      - {symbol: FTNT, sector: technology}
+      - {symbol: FTS, sector: utilities}
+      - {symbol: FULT, sector: financial_services}
+      - {symbol: GEHC, sector: healthcare}
+      - {symbol: GPOR, sector: energy}
+      - {symbol: HII, sector: industrials}
+      - {symbol: HMY, sector: basic_materials}
+      - {symbol: HXL, sector: industrials}
+      - {symbol: IBP, sector: consumer_cyclical}
+      - {symbol: KNF, sector: basic_materials}
+      - {symbol: KVYO, sector: technology}
+      - {symbol: LAZ, sector: financial_services}
+      - {symbol: LII, sector: industrials}
+      - {symbol: LYB, sector: basic_materials}
+      - {symbol: MMM, sector: industrials}
+      - {symbol: NSC, sector: industrials}
+      - {symbol: NTR, sector: basic_materials}
+      - {symbol: NVTS, sector: technology}
+      - {symbol: NWG, sector: financial_services}
+      - {symbol: NWSA, sector: communication_services}
+      - {symbol: OVV, sector: energy}
+      - {symbol: PEG, sector: utilities}
+      - {symbol: PFGC, sector: consumer_defensive}
+      - {symbol: PNC, sector: financial_services}
+      - {symbol: PRGO, sector: healthcare}
+      - {symbol: REGN, sector: healthcare}
+      - {symbol: RYTM, sector: healthcare}
+      - {symbol: SEIC, sector: financial_services}
+      - {symbol: SKY, sector: consumer_cyclical}
+      - {symbol: SLG, sector: real_estate}
+      - {symbol: SSRM, sector: basic_materials}
+      - {symbol: STNE, sector: technology}
+      - {symbol: TALO, sector: energy}
+      - {symbol: TAP, sector: consumer_defensive}
+      - {symbol: TDS, sector: communication_services}
+      - {symbol: TNL, sector: consumer_cyclical}
+      - {symbol: TPR, sector: consumer_cyclical}
+      - {symbol: TTEK, sector: industrials}
+      - {symbol: VNT, sector: technology}
+      - {symbol: VRNS, sector: technology}
+      - {symbol: XPO, sector: industrials}
+      - {symbol: YUMC, sector: consumer_cyclical}
+
 risk:
   min_risk_reward_ratio: 2.0
   min_stop_atr_multiple: 1.5
@@ -146,6 +311,7 @@ strategies:
 
 scheduler:
   cron_hour_interval: 4 # Scan every 4 hours aligned with 4h candle closes
+  suggestion_scan_times_et: ["10:35", "14:35"]
 
 sizing:
   mode: "static" # "static", "volatility_targeted"
@@ -157,7 +323,7 @@ sizing:
   max_shares_per_trade: 500
   min_shares: 1.0
   max_risk_pct_cap: 0.01 # 1.0% hard risk cap per trade / tier
-  max_trade_notional_cap: 30000.0 # 50% of portfolio $60k notional ceiling
+  max_trade_notional_cap: 7500.0 # paper desk cap (September 22)
   drawdown_gating_enabled: true
   drawdown_haircut_threshold_pct: 0.03 # scale down size above 3% drawdown
   max_drawdown_stop_pct: 0.06 # halt sizing if drawdown >= 6%
@@ -248,6 +414,17 @@ market_data:
   timeout_seconds: 10.0
   max_retries: 2
   retry_backoff_factor: 0.5
+  scan_concurrency: 8
+  max_requests_per_minute: 150
+
+scan:
+  max_cards_per_scan: 1
+  max_cards_per_session: 2
+  max_cards_per_group_per_session: 1
+  max_llm_evaluations_per_scan: 4
+  min_bar_coverage: 0.8
+  coverage_sessions: 10
+  coverage_reference_symbol: "SPY"
 
 database:
   name: "signals"

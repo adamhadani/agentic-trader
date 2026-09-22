@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from alpaca.trading.requests import GetCalendarRequest
 
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import CRYPTO_SYMBOL_PREFIXES, AssetClass
 from agentic_trader.resilience.fallback import RetryPolicy, RunnableWithFallbacks
 
 
@@ -1057,7 +1057,7 @@ class CompositeMarketSessionProvider:
         clean_sym = symbol.strip().upper()
         if clean_sym.startswith("/") or clean_sym.endswith("=F"):
             return self.futures_provider, AssetClass.FUTURES
-        if "/" in clean_sym or clean_sym.startswith(("BTC", "ETH", "SOL", "DOGE")):
+        if "/" in clean_sym or clean_sym.startswith(CRYPTO_SYMBOL_PREFIXES):
             return self.crypto_provider, AssetClass.CRYPTO
         return self.equity_provider, AssetClass.EQUITY
 
