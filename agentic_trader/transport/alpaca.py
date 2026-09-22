@@ -1,5 +1,6 @@
 """Bounded official Alpaca SDK clients shared by broker and data adapters."""
 
+import logging
 import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -9,8 +10,12 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
+import requests
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
 from alpaca.trading.client import TradingClient
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -54,10 +59,30 @@ class BoundedTransport:
             self._response_observer.reset(token)
 
     def _one_request(self, method: str, url: str, opts: dict, retry: int) -> dict:
-        requested = datetime.now(UTC)
-        result = super()._one_request(  # type: ignore[misc]
-            method, url, {**opts, "timeout": self.request_timeout}, retry if method.upper() == "GET" else 0
-        )
+        is_get = method.upper() == "GET"
+        merged_opts = {**opts, "timeout": self.request_timeout}
+        try:
+            requested = datetime.now(UTC)
+            result = super()._one_request(method, url, merged_opts, retry if is_get else 0)  # type: ignore[misc]
+        except requests.exceptions.ConnectionError:
+            # Only idempotent GETs retry here: the SDK's own `retry` only covers
+            # HTTP 429/504 status codes, never a transport-level reset raised by
+            # `requests` (e.g. a pooled connection that idled for minutes and was
+            # reset by peer on reuse; `ConnectTimeout` also inherits it, so a hung
+            # GET can take up to twice the request timeout). Retrying immediately is safe because the
+            # underlying connection pool opens a fresh socket for the next
+            # attempt rather than reusing the dead one, so there is nothing to
+            # wait out; POST/PATCH/PUT/DELETE are never retried automatically
+            # (repo contract). `requested`/the observer reflect only the
+            # attempt that ultimately succeeds.
+            if not is_get:
+                raise
+            logger.info(
+                "Retrying Alpaca GET once after a transport-level connection reset",
+                extra={"event": "alpaca_get_connection_retry", "path": urlsplit(url).path},
+            )
+            requested = datetime.now(UTC)
+            result = super()._one_request(method, url, merged_opts, retry)  # type: ignore[misc]
         if observer := self._response_observer.get():
             observer(
                 ResponsePage(

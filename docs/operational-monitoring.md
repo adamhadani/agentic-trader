@@ -15,6 +15,11 @@ outbox; there is no separate queue, retry engine, Telegram poller or trade consu
 - `/readyz`: passive, current-run freshness; HTTP 200 when ready, 503 otherwise.
   Includes run/start/check times, component observations, stream connection, event
   loop lag, entry/close recovery, halt and outbox backlog/dead letters.
+  `BoundedTransport` retries an idempotent Alpaca GET once on a transport-level
+  connection failure (reset by peer or connect timeout — e.g. the daily-panel
+  worker's periodic `/calendar` poll on a pooled connection that idled for
+  minutes), so a single transient reset is no longer reported as a failed worker
+  poll; mutations still never retry automatically.
 - `doctor --readiness`: validates that endpoint's types, aggregate status, HTTP
   status and observation age. It performs no DB writes or external service probes.
 - `doctor`: active CLI diagnostics, including DB migration checks and external

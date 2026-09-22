@@ -37,6 +37,11 @@ The installed SDK retries HTTP 429/504 and does not set request timeouts.
 `BoundedTransport` is the shared SDK extension used by trading and stock-data
 clients: it supplies a socket timeout and disables mutation retries. GET requests retain SDK retries. The SDK
 exposes this boundary privately, so the HTTP tests must pass on upgrades.
+Idempotent GETs also retry exactly once, immediately, on a transport-level
+`requests.exceptions.ConnectionError` — a connection-level failure such as a pooled
+connection reset by peer after idling, or a connect timeout (`ConnectTimeout`
+inherits it; `ReadTimeout` does not), so a hung GET can take up to twice the
+request timeout; mutations (`POST`/`PATCH`/`PUT`/`DELETE`) never retry.
 `execution.broker_request_timeout_seconds` is per HTTP attempt, not a total
 transaction deadline. Stop verification uses `execution.stop_replace_timeout_seconds`.
 
