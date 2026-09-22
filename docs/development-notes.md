@@ -171,7 +171,7 @@ time and the deterministic lockout verdict recomputed on the same captured clock
 with full event dates, because an event time alone made the model refuse candidates
 on unverifiable macro timing. Missing VIX fails regime evaluation; missing enrichment
 can leave volatility-only policy. Daily-feed admission age remains a gap.
-GEX is an option-chain/model estimate with quality notes and a required real spot.
+GEX is an option-chain/model estimate with quality notes and a required real spot. Replay evidence: [LLM prompt evaluation, 2026-09-22](llm-prompt-eval-2026-09-22.md) (old prompt 0/10 approvals on the traced candidates, new prompt 10/10, lockout control 6/6 rejected).
 
 Research outputs do not automatically change running strategy parameters. Legacy
 retuning and config exports are removed; use the canonical journal-backed pipeline.
