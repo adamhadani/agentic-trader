@@ -32,6 +32,12 @@ TIER_1_KEYWORDS = [
 ]
 
 
+def _format_delta(delta: timedelta) -> str:
+    """Render a positive time delta as `<h>h <m>m`, clamped at zero."""
+    total_minutes = max(0, int(delta.total_seconds() // 60))
+    return f"{total_minutes // 60}h {total_minutes % 60}m"
+
+
 @dataclass
 class MacroEvent:
     title: str
@@ -61,7 +67,12 @@ class EconomicCalendarProtocol(Protocol):
         now: datetime | None = None,
     ) -> tuple[bool, MacroEvent | None]: ...
 
-    async def get_macro_summary_for_prompt(self, now: datetime | None = None) -> str: ...
+    async def get_macro_summary_for_prompt(
+        self,
+        now: datetime | None = None,
+        pre_minutes: int = DEFAULT_LOCKOUT_PRE_EVENT_MINUTES,
+        post_minutes: int = DEFAULT_LOCKOUT_POST_EVENT_MINUTES,
+    ) -> str: ...
 
 
 class BaseEconomicCalendar(ABC):
@@ -106,21 +117,50 @@ class BaseEconomicCalendar(ABC):
                 return True, e
         return False, None
 
-    async def get_macro_summary_for_prompt(self, now: datetime | None = None) -> str:
+    async def get_macro_summary_for_prompt(
+        self,
+        now: datetime | None = None,
+        pre_minutes: int = DEFAULT_LOCKOUT_PRE_EVENT_MINUTES,
+        post_minutes: int = DEFAULT_LOCKOUT_POST_EVENT_MINUTES,
+    ) -> str:
+        """Render the macro context block, stating the evaluation time and the computed clearance.
+
+        The deterministic lockout gate runs before the LLM is consulted, so the
+        block reports that verdict explicitly; an LLM cannot reconstruct macro
+        timing from an event time alone.
+        """
         now = now or datetime.now(UTC)
-        in_lockout, lock_event = await self.is_in_lockout_window(now=now)
+        header = f"Evaluation time: {now.strftime('%Y-%m-%d %H:%M UTC')}."
+        in_lockout, lock_event = await self.is_in_lockout_window(
+            pre_minutes=pre_minutes, post_minutes=post_minutes, now=now
+        )
         if in_lockout and lock_event:
             return (
-                f"LOCKOUT ACTIVE: Event '{lock_event.title}' scheduled at "
-                f"{lock_event.timestamp.strftime('%Y-%m-%d %H:%M UTC')}. Trading lockout in effect."
+                f"{header} LOCKOUT ACTIVE: Event '{lock_event.title}' scheduled at "
+                f"{lock_event.timestamp.strftime('%Y-%m-%d %H:%M UTC')} "
+                f"(lockout window: {pre_minutes} minutes before and {post_minutes} minutes after the event). "
+                "Trading lockout in effect."
             )
 
-        upcoming = await self.get_upcoming_tier1_events(window_hours=24, now=now)
+        upcoming = sorted(
+            await self.get_upcoming_tier1_events(window_hours=24, now=now),
+            key=lambda e: e.timestamp,
+        )
         if not upcoming:
-            return "Macro Clear: No Tier-1 US economic releases (CPI, PPI, FOMC, NFP) scheduled in the next 24 hours."
+            return (
+                f"{header} Lockout verified: CLEAR. No Tier-1 US economic releases "
+                "(CPI, PPI, FOMC, NFP) scheduled in the next 24 hours."
+            )
 
-        event_descriptions = [f"- {e.title} at {e.timestamp.strftime('%H:%M UTC')}" for e in upcoming]
-        return "Upcoming Tier-1 releases in next 24 hours:\n" + "\n".join(event_descriptions)
+        event_descriptions = [
+            f"- {e.title} at {e.timestamp.strftime('%Y-%m-%d %H:%M UTC')} (in {_format_delta(e.timestamp - now)})"
+            for e in upcoming
+        ]
+        return (
+            f"{header} Lockout verified: CLEAR "
+            f"(next Tier-1 event in {_format_delta(upcoming[0].timestamp - now)}). "
+            "Upcoming Tier-1 releases in the next 24 hours:\n" + "\n".join(event_descriptions)
+        )
 
 
 class ForexFactoryCalendar(BaseEconomicCalendar):

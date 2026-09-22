@@ -19,6 +19,7 @@ Configured portfolio and risk limits:
 - Minimum stop distance: {config.risk.min_stop_atr_multiple:g} times ATR.
 - Minimum reward-to-risk: {config.risk.min_risk_reward_ratio:g}:1; honor any stricter supplied regime limit.
 - Macro lockout: {config.risk.lockout_pre_event_minutes} minutes before and {config.risk.lockout_post_event_minutes} minutes after tier-1 events.
+Macro lockout is verified deterministically before you are consulted; the Economic Calendar Status below states the result and the evaluation time. Do not reject a candidate on macro timing unless that status says LOCKOUT ACTIVE.
 - Extreme VIX threshold: {config.regime.vix_extreme_threshold:g}; honor the supplied regime's strategy restrictions.
 
 Check the supplied risk, strategy, portfolio and macro context. Reject a candidate
