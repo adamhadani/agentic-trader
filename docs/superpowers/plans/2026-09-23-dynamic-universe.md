@@ -52,7 +52,7 @@ class DynamicUniverseSource:
 ```
 
 The order of filters and the reason keys come from the spec:
-- `shape`, `static`, `asset_missing`, `asset_class`, `inactive`, `untradable`, `exchange`, `leveraged`, `price`, `cap`;
+- `shape`, `static`, `asset_missing`, `asset_class`, `inactive`, `untradable`, `exchange`, `instrument` (warrant/rights/units by name), `leveraged`, `price`, `cap`;
 - in the liquidity gate: `insufficient_bars`, `dollar_volume`, `cap`.
 
 Movers are ordered by the absolute value of `percent_change` after the most-actives entries. A symbol seen in both sources keeps its first (most-actives) entry. The liquidity median uses the last 20 completed daily rows of `Close * Volume`; fewer than 20 rows gives `insufficient_bars`.
