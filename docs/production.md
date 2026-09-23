@@ -109,6 +109,7 @@ healthy observation — a silent whole-universe data failure must be visible in
 | `min_bar_coverage` | 0.8 | Fraction of the reference's active regular-session hourly bars (New York 09:00–15:00 buckets) a name needs to be scanned by strategies. |
 | `coverage_sessions` | 10 | Sessions of hourly bars the coverage gate counts. |
 | `coverage_reference_symbol` | `SPY` | Reference name; if it is unavailable the gate is skipped and the summary says so. |
+| `shadow_ranker_artifact` | unset | Path to a frozen setup-study `ranker.json`, scored in shadow only. Every ranked candidate's `setup_features_v1` vector is recorded in sent-card provenance (`shadow_ranker`) and in one `scan_candidates_ranked` journal event per budgeted scan; the score is recorded only when the artifact's sha256 and `features_version` verify. It never changes ranking, the budget or any card. |
 
 Fetch scaling lives under `market_data:`: `scan_concurrency` (8) bounds the copilot's
 read pool and `max_requests_per_minute` (150) paces provider reads below the 200/minute

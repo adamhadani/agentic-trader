@@ -158,6 +158,9 @@ class ScanConfig(BaseModel):
     min_bar_coverage: float = Field(default=0.8, ge=0, le=1)
     coverage_sessions: int = Field(default=10, ge=1)
     coverage_reference_symbol: str = Field(default="SPY", pattern=r"^[A-Z][A-Z.]{0,5}$")
+    # Frozen setup-study ranker (ranker.json) scored in shadow at RANK. Evidence only:
+    # it never changes ranking, the card budget or any card. None records features only.
+    shadow_ranker_artifact: Path | None = None
 
 
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {

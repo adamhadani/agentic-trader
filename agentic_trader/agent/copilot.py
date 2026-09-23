@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, time as dt_time
 from tempfile import TemporaryDirectory
 from typing import Any
+from uuid import uuid4
 
 from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
@@ -40,7 +41,7 @@ from agentic_trader.constants import (
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
 from agentic_trader.execution.closing import PositionCloseService
-from agentic_trader.execution.durable import OrderObservation, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, OrderObservation, WorkKind, WorkStatus
 from agentic_trader.execution.engine import SlicedExecutionEngine
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.execution.lifetimes import TradeLifetimeService
@@ -64,6 +65,14 @@ from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
+from agentic_trader.research.setups.features import cross_section
+from agentic_trader.research.setups.ranker import (
+    finite_or_none,
+    last_completed_session,
+    load_ranker,
+    setup_features,
+    shadow_blocks,
+)
 from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor
 from agentic_trader.risk import requires_account_risk
 from agentic_trader.runtime import RUN_ID
@@ -658,6 +667,15 @@ class TradingCopilot:
             # Deterministic approvals eligible for ranking, not cards sent: the budget,
             # the send-phase evaluation and send failures all thin this number down.
             summary["approved"] = len(ranked)
+            # SHADOW: evidence only. It reads `ranked` and never reorders, filters or
+            # gates it; a failure leaves every block None and the scan unchanged.
+            decided_at = datetime.now(UTC)
+            scan_id = uuid4().hex
+            summary["scan_id"] = scan_id
+            shadow_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
+            if not dry_run and ranked:
+                shadow_by_rank = await self._shadow_blocks(ranked, datasets, equities, decided_at, summary)
+            outcomes: list[str | None] = [None] * len(ranked)
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
             if budget == ScanBudget.NONE:
@@ -691,6 +709,7 @@ class TradingCopilot:
                         # bounded by the card budget alone.
                         reason = "LLM evaluation budget spent"
                     if reason:
+                        outcomes[rank - 1] = reason
                         summary["runners_up"].append(self._runner_up(candidate, reason))
                         continue
 
@@ -706,6 +725,7 @@ class TradingCopilot:
                     )
 
                     if not eval_res.approved:
+                        outcomes[rank - 1] = f"rejected: {eval_res.rejection_reason}"
                         summary["runners_up"].append(
                             self._runner_up(candidate, f"rejected: {eval_res.rejection_reason}")
                         )
@@ -748,6 +768,7 @@ class TradingCopilot:
                             "rank": rank,
                             "candidates_considered": len(ranked),
                             "budget": str(budget),
+                            "shadow_ranker": shadow_by_rank[rank - 1],
                         },
                         contract=eval_res.contract,
                         strategy=candidate.strategy,
@@ -776,6 +797,7 @@ class TradingCopilot:
                     # further bookkeeping: an exception later in this iteration must
                     # never leave a recorded card uncharged.
                     total_alerts += 1
+                    outcomes[rank - 1] = "sent"
                     remaining_scan -= 1
                     remaining_session -= 1
                     for group in self.correlation_groups_of(candidate.contract):
@@ -816,10 +838,23 @@ class TradingCopilot:
                         }
                     )
 
-                except Exception:
+                except Exception as exc:
                     scan_errors += 1
+                    if outcomes[rank - 1] is None:
+                        outcomes[rank - 1] = f"error: {type(exc).__name__}"
                     logger.exception(f"Error scanning {candidate.contract}")
                     continue
+
+            if not dry_run and budget != ScanBudget.NONE and ranked:
+                await self._journal_scan_ranking(
+                    scan_id=scan_id,
+                    decided_at=decided_at,
+                    budget=budget,
+                    ranked=ranked,
+                    outcomes=outcomes,
+                    shadow_by_rank=shadow_by_rank,
+                    summary=summary,
+                )
 
             summary["candidates"] = total_candidates
             summary["sent"] = total_alerts
@@ -870,6 +905,124 @@ class TradingCopilot:
             # Monitor any active positions for stop loss or take profit crossings
             if not dry_run:
                 await self.monitor_positions()
+
+    async def _shadow_blocks(
+        self,
+        ranked: list[tuple[Any, Any, Any]],
+        datasets: dict[str, Any],
+        equities: set[str],
+        decided_at: datetime,
+        summary: dict[str, Any],
+    ) -> list[dict[str, Any] | None]:
+        """One shadow block per ranked candidate, or all None if anything fails."""
+        started = time.monotonic()
+        try:
+            return await asyncio.to_thread(self._compute_shadow_blocks, ranked, datasets, equities, decided_at)
+        except Exception as exc:
+            summary["shadow_ranker_error"] = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "Shadow ranker failed; ranking and cards are unaffected", extra={"event": "shadow_ranker_failed"}
+            )
+            return [None] * len(ranked)
+        finally:
+            summary["shadow_ranker_seconds"] = round(time.monotonic() - started, 3)
+
+    def _compute_shadow_blocks(
+        self,
+        ranked: list[tuple[Any, Any, Any]],
+        datasets: dict[str, Any],
+        equities: set[str],
+        decided_at: datetime,
+    ) -> list[dict[str, Any] | None]:
+        """Setup features over this scan's already-fetched daily frames; never refetches.
+
+        The cross-section is every fetched equity with daily bars, as of the last
+        session completed before the scan's New York date (today's partial bar is
+        excluded), with sectors from the configured universe -- the study's inputs.
+        """
+        daily = {}
+        for contract, data in datasets.items():
+            frame = getattr(data, "daily", None)
+            if contract in equities and frame is not None and not frame.empty:
+                daily[contract] = frame
+        et_date = self.session_start_et(decided_at).date()
+        as_of = last_completed_session(daily, et_date)
+        if as_of is None:
+            raise ValueError(f"No completed daily session before {et_date} in this scan's data")
+        sectors = {entry.symbol: entry.sector for group in self.config.universe.groups.values() for entry in group}
+        artifact = self.config.scan.shadow_ranker_artifact
+        ranker = load_ranker(artifact) if artifact is not None else None
+        cs = cross_section(daily, sectors, as_of)
+        vectors = [
+            setup_features(
+                cs,
+                symbol=candidate.contract,
+                direction=candidate.direction,
+                strategy=candidate.strategy,
+                timeframe=candidate.timeframe,
+                setup_quality=self._setup_quality(candidate),
+                entry=det_res.entry_price,
+                stop=det_res.stop_loss,
+                target=det_res.take_profit,
+                atr_14=candidate.atr_14,
+            )
+            for candidate, det_res, _ in ranked
+        ]
+        return list(shadow_blocks(vectors, ranker))
+
+    async def _journal_scan_ranking(
+        self,
+        *,
+        scan_id: str,
+        decided_at: datetime,
+        budget: ScanBudget,
+        ranked: list[tuple[Any, Any, Any]],
+        outcomes: list[str | None],
+        shadow_by_rank: list[dict[str, Any] | None],
+        summary: dict[str, Any],
+    ) -> None:
+        """Append one ``scan_candidates_ranked`` event in its own transaction; never raises."""
+        try:
+            candidates = [
+                {
+                    "contract": candidate.contract,
+                    "strategy": candidate.strategy,
+                    "timeframe": candidate.timeframe,
+                    "direction": candidate.direction,
+                    "entry": finite_or_none(det_res.entry_price),
+                    "stop": finite_or_none(det_res.stop_loss),
+                    "target": finite_or_none(det_res.take_profit),
+                    "atr_14": finite_or_none(candidate.atr_14),
+                    "setup_quality": finite_or_none(self._setup_quality(candidate)),
+                    "rank": rank,
+                    "outcome": outcomes[rank - 1],
+                    "shadow": shadow_by_rank[rank - 1],
+                }
+                for rank, (candidate, det_res, _) in enumerate(ranked, 1)
+            ]
+            payload = {
+                "scan_id": scan_id,
+                "decided_at": decided_at.isoformat(),
+                "budget": str(budget),
+                "ranking_key": "setup_quality",
+                "candidates": candidates,
+            }
+            et_date = self.session_start_et(decided_at).date().isoformat()
+            workflows = self.db.workflows
+            async with self.db.session_factory() as session, session.begin():
+                await workflows.lock(session)
+                await workflows.append(
+                    session,
+                    stream=f"scan/{et_date}",
+                    kind=EventKind.SCAN_CANDIDATES_RANKED,
+                    payload=payload,
+                    key=f"scan_candidates_ranked/{scan_id}",
+                )
+        except Exception as exc:
+            summary["scan_journal_error"] = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "Scan ranking journal failed; cards and budget are unaffected", extra={"event": "scan_journal_failed"}
+            )
 
     async def _fetch_universe(
         self, instruments: list[tuple[str, Any]], *, include_fifteen_min: bool

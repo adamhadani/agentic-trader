@@ -62,6 +62,7 @@ def test_scan_config_defaults_match_the_spec():
         "min_bar_coverage": 0.8,
         "coverage_sessions": 10,
         "coverage_reference_symbol": "SPY",
+        "shadow_ranker_artifact": None,
     }
     assert [b.value for b in ScanBudget] == ["full", "session", "none"]
 
