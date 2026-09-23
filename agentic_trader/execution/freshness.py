@@ -46,6 +46,9 @@ class CardOutcome(StrEnum):
     REPRICE = "reprice"
     MISSED = "missed"
     EXPIRED = "expired"
+    # Journal-only: the tap-time reads (price, session, gates) failed or timed out, so no
+    # assessment was possible and the card stayed PENDING. ``assess_card`` never returns it.
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)

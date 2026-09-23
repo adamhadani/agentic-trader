@@ -472,6 +472,20 @@ class TelegramNotifier:
                 logger.error(f"Failed to initialize Telegram application: {e}")
                 self.app = None
 
+    async def _tier_button_label(self, signal_id: int, quantity: float) -> str:
+        """A restored tier button names its size, in the card's own units (shares or contracts)."""
+        unit = " units"
+        try:
+            signal = await self.db.get_signal_by_id(signal_id) if self.db else None
+        except Exception:
+            logger.warning("Signal lookup for a restored tier button failed", exc_info=True)
+            signal = None
+        if signal:
+            contract = str(signal.get("contract") or "")
+            is_equity = str(signal.get("asset_class") or "").upper() == AssetClass.EQUITY
+            unit = " sh" if is_equity or not contract.startswith("/") else "x"
+        return f"🚀 Execute {quantity:g}{unit}"
+
     def _label(self, message: str) -> str:
         return (
             message if self.environment == RuntimeEnvironment.PRODUCTION else f"[{self.environment.upper()}] {message}"
@@ -1051,10 +1065,15 @@ class TelegramNotifier:
                     # tapped button plus dismiss so the operator can retry. Other tiers on a
                     # multi-tier card are not reconstructable here, so only the button that was
                     # actually tapped is restored.
+                    restore_label = (
+                        await self._tier_button_label(signal_id, quantity)
+                        if quantity is not None
+                        else _exec_button_label(self.execution_mode)
+                    )
                     restore_markup = InlineKeyboardMarkup(
                         [
                             [
-                                InlineKeyboardButton(_exec_button_label(self.execution_mode), callback_data=data),
+                                InlineKeyboardButton(restore_label, callback_data=data),
                                 InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}"),
                             ]
                         ]

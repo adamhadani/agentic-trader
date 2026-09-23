@@ -11,6 +11,7 @@ from agentic_trader.agent.regime import RegimeSnapshot
 from agentic_trader.config import load_config
 from agentic_trader.constants import AssetClass, Direction, ExitReason, SignalStatus, VolatilityRegime
 from agentic_trader.execution.freshness import ExecutionReply
+from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import (
     TelegramNotifier,
     format_alert_card,
@@ -727,3 +728,111 @@ async def test_reval_callback_does_not_collide_with_exec_or_dism(temp_db):
     await notifier.handle_button_callback(cb_update, MagicMock())
     mock_reval.assert_not_called()
     mock_exec.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("contract", "asset_class", "label"),
+    [("AAPL", AssetClass.EQUITY, "🚀 Execute 23 sh"), ("/MES", AssetClass.FUTURES, "🚀 Execute 2x")],
+)
+async def test_exec_retry_restores_a_tier_button_labelled_with_its_size(temp_db, contract, asset_class, label):
+    qty = 23 if asset_class == AssetClass.EQUITY else 2
+    signal_id = await temp_db.record_signal(
+        contract=contract,
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=100.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        risk_dollars=50.0,
+        asset_class=asset_class,
+        quantity=qty,
+    )
+    reply = ExecutionReply(False, "⚠️ Checks unavailable; try again shortly.", retryable=True)
+    notifier = TelegramNotifier(
+        bot_token="test_token", chat_id="123456", db=temp_db, execute_handler=AsyncMock(return_value=reply)
+    )
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = f"exec_{signal_id}_{qty}"
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    restored = query_mock.edit_message_reply_markup.call_args_list[-1].kwargs["reply_markup"]
+    button = restored.inline_keyboard[0][0]
+    assert (button.text, button.callback_data) == (label, f"exec_{signal_id}_{qty}")
+
+
+@pytest.mark.asyncio
+async def test_replacement_card_outbox_row_renders_through_the_real_dispatcher(temp_db):
+    """Seam: a REPRICE replacement's durable SIGNAL row, delivered by the real outbox path."""
+    evaluation = LLMTradeEvaluation(
+        approved=True,
+        contract="SPY",
+        direction="LONG",
+        entry_price=102.0,
+        stop_loss=95.0,
+        take_profit=120.0,
+        stop_distance_points=7.0,
+        target_distance_points=18.0,
+        risk_reward_ratio=18 / 7,
+        risk_dollars=49.0,
+        reward_dollars=126.0,
+        notional_value=714.0,
+        effective_leverage=0.01,
+        macro_clearance=True,
+        thesis_summary="Original thesis",
+        quantity=7.0,
+        asset_class=AssetClass.EQUITY,
+    )
+    old_id = await temp_db.record_signal(
+        contract="SPY",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=100.0,
+        stop_loss=95.0,
+        take_profit=120.0,
+        risk_dollars=50.0,
+        asset_class=AssetClass.EQUITY,
+        quantity=10,
+    )
+    new_id = await temp_db.replace_signal(
+        old_id,
+        notification={
+            "eval_res": evaluation.model_dump(mode="json"),
+            "strategy": "TREND_PULLBACK",
+            "regime_summary": "calm",
+            "probe_risk_cap": None,
+            "valid_until": VALID_UNTIL_UTC,
+            "reprices": old_id,
+            "first_issued_at": FIRST_ISSUED_UTC,
+        },
+        decision_provenance={"reprices": old_id},
+        contract="SPY",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=102.0,
+        stop_loss=95.0,
+        take_profit=120.0,
+        risk_dollars=49.0,
+        asset_class=AssetClass.EQUITY,
+        quantity=7.0,
+    )
+    notifier = TelegramNotifier(bot_token="test_token", chat_id="123456", db=temp_db)
+    send = AsyncMock(return_value=SimpleNamespace(message_id=41))
+    notifier.app = SimpleNamespace(bot=SimpleNamespace(send_message=send))
+
+    assert await NotificationDispatcher(temp_db.workflows, notifier, load_config().execution).dispatch_one()
+
+    text = send.await_args.kwargs["text"]
+    assert f"UPDATED CARD (re-priced from #{old_id}, first issued {FIRST_ISSUED_NY_HHMM} NY)" in text
+    assert f"• <b>Valid until:</b> {VALID_UNTIL_NY_HHMM} NY" in text
+    buttons = send.await_args.kwargs["reply_markup"].inline_keyboard[0]
+    assert buttons[0].callback_data == f"exec_{new_id}"
+    assert (await temp_db.get_signal_by_id(new_id))["telegram_message_id"] == 41

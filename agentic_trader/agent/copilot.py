@@ -391,7 +391,7 @@ class TradingCopilot:
         include_fifteen_min: bool | None = None,
         budget: ScanBudget = ScanBudget.SESSION,
         shadow_evidence: bool = False,
-        dedup_exempt_contracts: frozenset[str] = frozenset(),
+        dedup_exempt_setups: frozenset[tuple[str, str, str | None, str | None]] = frozenset(),
         scan_lock_timeout: float | None = None,
     ) -> dict[str, Any] | None:
         """Scan, rank and record cards; returns the scan summary, or None when the scan did not run.
@@ -402,8 +402,9 @@ class TradingCopilot:
         scan never set it, even though they may otherwise share this scan's shape (no
         symbols, no timeframe).
 
-        ``dedup_exempt_contracts`` skips the recent-duplicate rule for exactly those
-        contracts: an operator's explicit re-evaluation of a card they were refused.
+        ``dedup_exempt_setups`` skips the recent-duplicate rule for exactly those
+        ``(contract, strategy, timeframe, alpha_version)`` setups: an operator's explicit
+        re-evaluation of the one expired card, never its contract's other setups.
         ``scan_lock_timeout`` bounds the wait for a running scan; ``ScanBusyError`` is
         raised, before anything else happens, when it is exceeded.
         """
@@ -643,7 +644,8 @@ class TradingCopilot:
                         elif candidate_tf in ("1h", "hourly"):
                             dedup_hours = min(dedup_hours, 4)
 
-                        is_dup = candidate.contract not in dedup_exempt_contracts and await self.db.is_duplicate_recent(
+                        setup = (candidate.contract, candidate.strategy, candidate.timeframe, candidate.alpha_version)
+                        is_dup = setup not in dedup_exempt_setups and await self.db.is_duplicate_recent(
                             candidate.contract,
                             candidate.strategy,
                             hours=dedup_hours,
@@ -2015,7 +2017,7 @@ class TradingCopilot:
         asset_class: str,
         multiplier: float,
         issued_at: datetime,
-        regime_summary: str | None,
+        regime: Any,
     ) -> tuple[dict[str, Any] | None, str]:
         """``replace_signal`` arguments for a re-priced card, or None with the MISSED reason.
 
@@ -2037,6 +2039,11 @@ class TradingCopilot:
         )
         if quantity <= 0:
             return None, "Missed: the re-priced size rounds to zero."
+        quantity = self._capped_replacement_quantity(
+            quantity, price=price, stop=stop, multiplier=multiplier, asset_class=asset_class, regime=regime
+        )
+        if quantity <= 0:
+            return None, "Missed: the per-trade caps leave no size for a re-priced card."
         stop_distance, target_distance = abs(price - stop), abs(target - price)
         risk_dollars = round(stop_distance * multiplier * quantity, 2)
         reward_dollars = round(target_distance * multiplier * quantity, 2)
@@ -2082,7 +2089,7 @@ class TradingCopilot:
         notification = {
             "eval_res": rebuilt.model_dump(mode="json"),
             "strategy": sig["strategy"],
-            "regime_summary": regime_summary,
+            "regime_summary": getattr(regime, "summary_text", None),
             "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars
             if old_provenance.get(PAPER_PROBE_TAG)
             else None,
@@ -2112,6 +2119,30 @@ class TradingCopilot:
         }
         return fields, ""
 
+    def _capped_replacement_quantity(
+        self, quantity: float, *, price: float, stop: float, multiplier: float, asset_class: str, regime: Any
+    ) -> float:
+        """Apply admission's per-trade caps, so a replacement never offers a size admission refuses.
+
+        Quantity (shares/contracts), per-trade notional and per-trade risk (on configured
+        cash, scaled down but never up by the regime) cap the size; whole units except crypto.
+        Account-state limits (drawdown, aggregate exposure, positions) stay admission's job.
+        """
+        sizing = self.config.sizing
+        is_futures = asset_class.upper() == AssetClass.FUTURES
+        caps = [quantity, float(sizing.max_contracts_per_trade if is_futures else sizing.max_shares_per_trade)]
+        unit_notional = price * multiplier
+        if unit_notional > 0:
+            caps.append(sizing.max_trade_notional_cap / unit_notional)
+        unit_risk = abs(price - stop) * multiplier
+        if unit_risk > 0:
+            risk_scale = min(1.0, float(getattr(regime, "risk_multiplier", 1.0)))
+            caps.append(self.config.portfolio.cash * sizing.max_risk_pct_cap * risk_scale / unit_risk)
+        capped = max(min(caps), 0.0)
+        if asset_class.upper() != AssetClass.CRYPTO:
+            capped = float(math.floor(capped + 1e-9))
+        return capped
+
     async def _assess_card_tap(
         self,
         sig: dict[str, Any],
@@ -2137,12 +2168,24 @@ class TradingCopilot:
         signal_id = int(sig["id"])
         contract = sig["contract"]
         tapped_at = datetime.now(UTC)
-        unavailable = ExecutionReply(False, "⚠️ Checks unavailable; try again shortly.", retryable=True)
+        issued_at = datetime.fromisoformat(sig["timestamp"]).replace(tzinfo=UTC)
+        policy_locked = bool(sig.get("alpha_version") or sig.get("alpha_policy"))
+        price: float | None = None
+
+        async def refuse(reply_text: str, reason: str) -> ExecutionReply:
+            # Journaled like any assessment, so tap-time read-failure rates are measurable.
+            unavailable = CardAssessment(
+                CardOutcome.UNAVAILABLE, reason, None, (tapped_at - issued_at).total_seconds(), price
+            )
+            await self._journal_card_tap(signal_id, unavailable, tapped_at, applied=False, policy_locked=policy_locked)
+            return ExecutionReply(False, reply_text, retryable=True)
+
+        checks_unavailable = "⚠️ Checks unavailable; try again shortly."
         try:
             async with asyncio.timeout(TAP_CHECK_TIMEOUT_SECONDS):
                 price = await self._tap_price(ticker, tick_size)
                 if price is None:
-                    return ExecutionReply(False, "⚠️ Current price unavailable; try again shortly.", retryable=True)
+                    return await refuse("⚠️ Current price unavailable; try again shortly.", "Current price unavailable.")
                 info = await self.session_provider.get_session_info(contract)
                 # The cached regime: admission force-refreshes it before any submission.
                 regime = await self.regime_detector.get_regime()
@@ -2154,15 +2197,15 @@ class TradingCopilot:
                 TAP_CHECK_TIMEOUT_SECONDS,
                 extra={"event": "card_tap_checks_timeout", "signal_id": signal_id},
             )
-            return unavailable
-        except Exception:
+            return await refuse(checks_unavailable, f"Tap-time checks timed out after {TAP_CHECK_TIMEOUT_SECONDS:g}s.")
+        except Exception as exc:
             logger.warning(
                 "Tap-time session or gate check failed for card #%d; card left PENDING",
                 signal_id,
                 exc_info=True,
                 extra={"event": "card_tap_checks_failed", "signal_id": signal_id},
             )
-            return unavailable
+            return await refuse(checks_unavailable, f"Tap-time checks failed: {type(exc).__name__}.")
 
         provenance = sig.get("decision_provenance")
         raw_valid_until = provenance.get("valid_until") if isinstance(provenance, dict) else None
@@ -2172,7 +2215,7 @@ class TradingCopilot:
             valid_until = None
         if valid_until is not None and valid_until.utcoffset() is None:
             valid_until = None  # unreadable: fall back to the legacy New York date rule
-        issued_at = datetime.fromisoformat(sig["timestamp"]).replace(tzinfo=UTC)
+        assert price is not None  # a missing price returned above
         assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
         assessment = assess_card(
             direction=request.direction,
@@ -2188,7 +2231,6 @@ class TradingCopilot:
             min_reward_risk=max(self.config.risk.min_risk_reward_ratio, float(regime.min_rr_threshold)),
             policy=self.config.execution.card_freshness,
         )
-        policy_locked = bool(sig.get("alpha_version") or sig.get("alpha_policy"))
         replacement: dict[str, Any] | None = None
         if assessment.outcome == CardOutcome.REPRICE and policy_locked:
             assessment = dataclass_replace(
@@ -2205,7 +2247,7 @@ class TradingCopilot:
                 asset_class=asset_class,
                 multiplier=multiplier,
                 issued_at=issued_at,
-                regime_summary=getattr(regime, "summary_text", None),
+                regime=regime,
             )
             if replacement is None:
                 assessment = dataclass_replace(assessment, outcome=CardOutcome.MISSED, reason=missed_reason)
@@ -2246,11 +2288,13 @@ class TradingCopilot:
     async def reevaluate_signal(self, signal_id: int) -> ExecutionReply:
         """Operator re-evaluation of an expired card: a fresh single-contract scan, never the old levels.
 
-        Validates synchronously (the card is EXPIRED, the contract is in its regular
-        session), then schedules the scan in the background so the serialized Telegram
-        handler returns at once. The scan uses the NONE budget (an explicit operator
-        request) and exempts only this contract from the recent-duplicate rule. A fresh
-        card is its own result; otherwise the result is queued through the durable outbox.
+        Validates synchronously (the card is EXPIRED, no live card exists for its contract,
+        the contract is in its regular session), then atomically claims the card's single
+        re-evaluation, so a redelivered callback, double tap or CLI call schedules nothing
+        more. The scan runs in the background so the serialized Telegram handler returns at
+        once; it uses the NONE budget (an explicit operator request) and exempts only this
+        card's exact setup from the recent-duplicate rule. A fresh card is its own result;
+        otherwise the result is queued through the durable outbox.
         """
         sig = await self.db.get_signal_by_id(signal_id)
         if not sig:
@@ -2258,6 +2302,8 @@ class TradingCopilot:
         if sig["status"] != SignalStatus.EXPIRED:
             return ExecutionReply(False, f"Signal #{signal_id} is {sig['status']}; nothing to re-evaluate.")
         contract = sig["contract"]
+        if (live := await self.db.live_signal_id(contract)) is not None:
+            return ExecutionReply(False, f"A live card for {html.escape(contract)} already exists (#{live}).")
         try:
             async with asyncio.timeout(TAP_CHECK_TIMEOUT_SECONDS):
                 info = await self.session_provider.get_session_info(contract)
@@ -2271,32 +2317,61 @@ class TradingCopilot:
             return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.")
         if not (info.is_open and info.is_rth):
             return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}")
-        task = asyncio.create_task(self._run_reevaluation(signal_id, contract), name=f"reevaluate-card-{signal_id}")
+        setup = (contract, sig["strategy"], sig.get("timeframe"), sig.get("alpha_version"))
+        claimed = await self.db.workflows.claim_card_reevaluation(
+            signal_id,
+            {
+                "signal_id": signal_id,
+                "setup": list(setup),
+                "requested_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        if not claimed:
+            return ExecutionReply(False, f"Re-evaluation of #{signal_id} already requested.")
+        task = asyncio.create_task(
+            self._run_reevaluation(signal_id, contract, setup), name=f"reevaluate-card-{signal_id}"
+        )
         self.reevaluation_tasks.add(task)
         task.add_done_callback(self.reevaluation_tasks.discard)
         return ExecutionReply(
             True, f"🔄 Re-evaluating {html.escape(contract)}… a fresh card or a result message will follow."
         )
 
-    async def _run_reevaluation(self, signal_id: int, contract: str) -> None:
-        """Background single-contract scan; any non-card result is delivered through the outbox."""
+    async def cancel_reevaluations(self) -> None:
+        """Cancel and await every in-flight background re-evaluation (daemon shutdown)."""
+        tasks = list(self.reevaluation_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _run_reevaluation(
+        self, signal_id: int, contract: str, setup: tuple[str, str, str | None, str | None]
+    ) -> None:
+        """Background single-contract scan; any non-card result is delivered through the outbox.
+
+        A cancellation (daemon shutdown) propagates and reports nothing.
+        """
         name = html.escape(contract)
         try:
             summary = await self.run_scan(
                 symbols=[contract],
                 budget=ScanBudget.NONE,
-                dedup_exempt_contracts=frozenset({contract}),
+                dedup_exempt_setups=frozenset({setup}),
                 scan_lock_timeout=REEVALUATE_SCAN_WAIT_SECONDS,
             )
         except ScanBusyError:
-            text = f"Re-evaluation of {name}: a scan is running; try again in a minute."
+            text = (
+                f"Re-evaluation of #{signal_id} ({name}) did not run: a scan is running; "
+                "try again in a minute with /scan."
+            )
         except Exception:
             logger.exception(
                 "Re-evaluation of card #%d failed",
                 signal_id,
                 extra={"event": "card_reevaluate_failed", "signal_id": signal_id, "contract": contract},
             )
-            text = f"Re-evaluation of {name} failed; see logs, then try again."
+            text = f"Re-evaluation of #{signal_id} ({name}) failed; see logs. Scheduled scans still cover {name}."
         else:
             if summary is not None and summary.get("sent", 0) > 0:
                 return  # the fresh card, delivered by the outbox, is the result

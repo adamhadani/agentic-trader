@@ -303,6 +303,9 @@ async def test_price_failure_leaves_the_card_pending(tap_desk, temp_db, failure)
     assert reply == ExecutionReply(False, "⚠️ Current price unavailable; try again shortly.", retryable=True)
     assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.PENDING
     tap_desk.entry_service.authorize.assert_not_awaited()
+    [event] = await tap_events(temp_db, sid)
+    assert event["payload"]["outcome"] == "unavailable" and event["payload"]["applied"] is False
+    assert "price unavailable" in event["payload"]["reason"].lower()
 
 
 async def test_disabled_freshness_is_the_legacy_path(tap_desk, temp_db, app_config):
@@ -391,16 +394,37 @@ async def test_scan_omits_valid_until_when_the_session_close_is_unavailable(budg
     assert all("valid_until" not in p for p in payloads)
 
 
-async def test_dedup_exemption_applies_to_the_named_contract_only(budget_desk, temp_db):  # noqa: F811
+async def test_dedup_exemption_applies_to_the_exact_setup_only(budget_desk, temp_db):  # noqa: F811
     budget_desk.db.is_duplicate_recent = AsyncMock(return_value=True)
 
     await budget_desk.run_scan(
-        use_llm=False, dry_run=False, budget=ScanBudget.NONE, dedup_exempt_contracts=frozenset({"CCC"})
+        use_llm=False,
+        dry_run=False,
+        budget=ScanBudget.NONE,
+        dedup_exempt_setups=frozenset({("CCC", "TREND_PULLBACK", "4h", None)}),
     )
 
     assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["CCC"]
     checked = {c.args[0] for c in budget_desk.db.is_duplicate_recent.await_args_list}
     assert checked == {"AAA", "BBB", "DDD", "EEE"}
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        ("CCC", "SQUEEZE_BREAKOUT", "4h", None),  # another strategy on the same contract
+        ("CCC", "TREND_PULLBACK", "1h", None),  # another timeframe
+        ("CCC", "TREND_PULLBACK", "4h", "alpha-v9"),  # another alpha version
+    ],
+)
+async def test_dedup_exemption_never_covers_a_different_setup(budget_desk, temp_db, setup):  # noqa: F811
+    budget_desk.db.is_duplicate_recent = AsyncMock(return_value=True)
+
+    await budget_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.NONE, dedup_exempt_setups=frozenset({setup})
+    )
+
+    assert await temp_db.get_recent_signals(limit=10) == []
 
 
 async def message_texts(db):
@@ -427,7 +451,7 @@ async def test_reevaluate_schedules_a_single_contract_scan_without_budget_or_ded
     tap_desk.run_scan.assert_awaited_once_with(
         symbols=["SPY"],
         budget=ScanBudget.NONE,
-        dedup_exempt_contracts=frozenset({"SPY"}),
+        dedup_exempt_setups=frozenset({("SPY", "TREND_PULLBACK", "4h", None)}),
         scan_lock_timeout=copilot_module.REEVALUATE_SCAN_WAIT_SECONDS,
     )
     assert await message_texts(temp_db) == []  # the fresh card itself is the result
@@ -578,7 +602,8 @@ async def test_slow_tap_time_reads_are_bounded_and_leave_the_card_pending(tap_de
     assert reply == ExecutionReply(False, "⚠️ Checks unavailable; try again shortly.", retryable=True)
     assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.PENDING
     tap_desk.entry_service.authorize.assert_not_awaited()
-    assert await tap_events(temp_db, sid) == []
+    [event] = await tap_events(temp_db, sid)
+    assert event["payload"]["outcome"] == "unavailable" and "timed out" in event["payload"]["reason"]
 
 
 async def test_a_failing_gate_read_is_a_retryable_refusal(tap_desk, temp_db):
@@ -589,6 +614,19 @@ async def test_a_failing_gate_read_is_a_retryable_refusal(tap_desk, temp_db):
 
     assert reply == ExecutionReply(False, "⚠️ Checks unavailable; try again shortly.", retryable=True)
     assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.PENDING
+    [event] = await tap_events(temp_db, sid)
+    assert event["payload"]["outcome"] == "unavailable" and "ValueError" in event["payload"]["reason"]
+
+
+async def test_a_failing_session_read_is_journaled_as_unavailable(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    tap_desk.session_provider.get_session_info.side_effect = RuntimeError("clock down")
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply.retryable is True
+    [event] = await tap_events(temp_db, sid)
+    assert event["payload"]["outcome"] == "unavailable" and event["payload"]["price"] == 100.5
 
 
 async def test_terminal_refusals_are_not_retryable(tap_desk, temp_db):
@@ -642,6 +680,93 @@ async def test_expiry_lost_race_is_journaled_as_not_applied(tap_desk, temp_db):
     assert reply.offer_reevaluate is False
     [event] = await tap_events(temp_db, sid)
     assert event["payload"]["outcome"] == "missed" and event["payload"]["applied"] is False
+
+
+async def test_concurrent_reevaluations_schedule_exactly_one_scan(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    tap_desk.run_scan = AsyncMock(return_value={"sent": 1, "runners_up": []})
+
+    replies = await asyncio.gather(tap_desk.reevaluate_signal(sid), tap_desk.reevaluate_signal(sid))
+    await finish_reevaluations(tap_desk)
+    later = await tap_desk.reevaluate_signal(sid)  # e.g. Telegram redelivering the callback
+
+    texts = sorted(r.text for r in replies)
+    assert texts[0].startswith("Re-evaluation of #") and "already requested" in texts[0]
+    assert texts[1].startswith("🔄 Re-evaluating SPY")
+    assert later == ExecutionReply(False, f"Re-evaluation of #{sid} already requested.")
+    tap_desk.run_scan.assert_awaited_once()
+
+
+@pytest.mark.parametrize("live_status", [SignalStatus.PENDING, SignalStatus.SUBMITTING])
+async def test_reevaluate_is_refused_while_a_live_card_exists_for_the_contract(tap_desk, temp_db, live_status):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    live = await record_card(temp_db)
+    if live_status != SignalStatus.PENDING:
+        await temp_db.update_signal_status(live, live_status)
+    tap_desk.run_scan = AsyncMock()
+
+    reply = await tap_desk.reevaluate_signal(sid)
+
+    assert reply == ExecutionReply(False, f"A live card for SPY already exists (#{live}).")
+    assert tap_desk.reevaluation_tasks == set()
+    tap_desk.run_scan.assert_not_awaited()
+
+
+async def test_shutdown_cancels_and_awaits_in_flight_reevaluations(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def hanging_scan(**kwargs):
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    tap_desk.run_scan = AsyncMock(side_effect=hanging_scan)
+    await tap_desk.reevaluate_signal(sid)
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    await asyncio.wait_for(tap_desk.cancel_reevaluations(), timeout=1)
+
+    assert cancelled.is_set() and tap_desk.reevaluation_tasks == set()
+    assert await message_texts(temp_db) == []  # a cancelled re-evaluation reports nothing
+
+
+@pytest.mark.parametrize(
+    "policy,setting,value,expected",
+    [
+        ("sizing", "max_shares_per_trade", 4, 4.0),
+        ("sizing", "max_trade_notional_cap", 300.0, 2.0),  # floor(300 / 102)
+    ],
+)
+async def test_replacement_size_respects_the_per_trade_caps(
+    tap_desk, temp_db, app_config, policy, setting, value, expected
+):
+    app_config.portfolio.cash = 100_000.0
+    setattr(getattr(app_config, policy), setting, value)
+    sid = await record_card(temp_db, age_seconds=3600)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    [new] = [s for s in await temp_db.get_recent_signals(limit=10) if s["id"] != sid]
+    assert new["quantity"] == expected
+
+
+async def test_replacement_capped_to_zero_is_missed(tap_desk, temp_db, app_config):
+    app_config.sizing.max_trade_notional_cap = 50.0
+    sid = await record_card(temp_db, age_seconds=3600)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply.offer_reevaluate is True and "cap" in reply.text
+    assert [s["id"] for s in await temp_db.get_recent_signals(limit=10)] == [sid]
 
 
 def test_cli_execute_prints_the_reply_text():

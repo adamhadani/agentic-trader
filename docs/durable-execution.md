@@ -102,9 +102,23 @@ own fresh tap and carries no authorization from the card it replaced.
 `SignalStatus.EXPIRED` is now a live, reachable status rather than a value that only
 existed for completeness. Every status-gated query was re-audited for it: enqueue and
 dismiss still accept `PENDING` only, the recent-duplicate rule still ignores status
-(so an expired card still blocks a same-contract re-scan — the one exemption is an
-explicit `/scan`-equivalent re-evaluate), and `/perf`/positions continue to ignore any
-non-executed signal, `EXPIRED` included. See
+(so an expired card still blocks a same-setup re-scan — the one exemption is the
+operator's re-evaluate of that card, and only for its exact
+`(contract, strategy, timeframe, alpha_version)` setup), and `/perf`/positions continue to ignore any
+non-executed signal, `EXPIRED` included. A versioned alpha card is never re-priced: its `REPRICE` outcome becomes `EXECUTE` of
+the original bracket, and admission's policy checks decide.
+
+Re-evaluation is idempotent by an explicit claim rather than by the cleared Telegram
+button. `reevaluate_signal` accepts only an `EXPIRED` card with no `PENDING` or
+`SUBMITTING` card for its contract, during the regular session. Under the workflow
+scope lock and in one transaction, it then checks for and inserts the domain event
+keyed `card_reevaluate/{signal_id}`. A redelivered callback, a double tap or a CLI call
+finds the claim and schedules nothing. The scan runs as a background task whose non-card
+results are durable outbox messages; shutdown cancels and awaits it.
+
+Every assessed tap is journaled as `card_tap_assessed` after its state transition,
+including retryable read failures (outcome `unavailable`); refusals before
+assessment (halt, not `PENDING`) are not. See
 [card freshness behaviour](production.md#suggestion-scans) for the operator-facing
 outcome table, config keys and the re-evaluate path.
 

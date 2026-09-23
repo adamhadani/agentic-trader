@@ -106,25 +106,47 @@ A tap resolves to exactly one of four outcomes:
 | Outcome | Behaviour |
 | --- | --- |
 | `EXECUTE` | Same session, within `fresh_seconds` and `fresh_max_r`. Unchanged path: `EntryExecutionService.authorize` with the original bracket. The freshness decision never authorizes by itself — admission still enforces drift, macro, capacity, session and deadlines on its own terms. |
-| `REPRICE` | Same session, open, past the fresh bounds, price strictly between stop and target, remaining risk and reward:risk still acceptable, and every gate (halt, RTH, macro, regime, earnings) passes. The old signal is atomically expired and a replacement `PENDING` signal is recorded — entry at the current price, same stop/target, quantity re-derived from the original risk dollars — in the *same* transaction as its outbox notification, so a crash never leaves a replacement without its card or a card without its signal. The tap reply says a re-priced card was sent; the new card needs its own tap. |
-| `MISSED` | Same session, but the geometry or a gate fails (through the stop/target, too close to the stop, reward:risk below `risk.min_risk_reward_ratio`, or a failing gate). The old signal is expired and the reply offers **[🔄 Re-evaluate]**. |
+| `REPRICE` | Same session, open, past the fresh bounds, price strictly between stop and target, remaining risk and reward:risk still acceptable, and every gate (halt, RTH, macro, regime, earnings) passes. The old signal is atomically expired and a replacement `PENDING` signal is recorded — entry at the current price rounded to the instrument's tick, same stop/target, quantity re-derived from the risk dollars of the tapped tier (else the card's size) and then capped by admission's per-trade caps (`sizing.max_shares_per_trade`/`max_contracts_per_trade`, `max_trade_notional_cap`, `max_risk_pct_cap` on configured cash, scaled down by the regime's risk multiplier); a size that rounds or caps to zero is `MISSED` instead — in the *same* transaction as its outbox notification, so a crash never leaves a replacement without its card or a card without its signal. The tap reply says a re-priced card was sent; the new card needs its own tap. A versioned alpha card (`alpha_version`/`alpha_policy`) is never re-priced: its immutable execution policy owns the entry limit and bracket, so this outcome executes the original bracket instead and admission's age/drift/policy checks decide. |
+| `MISSED` | Same session, but the geometry or a gate fails (through the stop/target, too close to the stop, reward:risk below the larger of `risk.min_risk_reward_ratio` and the cached regime's threshold, or a failing gate). The old signal is expired and the reply offers **[🔄 Re-evaluate]**. |
 | `EXPIRED` | The issuing session has ended (`now ≥ valid_until`) or the market is not in RTH. The old signal is expired; the reply gives the reason and the broker's next regular open, and offers **[🔄 Re-evaluate]**. `EXPIRED` is a live signal status, not a terminal-only label: every status-gated query (duplicate rule, `/perf`, positions) already treats it as non-executed. |
 
 A price fetch failure, or a tap-time session/gate read failure (regime, macro,
 earnings), refuses the tap with a retryable message and leaves the card `PENDING`
-exactly as it was — safe to tap again. Telegram restores the original keyboard
+exactly as it was — safe to tap again. All tap-time reads share one 15-second bound
+(`TAP_CHECK_TIMEOUT_SECONDS`); a timeout is the same retryable refusal. Telegram restores the original keyboard
 (the tapped execute button plus dismiss) on the card so the operator can retry
 without a fresh scan; a multi-tier card only gets back the tier that was actually
 tapped, since the others are not reconstructable from the reply alone.
 
-**Re-evaluate** (`reval_<signal_id>`) runs a single-symbol scan
-(`run_scan(symbols=[contract], budget=ScanBudget.NONE)`, with the duplicate-signal
-rule exempted for that one contract) and never reuses the old signal's levels. The
-button reply comes back immediately ("🔄 Re-evaluating…"); the outcome — a fresh
-card, "no valid setup right now", or a closed-market refusal with the next regular
-open — is delivered later through the durable outbox, the same as any other
-notification. The button is single-use: Telegram clears it on tap regardless of the
-outcome, so at-least-once delivery cannot replay a re-evaluation.
+**Re-evaluate** (`reval_<signal_id>`, `copilot.reevaluate_signal`) runs a
+single-symbol scan (`run_scan(symbols=[contract], budget=ScanBudget.NONE)`) and never
+reuses the old signal's levels. The duplicate-signal rule is exempted only for the
+expired card's exact setup — `(contract, strategy, timeframe, alpha_version)` — so
+the contract's other setups stay deduplicated. It validates synchronously and answers
+with a direct reply, not through the outbox:
+
+- only an `EXPIRED` card can be re-evaluated ("Signal #N is STATUS; nothing to re-evaluate.");
+- a `PENDING` or `SUBMITTING` card for the same contract refuses it ("A live card for
+  SYMBOL already exists (#M).");
+- outside the regular session it is refused with the next regular open ("Market closed; …").
+
+It then **claims** the card's single re-evaluation: under the workflow scope lock, in
+one transaction, it checks for and inserts the `card_reevaluate/{signal_id}` domain
+event (kind `card_reevaluate_requested`). A second request for the same card — a
+Telegram callback redelivered at least once, a fast double tap or the CLI — finds the
+claim and replies "Re-evaluation of #N already requested." without scheduling
+anything. The claim, not the cleared button, is what makes at-least-once callback
+delivery safe. The claim is permanent: a re-evaluation that found no setup, found the
+scanner busy, or failed is not retried from the same card.
+
+The scan runs as a background task, so the serialized Telegram handler replies at once
+("🔄 Re-evaluating SYMBOL… a fresh card or a result message will follow."). It waits
+at most 120 s (`REEVALUATE_SCAN_WAIT_SECONDS`) for a running scan. A fresh card is its
+own result. "No valid setup … right now" (with the first runner-up reason), "a scan
+is running" and a failure are queued as durable outbox messages, never sent directly.
+Daemon shutdown cancels and awaits in-flight re-evaluations
+(`copilot.cancel_reevaluations()`) right after the shutdown event, before the trade
+stream, Telegram and SDK clients close; a cancelled re-evaluation reports nothing.
 
 **Card rendering.** Every card that carries a `valid_until` (recorded in
 `decision_provenance` when the contract is in RTH at scan/tap time) shows
@@ -135,14 +157,27 @@ carried across a whole chain of re-prices, so a twice-repriced card still cites 
 original issue time. A legacy card without `valid_until` expires on the New York
 date change instead.
 
-**Evidence.** Every tap appends one `card_tap_assessed` domain event to the
-`card/{signal_id}` stream: outcome, tap latency in seconds, price, `r_consumed` and
-reason. A replacement signal's `decision_provenance` additionally records
+**Evidence.** Every assessed tap appends one `card_tap_assessed` domain event to the
+`card/{signal_id}` stream, written after the outcome's state transition: outcome,
+tap latency in seconds, price, `r_consumed`, reason, `applied` (whether the transition
+took effect: handed to authorization, replacement recorded, or card expired; false
+when a conditional update lost a race), `new_signal_id` for a replacement and
+`policy_locked` for a versioned alpha card. Retryable refusals are journaled too, with
+outcome `unavailable` and the failure reason (price unavailable, checks timed out,
+or the failing read's exception type), so read-failure rates are measurable. Taps
+refused before any assessment — trading halt, unknown signal, a card that is no
+longer `PENDING`, or an invalid tier quantity — are not journaled. A replacement signal's `decision_provenance` additionally records
 `reprices` (the old signal id), `first_issued_at`, `tap_latency_seconds` and
 `r_consumed`. This is the evidence for how late the operator actually acts on a
 card, and whether a late-read card still works; it is a `domain_events` row
 (stream `card/{signal_id}`, kind `card_tap_assessed`) like other workflow evidence,
 with no dedicated CLI view yet.
+
+**Deploy note.** Outbox `SIGNAL` rows written by this release carry `valid_until` and,
+for replacements, `reprices` and `first_issued_at`. An older daemon's
+`send_signal_alert` rejects those arguments, so rolling the daemon back below this
+release dead-letters such rows. Drain the outbox (`copilot db outbox` shows nothing
+queued) before a rollback.
 
 **Budget.** A `REPRICE` replacement does not spend a fresh session-card slot: the
 budget counts signals whose provenance lacks `reprices`. Re-evaluate uses the

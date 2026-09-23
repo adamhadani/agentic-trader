@@ -645,6 +645,20 @@ class SignalDatabase:
                 **new_signal_fields,
             )
 
+    async def live_signal_id(self, contract: str) -> int | None:
+        """The newest PENDING or SUBMITTING signal for ``contract`` in this scope, if any."""
+        async with self.session_factory() as session:
+            return await session.scalar(
+                select(SignalRecord.id)
+                .where(
+                    *self._scope(),
+                    SignalRecord.contract == contract,
+                    SignalRecord.status.in_((SignalStatus.PENDING, SignalStatus.SUBMITTING)),
+                )
+                .order_by(SignalRecord.id.desc())
+                .limit(1)
+            )
+
     async def update_telegram_message_id(self, signal_id: int, message_id: int):
         """Associate the Telegram alert message ID with the signal record."""
         async with self.session_factory() as session:

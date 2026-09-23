@@ -146,6 +146,32 @@ class WorkflowStore:
                 key=f"card_tap_assessed/{signal_id}/{uuid4().hex}",
             )
 
+    async def claim_card_reevaluation(self, signal_id: int, payload: dict[str, Any]) -> bool:
+        """Atomically claim the one re-evaluation an expired card may have.
+
+        Under the scope lock, in one transaction: an existing ``card_reevaluate/{id}``
+        event means the re-evaluation was already requested (a redelivered callback, a
+        double tap or the CLI) and nothing is written; otherwise the claim is appended.
+        """
+        key = f"card_reevaluate/{signal_id}"
+        async with self.db.session_factory() as session, session.begin():
+            await self.lock(session)
+            existing = await session.scalar(
+                select(DomainEventRecord.id).where(
+                    DomainEventRecord.scope == self.scope, DomainEventRecord.event_key == key
+                )
+            )
+            if existing is not None:
+                return False
+            await self.append(
+                session,
+                stream=f"card/{signal_id}",
+                kind=EventKind.CARD_REEVALUATE_REQUESTED,
+                payload=payload,
+                key=key,
+            )
+            return True
+
     async def events(self, stream: str | None = None, *, limit: int | None = None) -> list[dict[str, Any]]:
         async with self.db.session_factory() as session:
             stmt = select(DomainEventRecord).where(DomainEventRecord.scope == self.scope)

@@ -484,6 +484,8 @@ async def daemon(no_llm: bool) -> None:
     except KeyboardInterrupt, SystemExit, asyncio.CancelledError:
         logger.info("Shutting down daemon...")
         copilot._shutdown_event.set()
+        # Background card re-evaluations stop before the stream, Telegram and SDK clients close.
+        await copilot.cancel_reevaluations()
         copilot.readiness.started = False
         for task in session_tasks:
             await task
