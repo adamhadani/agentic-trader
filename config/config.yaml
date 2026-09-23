@@ -344,6 +344,11 @@ execution:
   twap_interval_seconds: 5.0
   price_collar_ticks: 2.0 # max allowable ticks from base entry price
   price_collar_pct: 0.001 # 0.10% price collar for equities
+  card_freshness:
+    enabled: true
+    fresh_seconds: 1800 # tap within 30 minutes and 0.25R: submit the original bracket unchanged
+    fresh_max_r: 0.25
+    reprice_min_risk_fraction: 0.5 # below this remaining-risk fraction, a re-price is refused as "too close to the stop"
 
 friction:
   enabled: true

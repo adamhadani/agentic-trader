@@ -350,6 +350,13 @@ class AccountingConfig(BaseModel):
         return self
 
 
+class CardFreshnessConfig(BaseModel):
+    enabled: bool = True
+    fresh_seconds: float = Field(default=1800, gt=0)
+    fresh_max_r: float = Field(default=0.25, gt=0)
+    reprice_min_risk_fraction: float = Field(default=0.5, gt=0, lt=1)
+
+
 class ExecutionConfig(BaseModel):
     journal_history_days: int = Field(default=7, ge=1, le=90)
     journal_max_pages: int = Field(default=20, ge=1, le=100)
@@ -366,6 +373,7 @@ class ExecutionConfig(BaseModel):
     notification_max_attempts: int = Field(default=8, ge=1, le=100)
     notification_retry_seconds: float = Field(default=5, gt=0)
     notification_max_retry_seconds: float = Field(default=900, gt=0)
+    card_freshness: CardFreshnessConfig = Field(default_factory=CardFreshnessConfig)
 
     broker_request_timeout_seconds: float = Field(default=10, gt=0, le=60)
     stop_replace_timeout_seconds: float = Field(default=10, gt=0, le=60)

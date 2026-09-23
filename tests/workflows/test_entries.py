@@ -4,8 +4,10 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import update
 
 from agentic_trader.agent.copilot import TradingCopilot
+from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.broker.base import (
     BrokerEntryContext,
     BrokerPosition,
@@ -20,6 +22,7 @@ from agentic_trader.execution import entries
 from agentic_trader.execution.durable import WorkKind, WorkStatus
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.notifier.outbox import NotificationDispatcher
+from agentic_trader.storage.models import SignalRecord
 
 
 @pytest.fixture
@@ -255,3 +258,127 @@ async def test_unconfigured_notifier_does_not_consume_outbox(store, app_config, 
     item_id = await store.enqueue_notification("unconfigured", "message", {"text": "example"})
     assert not await NotificationDispatcher(store, mock_notifier, app_config.execution).dispatch_one()
     assert (await store.get_work(item_id)).attempts == 0
+
+
+def _freshness_copilot(app_config, store, service, mock_notifier, *, price=100.0):
+    """A copilot with card freshness ENABLED whose taps reach the real entry service."""
+    assert app_config.execution.card_freshness.enabled
+    app_config.copilot_chat_enabled = False
+    copilot = TradingCopilot(
+        app_config,
+        db=store.db,
+        broker=MagicMock(supports_activity_ledger=False, supports_trade_stream=False),
+        notifier=mock_notifier,
+        entry_service=service,
+        alpha_repository=AsyncMock(),
+    )
+    copilot.data_fetcher = MagicMock()
+    copilot.data_fetcher.fetch_latest_price.return_value = price
+    now = datetime.now(UTC)
+    copilot.session_provider = AsyncMock()
+    copilot.session_provider.get_session_info.return_value = MagicMock(
+        is_open=True, is_rth=True, next_open=None, next_close=now + timedelta(hours=2)
+    )
+    copilot.calendar = AsyncMock()
+    copilot.calendar.is_in_lockout_window.return_value = (False, None)
+    copilot.regime_detector = AsyncMock()
+    copilot.regime_detector.get_regime.return_value = MagicMock(
+        summary_text="calm", breakout_allowed=True, min_rr_threshold=2.0, risk_multiplier=1.0
+    )
+    copilot.earnings_calendar = None
+    return copilot
+
+
+@pytest.mark.parametrize("tier_quantity", [None, 5.0])
+async def test_fresh_tap_queues_the_original_bracket_through_the_real_entry_service(
+    store, app_config, entry, service, mock_notifier, tier_quantity
+):
+    request = await entry()
+    copilot = _freshness_copilot(app_config, store, service, mock_notifier)
+
+    await copilot.execute_signal_by_id(request.signal_id, quantity=tier_quantity)
+
+    [work] = await store.list_work(WorkKind.ENTRY)
+    payload = work.payload
+    assert (payload["signal_id"], payload["entry_price"], payload["stop_loss"], payload["take_profit"]) == (
+        request.signal_id,
+        100.0,
+        95.0,
+        110.0,
+    )
+    assert payload["quantity"] == (tier_quantity or 10.0)
+    copilot.data_fetcher.fetch_latest_price.assert_called_once()
+    events = await store.events(stream=f"card/{request.signal_id}")
+    assert [e["payload"]["outcome"] for e in events] == ["execute"]
+
+
+async def test_tapping_a_replacement_card_submits_its_new_bracket_and_quantity(
+    store, app_config, service, mock_notifier
+):
+    """Seam: stale card -> REPRICE replacement -> fresh tap reaches the real entry service."""
+    evaluation = LLMTradeEvaluation(
+        approved=True,
+        contract="SPY",
+        direction="LONG",
+        entry_price=100.0,
+        stop_loss=95.0,
+        take_profit=120.0,
+        stop_distance_points=5.0,
+        target_distance_points=20.0,
+        risk_reward_ratio=4.0,
+        risk_dollars=50.0,
+        reward_dollars=200.0,
+        notional_value=1000.0,
+        effective_leverage=0.01,
+        macro_clearance=True,
+        thesis_summary="Original thesis",
+        quantity=10.0,
+        asset_class="EQUITY",
+    )
+    old_id = await store.db.record_signal(
+        contract="SPY",
+        strategy="queue-test",
+        direction="LONG",
+        entry_price=100.0,
+        stop_loss=95.0,
+        take_profit=120.0,
+        risk_dollars=50.0,
+        notional_value=1000.0,
+        quantity=10,
+        asset_class="EQUITY",
+        raw_response=evaluation.model_dump_json(),
+        decision_provenance={"valid_until": (datetime.now(UTC) + timedelta(hours=2)).isoformat()},
+    )
+    async with store.db.session_factory() as session, session.begin():
+        await session.execute(
+            update(SignalRecord)
+            .where(SignalRecord.id == old_id)
+            .values(timestamp=datetime.now(UTC) - timedelta(hours=1))
+        )
+    copilot = _freshness_copilot(app_config, store, service, mock_notifier, price=100.0)
+    # The broker's admission quote and the tap price agree on the new level.
+    context = service.broker.entry_market_context.return_value
+    service.broker.entry_market_context.return_value = context.model_copy(
+        update={
+            "price": Decimal(102),
+            "quote": context.quote.model_copy(update={"bid_price": "101.9", "ask_price": "102.1"}),
+        }
+    )
+    copilot.data_fetcher.fetch_latest_price.return_value = 102.0
+
+    first = await copilot.execute_signal_by_id(old_id)
+    assert "re-priced card" in first.text
+    assert await store.list_work(WorkKind.ENTRY) == []
+    [new] = [s for s in await store.db.get_recent_signals(limit=10) if s["id"] != old_id]
+
+    await copilot.execute_signal_by_id(new["id"])
+
+    [work] = await store.list_work(WorkKind.ENTRY)
+    payload = work.payload
+    assert (payload["signal_id"], payload["entry_price"], payload["stop_loss"], payload["take_profit"]) == (
+        new["id"],
+        102.0,
+        95.0,
+        120.0,
+    )
+    assert payload["quantity"] == new["quantity"] == 7.0

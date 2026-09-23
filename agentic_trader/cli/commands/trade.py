@@ -91,9 +91,9 @@ async def execute(signal_id: int, qty: float | None = None) -> None:
     """Execute a staged signal manually by signal_id."""
     copilot, _config = get_copilot_and_config()
     await copilot.broker.connect()
-    _success, res = await copilot.execute_signal_by_id(signal_id, quantity=qty)
+    reply = await copilot.execute_signal_by_id(signal_id, quantity=qty)
     clean_text = (
-        res.replace("<b>", "")
+        reply.text.replace("<b>", "")
         .replace("</b>", "")
         .replace("<code>", "")
         .replace("</code>", "")

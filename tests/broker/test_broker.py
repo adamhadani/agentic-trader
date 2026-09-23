@@ -131,6 +131,8 @@ async def test_copilot_execute_signal(tmp_path):
     await db.init_db()
 
     config = load_config().model_copy(update={"db_path": str(db_file), "execution_mode": "paper"})
+    # Admission-path test of a legacy tap: tap-time card freshness is exercised in test_card_freshness_tap.py.
+    config.execution.card_freshness.enabled = False
     copilot = TradingCopilot(config, db=db)
     copilot.data_fetcher = MagicMock()
     copilot.data_fetcher.fetch_latest_price.return_value = 5812.50
@@ -148,7 +150,8 @@ async def test_copilot_execute_signal(tmp_path):
         status="PENDING",
     )
 
-    success, message = await copilot.execute_signal_by_id(sig_id)
+    reply = await copilot.execute_signal_by_id(sig_id)
+    success, message = reply.ok, reply.text
     assert success is True
     assert "ORDER EXECUTED" in message
     assert "SIM-" in message
@@ -161,7 +164,8 @@ async def test_copilot_execute_signal(tmp_path):
     assert stored_sig["broker_order_id"].startswith("SIM-")
 
     # Second execution attempt should be rejected
-    success2, message2 = await copilot.execute_signal_by_id(sig_id)
+    reply2 = await copilot.execute_signal_by_id(sig_id)
+    success2, message2 = reply2.ok, reply2.text
     assert success2 is False
     assert "only PENDING signals can be executed" in message2
 
@@ -173,6 +177,8 @@ async def test_copilot_execute_signal_exposure_limit(tmp_path):
     await db.init_db()
 
     config = load_config().model_copy(update={"db_path": str(db_file), "execution_mode": "paper"})
+    # Admission-path test of a legacy tap: tap-time card freshness is exercised in test_card_freshness_tap.py.
+    config.execution.card_freshness.enabled = False
     # Set maximum notional exposure lower than signal notional
     config.portfolio.max_notional_exposure = 20000.0
 
@@ -190,7 +196,8 @@ async def test_copilot_execute_signal_exposure_limit(tmp_path):
         status="PENDING",
     )
 
-    success, message = await copilot.execute_signal_by_id(sig_id)
+    reply = await copilot.execute_signal_by_id(sig_id)
+    success, message = reply.ok, reply.text
     assert success is False
     assert "Execution Rejected" in message
     assert "maximum portfolio notional ceiling" in message
@@ -583,6 +590,8 @@ async def test_copilot_execute_equity_signal_with_shares(tmp_path):
     config = load_config()
     config.execution_mode = "paper"
     config.db_path = db_path
+    # Admission-path test of a legacy tap: tap-time card freshness is exercised in test_card_freshness_tap.py.
+    config.execution.card_freshness.enabled = False
 
     copilot = TradingCopilot(config)
     await copilot.db.init_db()
@@ -603,7 +612,8 @@ async def test_copilot_execute_equity_signal_with_shares(tmp_path):
         quantity=35.0,
     )
 
-    success, msg = await copilot.execute_signal_by_id(sig_id)
+    reply = await copilot.execute_signal_by_id(sig_id)
+    success, msg = reply.ok, reply.text
     assert success is True
     assert "Executed" in msg or "Order ID" in msg
 

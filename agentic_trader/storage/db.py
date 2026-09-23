@@ -65,6 +65,23 @@ def _is_paper_probe(provenance: str | None, *, signal_id: int | None = None) -> 
     return bool(document.get(PAPER_PROBE_TAG))
 
 
+def _replaces_prior_card(provenance: str | None) -> bool:
+    """A replacement card's ``decision_provenance`` carries a non-null ``reprices`` key.
+
+    ``decision_provenance`` is stored as plain text (portable across SQLite and
+    PostgreSQL), so this is evaluated in Python rather than with a JSON operator.
+    """
+    if not provenance:
+        return False
+    try:
+        document = json.loads(provenance)
+    except json.JSONDecodeError, ValueError, TypeError:
+        return False
+    if not isinstance(document, dict):
+        return False
+    return document.get("reprices") is not None
+
+
 class SignalDatabase:
     """
     SQLAlchemy 2.0 Async ORM Persistence Layer.
@@ -453,16 +470,88 @@ class SignalDatabase:
         modes, exactly as ``is_duplicate_recent`` does. ``SignalRecord.timestamp`` is a
         ``UTCDatetime``: an aware ``cutoff`` is normalized to naive UTC by the column's
         bind processor, so a New York session start compares correctly on SQLite and
-        PostgreSQL alike.
+        PostgreSQL alike. A replacement card (its ``decision_provenance`` carries a
+        non-null ``reprices`` key) replaces the card it superseded rather than
+        spending a fresh slot of the session budget, so it is excluded here; the
+        original it replaced (now EXPIRED) still counts.
         """
         async with self.session_factory() as session:
             rows = await session.execute(
-                select(SignalRecord.contract, SignalRecord.strategy, SignalRecord.timestamp)
+                select(
+                    SignalRecord.contract,
+                    SignalRecord.strategy,
+                    SignalRecord.timestamp,
+                    SignalRecord.decision_provenance,
+                )
                 .where(*self._scope())
                 .where(SignalRecord.timestamp >= cutoff)
                 .order_by(SignalRecord.timestamp)
             )
-            return [{"contract": c, "strategy": s, "timestamp": t} for c, s, t in rows]
+            return [
+                {"contract": c, "strategy": s, "timestamp": t}
+                for c, s, t, provenance in rows
+                if not _replaces_prior_card(provenance)
+            ]
+
+    async def _insert_signal(
+        self,
+        session,
+        *,
+        contract: str,
+        strategy: str,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+        risk_dollars: float,
+        reward_dollars: float | None = None,
+        notional_value: float | None = None,
+        raw_response: str | None = None,
+        status: str = SignalStatus.PENDING,
+        asset_class: str = AssetClass.FUTURES,
+        quantity: float = 1.0,
+        notification: dict[str, Any] | None = None,
+        timeframe: str | None = None,
+        alpha_version: str | None = None,
+        alpha_policy: dict[str, Any] | None = None,
+        decision_provenance: dict[str, Any] | None = None,
+    ) -> int:
+        """Insert one signal row, its audit event and outbox notification within ``session``.
+
+        Shared by ``record_signal`` and ``replace_signal``; the caller owns the
+        transaction boundary (locking, commit/rollback).
+        """
+        rec = SignalRecord(
+            environment=self.environment,
+            execution_mode=self.execution_mode,
+            run_id=RUN_ID,
+            timestamp=datetime.now(UTC),
+            contract=contract,
+            strategy=strategy,
+            timeframe=timeframe,
+            alpha_version=alpha_version,
+            alpha_policy=json.dumps(alpha_policy, allow_nan=False) if alpha_policy else None,
+            decision_provenance=json.dumps(decision_provenance, allow_nan=False) if decision_provenance else None,
+            direction=str(direction),
+            entry_price=float(entry_price),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit),
+            risk_dollars=float(risk_dollars),
+            reward_dollars=float(reward_dollars) if reward_dollars is not None else None,
+            notional_value=float(notional_value) if notional_value is not None else None,
+            raw_response=raw_response,
+            status=str(status),
+            asset_class=str(asset_class),
+            quantity=float(quantity),
+        )
+        session.add(rec)
+        await session.flush()
+        session.add(self._audit(AuditEventType.SIGNAL_CREATED, rec.id, rec.to_dict()))
+        if notification is not None:
+            await self.workflows.add_notification(
+                session, f"signal/{rec.id}/created", NotificationKind.SIGNAL, {**notification, "signal_id": rec.id}
+            )
+        return rec.id
 
     async def record_signal(
         self,
@@ -488,38 +577,87 @@ class SignalDatabase:
         """Insert a new trade signal record into the database."""
         async with self.session_factory() as session:
             await self.workflows.lock(session)
-            rec = SignalRecord(
-                environment=self.environment,
-                execution_mode=self.execution_mode,
-                run_id=RUN_ID,
-                timestamp=datetime.now(UTC),
+            signal_id = await self._insert_signal(
+                session,
                 contract=contract,
                 strategy=strategy,
+                direction=direction,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                risk_dollars=risk_dollars,
+                reward_dollars=reward_dollars,
+                notional_value=notional_value,
+                raw_response=raw_response,
+                status=status,
+                asset_class=asset_class,
+                quantity=quantity,
+                notification=notification,
                 timeframe=timeframe,
                 alpha_version=alpha_version,
-                alpha_policy=json.dumps(alpha_policy, allow_nan=False) if alpha_policy else None,
-                decision_provenance=json.dumps(decision_provenance, allow_nan=False) if decision_provenance else None,
-                direction=str(direction),
-                entry_price=float(entry_price),
-                stop_loss=float(stop_loss),
-                take_profit=float(take_profit),
-                risk_dollars=float(risk_dollars),
-                reward_dollars=float(reward_dollars) if reward_dollars is not None else None,
-                notional_value=float(notional_value) if notional_value is not None else None,
-                raw_response=raw_response,
-                status=str(status),
-                asset_class=str(asset_class),
-                quantity=float(quantity),
+                alpha_policy=alpha_policy,
+                decision_provenance=decision_provenance,
             )
-            session.add(rec)
-            await session.flush()
-            session.add(self._audit(AuditEventType.SIGNAL_CREATED, rec.id, rec.to_dict()))
-            if notification is not None:
-                await self.workflows.add_notification(
-                    session, f"signal/{rec.id}/created", NotificationKind.SIGNAL, {**notification, "signal_id": rec.id}
-                )
             await session.commit()
-            return rec.id
+            return signal_id
+
+    async def expire_signal(self, signal_id: int) -> bool:
+        """Conditionally transition a PENDING signal to EXPIRED. Mirrors ``dismiss_signal``."""
+        async with self.session_factory() as session, session.begin():
+            await self.workflows.lock(session)
+            result = await session.execute(
+                update(SignalRecord)
+                .where(*self._scope(), SignalRecord.id == signal_id, SignalRecord.status == SignalStatus.PENDING)
+                .values(status=SignalStatus.EXPIRED)
+            )
+            return bool(getattr(result, "rowcount", 0))
+
+    async def replace_signal(
+        self,
+        old_signal_id: int,
+        *,
+        notification: dict[str, Any],
+        decision_provenance: dict[str, Any],
+        **new_signal_fields: Any,
+    ) -> int | None:
+        """Atomically expire ``old_signal_id`` and record its PENDING replacement.
+
+        In one transaction: conditionally expire the old signal (PENDING only); if
+        no row changed, return None and write nothing. Otherwise insert the new
+        signal row and its SIGNAL outbox notification exactly as ``record_signal``
+        does, via the shared ``_insert_signal`` helper. Any error (including an
+        invalid new-signal field) rolls back the expiry too, leaving the old
+        signal PENDING.
+        """
+        async with self.session_factory() as session, session.begin():
+            await self.workflows.lock(session)
+            result = await session.execute(
+                update(SignalRecord)
+                .where(*self._scope(), SignalRecord.id == old_signal_id, SignalRecord.status == SignalStatus.PENDING)
+                .values(status=SignalStatus.EXPIRED)
+            )
+            if not getattr(result, "rowcount", 0):
+                return None
+            return await self._insert_signal(
+                session,
+                notification=notification,
+                decision_provenance=decision_provenance,
+                **new_signal_fields,
+            )
+
+    async def live_signal_id(self, contract: str) -> int | None:
+        """The newest PENDING or SUBMITTING signal for ``contract`` in this scope, if any."""
+        async with self.session_factory() as session:
+            return await session.scalar(
+                select(SignalRecord.id)
+                .where(
+                    *self._scope(),
+                    SignalRecord.contract == contract,
+                    SignalRecord.status.in_((SignalStatus.PENDING, SignalStatus.SUBMITTING)),
+                )
+                .order_by(SignalRecord.id.desc())
+                .limit(1)
+            )
 
     async def update_telegram_message_id(self, signal_id: int, message_id: int):
         """Associate the Telegram alert message ID with the signal record."""
