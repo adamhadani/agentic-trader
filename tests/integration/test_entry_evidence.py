@@ -1,6 +1,7 @@
 """Entry admission evidence through real SDK serialization and loopback HTTP."""
 
 from copy import deepcopy
+from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -277,3 +278,29 @@ async def test_simulated_entry_has_explicit_empty_evidence(app_config, entry_req
     )
     assert isinstance(context, SimulatedEntryContext)
     assert context.simulated and context.positions == context.orders == ()
+
+
+def _shift_timestamps(order: dict, delta: timedelta) -> dict:
+    shifted = dict(order)
+    for key in ("updated_at", "submitted_at"):
+        shifted[key] = (datetime.fromisoformat(order[key]) + delta).isoformat()
+    return shifted
+
+
+async def test_duplicate_leg_with_sub_millisecond_timestamp_skew_is_the_same_order(alpaca_http, entry_request):
+    # Observed on the paper desk (September 23): the open-orders list and the nested
+    # by-ID root serialize the same bracket leg's timestamps one microsecond apart.
+    venue, broker = alpaca_http
+    skewed = _shift_timestamps(venue.take_profit, -timedelta(microseconds=1))
+    venue.override = lambda method, path, query, body: (200, [skewed]) if path == "/v2/orders" else None
+    context = await broker.entry_market_context(entry_request, entry_order_ids=(venue.entry["id"],))
+    orders = {order.order_id: order for order in context.orders}
+    assert orders[venue.take_profit["id"]].parent_order_id == venue.entry["id"]
+
+
+async def test_duplicate_leg_with_material_timestamp_difference_still_fails_closed(alpaca_http, entry_request):
+    venue, broker = alpaca_http
+    skewed = _shift_timestamps(venue.take_profit, -timedelta(milliseconds=2))
+    venue.override = lambda method, path, query, body: (200, [skewed]) if path == "/v2/orders" else None
+    with pytest.raises(ValueError, match="Conflicting duplicate"):
+        await broker.entry_market_context(entry_request, entry_order_ids=(venue.entry["id"],))
