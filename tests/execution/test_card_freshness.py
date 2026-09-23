@@ -361,3 +361,17 @@ def test_reprice_quantity_multiplier_cancels_in_ratio():
         original_quantity=10, entry=100.0, stop=95.0, new_entry=102.0, multiplier=50.0, whole_units=False
     )
     assert plain == pytest.approx(scaled)
+
+
+def test_degenerate_levels_are_missed_not_a_crash():
+    result = _assess(entry=100.0, stop=100.0, target=120.0, price=100.0)
+    assert result.outcome == CardOutcome.MISSED
+    assert result.r_consumed is None
+
+
+@pytest.mark.parametrize("field", ["issued_at", "valid_until", "now"])
+def test_naive_datetimes_are_rejected_on_every_path(field):
+    naive = {"issued_at": ISSUED_AT, "valid_until": VALID_UNTIL, "now": ISSUED_AT}
+    naive[field] = naive[field].replace(tzinfo=None)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _assess(**naive)

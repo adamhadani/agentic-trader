@@ -52,17 +52,21 @@ def assess_card(
     min_reward_risk: float,
     policy: CardFreshnessConfig,
 ) -> CardAssessment:
-    age_seconds = (now - issued_at).total_seconds()
+    issued_et, now_et = _aware_et(issued_at), _aware_et(now)
+    until_et = _aware_et(valid_until) if valid_until is not None else None
+    age_seconds = (now_et - issued_et).total_seconds()
 
-    if valid_until is not None:
-        session_over = now >= valid_until
-    else:
-        session_over = _aware_et(issued_at).date() != _aware_et(now).date()
+    # Legacy cards without `valid_until` expire when the New York date changes.
+    session_over = now_et >= until_et if until_et is not None else issued_et.date() != now_et.date()
     if session_over or not session_is_rth:
         return CardAssessment(CardOutcome.EXPIRED, "Card expired: its session has ended.", None, age_seconds, None)
 
     sign = 1 if direction == Direction.LONG else -1
     risk = abs(entry - stop)
+    if risk <= 0:
+        return CardAssessment(
+            CardOutcome.MISSED, "Missed: the card's entry and stop coincide.", None, age_seconds, price
+        )
     r_consumed = sign * (price - entry) / risk
 
     if (direction == Direction.LONG and price <= stop) or (direction == Direction.SHORT and price >= stop):
