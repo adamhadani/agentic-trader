@@ -55,8 +55,7 @@ class SetupLevels:
                 )
         elif not (self.target < self.entry < self.stop):
             raise ValueError(
-                f"SHORT requires target < entry < stop, got target={self.target}, "
-                f"entry={self.entry}, stop={self.stop}"
+                f"SHORT requires target < entry < stop, got target={self.target}, entry={self.entry}, stop={self.stop}"
             )
 
 
@@ -224,10 +223,7 @@ def label_bracket(
             target_hit = bar_low <= levels.target
 
         if stop_hit:
-            if is_long:
-                fill = bar_open if bar_open <= levels.stop else levels.stop
-            else:
-                fill = bar_open if bar_open >= levels.stop else levels.stop
+            fill = min(bar_open, levels.stop) if is_long else max(bar_open, levels.stop)
             return _resolved(
                 hit=BracketHit.STOP,
                 entry_time=entry_time,
@@ -240,10 +236,7 @@ def label_bracket(
                 cost_bps_per_side=cost_bps_per_side,
             )
         if target_hit:
-            if is_long:
-                fill = bar_open if bar_open >= levels.target else levels.target
-            else:
-                fill = bar_open if bar_open <= levels.target else levels.target
+            fill = max(bar_open, levels.target) if is_long else min(bar_open, levels.target)
             return _resolved(
                 hit=BracketHit.TARGET,
                 entry_time=entry_time,

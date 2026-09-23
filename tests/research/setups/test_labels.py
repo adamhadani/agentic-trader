@@ -1,4 +1,4 @@
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -32,7 +32,7 @@ BEFORE_OPEN = datetime(2026, 3, 2, 13, 45, tzinfo=UTC)
 
 
 def test_regular_session_hours_reexported():
-    assert REGULAR_SESSION_HOURS_NY == range(9, 16)
+    assert range(9, 16) == REGULAR_SESSION_HOURS_NY
 
 
 def test_long_target_first():
@@ -152,9 +152,11 @@ def test_timeout_exits_last_close_of_nth_session():
 def test_immature_when_bars_run_out():
     wide = SetupLevels(direction="LONG", entry=100.0, stop=90.0, target=110.0)
     rows = []
-    for day in ("2026-03-02", "2026-03-03"):
-        for hour in range(14, 21):
-            rows.append((f"{day}T{hour:02d}:00:00+00:00", 100.0, 100.4, 99.7, 100.1))
+    rows.extend(
+        (f"{day}T{hour:02d}:00:00+00:00", 100.0, 100.4, 99.7, 100.1)
+        for day in ("2026-03-02", "2026-03-03")
+        for hour in range(14, 21)
+    )
 
     frame = bars(rows)
     outcome = label_bracket(wide, BEFORE_OPEN, frame, max_hold_sessions=5)
