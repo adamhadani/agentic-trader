@@ -2341,6 +2341,12 @@ class TradingCopilot:
         """Cancel and await every in-flight background re-evaluation (daemon shutdown)."""
         tasks = list(self.reevaluation_tasks)
         for task in tasks:
+            # The card's claim is permanent, so say which re-evaluation ends unreported.
+            logger.warning(
+                "Cancelling in-flight re-evaluation %s at shutdown; its operator will get no result",
+                task.get_name(),
+                extra={"event": "card_reevaluate_cancelled", "task": task.get_name()},
+            )
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -2362,8 +2368,9 @@ class TradingCopilot:
             )
         except ScanBusyError:
             text = (
-                f"Re-evaluation of #{signal_id} ({name}) did not run: a scan is running; "
-                "try again in a minute with /scan."
+                f"Re-evaluation of #{signal_id} ({name}) did not run: another scan held the scanner. "
+                "This card cannot be re-evaluated again; the next scheduled suggestion scan will "
+                "consider the contract once its duplicate window ends."
             )
         except Exception:
             logger.exception(

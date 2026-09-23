@@ -504,7 +504,7 @@ async def test_reevaluate_reports_a_busy_scan_lock_through_the_outbox(tap_desk, 
         tap_desk._scan_lock.release()
 
     [text] = await message_texts(temp_db)
-    assert "a scan is running; try again in a minute" in text.lower()
+    assert "another scan held the scanner" in text.lower()
 
 
 async def test_reevaluate_failure_is_logged_and_reported(tap_desk, temp_db):
