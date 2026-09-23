@@ -272,8 +272,28 @@ one or two reasonable cards per session:
      and `copilot cards outcomes` labels them prospectively.
    - The panel-mining lane follows, using this outcome target. Its first hypotheses are
      the two surviving features and a short-suppression test on fresh data.
-3. **WS3 — dynamic universe.** Liquidity screen plus movers/most-actives for the
-   suggestion scan only. The intraday job stays restricted.
+3. **WS3 — dynamic universe (September 23) — delivered.** Liquidity screen plus
+   movers/most-actives for the scheduled suggestion scan only; the intraday job,
+   swing scan and manual scans stay unchanged
+   ([design](superpowers/specs/2026-09-23-dynamic-universe-design.md),
+   [production behaviour](production.md#suggestion-scans)).
+   - Each suggestion scan adds up to 20 deterministically filtered US equities, with
+     a synthetic per-scan contract (multiplier 1). `config.contracts` is never
+     mutated. Dynamic names run native strategies only.
+   - Liquidity is relative: at least the 25th percentile of the static universe
+     equities' median dollar volume, measured in the same scan on the same (IEX)
+     bars. The scan fails closed when there is no static reference.
+   - All dynamic names share one `dynamic` correlation group, so the desk issues at
+     most one dynamic card per session. Cards and `scan_candidates_ranked` candidates
+     carry `dynamic`/`dynamic_source`.
+   - Each scan journals one `dynamic_universe_built` event, and the digest counts
+     dynamic names. A screener failure leaves a static-only scan and an
+     `available: false` event.
+   - Follow-ups:
+     - Measure dynamic cards separately in `cards outcomes`; they are in-play names,
+       selected by today's movers.
+     - Decide whether admission's `max_correlated_positions` should also group open
+       dynamic positions; today only the scan's card cap does.
 4. **Card freshness (September 23) — delivered.** The first live card (signal #16,
    XOM LONG, issued 10:38 NY) was read more than an hour later; a tap judged only by
    entry admission would submit a stale bracket or dead-end refuse the operator with

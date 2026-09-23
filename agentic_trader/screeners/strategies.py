@@ -395,16 +395,21 @@ class StrategyEngine:
         override_strategy: str | None = None,
         override_mode: str | None = None,
         timeframe: str | None = None,
+        native_only: bool = False,
     ) -> list[ScreenerCandidate]:
         """Scan contract data across active strategies according to configured mode
 
-        (single vs parallel) and apply conflict resolution.
+        (single vs parallel) and apply conflict resolution. ``native_only`` drops every
+        registry alpha (active or paper probe): a dynamic suggestion-universe name runs
+        the native strategies only, whatever an alpha's declared eligibility.
         """
         active_strategies = self.registry.get_active_strategies(
             config=self.config,
             override_strategy=override_strategy,
             override_mode=override_mode,
         )
+        if native_only:
+            active_strategies = [s for s in active_strategies if not isinstance(s, FormulaicAlphaStrategy)]
 
         raw_candidates: list[ScreenerCandidate] = []
         for strat in active_strategies:

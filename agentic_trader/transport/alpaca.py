@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import requests
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
+from alpaca.data.historical.screener import ScreenerClient
 from alpaca.trading.client import TradingClient
 
 
@@ -101,4 +102,8 @@ class BoundedStockDataClient(BoundedTransport, StockHistoricalDataClient):
 
 
 class BoundedCryptoDataClient(BoundedTransport, CryptoHistoricalDataClient):
+    pass
+
+
+class BoundedScreenerClient(BoundedTransport, ScreenerClient):
     pass

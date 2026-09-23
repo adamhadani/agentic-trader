@@ -65,21 +65,19 @@ def _is_paper_probe(provenance: str | None, *, signal_id: int | None = None) -> 
     return bool(document.get(PAPER_PROBE_TAG))
 
 
-def _replaces_prior_card(provenance: str | None) -> bool:
-    """A replacement card's ``decision_provenance`` carries a non-null ``reprices`` key.
+def _provenance_document(provenance: str | None) -> dict[str, Any]:
+    """A stored ``decision_provenance`` object, or an empty one when absent or unreadable.
 
     ``decision_provenance`` is stored as plain text (portable across SQLite and
-    PostgreSQL), so this is evaluated in Python rather than with a JSON operator.
+    PostgreSQL), so its keys are evaluated in Python rather than with a JSON operator.
     """
     if not provenance:
-        return False
+        return {}
     try:
         document = json.loads(provenance)
     except json.JSONDecodeError, ValueError, TypeError:
-        return False
-    if not isinstance(document, dict):
-        return False
-    return document.get("reprices") is not None
+        return {}
+    return document if isinstance(document, dict) else {}
 
 
 class SignalDatabase:
@@ -480,7 +478,9 @@ class SignalDatabase:
         PostgreSQL alike. A replacement card (its ``decision_provenance`` carries a
         non-null ``reprices`` key) replaces the card it superseded rather than
         spending a fresh slot of the session budget, so it is excluded here; the
-        original it replaced (now EXPIRED) still counts.
+        original it replaced (now EXPIRED) still counts. ``dynamic`` is True for a card
+        on a dynamic suggestion-universe name (its provenance says so), which counts
+        toward the scan's shared ``dynamic`` correlation group.
         """
         async with self.session_factory() as session:
             rows = await session.execute(
@@ -494,10 +494,12 @@ class SignalDatabase:
                 .where(SignalRecord.timestamp >= cutoff)
                 .order_by(SignalRecord.timestamp)
             )
+            # A replacement card's provenance carries a non-null ``reprices`` key.
+            documents = [(c, s, t, _provenance_document(provenance)) for c, s, t, provenance in rows]
             return [
-                {"contract": c, "strategy": s, "timestamp": t}
-                for c, s, t, provenance in rows
-                if not _replaces_prior_card(provenance)
+                {"contract": c, "strategy": s, "timestamp": t, "dynamic": document.get("dynamic") is True}
+                for c, s, t, document in documents
+                if document.get("reprices") is None
             ]
 
     async def _insert_signal(

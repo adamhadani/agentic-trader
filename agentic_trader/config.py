@@ -104,11 +104,36 @@ class UniverseEntry(BaseModel):
     sector: str = Field(default="unknown", pattern=r"^[a-z][a-z0-9_]{0,31}$")
 
 
+class DynamicUniverseConfig(BaseModel):
+    """Deterministic filtering of Alpaca screener output into a scan's dynamic names.
+
+    See docs/superpowers/specs/2026-09-23-dynamic-universe-design.md. When `enabled`
+    is False, scheduled suggestion scans are byte-for-byte unchanged.
+    """
+
+    enabled: bool = True
+    sources: list[Literal["most_actives", "movers"]] = Field(
+        default_factory=lambda: ["most_actives", "movers"]  # type: ignore[arg-type]
+    )
+    most_actives_top: int = Field(default=100, ge=1, le=500)
+    movers_top: int = Field(default=50, ge=1, le=500)
+    max_candidates: int = Field(default=40, ge=1, le=500)
+    max_symbols: int = Field(default=20, ge=1, le=500)
+    min_price: float = Field(default=10.0, gt=0)
+    # A dynamic name's median 20-session dollar volume must reach this percentile of the
+    # static universe equities' own medians, measured in the same scan on the same feed
+    # (self-calibrating: IEX volume is a few percent of consolidated volume).
+    min_dollar_volume_static_percentile: float = Field(default=0.25, ge=0, le=1)
+    # Optional absolute floor in the scan's own feed units; the larger of the two applies.
+    min_median_dollar_volume: float = Field(default=0, ge=0)
+
+
 class UniverseConfig(BaseModel):
     """Named groups of equity/ETF symbols expanded into contracts at load time."""
 
     groups: dict[str, list[UniverseEntry]] = Field(default_factory=dict)
     max_symbols: int = Field(default=250, ge=1, le=500)
+    dynamic: DynamicUniverseConfig = Field(default_factory=DynamicUniverseConfig)
 
     @model_validator(mode="after")
     def validated(self):
