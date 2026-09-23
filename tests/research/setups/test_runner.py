@@ -417,12 +417,14 @@ def _records() -> list[SetupRecord]:
 def _study_rows(monkeypatch, daily: dict[str, pd.DataFrame], trading_days: list[date]) -> pd.DataFrame:
     monkeypatch.setattr(runner, "label_bracket", _fake_label_bracket_factory([]))
     hourly = {symbol: _hourly_frame(datetime.combine(DECISION_DATE, time(16), tzinfo=UTC)) for symbol in daily}
+    protocol = _protocol()
     return runner._build_frame(
         _records(),
         daily,
         hourly,
         PANEL_SECTORS,
-        _protocol(),
+        protocol.max_hold_sessions,
+        protocol.cost_bps_per_side,
         trading_days,
         {DECISION_DATE: SCANS[0]},
     )
