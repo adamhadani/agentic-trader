@@ -7,7 +7,7 @@ from agentic_trader.constants import AssetClass
 from agentic_trader.data.market_data import ContractMarketData, MarketDataFetcher
 from agentic_trader.market.session import ET_TZ, MarketCalendarDay
 from agentic_trader.research.setups.replay import (
-    LIVE_DAILY_SESSIONS,
+    LIVE_DAILY_LOOKBACK_DAYS,
     LIVE_HOURLY_DAYS,
     SetupRecord,
     decision_instants,
@@ -45,6 +45,38 @@ def hourly_frame(starts_et: list[datetime], start_price: float = 100.0) -> pd.Da
             "Low": [c - 0.02 for c in closes],
             "Close": closes,
             "Volume": [100.0 + i for i in range(len(starts_et))],
+        },
+        index=index,
+    )
+
+
+def daily_rows(pairs: list[tuple[date, float]]) -> pd.DataFrame:
+    """Explicit (session_date, close) daily rows, tz-aware UTC index like providers.py."""
+    dates = [pd.Timestamp(d, tz="UTC") for d, _ in pairs]
+    closes = [c for _, c in pairs]
+    return pd.DataFrame(
+        {
+            "Open": [c - 0.05 for c in closes],
+            "High": [c + 0.2 for c in closes],
+            "Low": [c - 0.2 for c in closes],
+            "Close": closes,
+            "Volume": [1000.0 for _ in closes],
+        },
+        index=pd.DatetimeIndex(dates, name="timestamp"),
+    )
+
+
+def hourly_rows(pairs: list[tuple[datetime, float]]) -> pd.DataFrame:
+    """Explicit (bar_start_et, close) hourly rows."""
+    index = pd.DatetimeIndex([dt.astimezone(UTC) for dt, _ in pairs], name="timestamp")
+    closes = [c for _, c in pairs]
+    return pd.DataFrame(
+        {
+            "Open": [c - 0.01 for c in closes],
+            "High": [c + 0.02 for c in closes],
+            "Low": [c - 0.02 for c in closes],
+            "Close": closes,
+            "Volume": [100.0 for _ in closes],
         },
         index=index,
     )
@@ -195,13 +227,51 @@ def test_frames_at_no_in_progress_bar_when_none_closed():
     assert pd.DatetimeIndex(result.daily.index).date[-1] == day - timedelta(days=1)
 
 
+def test_frames_at_daily_window_length_matches_365_day_lookback():
+    """Exact completed-session count for two instants straddling a year boundary,
+    computed independently of replay.py's own helpers (raw ``timedelta(days=365)``
+    off a UTC instant, mirroring providers.py's ``parse_period_to_timedelta("1y")``
+    arithmetic exactly, per the controller ruling)."""
+    for t_et in (et(2026, 9, 15, 10, 35), et(2026, 1, 5, 10, 35)):
+        t = t_et.astimezone(UTC)
+        ny_date = t_et.date()
+        cutoff_date = (t - timedelta(days=365)).astimezone(ET_TZ).date()
+        expected_days = (ny_date - cutoff_date).days
+        assert expected_days == 365  # a raw 365-day instant subtraction always spans 365 dates
+
+        daily_all = daily_frame(800, ny_date - timedelta(days=1))  # comfortably covers >365d back
+        result = frames_at("AAPL", daily_all, hourly_frame([]), t)
+
+        assert len(result.daily) == expected_days
+        assert pd.DatetimeIndex(result.daily.index).date[0] == cutoff_date
+        assert pd.DatetimeIndex(result.daily.index).date[-1] == ny_date - timedelta(days=1)
+
+
+def test_frames_at_in_progress_bar_stamped_at_ny_midnight():
+    day = date(2026, 9, 15)  # EDT: NY midnight == 04:00 UTC, not 00:00 UTC
+    daily_all = daily_frame(5, day - timedelta(days=1))  # tz-aware UTC index, like providers.py
+    hourly_all = hourly_frame([et(2026, 9, 15, 9, 0)])
+    t = et(2026, 9, 15, 10, 35).astimezone(UTC)
+
+    result = frames_at("AAPL", daily_all, hourly_all, t)
+
+    result_index = pd.DatetimeIndex(result.daily.index)
+    assert result_index.tz is not None
+    assert str(result_index.tz) == str(pd.DatetimeIndex(daily_all.index).tz)  # concat stayed tz-consistent
+
+    stamp = result_index[-1]
+    expected = datetime.combine(day, time(0, 0), tzinfo=ET_TZ).astimezone(UTC)
+    assert stamp == pd.Timestamp(expected)
+    assert stamp.hour == 4  # NY midnight in EDT, not UTC midnight
+
+
 # ---------------------------------------------------------------------------
 # replay_symbol
 # ---------------------------------------------------------------------------
 
 
-def _rich_history(last_session_day: date, sessions: int = LIVE_DAILY_SESSIONS + 3):
-    daily_all = daily_frame(sessions, last_session_day - timedelta(days=1), start_price=150.0)
+def _rich_history(last_session_day: date, days: int = LIVE_DAILY_LOOKBACK_DAYS + 5):
+    daily_all = daily_frame(days, last_session_day - timedelta(days=1), start_price=150.0)
     today_starts = [et(last_session_day.year, last_session_day.month, last_session_day.day, h, 0) for h in (9, 10)]
     hourly_all = hourly_frame(today_starts, start_price=150.0)
     return daily_all, hourly_all
@@ -228,33 +298,113 @@ def test_replay_uses_live_strategy_engine(config, monkeypatch):
     assert asset_class == AssetClass.EQUITY
 
 
-def test_future_perturbation_does_not_change_setups(config, monkeypatch):
+def test_out_of_window_perturbation_does_not_change_setups(config, monkeypatch):
+    """A correct implementation must be invariant to values living entirely
+    outside its declared windows. This directly exercises the four historical
+    off-by-one leaks: ``<=`` (not ``<``) on the daily cutoff, ``bar_start<=t``
+    (not ``bar_end<=t``) on the hourly cutoff, and dropping either lower bound
+    (60d hourly / 365d daily). If any leaks a row in, perturbing that row's
+    value moves a captured stat derived from daily, hourly AND four_hour (and,
+    through the spy's price, the final ``SetupRecord`` too); perturbing a
+    correctly-excluded row must change nothing.
+    """
     day = date(2026, 9, 15)
-    daily_all, hourly_all = _rich_history(day)
     t = et(2026, 9, 15, 10, 35).astimezone(UTC)
-    instants = [t]
+    cutoff_date = (t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)).astimezone(ET_TZ).date()
+
+    daily_all = daily_rows(
+        [
+            (date(2025, 9, 10), 111.0),  # stale: before the 365d cutoff
+            (cutoff_date, 120.0),  # exactly the cutoff date: inclusive lower bound
+            (date(2026, 9, 10), 150.0),
+            (date(2026, 9, 14), 151.0),  # the last completed session, strictly before ny_date
+            (date(2026, 9, 15), 999.0),  # == ny_date: must never be "completed"
+            (date(2026, 9, 16), 1000.0),  # a later session
+        ]
+    )
+    hourly_all = hourly_rows(
+        [
+            (et(2026, 6, 1, 9, 0), 222.0),  # stale: more than 60d before t
+            (et(2026, 9, 14, 15, 0), 140.0),
+            (et(2026, 9, 15, 9, 0), 145.0),  # closes 10:00: the freshest correctly-closed bar
+            (et(2026, 9, 15, 10, 0), 333.0),  # still open at t (closes 11:00): must be excluded
+            (et(2026, 9, 15, 14, 0), 888.0),  # a later session
+        ]
+    )
+
+    captured: list[tuple] = []
 
     def spy(self, data, asset_class=AssetClass.EQUITY, **kwargs):
-        price = float(data.daily["Close"].iloc[-1])
+        daily_sum = float(data.daily["Close"].sum())
+        hourly_sum = float(data.hourly["Close"].sum()) if len(data.hourly) else 0.0
+        four_hour_sum = float(data.four_hour["Close"].sum()) if len(data.four_hour) else 0.0
+        captured.append(
+            (
+                len(data.daily),
+                float(data.daily["Close"].iloc[-1]),
+                daily_sum,
+                len(data.hourly),
+                hourly_sum,
+                len(data.four_hour),
+                four_hour_sum,
+            )
+        )
+        # Derived from all three frames, so a leak anywhere reaches the final SetupRecord too.
+        price = daily_sum + hourly_sum * 1e-6 + four_hour_sum * 1e-9
         return [make_candidate(price=price)]
 
     monkeypatch.setattr(StrategyEngine, "scan_contract", spy)
 
-    baseline = replay_symbol("AAPL", daily_all, hourly_all, instants, config, dedup_hours=12)
+    baseline = replay_symbol("AAPL", daily_all, hourly_all, [t], config, dedup_hours=12)
+    baseline_stats = captured.pop()
 
-    perturbed_daily = daily_all.copy()
-    perturbed_hourly = hourly_all.copy()
-    future_daily_mask = pd.DatetimeIndex(perturbed_daily.index).date >= day
-    for col in ("Open", "High", "Low", "Close"):
-        perturbed_daily.loc[future_daily_mask, col] *= 1.5
-    future_hourly_mask = pd.DatetimeIndex(perturbed_hourly.index) >= et(2026, 9, 15, 10, 0).astimezone(UTC)
-    for col in ("Open", "High", "Low", "Close"):
-        perturbed_hourly.loc[future_hourly_mask, col] *= 1.5
+    future_daily = daily_all.copy()
+    future_daily_mask = pd.DatetimeIndex(future_daily.index).date >= day
+    future_daily.loc[future_daily_mask, ["Open", "High", "Low", "Close"]] *= 1.5
 
-    perturbed = replay_symbol("AAPL", perturbed_daily, perturbed_hourly, instants, config, dedup_hours=12)
+    future_hourly = hourly_all.copy()
+    future_hourly_mask = (pd.DatetimeIndex(future_hourly.index) + pd.Timedelta(hours=1)) > t
+    future_hourly.loc[future_hourly_mask, ["Open", "High", "Low", "Close"]] *= 1.5
 
-    assert baseline == perturbed
+    future_perturbed = replay_symbol("AAPL", future_daily, future_hourly, [t], config, dedup_hours=12)
+    future_stats = captured.pop()
+
+    stale_daily = daily_all.copy()
+    stale_daily_mask = pd.DatetimeIndex(stale_daily.index).date < cutoff_date
+    stale_daily.loc[stale_daily_mask, ["Open", "High", "Low", "Close"]] *= 1.5
+
+    stale_hourly = hourly_all.copy()
+    stale_hourly_mask = pd.DatetimeIndex(stale_hourly.index) < (t - timedelta(days=LIVE_HOURLY_DAYS))
+    stale_hourly.loc[stale_hourly_mask, ["Open", "High", "Low", "Close"]] *= 1.5
+
+    stale_perturbed = replay_symbol("AAPL", stale_daily, stale_hourly, [t], config, dedup_hours=12)
+    stale_stats = captured.pop()
+
+    assert baseline_stats == future_stats == stale_stats
+    assert baseline == future_perturbed == stale_perturbed
     assert len(baseline) == 1
+
+
+def test_dedup_boundary_exactly_4h_suppressed_for_hourly_timeframe(config, monkeypatch):
+    """The live suggestion-scan gap itself (10:35 -> 14:35 same day) is exactly
+    4 hours; a 1h-timeframe setup's effective dedup window is min(dedup_hours, 4),
+    so the boundary is inclusive and the 14:35 repeat must be suppressed."""
+    day = date(2026, 9, 15)
+    daily_all, hourly_all = _rich_history(day)
+
+    monkeypatch.setattr(
+        StrategyEngine,
+        "scan_contract",
+        lambda self, data, asset_class=AssetClass.EQUITY, **kwargs: [make_candidate(timeframe="1h")],
+    )
+
+    first = et(2026, 9, 15, 10, 35).astimezone(UTC)
+    second = et(2026, 9, 15, 14, 35).astimezone(UTC)
+    assert second - first == timedelta(hours=4)
+
+    records = replay_symbol("AAPL", daily_all, hourly_all, [first, second], config, dedup_hours=12)
+
+    assert [r.decision_at for r in records] == [first]
 
 
 def test_dedup_matches_live_rule(config, monkeypatch):
@@ -275,10 +425,13 @@ def test_dedup_matches_live_rule(config, monkeypatch):
     assert [r.decision_at for r in records] == [base, base + timedelta(hours=5)]
 
 
-def test_replay_skips_before_252_sessions(config, monkeypatch):
+def test_replay_skips_when_daily_history_shorter_than_lookback(config, monkeypatch):
     day = date(2026, 9, 15)
-    daily_all, hourly_all = _rich_history(day, sessions=LIVE_DAILY_SESSIONS - 1)
+    # History starts a few days later than the 365d lookback requires.
+    daily_all, hourly_all = _rich_history(day, days=LIVE_DAILY_LOOKBACK_DAYS - 5)
     t = et(2026, 9, 15, 10, 35).astimezone(UTC)
+    cutoff_instant = t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)
+    assert pd.DatetimeIndex(daily_all.index).min() > cutoff_instant  # confirm the fixture is actually short
 
     monkeypatch.setattr(
         StrategyEngine,
@@ -314,6 +467,6 @@ def test_replay_produces_setup_record_from_levels(config, monkeypatch):
     assert record.atr == pytest.approx(2.0)
 
 
-def test_live_hourly_days_and_daily_sessions_constants():
-    assert LIVE_DAILY_SESSIONS == 252
+def test_live_hourly_days_and_daily_lookback_constants():
+    assert LIVE_DAILY_LOOKBACK_DAYS == 365
     assert LIVE_HOURLY_DAYS == 60

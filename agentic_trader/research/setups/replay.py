@@ -13,21 +13,54 @@ whole point, so every helper here mirrors a specific piece of live behaviour:
   frame is ``resample_to_4h`` of that exact same clean hourly slice, then
   ``compute_intraday_indicators`` -- never resampled from a wider or narrower
   window.
-* The daily window is the last ``LIVE_DAILY_SESSIONS`` *completed* sessions
-  (session date strictly before the instant's New York date) plus, when any
-  hourly bars for that New York date have closed by the instant, one
-  synthesized in-progress daily bar aggregated from them (Open=first,
-  High=max, Low=min, Close=last, Volume=sum). This mirrors a documented Alpaca
-  quirk: its daily-bar endpoint returns the current day's bar intraday, built
-  from whatever trades have happened so far, not the next calendar day's
-  history. Indicators are computed from scratch on each window every time --
-  EMA seeding depends on the window's start, so nothing here is ever
-  precomputed on full history and then sliced.
-* Duplicate suppression mirrors ``TradingCopilot``'s ``dedup_hours`` rule
-  (``agent/copilot.py``): a (symbol, strategy, timeframe) that already produced
-  a record within the effective window is skipped, where effective hours is
-  ``min(dedup_hours, 4)`` for 1h candidates and ``min(dedup_hours, 2)`` for 15m
-  candidates, else the configured ``dedup_hours``.
+
+  **Known parity gap.** Live ``fetch_data`` never drops an unfinished bar: the
+  Alpaca hourly endpoint returns the current, still-forming hour, and the
+  native strategies read its ``iloc[-1]``. Replay cannot reproduce that bar
+  without lookahead (it doesn't close until after ``t``), so it deliberately
+  excludes it instead. Concretely, at a 10:35 or 14:35 scan the freshest bar
+  replay can use ended at 10:00/14:00 -- replay's last hourly/4h bar, and the
+  synthesized daily ``Close`` derived from it (below), are up to ~35 minutes
+  staler than what live saw.
+
+* The daily window is every completed session (session date strictly before
+  the instant's New York date) whose date is on or after the New York date of
+  ``t - LIVE_DAILY_LOOKBACK_DAYS`` -- mirroring ``fetch_data(daily_period="1y")``:
+  live's ``AlpacaDataProvider.fetch_bars`` calls
+  ``providers.parse_period_to_timedelta("1y")`` (365 days) and sets
+  ``start = now(UTC) - delta`` (see ``data/providers.py``); replay uses the
+  identical timedelta with ``t`` standing in for "now". Plus, when any hourly
+  bars for that New York date have closed by the instant, one synthesized
+  in-progress daily bar aggregated from them (Open=first, High=max, Low=min,
+  Close=last, Volume=sum over *every* closed hour, not just regular session
+  hours -- extended-hours trades can update Alpaca's daily volume too; see
+  docs/alpha-daily-panel.md). This mirrors a documented Alpaca quirk: its
+  daily-bar endpoint returns the current day's bar intraday, built from
+  whatever trades have happened so far, not the next calendar day's history.
+  The synthesized bar is stamped at New York midnight of ``t``'s date,
+  converted to ``daily_all``'s own index timezone -- matching Alpaca's actual
+  daily-bar timestamp convention (New York midnight; see
+  docs/alpha-trade-lifetimes.md) and keeping ``pd.concat`` tz-safe against a
+  tz-aware ``daily_all`` (the shape ``providers.py`` actually returns).
+  Indicators are computed from scratch on each window every time -- EMA
+  seeding depends on the window's start, so nothing here is ever precomputed
+  on full history and then sliced.
+* An instant is skipped entirely (no scan) unless ``daily_all``'s own history
+  starts at or before ``t - LIVE_DAILY_LOOKBACK_DAYS`` -- i.e. unless a full
+  live daily window is actually available; a shorter history would silently
+  understate the window rather than reproduce live's completed one-year fetch.
+* Duplicate suppression is a *research* definition, not a copy of live's
+  literal one: live only ever suppresses against a signal it already
+  persisted to the database, so a symbol/strategy/timeframe live had already
+  suppressed can never re-suppress a later scan the way this replay's
+  in-memory ``last_seen`` does. What is shared exactly is the window
+  arithmetic from ``TradingCopilot`` (``agent/copilot.py``, ``dedup_hours``):
+  a (symbol, strategy, timeframe) that already produced a record within the
+  effective window is skipped, where effective hours is ``min(dedup_hours,
+  4)`` for 1h candidates and ``min(dedup_hours, 2)`` for 15m candidates, else
+  the configured ``dedup_hours``; the boundary is inclusive
+  (``t - previous <= effective_hours`` suppresses, matching
+  ``storage/db.py``'s ``timestamp >= cutoff``).
 
 ``replay_symbol`` is a module-level function with picklable arguments so a
 ``ProcessPoolExecutor`` can later call it once per symbol.
@@ -47,13 +80,14 @@ from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import AssetClass
 from agentic_trader.data.market_data import ContractMarketData, MarketDataFetcher
+from agentic_trader.data.providers import parse_period_to_timedelta
 from agentic_trader.market.session import ET_TZ, MarketCalendarDay
 from agentic_trader.research.alpha.strategy import entry_limit, execution_policy_from_dict
 from agentic_trader.screeners.strategies import StrategyEngine
 
 
 __all__ = [
-    "LIVE_DAILY_SESSIONS",
+    "LIVE_DAILY_LOOKBACK_DAYS",
     "LIVE_HOURLY_DAYS",
     "SetupRecord",
     "decision_instants",
@@ -61,7 +95,9 @@ __all__ = [
     "replay_symbol",
 ]
 
-LIVE_DAILY_SESSIONS = 252  # live fetch_data daily_period="1y"
+# live fetch_data(daily_period="1y"): mirror providers.parse_period_to_timedelta("1y")
+# exactly rather than hardcoding 365, so this stays in lockstep with that arithmetic.
+LIVE_DAILY_LOOKBACK_DAYS = parse_period_to_timedelta("1y").days
 LIVE_HOURLY_DAYS = 60  # live fetch_data hourly_period="60d" (calendar days back from t)
 
 # Per-timeframe dedup ceilings, mirroring agent/copilot.py's dedup_hours narrowing.
@@ -136,8 +172,17 @@ def decision_instants(days: Sequence[MarketCalendarDay], scan_times_et: Sequence
     return instants
 
 
-def _completed_daily(daily_all: pd.DataFrame, ny_date: date) -> pd.DataFrame:
-    """Sessions strictly before ``ny_date``, in original order.
+def _daily_window_dates(t: datetime) -> tuple[date, date]:
+    """(inclusive lower, exclusive upper) New York session-date bounds for the
+    completed daily window at ``t``, mirroring live's ``period="1y"`` cutoff
+    (see the module docstring)."""
+    ny_date = t.astimezone(ET_TZ).date()
+    cutoff_date = (t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)).astimezone(ET_TZ).date()
+    return cutoff_date, ny_date
+
+
+def _completed_daily(daily_all: pd.DataFrame, t: datetime) -> pd.DataFrame:
+    """Sessions in ``[t - LIVE_DAILY_LOOKBACK_DAYS, t's NY date)``, in original order.
 
     Daily bars are stamped by session date (see providers.py normalization),
     so the plain UTC ``.date()`` of the index already is the session date --
@@ -146,8 +191,17 @@ def _completed_daily(daily_all: pd.DataFrame, ny_date: date) -> pd.DataFrame:
     """
     if daily_all.empty:
         return daily_all
+    cutoff_date, ny_date = _daily_window_dates(t)
     session_dates = pd.DatetimeIndex(daily_all.index).date
-    return daily_all.loc[session_dates < ny_date]
+    return daily_all.loc[(session_dates >= cutoff_date) & (session_dates < ny_date)]
+
+
+def _ny_midnight(ny_date: date, tz) -> pd.Timestamp:
+    """New York midnight for session date ``ny_date``, converted to ``tz`` --
+    matching Alpaca's actual daily-bar timestamp convention (see the module
+    docstring and docs/alpha-trade-lifetimes.md)."""
+    local_midnight = datetime.combine(ny_date, time(0, 0), tzinfo=ET_TZ)
+    return pd.Timestamp(local_midnight).tz_convert(tz)
 
 
 def frames_at(symbol: str, daily_all: pd.DataFrame, hourly_all: pd.DataFrame, t: datetime) -> ContractMarketData:
@@ -166,7 +220,7 @@ def frames_at(symbol: str, daily_all: pd.DataFrame, hourly_all: pd.DataFrame, t:
     hourly = _FETCHER.compute_intraday_indicators(hourly_slice)
     four_hour = _FETCHER.compute_intraday_indicators(_FETCHER.resample_to_4h(hourly_slice))
 
-    completed = _completed_daily(daily_all, ny_date).tail(LIVE_DAILY_SESSIONS)
+    completed = _completed_daily(daily_all, t)
 
     if hourly_slice.empty:
         today_bars = hourly_slice
@@ -177,6 +231,8 @@ def frames_at(symbol: str, daily_all: pd.DataFrame, hourly_all: pd.DataFrame, t:
     if today_bars.empty:
         daily_slice = completed
     else:
+        daily_index = pd.DatetimeIndex(daily_all.index)
+        target_tz = daily_index.tz if not daily_all.empty and daily_index.tz is not None else UTC
         in_progress = pd.DataFrame(
             {
                 "Open": [float(today_bars["Open"].iloc[0])],
@@ -185,7 +241,7 @@ def frames_at(symbol: str, daily_all: pd.DataFrame, hourly_all: pd.DataFrame, t:
                 "Close": [float(today_bars["Close"].iloc[-1])],
                 "Volume": [float(today_bars["Volume"].sum())],
             },
-            index=pd.DatetimeIndex([pd.Timestamp(ny_date, tz="UTC")], name="timestamp"),
+            index=pd.DatetimeIndex([_ny_midnight(ny_date, target_tz)], name="timestamp"),
         )
         daily_slice = pd.concat([completed, in_progress])
 
@@ -221,10 +277,11 @@ def replay_symbol(
 
     records: list[SetupRecord] = []
     last_seen: dict[tuple[str, str, str], datetime] = {}
+    daily_index = pd.DatetimeIndex(daily_all.index) if not daily_all.empty else None
 
     for t in instants:
-        ny_date = t.astimezone(ET_TZ).date()
-        if len(_completed_daily(daily_all, ny_date)) < LIVE_DAILY_SESSIONS:
+        cutoff_instant = t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)
+        if daily_index is None or daily_index.min() > cutoff_instant:
             continue
 
         data = frames_at(symbol, daily_all, hourly_all, t)
