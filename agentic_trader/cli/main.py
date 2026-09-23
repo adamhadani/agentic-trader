@@ -11,6 +11,7 @@ from agentic_trader.cli.commands.alpha_forecast import forecast_study_cmd
 from agentic_trader.cli.commands.alpha_liquidity import liquidity_study_cmd
 from agentic_trader.cli.commands.alpha_universe import universe_snapshot_cmd
 from agentic_trader.cli.commands.backtest import backtest
+from agentic_trader.cli.commands.cards import cards_group
 from agentic_trader.cli.commands.db import db_group
 from agentic_trader.cli.commands.options import gex
 from agentic_trader.cli.commands.pairs import pairs
@@ -94,6 +95,7 @@ cli.add_command(listen)
 cli.add_command(doctor)
 cli.add_command(eval_command, name="eval")
 cli.add_command(db_group, name="db")
+cli.add_command(cards_group, name="cards")
 alpha_group.add_command(universe_snapshot_cmd)
 alpha_group.add_command(liquidity_study_cmd)
 alpha_group.add_command(forecast_study_cmd)

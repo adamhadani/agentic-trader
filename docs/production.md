@@ -109,7 +109,51 @@ healthy observation — a silent whole-universe data failure must be visible in
 | `min_bar_coverage` | 0.8 | Fraction of the reference's active regular-session hourly bars (New York 09:00–15:00 buckets) a name needs to be scanned by strategies. |
 | `coverage_sessions` | 10 | Sessions of hourly bars the coverage gate counts. |
 | `coverage_reference_symbol` | `SPY` | Reference name; if it is unavailable the gate is skipped and the summary says so. |
-| `shadow_ranker_artifact` | unset | Path to a frozen setup-study `ranker.json`, scored in shadow only. Every ranked candidate's `setup_features_v1` vector is recorded in sent-card provenance (`shadow_ranker`) and in one `scan_candidates_ranked` journal event per budgeted scan; the score is recorded only when the artifact's sha256 and `features_version` verify. It never changes ranking, the budget or any card. |
+| `shadow_ranker_artifact` | unset | Path to a frozen setup-study `ranker.json`, scored in shadow only. Every full-universe scan's ranked candidates get a `setup_features_v2` vector, recorded in sent-card provenance (`shadow_ranker`) and in one `scan_candidates_ranked` journal event per budgeted scan (`scope=universe`); the score is recorded only when the artifact's sha256 and `features_version` verify. It never changes ranking, the budget or any card. |
+
+### Shadow card ranker
+
+`scan.shadow_ranker_artifact` scores every ranked candidate in shadow only, whether or
+not it is configured. Live ranking, the per-scan/per-session/per-group card budgets
+and every card sent are governed by `setup_quality` alone; the shadow block never
+reorders a scan, blocks or replaces a card, and earns no shadow, holdout or promotion
+credit by existing.
+
+Only a full-universe scheduled suggestion scan matches the setup study's population:
+the intraday `non_universe_contracts` job and a symbol-restricted `copilot scan`/
+Telegram `/scan` neither compute nor journal shadow evidence at all.
+
+What is recorded, and where:
+
+- every sent card from a full-universe scan carries a `shadow_ranker` provenance block
+  (`features_version` `setup_features_v2`, the feature vector, `score` when a verified
+  artifact is configured, and the artifact's `ranker_sha`);
+- one `scan_candidates_ranked` domain event per budgeted full-universe scan (`EventKind`
+  in `agentic_trader/execution/durable.py`), journaled under stream `scan/{et_date}`
+  with `"scope": "universe"`, and readable with `copilot db events --stream
+  scan/<et-date>`. It carries every ranked candidate that scan considered, sent or
+  runner-up, with its entry/stop/target, `setup_quality`, `rank`, `outcome` (`"sent"`
+  or the reason it was skipped) and shadow block.
+
+`copilot cards outcomes [--days 30]` is a read-only report over those events (filtered
+to `scope=universe`; no other scope is ever journaled today). For each journaled
+candidate it fetches 1-hour bars from the decision time to now (raw adjustment, the
+configured live feed) and labels the realized bracket outcome with the
+same `label_bracket` the setup-outcome study uses (`max_hold_sessions=20`,
+`cost_bps_per_side=5.0`, `agentic_trader/research/setups/labels.py`). It prints counts
+by outcome (sent versus runner-up), with rows the labeler cannot yet resolve —
+IMMATURE, not enough elapsed bars or missing data — counted separately; each group's
+base rates and mean cost-adjusted R; and, per scan, the top-1/top-2 mean cost-adjusted
+R a picker following `setup_quality`, the shadow `score` (when recorded) and a random
+pick would each have realized, so an operator can see whether either scorer would have
+out-selected chance. It sends no orders or Telegram messages and writes nothing back
+to the database.
+
+Switching live ranking away from `setup_quality` to a shadow score is an operator
+decision, not something this report or the shadow block can do by itself. It needs a
+frozen study holdout result plus enough measured evidence from this report and `alpha
+forward`, applied through an explicit config change and the documented restart
+procedure — exactly like promoting any other alpha.
 
 Fetch scaling lives under `market_data:`: `scan_concurrency` (8) bounds the copilot's
 read pool and `max_requests_per_minute` (150) paces provider reads below the 200/minute
