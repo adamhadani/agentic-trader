@@ -29,6 +29,7 @@ from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.setups.features import CROSS_SECTIONAL, MARKET, SETUP
 from agentic_trader.storage.artifacts import save_json_report
 
@@ -219,7 +220,9 @@ def spearman_by_session_bootstrap(
         p_one_sided = float("nan")
     else:
         ci90 = [float(np.percentile(finite, 5)), float(np.percentile(finite, 95))]
-        p_one_sided = float(np.mean(finite <= 0.0))
+        # Add-one bootstrap p-value correction: never report an impossible p=0 from a
+        # finite number of resamples.
+        p_one_sided = (int(np.sum(finite <= 0.0)) + 1) / (finite.size + 1)
 
     return {
         "rho": rho,
@@ -231,9 +234,16 @@ def spearman_by_session_bootstrap(
 
 
 def holm(pvalues: Mapping[str, float]) -> dict[str, float]:
-    """Holm step-down adjustment of a p-value family; returns monotone adjusted p-values."""
-    items = sorted(pvalues.items(), key=lambda kv: kv[1])
-    m = len(items)
+    """Holm step-down adjustment of a p-value family; returns monotone adjusted p-values.
+
+    A non-finite (NaN) input p-value is treated as 1.0 (the most conservative value, never
+    the smallest contributor to rejection) before sorting. Ties -- including every NaN,
+    which all become 1.0 -- are broken by hypothesis name so the result never depends on
+    the input mapping's iteration order.
+    """
+    m = len(pvalues)
+    cleaned = {name: (float(p) if np.isfinite(p) else 1.0) for name, p in pvalues.items()}
+    items = sorted(cleaned.items(), key=lambda kv: (kv[1], kv[0]))
     adjusted: dict[str, float] = {}
     running_max = 0.0
     for rank, (name, p) in enumerate(items):
@@ -246,13 +256,22 @@ def holm(pvalues: Mapping[str, float]) -> dict[str, float]:
 # --- Selection ------------------------------------------------------------------------------
 
 
+_TIE_BREAK_COLUMNS = ("symbol", "strategy", "timeframe", "direction", "decision_at")
+
+
 def top_k_selection(frame: pd.DataFrame, score: str, target: str, k: int) -> pd.Series:
-    """Per session, mean ``target`` of the ``k`` highest-``score`` rows (ties: symbol, strategy)."""
+    """Per session, mean ``target`` of the ``k`` highest-``score`` rows.
+
+    Ties are broken by a full, deterministic key (symbol, strategy, timeframe, direction,
+    decision_at) with a stable sort, so the result never depends on the input row order.
+    """
+    columns = [score, *_TIE_BREAK_COLUMNS]
+    ascending = [False, *([True] * len(_TIE_BREAK_COLUMNS))]
     results: dict = {}
     for session, group in frame.groupby("session"):
         if group.empty:
             continue
-        ordered = group.sort_values([score, "symbol", "strategy"], ascending=[False, True, True])
+        ordered = group.sort_values(columns, ascending=ascending, kind="mergesort")
         results[session] = float(ordered[target].head(k).mean())
     return pd.Series(results, dtype=float).sort_index()
 
@@ -302,6 +321,28 @@ def model_features(frame: pd.DataFrame) -> list[str]:
     )
 
 
+def _is_one_hot_feature(column: str) -> bool:
+    return column.startswith(("strategy=", "timeframe="))
+
+
+def _reindex_features(frame: pd.DataFrame, features: Sequence[str]) -> pd.DataFrame:
+    """Reindex ``frame`` to exactly ``features`` for model fit/predict.
+
+    ``setup_vector`` only ever sets a row's *own* ``strategy=``/``timeframe=`` key, so a
+    real frame is missing (or NaN in) every other one-hot column, and a frame that never
+    saw one strategy/timeframe combination is missing that column entirely. Both cases mean
+    "not this setup" -- 0.0, not a missing value -- and reindexing here (rather than relying
+    on the caller) means scoring never raises `KeyError` when development and holdout don't
+    share every one-hot combination. Every other missing/NaN feature stays NaN: linear
+    models impute it (fit on training rows only) and HGB branches on it natively.
+    """
+    prepared = frame.reindex(columns=list(features)).copy()
+    one_hot_columns = [column for column in features if _is_one_hot_feature(column)]
+    if one_hot_columns:
+        prepared[one_hot_columns] = prepared[one_hot_columns].fillna(0.0)
+    return prepared
+
+
 @dataclass(frozen=True)
 class Fitted:
     name: str
@@ -319,6 +360,8 @@ def fit_scorer(name: str, train: pd.DataFrame, features: Sequence[str], protocol
     if name == "setup_quality":
         return Fitted(name, tuple(feature_list), None, lambda frame: frame["setup_quality"].to_numpy(dtype=float))
 
+    prepared_train = _reindex_features(train, feature_list)
+
     if name == "logistic":
         target = (train["hit"] == "target").astype(int).to_numpy()
         pipeline = Pipeline(
@@ -328,9 +371,12 @@ def fit_scorer(name: str, train: pd.DataFrame, features: Sequence[str], protocol
                 ("model", LogisticRegression(C=protocol.logistic_C, max_iter=1000)),
             ]
         )
-        pipeline.fit(train[feature_list], target)
+        pipeline.fit(prepared_train, target)
         return Fitted(
-            name, tuple(feature_list), pipeline, lambda frame: pipeline.predict_proba(frame[feature_list])[:, 1]
+            name,
+            tuple(feature_list),
+            pipeline,
+            lambda frame: pipeline.predict_proba(_reindex_features(frame, feature_list))[:, 1],
         )
 
     if name == "ridge":
@@ -342,14 +388,18 @@ def fit_scorer(name: str, train: pd.DataFrame, features: Sequence[str], protocol
                 ("model", Ridge(alpha=protocol.ridge_alpha)),
             ]
         )
-        pipeline.fit(train[feature_list], target)
-        return Fitted(name, tuple(feature_list), pipeline, lambda frame: pipeline.predict(frame[feature_list]))
+        pipeline.fit(prepared_train, target)
+        return Fitted(
+            name, tuple(feature_list), pipeline, lambda frame: pipeline.predict(_reindex_features(frame, feature_list))
+        )
 
     if name == "hgb":
         target = train["r_cost"].to_numpy(dtype=float)
         model = HistGradientBoostingRegressor(**protocol.hgb_params)
-        model.fit(train[feature_list], target)
-        return Fitted(name, tuple(feature_list), model, lambda frame: model.predict(frame[feature_list]))
+        model.fit(prepared_train, target)
+        return Fitted(
+            name, tuple(feature_list), model, lambda frame: model.predict(_reindex_features(frame, feature_list))
+        )
 
     raise ValueError(f"Unknown scorer: {name!r}")
 
@@ -371,6 +421,44 @@ def _linear_payload(fitted: Fitted) -> dict:
 
 
 # --- Study internals -----------------------------------------------------------------------
+
+
+def _ny_session_date(decision_at) -> date:
+    return decision_at.astimezone(ET_TZ).date()
+
+
+def _validate_frame(frame: pd.DataFrame, window: tuple[date, date], label: str) -> pd.DataFrame:
+    """Derive/validate ``session`` and check every row falls inside ``window`` (inclusive).
+
+    ``session`` is the New York calendar date of ``decision_at`` -- both scans of a day
+    share one session. If the column is absent it is derived here; if present, it must
+    match exactly (a caller-supplied session that disagrees with its own decision_at is a
+    bug worth failing loudly on, not silently overriding).
+    """
+    derived = frame["decision_at"].map(_ny_session_date)
+    if "session" not in frame.columns:
+        frame = frame.assign(session=derived)
+    else:
+        mismatched = frame["session"] != derived
+        if mismatched.any():
+            raise ValueError(
+                f"{label}: 'session' does not match the New York date of 'decision_at' "
+                f"for {int(mismatched.sum())} row(s)"
+            )
+
+    start, end = window
+    outside = (frame["session"] < start) | (frame["session"] > end)
+    if outside.any():
+        raise ValueError(
+            f"{label}: {int(outside.sum())} row(s) have a session date outside {start.isoformat()}..{end.isoformat()}"
+        )
+    return frame
+
+
+def _require_disjoint_sessions(dev_sessions: set, hold_sessions: set) -> None:
+    overlap = dev_sessions & hold_sessions
+    if overlap:
+        raise ValueError(f"development and holdout sessions must be disjoint, overlap: {sorted(overlap)[:5]}")
 
 
 def _drop_immature(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
@@ -405,7 +493,7 @@ def _bootstrap_kwargs(protocol: SetupStudyProtocol) -> dict:
     }
 
 
-def _h1_h2(frame: pd.DataFrame, protocol: SetupStudyProtocol) -> tuple[dict, dict, dict]:
+def _h1_h2(frame: pd.DataFrame, protocol: SetupStudyProtocol) -> tuple[dict, dict, dict, list[str]]:
     boot_kwargs = _bootstrap_kwargs(protocol)
     h1 = spearman_by_session_bootstrap(frame, "setup_quality", "r_cost", **boot_kwargs)
     h2 = {
@@ -413,47 +501,91 @@ def _h1_h2(frame: pd.DataFrame, protocol: SetupStudyProtocol) -> tuple[dict, dic
         for letter, feature in zip(_H2_LETTERS, CROSS_SECTIONAL, strict=True)
     }
     pvalues = {"H1": h1["p_one_sided"], **{name: result["p_one_sided"] for name, result in h2.items()}}
-    return h1, h2, holm(pvalues)
+    nan_hypotheses = sorted(name for name, p in pvalues.items() if not np.isfinite(p))
+    return h1, h2, holm(pvalues), nan_hypotheses
 
 
-def _fold_metrics(dev: pd.DataFrame, features: list[str], protocol: SetupStudyProtocol) -> dict[str, list[float]]:
+def _fold_scored_frame(
+    name: str, train: pd.DataFrame, test: pd.DataFrame, features: list[str], protocol: SetupStudyProtocol
+) -> tuple[pd.DataFrame | None, str]:
+    """The scored test frame for one (scorer, fold), or ``(None, "")`` if fitting/scoring fails.
+
+    A degenerate training fold (e.g. a single hit class reaching ``logistic``) is a data
+    problem, not a code bug: it is caught here and surfaces as a missing (NaN) fold metric,
+    which ``_require_complete_fold_evidence`` then turns into a clear development failure.
+    """
+    if train.empty or test.empty:
+        return None, ""
+    try:
+        if name == "setup_quality":
+            return test, "setup_quality"
+        fitted = fit_scorer(name, train, features, protocol)
+        scored = test.copy()
+        scored["_score"] = fitted.predict(test)
+        return scored, "_score"
+    except Exception:
+        return None, ""
+
+
+def _selection_mean(scored: pd.DataFrame | None, score_col: str, target: str, k: int) -> float:
+    if scored is None:
+        return float("nan")
+    selection = top_k_selection(scored, score_col, target, k)
+    return float(selection.mean()) if not selection.empty else float("nan")
+
+
+def _fold_metrics(
+    dev: pd.DataFrame, features: list[str], protocol: SetupStudyProtocol
+) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+    """Per-fold top-``top_k`` metrics (used for model selection) and top-1 (descriptive only).
+
+    Every scorer gets exactly one entry per fold -- ``NaN`` on any failure or empty fold --
+    so every candidate's list length always equals the number of folds; the caller decides
+    what to do with an incomplete/non-finite candidate.
+    """
     sessions = sorted(dev["session"].unique())
     folds = purged_walk_forward(sessions, protocol.cv_folds, protocol.embargo_sessions)
     top_k = protocol.acceptance["top_k"]
     metrics: dict[str, list[float]] = {name: [] for name in (*SCORERS, "random")}
+    metrics_top1: dict[str, list[float]] = {name: [] for name in (*SCORERS, "random")}
 
     for train_sessions, test_sessions in folds:
-        if not train_sessions or not test_sessions:
-            continue
-        train = dev[dev["session"].isin(train_sessions)]
-        test = dev[dev["session"].isin(test_sessions)]
-        if train.empty or test.empty:
-            continue
+        train = dev[dev["session"].isin(train_sessions)] if train_sessions else dev.iloc[0:0]
+        test = dev[dev["session"].isin(test_sessions)] if test_sessions else dev.iloc[0:0]
 
         for name in SCORERS:
-            if name == "setup_quality":
-                scored, score_col = test, "setup_quality"
-            else:
-                fitted = fit_scorer(name, train, features, protocol)
-                scored = test.copy()
-                scored["_score"] = fitted.predict(test)
-                score_col = "_score"
-            selection = top_k_selection(scored, score_col, "r_cost", top_k)
-            if not selection.empty:
-                metrics[name].append(float(selection.mean()))
+            scored, score_col = _fold_scored_frame(name, train, test, features, protocol)
+            metrics[name].append(_selection_mean(scored, score_col, "r_cost", top_k))
+            metrics_top1[name].append(_selection_mean(scored, score_col, "r_cost", 1))
 
-        random_series = random_selection(test, "r_cost", top_k)
-        if not random_series.empty:
-            metrics["random"].append(float(random_series.mean()))
+        if test.empty:
+            metrics["random"].append(float("nan"))
+            metrics_top1["random"].append(float("nan"))
+        else:
+            metrics["random"].append(float(random_selection(test, "r_cost", top_k).mean()))
+            metrics_top1["random"].append(float(random_selection(test, "r_cost", 1).mean()))
 
-    return metrics
+    return metrics, metrics_top1
+
+
+def _require_complete_fold_evidence(fold_metrics: Mapping[str, list[float]], cv_folds: int) -> None:
+    """Every scorer must have exactly ``cv_folds`` valid, finite fold metrics.
+
+    A missing or non-finite fold (a degenerate training set, an empty test fold) is
+    insufficient evidence for model selection -- fail the whole development phase rather
+    than silently selecting a winner off a partial record.
+    """
+    for name, values in fold_metrics.items():
+        finite_count = sum(1 for value in values if np.isfinite(value))
+        if len(values) != cv_folds or finite_count != cv_folds:
+            raise ValueError(
+                f"scorer {name!r} has {finite_count}/{cv_folds} valid finite fold metrics "
+                "(need exactly cv_folds) -- insufficient CV evidence for model selection"
+            )
 
 
 def _select_winner(fold_metrics: Mapping[str, list[float]]) -> str:
-    medians = {
-        name: (float(np.median(fold_metrics[name])) if fold_metrics.get(name) else float("-inf"))
-        for name in _FITTED_CANDIDATES
-    }
+    medians = {name: float(np.median(fold_metrics[name])) for name in _FITTED_CANDIDATES}
     best = max(medians.values())
     for name in _FITTED_CANDIDATES:  # SCORERS order breaks ties.
         if medians[name] == best:
@@ -487,111 +619,145 @@ def execute_setup_study(
         directory / "manifest.json",
     )
 
+    # The whole development phase -- including H1/H2, CV, the final refit and the ranker
+    # artifact bytes -- is computed here before anything is written. Any failure anywhere in
+    # this block must leave development.json (and only development.json) recording it, and
+    # must never call `holdout()`. Nothing below is persisted until the phase fully succeeds,
+    # since `save_json_report` refuses to overwrite an existing file.
     try:
-        raw_development = development()
+        raw_development = _validate_frame(development(), protocol.development, "development")
+        dev, immature_dropped = _drop_immature(raw_development)
+        dev_sessions = set(dev["session"])
+        features = model_features(dev)
+
+        h1, h2, holm_adjusted, holm_nan_hypotheses = _h1_h2(dev, protocol)
+        fold_metrics, fold_metrics_top1 = _fold_metrics(dev, features, protocol)
+        _require_complete_fold_evidence(fold_metrics, protocol.cv_folds)
+        winner = _select_winner(fold_metrics)
+
+        development_doc = {
+            "status": "completed",
+            "immature_dropped": immature_dropped,
+            "n_setups": len(dev),
+            "base_rates": _base_rates(dev),
+            "h1": h1,
+            "h2": h2,
+            "holm_adjusted_p": holm_adjusted,
+            "holm_nan_hypotheses": holm_nan_hypotheses,
+            "fold_metrics": fold_metrics,
+            "fold_metrics_top1": fold_metrics_top1,
+            "winner": winner,
+        }
+
+        fitted_winner = fit_scorer(winner, dev, features, protocol)
+        ranker_doc: dict = {
+            "scorer": winner,
+            "features_version": protocol.features_version,
+            "features": features,
+            "training_window": [protocol.development[0].isoformat(), protocol.development[1].isoformat()],
+            "protocol_id": protocol.identity,
+        }
+        pickle_bytes: bytes | None = None
+        if winner == "hgb":
+            pickle_bytes = pickle.dumps(fitted_winner.model, protocol=_HGB_PICKLE_PROTOCOL)
+            ranker_doc["pickle_path"] = "ranker.pkl"
+            ranker_doc["pickle_sha256"] = hashlib.sha256(pickle_bytes).hexdigest()
+            ranker_doc["hgb_params"] = dict(protocol.hgb_params)
+        else:
+            ranker_doc.update(_linear_payload(fitted_winner))
     except Exception as exc:
         failure = {"status": "failed", "phase": "development", "error": f"{type(exc).__name__}: {exc}"}
         save_json_report(failure, directory / "development.json")
         return failure
 
-    dev, immature_dropped = _drop_immature(raw_development)
-    features = model_features(dev)
-
-    h1, h2, holm_adjusted = _h1_h2(dev, protocol)
-    fold_metrics = _fold_metrics(dev, features, protocol)
-    winner = _select_winner(fold_metrics)
-
-    development_doc = {
-        "status": "completed",
-        "immature_dropped": immature_dropped,
-        "n_setups": len(dev),
-        "base_rates": _base_rates(dev),
-        "h1": h1,
-        "h2": h2,
-        "holm_adjusted_p": holm_adjusted,
-        "fold_metrics": fold_metrics,
-        "winner": winner,
-    }
     save_json_report(development_doc, directory / "development.json")
-
-    fitted_winner = fit_scorer(winner, dev, features, protocol)
-    ranker_doc: dict = {
-        "scorer": winner,
-        "features_version": protocol.features_version,
-        "features": features,
-        "training_window": [protocol.development[0].isoformat(), protocol.development[1].isoformat()],
-        "protocol_id": protocol.identity,
-    }
-    if winner == "hgb":
-        pickle_bytes = pickle.dumps(fitted_winner.model, protocol=_HGB_PICKLE_PROTOCOL)
+    if pickle_bytes is not None:
         pickle_path = directory / "ranker.pkl"
         pickle_path.write_bytes(pickle_bytes)
         pickle_path.chmod(0o600)
-        ranker_doc["pickle_path"] = "ranker.pkl"
-        ranker_doc["pickle_sha256"] = hashlib.sha256(pickle_bytes).hexdigest()
-        ranker_doc["hgb_params"] = dict(protocol.hgb_params)
-    else:
-        ranker_doc.update(_linear_payload(fitted_winner))
     save_json_report(ranker_doc, directory / "ranker.json")
-
     ranker_sha256 = hashlib.sha256((directory / "ranker.json").read_bytes()).hexdigest()
     save_json_report({"winner": winner, "ranker_sha256": ranker_sha256}, directory / "selection.json")
 
     # Only now -- after both artifacts above are saved and hashed -- may holdout be read.
-    raw_holdout = holdout()
-    hold, holdout_immature_dropped = _drop_immature(raw_holdout)
+    # A failure anywhere in this block (including reading `holdout()` itself) is recorded in
+    # holdout.json only; ranker.json/selection.json above are already durable.
+    try:
+        raw_holdout = _validate_frame(holdout(), protocol.holdout, "holdout")
+        _require_disjoint_sessions(dev_sessions, set(raw_holdout["session"]))
+        hold, holdout_immature_dropped = _drop_immature(raw_holdout)
 
-    hold_scored = hold.copy()
-    hold_scored["_winner_score"] = fitted_winner.predict(hold)
-    top_k = protocol.acceptance["top_k"]
-    winner_top2 = top_k_selection(hold_scored, "_winner_score", "r_cost", top_k)
-    quality_top2 = top_k_selection(hold, "setup_quality", "r_cost", top_k)
-    random_top2 = random_selection(hold, "r_cost", top_k)
+        hold_scored = hold.copy()
+        hold_scored["_winner_score"] = fitted_winner.predict(hold)
+        top_k = protocol.acceptance["top_k"]
+        winner_top2 = top_k_selection(hold_scored, "_winner_score", "r_cost", top_k)
+        quality_top2 = top_k_selection(hold, "setup_quality", "r_cost", top_k)
+        random_top2 = random_selection(hold, "r_cost", top_k)
+        winner_top1 = top_k_selection(hold_scored, "_winner_score", "r_cost", 1)
+        quality_top1 = top_k_selection(hold, "setup_quality", "r_cost", 1)
+        random_top1 = random_selection(hold, "r_cost", 1)
 
-    paired = pd.concat({"winner": winner_top2, "setup_quality": quality_top2}, axis=1).dropna()
-    diff_series = paired["winner"] - paired["setup_quality"]
-    boot_kwargs = _bootstrap_kwargs(protocol)
-    diff_boot = session_block_bootstrap(diff_series, np.mean, **boot_kwargs) if not diff_series.empty else np.zeros(0)
-    lower_pct = (1.0 - protocol.acceptance["ci"]) / 2.0 * 100.0
-    upper_pct = 100.0 - lower_pct
-    if diff_boot.size:
-        diff_ci90 = [float(np.percentile(diff_boot, lower_pct)), float(np.percentile(diff_boot, upper_pct))]
-    else:
-        diff_ci90 = [float("nan"), float("nan")]
+        paired = pd.concat({"winner": winner_top2, "setup_quality": quality_top2}, axis=1).dropna()
+        diff_series = paired["winner"] - paired["setup_quality"]
+        boot_kwargs = _bootstrap_kwargs(protocol)
+        diff_boot = (
+            session_block_bootstrap(diff_series, np.mean, **boot_kwargs) if not diff_series.empty else np.zeros(0)
+        )
+        ci_level = protocol.acceptance["ci"]
+        lower_pct = (1.0 - ci_level) / 2.0 * 100.0
+        upper_pct = 100.0 - lower_pct
+        if diff_boot.size:
+            diff_ci = [float(np.percentile(diff_boot, lower_pct)), float(np.percentile(diff_boot, upper_pct))]
+        else:
+            diff_ci = [float("nan"), float("nan")]
 
-    session_counts = hold.groupby("session").size()
-    sessions_with_ge2 = int((session_counts >= 2).sum())
-    winner_mean = float(winner_top2.mean()) if not winner_top2.empty else float("nan")
-    quality_mean = float(quality_top2.mean()) if not quality_top2.empty else float("nan")
+        session_counts = hold.groupby("session").size()
+        sessions_with_ge2 = int((session_counts >= 2).sum())
+        winner_mean = float(winner_top2.mean()) if not winner_top2.empty else float("nan")
+        quality_mean = float(quality_top2.mean()) if not quality_top2.empty else float("nan")
 
-    acceptance_passed = bool(
-        np.isfinite(diff_ci90[0])
-        and diff_ci90[0] > 0
-        and np.isfinite(winner_mean)
-        and winner_mean > 0
-        and sessions_with_ge2 >= protocol.acceptance["min_sessions"]
-        and np.isfinite(quality_mean)
-        and winner_mean > quality_mean
-    )
+        acceptance_passed = bool(
+            np.isfinite(diff_ci[0])
+            and diff_ci[0] > 0
+            and np.isfinite(winner_mean)
+            and winner_mean > 0
+            and sessions_with_ge2 >= protocol.acceptance["min_sessions"]
+            and np.isfinite(quality_mean)
+            and winner_mean > quality_mean
+        )
 
-    holdout_h1 = spearman_by_session_bootstrap(hold, "setup_quality", "r_cost", **boot_kwargs)
+        holdout_h1 = spearman_by_session_bootstrap(hold, "setup_quality", "r_cost", **boot_kwargs)
 
-    holdout_doc = {
-        "winner": winner,
-        "immature_dropped": holdout_immature_dropped,
-        "n_setups": len(hold),
-        "top2_by_session": {
-            "winner": _series_to_json(winner_top2),
-            "setup_quality": _series_to_json(quality_top2),
-            "random": _series_to_json(random_top2),
-        },
-        "winner_top2_mean": winner_mean,
-        "setup_quality_top2_mean": quality_mean,
-        "diff_ci90": diff_ci90,
-        "h1": holdout_h1,
-        "sessions_with_ge2_setups": sessions_with_ge2,
-        "acceptance_passed": acceptance_passed,
-        "acceptance": dict(protocol.acceptance),
-    }
+        holdout_doc = {
+            "status": "completed",
+            "winner": winner,
+            "immature_dropped": holdout_immature_dropped,
+            "n_setups": len(hold),
+            "top2_by_session": {
+                "winner": _series_to_json(winner_top2),
+                "setup_quality": _series_to_json(quality_top2),
+                "random": _series_to_json(random_top2),
+            },
+            "top1_by_session": {
+                "winner": _series_to_json(winner_top1),
+                "setup_quality": _series_to_json(quality_top1),
+                "random": _series_to_json(random_top1),
+            },
+            "winner_top2_mean": winner_mean,
+            "setup_quality_top2_mean": quality_mean,
+            "winner_top1_mean": float(winner_top1.mean()) if not winner_top1.empty else float("nan"),
+            "setup_quality_top1_mean": float(quality_top1.mean()) if not quality_top1.empty else float("nan"),
+            "diff_ci": diff_ci,
+            "diff_ci_level": ci_level,
+            "h1": holdout_h1,
+            "sessions_with_ge2_setups": sessions_with_ge2,
+            "acceptance_passed": acceptance_passed,
+            "acceptance": dict(protocol.acceptance),
+        }
+    except Exception as exc:
+        failure = {"status": "failed", "phase": "holdout", "error": f"{type(exc).__name__}: {exc}"}
+        save_json_report(failure, directory / "holdout.json")
+        return failure
+
     save_json_report(holdout_doc, directory / "holdout.json")
     return holdout_doc

@@ -24,6 +24,7 @@
   "features_version": "setup_features_v1",
   "feed": "alpaca:sip",
   "hgb_params": {
+    "early_stopping": false,
     "learning_rate": 0.05,
     "max_depth": 3,
     "max_iter": 200,

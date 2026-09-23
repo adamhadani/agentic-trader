@@ -7,7 +7,7 @@ import hashlib
 import json
 import platform
 import re
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
@@ -24,6 +24,7 @@ from agentic_trader.data.evidence import BarAcquisitionError, BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.execution.lifetime_policy import MAX_TRADE_LIFETIME_SECONDS, TradeLifetimePolicy
 from agentic_trader.market.bars import MAX_DECISION_SECONDS, SessionClockPolicy, completed_fixed_bars
+from agentic_trader.market.session import AlpacaCalendarProvider
 from agentic_trader.research.alpha.baselines import (
     BENCHMARK_METHODS,
     ECONOMIC_FEATURES,
@@ -77,10 +78,14 @@ from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_volume_study
+from agentic_trader.research.setups.features import SECTOR_ETF
+from agentic_trader.research.setups.runner import build_setup_frames
+from agentic_trader.research.setups.study import SetupStudyProtocol, execute_setup_study
 from agentic_trader.runtime import runtime_identity, state_directory
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.artifacts import save_json_report
 from agentic_trader.storage.db import SignalDatabase
+from agentic_trader.transport.alpaca import BoundedStockDataClient, BoundedTradingClient
 
 
 @asynccontextmanager
@@ -1024,3 +1029,70 @@ async def alpha_panel_study_cmd(protocol_path, output):
     click.echo(json.dumps(report, indent=2))
     if result["status"] != PanelStudyStatus.COMPLETED:
         raise click.ClickException("Panel study failed; retained inputs/receipts explain the unavailable comparisons")
+
+
+@alpha_group.command("setup-study")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--max-workers", type=int, default=6, show_default=True, help="Replay ProcessPoolExecutor width")
+@click.option(
+    "--cache", type=click.Path(path_type=Path), default=None, help="Bar cache directory; defaults to OUTPUT/raw"
+)
+@coro
+async def alpha_setup_study_cmd(protocol_path, output, max_workers, cache):
+    """Fetch/replay/label the frozen setup-outcome study, then run its development/holdout split."""
+    document = json.loads(await asyncio.to_thread(protocol_path.read_text))
+    protocol = SetupStudyProtocol(**document)
+
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+
+    config = load_config()
+    expected_strategy_config = config.strategies.model_dump(mode="json")
+    if protocol.strategy_config != expected_strategy_config:
+        raise click.ClickException(
+            "Protocol strategy_config does not match the loaded config.yaml strategies; "
+            "refusing to run a study against a stale strategy configuration"
+        )
+    if dict(protocol.sector_etf) != dict(SECTOR_ETF):
+        raise click.ClickException(
+            "Protocol sector_etf does not match research.setups.features.SECTOR_ETF; "
+            "refusing to run a study against a stale sector map"
+        )
+
+    universe = [(entry.symbol, entry.sector) for group in config.universe.groups.values() for entry in group]
+    cache_dir = cache if cache is not None else output / "raw"
+
+    with ExitStack() as clients:
+        calendar_client = BoundedTradingClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            paper=config.alpaca_paper,
+            request_timeout=config.market_data.timeout_seconds,
+        )
+        clients.callback(calendar_client._session.close)
+        data_client = BoundedStockDataClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            request_timeout=config.market_data.timeout_seconds,
+        )
+        clients.callback(data_client._session.close)
+        bars = AlpacaDataProvider(
+            stock_client=data_client,
+            feed="sip",
+            evidence=BarEvidenceStore(state_directory() / "market-data", config.market_data.evidence),
+        )
+        calendar = AlpacaCalendarProvider(trading_client=calendar_client)
+
+        development, holdout, coverage = await build_setup_frames(
+            protocol, universe, bars, calendar, cache_dir, config, max_workers=max_workers
+        )
+
+    environment = await asyncio.to_thread(research_environment)
+    environment["coverage"] = coverage
+    result = await asyncio.to_thread(
+        execute_setup_study, protocol, output, development=development, holdout=holdout, environment=environment
+    )
+    click.echo(json.dumps(result, indent=2, default=str))
+    if result.get("status") == "failed":
+        raise click.ClickException("Setup study failed during development; see development.json for the reason")
