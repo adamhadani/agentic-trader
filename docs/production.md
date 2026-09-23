@@ -86,6 +86,70 @@ date in the window the note reads "Unverified — earnings calendar unavailable"
 the gate fails open (never blocks on unverifiable data). Held positions are not yet
 warned ahead of an earnings date — that is a follow-up, not covered by this gate.
 
+**Card freshness (September 23).** A card is an offer valid only until the close of
+the regular session it was issued in, not until the operator happens to read it. A
+tap (Telegram button or CLI `execute`) re-assesses the card against the current
+price, session and gates instead of blindly submitting the original bracket. The
+approved bracket itself is never silently changed; any change of price or size
+becomes a *new* card that needs its own fresh tap. Config lives under
+`execution.card_freshness`:
+
+| Key | Default | Meaning |
+| --- | ---: | --- |
+| `enabled` | `true` | `false` restores the legacy tap (admission's own drift/age checks only, no re-assessment). |
+| `fresh_seconds` | 1800 | Age below which a same-session tap is still `EXECUTE`. |
+| `fresh_max_r` | 0.25 | `abs(r_consumed)` bound for `EXECUTE`; `r_consumed = sign × (price − entry) / |entry − stop|`. |
+| `reprice_min_risk_fraction` | 0.5 | Minimum fraction of the original stop distance the current price must still have as remaining risk for `REPRICE`. |
+
+A tap resolves to exactly one of four outcomes:
+
+| Outcome | Behaviour |
+| --- | --- |
+| `EXECUTE` | Same session, within `fresh_seconds` and `fresh_max_r`. Unchanged path: `EntryExecutionService.authorize` with the original bracket. The freshness decision never authorizes by itself — admission still enforces drift, macro, capacity, session and deadlines on its own terms. |
+| `REPRICE` | Same session, open, past the fresh bounds, price strictly between stop and target, remaining risk and reward:risk still acceptable, and every gate (halt, RTH, macro, regime, earnings) passes. The old signal is atomically expired and a replacement `PENDING` signal is recorded — entry at the current price, same stop/target, quantity re-derived from the original risk dollars — in the *same* transaction as its outbox notification, so a crash never leaves a replacement without its card or a card without its signal. The tap reply says a re-priced card was sent; the new card needs its own tap. |
+| `MISSED` | Same session, but the geometry or a gate fails (through the stop/target, too close to the stop, reward:risk below `risk.min_risk_reward_ratio`, or a failing gate). The old signal is expired and the reply offers **[🔄 Re-evaluate]**. |
+| `EXPIRED` | The issuing session has ended (`now ≥ valid_until`) or the market is not in RTH. The old signal is expired; the reply gives the reason and the broker's next regular open, and offers **[🔄 Re-evaluate]**. `EXPIRED` is a live signal status, not a terminal-only label: every status-gated query (duplicate rule, `/perf`, positions) already treats it as non-executed. |
+
+A price fetch failure, or a tap-time session/gate read failure (regime, macro,
+earnings), refuses the tap with a retryable message and leaves the card `PENDING`
+exactly as it was — safe to tap again. Telegram restores the original keyboard
+(the tapped execute button plus dismiss) on the card so the operator can retry
+without a fresh scan; a multi-tier card only gets back the tier that was actually
+tapped, since the others are not reconstructable from the reply alone.
+
+**Re-evaluate** (`reval_<signal_id>`) runs a single-symbol scan
+(`run_scan(symbols=[contract], budget=ScanBudget.NONE)`, with the duplicate-signal
+rule exempted for that one contract) and never reuses the old signal's levels. The
+button reply comes back immediately ("🔄 Re-evaluating…"); the outcome — a fresh
+card, "no valid setup right now", or a closed-market refusal with the next regular
+open — is delivered later through the durable outbox, the same as any other
+notification. The button is single-use: Telegram clears it on tap regardless of the
+outcome, so at-least-once delivery cannot replay a re-evaluation.
+
+**Card rendering.** Every card that carries a `valid_until` (recorded in
+`decision_provenance` when the contract is in RTH at scan/tap time) shows
+"• **Valid until:** HH:MM NY" under the Earnings line, in both the Telegram and
+terminal cards. A `REPRICE` replacement additionally prefixes its title with
+"🔄 UPDATED CARD (re-priced from #N, first issued HH:MM NY)"; `first_issued_at` is
+carried across a whole chain of re-prices, so a twice-repriced card still cites the
+original issue time. A legacy card without `valid_until` expires on the New York
+date change instead.
+
+**Evidence.** Every tap appends one `card_tap_assessed` domain event to the
+`card/{signal_id}` stream: outcome, tap latency in seconds, price, `r_consumed` and
+reason. A replacement signal's `decision_provenance` additionally records
+`reprices` (the old signal id), `first_issued_at`, `tap_latency_seconds` and
+`r_consumed`. This is the evidence for how late the operator actually acts on a
+card, and whether a late-read card still works; it is a `domain_events` row
+(stream `card/{signal_id}`, kind `card_tap_assessed`) like other workflow evidence,
+with no dedicated CLI view yet.
+
+**Budget.** A `REPRICE` replacement does not spend a fresh session-card slot: the
+budget counts signals whose provenance lacks `reprices`. Re-evaluate uses the
+`NONE` budget, since it is an explicit operator request. `EXPIRED` signals still
+count toward the session budget — the budget remains "cards sent today", not
+"cards still valid".
+
 **Disabling the cron scans** is a config edit: `scheduler.suggestion_scan_times_et: []`
 registers no cron job, so neither an automatic suggestion scan nor the end-of-session
 digest runs (`Suggestion scans disabled (no times configured)` at startup). Manual

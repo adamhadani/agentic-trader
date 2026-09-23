@@ -255,3 +255,55 @@ async def test_unconfigured_notifier_does_not_consume_outbox(store, app_config, 
     item_id = await store.enqueue_notification("unconfigured", "message", {"text": "example"})
     assert not await NotificationDispatcher(store, mock_notifier, app_config.execution).dispatch_one()
     assert (await store.get_work(item_id)).attempts == 0
+
+
+def _freshness_copilot(app_config, store, service, mock_notifier, *, price=100.0):
+    """A copilot with card freshness ENABLED whose taps reach the real entry service."""
+    assert app_config.execution.card_freshness.enabled
+    app_config.copilot_chat_enabled = False
+    copilot = TradingCopilot(
+        app_config,
+        db=store.db,
+        broker=MagicMock(supports_activity_ledger=False, supports_trade_stream=False),
+        notifier=mock_notifier,
+        entry_service=service,
+        alpha_repository=AsyncMock(),
+    )
+    copilot.data_fetcher = MagicMock()
+    copilot.data_fetcher.fetch_latest_price.return_value = price
+    now = datetime.now(UTC)
+    copilot.session_provider = AsyncMock()
+    copilot.session_provider.get_session_info.return_value = MagicMock(
+        is_open=True, is_rth=True, next_open=None, next_close=now + timedelta(hours=2)
+    )
+    copilot.calendar = AsyncMock()
+    copilot.calendar.is_in_lockout_window.return_value = (False, None)
+    copilot.regime_detector = AsyncMock()
+    copilot.regime_detector.get_regime.return_value = MagicMock(
+        summary_text="calm", breakout_allowed=True, min_rr_threshold=2.0, risk_multiplier=1.0
+    )
+    copilot.earnings_calendar = None
+    return copilot
+
+
+@pytest.mark.parametrize("tier_quantity", [None, 5.0])
+async def test_fresh_tap_queues_the_original_bracket_through_the_real_entry_service(
+    store, app_config, entry, service, mock_notifier, tier_quantity
+):
+    request = await entry()
+    copilot = _freshness_copilot(app_config, store, service, mock_notifier)
+
+    await copilot.execute_signal_by_id(request.signal_id, quantity=tier_quantity)
+
+    [work] = await store.list_work(WorkKind.ENTRY)
+    payload = work.payload
+    assert (payload["signal_id"], payload["entry_price"], payload["stop_loss"], payload["take_profit"]) == (
+        request.signal_id,
+        100.0,
+        95.0,
+        110.0,
+    )
+    assert payload["quantity"] == (tier_quantity or 10.0)
+    copilot.data_fetcher.fetch_latest_price.assert_called_once()
+    events = await store.events(stream=f"card/{request.signal_id}")
+    assert [e["payload"]["outcome"] for e in events] == ["execute"]

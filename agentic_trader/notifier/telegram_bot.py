@@ -4,6 +4,7 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Coroutine
+from datetime import datetime
 from functools import wraps
 from typing import Any
 
@@ -45,6 +46,7 @@ from agentic_trader.constants import (
     SignalStatus,
 )
 from agentic_trader.execution.freshness import ExecutionReply
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.transport import (
     ObservedPollingRequest,
     RetryingTelegramRequest,
@@ -60,6 +62,34 @@ from agentic_trader.telemetry.collector import MetricsCollector, global_metrics
 logger = logging.getLogger(__name__)
 
 
+def _ny_hhmm(value: str | None) -> str | None:
+    """Convert an aware ISO-8601 timestamp string to an ``HH:MM`` New York clock string.
+
+    Returns None for a missing, unparseable or naive value, so a card renders without
+    the affected line rather than raising.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except TypeError, ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(ET_TZ).strftime("%H:%M")
+
+
+def _exec_button_label(execution_mode: str) -> str:
+    mode_lower = execution_mode.lower()
+    if mode_lower == ExecutionMode.PAPER:
+        return "🚀 Execute (Paper)"
+    if mode_lower == ExecutionMode.TRADOVATE:
+        return "🚀 Approve & Execute"
+    if mode_lower == ExecutionMode.ALPACA:
+        return "🚀 Execute (Alpaca)"
+    return "✅ Acknowledge & Tracking"
+
+
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
@@ -67,12 +97,22 @@ def format_alert_card(
     execution_mode: str = ExecutionMode.PAPER,
     regime_summary: str | None = None,
     probe_risk_cap: float | None = None,
+    valid_until: str | None = None,
+    reprices: int | None = None,
+    first_issued_at: str | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     earnings_line = f"• <b>Earnings:</b> {html.escape(eval_res.earnings_note)}\n" if eval_res.earnings_note else ""
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
+    valid_until_hhmm = _ny_hhmm(valid_until)
+    valid_until_line = f"• <b>Valid until:</b> {valid_until_hhmm} NY\n" if valid_until_hhmm else ""
+    updated_card_prefix = ""
+    if reprices is not None:
+        first_issued_hhmm = _ny_hhmm(first_issued_at)
+        issued_part = f", first issued {first_issued_hhmm} NY" if first_issued_hhmm else ""
+        updated_card_prefix = f"🔄 <b>UPDATED CARD (re-priced from #{reprices}{issued_part})</b>\n"
 
     qty = eval_res.quantity
     asset_class = eval_res.asset_class
@@ -156,6 +196,7 @@ def format_alert_card(
 
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
+        f"{updated_card_prefix}"
         f"🚨 <b>TRADE SIGNAL: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
         f"<b>Strategy:</b> {html.escape(strategy)}\n\n"
         f"📊 <b>Levels</b>\n"
@@ -167,6 +208,7 @@ def format_alert_card(
         f"• <b>Notional Exposure:</b> ~${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)\n"
         f"• <b>Macro Check:</b> {macro_status}\n"
         f"{earnings_line}"
+        f"{valid_until_line}"
         f"{regime_line}"
         f"{sizing_section}\n"
         f"📝 <b>Thesis:</b>\n"
@@ -188,12 +230,22 @@ def format_terminal_card(
     portfolio_cash: float = DEFAULT_PORTFOLIO_CASH,
     execution_mode: str = ExecutionMode.PAPER,
     regime_summary: str | None = None,
+    valid_until: str | None = None,
+    reprices: int | None = None,
+    first_issued_at: str | None = None,
 ) -> str:
     """ASCII/plain text formatted card for terminal display."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     earnings_line = f"• Earnings:         {eval_res.earnings_note}\n" if eval_res.earnings_note else ""
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
+    valid_until_hhmm = _ny_hhmm(valid_until)
+    valid_until_line = f"• Valid until:      {valid_until_hhmm} NY\n" if valid_until_hhmm else ""
+    updated_card_prefix = ""
+    if reprices is not None:
+        first_issued_hhmm = _ny_hhmm(first_issued_at)
+        issued_part = f", first issued {first_issued_hhmm} NY" if first_issued_hhmm else ""
+        updated_card_prefix = f"🔄 UPDATED CARD (re-priced from #{reprices}{issued_part})\n"
 
     qty = eval_res.quantity
     asset_class = eval_res.asset_class
@@ -275,7 +327,7 @@ def format_terminal_card(
     border = "=" * 65
     return f"""
 {border}
-🚨 TRADE SIGNAL: {qty_str} {eval_res.contract} ({eval_res.direction})
+{updated_card_prefix}🚨 TRADE SIGNAL: {qty_str} {eval_res.contract} ({eval_res.direction})
 Strategy: {strategy}
 
 📊 Levels
@@ -288,7 +340,7 @@ Strategy: {strategy}
 • Capital Risk:     {risk_pct}% of ${portfolio_cash:,.0f}
 • Notional Value:   ${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)
 • Macro Check:      {macro_status}
-{earnings_line}{regime_line}{sizing_section}
+{earnings_line}{valid_until_line}{regime_line}{sizing_section}
 📝 Thesis:
 {eval_res.thesis_summary}
 
@@ -353,6 +405,7 @@ class TelegramNotifier:
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
         flatten_handler: Callable[[bool], Awaitable[str]] | None = None,
         execute_handler: Callable[..., Awaitable[ExecutionReply]] | None = None,
+        reevaluate_handler: Callable[[int], Awaitable[ExecutionReply]] | None = None,
         perf_provider: Callable[[], Awaitable[str]] | None = None,
         macro_provider: Callable[[], Awaitable[str]] | None = None,
         explain_macro_provider: Callable[[], Awaitable[str]] | None = None,
@@ -386,6 +439,7 @@ class TelegramNotifier:
         self.close_handler = close_handler
         self.flatten_handler = flatten_handler
         self.execute_handler = execute_handler
+        self.reevaluate_handler = reevaluate_handler
         self.perf_provider = perf_provider
         self.macro_provider = macro_provider
         self.explain_macro_provider = explain_macro_provider
@@ -939,14 +993,17 @@ class TelegramNotifier:
         data = query.data
         msg = query.message
 
-        async def _safe_clear_markup() -> None:
+        async def _safe_set_markup(markup: InlineKeyboardMarkup | None) -> None:
             if hasattr(query, "edit_message_reply_markup"):
                 try:
-                    markup_res = query.edit_message_reply_markup(reply_markup=None)
+                    markup_res = query.edit_message_reply_markup(reply_markup=markup)
                     if inspect.isawaitable(markup_res):
                         await markup_res
                 except Exception:
                     pass
+
+        async def _safe_clear_markup() -> None:
+            await _safe_set_markup(None)
 
         if data == "cmd_scan":
             await query.answer("Running quantitative scan...")
@@ -989,8 +1046,28 @@ class TelegramNotifier:
                 await query.answer(f"Submitting order{qty_msg} to broker...")
                 await _safe_clear_markup()
                 reply = await self.execute_handler(signal_id, quantity=quantity)
+                if getattr(reply, "retryable", False):
+                    # The card is still PENDING (e.g. price/checks unavailable); restore the
+                    # tapped button plus dismiss so the operator can retry. Other tiers on a
+                    # multi-tier card are not reconstructable here, so only the button that was
+                    # actually tapped is restored.
+                    restore_markup = InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(_exec_button_label(self.execution_mode), callback_data=data),
+                                InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}"),
+                            ]
+                        ]
+                    )
+                    await _safe_set_markup(restore_markup)
                 if msg and hasattr(msg, "reply_text"):
-                    await msg.reply_text(reply.text, parse_mode="HTML")
+                    if reply.offer_reevaluate:
+                        reeval_markup = InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("🔄 Re-evaluate", callback_data=f"reval_{signal_id}")]]
+                        )
+                        await msg.reply_text(reply.text, parse_mode="HTML", reply_markup=reeval_markup)
+                    else:
+                        await msg.reply_text(reply.text, parse_mode="HTML")
             else:
                 await query.answer("Execution handler unavailable; no order submitted.", show_alert=True)
 
@@ -1010,6 +1087,21 @@ class TelegramNotifier:
                     if dismissed
                     else f"Signal #{signal_id} is no longer pending; no trade state changed."
                 )
+        elif data.startswith("reval_"):
+            signal_id = int(data.split("_")[1])
+            logger.info(
+                "Re-evaluate button clicked for signal #%d",
+                signal_id,
+                extra={"signal_id": signal_id, "action": "reevaluate"},
+            )
+            if self.reevaluate_handler:
+                await query.answer("Re-evaluating…")
+                await _safe_clear_markup()
+                reply = await self.reevaluate_handler(signal_id)
+                if msg and hasattr(msg, "reply_text"):
+                    await msg.reply_text(reply.text, parse_mode="HTML")
+            else:
+                await query.answer("Re-evaluate handler unavailable.", show_alert=True)
         elif data == "panic_confirm":
             await query.answer("Executing emergency kill switch...")
             await _safe_clear_markup()
@@ -1045,7 +1137,7 @@ class TelegramNotifier:
         first_issued_at: str | None = None,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
-        # by the scan and by tap-time re-pricing; accepted here so delivery never fails.
+        # by the scan and by tap-time re-pricing; rendered on both cards below.
         # Always output to terminal/logs
         print(
             format_terminal_card(
@@ -1054,6 +1146,9 @@ class TelegramNotifier:
                 self.portfolio_cash,
                 execution_mode=self.execution_mode,
                 regime_summary=regime_summary,
+                valid_until=valid_until,
+                reprices=reprices,
+                first_issued_at=first_issued_at,
             )
         )
 
@@ -1071,17 +1166,12 @@ class TelegramNotifier:
             execution_mode=self.execution_mode,
             regime_summary=regime_summary,
             probe_risk_cap=probe_risk_cap,
+            valid_until=valid_until,
+            reprices=reprices,
+            first_issued_at=first_issued_at,
         )
 
-        mode_lower = self.execution_mode.lower()
-        if mode_lower == ExecutionMode.PAPER:
-            exec_btn_text = "🚀 Execute (Paper)"
-        elif mode_lower == ExecutionMode.TRADOVATE:
-            exec_btn_text = "🚀 Approve & Execute"
-        elif mode_lower == ExecutionMode.ALPACA:
-            exec_btn_text = "🚀 Execute (Alpaca)"
-        else:
-            exec_btn_text = "✅ Acknowledge & Tracking"
+        exec_btn_text = _exec_button_label(self.execution_mode)
 
         tiers = eval_res.sizing_tiers
         asset_class = eval_res.asset_class

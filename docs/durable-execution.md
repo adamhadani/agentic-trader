@@ -82,6 +82,32 @@ Unsupported external adapters fail closed until they implement this contract;
 local simulation explicitly skips external market checks. Current broker entry
 admission supports Alpaca equities; crypto brackets remain unsupported.
 
+### Card freshness precedes authorize (September 23)
+
+Before a tapped `PENDING` card reaches `authorize` at all, `execution.card_freshness`
+(when enabled) re-judges it against the current price, session and gates and returns
+one of `EXECUTE`/`REPRICE`/`MISSED`/`EXPIRED`. This check is strictly upstream of
+admission and **never authorizes anything by itself**: only `EXECUTE` falls through
+to the unchanged `EntryExecutionService.authorize` path with the original,
+immutable bracket, and admission still independently enforces
+`signal_max_age_seconds`, price drift, macro lockout, capacity and session/deadline
+checks exactly as before. `REPRICE`, `MISSED` and `EXPIRED` never call `authorize`;
+they instead expire the tapped signal (a conditional `PENDING`→`EXPIRED` update, so a
+second tap on the same card is refused) and, for `REPRICE`, atomically record a
+*replacement* `PENDING` signal together with its outbox notification row in one
+transaction — a crash between the two is impossible, not merely retried. The
+replacement is a brand-new signal with its own id and client order id; it needs its
+own fresh tap and carries no authorization from the card it replaced.
+
+`SignalStatus.EXPIRED` is now a live, reachable status rather than a value that only
+existed for completeness. Every status-gated query was re-audited for it: enqueue and
+dismiss still accept `PENDING` only, the recent-duplicate rule still ignores status
+(so an expired card still blocks a same-contract re-scan — the one exemption is an
+explicit `/scan`-equivalent re-evaluate), and `/perf`/positions continue to ignore any
+non-executed signal, `EXPIRED` included. See
+[card freshness behaviour](production.md#suggestion-scans) for the operator-facing
+outcome table, config keys and the re-evaluate path.
+
 An expired or changed approval is rejected with its reason, retained in the
 journal and notified. The operator requests `/scan` and approves a new proposal.
 No price/quantity is silently changed. The original limit/bracket and client ID

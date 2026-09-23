@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
@@ -395,3 +397,333 @@ def test_format_terminal_card_renders_earnings_line_when_note_set(eval_res):
 
     card_no_note = format_terminal_card(eval_res, strategy="TREND_PULLBACK")
     assert "Earnings:" not in card_no_note
+
+
+# September 23, 2026 is within US daylight time (EDT, UTC-4).
+VALID_UNTIL_UTC = "2026-09-23T20:00:00+00:00"
+VALID_UNTIL_NY_HHMM = "16:00"
+FIRST_ISSUED_UTC = "2026-09-23T14:38:00+00:00"
+FIRST_ISSUED_NY_HHMM = "10:38"
+
+
+def test_format_alert_card_renders_valid_until_line_when_set(eval_res):
+    card = format_alert_card(eval_res, "TREND_PULLBACK", valid_until=VALID_UNTIL_UTC)
+    assert f"• <b>Valid until:</b> {VALID_UNTIL_NY_HHMM} NY" in card
+
+
+def test_format_alert_card_omits_valid_until_line_when_absent(eval_res):
+    card = format_alert_card(eval_res, "TREND_PULLBACK")
+    assert "Valid until" not in card
+
+
+def test_format_alert_card_renders_updated_card_prefix_when_reprices_set(eval_res):
+    card = format_alert_card(
+        eval_res,
+        "TREND_PULLBACK",
+        reprices=16,
+        first_issued_at=FIRST_ISSUED_UTC,
+    )
+    assert f"UPDATED CARD (re-priced from #16, first issued {FIRST_ISSUED_NY_HHMM} NY)" in card
+    assert card.index("UPDATED CARD") < card.index("TRADE SIGNAL")
+
+
+def test_format_alert_card_omits_updated_card_prefix_when_absent(eval_res):
+    card = format_alert_card(eval_res, "TREND_PULLBACK")
+    assert "UPDATED CARD" not in card
+
+
+def test_probe_card_with_updated_prefix_still_starts_with_probe_tag(eval_res):
+    tagged = format_alert_card(
+        eval_res,
+        "alpha_x",
+        probe_risk_cap=100.0,
+        reprices=16,
+        first_issued_at=FIRST_ISSUED_UTC,
+    )
+    assert tagged.startswith("🧪 <b>PAPER PROBE</b>")
+    assert "UPDATED CARD" in tagged
+
+
+def test_format_terminal_card_renders_valid_until_line_when_set(eval_res):
+    card = format_terminal_card(eval_res, "TREND_PULLBACK", valid_until=VALID_UNTIL_UTC)
+    assert f"Valid until:      {VALID_UNTIL_NY_HHMM} NY" in card
+
+
+def test_format_terminal_card_omits_valid_until_line_when_absent(eval_res):
+    card = format_terminal_card(eval_res, "TREND_PULLBACK")
+    assert "Valid until" not in card
+
+
+def test_format_terminal_card_renders_updated_card_prefix_when_reprices_set(eval_res):
+    card = format_terminal_card(
+        eval_res,
+        "TREND_PULLBACK",
+        reprices=16,
+        first_issued_at=FIRST_ISSUED_UTC,
+    )
+    assert f"UPDATED CARD (re-priced from #16, first issued {FIRST_ISSUED_NY_HHMM} NY)" in card
+    assert card.index("UPDATED CARD") < card.index("TRADE SIGNAL")
+
+
+def test_format_terminal_card_omits_updated_card_prefix_when_absent(eval_res):
+    card = format_terminal_card(eval_res, "TREND_PULLBACK")
+    assert "UPDATED CARD" not in card
+
+
+@pytest.mark.asyncio
+async def test_send_signal_alert_renders_valid_until_and_updated_card_on_terminal(temp_db, eval_res, capsys):
+    # Unconfigured (no bot token/chat id): send_signal_alert prints the terminal card and
+    # returns without touching Telegram, so this exercises rendering without a bot mock.
+    notifier = TelegramNotifier(bot_token=None, chat_id=None, db=temp_db)
+    result = await notifier.send_signal_alert(
+        eval_res,
+        strategy="TREND_PULLBACK",
+        signal_id=1,
+        valid_until=VALID_UNTIL_UTC,
+        reprices=16,
+        first_issued_at=FIRST_ISSUED_UTC,
+    )
+    assert result is None
+    captured = capsys.readouterr()
+    assert f"Valid until:      {VALID_UNTIL_NY_HHMM} NY" in captured.out
+    assert f"UPDATED CARD (re-priced from #16, first issued {FIRST_ISSUED_NY_HHMM} NY)" in captured.out
+
+
+@pytest.mark.asyncio
+async def test_exec_reply_attaches_reevaluate_button_when_offered(temp_db):
+    mock_exec = AsyncMock(
+        return_value=ExecutionReply(False, "⌛ Missed: past the fresh window.", offer_reevaluate=True)
+    )
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="123456",
+        db=temp_db,
+        execute_handler=mock_exec,
+    )
+
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = "exec_88"
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    expected_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Re-evaluate", callback_data="reval_88")]])
+    query_mock.message.reply_text.assert_called_with(
+        "⌛ Missed: past the fresh window.", parse_mode="HTML", reply_markup=expected_markup
+    )
+
+
+@pytest.mark.asyncio
+async def test_exec_reply_has_no_reevaluate_button_when_not_offered(temp_db):
+    mock_exec = AsyncMock(return_value=ExecutionReply(True, "<b>Executed</b>"))
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="123456",
+        db=temp_db,
+        execute_handler=mock_exec,
+    )
+
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = "exec_89"
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    query_mock.message.reply_text.assert_called_with("<b>Executed</b>", parse_mode="HTML")
+
+
+@pytest.mark.asyncio
+async def test_exec_reply_not_retryable_does_not_restore_keyboard(temp_db):
+    mock_exec = AsyncMock(return_value=ExecutionReply(True, "<b>Executed</b>"))
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="123456",
+        db=temp_db,
+        execute_handler=mock_exec,
+    )
+
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = "exec_42"
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    query_mock.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
+
+
+@pytest.mark.asyncio
+async def test_exec_reply_retryable_restores_original_two_button_keyboard(temp_db):
+    # ``retryable`` is not yet a field on ``ExecutionReply`` (a concurrent change lands it);
+    # a stand-in object with the same attributes exercises the forward-compatible path.
+    reply = SimpleNamespace(
+        ok=False, text="⚠️ Current price unavailable; try again shortly.", offer_reevaluate=False, retryable=True
+    )
+    mock_exec = AsyncMock(return_value=reply)
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="123456",
+        db=temp_db,
+        execute_handler=mock_exec,
+    )
+
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = "exec_42"
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    # Cleared before calling the handler, then restored after a retryable reply.
+    assert query_mock.edit_message_reply_markup.call_count == 2
+    restored_markup = query_mock.edit_message_reply_markup.call_args_list[-1].kwargs["reply_markup"]
+    assert restored_markup is not None
+    buttons = restored_markup.inline_keyboard[0]
+    assert buttons[0].callback_data == "exec_42"
+    assert buttons[1].callback_data == "dism_42"
+    query_mock.message.reply_text.assert_called_with(
+        "⚠️ Current price unavailable; try again shortly.", parse_mode="HTML"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exec_reply_retryable_restores_tapped_tier_button(temp_db):
+    reply = SimpleNamespace(ok=False, text="⚠️ unavailable; try again shortly.", offer_reevaluate=False, retryable=True)
+    mock_exec = AsyncMock(return_value=reply)
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="123456",
+        db=temp_db,
+        execute_handler=mock_exec,
+    )
+
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = "exec_42_2"
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    restored_markup = query_mock.edit_message_reply_markup.call_args_list[-1].kwargs["reply_markup"]
+    buttons = restored_markup.inline_keyboard[0]
+    assert buttons[0].callback_data == "exec_42_2"
+    assert buttons[1].callback_data == "dism_42"
+
+
+@pytest.mark.asyncio
+async def test_reval_callback_calls_handler_and_clears_markup(temp_db):
+    mock_reval = AsyncMock(return_value=ExecutionReply(True, "<b>Fresh card sent for AAPL</b>"))
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="123456",
+        db=temp_db,
+        reevaluate_handler=mock_reval,
+    )
+
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = "reval_77"
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    query_mock.answer.assert_called_once_with("Re-evaluating…")
+    query_mock.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
+    mock_reval.assert_called_once_with(77)
+    query_mock.message.reply_text.assert_called_with("<b>Fresh card sent for AAPL</b>", parse_mode="HTML")
+
+
+@pytest.mark.asyncio
+async def test_reval_callback_unavailable_without_handler(temp_db):
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="123456",
+        db=temp_db,
+    )
+
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = "reval_5"
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    query_mock.answer.assert_called_once_with("Re-evaluate handler unavailable.", show_alert=True)
+    query_mock.message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reval_callback_does_not_collide_with_exec_or_dism(temp_db):
+    mock_exec = AsyncMock(return_value=ExecutionReply(True, "<b>Executed</b>"))
+    mock_reval = AsyncMock(return_value=ExecutionReply(True, "<b>Re-evaluated</b>"))
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="123456",
+        db=temp_db,
+        execute_handler=mock_exec,
+        reevaluate_handler=mock_reval,
+    )
+
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+
+    query_mock.data = "exec_5"
+    await notifier.handle_button_callback(cb_update, MagicMock())
+    mock_exec.assert_called_once_with(5, quantity=None)
+    mock_reval.assert_not_called()
+
+    query_mock.data = "dism_6"
+    await notifier.handle_button_callback(cb_update, MagicMock())
+    mock_reval.assert_not_called()
+    mock_exec.assert_called_once()

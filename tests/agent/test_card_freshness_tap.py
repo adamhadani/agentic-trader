@@ -5,6 +5,7 @@ the unchanged ``EntryExecutionService.authorize`` with the original bracket, whi
 other outcome refuses the tap (a re-priced card is a *new* signal needing a fresh tap).
 """
 
+import asyncio
 import inspect
 import math
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,7 @@ import pytest
 from click.testing import CliRunner
 from sqlalchemy import update
 
+from agentic_trader.agent import copilot as copilot_module
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.earnings import EarningsEvent, EarningsLookup, EarningsTiming
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
@@ -111,6 +113,8 @@ async def record_card(
     target=120.0,
     quantity=10.0,
     provenance_extra: dict | None = None,
+    alpha_version: str | None = None,
+    alpha_policy: dict | None = None,
 ) -> int:
     evaluation = original_evaluation(entry=entry, stop=stop, target=target, quantity=quantity)
     provenance = {"setup_quality": 0.9, "rank": 1, **(provenance_extra or {})}
@@ -133,6 +137,8 @@ async def record_card(
         asset_class=AssetClass.EQUITY,
         quantity=quantity,
         decision_provenance=provenance,
+        alpha_version=alpha_version,
+        alpha_policy=alpha_policy,
     )
     async with db.session_factory() as session, session.begin():
         await session.execute(
@@ -169,6 +175,7 @@ async def test_fresh_card_executes_the_original_bracket_unchanged(tap_desk, temp
     payload = events[0]["payload"]
     assert payload["outcome"] == "execute" and payload["signal_id"] == sid and payload["price"] == 100.5
     assert set(payload) >= {"signal_id", "outcome", "reason", "age_seconds", "price", "r_consumed", "tapped_at"}
+    assert payload["applied"] is True and payload["new_signal_id"] is None and payload["policy_locked"] is False
     assert EventKind.CARD_TAP_ASSESSED == "card_tap_assessed"
 
 
@@ -217,7 +224,9 @@ async def test_stale_card_is_repriced_into_one_new_pending_card_without_authoriz
     # The durable payload must be deliverable by the real Telegram notifier signature.
     inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **{**arguments, "eval_res": rebuilt})
 
-    assert [e["payload"]["outcome"] for e in await tap_events(temp_db, sid)] == ["reprice"]
+    [event] = await tap_events(temp_db, sid)
+    assert event["payload"]["outcome"] == "reprice"
+    assert event["payload"]["applied"] is True and event["payload"]["new_signal_id"] == new["id"]
 
     # A second tap on the re-priced original is refused: it is no longer PENDING.
     again = await tap_desk.execute_signal_by_id(sid)
@@ -291,7 +300,7 @@ async def test_price_failure_leaves_the_card_pending(tap_desk, temp_db, failure)
 
     reply = await tap_desk.execute_signal_by_id(sid)
 
-    assert reply == ExecutionReply(False, "⚠️ Current price unavailable; try again shortly.")
+    assert reply == ExecutionReply(False, "⚠️ Current price unavailable; try again shortly.", retryable=True)
     assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.PENDING
     tap_desk.entry_service.authorize.assert_not_awaited()
 
@@ -394,40 +403,245 @@ async def test_dedup_exemption_applies_to_the_named_contract_only(budget_desk, t
     assert checked == {"AAA", "BBB", "DDD", "EEE"}
 
 
-async def test_reevaluate_runs_a_single_contract_scan_without_budget_or_dedup(tap_desk, temp_db):
+async def message_texts(db):
+    return [
+        n.payload["arguments"]["text"]
+        for n in await db.workflows.list_work(WorkKind.NOTIFICATION)
+        if n.payload["kind"] == "message"
+    ]
+
+
+async def finish_reevaluations(copilot):
+    await asyncio.gather(*list(copilot.reevaluation_tasks))
+
+
+async def test_reevaluate_schedules_a_single_contract_scan_without_budget_or_dedup(tap_desk, temp_db):
     sid = await record_card(temp_db)
     await temp_db.expire_signal(sid)
     tap_desk.run_scan = AsyncMock(return_value={"sent": 1, "runners_up": []})
 
     reply = await tap_desk.reevaluate_signal(sid)
 
+    assert reply.ok is True and reply.text == "🔄 Re-evaluating SPY… a fresh card or a result message will follow."
+    await finish_reevaluations(tap_desk)
     tap_desk.run_scan.assert_awaited_once_with(
-        symbols=["SPY"], budget=ScanBudget.NONE, dedup_exempt_contracts=frozenset({"SPY"})
+        symbols=["SPY"],
+        budget=ScanBudget.NONE,
+        dedup_exempt_contracts=frozenset({"SPY"}),
+        scan_lock_timeout=copilot_module.REEVALUATE_SCAN_WAIT_SECONDS,
     )
-    assert reply.ok is True and "Fresh card sent" in reply.text
+    assert await message_texts(temp_db) == []  # the fresh card itself is the result
 
 
-async def test_reevaluate_without_a_setup_names_the_first_reason(tap_desk, temp_db):
+async def test_reevaluate_does_not_run_the_scan_inline(tap_desk, temp_db):
     sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_scan(**kwargs):
+        started.set()
+        await release.wait()
+        return {"sent": 1, "runners_up": []}
+
+    tap_desk.run_scan = AsyncMock(side_effect=slow_scan)
+
+    reply = await asyncio.wait_for(tap_desk.reevaluate_signal(sid), timeout=1)
+
+    assert "Re-evaluating" in reply.text and not release.is_set()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    release.set()
+    await finish_reevaluations(tap_desk)
+
+
+async def test_reevaluate_without_a_setup_reports_through_the_outbox(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
     tap_desk.run_scan = AsyncMock(
         return_value={"sent": 0, "runners_up": [{"contract": "SPY", "reason": "rejected: <weak>"}]}
     )
 
+    await tap_desk.reevaluate_signal(sid)
+    await finish_reevaluations(tap_desk)
+
+    [text] = await message_texts(temp_db)
+    assert "No valid setup for SPY right now" in text and "rejected: &lt;weak&gt;" in text
+    tap_desk.notifier.send_message.assert_not_called()  # never a bare bot send
+
+
+async def test_reevaluate_reports_a_busy_scan_lock_through_the_outbox(tap_desk, temp_db, monkeypatch):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    monkeypatch.setattr(copilot_module, "REEVALUATE_SCAN_WAIT_SECONDS", 0.05)
+    await tap_desk._scan_lock.acquire()
+    try:
+        await tap_desk.reevaluate_signal(sid)
+        await finish_reevaluations(tap_desk)
+    finally:
+        tap_desk._scan_lock.release()
+
+    [text] = await message_texts(temp_db)
+    assert "a scan is running; try again in a minute" in text.lower()
+
+
+async def test_reevaluate_failure_is_logged_and_reported(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    tap_desk.run_scan = AsyncMock(side_effect=RuntimeError("provider down"))
+
+    await tap_desk.reevaluate_signal(sid)
+    await finish_reevaluations(tap_desk)
+
+    [text] = await message_texts(temp_db)
+    assert "SPY" in text and "failed" in text
+
+
+@pytest.mark.parametrize("status", [SignalStatus.PENDING, SignalStatus.EXECUTED])
+async def test_reevaluate_accepts_only_expired_cards(tap_desk, temp_db, status):
+    sid = await record_card(temp_db)
+    if status != SignalStatus.PENDING:
+        await temp_db.update_signal_status(sid, status)
+    tap_desk.run_scan = AsyncMock()
+
     reply = await tap_desk.reevaluate_signal(sid)
 
-    assert reply.ok is False and "No valid setup for SPY right now" in reply.text
-    assert "rejected: &lt;weak&gt;" in reply.text
+    assert reply == ExecutionReply(False, f"Signal #{sid} is {status}; nothing to re-evaluate.")
+    assert tap_desk.reevaluation_tasks == set()
+    tap_desk.run_scan.assert_not_awaited()
 
 
 async def test_reevaluate_is_refused_outside_rth(tap_desk, temp_db):
     sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
     tap_desk.session_provider.get_session_info.return_value = session_info(is_open=False, is_rth=False)
     tap_desk.run_scan = AsyncMock()
 
     reply = await tap_desk.reevaluate_signal(sid)
 
+    assert tap_desk.reevaluation_tasks == set()
     tap_desk.run_scan.assert_not_awaited()
     assert reply.ok is False and reply.text.startswith("Market closed") and "2026-09-24 13:30 UTC" in reply.text
+
+
+async def test_versioned_alpha_card_is_never_repriced_but_executes_its_original_bracket(tap_desk, temp_db):
+    sid = await record_card(
+        temp_db, age_seconds=3600, alpha_version="alpha-v1", alpha_policy={"entry": {"kind": "limit"}}
+    )
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0  # would re-price an unversioned card
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    tap_desk.entry_service.authorize.assert_awaited_once()
+    request = tap_desk.entry_service.authorize.await_args.args[0]
+    assert (request.entry_price, request.stop_loss, request.take_profit, request.quantity) == (100.0, 95.0, 120.0, 10)
+    assert [s["id"] for s in await temp_db.get_recent_signals(limit=10)] == [sid]
+    [event] = await tap_events(temp_db, sid)
+    assert event["payload"]["outcome"] == "execute" and event["payload"]["policy_locked"] is True
+
+
+async def test_versioned_alpha_card_through_its_stop_is_still_missed(tap_desk, temp_db):
+    sid = await record_card(temp_db, alpha_version="alpha-v1")
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 94.0
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply.offer_reevaluate is True
+    tap_desk.entry_service.authorize.assert_not_awaited()
+    assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.EXPIRED
+
+
+async def test_regime_reward_risk_threshold_above_config_governs_and_uses_the_cached_regime(tap_desk, temp_db):
+    sid = await record_card(temp_db, age_seconds=3600)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0  # R:R 18/7 = 2.57
+    tap_desk.regime_detector.get_regime.return_value = SimpleNamespace(
+        summary_text="stressed", breakout_allowed=True, min_rr_threshold=3.0, risk_multiplier=1.0
+    )
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply.offer_reevaluate is True and "3.0" in reply.text
+    assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.EXPIRED
+    for call in tap_desk.regime_detector.get_regime.await_args_list:
+        assert not call.kwargs.get("force_refresh")
+
+
+async def test_slow_tap_time_reads_are_bounded_and_leave_the_card_pending(tap_desk, temp_db, monkeypatch):
+    sid = await record_card(temp_db)
+    monkeypatch.setattr(copilot_module, "TAP_CHECK_TIMEOUT_SECONDS", 0.05)
+
+    async def slow_session(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    tap_desk.session_provider.get_session_info.side_effect = slow_session
+
+    reply = await asyncio.wait_for(tap_desk.execute_signal_by_id(sid), timeout=2)
+
+    assert reply == ExecutionReply(False, "⚠️ Checks unavailable; try again shortly.", retryable=True)
+    assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.PENDING
+    tap_desk.entry_service.authorize.assert_not_awaited()
+    assert await tap_events(temp_db, sid) == []
+
+
+async def test_a_failing_gate_read_is_a_retryable_refusal(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    tap_desk.regime_detector.get_regime.side_effect = ValueError("VIX data unavailable")
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply == ExecutionReply(False, "⚠️ Checks unavailable; try again shortly.", retryable=True)
+    assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.PENDING
+
+
+async def test_terminal_refusals_are_not_retryable(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 94.0
+
+    assert (await tap_desk.execute_signal_by_id(sid)).retryable is False
+    assert (await tap_desk.execute_signal_by_id(sid)).retryable is False  # now not PENDING
+
+
+async def test_replacement_entry_is_rounded_to_the_tick(tap_desk, temp_db):
+    sid = await record_card(temp_db, age_seconds=3600)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0049
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    [new] = [s for s in await temp_db.get_recent_signals(limit=10) if s["id"] != sid]
+    assert new["entry_price"] == 102.0
+
+
+async def test_replacement_is_sized_from_the_tapped_tier(tap_desk, temp_db):
+    sid = await record_card(temp_db, age_seconds=3600)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0
+
+    await tap_desk.execute_signal_by_id(sid, quantity=5)
+
+    [new] = [s for s in await temp_db.get_recent_signals(limit=10) if s["id"] != sid]
+    assert new["quantity"] == 3.0  # 5 shares x 5 risk / 7 per share, whole shares
+
+
+async def test_lost_race_is_journaled_as_not_applied(tap_desk, temp_db):
+    sid = await record_card(temp_db, age_seconds=3600)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0
+    tap_desk.db.replace_signal = AsyncMock(return_value=None)
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply.ok is False and "status" in reply.text
+    [event] = await tap_events(temp_db, sid)
+    assert event["payload"]["outcome"] == "reprice"
+    assert event["payload"]["applied"] is False and event["payload"]["new_signal_id"] is None
+
+
+async def test_expiry_lost_race_is_journaled_as_not_applied(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 94.0
+    tap_desk.db.expire_signal = AsyncMock(return_value=False)
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply.offer_reevaluate is False
+    [event] = await tap_events(temp_db, sid)
+    assert event["payload"]["outcome"] == "missed" and event["payload"]["applied"] is False
 
 
 def test_cli_execute_prints_the_reply_text():

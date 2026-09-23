@@ -8,11 +8,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import ROUND_HALF_EVEN, Decimal
 from enum import StrEnum
 
 from agentic_trader.config import CardFreshnessConfig
 from agentic_trader.constants import Direction
 from agentic_trader.market.session import ET_TZ
+
+
+# One bound for every tap-time read (price, session, regime/macro gates, earnings): a
+# serialized Telegram handler must never wait on a slow provider indefinitely.
+TAP_CHECK_TIMEOUT_SECONDS = 15.0
+# How long a background re-evaluation waits for a running scan before reporting "busy".
+REEVALUATE_SCAN_WAIT_SECONDS = 120.0
 
 
 def _aware_et(value: datetime) -> datetime:
@@ -28,6 +36,9 @@ class ExecutionReply:
     ok: bool
     text: str  # HTML, as rendered by Telegram
     offer_reevaluate: bool = False
+    # True only for refusals that left the card PENDING and may succeed on a later tap
+    # (price or tap-time checks unavailable, including timeouts).
+    retryable: bool = False
 
 
 class CardOutcome(StrEnum):
@@ -105,6 +116,14 @@ def assess_card(
 
     reason = f"Re-priced at {price:.2f}: {r_consumed:+.2f}R since the card."
     return CardAssessment(CardOutcome.REPRICE, reason, r_consumed, age_seconds, price)
+
+
+def round_to_tick(price: float, tick_size: float) -> float:
+    """Round a price to the nearest multiple of ``tick_size`` (exact decimal arithmetic)."""
+    if not tick_size > 0:
+        raise ValueError("tick_size must be positive")
+    tick = Decimal(str(tick_size))
+    return float((Decimal(str(price)) / tick).to_integral_value(rounding=ROUND_HALF_EVEN) * tick)
 
 
 def reprice_quantity(

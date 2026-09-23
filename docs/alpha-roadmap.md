@@ -274,6 +274,24 @@ one or two reasonable cards per session:
      the two surviving features and a short-suppression test on fresh data.
 3. **WS3 — dynamic universe.** Liquidity screen plus movers/most-actives for the
    suggestion scan only. The intraday job stays restricted.
+4. **Card freshness (September 23) — delivered.** The first live card (signal #16,
+   XOM LONG, issued 10:38 NY) was read more than an hour later; a tap judged only by
+   entry admission would submit a stale bracket or dead-end refuse the operator with
+   no path to a fresh one. [`execution/freshness.py`](../agentic_trader/execution/freshness.py)
+   now re-assesses a tapped card against the current price, session and gates and
+   returns one of `EXECUTE`/`REPRICE`/`MISSED`/`EXPIRED` (see
+   [production behaviour](production.md#suggestion-scans) and
+   [the entry-authorization contract](durable-execution.md#card-freshness-precedes-authorize-september-23));
+   `REPRICE` atomically
+   replaces the card with its own outbox row, `MISSED`/`EXPIRED` offer a one-tap
+   **Re-evaluate** that runs a fresh single-symbol scan, and every card shows its
+   validity window. Follow-ups, out of scope here: proactively striking a card's
+   buttons at session close (needs an outbox "edit message" kind, since today's
+   correctness depends only on tap-time re-assessment, not on the buttons looking
+   dead); labeling delayed entries 1–3h after the decision in the setup-outcome study,
+   to quantify decay against measured tap latency; and a `/scan SYM` Telegram command
+   for an arbitrary symbol (re-evaluate today only covers the contract already on the
+   tapped card).
 
 Later and operator-gated:
 
