@@ -236,6 +236,9 @@ class RiskConfig(BaseModel):
 
 class TrendPullbackConfig(BaseModel):
     enabled: bool = True
+    # False stops the strategy emitting short setups (longs unaffected); see
+    # docs/setup-baserates-short-2026-09-23.md.
+    allow_short: bool = True
     daily_ema_fast: int = 50
     daily_ema_slow: int = 200
     trigger_ema_span: int = 20
@@ -251,6 +254,9 @@ class TrendPullbackConfig(BaseModel):
 
 class SqueezeBreakoutConfig(BaseModel):
     enabled: bool = True
+    # False stops the strategy emitting short setups (longs unaffected); see
+    # docs/setup-baserates-short-2026-09-23.md.
+    allow_short: bool = True
     bb_length: int = 20
     bb_std: float = 2.0
     kc_length: int = 20

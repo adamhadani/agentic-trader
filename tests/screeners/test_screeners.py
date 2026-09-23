@@ -162,3 +162,50 @@ def test_equity_screener_candidate(config):
     assert c.asset_class == AssetClass.EQUITY
     assert c.direction == "LONG"
     assert 0.0 < c.setup_quality <= 1.0
+
+
+def _bearish_pullback():
+    return create_mock_market_data(
+        daily_close=5500.0,
+        daily_ema50=5600.0,
+        daily_ema200=5800.0,
+        four_h_close=5500.0,
+        four_h_ema20=5500.0,
+        four_h_rsi_seq=[50.0, 58.0, 59.0, 57.0],
+        four_h_atr=20.0,
+    )
+
+
+def _squeeze_breakdown():
+    data = create_mock_market_data(squeeze_bars=6)
+    data.four_hour.iloc[-1, data.four_hour.columns.get_loc("Close")] = 5800.0 - 15.0  # below BB_Lower
+    data.four_hour.iloc[-1, data.four_hour.columns.get_loc("Volume")] = 10000.0
+    return data
+
+
+@pytest.mark.parametrize("allow_short", [True, False])
+def test_native_short_setups_follow_allow_short(config, allow_short):
+    # September 23 short-suppression test: native shorts lost -0.33R/setup after costs on a
+    # fresh 2017-2021 window; the switch disables them without touching longs.
+    config.strategies.trend_pullback.allow_short = allow_short
+    config.strategies.squeeze_breakout.allow_short = allow_short
+    engine = StrategyEngine(config)
+    trend = engine.check_trend_pullback(_bearish_pullback())
+    squeeze = engine.check_squeeze_breakout(_squeeze_breakdown(), timeframe="4h")
+    if allow_short:
+        assert trend is not None and trend.direction == "SHORT"
+        assert squeeze is not None and squeeze.direction == "SHORT"
+    else:
+        assert trend is None and squeeze is None
+
+
+def test_disallowing_shorts_keeps_long_setups(config):
+    config.strategies.trend_pullback.allow_short = False
+    config.strategies.squeeze_breakout.allow_short = False
+    engine = StrategyEngine(config)
+    data = create_mock_market_data(four_h_rsi_seq=[48.0, 42.0, 41.0, 44.0])
+    assert engine.check_trend_pullback(data).direction == "LONG"
+    assert (
+        engine.check_squeeze_breakout(create_mock_market_data(squeeze_bars=6, breakout=True), timeframe="4h").direction
+        == "LONG"
+    )

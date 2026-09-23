@@ -600,7 +600,14 @@ def test_committed_protocol_matches_config_and_sector_etf():
     with open(WORKSPACE_ROOT / "config" / "config.yaml") as handle:
         config = yaml.safe_load(handle)
 
-    assert data["strategy_config"] == config["strategies"]
+    # Frozen before native shorts were disabled (September 23 short-suppression test):
+    # the protocol pins the strategy config it actually ran with.
+    current = {
+        name: dict(section) if isinstance(section, dict) else section for name, section in config["strategies"].items()
+    }
+    for native in ("trend_pullback", "squeeze_breakout"):
+        assert current[native].pop("allow_short") is False
+    assert data["strategy_config"] == current
     assert data["sector_etf"] == dict(SECTOR_ETF)
 
     # Also confirm the frozen document is a constructible, self-consistent protocol.
