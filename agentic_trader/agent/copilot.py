@@ -6,12 +6,14 @@ import html
 import logging
 import math
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import replace as dataclass_replace
-from datetime import UTC, datetime, time as dt_time
+from datetime import UTC, datetime, time as dt_time, timedelta
 from tempfile import TemporaryDirectory
 from typing import Any
 from uuid import uuid4
+
+import pandas as pd
 
 from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
@@ -84,6 +86,7 @@ from agentic_trader.research.alpha.strategy import execution_policy_from_dict, t
 from agentic_trader.research.setups.ranker import (
     cached_ranker,
     finite_or_none,
+    last_completed_session,
     live_cross_section,
     setup_features,
     shadow_blocks,
@@ -92,6 +95,14 @@ from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExe
 from agentic_trader.risk import requires_account_risk
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.coverage import coverage_exclusions
+from agentic_trader.screeners.dynamic_universe import (
+    AssetInfo,
+    DynamicSelection,
+    DynamicUniverseSource,
+    liquidity_gate,
+    select_dynamic,
+    synthetic_contract,
+)
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
@@ -102,6 +113,12 @@ from agentic_trader.transport.alpaca import BoundedTradingClient
 
 
 logger = logging.getLogger("copilot")
+
+# Every dynamic suggestion-universe name shares this one correlation group for the
+# scan's per-group card cap, as does any card recorded today with `dynamic: true`.
+DYNAMIC_CORRELATION_GROUP = "dynamic"
+# One bound on a suggestion scan's screener and asset-list reads (it holds the scan lock).
+DYNAMIC_UNIVERSE_TIMEOUT_SECONDS = 60.0
 
 
 class ScanBusyError(RuntimeError):
@@ -128,6 +145,7 @@ class TradingCopilot:
         outbox: NotificationDispatcher | None = None,
         ledger: AccountLedgerService | None = None,
         alpha_repository: AlphaRepository | None = None,
+        dynamic_universe: DynamicUniverseSource | None = None,
     ):
         self._dry_run_directory: TemporaryDirectory[str] | None = None
         self._reconciliation_lock = asyncio.Lock()
@@ -165,6 +183,21 @@ class TradingCopilot:
         )
         self.alpha_shadow = AlphaShadowService(self.alpha_repository)
         self.strategy_engine = StrategyEngine(config)
+        # Read-only screener/asset access for the scheduled suggestion scan's dynamic names.
+        self.dynamic_universe: DynamicUniverseSource | None = dynamic_universe
+        self._dynamic_universe_error: str | None = None
+        if dynamic_universe is None and config.universe.dynamic.enabled:
+            try:
+                self.dynamic_universe = DynamicUniverseSource(config)
+            except Exception as exc:
+                # Missing credentials must not stop the daemon: every suggestion scan
+                # then reports the dynamic universe unavailable and scans statically.
+                self._dynamic_universe_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "Dynamic universe source unavailable: %s",
+                    self._dynamic_universe_error,
+                    extra={"event": "dynamic_universe_unavailable", "error": self._dynamic_universe_error},
+                )
         self.calendar: BaseEconomicCalendar = ForexFactoryCalendar()
         self.earnings_calendar: EarningsCalendarProtocol = NasdaqEarningsCalendar()
         self.regime_detector = RegimeDetector(config=config.regime)
@@ -363,6 +396,17 @@ class TradingCopilot:
                 groups.add(name)
         return groups
 
+    def _scan_groups(self, symbol: str, *, dynamic: bool) -> set[str]:
+        """Groups for the scan's per-group card cap: configured groups, plus ``dynamic`` for a dynamic name."""
+        groups = self.correlation_groups_of(symbol)
+        return groups | {DYNAMIC_CORRELATION_GROUP} if dynamic else groups
+
+    @staticmethod
+    def _dynamic_tag(contract: str, dynamic_sources: Mapping[str, str]) -> dict[str, Any]:
+        """Provenance/journal keys marking a dynamic name; absent (empty) for a static one."""
+        source = dynamic_sources.get(contract)
+        return {"dynamic": True, "dynamic_source": source} if source is not None else {}
+
     @staticmethod
     def _setup_quality(candidate: Any) -> float:
         """A candidate's ranking score; screeners that predate ``setup_quality`` rank last."""
@@ -507,6 +551,8 @@ class TradingCopilot:
                 "sent": 0,
                 "runners_up": [],
             }
+            scan_id = uuid4().hex
+            summary["scan_id"] = scan_id
             equity_open = True
             if not dry_run and not bypass_session_filter:
                 equity_open, _ = await self.session_provider.is_session_active(instrument_type="equity")
@@ -521,8 +567,24 @@ class TradingCopilot:
 
             target_syms = [s.strip().upper() for s in symbols] if symbols else None
 
+            # DYNAMIC: only the scheduled suggestion scan (shadow_evidence) over the whole
+            # universe adds screener names; manual, intraday and restricted scans never do.
+            # Their synthetic contracts live for this scan only: config.contracts is never mutated.
+            dynamic_cfg = self.config.universe.dynamic
+            attempt_dynamic = shadow_evidence and dynamic_cfg.enabled and not symbols and timeframe is None
+            dynamic_selection: DynamicSelection | None = None
+            dynamic_error: str | None = None
+            dynamic_contracts: list[tuple[str, Any]] = []
+            if attempt_dynamic:
+                dynamic_selection, dynamic_assets, dynamic_error = await self._select_dynamic_universe()
+                if dynamic_selection is not None:
+                    dynamic_contracts = [
+                        (entry.symbol, synthetic_contract(entry.symbol, dynamic_assets[entry.symbol].name))
+                        for entry in dynamic_selection.members
+                    ]
+
             selected: list[tuple[str, Any]] = []
-            for contract, info in self.config.contracts.items():
+            for contract, info in [*self.config.contracts.items(), *dynamic_contracts]:
                 clean_contract = contract.strip("/").upper()
                 if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
                     continue
@@ -574,7 +636,32 @@ class TradingCopilot:
             if coverage_note:
                 logger.warning(coverage_note, extra={"event": "coverage_gate_skipped"})
 
+            # Dynamic names that reach strategy scanning -> their screener source.
+            dynamic_sources: dict[str, str] = {}
+            dynamic_excluded: dict[str, str] = {}
+            if attempt_dynamic:
+                if dynamic_selection is not None:
+                    dynamic_sources, dynamic_excluded = self._gate_dynamic_members(
+                        dynamic_selection, selected, datasets, excluded
+                    )
+                summary["dynamic"] = {
+                    "available": dynamic_selection is not None,
+                    "error": dynamic_error,
+                    "members": list(dynamic_sources),
+                    "excluded": dynamic_excluded,
+                    "reasons": dict(dynamic_selection.reasons) if dynamic_selection else {},
+                    "raw_counts": dict(dynamic_selection.raw_counts) if dynamic_selection else {},
+                }
+                if not dry_run:
+                    await self._journal_dynamic_universe(
+                        scan_id=scan_id, selection=dynamic_selection, dynamic=summary["dynamic"], summary=summary
+                    )
+
             for contract, info in selected:
+                if contract in dynamic_excluded:
+                    # Fetch failures, coverage and liquidity exclusions of dynamic names are
+                    # recorded in summary["dynamic"]; they never reach strategy scanning.
+                    continue
                 data = datasets.get(contract)
                 if isinstance(data, BaseException) or data is None:
                     summary["fetch_failed"].append(contract)
@@ -589,7 +676,9 @@ class TradingCopilot:
                 inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
                 logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
                 try:
-                    if not dry_run:
+                    # Alpha shadow evidence keeps its static population: a dynamic name is
+                    # selected by today's screener, not by any alpha's declared universe.
+                    if not dry_run and contract not in dynamic_sources:
                         await self.alpha_shadow.observe(alpha_snapshot, data, as_of=receipts.get(contract))
 
                     if data.daily.empty or data.four_hour.empty:
@@ -735,8 +824,6 @@ class TradingCopilot:
             # journaling, since only the unrestricted population matches the setup
             # study's own.
             decided_at = datetime.now(UTC)
-            scan_id = uuid4().hex
-            summary["scan_id"] = scan_id
             compute_shadow_evidence = shadow_evidence and not symbols and timeframe is None
             shadow_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             if not dry_run and ranked and compute_shadow_evidence:
@@ -753,7 +840,7 @@ class TradingCopilot:
                 remaining_session = max(0, cfg.max_cards_per_session - len(today))
                 remaining_scan = cfg.max_cards_per_scan if budget == ScanBudget.FULL else len(ranked)
                 for row in today:
-                    for group in self.correlation_groups_of(row["contract"]):
+                    for group in self._scan_groups(row["contract"], dynamic=row.get("dynamic", False)):
                         groups_used[group] = groups_used.get(group, 0) + 1
             llm_budget = cfg.max_llm_evaluations_per_scan
             # One session-clock read per contract that actually records a card.
@@ -769,7 +856,7 @@ class TradingCopilot:
                         reason = "per-session budget spent"
                     elif budget != ScanBudget.NONE and any(
                         groups_used.get(g, 0) >= cfg.max_cards_per_group_per_session
-                        for g in self.correlation_groups_of(candidate.contract)
+                        for g in self._scan_groups(candidate.contract, dynamic=candidate.contract in dynamic_sources)
                     ):
                         reason = "correlation group already has a card this session"
                     elif use_llm and llm_budget <= 0:
@@ -842,6 +929,7 @@ class TradingCopilot:
                             "candidates_considered": len(ranked),
                             "budget": str(budget),
                             "shadow_ranker": shadow_by_rank[rank - 1],
+                            **self._dynamic_tag(candidate.contract, dynamic_sources),
                             **validity,
                         },
                         contract=eval_res.contract,
@@ -875,7 +963,7 @@ class TradingCopilot:
                     outcomes[rank - 1] = "sent"
                     remaining_scan -= 1
                     remaining_session -= 1
-                    for group in self.correlation_groups_of(candidate.contract):
+                    for group in self._scan_groups(candidate.contract, dynamic=candidate.contract in dynamic_sources):
                         groups_used[group] = groups_used.get(group, 0) + 1
 
                     logger.info(
@@ -928,6 +1016,7 @@ class TradingCopilot:
                     ranked=ranked,
                     outcomes=outcomes,
                     shadow_by_rank=shadow_by_rank,
+                    dynamic_sources=dynamic_sources,
                     summary=summary,
                 )
 
@@ -1055,6 +1144,7 @@ class TradingCopilot:
         ranked: list[tuple[Any, Any, Any]],
         outcomes: list[str | None],
         shadow_by_rank: list[dict[str, Any] | None],
+        dynamic_sources: Mapping[str, str],
         summary: dict[str, Any],
     ) -> None:
         """Append one ``scan_candidates_ranked`` event in its own transaction; never raises."""
@@ -1073,6 +1163,7 @@ class TradingCopilot:
                     "rank": rank,
                     "outcome": outcomes[rank - 1],
                     "shadow": shadow_by_rank[rank - 1],
+                    **self._dynamic_tag(candidate.contract, dynamic_sources),
                 }
                 for rank, (candidate, det_res, _) in enumerate(ranked, 1)
             ]
@@ -1102,6 +1193,127 @@ class TradingCopilot:
             summary["scan_journal_error"] = f"{type(exc).__name__}: {exc}"
             logger.exception(
                 "Scan ranking journal failed; cards and budget are unaffected", extra={"event": "scan_journal_failed"}
+            )
+
+    async def _select_dynamic_universe(self) -> tuple[DynamicSelection | None, dict[str, AssetInfo], str | None]:
+        """This suggestion scan's filtered screener names, or why they are unavailable; never raises.
+
+        Any failure (no source, a screener or asset-list error, the time bound) is logged
+        once as ``dynamic_universe_unavailable`` and the scan continues with the static
+        universe alone.
+        """
+        source = self.dynamic_universe
+        try:
+            if source is None:
+                raise RuntimeError(self._dynamic_universe_error or "dynamic universe source is not configured")
+            async with asyncio.timeout(DYNAMIC_UNIVERSE_TIMEOUT_SECONDS):
+                entries = await source.entries()
+                assets = await source.assets()
+            selection = select_dynamic(entries, assets, self.config.contracts.keys(), self.config.universe.dynamic)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "Dynamic universe unavailable; scanning the static universe only: %s",
+                error,
+                extra={"event": "dynamic_universe_unavailable", "error": error},
+            )
+            return None, {}, error
+        return selection, assets, None
+
+    def _gate_dynamic_members(
+        self,
+        selection: DynamicSelection,
+        selected: list[tuple[str, Any]],
+        datasets: Mapping[str, Any],
+        coverage_excluded: set[str],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Kept dynamic names -> source (source order, capped) and excluded name -> reason.
+
+        A dynamic name whose fetch failed or that the coverage gate excluded is dropped
+        before the liquidity gate, so it never consumes the ``max_symbols`` cap. The
+        liquidity window counts completed sessions only: as of the last session completed
+        before this scan's New York date, the date the shadow cross-section uses.
+        """
+        chosen = {contract for contract, _ in selected}
+        excluded: dict[str, str] = {}
+        daily: dict[str, Any] = {}
+        gated = []
+        for entry in selection.members:
+            if entry.symbol not in chosen:
+                continue  # already reported by the session/executability filters
+            data = datasets.get(entry.symbol)
+            if isinstance(data, BaseException) or data is None:
+                excluded[entry.symbol] = "fetch_failed"
+            elif entry.symbol in coverage_excluded:
+                excluded[entry.symbol] = "coverage"
+            else:
+                daily[entry.symbol] = data.daily
+                gated.append(entry)
+        try:
+            scan_date = self.session_start_et().date()
+            frames = {
+                contract: frame
+                for contract, data in datasets.items()
+                if isinstance(frame := getattr(data, "daily", None), pd.DataFrame) and not frame.empty
+            }
+            as_of = last_completed_session(frames, scan_date) or scan_date - timedelta(days=1)
+            kept, gate_excluded = liquidity_gate(daily, gated, self.config.universe.dynamic, as_of=as_of)
+        except Exception:
+            logger.exception(
+                "Dynamic liquidity gate raised; no dynamic name is scanned this time",
+                extra={"event": "dynamic_liquidity_gate_error"},
+            )
+            kept, gate_excluded = [], dict.fromkeys((entry.symbol for entry in gated), "gate_error")
+        excluded.update(gate_excluded)
+        return {entry.symbol: entry.source for entry in kept}, excluded
+
+    async def _journal_dynamic_universe(
+        self,
+        *,
+        scan_id: str,
+        selection: DynamicSelection | None,
+        dynamic: dict[str, Any],
+        summary: dict[str, Any],
+    ) -> None:
+        """Append one ``dynamic_universe_built`` event in its own transaction; never raises."""
+        try:
+            built_at = datetime.now(UTC)
+            payload = {
+                "scan_id": scan_id,
+                "built_at": built_at.isoformat(),
+                "available": dynamic["available"],
+                "error": dynamic["error"],
+                "raw_counts": dynamic["raw_counts"],
+                "reasons": dynamic["reasons"],
+                "members": [
+                    {
+                        "symbol": entry.symbol,
+                        "source": entry.source,
+                        "rank": entry.rank,
+                        "price": finite_or_none(entry.price),
+                        "percent_change": finite_or_none(entry.percent_change),
+                    }
+                    for entry in (selection.members if selection else ())
+                ],
+                "scanned": dynamic["members"],
+                "excluded": dynamic["excluded"],
+            }
+            et_date = self.session_start_et(built_at).date().isoformat()
+            workflows = self.db.workflows
+            async with self.db.session_factory() as session, session.begin():
+                await workflows.lock(session)
+                await workflows.append(
+                    session,
+                    stream=f"scan/{et_date}",
+                    kind=EventKind.DYNAMIC_UNIVERSE_BUILT,
+                    payload=payload,
+                    key=f"dynamic_universe_built/{scan_id}",
+                )
+        except Exception as exc:
+            summary["dynamic_journal_error"] = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "Dynamic universe journal failed; the scan is unaffected",
+                extra={"event": "dynamic_universe_journal_failed"},
             )
 
     async def _fetch_universe(
@@ -1419,6 +1631,12 @@ class TradingCopilot:
                 continue
             try:
                 info = self.config.contracts.get(contract)
+                if info is None and normalize_asset_class(str(pos.get("asset_class") or "")) == normalize_asset_class(
+                    AssetClass.EQUITY
+                ):
+                    # An unconfigured equity (a dynamic suggestion-universe name) trails with
+                    # the default equity policy, exactly as admission sizes it: multiplier 1.
+                    info = synthetic_contract(contract, contract)
                 if not info:
                     logger.warning("No instrument policy for trailing stop #%s (%s)", pos["id"], contract)
                     continue
@@ -2283,13 +2501,16 @@ class TradingCopilot:
         text = f"⌛ {html.escape(assessment.reason)}"
         if assessment.outcome == CardOutcome.EXPIRED:
             text += f"\n{self._next_open_text(info)}"
-        return ExecutionReply(False, text, offer_reevaluate=True)
+        # A re-evaluation scans configured contracts only; a dynamic name returns with a
+        # later suggestion scan if it is still in play.
+        return ExecutionReply(False, text, offer_reevaluate=contract in self.config.contracts)
 
     async def reevaluate_signal(self, signal_id: int) -> ExecutionReply:
         """Operator re-evaluation of an expired card: a fresh single-contract scan, never the old levels.
 
-        Validates synchronously (the card is EXPIRED, no live card exists for its contract,
-        the contract is in its regular session), then atomically claims the card's single
+        Validates synchronously (the card is EXPIRED, its contract is configured -- a
+        dynamic suggestion-universe name is not, and a restricted scan never adds it --
+        no live card exists for its contract, the contract is in its regular session), then atomically claims the card's single
         re-evaluation, so a redelivered callback, double tap or CLI call schedules nothing
         more. The scan runs in the background so the serialized Telegram handler returns at
         once; it uses the NONE budget (an explicit operator request) and exempts only this
@@ -2302,6 +2523,13 @@ class TradingCopilot:
         if sig["status"] != SignalStatus.EXPIRED:
             return ExecutionReply(False, f"Signal #{signal_id} is {sig['status']}; nothing to re-evaluate.")
         contract = sig["contract"]
+        if contract not in self.config.contracts:
+            return ExecutionReply(
+                False,
+                f"{html.escape(contract)} is not a configured contract (a dynamic suggestion-universe name); "
+                "re-evaluate covers configured contracts only. A later suggestion scan considers it again "
+                "if it is still in play.",
+            )
         if (live := await self.db.live_signal_id(contract)) is not None:
             return ExecutionReply(False, f"A live card for {html.escape(contract)} already exists (#{live}).")
         try:
@@ -2724,6 +2952,9 @@ class TradingCopilot:
     async def publish_scan_digest(self, et_date: str | None = None) -> str:
         """Publish exactly one end-of-session digest of this New York date's suggestion scans.
 
+        Scans that attempted the dynamic suggestion universe add one
+        "N dynamic names scanned (M excluded)" line (and how many scans found it unavailable).
+
         Only *universe* suggestion scans are aggregated: a summary with a timeframe (the
         15-minute intraday job) or a symbol restriction (an operator or Telegram scan of
         named contracts) is not a suggestion scan and is excluded. If only excluded scans
@@ -2754,6 +2985,14 @@ class TradingCopilot:
                 f"Fetch failures: {len(failed)}" + (f" ({', '.join(failed[:8])})" if failed else "") + "; "
                 f"coverage excluded: {len(excluded)}; scan durations: {durations}."
             )
+            dynamic = [s["dynamic"] for s in scans if s.get("dynamic")]
+            if dynamic:
+                names = sum(len(d.get("members", [])) for d in dynamic)
+                dropped = sum(len(d.get("excluded", {})) for d in dynamic)
+                unavailable = sum(1 for d in dynamic if not d.get("available"))
+                text += f" {names} dynamic names scanned ({dropped} excluded)" + (
+                    f"; dynamic universe unavailable in {unavailable} scan(s)." if unavailable else "."
+                )
         await self.outbox.publish_message(text, key=f"scan-digest/{et_date}")
         return text
 

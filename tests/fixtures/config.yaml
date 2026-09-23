@@ -24,3 +24,6 @@ session:
   fallback_providers: [deterministic]
 telemetry:
   metrics_enabled: false
+universe:
+  # Suggestion-scan screener reads are opt-in per test (tests/agent/test_dynamic_universe_scan.py).
+  dynamic: {enabled: false}

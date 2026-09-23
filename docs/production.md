@@ -22,7 +22,8 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 - Swing scans: every four hours from startup, immediate first run, all timeframes,
   the whole `universe:` when the equity session is open.
 - Suggestion scans: cron on the New York clock, weekdays, at
-  `scheduler.suggestion_scan_times_et` (see below).
+  `scheduler.suggestion_scan_times_et` (see below). They also add the dynamic
+  suggestion universe.
 - Intraday scans: every 15 minutes from startup, session gated, `15m` filter,
   restricted to the contracts configured explicitly under `contracts:`
   (`AppConfig.non_universe_contracts`) — never the universe.
@@ -53,7 +54,9 @@ day still reports.
 The digest reports: number of scans, instruments actually scanned, names with
 insufficient data, candidates found, cards sent, runners-up with their
 `setup_quality` scores (top five), fetch failures (count and up to eight symbols),
-the count of names excluded by the coverage gate, and each scan's duration.
+the count of names excluded by the coverage gate, and each scan's duration. When a
+scan attempted the dynamic suggestion universe, it also reports "N dynamic names
+scanned (M excluded)" (see below).
 It aggregates **universe suggestion scans only**: a run carrying a timeframe filter
 (the 15-minute intraday job) or a symbol restriction (`copilot scan --symbols`,
 Telegram `/scan` of named contracts) is excluded, and a session in which only those
@@ -73,6 +76,62 @@ cannot admit (`skipped_not_executable` in the scan summary). Alpaca entry admiss
 accepts equities only, so on the Alpaca paper desk futures are not scanned: a futures
 card could never be accepted. The simulator (`EXECUTION_MODE=paper`, including dry
 scans) still scans every configured class.
+
+**Dynamic suggestion universe (WS3, September 23).** Each scheduled suggestion scan
+(and only that scan: `run_scan(shadow_evidence=True)` with no symbols and no
+timeframe) adds up to `universe.dynamic.max_symbols` in-play US equities to the static
+universe. The swing scan, the intraday `non_universe_contracts` job, and manual or
+Telegram scans (restricted or not) never do. The design and the filter order are in
+[the WS3 spec](superpowers/specs/2026-09-23-dynamic-universe-design.md); the code is
+[`screeners/dynamic_universe.py`](../agentic_trader/screeners/dynamic_universe.py).
+
+- **Sources.** Alpaca's screener: most actives by trade count, plus market movers.
+  These are read-only GETs, followed by the Alpaca asset list, which is cached per
+  New York date. All of it runs off the event loop under one 60-second bound
+  (`DYNAMIC_UNIVERSE_TIMEOUT_SECONDS`). Any failure, including missing credentials,
+  is logged once as `dynamic_universe_unavailable`, and the scan continues with the
+  static universe alone.
+- **Filters.** A deterministic, reason-counted filter keeps:
+  - plain `^[A-Z]{1,5}$` symbols not already in `contracts:`;
+  - active, tradable `us_equity` assets on NYSE, NASDAQ, ARCA, AMEX or BATS;
+  - no warrants, rights, units or leveraged/inverse funds;
+  - a price of at least `min_price`.
+
+  At most `max_candidates` survivors are fetched.
+- **Liquidity gate.** After the scan's normal fetch and the coverage gate, a dynamic
+  name needs a median `Close × Volume` of at least `min_median_dollar_volume` over
+  its last 20 completed, finite daily sessions. Today's partial bar never counts; the
+  window ends at the last session completed before the scan's New York date, the
+  date the shadow cross-section uses. A fetch failure, a coverage exclusion or a
+  failed gate drops the name before strategy scanning, with a reason. Such a name
+  never counts as a scan fetch failure or consumes the `max_symbols` cap.
+- **Treatment.** Each dynamic name gets a synthetic contract for this scan only:
+  equity, multiplier 1, tick 0.01, and the symbol as ticker. `config.contracts` is
+  never mutated. Every existing gate applies unchanged, including dedup, earnings,
+  macro, sizing, session, LLM, card budget and card freshness. Admission, the
+  tap-time checks and trailing stops use the default equity policy (multiplier 1) for
+  an unconfigured equity. Alpha shadow observation skips dynamic names, so alpha
+  evidence keeps its declared population.
+- **One correlation group.** All dynamic names share the group `dynamic` for the
+  scan's `max_cards_per_group_per_session` cap. A card recorded today whose
+  provenance has `dynamic: true` counts toward it, so the paper desk issues at most
+  one dynamic card per session. Admission's `max_correlated_positions` still sees
+  only configured groups.
+- **Evidence.** A dynamic card's provenance carries `dynamic: true` and
+  `dynamic_source` (`most_actives` or `movers`). So does its `scan_candidates_ranked`
+  candidate; the keys are absent for static names. The shadow cross-section stays
+  `universe.groups` only, so a dynamic candidate's cross-sectional features are null.
+- **Audit.** Every non-dry scan that attempts dynamic selection appends one
+  `dynamic_universe_built` event under stream `scan/{et_date}` (key
+  `dynamic_universe_built/{scan_id}`). It is written in its own transaction under the
+  scope lock and never blocks the scan. The event carries `available`, `error`, the
+  sources' `raw_counts`, the per-reason filter counts, the members with source, rank,
+  price and percent change, the `scanned` names and the `excluded` names with their
+  reasons. The scan summary holds the same under `dynamic`. The end-of-session digest
+  adds "N dynamic names scanned (M excluded)", plus how many scans found the dynamic
+  universe unavailable.
+- **Rollback.** Set `universe.dynamic.enabled: false`; suggestion scans are then
+  unchanged. Like any config change, this needs a restart.
 
 **Earnings blackout.** The risk evaluator's deterministic gates now include an
 earnings-announcement blackout for equity candidates, right after the macro lockout
