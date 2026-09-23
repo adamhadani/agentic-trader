@@ -12,7 +12,7 @@
   "data_cutoff": "2021-06-15",
   "decision_rule": "If S1 and S2 both hold: add a per-strategy allow_short switch (default true) and set allow_short: false for trend_pullback and squeeze_breakout in config/config.yaml. Otherwise: no config change; record the result and keep shorts.",
   "feed": "alpaca:sip",
-  "hypotheses": "S1: mean R_cost of short setups (all native strategies and timeframes pooled) < 0. The 90% CI upper bound must be < 0. S2: mean R_cost(long) - mean R_cost(short) > 0, paired over sessions containing both a long and a short setup. The 90% CI lower bound must be > 0. Stationary session-block bootstrap, block mean 10, 2000 draws, seed 20260923, one-sided. Per strategy/timeframe base rates are descriptive only. See docs/superpowers/specs/2026-09-23-short-suppression-test.md.",
+  "hypotheses": "S1: mean R_cost of short setups (all native strategies and timeframes pooled; setup-weighted) < 0. The 90% CI upper bound must be < 0. S2: mean R_cost(long) - mean R_cost(short) > 0 (setup-weighted means), paired session-block bootstrap over sessions that contain setups (each draw resamples whole sessions once for both means). The 90% CI lower bound must be > 0. Stationary session-block bootstrap, block mean 10, 2000 draws, seed 20260923, one-sided. Per strategy/timeframe base rates are descriptive only. See docs/superpowers/specs/2026-09-23-short-suppression-test.md.",
   "max_hold_sessions": 20,
   "scan_times_et": [
     "10:35",

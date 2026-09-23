@@ -2,7 +2,7 @@
 
 See ``docs/superpowers/specs/2026-09-23-short-suppression-test.md``. This reuses the
 setup-outcome study's window-acquisition machinery (``runner.build_window_frames``)
-and its stationary session-block bootstrap (``study.session_block_bootstrap``) over
+and its stationary session-block bootstrap (``study._stationary_index_draws``) over
 one arbitrary, named decision window, but fits no model and grants no promotion or
 shadow credit: it only computes descriptive per-(strategy, timeframe, direction) base
 rates and the two predeclared S1/S2 hypotheses, then applies the frozen decision rule.
@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, model_validator
 
-from agentic_trader.research.setups.study import _base_rates, _drop_immature, _finite_json, session_block_bootstrap
+from agentic_trader.research.setups.study import _base_rates, _drop_immature, _finite_json, _stationary_index_draws
 from agentic_trader.storage.artifacts import save_json_report
 
 
@@ -97,10 +97,29 @@ def _bootstrap_kwargs(protocol: SetupBaseRateProtocol) -> dict:
     }
 
 
-def _session_means(frame: pd.DataFrame, direction: str) -> pd.Series:
-    """Per-session mean ``r_cost`` of ``direction`` setups; sessions are the resampled unit."""
-    subset = frame.loc[frame["direction"] == direction]
-    return subset.groupby("session")["r_cost"].mean().sort_index()
+def _session_sums(frame: pd.DataFrame) -> pd.DataFrame:
+    """Per session with any setup: r_cost sum and setup count for each direction.
+
+    Sessions are the resampled unit; statistics are setup-weighted (sum / count over the
+    drawn sessions), matching the protocol's "mean R_cost of ... setups".
+    """
+    grouped = frame.groupby(["session", "direction"])["r_cost"].agg(["sum", "count"])
+    table = grouped.unstack("direction", fill_value=0).sort_index()
+    out = pd.DataFrame(index=table.index)
+    for direction in ("LONG", "SHORT"):
+        out[f"sum_{direction}"] = table["sum"].get(direction, 0.0)
+        out[f"n_{direction}"] = table["count"].get(direction, 0)
+    return out
+
+
+def _weighted(sums: np.ndarray, counts: np.ndarray, rows: np.ndarray) -> float:
+    n = counts[rows].sum()
+    return float(sums[rows].sum() / n) if n > 0 else float("nan")
+
+
+def _draws(n_sessions: int, protocol: SetupBaseRateProtocol) -> np.ndarray:
+    kwargs = _bootstrap_kwargs(protocol)
+    return _stationary_index_draws(n_sessions, kwargs["block_mean"], kwargs["draws"], kwargs["seed"])
 
 
 def _ci90(boot: np.ndarray) -> list[float]:
@@ -128,45 +147,53 @@ def _p_one_sided_positive(boot: np.ndarray) -> float:
 
 
 def _s1(frame: pd.DataFrame, protocol: SetupBaseRateProtocol) -> dict:
-    """S1: pooled short mean r_cost < 0 (all native strategies/timeframes pooled)."""
-    by_session = _session_means(frame, "SHORT")
+    """S1: pooled short mean r_cost < 0 (setup-weighted; whole sessions resampled)."""
+    table = _session_sums(frame)
+    short = table[table["n_SHORT"] > 0]
+    sums, counts = short["sum_SHORT"].to_numpy(float), short["n_SHORT"].to_numpy(float)
     boot = (
-        session_block_bootstrap(by_session, np.mean, **_bootstrap_kwargs(protocol))
-        if not by_session.empty
+        np.array([_weighted(sums, counts, rows) for rows in _draws(len(short), protocol)], dtype=float)
+        if len(short)
         else np.zeros(0, dtype=float)
     )
     ci90 = _ci90(boot)
-    holds = bool(np.isfinite(ci90[1]) and ci90[1] < 0.0)
     return {
-        "n_sessions": len(by_session),
-        "n_setups": int((frame["direction"] == "SHORT").sum()),
-        "mean_r_cost": float(by_session.mean()) if not by_session.empty else float("nan"),
+        "n_sessions": len(short),
+        "n_setups": int(counts.sum()),
+        "mean_r_cost": _weighted(sums, counts, np.arange(len(short))) if len(short) else float("nan"),
         "ci90": ci90,
         "p_one_sided": _p_one_sided_negative(boot),
-        "holds": holds,
+        "holds": bool(np.isfinite(ci90[1]) and ci90[1] < 0.0),
     }
 
 
 def _s2(frame: pd.DataFrame, protocol: SetupBaseRateProtocol) -> dict:
-    """S2: paired long - short mean r_cost > 0, over sessions with both a long and a short."""
-    long_by_session = _session_means(frame, "LONG")
-    short_by_session = _session_means(frame, "SHORT")
-    paired = pd.concat({"long": long_by_session, "short": short_by_session}, axis=1).dropna()
-    diff_series = paired["long"] - paired["short"]
+    """S2: mean r_cost(long) - mean r_cost(short) > 0.
+
+    Setup-weighted means over every session with setups; each bootstrap draw resamples
+    whole sessions once and computes both means on the same draw (paired).
+    """
+    table = _session_sums(frame)
+    long_sums, long_n = table["sum_LONG"].to_numpy(float), table["n_LONG"].to_numpy(float)
+    short_sums, short_n = table["sum_SHORT"].to_numpy(float), table["n_SHORT"].to_numpy(float)
+
+    def diff(rows: np.ndarray) -> float:
+        return _weighted(long_sums, long_n, rows) - _weighted(short_sums, short_n, rows)
 
     boot = (
-        session_block_bootstrap(diff_series, np.mean, **_bootstrap_kwargs(protocol))
-        if not diff_series.empty
+        np.array([diff(rows) for rows in _draws(len(table), protocol)], dtype=float)
+        if len(table)
         else np.zeros(0, dtype=float)
     )
     ci90 = _ci90(boot)
-    holds = bool(np.isfinite(ci90[0]) and ci90[0] > 0.0)
     return {
-        "n_sessions_paired": len(diff_series),
-        "mean_diff": float(diff_series.mean()) if not diff_series.empty else float("nan"),
+        "n_sessions": len(table),
+        "n_long": int(long_n.sum()),
+        "n_short": int(short_n.sum()),
+        "mean_diff": diff(np.arange(len(table))) if len(table) else float("nan"),
         "ci90": ci90,
         "p_one_sided": _p_one_sided_positive(boot),
-        "holds": holds,
+        "holds": bool(np.isfinite(ci90[0]) and ci90[0] > 0.0),
     }
 
 

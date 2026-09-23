@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import json
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -360,6 +361,27 @@ def _build_frame(
     return frame
 
 
+_CACHE_RANGE_FILE = "cache_range.json"
+
+
+def _claim_cache_range(cache_dir: Path, start: datetime, end: datetime) -> None:
+    """Cached frames are keyed by symbol and timeframe only, so the directory records the
+    bar range it was filled for; a request outside that range must use another cache."""
+    cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record = cache_dir / _CACHE_RANGE_FILE
+    if record.exists():
+        recorded = json.loads(record.read_text())
+        if not (datetime.fromisoformat(recorded["start"]) <= start and end <= datetime.fromisoformat(recorded["end"])):
+            raise ValueError(
+                f"Bar cache {cache_dir} holds {recorded['start']}..{recorded['end']}; the request needs "
+                f"{start.isoformat()}..{end.isoformat()} — use a fresh cache directory"
+            )
+        return
+    if any(cache_dir.iterdir()):
+        raise ValueError(f"Bar cache {cache_dir} has no {_CACHE_RANGE_FILE}; its bar range is unknown")
+    record.write_text(json.dumps({"start": start.isoformat(), "end": end.isoformat()}))
+
+
 async def build_window_frames(
     windows: Mapping[str, tuple[date, date]],
     universe: Sequence[tuple[str, str]],
@@ -387,14 +409,14 @@ async def build_window_frames(
     if not windows:
         raise ValueError("windows must be non-empty")
 
-    cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    pace = _build_pacer(config)
-
     earliest_start = min(start for start, _ in windows.values())
     latest_end = max(end for _, end in windows.values())
 
     bars_start = datetime.combine(earliest_start - timedelta(days=_BARS_LOOKBACK_DAYS), time.min, tzinfo=UTC)
     bars_end = datetime.combine(data_cutoff, time.max, tzinfo=UTC)
+
+    _claim_cache_range(cache_dir, bars_start, bars_end)
+    pace = _build_pacer(config)
 
     sectors: dict[str, str] = {}
     coverage: dict[str, dict] = {}

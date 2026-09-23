@@ -171,8 +171,9 @@ def test_noise_gives_no_change(tmp_path):
     assert not (result["s1"]["holds"] and result["s2"]["holds"])
 
 
-def test_pairing_uses_only_sessions_with_both_directions(tmp_path):
-    # Sessions 0..4 have both; 5..7 short-only; 8..10 long-only.
+def test_s2_uses_every_session_with_setups_and_setup_weighted_means(tmp_path):
+    # Sessions 0..4 have both; 5..7 short-only; 8..10 long-only. The frozen protocol's S2
+    # is mean(long) - mean(short) over setups, resampling all sessions with setups.
     frame = _synthetic_frame(
         11,
         seed=3,
@@ -187,7 +188,44 @@ def test_pairing_uses_only_sessions_with_both_directions(tmp_path):
 
     result = execute_baserates(protocol, tmp_path / "out", frame=lambda: frame, environment={})
 
-    assert result["s2"]["n_sessions_paired"] == 5
+    longs = frame.loc[frame["direction"] == "LONG", "r_cost"].mean()
+    shorts = frame.loc[frame["direction"] == "SHORT", "r_cost"].mean()
+    assert result["s2"]["n_sessions"] == 11
+    assert result["s2"]["mean_diff"] == pytest.approx(longs - shorts)
+
+
+def test_s1_is_setup_weighted_when_shorts_cluster_in_a_few_sessions(tmp_path):
+    # Reviewer's counterexample: one losing short on most sessions, 20 winning shorts on
+    # every 10th. The pooled setup mean is positive, so S1 must NOT hold (a mean of
+    # session means would wrongly report a negative mean and suppress shorts).
+    rows = []
+    for i in range(200):
+        session = date(2018, 1, 1) + timedelta(days=i)
+        decision_at = datetime.combine(session, time(14, 35), tzinfo=UTC)
+        values = [0.6] * 20 if i % 10 == 0 else [-0.2]
+        for j, value in enumerate(values):
+            rows.append(
+                {
+                    "decision_at": decision_at,
+                    "session": session,
+                    "symbol": f"S{j}",
+                    "strategy": "trend_pullback",
+                    "timeframe": "4h",
+                    "direction": "SHORT",
+                    "hit": "target" if value > 0 else "stop",
+                    "r": value,
+                    "r_cost": value,
+                }
+            )
+    frame = pd.DataFrame(rows)
+    protocol = _protocol(bootstrap={"block_mean": 10, "draws": 400, "seed": 20260923})
+
+    result = execute_baserates(protocol, tmp_path / "out", frame=lambda: frame, environment={})
+
+    assert result["s1"]["mean_r_cost"] == pytest.approx(frame["r_cost"].mean())
+    assert result["s1"]["mean_r_cost"] > 0
+    assert result["s1"]["holds"] is False
+    assert result["decision"] == "no_change"
 
 
 def test_non_finite_values_saved_as_null(tmp_path):
@@ -196,9 +234,8 @@ def test_non_finite_values_saved_as_null(tmp_path):
     frame = frame[frame["direction"] == "SHORT"].reset_index(drop=True)
     protocol = _protocol(bootstrap={"block_mean": 2, "draws": 50, "seed": 1})
 
-    result = execute_baserates(protocol, tmp_path / "out", frame=lambda: frame, environment={})
+    execute_baserates(protocol, tmp_path / "out", frame=lambda: frame, environment={})
 
-    assert result["s2"]["n_sessions_paired"] == 0
     saved = json.loads((tmp_path / "out" / "result.json").read_text())
     assert saved["s2"]["ci90"] == [None, None]
     assert saved["s2"]["p_one_sided"] is None

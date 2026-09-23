@@ -605,3 +605,24 @@ async def test_missing_reference_daily_bars_abort_before_labelling(tmp_path, mon
     source = _FlakySource(set(), always_fail={("SPY", "1d")})
     with pytest.raises(RuntimeError, match="SPY"):
         await build_setup_frames(protocol, UNIVERSE, source, CALENDAR, tmp_path / "cache", config, max_workers=2)
+
+
+async def test_cache_records_its_range_and_refuses_a_request_outside_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "replay_symbol", _fake_replay_symbol_factory([]))
+    protocol, config = _protocol(), load_config()
+    cache = tmp_path / "cache"
+    await build_setup_frames(protocol, UNIVERSE, FakeBarSource(), CALENDAR, cache, config, max_workers=2)
+    recorded = json.loads((cache / "cache_range.json").read_text())
+    assert recorded["start"] <= recorded["end"]
+
+    later = _protocol(data_cutoff=protocol.data_cutoff + timedelta(days=30))
+    with pytest.raises(ValueError, match="cache"):
+        await build_setup_frames(later, UNIVERSE, FakeBarSource(), CALENDAR, cache, config, max_workers=2)
+
+
+async def test_non_empty_cache_without_a_recorded_range_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "replay_symbol", _fake_replay_symbol_factory([]))
+    cache = tmp_path / "cache"
+    (cache / "AAA_1d").mkdir(parents=True)
+    with pytest.raises(ValueError, match="cache_range.json"):
+        await build_setup_frames(_protocol(), UNIVERSE, FakeBarSource(), CALENDAR, cache, load_config(), max_workers=2)
