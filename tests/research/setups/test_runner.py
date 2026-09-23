@@ -551,3 +551,55 @@ async def test_long_histories_are_fetched_in_bounded_contiguous_chunks(tmp_path)
     assert all(e - s <= timedelta(days=366) for s, e in spans)
     assert all(prev[1] == nxt[0] for prev, nxt in pairwise(spans))
     assert frame.index.is_unique and frame.index.is_monotonic_increasing
+
+
+class _FlakySource(FakeBarSource):
+    """Fails the first request for chosen (symbol, timeframe) pairs, then succeeds."""
+
+    def __init__(self, flaky: set[tuple[str, str]], *, always_fail: set[tuple[str, str]] = frozenset()):
+        super().__init__()
+        self.flaky = set(flaky)
+        self.always_fail = set(always_fail)
+
+    def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+        key = (symbol, timeframe)
+        if key in self.always_fail:
+            self.calls.append(key)
+            raise RuntimeError(f"permanent failure for {key}")
+        if key in self.flaky:
+            self.flaky.discard(key)
+            self.calls.append(key)
+            raise RuntimeError(f"transient failure for {key}")
+        return super().fetch_bars(symbol, timeframe, start, end, adjustment=adjustment)
+
+
+async def test_transient_fetch_failures_are_retried(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentic_trader.research.setups.runner._RETRY_DELAYS", (0.0, 0.0))
+    monkeypatch.setattr(runner, "replay_symbol", _fake_replay_symbol_factory([]))
+    protocol, config = _protocol(), load_config()
+    source = _FlakySource({("SPY", "1h")})
+    _dev, _hold, coverage = await build_setup_frames(
+        protocol, UNIVERSE, source, CALENDAR, tmp_path / "cache", config, max_workers=2
+    )
+    assert coverage["SPY"]["included"] is True
+
+
+async def test_daily_only_symbols_still_feed_the_cross_section(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentic_trader.research.setups.runner._RETRY_DELAYS", (0.0, 0.0))
+    monkeypatch.setattr(runner, "replay_symbol", _fake_replay_symbol_factory([]))
+    protocol, config = _protocol(), load_config()
+    source = _FlakySource(set(), always_fail={("XLK", "1h")})
+    _dev, _hold, coverage = await build_setup_frames(
+        protocol, UNIVERSE, source, CALENDAR, tmp_path / "cache", config, max_workers=2
+    )
+    assert coverage["XLK"]["included"] is False
+    assert coverage["XLK"]["cross_section_only"] is True
+
+
+async def test_missing_reference_daily_bars_abort_before_labelling(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentic_trader.research.setups.runner._RETRY_DELAYS", (0.0, 0.0))
+    monkeypatch.setattr(runner, "replay_symbol", _fake_replay_symbol_factory([]))
+    protocol, config = _protocol(), load_config()
+    source = _FlakySource(set(), always_fail={("SPY", "1d")})
+    with pytest.raises(RuntimeError, match="SPY"):
+        await build_setup_frames(protocol, UNIVERSE, source, CALENDAR, tmp_path / "cache", config, max_workers=2)

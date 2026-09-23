@@ -32,7 +32,7 @@ from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.market.session import ET_TZ, MarketCalendarDay
 from agentic_trader.research.alpha.data import load_dataset, save_dataset
 from agentic_trader.research.alpha.validation import frame_digest
-from agentic_trader.research.setups.features import CrossSection, cross_section
+from agentic_trader.research.setups.features import SECTOR_ETF, CrossSection, cross_section
 from agentic_trader.research.setups.labels import SetupLevels, label_bracket
 from agentic_trader.research.setups.ranker import setup_features
 from agentic_trader.research.setups.replay import SetupRecord, decision_instants, live_daily_window, replay_symbol
@@ -94,6 +94,30 @@ def _build_pacer(config: AppConfig) -> Callable[[], Awaitable[None]]:
 
 
 _FETCH_CHUNK = timedelta(days=365)
+# Bar GETs are idempotent, so a transient provider error is retried after these delays
+# (the first study run lost SPY's hourly bars, and with them every market feature, to
+# one transient APIError).
+_RETRY_DELAYS: tuple[float, ...] = (5.0, 20.0)
+
+
+async def _fetch_with_retry(
+    bars: BarSource,
+    symbol: str,
+    timeframe: str,
+    start: datetime,
+    end: datetime,
+    adjustment: str,
+    pace: Callable[[], Awaitable[None]],
+) -> pd.DataFrame:
+    for delay in (*_RETRY_DELAYS, None):
+        await pace()
+        try:
+            return await asyncio.to_thread(bars.fetch_bars, symbol, timeframe, start, end, adjustment=adjustment)
+        except Exception:
+            if delay is None:
+                raise
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 async def _fetch_cached(
@@ -118,10 +142,7 @@ async def _fetch_cached(
     chunk_start = start
     while chunk_start < end:
         chunk_end = min(chunk_start + _FETCH_CHUNK, end)
-        await pace()
-        parts.append(
-            await asyncio.to_thread(bars.fetch_bars, symbol, timeframe, chunk_start, chunk_end, adjustment=adjustment)
-        )
+        parts.append(await _fetch_with_retry(bars, symbol, timeframe, chunk_start, chunk_end, adjustment, pace))
         chunk_start = chunk_end
     frame = pd.concat([part for part in parts if not part.empty]) if any(not p.empty for p in parts) else parts[0]
     frame = frame[~frame.index.duplicated(keep="first")].sort_index()
@@ -371,13 +392,25 @@ async def build_setup_frames(
             "daily_rows": None if daily is None else len(daily),
             "hourly_rows": None if hourly is None else len(hourly),
             "included": included,
+            # Live cross-sections need only daily bars, so a name whose hourly bars are
+            # missing is not replayed but still ranks in every decision's cross-section.
+            "cross_section_only": daily is not None and hourly is None,
             "reason": reason,
         }
-        if included:
+        if daily is not None:
             daily_by_symbol[symbol] = daily
+        if included:
+            assert hourly is not None
             hourly_by_symbol[symbol] = hourly
             included_symbols.append(symbol)
         _progress(f"fetch {i}/{total}")
+
+    references = {"SPY"} | {SECTOR_ETF[sector] for sector in sectors.values() if sector in SECTOR_ETF}
+    missing_references = sorted(symbol for symbol in references if symbol not in daily_by_symbol)
+    if missing_references:
+        # Market and residual features would be blank for every decision; stop before any
+        # replay or labelling so the one-shot holdout is never exposed to a broken study.
+        raise RuntimeError(f"Reference symbols lack daily bars: {', '.join(missing_references)}")
 
     calendar_start = protocol.development[0] - timedelta(days=_CALENDAR_PAD_DAYS)
     calendar_end = protocol.holdout[1]
