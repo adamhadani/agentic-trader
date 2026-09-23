@@ -16,15 +16,32 @@ from typing import Any
 
 import pandas as pd
 
+from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.setups.labels import BracketHit, SetupLevels, label_bracket
 from agentic_trader.research.setups.runner import BarSource
 
 
-__all__ = ["label_journaled", "summarize"]
+__all__ = [
+    "DEFAULT_COST_BPS_PER_SIDE",
+    "DEFAULT_MAX_HOLD_SESSIONS",
+    "FETCH_FAILED_HIT",
+    "label_journaled",
+    "summarize",
+]
 
 _BAR_TIMEFRAME = "1h"
+
+# Mirror config/research/setup-outcomes-v1.json's frozen protocol values, so the live
+# `copilot cards outcomes` report and the study it compares against never drift apart
+# by accident. See test_defaults_match_the_setup_outcomes_protocol.
+DEFAULT_MAX_HOLD_SESSIONS = 20
+DEFAULT_COST_BPS_PER_SIDE = 5.0
+
+# A bar-fetch failure's own outcome, distinct from every ``BracketHit`` value: it means
+# "the labeler was never able to try", not "not enough elapsed bars yet" (IMMATURE).
+FETCH_FAILED_HIT = "fetch_failed"
 
 _COLUMNS = (
     "scan_id",
@@ -42,6 +59,7 @@ _COLUMNS = (
     "r_cost",
     "holding_sessions",
     "decided_at",
+    "reason",
 )
 
 
@@ -83,6 +101,11 @@ def _immature_row(entry: dict[str, Any], symbol: str) -> dict[str, Any]:
     return _row(entry, symbol, hit=BracketHit.IMMATURE.value, r=None, r_cost=None, holding_sessions=0)
 
 
+def _fetch_failed_row(entry: dict[str, Any], symbol: str, reason: str) -> dict[str, Any]:
+    """A bar fetch that raised, not a candidate that merely has not matured yet."""
+    return _row(entry, symbol, hit=FETCH_FAILED_HIT, r=None, r_cost=None, holding_sessions=0, reason=reason)
+
+
 def _row(
     entry: dict[str, Any],
     symbol: str,
@@ -91,6 +114,7 @@ def _row(
     r: float | None,
     r_cost: float | None,
     holding_sessions: int,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     shadow = entry.get("shadow") or {}
     decided_at = entry["decided_at"]
@@ -111,6 +135,7 @@ def _row(
         "r_cost": r_cost,
         "holding_sessions": holding_sessions,
         "decided_at": decided_at,
+        "reason": reason,
     }
 
 
@@ -145,32 +170,43 @@ def label_journaled(
     events: list[dict[str, Any]],
     bars: BarSource,
     *,
-    max_hold_sessions: int = 20,
-    cost_bps: float = 5.0,
+    max_hold_sessions: int = DEFAULT_MAX_HOLD_SESSIONS,
+    cost_bps: float = DEFAULT_COST_BPS_PER_SIDE,
     now: datetime | None = None,
+    max_requests_per_minute: int = 150,
 ) -> pd.DataFrame:
     """One row per journaled ranked candidate, labelled with its realized bracket outcome.
 
     ``events`` is the journal's own shape, exactly as
     ``SignalDatabase.workflows.events()`` returns it (each item is
-    ``{"payload": {...}, ...}``, and ``payload["candidates"]`` is the list Task 7's
-    ``_journal_scan_ranking`` records). Bars are fetched once per symbol -- from that
-    symbol's earliest journaled decision through ``now`` -- and reused for every one
-    of that symbol's candidates, since ``label_bracket`` walks forward from its own
-    ``decision_at`` regardless of any earlier bars already in the frame. A fetch
-    failure for a symbol marks every one of its candidates IMMATURE rather than
+    ``{"payload": {...}, ...}``, and ``payload["candidates"]`` is the list
+    ``_journal_scan_ranking`` records, one event per scan). Bars are fetched once per
+    symbol -- from that symbol's earliest journaled decision through ``now`` -- and
+    reused for every one of that symbol's candidates, since ``label_bracket`` walks
+    forward from its own ``decision_at`` regardless of any earlier bars already in the
+    frame. Fetches are paced with the same sliding-window ``RequestPacer`` the setup
+    runner uses, so a wide symbol population cannot exceed the configured provider rate.
+    A fetch failure for a symbol marks every one of its candidates ``FETCH_FAILED_HIT``
+    -- distinct from IMMATURE, which means "not enough elapsed bars yet" -- rather than
     raising: this is a best-effort report, not an admission or execution path.
     """
     now = now or datetime.now(UTC)
     by_symbol = _candidate_entries(events)
+    try:
+        pacer: RequestPacer | None = RequestPacer(max(1, max_requests_per_minute))
+    except Exception:
+        pacer = None
 
     rows: list[dict[str, Any]] = []
     for symbol, entries in by_symbol.items():
+        if pacer is not None:
+            pacer.acquire()
         start = min(e["decided_at"] for e in entries)
         try:
             hourly = bars.fetch_bars(symbol, _BAR_TIMEFRAME, start, now, adjustment="raw")
-        except Exception:
-            rows.extend(_immature_row(entry, symbol) for entry in entries)
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            rows.extend(_fetch_failed_row(entry, symbol, reason) for entry in entries)
             continue
         rows.extend(_label_one(entry, symbol, hourly, max_hold_sessions, cost_bps) for entry in entries)
 
@@ -178,7 +214,11 @@ def label_journaled(
 
 
 def _selection_by_score(frame: pd.DataFrame, score_column: str) -> dict[str, Any] | None:
-    """Mean cost-adjusted R of the top-1/top-2 pick per scan session, ranked by ``score_column``."""
+    """Mean cost-adjusted R of the top-1/top-2 pick per scan, ranked by ``score_column``.
+
+    Grouped by ``scan_id`` -- one journaled scan, not a trading session (a session may
+    hold more than one scheduled scan) -- hence the ``scans`` key below.
+    """
     scored = frame.dropna(subset=["scan_id", score_column])
     if scored.empty:
         return None
@@ -189,20 +229,20 @@ def _selection_by_score(frame: pd.DataFrame, score_column: str) -> dict[str, Any
         top1.append(float(ranked["r_cost"].iloc[:1].mean()))
         top2.append(float(ranked["r_cost"].iloc[:2].mean()))
     return {
-        "sessions": len(top1),
+        "scans": len(top1),
         "top1_mean_r_cost": sum(top1) / len(top1),
         "top2_mean_r_cost": sum(top2) / len(top2),
     }
 
 
 def _selection_random(frame: pd.DataFrame) -> dict[str, Any] | None:
-    """A random pick's expected cost-adjusted R equals the session's own mean -- for any pick count."""
+    """A random pick's expected cost-adjusted R equals the scan's own mean -- for any pick count."""
     scoped = frame.dropna(subset=["scan_id"])
     if scoped.empty:
         return None
-    per_session = scoped.groupby("scan_id")["r_cost"].mean()
-    mean_r_cost = float(per_session.mean())
-    return {"sessions": len(per_session), "top1_mean_r_cost": mean_r_cost, "top2_mean_r_cost": mean_r_cost}
+    per_scan = scoped.groupby("scan_id")["r_cost"].mean()
+    mean_r_cost = float(per_scan.mean())
+    return {"scans": len(per_scan), "top1_mean_r_cost": mean_r_cost, "top2_mean_r_cost": mean_r_cost}
 
 
 def _base_rate(frame: pd.DataFrame) -> dict[str, Any] | None:
@@ -224,20 +264,32 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         return {
             "total": 0,
             "immature_total": 0,
-            "counts": {"sent": {"mature": 0, "immature": 0}, "runner_up": {"mature": 0, "immature": 0}},
+            "fetch_failed_total": 0,
+            "fetch_failed_reasons": {},
+            "counts": {
+                "sent": {"mature": 0, "immature": 0, "fetch_failed": 0},
+                "runner_up": {"mature": 0, "immature": 0, "fetch_failed": 0},
+            },
             "base_rates": {"sent": None, "runner_up": None},
             "selection": {"setup_quality": None, "shadow_score": None, "random": None},
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
+    is_fetch_failed = frame["hit"] == FETCH_FAILED_HIT
+    is_unresolved = is_immature | is_fetch_failed
     is_sent = frame["sent"].astype(bool)
-    mature = frame.loc[~is_immature]
+    mature = frame.loc[~is_unresolved]
 
     counts = {
-        "sent": {"mature": int((is_sent & ~is_immature).sum()), "immature": int((is_sent & is_immature).sum())},
+        "sent": {
+            "mature": int((is_sent & ~is_unresolved).sum()),
+            "immature": int((is_sent & is_immature).sum()),
+            "fetch_failed": int((is_sent & is_fetch_failed).sum()),
+        },
         "runner_up": {
-            "mature": int((~is_sent & ~is_immature).sum()),
+            "mature": int((~is_sent & ~is_unresolved).sum()),
             "immature": int((~is_sent & is_immature).sum()),
+            "fetch_failed": int((~is_sent & is_fetch_failed).sum()),
         },
     }
     base_rates = {
@@ -250,10 +302,15 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "shadow_score": _selection_by_score(mature, "shadow_score") if has_shadow_scores else None,
         "random": _selection_random(mature),
     }
+    fetch_failed_reasons: dict[str, int] = {}
+    if is_fetch_failed.any():
+        fetch_failed_reasons = frame.loc[is_fetch_failed, "reason"].value_counts().to_dict()
 
     return {
         "total": len(frame),
         "immature_total": int(is_immature.sum()),
+        "fetch_failed_total": int(is_fetch_failed.sum()),
+        "fetch_failed_reasons": fetch_failed_reasons,
         "counts": counts,
         "base_rates": base_rates,
         "selection": selection,

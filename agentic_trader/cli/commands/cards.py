@@ -12,7 +12,12 @@ from agentic_trader.data.evidence import BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.setups.outcomes import label_journaled, summarize
+from agentic_trader.research.setups.outcomes import (
+    DEFAULT_COST_BPS_PER_SIDE,
+    DEFAULT_MAX_HOLD_SESSIONS,
+    label_journaled,
+    summarize,
+)
 from agentic_trader.runtime import state_directory
 from agentic_trader.storage.db import SignalDatabase
 
@@ -39,8 +44,9 @@ def build_bar_source(config: AppConfig) -> AlpacaDataProvider:
 async def _scan_ranked_events(db: SignalDatabase, days: int, *, now: datetime) -> list[dict[str, Any]]:
     """Every ``scan_candidates_ranked`` event journaled on each ET calendar date in the window.
 
-    Task 7's ``_journal_scan_ranking`` stamps one event per stream ``scan/{et_date}``;
-    the reader has no range/prefix query, so this walks each date's exact stream.
+    ``_journal_scan_ranking`` stamps one event per scan under stream ``scan/{et_date}``
+    (a date may hold more than one, since a session may run more than one suggestion
+    scan); the reader has no range/prefix query, so this walks each date's exact stream.
     """
     et_today = now.astimezone(ET_TZ).date()
     events: list[dict[str, Any]] = []
@@ -63,7 +69,14 @@ async def outcomes_cmd(days: int) -> None:
         now = datetime.now(UTC)
         events = await _scan_ranked_events(db, days, now=now)
         bars = build_bar_source(config)
-        frame = label_journaled(events, bars, max_hold_sessions=20, cost_bps=5.0, now=now)
+        frame = label_journaled(
+            events,
+            bars,
+            max_hold_sessions=DEFAULT_MAX_HOLD_SESSIONS,
+            cost_bps=DEFAULT_COST_BPS_PER_SIDE,
+            now=now,
+            max_requests_per_minute=config.market_data.max_requests_per_minute,
+        )
         click.echo(json.dumps(summarize(frame), indent=2, default=str))
         if frame.empty:
             click.echo(f"No scan_candidates_ranked events in the last {days} day(s).")

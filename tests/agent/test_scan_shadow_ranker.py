@@ -24,6 +24,7 @@ from agentic_trader.config import ScanBudget, UniverseConfig, UniverseEntry
 from agentic_trader.constants import AssetClass
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.research.setups.features import CROSS_SECTIONAL, FEATURES_VERSION
+from agentic_trader.research.setups.outcomes import label_journaled
 from agentic_trader.storage.models import SignalRecord
 from tests.agent.test_scan_budget import (  # noqa: F401  (budget_desk is a fixture)
     budget_desk,
@@ -97,7 +98,7 @@ async def test_rank_order_unchanged_with_shadow_block(shadow_desk, temp_db, app_
     for path in (None, artifact[0]):
         app_config.scan.shadow_ranker_artifact = path
         shadow_desk.evaluator.evaluate_candidate.reset_mock()
-        await shadow_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL)
+        await shadow_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
         signals = sorted(await temp_db.get_recent_signals(limit=10), key=lambda s: s["decision_provenance"]["rank"])
         outcomes.append(
             (
@@ -117,7 +118,7 @@ async def test_rank_order_unchanged_with_shadow_block(shadow_desk, temp_db, app_
 async def test_sent_card_provenance_has_shadow_block(shadow_desk, temp_db, app_config, artifact):
     path, sha = artifact
     app_config.scan.shadow_ranker_artifact = path
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
 
     [signal] = await temp_db.get_recent_signals(limit=10)
     block = signal["decision_provenance"]["shadow_ranker"]
@@ -139,7 +140,7 @@ async def test_sent_card_provenance_has_shadow_block(shadow_desk, temp_db, app_c
 
 async def test_runners_up_and_sent_are_journaled_once(shadow_desk, temp_db, app_config, artifact):
     app_config.scan.shadow_ranker_artifact = artifact[0]
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
 
     [event] = await _ranked_events(temp_db)
     et_date = shadow_desk.session_start_et().date().isoformat()
@@ -147,6 +148,7 @@ async def test_runners_up_and_sent_are_journaled_once(shadow_desk, temp_db, app_
     payload = event["payload"]
     assert payload["budget"] == "full" and payload["ranking_key"] == "setup_quality"
     assert payload["scope"] == "universe"
+    assert payload["trigger"] == "suggestion_scan"
     assert payload["scan_id"] == shadow_desk.last_scan_summary["scan_id"]
     assert datetime.fromisoformat(payload["decided_at"]).utcoffset() == timedelta(0)
     candidates = payload["candidates"]
@@ -171,7 +173,7 @@ async def test_runners_up_and_sent_are_journaled_once(shadow_desk, temp_db, app_
     assert all(c["shadow"]["score"] is not None for c in candidates)
 
     # One event per scan: a second scan appends a second, distinct event.
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
     events = await _ranked_events(temp_db)
     assert len(events) == 2
     assert events[0]["payload"]["scan_id"] != events[1]["payload"]["scan_id"]
@@ -189,7 +191,7 @@ async def test_rejected_send_evaluation_is_journaled_with_its_reason(shadow_desk
         )
 
     shadow_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=evaluate)
-    await shadow_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL)
+    await shadow_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
     [event] = await _ranked_events(temp_db)
     outcomes = {c["contract"]: c["outcome"] for c in event["payload"]["candidates"]}
     assert outcomes["DDD"] == "rejected: llm says no" and outcomes["CCC"] == "sent"
@@ -205,7 +207,7 @@ async def test_journal_failure_does_not_block_card(shadow_desk, temp_db, caplog)
 
     temp_db.workflows.append = failing_append
     with caplog.at_level(logging.ERROR, logger="copilot"):
-        await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+        await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
 
     assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["DDD"]
     assert shadow_desk.last_scan_summary["sent"] == 1
@@ -227,7 +229,7 @@ async def test_artifact_mismatch_records_features_only(shadow_desk, temp_db, app
     app_config.scan.shadow_ranker_artifact = path
 
     with caplog.at_level(logging.WARNING):
-        await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+        await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
 
     [signal] = await temp_db.get_recent_signals(limit=10)
     block = signal["decision_provenance"]["shadow_ranker"]
@@ -238,7 +240,7 @@ async def test_artifact_mismatch_records_features_only(shadow_desk, temp_db, app
 
 
 async def test_no_artifact_records_features_only(shadow_desk, temp_db):
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
     [signal] = await temp_db.get_recent_signals(limit=10)
     block = signal["decision_provenance"]["shadow_ranker"]
     assert block["score"] is None and block["ranker_sha"] is None and block["features"]["setup_quality"] == 0.9
@@ -267,12 +269,16 @@ async def test_dry_run_does_not_journal(shadow_desk, temp_db):
         )
 
     shadow_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=evaluate)
-    await shadow_desk.run_scan(use_llm=False, dry_run=True, budget=ScanBudget.FULL)
+    # shadow_evidence=True proves a dry run refuses to journal even when the caller
+    # requests shadow evidence; a dry scan must never touch the durable journal.
+    await shadow_desk.run_scan(use_llm=False, dry_run=True, budget=ScanBudget.FULL, shadow_evidence=True)
     assert await _ranked_events(temp_db) == []
 
 
 async def test_no_budget_scan_does_not_journal(shadow_desk, temp_db):
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.NONE)
+    # shadow_evidence=True proves an unbudgeted scan (--no-budget) refuses to journal
+    # even when the caller requests shadow evidence.
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.NONE, shadow_evidence=True)
     assert len(await temp_db.get_recent_signals(limit=10)) == 5
     assert await _ranked_events(temp_db) == []
 
@@ -283,7 +289,7 @@ async def test_feature_failure_is_contained(shadow_desk, temp_db, monkeypatch, c
 
     monkeypatch.setattr(copilot_module, "live_cross_section", boom)
     with caplog.at_level(logging.ERROR, logger="copilot"):
-        await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+        await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
 
     [signal] = await temp_db.get_recent_signals(limit=10)
     assert signal["contract"] == "DDD"
@@ -292,6 +298,28 @@ async def test_feature_failure_is_contained(shadow_desk, temp_db, monkeypatch, c
     assert any(getattr(r, "event", None) == "shadow_ranker_failed" for r in caplog.records)
     [event] = await _ranked_events(temp_db)
     assert [c["shadow"] for c in event["payload"]["candidates"]] == [None] * 5
+
+
+async def test_shadow_ranker_empty_universe_logs_a_warning_without_traceback(shadow_desk, temp_db, monkeypatch, caplog):
+    """``live_cross_section`` raising for an anticipated, recoverable gap (no completed
+    daily session yet in this scan's data) is not a bug: log it once at WARNING with no
+    traceback, distinct from ``shadow_ranker_failed`` (an unexpected exception)."""
+
+    def no_data(*_args, **_kwargs):
+        raise ValueError("No completed daily session before 2026-09-23 in this scan's data")
+
+    monkeypatch.setattr(copilot_module, "live_cross_section", no_data)
+    with caplog.at_level(logging.WARNING, logger="copilot"):
+        await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
+
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    assert signal["decision_provenance"]["shadow_ranker"] is None
+    assert "No completed daily session" in shadow_desk.last_scan_summary["shadow_ranker_error"]
+    warnings = [r for r in caplog.records if getattr(r, "event", None) == "shadow_ranker_skipped"]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert warnings[0].exc_info is None
+    assert not any(getattr(r, "event", None) == "shadow_ranker_failed" for r in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -311,7 +339,9 @@ async def test_restricted_scans_neither_compute_nor_journal_the_shadow(
         raise AssertionError("the shadow cross-section is only for full-universe scans")
 
     monkeypatch.setattr(copilot_module, "live_cross_section", unexpected)
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, **scope)
+    # shadow_evidence=True proves the restriction guard defends even a caller that
+    # (incorrectly) also asks for shadow evidence on a symbol- or timeframe-scoped scan.
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True, **scope)
 
     [signal] = await temp_db.get_recent_signals(limit=10)  # the card itself is unaffected
     assert signal["contract"] == "DDD"
@@ -341,7 +371,7 @@ async def test_live_cross_section_is_universe_groups_only(shadow_desk, temp_db, 
         return original(daily, sectors, as_of)
 
     monkeypatch.setattr(ranker_module, "cross_section", spy)
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
 
     assert populations == [set(SYMBOLS)]
     [event] = await _ranked_events(temp_db)
@@ -349,3 +379,86 @@ async def test_live_cross_section_is_universe_groups_only(shadow_desk, temp_db, 
     assert set(shadow) == {*SYMBOLS, "ZZZ"}
     assert all(shadow["ZZZ"]["features"][name] is None for name in CROSS_SECTIONAL)
     assert all(shadow["DDD"]["features"][name] is not None for name in ("mom_60", "vol_20"))
+
+
+async def test_swing_scan_shaped_call_neither_computes_nor_journals_shadow(
+    shadow_desk, temp_db, app_config, artifact, monkeypatch
+):
+    """The daemon's 4-hourly swing scan calls ``run_scan(use_llm, dry_run, budget=FULL)``
+    with no symbols/timeframe and no ``shadow_evidence`` -- the same shape a full-universe
+    scan has, but not the suggestion-scan job, so it must neither compute nor journal."""
+    app_config.scan.shadow_ranker_artifact = artifact[0]
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("shadow evidence is scoped to the suggestion-scan job alone")
+
+    monkeypatch.setattr(copilot_module, "live_cross_section", unexpected)
+    await shadow_desk.run_scan(True, False, budget=ScanBudget.FULL)  # positional use_llm, dry_run like the cron job
+
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    assert signal["decision_provenance"]["shadow_ranker"] is None
+    assert await _ranked_events(temp_db) == []
+    assert "shadow_ranker_error" not in shadow_desk.last_scan_summary
+
+
+async def test_unrestricted_manual_scan_neither_computes_nor_journals_shadow(
+    shadow_desk, temp_db, app_config, artifact, monkeypatch
+):
+    """An operator ``copilot scan``/Telegram ``/scan`` with no symbols and no timeframe
+    is shaped exactly like the suggestion scan, but never sets ``shadow_evidence``."""
+    app_config.scan.shadow_ranker_artifact = artifact[0]
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("shadow evidence is scoped to the suggestion-scan job alone")
+
+    monkeypatch.setattr(copilot_module, "live_cross_section", unexpected)
+    await shadow_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL)
+
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    assert signal["decision_provenance"]["shadow_ranker"] is None
+    assert await _ranked_events(temp_db) == []
+    assert "shadow_ranker_error" not in shadow_desk.last_scan_summary
+
+
+async def test_ranking_and_cards_unaffected_by_the_shadow_evidence_flag(shadow_desk, temp_db, app_config, artifact):
+    """The flag governs shadow computation/journaling only; it must never change what
+    is ranked, budgeted or sent."""
+    app_config.scan.shadow_ranker_artifact = artifact[0]
+
+    outcomes = []
+    for shadow_evidence in (False, True):
+        await shadow_desk.run_scan(
+            use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=shadow_evidence
+        )
+        signals = sorted(await temp_db.get_recent_signals(limit=10), key=lambda s: s["decision_provenance"]["rank"])
+        outcomes.append([(s["contract"], s["decision_provenance"]["rank"], s["quantity"]) for s in signals])
+        async with temp_db.session_factory() as session, session.begin():
+            await session.execute(delete(SignalRecord))
+
+    assert outcomes[0] == outcomes[1]
+
+
+async def test_scan_candidates_ranked_round_trips_through_label_journaled(shadow_desk, temp_db, app_config, artifact):
+    """Write-side journal payload and read-side ``label_journaled`` agree end to end."""
+    app_config.scan.shadow_ranker_artifact = artifact[0]
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
+
+    [event] = await _ranked_events(temp_db)
+    assert event["payload"]["trigger"] == "suggestion_scan"
+
+    class _StaleBars:
+        """Bars entirely before the scan's decision time: every candidate is IMMATURE."""
+
+        def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+            index = pd.date_range("2020-01-01", periods=2, freq="h", tz="UTC")
+            return pd.DataFrame(
+                {"Open": [1.0, 1.0], "High": [1.0, 1.0], "Low": [1.0, 1.0], "Close": [1.0, 1.0]}, index=index
+            )
+
+    frame = label_journaled([event], _StaleBars())
+
+    assert set(frame["contract"]) == set(SYMBOLS)
+    assert (frame["hit"] == "immature").all()
+    sent = frame.loc[frame["contract"] == "DDD"].iloc[0]
+    assert bool(sent["sent"]) is True
+    assert sent["scan_id"] == event["payload"]["scan_id"]

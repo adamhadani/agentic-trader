@@ -351,7 +351,15 @@ class TradingCopilot:
         timeframe: str | None = None,
         include_fifteen_min: bool | None = None,
         budget: ScanBudget = ScanBudget.SESSION,
+        shadow_evidence: bool = False,
     ):
+        """``shadow_evidence`` is set only by the scheduled suggestion-scan job
+
+        (``make_suggestion_scan``): it is the sole trigger for computing and journaling
+        this scan's shadow ranker block. The daemon's swing scan and an operator/Telegram
+        scan never set it, even though they may otherwise share this scan's shape (no
+        symbols, no timeframe).
+        """
         async with self._scan_lock:
             self.last_scan_summary = {}
             if dry_run:
@@ -667,16 +675,22 @@ class TradingCopilot:
             # the send-phase evaluation and send failures all thin this number down.
             summary["approved"] = len(ranked)
             # SHADOW: evidence only. It reads `ranked` and never reorders, filters or
-            # gates it; a failure leaves every block None and the scan unchanged. Only a
-            # full-universe scan (the scheduled suggestion scans) matches the setup
-            # study's population, so a symbol-restricted or timeframe-filtered scan (an
-            # operator /scan, the intraday non-universe job) neither scores nor journals.
+            # gates it; a failure leaves every block None and the scan unchanged.
+            # `shadow_evidence` is an explicit keyword the caller must opt into -- only
+            # `make_suggestion_scan`'s scheduled job passes True -- never inferred from
+            # scan shape: the daemon's 4-hourly swing scan and an unrestricted operator
+            # or Telegram scan share this scan's shape (no symbols, no timeframe) but
+            # never request shadow evidence. The full-universe restriction below is a
+            # second, defensive check: even a caller that mistakenly asks for shadow
+            # evidence on a symbol- or timeframe-scoped scan gets neither scoring nor
+            # journaling, since only the unrestricted population matches the setup
+            # study's own.
             decided_at = datetime.now(UTC)
             scan_id = uuid4().hex
             summary["scan_id"] = scan_id
-            universe_scan = self._is_suggestion_scan(summary)
+            compute_shadow_evidence = shadow_evidence and not symbols and timeframe is None
             shadow_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
-            if not dry_run and ranked and universe_scan:
+            if not dry_run and ranked and compute_shadow_evidence:
                 shadow_by_rank = await self._shadow_blocks(ranked, datasets, decided_at, summary)
             outcomes: list[str | None] = [None] * len(ranked)
             cfg = self.config.scan
@@ -848,7 +862,7 @@ class TradingCopilot:
                     logger.exception(f"Error scanning {candidate.contract}")
                     continue
 
-            if not dry_run and budget != ScanBudget.NONE and ranked and universe_scan:
+            if not dry_run and budget != ScanBudget.NONE and ranked and compute_shadow_evidence:
                 await self._journal_scan_ranking(
                     scan_id=scan_id,
                     decided_at=decided_at,
@@ -920,6 +934,15 @@ class TradingCopilot:
         started = time.monotonic()
         try:
             return await asyncio.to_thread(self._compute_shadow_blocks, ranked, datasets, decided_at)
+        except ValueError as exc:
+            # `live_cross_section` raises a plain ValueError when this scan's universe
+            # has no completed daily session yet (every symbol's daily frame empty or
+            # too short): an anticipated, recoverable gap, not a bug. Log it once at
+            # WARNING with no traceback rather than `shadow_ranker_failed`'s ERROR/
+            # traceback, which is reserved for a genuinely unexpected exception.
+            summary["shadow_ranker_error"] = f"{type(exc).__name__}: {exc}"
+            logger.warning("Shadow ranker skipped: %s", exc, extra={"event": "shadow_ranker_skipped"})
+            return [None] * len(ranked)
         except Exception as exc:
             summary["shadow_ranker_error"] = f"{type(exc).__name__}: {exc}"
             logger.exception(
@@ -998,6 +1021,9 @@ class TradingCopilot:
                 "scan_id": scan_id,
                 "decided_at": decided_at.isoformat(),
                 "scope": "universe",
+                # This method is only ever called when `run_scan` computed shadow
+                # evidence, i.e. the scheduled suggestion-scan job requested it.
+                "trigger": "suggestion_scan",
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
                 "candidates": candidates,

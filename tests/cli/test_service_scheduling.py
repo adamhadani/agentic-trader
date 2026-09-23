@@ -48,7 +48,9 @@ async def test_suggestion_scan_runs_full_budget_only_when_the_equity_session_is_
     copilot.publish_scan_digest.assert_awaited_once()  # a quiet day still reports
     copilot.session_provider.is_session_active = AsyncMock(return_value=(True, "open"))
     await job(digest=False)
-    copilot.run_scan.assert_awaited_once_with(use_llm=True, dry_run=False, asset_class="equity", budget=ScanBudget.FULL)
+    copilot.run_scan.assert_awaited_once_with(
+        use_llm=True, dry_run=False, asset_class="equity", budget=ScanBudget.FULL, shadow_evidence=True
+    )
 
 
 def test_intraday_scan_is_restricted_to_non_universe_contracts(config):
