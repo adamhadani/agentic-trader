@@ -277,9 +277,12 @@ one or two reasonable cards per session:
    swing scan and manual scans stay unchanged
    ([design](superpowers/specs/2026-09-23-dynamic-universe-design.md),
    [production behaviour](production.md#suggestion-scans)).
-   - Each suggestion scan adds up to 20 deterministically filtered, liquid US
-     equities, with a synthetic per-scan contract (multiplier 1).
-     `config.contracts` is never mutated.
+   - Each suggestion scan adds up to 20 deterministically filtered US equities, with
+     a synthetic per-scan contract (multiplier 1). `config.contracts` is never
+     mutated. Dynamic names run native strategies only.
+   - Liquidity is relative: at least the 25th percentile of the static universe
+     equities' median dollar volume, measured in the same scan on the same (IEX)
+     bars. The scan fails closed when there is no static reference.
    - All dynamic names share one `dynamic` correlation group, so the desk issues at
      most one dynamic card per session. Cards and `scan_candidates_ranked` candidates
      carry `dynamic`/`dynamic_source`.

@@ -27,9 +27,9 @@ from alpaca.trading.enums import AssetClass as AlpacaAssetClass, AssetStatus
 from alpaca.trading.requests import GetAssetsRequest
 
 from agentic_trader.config import ContractConfig
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import CRYPTO_SYMBOL_PREFIXES, AssetClass
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.transport.alpaca import BoundedTradingClient
+from agentic_trader.transport.alpaca import BoundedScreenerClient, BoundedTradingClient
 
 
 if TYPE_CHECKING:
@@ -54,9 +54,15 @@ _FUND_CONTEXT = re.compile(r"\b(?:etf|etn|fund|trust|shares|proshares|direxion)\
 
 # Warrants, rights and units trade under plain symbols too; their asset names say so.
 _INSTRUMENT_MARKERS = re.compile(r"\bwarrants?\b|\brights?\b|\bunits?\b", re.IGNORECASE)
+# Volatility and option-income products ("iPath Series B S&P 500 VIX Short-Term Futures ETN",
+# "YieldMax TSLA Option Income Strategy ETF") are instruments, not companies; like the
+# leveraged markers they also need the fund context, so an ordinary company is kept.
+_PRODUCT_MARKERS = re.compile(r"\bvix\b|\bvolatility\b|yieldmax|option income|covered call", re.IGNORECASE)
 
 # The last 20 completed daily bars set the liquidity gate's median dollar-volume window.
 _LIQUIDITY_WINDOW = 20
+# The static reference percentile needs at least this many static equities with a full window.
+MIN_REFERENCE_NAMES = 20
 
 
 @dataclass(frozen=True)
@@ -129,6 +135,11 @@ def select_dynamic(
         if not _SYMBOL_SHAPE.match(entry.symbol):
             bump("shape")
             continue
+        if entry.symbol.startswith(CRYPTO_SYMBOL_PREFIXES):
+            # The same rule as the static universe validator: the session router would
+            # treat such a symbol as crypto.
+            bump("crypto_prefix")
+            continue
         if entry.symbol in static:
             bump("static")
             continue
@@ -148,7 +159,9 @@ def select_dynamic(
         if asset.exchange not in _ALLOWED_EXCHANGES:
             bump("exchange")
             continue
-        if _INSTRUMENT_MARKERS.search(asset.name):
+        if _INSTRUMENT_MARKERS.search(asset.name) or (
+            _PRODUCT_MARKERS.search(asset.name) and _FUND_CONTEXT.search(asset.name)
+        ):
             bump("instrument")
             continue
         if _LEVERAGED_MARKERS.search(asset.name) and _FUND_CONTEXT.search(asset.name):
@@ -166,14 +179,59 @@ def select_dynamic(
     return DynamicSelection(members=tuple(members), reasons=reasons, raw_counts=raw_counts)
 
 
+def median_dollar_volume(daily: pd.DataFrame | None, as_of: date | None = None) -> float | None:
+    """Median ``Close × Volume`` over the last 20 completed finite sessions, or None with fewer."""
+    completed = _completed_rows(daily, as_of)
+    if completed is None or len(completed) < _LIQUIDITY_WINDOW:
+        return None
+    window = completed.tail(_LIQUIDITY_WINDOW)
+    return float((window["Close"] * window["Volume"]).median())
+
+
+@dataclass(frozen=True)
+class StaticReference:
+    """The static universe's dollar-volume percentile, measured on this scan's own bars."""
+
+    percentile: float
+    names: int  # static equities with a full completed window
+    value: float | None  # None when fewer than MIN_REFERENCE_NAMES names had one
+
+
+def static_reference(
+    static_daily: Mapping[str, pd.DataFrame], percentile: float, *, as_of: date | None = None
+) -> StaticReference:
+    """The ``percentile`` of the static equities' median dollar volumes (linear interpolation).
+
+    Computed from the same scan's bars (so the same feed) and with the same completed,
+    finite 20-session rule as the dynamic names it gates, so it calibrates itself to a
+    partial-volume feed such as IEX.
+    """
+    medians = [value for frame in static_daily.values() if (value := median_dollar_volume(frame, as_of)) is not None]
+    if len(medians) < MIN_REFERENCE_NAMES:
+        return StaticReference(percentile=percentile, names=len(medians), value=None)
+    return StaticReference(percentile=percentile, names=len(medians), value=float(np.quantile(medians, percentile)))
+
+
+def dollar_volume_threshold(reference: StaticReference, cfg: DynamicUniverseConfig) -> float | None:
+    """The larger of the static reference and the optional absolute floor; None without a reference."""
+    if reference.value is None:
+        return None
+    return max(reference.value, cfg.min_median_dollar_volume)
+
+
 def liquidity_gate(
     daily_by_symbol: Mapping[str, pd.DataFrame],
     members: Sequence[ScreenerEntry],
     cfg: DynamicUniverseConfig,
     *,
+    reference: StaticReference,
     as_of: date | None = None,
 ) -> tuple[list[ScreenerEntry], dict[str, str]]:
     """Apply the median dollar-volume liquidity gate, preserving source order.
+
+    A dynamic name needs a median ``Close × Volume`` of at least
+    ``dollar_volume_threshold(reference, cfg)``. Without a static reference every member
+    is excluded as ``no_reference`` (fail closed).
 
     Only completed sessions count: with ``as_of`` (the last completed New York session),
     later rows such as today's in-progress bar are ignored, and rows with a non-finite
@@ -183,9 +241,13 @@ def liquidity_gate(
     against the last daily Close (reason "price"). A movers entry already passed the
     `min_price` filter in `select_dynamic` and is not rechecked.
     """
+    threshold = dollar_volume_threshold(reference, cfg)
     excluded: dict[str, str] = {}
     kept: list[ScreenerEntry] = []
     for entry in members:
+        if threshold is None:
+            excluded[entry.symbol] = "no_reference"
+            continue
         daily = _completed_rows(daily_by_symbol.get(entry.symbol), as_of)
         if daily is None or len(daily) < _LIQUIDITY_WINDOW:
             excluded[entry.symbol] = "insufficient_bars"
@@ -195,7 +257,7 @@ def liquidity_gate(
             excluded[entry.symbol] = "price"
             continue
         dollar_volume = window["Close"] * window["Volume"]
-        if float(dollar_volume.median()) < cfg.min_median_dollar_volume:
+        if float(dollar_volume.median()) < threshold:
             excluded[entry.symbol] = "dollar_volume"
             continue
         kept.append(entry)
@@ -234,9 +296,10 @@ class DynamicUniverseSource:
         clock: Callable[[], datetime] | None = None,
     ):
         self.cfg = config.universe.dynamic
-        self.screener_client = screener_client or ScreenerClient(
+        self.screener_client = screener_client or BoundedScreenerClient(
             config.alpaca_api_key,
             config.alpaca_api_secret,
+            request_timeout=config.market_data.timeout_seconds,
         )
         self.trading_client = trading_client or BoundedTradingClient(
             config.alpaca_api_key,

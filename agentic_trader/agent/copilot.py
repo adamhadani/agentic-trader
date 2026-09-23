@@ -99,8 +99,11 @@ from agentic_trader.screeners.dynamic_universe import (
     AssetInfo,
     DynamicSelection,
     DynamicUniverseSource,
+    StaticReference,
+    dollar_volume_threshold,
     liquidity_gate,
     select_dynamic,
+    static_reference,
     synthetic_contract,
 )
 from agentic_trader.screeners.strategies import StrategyEngine
@@ -639,9 +642,10 @@ class TradingCopilot:
             # Dynamic names that reach strategy scanning -> their screener source.
             dynamic_sources: dict[str, str] = {}
             dynamic_excluded: dict[str, str] = {}
+            dynamic_reference: StaticReference | None = None
             if attempt_dynamic:
                 if dynamic_selection is not None:
-                    dynamic_sources, dynamic_excluded = self._gate_dynamic_members(
+                    dynamic_sources, dynamic_excluded, dynamic_reference = self._gate_dynamic_members(
                         dynamic_selection, selected, datasets, excluded
                     )
                 summary["dynamic"] = {
@@ -651,6 +655,17 @@ class TradingCopilot:
                     "excluded": dynamic_excluded,
                     "reasons": dict(dynamic_selection.reasons) if dynamic_selection else {},
                     "raw_counts": dict(dynamic_selection.raw_counts) if dynamic_selection else {},
+                    # The liquidity threshold is in this feed's units (IEX volume is partial).
+                    "feed": self.config.market_data.alpaca_feed,
+                    "threshold": (
+                        dollar_volume_threshold(dynamic_reference, dynamic_cfg) if dynamic_reference else None
+                    ),
+                    "reference": {
+                        "percentile": dynamic_cfg.min_dollar_volume_static_percentile,
+                        "names": dynamic_reference.names if dynamic_reference else 0,
+                        "value": dynamic_reference.value if dynamic_reference else None,
+                        "floor": dynamic_cfg.min_median_dollar_volume,
+                    },
                 }
                 if not dry_run:
                     await self._journal_dynamic_universe(
@@ -703,6 +718,8 @@ class TradingCopilot:
                         override_strategy=strategy,
                         override_mode=strategy_mode,
                         timeframe=timeframe,
+                        # Registry alphas never evaluate a dynamic name: native strategies only.
+                        native_only=contract in dynamic_sources,
                     )
                     if timeframe:
                         tf_norm = timeframe.strip().lower()
@@ -1226,14 +1243,18 @@ class TradingCopilot:
         selected: list[tuple[str, Any]],
         datasets: Mapping[str, Any],
         coverage_excluded: set[str],
-    ) -> tuple[dict[str, str], dict[str, str]]:
-        """Kept dynamic names -> source (source order, capped) and excluded name -> reason.
+    ) -> tuple[dict[str, str], dict[str, str], StaticReference | None]:
+        """Kept dynamic names -> source (source order, capped), excluded name -> reason, and the reference.
 
         A dynamic name whose fetch failed or that the coverage gate excluded is dropped
         before the liquidity gate, so it never consumes the ``max_symbols`` cap. The
-        liquidity window counts completed sessions only: as of the last session completed
-        before this scan's New York date, the date the shadow cross-section uses.
+        liquidity threshold is relative: a percentile of this scan's static universe
+        equities' median dollar volumes, from the same bars and so the same feed. Both
+        sides count completed sessions only: as of the last session completed before this
+        scan's New York date, the date the shadow cross-section uses. Without a reference
+        (too few static equities with a full window) every dynamic name is excluded.
         """
+        dynamic_symbols = {entry.symbol for entry in selection.members}
         chosen = {contract for contract, _ in selected}
         excluded: dict[str, str] = {}
         daily: dict[str, Any] = {}
@@ -1249,6 +1270,8 @@ class TradingCopilot:
             else:
                 daily[entry.symbol] = data.daily
                 gated.append(entry)
+        dynamic_cfg = self.config.universe.dynamic
+        reference: StaticReference | None = None
         try:
             scan_date = self.session_start_et().date()
             frames = {
@@ -1257,15 +1280,31 @@ class TradingCopilot:
                 if isinstance(frame := getattr(data, "daily", None), pd.DataFrame) and not frame.empty
             }
             as_of = last_completed_session(frames, scan_date) or scan_date - timedelta(days=1)
-            kept, gate_excluded = liquidity_gate(daily, gated, self.config.universe.dynamic, as_of=as_of)
+            equity = normalize_asset_class(AssetClass.EQUITY)
+            static_daily = {
+                contract: frames[contract]
+                for contract, info in selected
+                if contract not in dynamic_symbols
+                and contract in frames
+                and normalize_asset_class(str(getattr(info, "asset_class", ""))) == equity
+            }
+            reference = static_reference(static_daily, dynamic_cfg.min_dollar_volume_static_percentile, as_of=as_of)
+            kept, gate_excluded = liquidity_gate(daily, gated, dynamic_cfg, reference=reference, as_of=as_of)
         except Exception:
             logger.exception(
                 "Dynamic liquidity gate raised; no dynamic name is scanned this time",
                 extra={"event": "dynamic_liquidity_gate_error"},
             )
             kept, gate_excluded = [], dict.fromkeys((entry.symbol for entry in gated), "gate_error")
+        if reference is not None and reference.value is None:
+            logger.warning(
+                "Dynamic liquidity reference unavailable (%d static equities with a full window); "
+                "no dynamic name is scanned this time",
+                reference.names,
+                extra={"event": "dynamic_liquidity_no_reference", "names": reference.names},
+            )
         excluded.update(gate_excluded)
-        return {entry.symbol: entry.source for entry in kept}, excluded
+        return {entry.symbol: entry.source for entry in kept}, excluded, reference
 
     async def _journal_dynamic_universe(
         self,
@@ -1297,6 +1336,9 @@ class TradingCopilot:
                 ],
                 "scanned": dynamic["members"],
                 "excluded": dynamic["excluded"],
+                "feed": dynamic["feed"],
+                "threshold": dynamic["threshold"],
+                "reference": dynamic["reference"],
             }
             et_date = self.session_start_et(built_at).date().isoformat()
             workflows = self.db.workflows
@@ -2953,7 +2995,9 @@ class TradingCopilot:
         """Publish exactly one end-of-session digest of this New York date's suggestion scans.
 
         Scans that attempted the dynamic suggestion universe add one
-        "N dynamic names scanned (M excluded)" line (and how many scans found it unavailable).
+        "N dynamic names scanned (M excluded)" line of unique names across the session (and
+        how many scans found it unavailable); a coverage-excluded dynamic name is counted
+        there, not again under "coverage excluded".
 
         Only *universe* suggestion scans are aggregated: a summary with a timeframe (the
         15-minute intraday job) or a symbol restriction (an operator or Telegram scan of
@@ -2975,7 +3019,15 @@ class TradingCopilot:
             insufficient = sum(len(s.get("insufficient", [])) for s in scans)
             runners = [r for s in scans for r in s.get("runners_up", [])]
             failed = sorted({c for s in scans for c in s.get("fetch_failed", [])})
-            excluded = sorted({c for s in scans for c in s.get("coverage_excluded", [])})
+            # A coverage-excluded dynamic name is reported once, in the dynamic line below.
+            excluded = sorted(
+                {
+                    c
+                    for s in scans
+                    for c in s.get("coverage_excluded", [])
+                    if c not in (s.get("dynamic") or {}).get("excluded", {})
+                }
+            )
             durations = ", ".join(f"{s.get('duration_seconds', 0):.0f}s" for s in scans)
             top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in runners[:5])
             text = (
@@ -2987,10 +3039,12 @@ class TradingCopilot:
             )
             dynamic = [s["dynamic"] for s in scans if s.get("dynamic")]
             if dynamic:
-                names = sum(len(d.get("members", [])) for d in dynamic)
-                dropped = sum(len(d.get("excluded", {})) for d in dynamic)
+                # Unique names across the session: one name screened by both scans counts once,
+                # and a name excluded in one scan but scanned in another counts as scanned.
+                names = {c for d in dynamic for c in d.get("members", [])}
+                dropped = {c for d in dynamic for c in d.get("excluded", {})} - names
                 unavailable = sum(1 for d in dynamic if not d.get("available"))
-                text += f" {names} dynamic names scanned ({dropped} excluded)" + (
+                text += f" {len(names)} dynamic names scanned ({len(dropped)} excluded)" + (
                     f"; dynamic universe unavailable in {unavailable} scan(s)." if unavailable else "."
                 )
         await self.outbox.publish_message(text, key=f"scan-digest/{et_date}")

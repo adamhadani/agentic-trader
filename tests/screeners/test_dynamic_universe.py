@@ -11,13 +11,23 @@ from alpaca.trading.enums import AssetClass as AlpacaAssetClass, AssetExchange, 
 from agentic_trader.config import ContractConfig, DynamicUniverseConfig, load_config
 from agentic_trader.constants import AssetClass
 from agentic_trader.screeners.dynamic_universe import (
+    MIN_REFERENCE_NAMES,
     AssetInfo,
     DynamicUniverseSource,
     ScreenerEntry,
+    StaticReference,
+    dollar_volume_threshold,
     liquidity_gate,
+    median_dollar_volume,
     select_dynamic,
+    static_reference,
     synthetic_contract,
 )
+from agentic_trader.transport.alpaca import BoundedScreenerClient
+
+
+# A zero static reference: these tests exercise the optional absolute floor alone.
+FLOOR_ONLY = StaticReference(percentile=0.25, names=MIN_REFERENCE_NAMES, value=0.0)
 
 
 # --------------------------------------------------------------------------
@@ -238,14 +248,14 @@ def _daily_frame(closes, volumes):
 def test_liquidity_gate_insufficient_bars():
     members = [entry("AAAA", price=50.0)]
     daily = {"AAAA": _daily_frame([50.0] * 19, [1_000_000.0] * 19)}
-    kept, excluded = liquidity_gate(daily, members, cfg())
+    kept, excluded = liquidity_gate(daily, members, cfg(), reference=FLOOR_ONLY)
     assert kept == []
     assert excluded == {"AAAA": "insufficient_bars"}
 
 
 def test_liquidity_gate_missing_symbol_is_insufficient_bars():
     members = [entry("AAAA", price=50.0)]
-    kept, excluded = liquidity_gate({}, members, cfg())
+    kept, excluded = liquidity_gate({}, members, cfg(), reference=FLOOR_ONLY)
     assert kept == []
     assert excluded == {"AAAA": "insufficient_bars"}
 
@@ -257,7 +267,7 @@ def test_liquidity_gate_exact_minimum_median_passes():
     volumes = [dollar_volume / 100.0] * 20
     members = [entry("AAAA", price=100.0)]
     daily = {"AAAA": _daily_frame(closes, volumes)}
-    kept, excluded = liquidity_gate(daily, members, cfg(min_median_dollar_volume=dollar_volume))
+    kept, excluded = liquidity_gate(daily, members, cfg(min_median_dollar_volume=dollar_volume), reference=FLOOR_ONLY)
     assert kept == members
     assert excluded == {}
 
@@ -267,7 +277,7 @@ def test_liquidity_gate_below_minimum_median_excluded():
     volumes = [1.0] * 20  # dollar volume 100, far below any reasonable minimum
     members = [entry("AAAA", price=100.0)]
     daily = {"AAAA": _daily_frame(closes, volumes)}
-    kept, excluded = liquidity_gate(daily, members, cfg(min_median_dollar_volume=50_000_000))
+    kept, excluded = liquidity_gate(daily, members, cfg(min_median_dollar_volume=50_000_000), reference=FLOOR_ONLY)
     assert kept == []
     assert excluded == {"AAAA": "dollar_volume"}
 
@@ -278,7 +288,7 @@ def test_liquidity_gate_only_uses_last_20_rows():
     volumes = [1.0] * 5 + [1_000_000.0] * 20
     members = [entry("AAAA", price=100.0)]
     daily = {"AAAA": _daily_frame(closes, volumes)}
-    kept, excluded = liquidity_gate(daily, members, cfg(min_median_dollar_volume=50_000_000))
+    kept, excluded = liquidity_gate(daily, members, cfg(min_median_dollar_volume=50_000_000), reference=FLOOR_ONLY)
     assert kept == members
     assert excluded == {}
 
@@ -289,7 +299,7 @@ def test_liquidity_gate_defers_price_check_for_most_actives_entries():
     closes = [5.0] * 20  # below the default min_price of 10.0
     volumes = [1_000_000_000.0] * 20  # dollar volume alone would pass
     daily = {"AAAA": _daily_frame(closes, volumes)}
-    kept, excluded = liquidity_gate(daily, members, cfg())
+    kept, excluded = liquidity_gate(daily, members, cfg(), reference=FLOOR_ONLY)
     assert kept == []
     assert excluded == {"AAAA": "price"}
 
@@ -298,7 +308,7 @@ def test_liquidity_gate_caps_at_max_symbols_in_order():
     symbols = ["AAAA", "BBBB", "CCCC"]
     members = [entry(sym, price=100.0) for sym in symbols]
     daily = {sym: _daily_frame([100.0] * 20, [1_000_000.0] * 20) for sym in symbols}
-    kept, excluded = liquidity_gate(daily, members, cfg(max_symbols=2))
+    kept, excluded = liquidity_gate(daily, members, cfg(max_symbols=2), reference=FLOOR_ONLY)
     assert [m.symbol for m in kept] == ["AAAA", "BBBB"]
     assert excluded == {"CCCC": "cap"}
 
@@ -463,14 +473,14 @@ def test_liquidity_gate_ignores_todays_partial_bar():
     members = [entry("AAAA", price=50.0)]
     # 20 completed sessions at $50M, then today's partial bar with tiny volume.
     frame = _dated_daily([50.0] * 21, [1_000_000.0] * 20 + [10.0])
-    kept, excluded = liquidity_gate({"AAAA": frame}, members, cfg(), as_of=date(2026, 9, 22))
+    kept, excluded = liquidity_gate({"AAAA": frame}, members, cfg(), as_of=date(2026, 9, 22), reference=FLOOR_ONLY)
     assert [m.symbol for m in kept] == ["AAAA"] and excluded == {}
 
 
 def test_liquidity_gate_non_finite_rows_do_not_count():
     members = [entry("AAAA", price=50.0)]
     frame = _dated_daily([50.0] * 19 + [float("nan")], [1_000_000.0] * 20, end="2026-09-22")
-    kept, excluded = liquidity_gate({"AAAA": frame}, members, cfg(), as_of=date(2026, 9, 22))
+    kept, excluded = liquidity_gate({"AAAA": frame}, members, cfg(), as_of=date(2026, 9, 22), reference=FLOOR_ONLY)
     assert kept == [] and excluded == {"AAAA": "insufficient_bars"}
 
 
@@ -483,3 +493,136 @@ def test_ordinary_names_containing_leveraged_substrings_are_kept(name):
     assets = {"ABCD": asset("ABCD", name=name)}
     selection = select_dynamic(entries, assets=assets, static_symbols=(), cfg=cfg())
     assert [member.symbol for member in selection.members] == ["ABCD"]
+
+
+# --------------------------------------------------------------------------
+# Final review: crypto prefixes, volatility/option-income products
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("symbol", ["BTCS", "ETHE", "SOLV", "DOGEX"])
+def test_crypto_prefixed_symbols_are_excluded_like_the_static_validator(symbol):
+    """The session router would treat these as crypto (CRYPTO_SYMBOL_PREFIXES)."""
+    selection = select_dynamic([entry(symbol)], assets={symbol: asset(symbol)}, static_symbols=(), cfg=cfg())
+    assert selection.members == ()
+    assert selection.reasons == {"crypto_prefix": 1}
+
+
+@pytest.mark.parametrize(
+    "symbol,name",
+    [
+        ("VXX", "iPath Series B S&P 500 VIX Short-Term Futures ETN"),
+        ("SVIX", "-1x Short VIX Futures ETF"),
+        ("SVOL", "Simplify Volatility Premium ETF"),
+        ("TSLY", "YieldMax TSLA Option Income Strategy ETF"),
+        ("JEPQ", "JPMorgan Nasdaq Equity Premium Income ETF Option Income Shares"),
+        ("QYLD", "Global X NASDAQ 100 Covered Call ETF"),
+    ],
+)
+def test_volatility_and_option_income_products_are_instruments(symbol, name):
+    selection = select_dynamic([entry(symbol)], assets={symbol: asset(symbol, name=name)}, static_symbols=(), cfg=cfg())
+    assert selection.members == ()
+    assert selection.reasons == {"instrument": 1}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Vixen Biosciences Inc. Common Stock",  # "vix" is not a whole word
+        "Volatility Analytics Inc. Common Stock",  # no fund context
+        "Covered Call Software Corp",  # no fund context
+        "Apple Inc. Common Stock",
+    ],
+)
+def test_ordinary_companies_are_not_volatility_products(name):
+    selection = select_dynamic([entry("ABCD")], assets={"ABCD": asset("ABCD", name=name)}, static_symbols=(), cfg=cfg())
+    assert [member.symbol for member in selection.members] == ["ABCD"]
+
+
+# --------------------------------------------------------------------------
+# Final review: relative, self-calibrating liquidity threshold
+# --------------------------------------------------------------------------
+
+
+def _flat(dollar_volume: float, rows: int = 20):
+    return _daily_frame([100.0] * rows, [dollar_volume / 100.0] * rows)
+
+
+def test_median_dollar_volume_needs_a_full_window():
+    assert median_dollar_volume(_flat(1e6, rows=19)) is None
+    assert median_dollar_volume(_flat(1e6)) == pytest.approx(1e6)
+
+
+def test_static_reference_is_a_linear_percentile_of_the_static_medians():
+    static = {f"S{i:02d}": _flat(1e6 * (i + 1)) for i in range(20)}  # 1M..20M
+    reference = static_reference(static, 0.25)
+    assert reference.names == 20
+    assert reference.value == pytest.approx(5.75e6)  # numpy linear quantile of 1..20 at 0.25 = 5.75
+
+
+def test_static_reference_fails_closed_below_the_minimum_names():
+    static = {f"S{i:02d}": _flat(1e6) for i in range(MIN_REFERENCE_NAMES - 1)}
+    static["THIN"] = _flat(1e6, rows=19)  # not a full window, so it does not count
+    reference = static_reference(static, 0.25)
+    assert reference.value is None and reference.names == MIN_REFERENCE_NAMES - 1
+
+
+def test_static_reference_counts_completed_sessions_only():
+    """The same as_of rule as the dynamic side: today's partial bar is ignored."""
+    static = {f"S{i:02d}": _dated_daily([100.0] * 21, [1e4] * 20 + [1e9]) for i in range(20)}
+    reference = static_reference(static, 0.5, as_of=date(2026, 9, 22))
+    assert reference.value == pytest.approx(1e6)
+
+
+def test_the_threshold_is_the_larger_of_the_reference_and_the_floor():
+    reference = StaticReference(percentile=0.25, names=20, value=2e6)
+    assert dollar_volume_threshold(reference, cfg(min_median_dollar_volume=0)) == 2e6
+    assert dollar_volume_threshold(reference, cfg(min_median_dollar_volume=5e6)) == 5e6
+    assert dollar_volume_threshold(StaticReference(0.25, 3, None), cfg()) is None
+
+
+def test_liquidity_gate_passes_at_the_reference_and_excludes_below_it():
+    reference = StaticReference(percentile=0.25, names=20, value=2e6)
+    members = [entry("PASS", price=100.0), entry("THIN", price=100.0)]
+    daily = {"PASS": _flat(2e6), "THIN": _flat(1.99e6)}
+    kept, excluded = liquidity_gate(daily, members, cfg(min_median_dollar_volume=0), reference=reference)
+    assert [m.symbol for m in kept] == ["PASS"]
+    assert excluded == {"THIN": "dollar_volume"}
+
+
+def test_liquidity_gate_without_a_reference_excludes_everything():
+    members = [entry("AAAA", price=100.0), entry("BBBB", price=100.0)]
+    daily = {"AAAA": _flat(1e12), "BBBB": _flat(1e12)}
+    kept, excluded = liquidity_gate(daily, members, cfg(), reference=StaticReference(0.25, 5, None))
+    assert kept == []
+    assert excluded == {"AAAA": "no_reference", "BBBB": "no_reference"}
+
+
+def test_config_defaults_make_the_reference_govern():
+    defaults = DynamicUniverseConfig()
+    assert defaults.min_dollar_volume_static_percentile == 0.25
+    assert defaults.min_median_dollar_volume == 0
+
+
+# --------------------------------------------------------------------------
+# Final review: the screener client is bounded
+# --------------------------------------------------------------------------
+
+
+def test_source_uses_a_bounded_screener_client_with_the_market_data_timeout(app_config, monkeypatch):
+    app_config.alpaca_api_key = "fake-key"
+    app_config.alpaca_api_secret = "fake-secret"
+    app_config.market_data.timeout_seconds = 7.5
+    source = DynamicUniverseSource(app_config, trading_client=_FakeTradingClient(pages=[[]]))
+    assert isinstance(source.screener_client, BoundedScreenerClient)
+    assert source.screener_client.request_timeout == 7.5
+
+    seen: list[dict] = []
+
+    def fake_parent(self, method, url, opts, retry):
+        seen.append(opts)
+        return {"most_actives": [], "last_updated": "2026-09-23T00:00:00Z"}
+
+    monkeypatch.setattr("agentic_trader.transport.alpaca.ScreenerClient._one_request", fake_parent)
+    source.screener_client._one_request("GET", "https://example.invalid/v1beta1/screener/stocks/most-actives", {}, 3)
+    assert seen == [{"timeout": 7.5}]

@@ -27,24 +27,46 @@ every other scan are unchanged. Per CLAUDE.md, the intraday job keeps scanning o
 
 1. Symbol shape `^[A-Z]{1,5}$`. This excludes warrants, units, rights and share
    classes with dots.
-2. Not already in the scan's static contracts.
-3. Asset metadata comes from the Alpaca asset list, fetched once per NY date and
+2. Not crypto-prefixed (`CRYPTO_SYMBOL_PREFIXES`: `BTC`, `ETH`, `SOL`, `DOGE`), the
+   static universe validator's rule, because the session router would treat such a
+   symbol as crypto. Reason `crypto_prefix`. *(Added in the final review.)*
+3. Not already in the scan's static contracts.
+4. Asset metadata comes from the Alpaca asset list, fetched once per NY date and
    cached in memory. The asset must be class `us_equity`, status `active` and
    `tradable`, on exchange NYSE, NASDAQ, ARCA, AMEX or BATS.
-4. The name must not contain a leveraged or inverse fund marker (case-insensitive:
+5. The name must not mark a warrant, right or unit. It must also not mark a volatility
+   or option-income fund: a fund-context name with the whole word "vix" or
+   "volatility", or "yieldmax", "option income" or "covered call". Reason
+   `instrument`. *(Volatility/option-income products added in the final review.)*
+6. The name must not contain a leveraged or inverse fund marker (case-insensitive:
    `2x`, `3x`, `-1x`, `ultra`, `ultrapro`, `bull`, `bear`, `leveraged`, `inverse`,
    `daily target`). ETFs in general are allowed only if they pass everything else.
-5. The screener's last price must be at least `min_price` (10.0).
-6. Take the first `max_candidates` survivors (40), most-actives order first, then
+7. The screener's last price must be at least `min_price` (10.0).
+8. Take the first `max_candidates` survivors (40), most-actives order first, then
    movers ordered by absolute percent change.
 
 ### Liquidity gate (after the scan's normal fetch, before strategies)
 
-Dynamic names need a median of the last 20 daily `Close × Volume` of at least
-`min_median_dollar_volume` (50,000,000), computed from the daily bars the scan already
-fetched. They also pass the existing hourly-coverage gate. At most `max_symbols` (20)
+*Revised in the final review.* The first real dry run on the desk's IEX bars excluded
+SHOP, SOFI, IONQ, CRWV and RKLB at an absolute $50M floor. IEX volume is a few percent
+of consolidated volume, so an absolute floor is miscalibrated. The threshold is
+therefore relative and self-calibrating.
+
+- A dynamic name needs a median of its last 20 completed, finite daily `Close × Volume`
+  of at least the `min_dollar_volume_static_percentile` (0.25) percentile of the same
+  median over the static universe's equities.
+- The reference is computed in the same scan, from the same bars (so the same feed)
+  and with the same completed-rows rule (`as_of`).
+- `min_median_dollar_volume` is an optional absolute floor in the feed's own units,
+  default 0; the larger of the two applies.
+- With fewer than 20 static equities that have a full window there is no reference,
+  and every dynamic name is excluded as `no_reference` (fail closed).
+- The threshold, the reference and the feed (`market_data.alpaca_feed`) are recorded
+  in `summary["dynamic"]` and in the audit event.
+
+Dynamic names also pass the existing hourly-coverage gate. At most `max_symbols` (20)
 dynamic names that pass are evaluated by strategies, in source order. Names that fail
-are counted in `summary["dynamic_excluded"]` with a reason.
+are recorded in `summary["dynamic"]["excluded"]` with a reason.
 
 ### Treatment of dynamic names
 
@@ -57,6 +79,9 @@ are counted in `summary["dynamic_excluded"]` with a reason.
   a recorded signal whose provenance has `dynamic: true` belongs to group `dynamic`.
 - **Gates.** Every existing gate applies unchanged: dedup, earnings blackout, macro,
   sizing, session, LLM, budget and card freshness.
+- **Strategies.** Dynamic names run the native strategies only. The scan drops every
+  registry alpha (active or paper probe) for them structurally, not through
+  `eligible_symbols`.
 - **Shadow evidence.** The cross-section stays `universe.groups` only, which is study
   parity. A dynamic candidate's cross-sectional features are therefore NaN (null).
   Journaled candidates and signal provenance carry `"dynamic": true` and
@@ -82,7 +107,8 @@ universe:
     max_candidates: 40
     max_symbols: 20
     min_price: 10.0
-    min_median_dollar_volume: 50000000
+    min_dollar_volume_static_percentile: 0.25
+    min_median_dollar_volume: 0   # optional absolute floor, in the feed's units
 ```
 
 When `enabled: false`, suggestion scans are byte-for-byte unchanged.
@@ -90,8 +116,9 @@ When `enabled: false`, suggestion scans are byte-for-byte unchanged.
 ## Constraints
 
 - No migration. `kind` is a String column and provenance is JSON text.
-- Blocking SDK calls run off the event loop (`asyncio.to_thread`) with the existing
-  bounded clients.
+- Blocking SDK calls run off the event loop (`asyncio.to_thread`) with bounded clients.
+  These are `BoundedScreenerClient` and `BoundedTradingClient`, with a per-request
+  socket timeout of `market_data.timeout_seconds`.
 - The intraday job and manual scans never get dynamic names.
 - A screener or asset-list failure is logged once
   (`event="dynamic_universe_unavailable"`) and the scan continues with the static

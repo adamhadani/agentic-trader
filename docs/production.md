@@ -87,31 +87,54 @@ Telegram scans (restricted or not) never do. The design and the filter order are
 
 - **Sources.** Alpaca's screener: most actives by trade count, plus market movers.
   These are read-only GETs, followed by the Alpaca asset list, which is cached per
-  New York date. All of it runs off the event loop under one 60-second bound
-  (`DYNAMIC_UNIVERSE_TIMEOUT_SECONDS`). Any failure, including missing credentials,
+  New York date. Both clients are bounded (`BoundedScreenerClient` and
+  `BoundedTradingClient`, with a per-request socket timeout of
+  `market_data.timeout_seconds`). All of it runs off the event loop under one
+  60-second bound (`DYNAMIC_UNIVERSE_TIMEOUT_SECONDS`). Any failure, including missing credentials,
   is logged once as `dynamic_universe_unavailable`, and the scan continues with the
   static universe alone.
 - **Filters.** A deterministic, reason-counted filter keeps:
   - plain `^[A-Z]{1,5}$` symbols not already in `contracts:`;
+  - no crypto-prefixed symbols (`BTC`, `ETH`, `SOL`, `DOGE`: the static universe
+    validator's rule, since the session router treats them as crypto), reason
+    `crypto_prefix`;
   - active, tradable `us_equity` assets on NYSE, NASDAQ, ARCA, AMEX or BATS;
-  - no warrants, rights, units or leveraged/inverse funds;
+  - no warrants, rights or units, and no volatility or option-income funds (a fund
+    whose name has the whole word "VIX" or "volatility", "YieldMax", "option income"
+    or "covered call"), reason `instrument`;
+  - no leveraged or inverse funds;
   - a price of at least `min_price`.
 
   At most `max_candidates` survivors are fetched.
-- **Liquidity gate.** After the scan's normal fetch and the coverage gate, a dynamic
-  name needs a median `Close × Volume` of at least `min_median_dollar_volume` over
-  its last 20 completed, finite daily sessions. Today's partial bar never counts; the
-  window ends at the last session completed before the scan's New York date, the
-  date the shadow cross-section uses. A fetch failure, a coverage exclusion or a
-  failed gate drops the name before strategy scanning, with a reason. Such a name
-  never counts as a scan fetch failure or consumes the `max_symbols` cap.
+- **Liquidity gate (relative, self-calibrating).** After the scan's normal fetch and
+  the coverage gate, a dynamic name's median `Close × Volume` over its last 20
+  completed, finite daily sessions must reach the threshold. The threshold is the
+  `min_dollar_volume_static_percentile` (default 0.25) percentile of the same median
+  for every static universe equity, computed in the same scan from the same bars.
+  - Same bars means the same feed and the same completed-rows rule. The desk's
+    `market_data.alpaca_feed` is IEX, whose volume is a few percent of consolidated
+    volume. An absolute dollar floor would be miscalibrated: the first real dry run
+    excluded SHOP, SOFI, IONQ, CRWV and RKLB at $50M.
+  - `min_median_dollar_volume` is an optional absolute floor in the feed's own units.
+    It defaults to 0; when set, the larger of the two applies.
+  - Fewer than 20 static equities with a full window means there is no reference.
+    Every dynamic name is then excluded as `no_reference` (fail closed), and
+    `dynamic_liquidity_no_reference` is logged.
+  - Today's partial bar never counts on either side. The window ends at the last
+    session completed before the scan's New York date, the date the shadow
+    cross-section uses.
+  - A fetch failure, a coverage exclusion or a failed gate drops the name before
+    strategy scanning, with a reason. Such a name never counts as a scan fetch
+    failure or consumes the `max_symbols` cap.
 - **Treatment.** Each dynamic name gets a synthetic contract for this scan only:
   equity, multiplier 1, tick 0.01, and the symbol as ticker. `config.contracts` is
   never mutated. Every existing gate applies unchanged, including dedup, earnings,
   macro, sizing, session, LLM, card budget and card freshness. Admission, the
   tap-time checks and trailing stops use the default equity policy (multiplier 1) for
-  an unconfigured equity. Alpha shadow observation skips dynamic names, so alpha
-  evidence keeps its declared population.
+  an unconfigured equity. Dynamic names run the native strategies only: the scan
+  drops every registry alpha (active or paper probe) for them, whatever the alpha's
+  declared eligibility. Alpha shadow observation also skips them, so alpha evidence
+  keeps its declared population.
 - **One correlation group.** All dynamic names share the group `dynamic` for the
   scan's `max_cards_per_group_per_session` cap. A card recorded today whose
   provenance has `dynamic: true` counts toward it, so the paper desk issues at most
@@ -127,11 +150,47 @@ Telegram scans (restricted or not) never do. The design and the filter order are
   scope lock and never blocks the scan. The event carries `available`, `error`, the
   sources' `raw_counts`, the per-reason filter counts, the members with source, rank,
   price and percent change, the `scanned` names and the `excluded` names with their
-  reasons. The scan summary holds the same under `dynamic`. The end-of-session digest
-  adds "N dynamic names scanned (M excluded)", plus how many scans found the dynamic
-  universe unavailable.
+  reasons. It also records the liquidity `threshold`, the `feed` it is measured in,
+  and the `reference` (percentile, number of static names, value, floor). The scan
+  summary holds the same under `dynamic`. The end-of-session digest adds "N dynamic
+  names scanned (M excluded)", counting unique names across the session's scans, plus
+  how many scans found the dynamic universe unavailable. A coverage-excluded dynamic
+  name is counted there, not again under "coverage excluded".
 - **Rollback.** Set `universe.dynamic.enabled: false`; suggestion scans are then
   unchanged. Like any config change, this needs a restart.
+- **Deploy note: trailing stops for unconfigured equities.** The trailing-stop
+  monitor now trails **any** open EQUITY position that has no `contracts:` entry,
+  with the default equity policy (multiplier 1, tick 0.01, the symbol as ticker).
+  This covers a dynamic name, but also any older equity position whose contract was
+  removed from config. Before this change such a position was skipped with "No
+  instrument policy for trailing stop". Unconfigured futures, and positions with no
+  asset class, are still never touched.
+
+  Before restarting onto this revision, list the tracked open positions and check
+  which ones are unconfigured:
+
+  ```bash
+  uv run copilot positions
+  uv run python - <<'PY'
+  import asyncio
+  from agentic_trader.config import load_config
+  from agentic_trader.storage.db import SignalDatabase
+
+  async def main():
+      config = load_config()
+      db = SignalDatabase(db_url=config.resolved_db_url, config=config)
+      for p in await db.get_active_positions():
+          if p["contract"] not in config.contracts:
+              print(p["id"], p["contract"], p["asset_class"], "stop", p["stop_loss"])
+
+  asyncio.run(main())
+  PY
+  ```
+
+  Every EQUITY row printed will start trailing on the next monitor cycle once its
+  price clears the breakeven or trail trigger. A confirmed replacement sends the
+  usual trailing-stop notice. Resolve any row that must not trail (for example, by
+  closing it) before the restart.
 
 **Earnings blackout.** The risk evaluator's deterministic gates now include an
 earnings-announcement blackout for equity candidates, right after the macro lockout

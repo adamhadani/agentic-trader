@@ -32,16 +32,24 @@ from agentic_trader.constants import AssetClass, SignalStatus
 from agentic_trader.execution.durable import EventKind, WorkKind, WorkStatus
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessionType
+from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.screeners.dynamic_universe import AssetInfo, ScreenerEntry
+from agentic_trader.screeners.formulaic import FormulaicAlphaStrategy
+from agentic_trader.screeners.strategies import StrategyEngine
 from tests.agent.test_scan_budget import (  # noqa: F401  (budget_desk is a fixture)
     budget_desk,
     candidate,
     evaluation,
     frame,
+    instrument,
 )
 
 
 STATIC = ("AAA", "BBB", "CCC", "DDD", "EEE")
+# Static equities with no setups: with STATIC they give the liquidity gate its reference
+# (at least 20 static equities with a full window).
+REFERENCE = tuple(f"REF{i:02d}" for i in range(20))
+ALL_STATIC = (*STATIC, *REFERENCE)
 QUALITIES = {"AAA": 0.6, "BBB": 0.7, "CCC": 0.8, "DDD": 0.9, "EEE": 0.5, "NEWA": 0.97, "NEWB": 0.96}
 
 
@@ -105,7 +113,11 @@ def default_source(**kwargs) -> FakeSource:
 
 @pytest.fixture
 def dailies():
-    return {symbol: daily_frame() for symbol in (*STATIC, "NEWA", "NEWB")}
+    # Static names trade ~$100M/day on the scan's feed; the dynamic names twice that.
+    return {
+        **{symbol: daily_frame() for symbol in ALL_STATIC},
+        **{symbol: daily_frame(volume=2_000_000.0) for symbol in ("NEWA", "NEWB")},
+    }
 
 
 @pytest.fixture
@@ -114,12 +126,13 @@ def dynamic_desk(budget_desk, app_config, dailies):  # noqa: F811
         groups={"test": [UniverseEntry(symbol=s, sector="technology") for s in STATIC]}, max_symbols=10
     )
     app_config.universe.dynamic.enabled = True
+    app_config.contracts = {**app_config.contracts, **{s: instrument(s) for s in REFERENCE}}
     budget_desk.data_fetcher.fetch_data.side_effect = lambda contract, ticker, include_fifteen_min=True: (
         SimpleNamespace(contract=contract, daily=dailies[contract], four_hour=frame(), hourly=frame())
     )
-    budget_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: [
-        candidate(data.contract, QUALITIES[data.contract])
-    ]
+    budget_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: (
+        [candidate(data.contract, QUALITIES[data.contract])] if data.contract in QUALITIES else []
+    )
     budget_desk.dynamic_universe = default_source()
     return budget_desk
 
@@ -164,7 +177,7 @@ async def test_suggestion_scan_adds_the_dynamic_names_without_touching_config_co
     assert summary["dynamic"]["excluded"] == {}
     assert summary["dynamic"]["reasons"] == {"static": 1}
     assert summary["dynamic"]["raw_counts"] == {"most_actives": 1, "movers": 2}
-    assert summary["scanned"] == 7
+    assert summary["scanned"] == len(ALL_STATIC) + 2
     # The highest-quality setup is dynamic, so it takes the scan's single card.
     [card] = await temp_db.get_recent_signals(limit=10)
     assert card["contract"] == "NEWA"
@@ -202,7 +215,7 @@ async def test_a_screener_failure_is_a_static_only_scan_with_an_unavailable_even
     with caplog.at_level(logging.WARNING, logger="copilot"):
         await suggestion_scan(dynamic_desk)
 
-    assert set(fetched(dynamic_desk)) == set(STATIC)
+    assert set(fetched(dynamic_desk)) == set(ALL_STATIC)
     [card] = await temp_db.get_recent_signals(limit=10)
     assert card["contract"] == "DDD"
     unavailable = [r for r in caplog.records if getattr(r, "event", None) == "dynamic_universe_unavailable"]
@@ -243,13 +256,13 @@ async def test_a_copilot_without_screener_credentials_scans_static_only(app_conf
 async def test_scan_without_a_source_journals_unavailable(dynamic_desk, temp_db):
     dynamic_desk.dynamic_universe = None
     await suggestion_scan(dynamic_desk)
-    assert set(fetched(dynamic_desk)) == set(STATIC)
+    assert set(fetched(dynamic_desk)) == set(ALL_STATIC)
     [event] = await dynamic_events(temp_db)
     assert event["payload"]["available"] is False and event["payload"]["error"]
 
 
 async def test_the_liquidity_gate_excludes_thin_names_from_strategy_scanning(dynamic_desk, temp_db, dailies):
-    dailies["NEWB"] = daily_frame(volume=1_000.0)  # ~$100k/day, far below $50M
+    dailies["NEWB"] = daily_frame(volume=1_000.0)  # ~$100k/day, far below the static reference
 
     await suggestion_scan(dynamic_desk)
 
@@ -627,3 +640,157 @@ async def test_a_missed_dynamic_card_offers_no_reevaluation_and_refuses_one(dyna
     assert refusal.ok is False and "not a configured contract" in refusal.text
     assert dynamic_desk.reevaluation_tasks == set()
     assert [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.CARD_REEVALUATE_REQUESTED] == []
+
+
+# --------------------------------------------------------------------------
+# Final review fix round
+# --------------------------------------------------------------------------
+
+
+async def test_the_liquidity_threshold_calibrates_to_the_static_universe_on_the_same_feed(
+    dynamic_desk, temp_db, app_config, dailies
+):
+    """IEX-like volume: every static name trades ~$2M/day on the feed, far below an absolute $50M.
+
+    NEWA at ~$3M/day clears the static 25th percentile; NEWB at ~$1M/day does not.
+    """
+    app_config.market_data.alpaca_feed = "iex"
+    for symbol in ALL_STATIC:
+        dailies[symbol] = daily_frame(volume=20_000.0)
+    dailies["NEWA"] = daily_frame(volume=30_000.0)
+    dailies["NEWB"] = daily_frame(volume=10_000.0)
+
+    await suggestion_scan(dynamic_desk)
+
+    dynamic = dynamic_desk.last_scan_summary["dynamic"]
+    assert dynamic["members"] == ["NEWA"]
+    assert dynamic["excluded"] == {"NEWB": "dollar_volume"}
+    assert dynamic["feed"] == "iex"
+    reference = dynamic["reference"]
+    assert reference["percentile"] == 0.25 and reference["names"] == len(ALL_STATIC) and reference["floor"] == 0
+    assert 1.5e6 < reference["value"] < 2.5e6
+    assert dynamic["threshold"] == reference["value"]
+    [event] = await dynamic_events(temp_db)
+    assert event["payload"]["feed"] == "iex"
+    assert event["payload"]["threshold"] == dynamic["threshold"]
+    assert event["payload"]["reference"] == reference
+
+
+async def test_the_absolute_floor_applies_when_it_is_the_larger(dynamic_desk, app_config):
+    app_config.universe.dynamic.min_median_dollar_volume = 250_000_000  # above both dynamic names (~$200M)
+
+    await suggestion_scan(dynamic_desk)
+
+    dynamic = dynamic_desk.last_scan_summary["dynamic"]
+    assert dynamic["threshold"] == 250_000_000
+    assert dynamic["excluded"] == {"NEWA": "dollar_volume", "NEWB": "dollar_volume"}
+
+
+async def test_without_a_static_reference_every_dynamic_name_is_excluded(dynamic_desk, temp_db, app_config):
+    """Fewer than 20 static equities with a full window: fail closed, the static scan is unaffected."""
+    app_config.contracts = {s: instrument(s) for s in STATIC}
+
+    await suggestion_scan(dynamic_desk)
+
+    dynamic = dynamic_desk.last_scan_summary["dynamic"]
+    assert dynamic["members"] == []
+    assert dynamic["excluded"] == {"NEWA": "no_reference", "NEWB": "no_reference"}
+    assert dynamic["threshold"] is None and dynamic["reference"]["value"] is None
+    assert dynamic["reference"]["names"] == len(STATIC)
+    assert not {"NEWA", "NEWB"} & set(strategy_scanned(dynamic_desk))
+    [card] = await temp_db.get_recent_signals(limit=10)
+    assert card["contract"] == "DDD"
+    [event] = await dynamic_events(temp_db)
+    assert event["payload"]["threshold"] is None
+
+
+async def test_dynamic_names_run_native_strategies_only(dynamic_desk):
+    await suggestion_scan(dynamic_desk)
+
+    native_only = {
+        c.args[0].contract: c.kwargs["native_only"] for c in dynamic_desk.strategy_engine.scan_contract.call_args_list
+    }
+    assert native_only["NEWA"] is True and native_only["NEWB"] is True
+    assert not any(native_only[s] for s in ALL_STATIC)
+
+
+def test_native_only_scans_drop_every_registry_alpha(app_config, monkeypatch):
+    """Structural, not eligibility-based: an alpha eligible for every symbol still never runs."""
+    app_config.strategies.active_strategies = []  # no native strategy: isolate the alphas
+    engine = StrategyEngine(app_config)
+    everywhere = AlphaDefinition("alpha_all", "alpha_all", "delta(close,3)", timeframe="1d", eligible_symbols=())
+    probe = AlphaDefinition("probe_all", "probe_all", "delta(close,3)", timeframe="1d", eligible_symbols=())
+    engine.registry.install_alphas((everywhere,), probes=(probe,))
+    evaluated: list[str] = []
+    monkeypatch.setattr(FormulaicAlphaStrategy, "can_handle", lambda self, asset_class: True)
+    monkeypatch.setattr(
+        FormulaicAlphaStrategy,
+        "evaluate",
+        lambda self, data, asset_class=None: evaluated.append(self.strategy_id) or [],
+    )
+    data = SimpleNamespace(contract="NEWA", symbol="NEWA")
+
+    assert engine.scan_contract(data, asset_class=AssetClass.EQUITY, native_only=True) == []
+    assert evaluated == []
+    engine.scan_contract(data, asset_class=AssetClass.EQUITY)
+    assert sorted(evaluated) == ["alpha_all", "probe_all"]
+
+
+async def test_the_digest_does_not_double_count_coverage_excluded_dynamic_names(dynamic_desk, monkeypatch):
+    monkeypatch.setattr(copilot_module, "coverage_exclusions", lambda datasets, **kwargs: ({"NEWA", "AAA"}, None))
+    dynamic_desk.outbox = AsyncMock()
+
+    await suggestion_scan(dynamic_desk)
+    text = await dynamic_desk.publish_scan_digest()
+
+    assert "coverage excluded: 1;" in text  # AAA only; NEWA is reported in the dynamic line
+    assert "1 dynamic names scanned (1 excluded)" in text
+
+
+async def test_the_digest_counts_unique_dynamic_names_across_the_session(dynamic_desk, dailies):
+    dynamic_desk.outbox = AsyncMock()
+    await suggestion_scan(dynamic_desk)  # NEWA and NEWB scanned
+    dailies["NEWB"] = daily_frame(volume=1_000.0)
+    await suggestion_scan(dynamic_desk)  # NEWA scanned again; NEWB excluded this time
+
+    text = await dynamic_desk.publish_scan_digest()
+
+    assert "2 dynamic names scanned (0 excluded)" in text
+
+
+@pytest.mark.parametrize("asset_class", ["FUTURES", None])
+async def test_trailing_stops_never_touch_an_unconfigured_non_equity_position(
+    config, temp_db, mock_notifier, asset_class
+):
+    """Multiplier 1 is the equity default only: an unconfigured futures position, or one
+    with no asset class, gets no stop replacement at all."""
+    config.trailing_stop.enabled = True
+    config.trailing_stop.breakeven_trigger_r = 1.0
+    config.trailing_stop.breakeven_buffer_dollars = 5.0
+    config.trailing_stop.trail_trigger_r = 1.5
+    copilot = TradingCopilot(config, db=temp_db, notifier=mock_notifier)
+    copilot.data_fetcher = MagicMock()
+    copilot.data_fetcher.fetch_latest_price.return_value = 106.0
+    copilot.broker.modify_order_stop = AsyncMock(return_value=OrderResult(success=True, stop_price=105.0))
+    sid = await temp_db.record_signal(
+        contract="/NEWF",
+        strategy="test",
+        direction="LONG",
+        entry_price=100.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        risk_dollars=50.0,
+        quantity=10,
+        status=SignalStatus.EXECUTED,
+        asset_class="FUTURES",
+    )
+    positions = await copilot.db.get_active_positions()
+    if asset_class is None:
+        for position in positions:
+            position.pop("asset_class", None)
+    assert "/NEWF" not in config.contracts
+
+    assert await copilot.manage_trailing_stops(positions) == 0
+
+    copilot.broker.modify_order_stop.assert_not_awaited()
+    assert (await temp_db.get_signal_by_id(sid))["stop_loss"] == 95.0

@@ -120,7 +120,12 @@ class DynamicUniverseConfig(BaseModel):
     max_candidates: int = Field(default=40, ge=1, le=500)
     max_symbols: int = Field(default=20, ge=1, le=500)
     min_price: float = Field(default=10.0, gt=0)
-    min_median_dollar_volume: float = Field(default=50_000_000, gt=0)
+    # A dynamic name's median 20-session dollar volume must reach this percentile of the
+    # static universe equities' own medians, measured in the same scan on the same feed
+    # (self-calibrating: IEX volume is a few percent of consolidated volume).
+    min_dollar_volume_static_percentile: float = Field(default=0.25, ge=0, le=1)
+    # Optional absolute floor in the scan's own feed units; the larger of the two applies.
+    min_median_dollar_volume: float = Field(default=0, ge=0)
 
 
 class UniverseConfig(BaseModel):
