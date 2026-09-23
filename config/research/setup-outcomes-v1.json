@@ -21,7 +21,7 @@
     "2026-01-29"
   ],
   "embargo_sessions": 20,
-  "features_version": "setup_features_v1",
+  "features_version": "setup_features_v2",
   "feed": "alpaca:sip",
   "hgb_params": {
     "early_stopping": false,

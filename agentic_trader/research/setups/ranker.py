@@ -9,7 +9,13 @@ Integrity is checked before anything is trusted: ``features_version`` must equal
 ``FEATURES_VERSION``, ``ranker.json`` must match ``selection.json`` when present, and
 the HGB pickle's sha256 must match ``ranker.json`` *before* it is unpickled. Any
 mismatch or unreadable artifact logs a warning and yields ``None`` -- the scan then
-records features only.
+records features only. A ``setup_features_v1`` artifact is always rejected: v1's
+252-session lookbacks never fit the live one-year daily fetch. ``cached_ranker`` keeps
+the verified result per artifact file state, so a scan neither re-reads nor re-warns.
+
+``live_cross_section`` is the live half of the study/live feature contract: the study
+(``runner.py``) slices its cached history to the same one-year window and builds the
+same cross-section for a decision instant.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ import json
 import logging
 import math
 import pickle
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -28,13 +35,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from agentic_trader.research.setups.features import FEATURES_VERSION, CrossSection, setup_vector
+from agentic_trader.research.setups.features import FEATURES_VERSION, CrossSection, cross_section, setup_vector
 
 
 __all__ = [
     "LoadedRanker",
+    "cached_ranker",
     "finite_or_none",
     "last_completed_session",
+    "live_cross_section",
     "load_ranker",
     "setup_features",
     "shadow_blocks",
@@ -84,7 +93,9 @@ class LoadedRanker:
             return np.asarray(self.model.predict(frame), dtype=float)
         assert self.coefficients is not None and self.imputer_medians is not None
         assert self.scaler_mean is not None and self.scaler_scale is not None
-        # SimpleImputer drops features it never observed in training (NaN median).
+        # The study's imputers use keep_empty_features=True, so every median is finite
+        # (0.0 for an all-missing training column) and nothing is dropped. This branch
+        # is defensive: it mirrors SimpleImputer's default of dropping NaN-median features.
         kept = ~np.isnan(self.imputer_medians)
         imputed = np.where(np.isnan(rows), self.imputer_medians, rows)[:, kept]
         scaled = (imputed - self.scaler_mean) / self.scaler_scale
@@ -168,8 +179,50 @@ def load_ranker(path: str | Path) -> LoadedRanker | None:
         return None
 
 
+_ARTIFACT_FILES = ("ranker.json", "selection.json", "ranker.pkl")
+_CACHE_LOCK = threading.Lock()
+_CACHE: dict[Path, tuple[tuple[tuple[int, int] | None, ...], LoadedRanker | None]] = {}
+
+
+def _artifact_state(path: Path) -> tuple[tuple[int, int] | None, ...]:
+    """(mtime_ns, size) of the artifact and its sibling files; ``None`` for an absent one."""
+    state: list[tuple[int, int] | None] = []
+    for candidate in (path, *(path.parent / name for name in _ARTIFACT_FILES if name != path.name)):
+        try:
+            stat = candidate.stat()
+        except OSError:
+            state.append(None)
+        else:
+            state.append((stat.st_mtime_ns, stat.st_size))
+    return tuple(state)
+
+
+def cached_ranker(path: str | Path) -> LoadedRanker | None:
+    """``load_ranker``, memoized by the artifact files' (path, mtime, size).
+
+    Each scan otherwise re-read, re-hashed and re-unpickled the artifact, and re-logged the
+    same rejection. A changed ``ranker.json``, ``selection.json`` or ``ranker.pkl`` reloads.
+    """
+    path = Path(path)
+    if path.is_dir():
+        path = path / "ranker.json"
+    path = path.resolve()
+    state = _artifact_state(path)
+    with _CACHE_LOCK:
+        cached = _CACHE.get(path)
+        if cached is not None and cached[0] == state:
+            return cached[1]
+        ranker = load_ranker(path)
+        _CACHE[path] = (state, ranker)
+        return ranker
+
+
 def last_completed_session(daily: Mapping[str, pd.DataFrame], before: date) -> date | None:
-    """The latest daily session date strictly before ``before`` across the fetched frames."""
+    """The latest daily session date strictly before ``before`` across the fetched frames.
+
+    Daily bars are stamped at their session's New York midnight (04:00Z/05:00Z in UTC),
+    so the index's own ``.date()`` is the session date for a UTC or New York index alike.
+    """
     latest: date | None = None
     for frame in daily.values():
         dates = [d for d in pd.DatetimeIndex(frame.index).date if d < before]
@@ -177,6 +230,27 @@ def last_completed_session(daily: Mapping[str, pd.DataFrame], before: date) -> d
             candidate = max(dates)
             latest = candidate if latest is None or candidate > latest else latest
     return latest
+
+
+def live_cross_section(
+    daily: Mapping[str, pd.DataFrame], universe_sectors: Mapping[str, str], session_date: date
+) -> CrossSection:
+    """The live scan's cross-section from its ``fetch_data(daily_period="1y")`` frames.
+
+    The population is every ``universe.groups`` symbol (the keys of ``universe_sectors``)
+    with daily bars in this scan -- not explicit ``contracts:`` equities outside the
+    universe -- as of the last session completed before ``session_date``, so today's
+    in-progress bar is excluded. The study reproduces this per decision date.
+    """
+    population = {
+        symbol: frame
+        for symbol, frame in daily.items()
+        if symbol in universe_sectors and frame is not None and not frame.empty
+    }
+    as_of = last_completed_session(population, session_date)
+    if as_of is None:
+        raise ValueError(f"No completed daily session before {session_date} in this scan's data")
+    return cross_section(population, universe_sectors, as_of)
 
 
 def finite_or_none(value: Any) -> float | None:

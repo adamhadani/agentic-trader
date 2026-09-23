@@ -5,6 +5,14 @@ study (replaying history) and the live suggestion scan. Every feature only
 looks at sessions on or before ``as_of``: appending future rows, or reading
 this module at a later date with more history collected, must never change
 a value already computed for an earlier ``as_of``.
+
+Every lookback fits the live scan's daily window with margin. Live fetches
+``daily_period="1y"`` -- bars stamped within the last 365 calendar days, i.e.
+roughly 249-251 completed sessions once today's in-progress bar is dropped --
+so ``setup_features_v2`` needs at most 240 sessions (``dist_high_240``); the
+v1 252-session lookbacks were NaN on every live scan. The study slices its
+longer cached history to that same window (``runner.py``), so a feature that
+did not fit would be NaN in both places rather than only live.
 """
 
 from __future__ import annotations
@@ -31,20 +39,20 @@ __all__ = [
     "setup_vector",
 ]
 
-FEATURES_VERSION = "setup_features_v1"
+FEATURES_VERSION = "setup_features_v2"
 
 CROSS_SECTIONAL = (
-    "mom_252_21",
+    "mom_231_21",
     "mom_60",
     "rev_5",
     "vol_20",
-    "dist_52w_high",
+    "dist_high_240",
     "dollar_volume_20",
     "resid_mom_60",
     "sector_rel_mom_60",
 )
 
-DIRECTIONAL = frozenset({"mom_252_21", "mom_60", "rev_5", "dist_52w_high", "resid_mom_60", "sector_rel_mom_60"})
+DIRECTIONAL = frozenset({"mom_231_21", "mom_60", "rev_5", "dist_high_240", "resid_mom_60", "sector_rel_mom_60"})
 
 MARKET = ("spy_above_200", "spy_vol20_pct")
 
@@ -82,8 +90,11 @@ _RESID_TRAIN_WINDOW = 126
 _RESID_GAP = 60
 _RESID_MIN_RETURNS = 187
 
+# Session counts; each feature is NaN below its minimum history (see _basic_features).
+_MOM_LONG_START = 232  # mom_231_21: close[-22] / close[-232] - 1
+_HIGH_WINDOW = 240  # dist_high_240: close[-1] / max(High[-240:]) - 1
 _VOL20_WINDOW = 20
-_VOL20_HISTORY = 252
+_VOL20_HISTORY = 200  # spy_vol20_pct ranks within the last 200 rolling vol_20 values (~220 sessions)
 _SPY_ABOVE_200_WINDOW = 200
 
 
@@ -106,7 +117,7 @@ def _basic_features(frame: pd.DataFrame) -> dict[str, float]:
     volume = frame["Volume"].to_numpy(dtype=float)
     n = len(close)
 
-    mom_252_21 = close[-22] / close[-253] - 1.0 if n >= 253 else np.nan
+    mom_231_21 = close[-22] / close[-_MOM_LONG_START] - 1.0 if n >= _MOM_LONG_START else np.nan
     mom_60 = close[-1] / close[-61] - 1.0 if n >= 61 else np.nan
     rev_5 = -(close[-1] / close[-6] - 1.0) if n >= 6 else np.nan
 
@@ -117,16 +128,16 @@ def _basic_features(frame: pd.DataFrame) -> dict[str, float]:
     else:
         vol_20 = np.nan
 
-    dist_52w_high = close[-1] / np.max(high[-252:]) - 1.0 if n >= 252 else np.nan
+    dist_high_240 = close[-1] / np.max(high[-_HIGH_WINDOW:]) - 1.0 if n >= _HIGH_WINDOW else np.nan
 
     dollar_volume_20 = float(np.mean(close[-20:] * volume[-20:])) if n >= 20 else np.nan
 
     return {
-        "mom_252_21": float(mom_252_21),
+        "mom_231_21": float(mom_231_21),
         "mom_60": float(mom_60),
         "rev_5": float(rev_5),
         "vol_20": vol_20,
-        "dist_52w_high": float(dist_52w_high),
+        "dist_high_240": float(dist_high_240),
         "dollar_volume_20": dollar_volume_20,
     }
 

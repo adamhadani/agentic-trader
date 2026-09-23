@@ -87,7 +87,7 @@ class SetupStudyProtocol(BaseModel, frozen=True, extra="forbid"):
     ridge_alpha: float
     logistic_C: float
     acceptance: dict
-    features_version: Literal["setup_features_v1"]
+    features_version: Literal["setup_features_v2"]
     sector_etf: dict[str, str]
     strategy_config: dict
 

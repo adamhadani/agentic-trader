@@ -23,13 +23,18 @@ whole point, so every helper here mirrors a specific piece of live behaviour:
   synthesized daily ``Close`` derived from it (below), are up to ~35 minutes
   staler than what live saw.
 
-* The daily window is every completed session (session date strictly before
-  the instant's New York date) whose date is on or after the New York date of
-  ``t - LIVE_DAILY_LOOKBACK_DAYS`` -- mirroring ``fetch_data(daily_period="1y")``:
+* The daily window is ``live_daily_window``: every bar *stamped* in
+  ``[t - LIVE_DAILY_LOOKBACK_DAYS, t]`` -- mirroring ``fetch_data(daily_period="1y")``:
   live's ``AlpacaDataProvider.fetch_bars`` calls
-  ``providers.parse_period_to_timedelta("1y")`` (365 days) and sets
-  ``start = now(UTC) - delta`` (see ``data/providers.py``); replay uses the
-  identical timedelta with ``t`` standing in for "now". Plus, when any hourly
+  ``providers.parse_period_to_timedelta("1y")`` (365 days), sets
+  ``start = now(UTC) - delta`` (see ``data/providers.py``), and Alpaca returns
+  bars stamped at or after ``start``; replay uses the identical timedelta with
+  ``t`` standing in for "now". A daily bar is stamped at its session's
+  midnight, so the session on the cutoff date itself (stamped before
+  ``start``) is outside the window, as it is live. Of that window, only
+  completed sessions (session date strictly before the instant's New York
+  date) are kept. The setup study's feature cross-section (``runner.py``) uses
+  the same helper, so research features see exactly the live window. Plus, when any hourly
   bars for that New York date have closed by the instant, one synthesized
   in-progress daily bar aggregated from them (Open=first, High=max, Low=min,
   Close=last, Volume=sum over *every* closed hour, not just regular session
@@ -92,6 +97,7 @@ __all__ = [
     "SetupRecord",
     "decision_instants",
     "frames_at",
+    "live_daily_window",
     "replay_symbol",
 ]
 
@@ -172,28 +178,38 @@ def decision_instants(days: Sequence[MarketCalendarDay], scan_times_et: Sequence
     return instants
 
 
-def _daily_window_dates(t: datetime) -> tuple[date, date]:
-    """(inclusive lower, exclusive upper) New York session-date bounds for the
-    completed daily window at ``t``, mirroring live's ``period="1y"`` cutoff
-    (see the module docstring)."""
-    ny_date = t.astimezone(ET_TZ).date()
-    cutoff_date = (t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)).astimezone(ET_TZ).date()
-    return cutoff_date, ny_date
+def _live_daily_start(t: datetime) -> datetime:
+    """``start`` of live's ``fetch_data(daily_period="1y")`` request made at ``t``."""
+    return t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)
+
+
+def live_daily_window(daily: pd.DataFrame, t: datetime) -> pd.DataFrame:
+    """The rows a live ``fetch_data(daily_period="1y")`` made at ``t`` would return.
+
+    Bars stamped in ``[t - LIVE_DAILY_LOOKBACK_DAYS, t]``, in original order (see the
+    module docstring). A tz-naive index is read as UTC, like the provider's output.
+    """
+    if daily.empty:
+        return daily
+    stamps = pd.DatetimeIndex(daily.index)
+    if stamps.tz is None:
+        stamps = stamps.tz_localize(UTC)
+    return daily.loc[(stamps >= _live_daily_start(t)) & (stamps <= t)]
 
 
 def _completed_daily(daily_all: pd.DataFrame, t: datetime) -> pd.DataFrame:
-    """Sessions in ``[t - LIVE_DAILY_LOOKBACK_DAYS, t's NY date)``, in original order.
+    """``live_daily_window`` at ``t``, minus ``t``'s own (in-progress) New York session.
 
     Daily bars are stamped by session date (see providers.py normalization),
     so the plain UTC ``.date()`` of the index already is the session date --
     no timezone conversion, matching ``research/setups/features.py``'s
     ``_closed_frame`` convention.
     """
-    if daily_all.empty:
-        return daily_all
-    cutoff_date, ny_date = _daily_window_dates(t)
-    session_dates = pd.DatetimeIndex(daily_all.index).date
-    return daily_all.loc[(session_dates >= cutoff_date) & (session_dates < ny_date)]
+    window = live_daily_window(daily_all, t)
+    if window.empty:
+        return window
+    ny_date = t.astimezone(ET_TZ).date()
+    return window.loc[pd.DatetimeIndex(window.index).date < ny_date]
 
 
 def _ny_midnight(ny_date: date, tz) -> pd.Timestamp:
@@ -280,8 +296,7 @@ def replay_symbol(
     daily_index = pd.DatetimeIndex(daily_all.index) if not daily_all.empty else None
 
     for t in instants:
-        cutoff_instant = t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)
-        if daily_index is None or daily_index.min() > cutoff_instant:
+        if daily_index is None or daily_index.min() > _live_daily_start(t):
             continue
 
         data = frames_at(symbol, daily_all, hourly_all, t)

@@ -12,6 +12,7 @@ from agentic_trader.research.setups.replay import (
     SetupRecord,
     decision_instants,
     frames_at,
+    live_daily_window,
     replay_symbol,
 )
 from agentic_trader.screeners.base import ScreenerCandidate
@@ -228,23 +229,52 @@ def test_frames_at_no_in_progress_bar_when_none_closed():
 
 
 def test_frames_at_daily_window_length_matches_365_day_lookback():
-    """Exact completed-session count for two instants straddling a year boundary,
-    computed independently of replay.py's own helpers (raw ``timedelta(days=365)``
-    off a UTC instant, mirroring providers.py's ``parse_period_to_timedelta("1y")``
-    arithmetic exactly, per the controller ruling)."""
+    """Exact completed-session window for two instants straddling a year boundary,
+    computed independently of replay.py's own helpers: providers.py fetches
+    ``period="1y"`` as ``start = now(UTC) - timedelta(days=365)`` and Alpaca returns
+    bars *stamped* at or after ``start``. A session-dated bar for the cutoff date is
+    stamped at its midnight, before ``start``, so live never sees it -- for UTC-midnight
+    and New York-midnight (Alpaca's actual) stamps alike."""
     for t_et in (et(2026, 9, 15, 10, 35), et(2026, 1, 5, 10, 35)):
         t = t_et.astimezone(UTC)
         ny_date = t_et.date()
         cutoff_date = (t - timedelta(days=365)).astimezone(ET_TZ).date()
-        expected_days = (ny_date - cutoff_date).days
-        assert expected_days == 365  # a raw 365-day instant subtraction always spans 365 dates
+        assert (ny_date - cutoff_date).days == 365
 
-        daily_all = daily_frame(800, ny_date - timedelta(days=1))  # comfortably covers >365d back
-        result = frames_at("AAPL", daily_all, hourly_frame([]), t)
+        utc_midnight = daily_frame(800, ny_date - timedelta(days=1))  # comfortably covers >365d back
+        ny_midnight = utc_midnight.set_axis(
+            pd.DatetimeIndex(
+                [
+                    pd.Timestamp(datetime.combine(d, time(0), tzinfo=ET_TZ)).tz_convert(UTC)
+                    for d in utc_midnight.index.date
+                ],
+                name="timestamp",
+            )
+        )
+        for daily_all in (utc_midnight, ny_midnight):
+            result = frames_at("AAPL", daily_all, hourly_frame([]), t)
 
-        assert len(result.daily) == expected_days
-        assert pd.DatetimeIndex(result.daily.index).date[0] == cutoff_date
-        assert pd.DatetimeIndex(result.daily.index).date[-1] == ny_date - timedelta(days=1)
+            stamps = pd.DatetimeIndex(daily_all.index)
+            expected = daily_all.index[(stamps >= t - timedelta(days=365)) & (stamps.date < ny_date)]
+            pd.testing.assert_index_equal(pd.DatetimeIndex(result.daily.index), pd.DatetimeIndex(expected))
+            assert len(result.daily) == 364
+            assert pd.DatetimeIndex(result.daily.index).date[0] == cutoff_date + timedelta(days=1)
+            assert pd.DatetimeIndex(result.daily.index).date[-1] == ny_date - timedelta(days=1)
+
+
+def test_live_daily_window_is_the_period_1y_fetch_at_t():
+    t = et(2026, 9, 15, 14, 35).astimezone(UTC)
+    start = t - timedelta(days=365)
+    stamps = [
+        start - timedelta(microseconds=1),  # just before start: excluded
+        start,  # exactly start: included (Alpaca's start is inclusive)
+        t,  # a bar stamped at t itself: included
+        t + timedelta(microseconds=1),  # after t: not yet fetchable
+    ]
+    frame = pd.DataFrame({"Close": [1.0, 2.0, 3.0, 4.0]}, index=pd.DatetimeIndex(stamps, name="timestamp"))
+
+    assert live_daily_window(frame, t)["Close"].tolist() == [2.0, 3.0]
+    assert live_daily_window(frame.iloc[0:0], t).empty
 
 
 def test_frames_at_in_progress_bar_stamped_at_ny_midnight():
@@ -310,12 +340,14 @@ def test_out_of_window_perturbation_does_not_change_setups(config, monkeypatch):
     """
     day = date(2026, 9, 15)
     t = et(2026, 9, 15, 10, 35).astimezone(UTC)
-    cutoff_date = (t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)).astimezone(ET_TZ).date()
+    window_start = t - timedelta(days=LIVE_DAILY_LOOKBACK_DAYS)
+    cutoff_date = window_start.astimezone(ET_TZ).date()
 
     daily_all = daily_rows(
         [
             (date(2025, 9, 10), 111.0),  # stale: before the 365d cutoff
-            (cutoff_date, 120.0),  # exactly the cutoff date: inclusive lower bound
+            (cutoff_date, 115.0),  # the cutoff date: stamped at its midnight, before t - 365d
+            (cutoff_date + timedelta(days=1), 120.0),  # the first session stamped after t - 365d
             (date(2026, 9, 10), 150.0),
             (date(2026, 9, 14), 151.0),  # the last completed session, strictly before ny_date
             (date(2026, 9, 15), 999.0),  # == ny_date: must never be "completed"
@@ -370,7 +402,7 @@ def test_out_of_window_perturbation_does_not_change_setups(config, monkeypatch):
     future_stats = captured.pop()
 
     stale_daily = daily_all.copy()
-    stale_daily_mask = pd.DatetimeIndex(stale_daily.index).date < cutoff_date
+    stale_daily_mask = pd.DatetimeIndex(stale_daily.index) < window_start
     stale_daily.loc[stale_daily_mask, ["Open", "High", "Low", "Close"]] *= 1.5
 
     stale_hourly = hourly_all.copy()

@@ -18,13 +18,20 @@ import pytest
 from sqlalchemy import delete
 
 import agentic_trader.agent.copilot as copilot_module
+import agentic_trader.research.setups.ranker as ranker_module
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import ScanBudget, UniverseConfig, UniverseEntry
 from agentic_trader.constants import AssetClass
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.research.setups.features import CROSS_SECTIONAL, FEATURES_VERSION
 from agentic_trader.storage.models import SignalRecord
-from tests.agent.test_scan_budget import budget_desk, evaluation, frame  # noqa: F401  (budget_desk is a fixture)
+from tests.agent.test_scan_budget import (  # noqa: F401  (budget_desk is a fixture)
+    budget_desk,
+    candidate,
+    evaluation,
+    frame,
+    instrument,
+)
 
 
 SYMBOLS = ("AAA", "BBB", "CCC", "DDD", "EEE")
@@ -139,6 +146,7 @@ async def test_runners_up_and_sent_are_journaled_once(shadow_desk, temp_db, app_
     assert event["stream"] == f"scan/{et_date}"
     payload = event["payload"]
     assert payload["budget"] == "full" and payload["ranking_key"] == "setup_quality"
+    assert payload["scope"] == "universe"
     assert payload["scan_id"] == shadow_desk.last_scan_summary["scan_id"]
     assert datetime.fromisoformat(payload["decided_at"]).utcoffset() == timedelta(0)
     candidates = payload["candidates"]
@@ -273,7 +281,7 @@ async def test_feature_failure_is_contained(shadow_desk, temp_db, monkeypatch, c
     def boom(*_args, **_kwargs):
         raise RuntimeError("features boom")
 
-    monkeypatch.setattr(copilot_module, "cross_section", boom)
+    monkeypatch.setattr(copilot_module, "live_cross_section", boom)
     with caplog.at_level(logging.ERROR, logger="copilot"):
         await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
 
@@ -284,3 +292,60 @@ async def test_feature_failure_is_contained(shadow_desk, temp_db, monkeypatch, c
     assert any(getattr(r, "event", None) == "shadow_ranker_failed" for r in caplog.records)
     [event] = await _ranked_events(temp_db)
     assert [c["shadow"] for c in event["payload"]["candidates"]] == [None] * 5
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"symbols": ["CCC", "DDD"]},  # an operator /scan of named symbols
+        {"timeframe": "4h"},  # a timeframe-filtered scan, like the 15-minute intraday job
+        {"symbols": ["DDD"], "timeframe": "4h"},
+    ],
+)
+async def test_restricted_scans_neither_compute_nor_journal_the_shadow(
+    shadow_desk, temp_db, app_config, artifact, monkeypatch, scope
+):
+    app_config.scan.shadow_ranker_artifact = artifact[0]
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("the shadow cross-section is only for full-universe scans")
+
+    monkeypatch.setattr(copilot_module, "live_cross_section", unexpected)
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, **scope)
+
+    [signal] = await temp_db.get_recent_signals(limit=10)  # the card itself is unaffected
+    assert signal["contract"] == "DDD"
+    assert signal["decision_provenance"]["shadow_ranker"] is None
+    assert await _ranked_events(temp_db) == []
+    assert "shadow_ranker_error" not in shadow_desk.last_scan_summary
+    assert "shadow_ranker_seconds" not in shadow_desk.last_scan_summary
+
+
+async def test_live_cross_section_is_universe_groups_only(shadow_desk, temp_db, app_config, monkeypatch):
+    """An explicit contracts: equity outside universe.groups is scanned (and may win a card)
+    but is not part of the cross-section its own and every other name's ranks come from."""
+    app_config.contracts = {**app_config.contracts, "ZZZ": instrument("ZZZ")}
+    dailies = {symbol: daily_frame(i) for i, symbol in enumerate((*SYMBOLS, "ZZZ"))}
+    shadow_desk.data_fetcher.fetch_data.side_effect = lambda contract, ticker, include_fifteen_min=True: (
+        SimpleNamespace(contract=contract, daily=dailies[contract], four_hour=frame(), hourly=frame())
+    )
+    qualities = {"AAA": 0.6, "BBB": 0.7, "CCC": 0.8, "DDD": 0.9, "EEE": 0.5, "ZZZ": 0.95}
+    shadow_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: [
+        candidate(data.contract, qualities[data.contract])
+    ]
+    populations = []
+    original = ranker_module.cross_section
+
+    def spy(daily, sectors, as_of):
+        populations.append(set(daily))
+        return original(daily, sectors, as_of)
+
+    monkeypatch.setattr(ranker_module, "cross_section", spy)
+    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+
+    assert populations == [set(SYMBOLS)]
+    [event] = await _ranked_events(temp_db)
+    shadow = {c["contract"]: c["shadow"] for c in event["payload"]["candidates"]}
+    assert set(shadow) == {*SYMBOLS, "ZZZ"}
+    assert all(shadow["ZZZ"]["features"][name] is None for name in CROSS_SECTIONAL)
+    assert all(shadow["DDD"]["features"][name] is not None for name in ("mom_60", "vol_20"))

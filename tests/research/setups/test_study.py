@@ -56,7 +56,7 @@ def _base_protocol_kwargs(**overrides) -> dict:
         "ridge_alpha": 1.0,
         "logistic_C": 1.0,
         "acceptance": {"top_k": 2, "min_sessions": 5, "ci": 0.90},
-        "features_version": "setup_features_v1",
+        "features_version": "setup_features_v2",
         "sector_etf": {"technology": "XLK"},
         "strategy_config": {"mode": "parallel"},
     }
@@ -605,7 +605,7 @@ def test_committed_protocol_matches_config_and_sector_etf():
 
     # Also confirm the frozen document is a constructible, self-consistent protocol.
     protocol = SetupStudyProtocol(**data)
-    assert protocol.features_version == "setup_features_v1"
+    assert protocol.features_version == "setup_features_v2"
     assert protocol.embargo_sessions == 20
     assert protocol.hgb_params["early_stopping"] is False
 

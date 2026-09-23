@@ -4,13 +4,20 @@ import hashlib
 import json
 import logging
 import pickle
+from datetime import date, datetime, time
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.setups.features import FEATURES_VERSION
-from agentic_trader.research.setups.ranker import load_ranker
+from agentic_trader.research.setups.ranker import (
+    cached_ranker,
+    last_completed_session,
+    live_cross_section,
+    load_ranker,
+)
 from agentic_trader.research.setups.study import SetupStudyProtocol, _linear_payload, fit_scorer
 
 
@@ -31,8 +38,9 @@ def _training_frame(rows: int = 120, *, empty_feature: bool = True) -> pd.DataFr
     frame = pd.DataFrame(
         {
             "mom_60": rng.uniform(0, 1, rows),
-            # All-missing in training: SimpleImputer drops it, so linear scoring must too.
-            # (HistGradientBoosting cannot bin an all-missing column, so HGB gets values.)
+            # All-missing in training: the study's keep_empty_features=True imputer keeps it
+            # and imputes 0.0, so linear scoring must too. (HistGradientBoosting cannot
+            # bin an all-missing column, so HGB gets values.)
             "resid_mom_60": np.full(rows, np.nan) if empty_feature else rng.uniform(0, 1, rows),
             "reward_risk": rng.uniform(1.5, 3.0, rows),
             "setup_quality": rng.uniform(0, 1, rows),
@@ -146,3 +154,123 @@ def test_tampered_pickle_is_never_unpickled(tmp_path, monkeypatch):
 
 def test_missing_artifact_is_rejected_not_raised(tmp_path):
     assert load_ranker(tmp_path / "absent.json") is None
+
+
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_features_v1_artifact_is_rejected(tmp_path, caplog):
+    fitted = fit_scorer("ridge", _training_frame(), FEATURES, _protocol())
+    _write_artifact(tmp_path, "ridge", fitted, features_version="setup_features_v1")
+    with caplog.at_level(logging.WARNING):
+        assert load_ranker(tmp_path / "ranker.json") is None
+    assert "setup_features_v1" in caplog.text and "setup_features_v2" in caplog.text
+
+
+# --- cached_ranker ---------------------------------------------------------------------------
+
+
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_cached_ranker_unpickles_once_until_the_artifact_changes(tmp_path, monkeypatch):
+    fitted = fit_scorer("hgb", _training_frame(empty_feature=False), FEATURES, _protocol())
+    _write_artifact(tmp_path, "hgb", fitted)
+    unpickled = []
+    real_loads = pickle.loads
+
+    def counting_loads(blob, *args, **kwargs):
+        unpickled.append(len(blob))
+        return real_loads(blob, *args, **kwargs)
+
+    monkeypatch.setattr(pickle, "loads", counting_loads)
+
+    first = cached_ranker(tmp_path / "ranker.json")
+    assert first is not None and first.scorer == "hgb"
+    assert cached_ranker(tmp_path / "ranker.json") is first
+    assert cached_ranker(tmp_path) is first  # the directory form names the same artifact
+    assert len(unpickled) == 1
+
+    _write_artifact(tmp_path, "ridge", fit_scorer("ridge", _training_frame(), FEATURES, _protocol()))
+    replaced = cached_ranker(tmp_path / "ranker.json")
+    assert replaced is not None and replaced.scorer == "ridge"
+    assert replaced.sha256 == hashlib.sha256((tmp_path / "ranker.json").read_bytes()).hexdigest()
+
+
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_cached_ranker_warns_about_a_rejected_artifact_once(tmp_path, caplog):
+    fitted = fit_scorer("ridge", _training_frame(), FEATURES, _protocol())
+    _write_artifact(tmp_path, "ridge", fitted, features_version="setup_features_v1")
+    with caplog.at_level(logging.WARNING):
+        assert cached_ranker(tmp_path / "ranker.json") is None
+        assert cached_ranker(tmp_path / "ranker.json") is None
+    rejected = [r for r in caplog.records if getattr(r, "event", None) == "shadow_ranker_artifact_rejected"]
+    assert len(rejected) == 1
+
+
+# --- last_completed_session -------------------------------------------------------------------
+
+
+def _ny_midnight(day: date) -> pd.Timestamp:
+    return pd.Timestamp(datetime.combine(day, time(0, 0), tzinfo=ET_TZ))
+
+
+def _daily(days: list[date], *, tz: str = "UTC") -> pd.DataFrame:
+    """Alpaca-shaped daily bars: stamped at New York midnight, in ``tz``."""
+    index = pd.DatetimeIndex([_ny_midnight(day).tz_convert(tz) for day in days], name="timestamp")
+    close = np.linspace(100.0, 101.0, len(days))
+    return pd.DataFrame({"Close": close, "High": close + 0.5, "Volume": 1_000.0}, index=index)
+
+
+@pytest.mark.parametrize("tz", ["UTC", "America/New_York"])
+@pytest.mark.parametrize(
+    ("today", "sessions", "expected"),
+    [
+        # Wednesday, EDT (NY midnight = 04:00Z): today's in-progress bar is excluded.
+        (date(2026, 9, 23), [date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23)], date(2026, 9, 22)),
+        # Wednesday, EST (NY midnight = 05:00Z).
+        (date(2026, 1, 14), [date(2026, 1, 12), date(2026, 1, 13), date(2026, 1, 14)], date(2026, 1, 13)),
+        # Monday -> the preceding Friday.
+        (date(2026, 9, 21), [date(2026, 9, 17), date(2026, 9, 18), date(2026, 9, 21)], date(2026, 9, 18)),
+        # Tuesday after Labor Day (Monday 2026-09-07 closed) -> the preceding Friday.
+        (date(2026, 9, 8), [date(2026, 9, 3), date(2026, 9, 4), date(2026, 9, 8)], date(2026, 9, 4)),
+        # No bar for today yet (fetched before the first trade): the last row is the answer.
+        (date(2026, 9, 23), [date(2026, 9, 21), date(2026, 9, 22)], date(2026, 9, 22)),
+    ],
+)
+def test_last_completed_session(tz, today, sessions, expected):
+    frame = _daily(sessions, tz=tz)
+    if tz == "UTC":
+        assert all(stamp.hour in (4, 5) for stamp in frame.index)  # Alpaca's 04:00Z/05:00Z convention
+    assert last_completed_session({"AAA": frame}, today) == expected
+
+
+def test_last_completed_session_is_the_latest_across_frames_or_none():
+    today = date(2026, 9, 23)
+    stale = _daily([date(2026, 9, 17), date(2026, 9, 18)])
+    fresh = _daily([date(2026, 9, 21), date(2026, 9, 22), today])
+    assert last_completed_session({"OLD": stale, "NEW": fresh}, today) == date(2026, 9, 22)
+    assert last_completed_session({"ONLY_TODAY": _daily([today])}, today) is None
+    assert last_completed_session({}, today) is None
+
+
+# --- live_cross_section -----------------------------------------------------------------------
+
+
+def test_live_cross_section_population_is_universe_symbols_with_daily_bars():
+    today = date(2026, 9, 23)
+    days = [d.date() for d in pd.bdate_range(end=pd.Timestamp(today), periods=70)]
+    daily = {
+        "AAA": _daily(days),
+        "BBB": _daily(days),
+        "EMPTY": _daily(days).iloc[0:0],  # in the universe, but no bars this scan
+        "EXTRA": _daily(days),  # an explicit contracts: equity outside universe.groups
+    }
+    sectors = {"AAA": "technology", "BBB": "technology", "EMPTY": "technology", "ABSENT": "energy"}
+
+    cs = live_cross_section(daily, sectors, today)
+
+    assert set(cs.ranks.index) == {"AAA", "BBB"}
+    assert cs.as_of == date(2026, 9, 22)  # today's in-progress bar excluded
+
+
+def test_live_cross_section_without_a_completed_session_raises():
+    today = date(2026, 9, 23)
+    with pytest.raises(ValueError, match="No completed daily session"):
+        live_cross_section({"AAA": _daily([today])}, {"AAA": "technology"}, today)

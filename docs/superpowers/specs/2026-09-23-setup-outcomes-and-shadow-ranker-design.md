@@ -102,34 +102,59 @@ bars strictly after the decision instant.
 
 A pure function of daily bars for the whole cross-section available at `t`. Only
 sessions closed before `t` are used, so an intraday scan never sees today's daily bar.
-It returns a versioned vector (`features_version = "setup_features_v1"`).
+It returns a versioned vector (`features_version = "setup_features_v2"`).
+
+**Live window.** The live scan fetches `daily_period="1y"`: bars stamped at or after
+`now − 365 days`, about 249–251 completed sessions once today's in-progress bar is
+dropped. Every v2 lookback fits that window with margin (the longest needs 240
+sessions). The study cuts each symbol's cached history to the same window, using
+`replay.live_daily_window` at each decision date's earliest scan instant, so a feature
+needing more history would be NaN in research exactly as it is live. v1 used 252-session
+lookbacks (`mom_252_21`, `dist_52w_high`, and a 252-value `spy_vol20_pct`) that were
+NaN on every live scan, and `ranker.py` rejects v1 artifacts.
 
 - **Cross-sectional percentile ranks** across the names present at `t`:
-  - `mom_252_21` (return from t−252 to t−21 sessions)
+  - `mom_231_21 = close[−22] / close[−232] − 1` (needs 232 sessions)
   - `mom_60`
   - `rev_5` (negated five-session return)
   - `vol_20` (realized)
-  - `dist_52w_high`
+  - `dist_high_240 = close[−1] / max(High[−240:]) − 1` (needs 240 sessions)
   - `dollar_volume_20`
   - `resid_mom_60`: the 60-session cumulative residual after an OLS regression on the
     name's sector ETF over the prior 126 sessions. The sector→ETF map is frozen in the
     protocol; ETFs regress on SPY.
   - `sector_rel_mom_60`: group-neutralized `mom_60` via the existing
     `panel.group_neutralize`.
-- **Market context:** SPY above its 200-session mean (0/1); SPY 20-session realized
-  volatility percentile over the prior 252 sessions.
+- **Market context:** SPY above its 200-session mean (0/1); `spy_vol20_pct`, the
+  percentile of SPY's current 20-session realized volatility within its last 200
+  rolling `vol_20` values (needs about 220 sessions).
 - **Setup:**
   - `setup_quality`
   - strategy (one-hot)
   - timeframe (one-hot)
   - stop distance in ATR units
   - target/stop ratio
-- **Direction-aware sign.** For shorts, directional features (momentum, reversal,
-  residual, sector-relative, distance to high) use `1 − rank`, so "high = favourable
-  for this direction" holds for both sides.
+- **Direction-aware sign.** For shorts, directional features (`mom_231_21`, `mom_60`,
+  `rev_5`, `resid_mom_60`, `sector_rel_mom_60`, `dist_high_240`) use `1 − rank`, so
+  "high = favourable for this direction" holds for both sides.
 - Missing history leaves a feature NaN, never forward-filled. Models use explicit
   missing-indicator handling: HGB natively; linear models get a median imputer fitted
   on training rows only.
+- **Population.** Live, the cross-section is every `universe.groups` symbol with daily
+  bars in the scan, not extra `contracts:` equities. The study's population is the same
+  configured universe.
+
+**Accepted parity gaps.** These research/live differences remain and are documented,
+not fixed:
+
+1. **Adjustment.** The study uses `all`-adjusted SIP bars; live uses raw bars on the
+   configured feed. The features are cross-sectional ranks, so dividends shift them
+   only slightly, but a recent split distorts that one name's live features.
+2. **Feed.** IEX and SIP volume levels differ roughly proportionally, so
+   `dollar_volume_20` ranks are comparable but not identical.
+3. **Staleness.** Replay's last hourly/4h bar and its in-progress daily bar are up to
+   about 35 minutes staler than live's, because replay excludes the still-forming hour
+   (see the `replay.py` docstring).
 
 ### Study protocol (`study.py`, `config/research/setup-outcomes-v1.json`)
 
@@ -195,16 +220,20 @@ loaded only by explicit config path.
 
 ### Live shadow (WS2b)
 
-- **RANK phase in `copilot.py`:** after `ranked` is built, compute `features.py` over
-  the daily frames already fetched this scan (the whole scanned universe is the cross
-  section). Attach `shadow_ranker = {features_version, features, score, ranker_sha}`
+- **RANK phase in `copilot.py`:** only on a full-universe scan (no `symbols`
+  restriction and no `timeframe` filter, i.e. the scheduled suggestion scans), after
+  `ranked` is built, compute `features.py` over the daily frames already fetched this
+  scan (`ranker.live_cross_section`: the `universe.groups` symbols with daily bars are
+  the cross-section). The intraday non-universe job and an operator's `/scan` of named
+  symbols neither compute the block nor journal. Attach `shadow_ranker = {features_version, features, score, ranker_sha}`
   to each approved candidate. `score` and `ranker_sha` are None unless
   `scan.shadow_ranker_artifact` names a file whose sha256 and `features_version` match.
   A mismatch logs a warning and records features only.
 - **Sent cards:** `decision_provenance["shadow_ranker"]` holds that block.
-- **Every scan with at least one approved candidate** appends **one** domain event
+- **Every full-universe scan with at least one approved candidate** appends **one** domain event
   `scan_candidates_ranked` through the existing `domain_events` journal API. The event
-  contains the scan ID and time, budget and ranking key (`setup_quality`), and per
+  contains the scan ID and time, `scope` (`"universe"`), budget and ranking key
+  (`setup_quality`), and per
   candidate: contract, strategy, timeframe, direction, entry/stop/target, setup_quality,
   rank, the outcome (`sent` | runner-up reason | `rejected: …`) and the shadow block.
   - The event is written in its own transaction after the RANK/SEND loop. A journal

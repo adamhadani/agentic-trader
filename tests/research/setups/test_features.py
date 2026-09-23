@@ -6,9 +6,11 @@ import pytest
 import yaml
 
 from agentic_trader.config import WORKSPACE_ROOT
+from agentic_trader.research.setups import features
 from agentic_trader.research.setups.features import (
     CROSS_SECTIONAL,
     DIRECTIONAL,
+    FEATURES_VERSION,
     MARKET,
     SECTOR_ETF,
     SETUP,
@@ -185,6 +187,97 @@ def test_short_direction_inverts_directional_ranks_only():
             assert math.isnan(right)
         else:
             assert left == pytest.approx(right)
+
+
+def test_v2_names_and_direction_aware_set():
+    assert FEATURES_VERSION == "setup_features_v2"
+    assert CROSS_SECTIONAL == (
+        "mom_231_21",
+        "mom_60",
+        "rev_5",
+        "vol_20",
+        "dist_high_240",
+        "dollar_volume_20",
+        "resid_mom_60",
+        "sector_rel_mom_60",
+    )
+    assert (
+        frozenset({"mom_231_21", "mom_60", "rev_5", "dist_high_240", "resid_mom_60", "sector_rel_mom_60"})
+        == DIRECTIONAL
+    )
+
+
+def test_every_feature_is_populated_within_the_shortest_live_window():
+    """Live fetches period="1y": 249-251 completed sessions after today's bar is dropped.
+
+    v1's mom_252_21 / dist_52w_high / spy_vol20_pct needed 253 / 252 / ~272 rows and were
+    NaN on every live scan; every v2 feature must be populated at 249 sessions.
+    """
+    daily, sectors, index = _build_panel(n=249)
+    cs = cross_section(daily, sectors, index[-1].date())
+
+    # The ETFs regress on themselves, so only their resid_mom_60 is (correctly) NaN.
+    equities = cs.ranks.drop(index=["XLK", "XLF", "SPY"])
+    assert equities.notna().all().all(), equities.isna().sum()
+    assert cs.ranks.drop(columns=["resid_mom_60"]).notna().all().all()
+    for feature in MARKET:
+        assert math.isfinite(cs.market[feature]), feature
+
+
+@pytest.mark.parametrize(
+    ("feature", "rows"),
+    [("mom_231_21", 232), ("dist_high_240", 240), ("mom_60", 61), ("dollar_volume_20", 20)],
+)
+def test_cross_sectional_short_history_threshold(feature, rows):
+    for n, populated in ((rows - 1, False), (rows, True)):
+        daily, sectors, index = _build_panel(n=n)
+        cs = cross_section(daily, sectors, index[-1].date())
+        assert cs.ranks[feature].notna().all() if populated else cs.ranks[feature].isna().all(), (feature, n)
+
+
+@pytest.mark.parametrize(("feature", "rows"), [("spy_vol20_pct", 220), ("spy_above_200", 200)])
+def test_market_short_history_threshold(feature, rows):
+    for n, populated in ((rows - 1, False), (rows, True)):
+        daily, sectors, index = _build_panel(n=n)
+        cs = cross_section(daily, sectors, index[-1].date())
+        assert math.isfinite(cs.market[feature]) is populated, (feature, n)
+
+
+def test_long_lookback_definitions():
+    n = 300
+    close = np.linspace(50.0, 80.0, n)
+    high = close + 0.5
+    high[-241] = 10_000.0  # just outside the 240-session high window: ignored
+    high[-240] = 500.0  # the oldest session inside it: the window's maximum
+    frame = pd.DataFrame(
+        {"Open": close, "High": high, "Low": close - 0.5, "Close": close, "Volume": np.full(n, 1_000.0)},
+        index=_dates(n),
+    )
+
+    values = features._basic_features(frame)
+
+    assert values["mom_231_21"] == pytest.approx(close[-22] / close[-232] - 1.0)
+    assert values["dist_high_240"] == pytest.approx(close[-1] / 500.0 - 1.0)
+
+
+def test_spy_vol20_pct_ranks_within_the_last_200_rolling_values():
+    # Random returns: the sinusoidal panel's periodic vol_20 has near-ties that float noise reorders.
+    returns = np.random.default_rng(11).normal(0.0003, 0.01, N)
+    returns[0] = 0.0
+    index = _dates(N)
+    spy = _frame_from_close(_close_from_returns(returns), index)
+    vol20 = spy["Close"].pct_change().rolling(20).std(ddof=1).dropna()
+    expected = float(vol20.iloc[-200:].rank(pct=True).iloc[-1])
+
+    assert features._market_features(spy)["spy_vol20_pct"] == pytest.approx(expected)
+
+    # A return old enough to reach only vol_20 values before the last 200 changes nothing;
+    # the same shock one session later reaches the oldest value inside the window.
+    for position, changed in ((N - 220, False), (N - 219, True)):
+        shocked = returns.copy()
+        shocked[position] += 0.5
+        value = features._market_features(_frame_from_close(_close_from_returns(shocked), index))["spy_vol20_pct"]
+        assert (value != pytest.approx(expected)) is changed, position
 
 
 def test_short_history_gives_nan_not_error():

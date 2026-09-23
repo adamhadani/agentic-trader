@@ -7,6 +7,11 @@ happens exclusively inside the two callables it returns: ``study.execute_setup_s
 must never be able to observe a holdout label before ``ranker.json``/``selection.json``
 are saved, so nothing here computes a label before the caller actually invokes
 ``development()``/``holdout()``.
+
+Each decision date's feature cross-section sees exactly what the live scan's does: every
+symbol's daily rows within ``replay.live_daily_window`` of the date's earliest scan
+instant (the live ``period="1y"`` fetch), as of the last session completed before that
+New York date -- never the longer history this runner happens to have cached.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import sys
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -27,9 +32,10 @@ from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.market.session import ET_TZ, MarketCalendarDay
 from agentic_trader.research.alpha.data import load_dataset, save_dataset
 from agentic_trader.research.alpha.validation import frame_digest
-from agentic_trader.research.setups.features import cross_section, setup_vector
+from agentic_trader.research.setups.features import CrossSection, cross_section
 from agentic_trader.research.setups.labels import SetupLevels, label_bracket
-from agentic_trader.research.setups.replay import SetupRecord, decision_instants, replay_symbol
+from agentic_trader.research.setups.ranker import setup_features
+from agentic_trader.research.setups.replay import SetupRecord, decision_instants, live_daily_window, replay_symbol
 from agentic_trader.research.setups.study import SetupStudyProtocol
 
 
@@ -180,6 +186,28 @@ def _previous_trading_day(trading_days: list[date], ny_date: date) -> date | Non
     return trading_days[idx - 1]
 
 
+def _first_instants(instants: Sequence[datetime]) -> dict[date, datetime]:
+    """Each New York decision date's earliest scan instant."""
+    first: dict[date, datetime] = {}
+    for t in instants:
+        ny_date = t.astimezone(ET_TZ).date()
+        if ny_date not in first or t < first[ny_date]:
+            first[ny_date] = t
+    return first
+
+
+def _live_cross_section(
+    daily_by_symbol: Mapping[str, pd.DataFrame], sectors: Mapping[str, str], as_of: date, window_at: datetime
+) -> CrossSection:
+    """The cross-section the live scan at ``window_at`` computes (``ranker.live_cross_section``).
+
+    Every symbol is cut to ``live_daily_window(frame, window_at)`` first; a symbol with no
+    row in that window has no live daily frame either, so it is not in the population.
+    """
+    windowed = {symbol: live_daily_window(frame, window_at) for symbol, frame in daily_by_symbol.items()}
+    return cross_section({symbol: frame for symbol, frame in windowed.items() if not frame.empty}, sectors, as_of)
+
+
 def _window_records(records: Sequence[SetupRecord], start: date, end: date) -> list[SetupRecord]:
     return [record for record in records if start <= record.decision_at.astimezone(ET_TZ).date() <= end]
 
@@ -195,12 +223,15 @@ def _build_frame(
     sectors: dict[str, str],
     protocol: SetupStudyProtocol,
     trading_days: list[date],
+    first_instants: Mapping[date, datetime],
 ) -> pd.DataFrame:
     """Features + both cost levels' bracket outcomes, for one window's records.
 
-    One ``CrossSection`` is computed per decision date and reused for every setup
-    on that date; label_bracket is only ever called from here, i.e. only when the
-    caller (``development()``/``holdout()``) actually runs this.
+    One ``CrossSection`` is computed per decision date -- over the live one-year daily
+    window at that date's earliest scan instant (``first_instants``) -- and reused for
+    every setup on that date, as both live scans of a session see the same completed
+    sessions. label_bracket is only ever called from here, i.e. only when the caller
+    (``development()``/``holdout()``) actually runs this.
     """
     if not records:
         return _empty_frame()
@@ -217,7 +248,7 @@ def _build_frame(
         as_of = _previous_trading_day(trading_days, ny_date)
         if as_of is None:
             continue
-        cs = cross_section(daily_by_symbol, sectors, as_of)
+        cs = _live_cross_section(daily_by_symbol, sectors, as_of, first_instants[ny_date])
 
         for record in by_date[ny_date]:
             hourly = hourly_by_symbol.get(record.symbol)
@@ -249,20 +280,19 @@ def _build_frame(
                 )
             )
 
-            risk_unit = abs(record.entry - record.stop)
-            stop_atr = risk_unit / record.atr if record.atr else float("nan")
-            reward_risk = abs(record.target - record.entry) / risk_unit if risk_unit else float("nan")
-
+            # The live scan's exact geometry (stop_atr, reward_risk) via the shared helper.
             row: dict[str, object] = dict(
-                setup_vector(
+                setup_features(
                     cs,
                     symbol=record.symbol,
                     direction=record.direction,
                     strategy=record.strategy,
                     timeframe=record.timeframe,
                     setup_quality=record.setup_quality,
-                    stop_atr=stop_atr,
-                    reward_risk=reward_risk,
+                    entry=record.entry,
+                    stop=record.stop,
+                    target=record.target,
+                    atr_14=record.atr,
                 )
             )
             row.update(
@@ -341,6 +371,7 @@ async def build_setup_frames(
     trading_days = sorted(day.date for day in days if day.is_trading_day)
     instant_days = [day for day in days if day.date >= protocol.development[0]]
     instants = decision_instants(instant_days, protocol.scan_times_et)
+    first_instants = _first_instants(instants)
 
     dedup_hours = config.risk.deduplication_hours
     records = await asyncio.to_thread(
@@ -352,12 +383,16 @@ async def build_setup_frames(
     holdout_records = _window_records(records, protocol.holdout[0], protocol.holdout[1])
 
     def development() -> pd.DataFrame:
-        frame = _build_frame(development_records, daily_by_symbol, hourly_by_symbol, sectors, protocol, trading_days)
+        frame = _build_frame(
+            development_records, daily_by_symbol, hourly_by_symbol, sectors, protocol, trading_days, first_instants
+        )
         _progress("development labelled")
         return frame
 
     def holdout() -> pd.DataFrame:
-        frame = _build_frame(holdout_records, daily_by_symbol, hourly_by_symbol, sectors, protocol, trading_days)
+        frame = _build_frame(
+            holdout_records, daily_by_symbol, hourly_by_symbol, sectors, protocol, trading_days, first_instants
+        )
         _progress("holdout labelled")
         return frame
 

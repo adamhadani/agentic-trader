@@ -65,11 +65,10 @@ from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
-from agentic_trader.research.setups.features import cross_section
 from agentic_trader.research.setups.ranker import (
+    cached_ranker,
     finite_or_none,
-    last_completed_session,
-    load_ranker,
+    live_cross_section,
     setup_features,
     shadow_blocks,
 )
@@ -668,13 +667,17 @@ class TradingCopilot:
             # the send-phase evaluation and send failures all thin this number down.
             summary["approved"] = len(ranked)
             # SHADOW: evidence only. It reads `ranked` and never reorders, filters or
-            # gates it; a failure leaves every block None and the scan unchanged.
+            # gates it; a failure leaves every block None and the scan unchanged. Only a
+            # full-universe scan (the scheduled suggestion scans) matches the setup
+            # study's population, so a symbol-restricted or timeframe-filtered scan (an
+            # operator /scan, the intraday non-universe job) neither scores nor journals.
             decided_at = datetime.now(UTC)
             scan_id = uuid4().hex
             summary["scan_id"] = scan_id
+            universe_scan = self._is_suggestion_scan(summary)
             shadow_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
-            if not dry_run and ranked:
-                shadow_by_rank = await self._shadow_blocks(ranked, datasets, equities, decided_at, summary)
+            if not dry_run and ranked and universe_scan:
+                shadow_by_rank = await self._shadow_blocks(ranked, datasets, decided_at, summary)
             outcomes: list[str | None] = [None] * len(ranked)
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
@@ -845,7 +848,7 @@ class TradingCopilot:
                     logger.exception(f"Error scanning {candidate.contract}")
                     continue
 
-            if not dry_run and budget != ScanBudget.NONE and ranked:
+            if not dry_run and budget != ScanBudget.NONE and ranked and universe_scan:
                 await self._journal_scan_ranking(
                     scan_id=scan_id,
                     decided_at=decided_at,
@@ -910,14 +913,13 @@ class TradingCopilot:
         self,
         ranked: list[tuple[Any, Any, Any]],
         datasets: dict[str, Any],
-        equities: set[str],
         decided_at: datetime,
         summary: dict[str, Any],
     ) -> list[dict[str, Any] | None]:
         """One shadow block per ranked candidate, or all None if anything fails."""
         started = time.monotonic()
         try:
-            return await asyncio.to_thread(self._compute_shadow_blocks, ranked, datasets, equities, decided_at)
+            return await asyncio.to_thread(self._compute_shadow_blocks, ranked, datasets, decided_at)
         except Exception as exc:
             summary["shadow_ranker_error"] = f"{type(exc).__name__}: {exc}"
             logger.exception(
@@ -931,28 +933,20 @@ class TradingCopilot:
         self,
         ranked: list[tuple[Any, Any, Any]],
         datasets: dict[str, Any],
-        equities: set[str],
         decided_at: datetime,
     ) -> list[dict[str, Any] | None]:
         """Setup features over this scan's already-fetched daily frames; never refetches.
 
-        The cross-section is every fetched equity with daily bars, as of the last
-        session completed before the scan's New York date (today's partial bar is
-        excluded), with sectors from the configured universe -- the study's inputs.
+        The cross-section is every ``universe.groups`` symbol with daily bars in this
+        scan (not explicit ``contracts:`` equities), as of the last session completed
+        before the scan's New York date -- today's partial bar is excluded -- with
+        sectors from the configured universe: the study's inputs (``live_cross_section``).
         """
-        daily = {}
-        for contract, data in datasets.items():
-            frame = getattr(data, "daily", None)
-            if contract in equities and frame is not None and not frame.empty:
-                daily[contract] = frame
-        et_date = self.session_start_et(decided_at).date()
-        as_of = last_completed_session(daily, et_date)
-        if as_of is None:
-            raise ValueError(f"No completed daily session before {et_date} in this scan's data")
+        daily = {contract: getattr(data, "daily", None) for contract, data in datasets.items()}
         sectors = {entry.symbol: entry.sector for group in self.config.universe.groups.values() for entry in group}
+        cs = live_cross_section(daily, sectors, self.session_start_et(decided_at).date())
         artifact = self.config.scan.shadow_ranker_artifact
-        ranker = load_ranker(artifact) if artifact is not None else None
-        cs = cross_section(daily, sectors, as_of)
+        ranker = cached_ranker(artifact) if artifact is not None else None
         vectors = [
             setup_features(
                 cs,
@@ -1003,6 +997,7 @@ class TradingCopilot:
             payload = {
                 "scan_id": scan_id,
                 "decided_at": decided_at.isoformat(),
+                "scope": "universe",
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
                 "candidates": candidates,

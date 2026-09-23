@@ -1,6 +1,8 @@
 import json
+import math
 from datetime import UTC, date, datetime, time, timedelta
 
+import numpy as np
 import pandas as pd
 import pytest
 from click.testing import CliRunner
@@ -8,9 +10,10 @@ from click.testing import CliRunner
 from agentic_trader.cli.main import cli
 from agentic_trader.config import load_config
 from agentic_trader.market.session import ET_TZ, DeterministicCalendarProvider
-from agentic_trader.research.setups import runner
-from agentic_trader.research.setups.features import SECTOR_ETF
+from agentic_trader.research.setups import features, runner
+from agentic_trader.research.setups.features import CROSS_SECTIONAL, MARKET, SECTOR_ETF, cross_section
 from agentic_trader.research.setups.labels import BracketHit, BracketOutcome
+from agentic_trader.research.setups.ranker import live_cross_section, setup_features
 from agentic_trader.research.setups.replay import SetupRecord
 from agentic_trader.research.setups.runner import build_setup_frames
 from agentic_trader.research.setups.study import SetupStudyProtocol
@@ -136,7 +139,7 @@ def _protocol_kwargs(**overrides) -> dict:
         "ridge_alpha": 1.0,
         "logistic_C": 1.0,
         "acceptance": {"top_k": 2, "min_sessions": 1, "ci": 0.90},
-        "features_version": "setup_features_v1",
+        "features_version": "setup_features_v2",
         "sector_etf": {"technology": "XLK", "etf_broad_equity": "SPY"},
         "strategy_config": {"mode": "parallel"},
     }
@@ -320,3 +323,203 @@ def test_cli_refuses_existing_output_and_strategy_config_mismatch(tmp_path):
     assert result.exit_code != 0
     assert "strategy_config" in result.output
     assert not fresh_output.exists()
+
+
+# --- Study cross-section == live cross-section ---------------------------------------------------
+#
+# Daily bars below are Alpaca-shaped: one per business day, stamped at New York midnight
+# in UTC (04:00Z/05:00Z). The "live" side is built independently of runner/replay helpers:
+# providers.py fetches period="1y" as start = now(UTC) - timedelta(days=365), and Alpaca
+# returns every bar stamped at or after start -- including today's in-progress bar.
+
+LIVE_LOOKBACK = timedelta(days=365)
+PANEL_SECTORS = {
+    "AAA": "technology",
+    "BBB": "technology",
+    "CCC": "financial_services",
+    "DDD": "financial_services",
+    "NEW": "technology",  # listed ~10 months before the decision: short history
+    "XLK": "technology",
+    "XLF": "financial_services",
+    "SPY": "etf_broad_equity",
+}
+DECISION_DATE = date(2025, 6, 12)  # a Thursday
+SCANS = tuple(datetime.combine(DECISION_DATE, time(h, 35), tzinfo=ET_TZ).astimezone(UTC) for h in (10, 14))
+
+
+def _ny_midnight_utc(day: date) -> pd.Timestamp:
+    return pd.Timestamp(datetime.combine(day, time(0, 0), tzinfo=ET_TZ)).tz_convert("UTC")
+
+
+def _alpaca_daily(seed: int, days: list[date]) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    close = 50.0 * np.exp(np.cumsum(rng.normal(0.0004, 0.015, len(days))))
+    return pd.DataFrame(
+        {
+            "Open": close * (1 + rng.normal(0, 0.002, len(days))),
+            "High": close * (1 + np.abs(rng.normal(0, 0.01, len(days)))),
+            "Low": close * (1 - np.abs(rng.normal(0, 0.01, len(days)))),
+            "Close": close,
+            "Volume": rng.uniform(1e5, 5e6, len(days)),
+        },
+        index=pd.DatetimeIndex([_ny_midnight_utc(day) for day in days], name="timestamp"),
+    )
+
+
+def _study_panel() -> tuple[dict[str, pd.DataFrame], list[date]]:
+    """Two years of full history (and a month *after* the decision), as the study caches it."""
+    trading_days = [d.date() for d in pd.bdate_range("2023-05-01", "2025-07-15")]
+    daily = {symbol: _alpaca_daily(seed, trading_days) for seed, symbol in enumerate(PANEL_SECTORS)}
+    listed = DECISION_DATE - timedelta(days=300)
+    daily["NEW"] = daily["NEW"].loc[pd.DatetimeIndex(daily["NEW"].index).date >= listed]
+    return daily, trading_days
+
+
+def _live_fetch(frame: pd.DataFrame, now: datetime) -> pd.DataFrame:
+    """What fetch_data(daily_period="1y") returns at ``now``: bars stamped in [now - 365d, now],
+    with today's bar replaced by an in-progress one (only part of the session has traded)."""
+    stamps = pd.DatetimeIndex(frame.index)
+    fetched = frame.loc[(stamps >= now - LIVE_LOOKBACK) & (stamps <= now)].copy()
+    today = pd.DatetimeIndex(fetched.index).date == DECISION_DATE
+    assert today.sum() == 1
+    fetched.loc[today, ["Close", "High"]] *= 1.07
+    fetched.loc[today, "Volume"] *= 0.1
+    return fetched
+
+
+RECORDS = [
+    ("AAA", "LONG", "TREND_PULLBACK", "4h", 0.7, 100.0, 97.0, 106.0, 1.5),
+    ("CCC", "SHORT", "SQUEEZE_BREAKOUT", "1h", 0.4, 50.0, 51.0, 47.5, 0.8),
+    ("NEW", "LONG", "TREND_PULLBACK", "1h", 0.55, 20.0, 19.0, 22.0, 0.6),
+]
+
+
+def _records() -> list[SetupRecord]:
+    return [
+        SetupRecord(
+            decision_at=scan,
+            symbol=symbol,
+            strategy=strategy,
+            timeframe=timeframe,
+            direction=direction,
+            setup_quality=quality,
+            entry=entry,
+            stop=stop,
+            target=target,
+            atr=atr,
+        )
+        for scan in SCANS
+        for symbol, direction, strategy, timeframe, quality, entry, stop, target, atr in RECORDS
+    ]
+
+
+def _study_rows(monkeypatch, daily: dict[str, pd.DataFrame], trading_days: list[date]) -> pd.DataFrame:
+    monkeypatch.setattr(runner, "label_bracket", _fake_label_bracket_factory([]))
+    hourly = {symbol: _hourly_frame(datetime.combine(DECISION_DATE, time(16), tzinfo=UTC)) for symbol in daily}
+    return runner._build_frame(
+        _records(),
+        daily,
+        hourly,
+        PANEL_SECTORS,
+        _protocol(),
+        trading_days,
+        {DECISION_DATE: SCANS[0]},
+    )
+
+
+def _live_vector(now: datetime, daily: dict[str, pd.DataFrame], record: tuple) -> dict[str, float]:
+    symbol, direction, strategy, timeframe, quality, entry, stop, target, atr = record
+    fetched = {s: _live_fetch(frame, now) for s, frame in daily.items()}
+    cs = live_cross_section(fetched, PANEL_SECTORS, DECISION_DATE)
+    return setup_features(
+        cs,
+        symbol=symbol,
+        direction=direction,
+        strategy=strategy,
+        timeframe=timeframe,
+        setup_quality=quality,
+        entry=entry,
+        stop=stop,
+        target=target,
+        atr_14=atr,
+    )
+
+
+def _same(left: float, right: float) -> bool:
+    return (math.isnan(left) and math.isnan(right)) or left == right
+
+
+def test_study_vector_equals_the_live_vector_for_the_same_instant(monkeypatch):
+    daily, trading_days = _study_panel()
+    rows = _study_rows(monkeypatch, daily, trading_days)
+    assert len(rows) == len(SCANS) * len(RECORDS)
+
+    for scan in SCANS:
+        for record in RECORDS:
+            live = _live_vector(scan, daily, record)
+            [row] = rows[(rows["decision_at"] == scan) & (rows["symbol"] == record[0])].to_dict("records")
+            mismatched = {k: (row[k], v) for k, v in live.items() if not _same(float(row[k]), float(v))}
+            assert not mismatched, (scan, record[0], mismatched)
+
+    # The mature names have every feature: nothing is NaN only because of the live window.
+    [aaa] = rows[(rows["decision_at"] == SCANS[0]) & (rows["symbol"] == "AAA")].to_dict("records")
+    assert all(math.isfinite(aaa[name]) for name in (*CROSS_SECTIONAL, *MARKET))
+
+
+def test_a_feature_longer_than_the_live_window_is_nan_in_the_study_as_it_is_live(monkeypatch):
+    """A feature needing more rows than any one-year fetch holds (at most 261 weekdays; real
+    calendars give ~250, which is why v1's 253-row mom_252_21 was always NaN live) must be
+    NaN in the study too, not computed from the longer history the study has cached."""
+    original = features._basic_features
+
+    def with_long_probe(frame: pd.DataFrame) -> dict[str, float]:
+        values = original(frame)
+        close = frame["Close"].to_numpy(dtype=float)
+        values["long_probe"] = close[-22] / close[-270] - 1.0 if len(close) >= 270 else float("nan")
+        return values
+
+    monkeypatch.setattr(features, "_basic_features", with_long_probe)
+    monkeypatch.setattr(features, "CROSS_SECTIONAL", (*CROSS_SECTIONAL, "long_probe"))
+
+    daily, trading_days = _study_panel()
+    as_of = trading_days[trading_days.index(DECISION_DATE) - 1]
+    # Full cached history would populate it: this test can see the leak.
+    assert cross_section(daily, PANEL_SECTORS, as_of).ranks["long_probe"].notna().sum() >= 4
+
+    rows = _study_rows(monkeypatch, daily, trading_days)
+    assert rows["long_probe"].isna().all()
+    for scan in SCANS:
+        for record in RECORDS:
+            assert math.isnan(_live_vector(scan, daily, record)["long_probe"])
+
+
+async def test_build_setup_frames_windows_each_date_at_its_first_scan(tmp_path, monkeypatch):
+    """Both scans of a date share one cross-section, windowed at the date's earliest scan."""
+    seen: list[str] = []
+    monkeypatch.setattr(runner, "replay_symbol", _fake_replay_symbol_factory(seen))
+    monkeypatch.setattr(runner, "label_bracket", _fake_label_bracket_factory([]))
+    windows: list[datetime] = []
+    original = runner.live_daily_window
+
+    def spy(frame, t):
+        windows.append(t)
+        return original(frame, t)
+
+    monkeypatch.setattr(runner, "live_daily_window", spy)
+    protocol = _protocol()
+    development, _holdout, _coverage = await build_setup_frames(
+        protocol, UNIVERSE, FakeBarSource(), CALENDAR, tmp_path / "cache", load_config(), max_workers=2
+    )
+    frame = development()
+
+    assert not frame.empty
+    by_date: dict[date, set[datetime]] = {}
+    for t in windows:
+        by_date.setdefault(t.astimezone(ET_TZ).date(), set()).add(t)
+    assert set(by_date) == set(frame["session"])
+    for ny_date, starts in by_date.items():
+        [t] = starts  # one window per date, shared by both scans
+        decisions = frame.loc[frame["session"] == ny_date, "decision_at"]
+        assert decisions.nunique() == 2
+        assert t == min(decisions)
+        assert t.astimezone(ET_TZ).time() == time(10, 35)
