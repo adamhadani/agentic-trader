@@ -442,7 +442,13 @@ class SignalDatabase:
         timeframe: str | None = None,
         alpha_version: str | None = None,
     ) -> bool:
-        """Check if an active or recent signal was emitted for this contract and strategy within `hours`."""
+        """Check if an active or recent signal was emitted for this contract and strategy within `hours`.
+
+        A FAILED card does not count: the system, not the operator, failed to place it
+        (e.g. a preflight refusal), so the setup may be carded again. Pending, dismissed,
+        expired and executed cards still suppress repeats; a FAILED card still spends the
+        session's card budget (``signals_since``).
+        """
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
         async with self.session_factory() as session:
             stmt = (
@@ -452,6 +458,7 @@ class SignalDatabase:
                     SignalRecord.contract == contract,
                     SignalRecord.strategy == strategy,
                     SignalRecord.timestamp >= cutoff,
+                    SignalRecord.status != SignalStatus.FAILED,
                 )
                 .order_by(SignalRecord.timestamp.desc())
                 .limit(1)
