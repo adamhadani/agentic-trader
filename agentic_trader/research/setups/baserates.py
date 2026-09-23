@@ -162,6 +162,7 @@ def _s1(frame: pd.DataFrame, protocol: SetupBaseRateProtocol) -> dict:
         "n_setups": int(counts.sum()),
         "mean_r_cost": _weighted(sums, counts, np.arange(len(short))) if len(short) else float("nan"),
         "ci90": ci90,
+        "finite_draws": int(np.isfinite(boot).sum()),
         "p_one_sided": _p_one_sided_negative(boot),
         "holds": bool(np.isfinite(ci90[1]) and ci90[1] < 0.0),
     }
@@ -192,6 +193,7 @@ def _s2(frame: pd.DataFrame, protocol: SetupBaseRateProtocol) -> dict:
         "n_short": int(short_n.sum()),
         "mean_diff": diff(np.arange(len(table))) if len(table) else float("nan"),
         "ci90": ci90,
+        "finite_draws": int(np.isfinite(boot).sum()),
         "p_one_sided": _p_one_sided_positive(boot),
         "holds": bool(np.isfinite(ci90[0]) and ci90[0] > 0.0),
     }
