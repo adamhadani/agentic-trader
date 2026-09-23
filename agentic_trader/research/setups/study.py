@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import pickle
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -32,6 +33,9 @@ from sklearn.preprocessing import StandardScaler
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.setups.features import CROSS_SECTIONAL, MARKET, SETUP
 from agentic_trader.storage.artifacts import save_json_report
+
+
+logger = logging.getLogger(__name__)
 
 
 __all__ = [
@@ -366,7 +370,7 @@ def fit_scorer(name: str, train: pd.DataFrame, features: Sequence[str], protocol
         target = (train["hit"] == "target").astype(int).to_numpy()
         pipeline = Pipeline(
             [
-                ("impute", SimpleImputer(strategy="median")),
+                ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
                 ("scale", StandardScaler()),
                 ("model", LogisticRegression(C=protocol.logistic_C, max_iter=1000)),
             ]
@@ -383,7 +387,7 @@ def fit_scorer(name: str, train: pd.DataFrame, features: Sequence[str], protocol
         target = train["r_cost"].to_numpy(dtype=float)
         pipeline = Pipeline(
             [
-                ("impute", SimpleImputer(strategy="median")),
+                ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
                 ("scale", StandardScaler()),
                 ("model", Ridge(alpha=protocol.ridge_alpha)),
             ]
@@ -505,6 +509,17 @@ def _h1_h2(frame: pd.DataFrame, protocol: SetupStudyProtocol) -> tuple[dict, dic
     return h1, h2, holm(pvalues), nan_hypotheses
 
 
+def _finite_json(value):
+    """Non-finite floats become None so a result document can always be saved as strict JSON."""
+    if isinstance(value, dict):
+        return {key: _finite_json(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_finite_json(item) for item in value]
+    if isinstance(value, float | np.floating):
+        return float(value) if np.isfinite(value) else None
+    return value
+
+
 def _fold_scored_frame(
     name: str, train: pd.DataFrame, test: pd.DataFrame, features: list[str], protocol: SetupStudyProtocol
 ) -> tuple[pd.DataFrame | None, str]:
@@ -523,7 +538,8 @@ def _fold_scored_frame(
         scored = test.copy()
         scored["_score"] = fitted.predict(test)
         return scored, "_score"
-    except Exception:
+    except Exception as exc:
+        logger.warning("Setup-study fold scorer %s failed: %s: %s", name, type(exc).__name__, exc)
         return None, ""
 
 
@@ -667,15 +683,15 @@ def execute_setup_study(
             ranker_doc.update(_linear_payload(fitted_winner))
     except Exception as exc:
         failure = {"status": "failed", "phase": "development", "error": f"{type(exc).__name__}: {exc}"}
-        save_json_report(failure, directory / "development.json")
+        save_json_report(_finite_json(failure), directory / "development.json")
         return failure
 
-    save_json_report(development_doc, directory / "development.json")
+    save_json_report(_finite_json(development_doc), directory / "development.json")
     if pickle_bytes is not None:
         pickle_path = directory / "ranker.pkl"
         pickle_path.write_bytes(pickle_bytes)
         pickle_path.chmod(0o600)
-    save_json_report(ranker_doc, directory / "ranker.json")
+    save_json_report(_finite_json(ranker_doc), directory / "ranker.json")
     ranker_sha256 = hashlib.sha256((directory / "ranker.json").read_bytes()).hexdigest()
     save_json_report({"winner": winner, "ranker_sha256": ranker_sha256}, directory / "selection.json")
 
@@ -756,8 +772,8 @@ def execute_setup_study(
         }
     except Exception as exc:
         failure = {"status": "failed", "phase": "holdout", "error": f"{type(exc).__name__}: {exc}"}
-        save_json_report(failure, directory / "holdout.json")
+        save_json_report(_finite_json(failure), directory / "holdout.json")
         return failure
 
-    save_json_report(holdout_doc, directory / "holdout.json")
+    save_json_report(_finite_json(holdout_doc), directory / "holdout.json")
     return holdout_doc

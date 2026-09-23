@@ -608,3 +608,21 @@ def test_committed_protocol_matches_config_and_sector_etf():
     assert protocol.features_version == "setup_features_v1"
     assert protocol.embargo_sessions == 20
     assert protocol.hgb_params["early_stopping"] is False
+
+
+def test_nan_holdout_statistics_are_saved_not_lost(tmp_path):
+    # A constant setup_quality in the holdout makes its H1 Spearman NaN; the holdout was
+    # already consumed, so the result must still be written (NaN recorded as null).
+    protocol = _base_protocol(
+        development=(date(2021, 1, 4), date(2021, 6, 1)),
+        holdout=(date(2021, 8, 2), date(2021, 12, 1)),
+        data_cutoff=date(2022, 1, 15),
+    )
+    dev_frame = _synthetic_frame(protocol.development, n_sessions=60, per_session=4, seed=3)
+    hold_frame = _synthetic_frame(protocol.holdout, n_sessions=30, per_session=4, seed=4)
+    hold_frame["setup_quality"] = 0.5
+    directory = tmp_path / "study"
+    execute_setup_study(protocol, directory, development=lambda: dev_frame, holdout=lambda: hold_frame, environment={})
+    saved = json.loads((directory / "holdout.json").read_text())
+    assert saved.get("status") != "failed"
+    assert saved["h1"]["rho"] is None
