@@ -1,0 +1,100 @@
+{
+  "acceptance": {
+    "ci": 0.9,
+    "min_sessions": 60,
+    "top_k": 2
+  },
+  "adjustment": "all",
+  "bootstrap": {
+    "block_mean": 10,
+    "draws": 2000,
+    "seed": 20260923
+  },
+  "cost_bps_per_side": [
+    0.0,
+    5.0
+  ],
+  "cv_folds": 5,
+  "data_cutoff": "2026-09-22",
+  "development": [
+    "2021-06-01",
+    "2026-01-29"
+  ],
+  "embargo_sessions": 20,
+  "features_version": "setup_features_v1",
+  "feed": "alpaca:sip",
+  "hgb_params": {
+    "learning_rate": 0.05,
+    "max_depth": 3,
+    "max_iter": 200,
+    "min_samples_leaf": 50,
+    "random_state": 20260923
+  },
+  "holdout": [
+    "2026-03-02",
+    "2026-08-14"
+  ],
+  "logistic_C": 1.0,
+  "max_hold_sessions": 20,
+  "ridge_alpha": 10.0,
+  "scan_times_et": [
+    "10:35",
+    "14:35"
+  ],
+  "sector_etf": {
+    "basic_materials": "XLB",
+    "communication_services": "XLC",
+    "consumer_cyclical": "XLY",
+    "consumer_defensive": "XLP",
+    "energy": "XLE",
+    "etf_broad_equity": "SPY",
+    "etf_international": "SPY",
+    "etf_metals": "SPY",
+    "etf_rates_credit": "SPY",
+    "financial_services": "XLF",
+    "healthcare": "XLV",
+    "industrials": "XLI",
+    "real_estate": "XLRE",
+    "technology": "XLK",
+    "utilities": "XLU"
+  },
+  "strategy_config": {
+    "active_strategies": [
+      "trend_pullback",
+      "squeeze_breakout"
+    ],
+    "active_strategy": "trend_pullback",
+    "conflict_resolution": "netting",
+    "mode": "parallel",
+    "squeeze_breakout": {
+      "bb_length": 20,
+      "bb_std": 2.0,
+      "enabled": true,
+      "kc_atr_mult": 1.5,
+      "kc_length": 20,
+      "min_squeeze_bars": 5,
+      "volume_factor": 1.3,
+      "volume_sma_period": 20
+    },
+    "strategy_allocations": {
+      "squeeze_breakout": 0.4,
+      "trend_pullback": 0.6
+    },
+    "trend_pullback": {
+      "atr_multiplier": 1.5,
+      "atr_period": 14,
+      "daily_ema_fast": 50,
+      "daily_ema_slow": 200,
+      "enabled": true,
+      "rsi_overbought": 60.0,
+      "rsi_overbought_surge": 55.0,
+      "rsi_oversold": 40.0,
+      "rsi_oversold_dip": 45.0,
+      "rsi_period": 14,
+      "trigger_atr_distance_mult": 0.5,
+      "trigger_ema_span": 20
+    }
+  },
+  "universe_source": "config/config.yaml universe (current membership; survivorship caveat)",
+  "version": "setup_outcomes_v1"
+}

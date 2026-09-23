@@ -141,7 +141,7 @@ The protocol is frozen JSON and its hash is its identity. It contains:
 - scan times;
 - `max_hold_sessions = 20`;
 - costs of 0 and 5 bp per side;
-- **development** window 2021-06-01 to 2026-02-27;
+- **development** window 2021-06-01 to 2026-01-29;
 - **holdout** window 2026-03-02 to 2026-08-14 (labels mature by the 2026-09-18 data
   cutoff). The protocol records the exact embargo: holdout decisions are at least
   `max_hold_sessions` sessions after the last development decision.

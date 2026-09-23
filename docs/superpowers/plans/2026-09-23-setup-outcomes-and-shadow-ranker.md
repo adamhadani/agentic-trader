@@ -250,7 +250,7 @@ class SetupStudyProtocol(BaseModel, frozen=True):
     scan_times_et: tuple[str, ...]             # ("10:35", "14:35")
     max_hold_sessions: int                     # 20
     cost_bps_per_side: tuple[float, ...]       # (0.0, 5.0); primary = 5.0 → "R_cost"
-    development: tuple[date, date]             # (2021-06-01, 2026-02-27) decision dates inclusive
+    development: tuple[date, date]             # (2021-06-01, 2026-01-29) decision dates inclusive; ≥20 sessions before holdout start
     holdout: tuple[date, date]                 # (2026-03-02, 2026-08-14)
     data_cutoff: date                          # 2026-09-22 — last date of bars fetched; validator: >= holdout[1] + ~max_hold_sessions sessions (use 30 calendar days)
     embargo_sessions: int                      # 20; validator: holdout[0] is >= embargo sessions after development[1] (business-day approximation is OK in the validator; the runner enforces with the real calendar)
