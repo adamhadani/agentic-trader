@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import json
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -39,7 +40,7 @@ from agentic_trader.research.setups.replay import SetupRecord, decision_instants
 from agentic_trader.research.setups.study import SetupStudyProtocol
 
 
-__all__ = ["BarSource", "CalendarSource", "build_setup_frames"]
+__all__ = ["BarSource", "CalendarSource", "build_setup_frames", "build_window_frames"]
 
 # Padding before development[0] so a prior trading session is always resolvable
 # for the very first decision date's cross-section ``as_of``.
@@ -256,7 +257,8 @@ def _build_frame(
     daily_by_symbol: dict[str, pd.DataFrame],
     hourly_by_symbol: dict[str, pd.DataFrame],
     sectors: dict[str, str],
-    protocol: SetupStudyProtocol,
+    max_hold_sessions: int,
+    cost_bps_per_side: Sequence[float],
     trading_days: list[date],
     first_instants: Mapping[date, datetime],
 ) -> pd.DataFrame:
@@ -266,13 +268,13 @@ def _build_frame(
     window at that date's earliest scan instant (``first_instants``) -- and reused for
     every setup on that date, as both live scans of a session see the same completed
     sessions. label_bracket is only ever called from here, i.e. only when the caller
-    (``development()``/``holdout()``) actually runs this.
+    (one of ``build_window_frames``'s returned callables) actually runs this.
     """
     if not records:
         return _empty_frame()
 
-    zero_cost = protocol.cost_bps_per_side[0]
-    primary_cost = protocol.cost_bps_per_side[-1]
+    zero_cost = cost_bps_per_side[0]
+    primary_cost = cost_bps_per_side[-1]
 
     by_date: dict[date, list[SetupRecord]] = {}
     for record in records:
@@ -300,7 +302,7 @@ def _build_frame(
                 levels,
                 record.decision_at,
                 hourly,
-                max_hold_sessions=protocol.max_hold_sessions,
+                max_hold_sessions=max_hold_sessions,
                 cost_bps_per_side=zero_cost,
             )
             outcome_primary = (
@@ -310,7 +312,7 @@ def _build_frame(
                     levels,
                     record.decision_at,
                     hourly,
-                    max_hold_sessions=protocol.max_hold_sessions,
+                    max_hold_sessions=max_hold_sessions,
                     cost_bps_per_side=primary_cost,
                 )
             )
@@ -359,21 +361,62 @@ def _build_frame(
     return frame
 
 
-async def build_setup_frames(
-    protocol: SetupStudyProtocol,
+_CACHE_RANGE_FILE = "cache_range.json"
+
+
+def _claim_cache_range(cache_dir: Path, start: datetime, end: datetime) -> None:
+    """Cached frames are keyed by symbol and timeframe only, so the directory records the
+    bar range it was filled for; a request outside that range must use another cache."""
+    cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record = cache_dir / _CACHE_RANGE_FILE
+    if record.exists():
+        recorded = json.loads(record.read_text())
+        if not (datetime.fromisoformat(recorded["start"]) <= start and end <= datetime.fromisoformat(recorded["end"])):
+            raise ValueError(
+                f"Bar cache {cache_dir} holds {recorded['start']}..{recorded['end']}; the request needs "
+                f"{start.isoformat()}..{end.isoformat()} — use a fresh cache directory"
+            )
+        return
+    if any(cache_dir.iterdir()):
+        raise ValueError(f"Bar cache {cache_dir} has no {_CACHE_RANGE_FILE}; its bar range is unknown")
+    record.write_text(json.dumps({"start": start.isoformat(), "end": end.isoformat()}))
+
+
+async def build_window_frames(
+    windows: Mapping[str, tuple[date, date]],
     universe: Sequence[tuple[str, str]],
     bars: BarSource,
     calendar: CalendarSource,
     cache_dir: Path,
     config: AppConfig,
     *,
+    data_cutoff: date,
+    scan_times_et: Sequence[str],
+    adjustment: str,
+    max_hold_sessions: int,
+    cost_bps_per_side: Sequence[float],
     max_workers: int,
-) -> tuple[Callable[[], pd.DataFrame], Callable[[], pd.DataFrame], dict]:
-    cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    pace = _build_pacer(config)
+) -> tuple[dict[str, Callable[[], pd.DataFrame]], dict]:
+    """Fetch/cache bars once and lazily label an arbitrary set of named decision windows.
 
-    bars_start = datetime.combine(protocol.development[0] - timedelta(days=_BARS_LOOKBACK_DAYS), time.min, tzinfo=UTC)
-    bars_end = datetime.combine(protocol.data_cutoff, time.max, tzinfo=UTC)
+    Generalizes the setup-outcome study's development/holdout machinery (bar fetch,
+    replay, lazy per-window labelling) to any named ``windows`` mapping, so a second,
+    purely descriptive study (``baserates.py``) can reuse it over its own decision
+    window without duplicating the fetch/replay/label pipeline. Exactly like
+    ``build_setup_frames``, labelling only ever happens inside the callables this
+    returns -- never eagerly here.
+    """
+    if not windows:
+        raise ValueError("windows must be non-empty")
+
+    earliest_start = min(start for start, _ in windows.values())
+    latest_end = max(end for _, end in windows.values())
+
+    bars_start = datetime.combine(earliest_start - timedelta(days=_BARS_LOOKBACK_DAYS), time.min, tzinfo=UTC)
+    bars_end = datetime.combine(data_cutoff, time.max, tzinfo=UTC)
+
+    _claim_cache_range(cache_dir, bars_start, bars_end)
+    pace = _build_pacer(config)
 
     sectors: dict[str, str] = {}
     coverage: dict[str, dict] = {}
@@ -384,9 +427,7 @@ async def build_setup_frames(
     total = len(universe)
     for i, (symbol, sector) in enumerate(universe, start=1):
         sectors[symbol] = sector
-        daily, hourly, reason = await _fetch_symbol(
-            symbol, bars, cache_dir, bars_start, bars_end, protocol.adjustment, pace
-        )
+        daily, hourly, reason = await _fetch_symbol(symbol, bars, cache_dir, bars_start, bars_end, adjustment, pace)
         included = daily is not None and hourly is not None
         coverage[symbol] = {
             "daily_rows": None if daily is None else len(daily),
@@ -412,12 +453,12 @@ async def build_setup_frames(
         # replay or labelling so the one-shot holdout is never exposed to a broken study.
         raise RuntimeError(f"Reference symbols lack daily bars: {', '.join(missing_references)}")
 
-    calendar_start = protocol.development[0] - timedelta(days=_CALENDAR_PAD_DAYS)
-    calendar_end = protocol.holdout[1]
+    calendar_start = earliest_start - timedelta(days=_CALENDAR_PAD_DAYS)
+    calendar_end = latest_end
     days = await calendar.get_calendar_range(calendar_start, calendar_end)
     trading_days = sorted(day.date for day in days if day.is_trading_day)
-    instant_days = [day for day in days if day.date >= protocol.development[0]]
-    instants = decision_instants(instant_days, protocol.scan_times_et)
+    instant_days = [day for day in days if day.date >= earliest_start]
+    instants = decision_instants(instant_days, scan_times_et)
     first_instants = _first_instants(instants)
 
     dedup_hours = config.risk.deduplication_hours
@@ -426,21 +467,52 @@ async def build_setup_frames(
     )
     _progress("replay done")
 
-    development_records = _window_records(records, protocol.development[0], protocol.development[1])
-    holdout_records = _window_records(records, protocol.holdout[0], protocol.holdout[1])
+    window_records = {name: _window_records(records, start, end) for name, (start, end) in windows.items()}
 
-    def development() -> pd.DataFrame:
-        frame = _build_frame(
-            development_records, daily_by_symbol, hourly_by_symbol, sectors, protocol, trading_days, first_instants
-        )
-        _progress("development labelled")
+    def _make_frame(name: str) -> Callable[[], pd.DataFrame]:
+        def frame() -> pd.DataFrame:
+            result = _build_frame(
+                window_records[name],
+                daily_by_symbol,
+                hourly_by_symbol,
+                sectors,
+                max_hold_sessions,
+                cost_bps_per_side,
+                trading_days,
+                first_instants,
+            )
+            _progress(f"{name} labelled")
+            return result
+
         return frame
 
-    def holdout() -> pd.DataFrame:
-        frame = _build_frame(
-            holdout_records, daily_by_symbol, hourly_by_symbol, sectors, protocol, trading_days, first_instants
-        )
-        _progress("holdout labelled")
-        return frame
+    frames = {name: _make_frame(name) for name in windows}
+    return frames, coverage
 
-    return development, holdout, coverage
+
+async def build_setup_frames(
+    protocol: SetupStudyProtocol,
+    universe: Sequence[tuple[str, str]],
+    bars: BarSource,
+    calendar: CalendarSource,
+    cache_dir: Path,
+    config: AppConfig,
+    *,
+    max_workers: int,
+) -> tuple[Callable[[], pd.DataFrame], Callable[[], pd.DataFrame], dict]:
+    """The setup-outcome study's development/holdout split, via ``build_window_frames``."""
+    frames, coverage = await build_window_frames(
+        {"development": protocol.development, "holdout": protocol.holdout},
+        universe,
+        bars,
+        calendar,
+        cache_dir,
+        config,
+        data_cutoff=protocol.data_cutoff,
+        scan_times_et=protocol.scan_times_et,
+        adjustment=protocol.adjustment,
+        max_hold_sessions=protocol.max_hold_sessions,
+        cost_bps_per_side=protocol.cost_bps_per_side,
+        max_workers=max_workers,
+    )
+    return frames["development"], frames["holdout"], coverage

@@ -180,7 +180,7 @@ class TrendPullbackStrategy(BaseStrategy):
                     )
                 ]
 
-        elif is_bearish_trend and within_tolerance:
+        elif is_bearish_trend and within_tolerance and cfg.allow_short:
             # Short Trigger: RSI crossed above rsi_overbought_surge and fell back below rsi_overbought
             max_recent_rsi = max(rsi_prev, rsi_prev2)
             if max_recent_rsi > cfg.rsi_overbought_surge and rsi_current <= cfg.rsi_overbought:
@@ -307,7 +307,7 @@ class SqueezeBreakoutStrategy(BaseStrategy):
             )
 
         # Bearish Breakdown: Closed below BB Lower while previous close was above/at BB Lower
-        if close < bb_lower and prev_close >= prev_bb_lower:
+        if cfg.allow_short and close < bb_lower and prev_close >= prev_bb_lower:
             return ScreenerCandidate(
                 contract=data.contract,
                 symbol=data.contract,

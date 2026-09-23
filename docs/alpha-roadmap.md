@@ -294,6 +294,14 @@ one or two reasonable cards per session:
        selected by today's movers.
      - Decide whether admission's `max_correlated_positions` should also group open
        dynamic positions; today only the scan's card cap does.
+5. **Short-suppression test (September 23) — delivered.** A predeclared test on a
+   fresh 2017–2021 window, which the setup study never used, found native short
+   setups at −0.33R per setup after costs (90% CI [−0.43, −0.21]), with longs ahead
+   by +0.69R. Per the frozen rule, `strategies.{trend_pullback,squeeze_breakout}.allow_short`
+   is now `false`, so native cards are long-only
+   ([result](setup-baserates-short-2026-09-23.md)).
+   - Follow-up: add a data-quality exclusion for implausible labels. One GPOR row from
+     the bankruptcy era had R = +1,546.
 4. **Card freshness (September 23) — delivered.** The first live card (signal #16,
    XOM LONG, issued 10:38 NY) was read more than an hour later; a tap judged only by
    entry admission would submit a stale bracket or dead-end refuse the operator with
