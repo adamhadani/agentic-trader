@@ -93,6 +93,9 @@ def _build_pacer(config: AppConfig) -> Callable[[], Awaitable[None]]:
     return pace
 
 
+_FETCH_CHUNK = timedelta(days=365)
+
+
 async def _fetch_cached(
     symbol: str,
     timeframe: str,
@@ -109,8 +112,19 @@ async def _fetch_cached(
     cached = sorted(cache_path.glob("*.npz")) if cache_path.exists() else []
     if cached:
         return await asyncio.to_thread(load_dataset, cached[0])
-    await pace()
-    frame = await asyncio.to_thread(bars.fetch_bars, symbol, timeframe, start, end, adjustment=adjustment)
+    # The raw-evidence store caps one acquisition at 100 pages, which years of hourly
+    # bars for a liquid name exceed, so long ranges are fetched as contiguous chunks.
+    parts = []
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + _FETCH_CHUNK, end)
+        await pace()
+        parts.append(
+            await asyncio.to_thread(bars.fetch_bars, symbol, timeframe, chunk_start, chunk_end, adjustment=adjustment)
+        )
+        chunk_start = chunk_end
+    frame = pd.concat([part for part in parts if not part.empty]) if any(not p.empty for p in parts) else parts[0]
+    frame = frame[~frame.index.duplicated(keep="first")].sort_index()
     plain = frame.copy()
     plain.attrs = {}
     await asyncio.to_thread(save_dataset, plain, cache_path, frame_digest(plain))

@@ -1,6 +1,7 @@
 import json
 import math
 from datetime import UTC, date, datetime, time, timedelta
+from itertools import pairwise
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,7 @@ from agentic_trader.research.setups.features import CROSS_SECTIONAL, MARKET, SEC
 from agentic_trader.research.setups.labels import BracketHit, BracketOutcome
 from agentic_trader.research.setups.ranker import live_cross_section, setup_features
 from agentic_trader.research.setups.replay import SetupRecord
-from agentic_trader.research.setups.runner import build_setup_frames
+from agentic_trader.research.setups.runner import _fetch_cached, build_setup_frames
 from agentic_trader.research.setups.study import SetupStudyProtocol
 
 
@@ -225,7 +226,7 @@ async def test_cache_reused_without_refetch(tmp_path, monkeypatch):
 
     first_source = FakeBarSource()
     await build_setup_frames(protocol, UNIVERSE, first_source, CALENDAR, cache_dir, config, max_workers=2)
-    assert len(first_source.calls) == 2 * len(UNIVERSE)  # 1d + 1h per symbol, nothing cached yet
+    assert {call for call in first_source.calls} == {(s, tf) for s, _ in UNIVERSE for tf in ("1d", "1h")}
 
     second_source = FakeBarSource()
     await build_setup_frames(protocol, UNIVERSE, second_source, CALENDAR, cache_dir, config, max_workers=2)
@@ -523,3 +524,30 @@ async def test_build_setup_frames_windows_each_date_at_its_first_scan(tmp_path, 
         assert decisions.nunique() == 2
         assert t == min(decisions)
         assert t.astimezone(ET_TZ).time() == time(10, 35)
+
+
+class _RangeRecordingSource(FakeBarSource):
+    def __init__(self):
+        super().__init__()
+        self.ranges: list[tuple[str, datetime, datetime]] = []
+
+    def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+        self.ranges.append((timeframe, start, end))
+        return super().fetch_bars(symbol, timeframe, start, end, adjustment=adjustment)
+
+
+async def test_long_histories_are_fetched_in_bounded_contiguous_chunks(tmp_path):
+    # The raw-evidence store caps one acquisition at 100 pages, which six years of
+    # hourly bars for a liquid name exceeds; each request must stay within a year.
+    source = _RangeRecordingSource()
+
+    async def no_pace():
+        return None
+
+    start, end = datetime(2020, 4, 27, tzinfo=UTC), datetime(2026, 9, 22, tzinfo=UTC)
+    frame = await _fetch_cached("AAA", "1h", source, tmp_path, start, end, "all", no_pace)
+    spans = [(s, e) for _, s, e in source.ranges]
+    assert spans[0][0] == start and spans[-1][1] == end
+    assert all(e - s <= timedelta(days=366) for s, e in spans)
+    assert all(prev[1] == nxt[0] for prev, nxt in pairwise(spans))
+    assert frame.index.is_unique and frame.index.is_monotonic_increasing
