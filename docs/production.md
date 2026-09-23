@@ -118,6 +118,14 @@ exactly as it was — safe to tap again. All tap-time reads share one 15-second 
 without a fresh scan; a multi-tier card only gets back the tier that was actually
 tapped, since the others are not reconstructable from the reply alone.
 
+**Duplicate rule and failed cards.** Scans skip a setup that was already carded for
+the same contract, strategy and timeframe within `risk.deduplication_hours` (capped at
+4h for 1h setups and 2h for 15m ones). A `FAILED` card does not count: the system, not
+the operator, failed to place it, for example through a preflight refusal. The next
+scan may therefore card the setup again if it is still valid. Pending, dismissed,
+expired and executed cards still suppress repeats, and a failed card still spends
+that session's card budget.
+
 **Re-evaluate** (`reval_<signal_id>`, `copilot.reevaluate_signal`) runs a
 single-symbol scan (`run_scan(symbols=[contract], budget=ScanBudget.NONE)`) and never
 reuses the old signal's levels. The duplicate-signal rule is exempted only for the
