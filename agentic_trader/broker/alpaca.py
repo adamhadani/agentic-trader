@@ -72,6 +72,10 @@ ALPACA_BRACKET_ORDER_COUNT = 3
 logger = logging.getLogger(__name__)
 
 
+# Serialization noise between Alpaca's list and by-ID order reads (observed: 1 microsecond).
+ENTRY_EVIDENCE_TIMESTAMP_TOLERANCE = timedelta(milliseconds=1)
+
+
 class _CloseRefused(ValueError):
     """A validated close-safety explanation that is safe to show to the operator."""
 
@@ -363,6 +367,26 @@ class AlpacaBroker(BaseBroker):
         )
 
     @staticmethod
+    def _same_entry_order(first: OrderObservation, second: OrderObservation) -> bool:
+        """Whether two reads of one order agree on everything but serialization noise.
+
+        The open-orders list and a nested by-ID root can serialize the same leg's
+        timestamps a microsecond apart; any material field, or a timestamp gap of more
+        than a millisecond, is still conflicting evidence.
+        """
+        timestamps = ("updated_at", "submitted_at", "filled_at")
+        exclude = {"parent_order_id", *timestamps}
+        if first.model_dump(exclude=exclude) != second.model_dump(exclude=exclude):
+            return False
+        for name in timestamps:
+            a, b = getattr(first, name), getattr(second, name)
+            if (a is None) != (b is None):
+                return False
+            if a is not None and abs(a - b) > ENTRY_EVIDENCE_TIMESTAMP_TOLERANCE:
+                return False
+        return True
+
+    @staticmethod
     def _entry_decimal(value: Any) -> Decimal:
         try:
             number = Decimal(str(value))
@@ -473,9 +497,9 @@ class AlpacaBroker(BaseBroker):
                         raise ValueError("Invalid entry order price")
                 previous = observations.get(observation.order_id)
                 if previous:
-                    if previous.model_dump(exclude={"parent_order_id"}) != observation.model_dump(
-                        exclude={"parent_order_id"}
-                    ) or (previous.parent_order_id and parent and previous.parent_order_id != parent):
+                    if not self._same_entry_order(previous, observation) or (
+                        previous.parent_order_id and parent and previous.parent_order_id != parent
+                    ):
                         raise ValueError("Conflicting duplicate entry order evidence")
                     if previous.parent_order_id:
                         observation = previous
