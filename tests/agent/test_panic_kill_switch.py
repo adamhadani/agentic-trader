@@ -35,6 +35,8 @@ def copilot_fixture(test_db):
     config.portfolio.cash = 100_000.0
     config.portfolio.max_notional_exposure = 200_000.0
     config.execution_mode = "paper"
+    # The halt/resume flow taps a legacy card; tap-time freshness is covered in test_card_freshness_tap.py.
+    config.execution.card_freshness.enabled = False
     metrics = MetricsCollector()
     copilot = TradingCopilot(config=config, db=test_db)
     copilot.metrics = metrics
@@ -230,7 +232,8 @@ async def test_emergency_panic_halt_and_resume_flow(copilot_fixture, test_db):
         risk_dollars=200.0,
         quantity=1.0,
     )
-    exec_success, exec_msg = await copilot.execute_signal_by_id(sig3_id)
+    blocked = await copilot.execute_signal_by_id(sig3_id)
+    exec_success, exec_msg = blocked.ok, blocked.text
     assert exec_success is False
     assert "Execution Blocked" in exec_msg
 
@@ -245,7 +248,8 @@ async def test_emergency_panic_halt_and_resume_flow(copilot_fixture, test_db):
     assert copilot.metrics._gauges[("copilot_trading_halted", ())] == 0.0
 
     # Execution is now unblocked (will proceed to broker check)
-    exec_success2, exec_msg2 = await copilot.execute_signal_by_id(sig3_id)
+    resumed = await copilot.execute_signal_by_id(sig3_id)
+    exec_success2, exec_msg2 = resumed.ok, resumed.text
     assert exec_success2 is True  # Paper broker executes order successfully
     assert "Execution Blocked" not in exec_msg2
 

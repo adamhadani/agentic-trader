@@ -44,6 +44,7 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SignalStatus,
 )
+from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.notifier.transport import (
     ObservedPollingRequest,
     RetryingTelegramRequest,
@@ -351,7 +352,7 @@ class TelegramNotifier:
         positions_provider: Callable[[], Awaitable[str]] | None = None,
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
         flatten_handler: Callable[[bool], Awaitable[str]] | None = None,
-        execute_handler: Callable[..., Awaitable[tuple[bool, str]]] | None = None,
+        execute_handler: Callable[..., Awaitable[ExecutionReply]] | None = None,
         perf_provider: Callable[[], Awaitable[str]] | None = None,
         macro_provider: Callable[[], Awaitable[str]] | None = None,
         explain_macro_provider: Callable[[], Awaitable[str]] | None = None,
@@ -987,9 +988,9 @@ class TelegramNotifier:
                 qty_msg = f" for {quantity:g} units" if quantity is not None else ""
                 await query.answer(f"Submitting order{qty_msg} to broker...")
                 await _safe_clear_markup()
-                _success, reply_text = await self.execute_handler(signal_id, quantity=quantity)
+                reply = await self.execute_handler(signal_id, quantity=quantity)
                 if msg and hasattr(msg, "reply_text"):
-                    await msg.reply_text(reply_text, parse_mode="HTML")
+                    await msg.reply_text(reply.text, parse_mode="HTML")
             else:
                 await query.answer("Execution handler unavailable; no order submitted.", show_alert=True)
 
@@ -1039,7 +1040,12 @@ class TelegramNotifier:
         signal_id: int,
         regime_summary: str | None = None,
         probe_risk_cap: float | None = None,
+        valid_until: str | None = None,
+        reprices: int | None = None,
+        first_issued_at: str | None = None,
     ) -> int | None:
+        # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
+        # by the scan and by tap-time re-pricing; accepted here so delivery never fails.
         # Always output to terminal/logs
         print(
             format_terminal_card(

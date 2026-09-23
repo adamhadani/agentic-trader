@@ -7,6 +7,7 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, time as dt_time
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -15,8 +16,13 @@ from uuid import uuid4
 from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
-from agentic_trader.agent.earnings import EarningsCalendarProtocol, NasdaqEarningsCalendar
-from agentic_trader.agent.evaluator import RiskEvaluator
+from agentic_trader.agent.earnings import (
+    EarningsCalendarProtocol,
+    EarningsLookup,
+    NasdaqEarningsCalendar,
+    earnings_blackout_reason,
+)
+from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
@@ -44,6 +50,13 @@ from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import EventKind, OrderObservation, WorkKind, WorkStatus
 from agentic_trader.execution.engine import SlicedExecutionEngine
 from agentic_trader.execution.entries import EntryExecutionService
+from agentic_trader.execution.freshness import (
+    CardAssessment,
+    CardOutcome,
+    ExecutionReply,
+    assess_card,
+    reprice_quantity,
+)
 from agentic_trader.execution.lifetimes import TradeLifetimeService
 from agentic_trader.market.session import ET_TZ, CompositeMarketSessionProvider
 from agentic_trader.notifier.outbox import NotificationDispatcher
@@ -352,13 +365,18 @@ class TradingCopilot:
         include_fifteen_min: bool | None = None,
         budget: ScanBudget = ScanBudget.SESSION,
         shadow_evidence: bool = False,
-    ):
-        """``shadow_evidence`` is set only by the scheduled suggestion-scan job
+        dedup_exempt_contracts: frozenset[str] = frozenset(),
+    ) -> dict[str, Any] | None:
+        """Scan, rank and record cards; returns the scan summary, or None when the scan did not run.
 
+        ``shadow_evidence`` is set only by the scheduled suggestion-scan job
         (``make_suggestion_scan``): it is the sole trigger for computing and journaling
         this scan's shadow ranker block. The daemon's swing scan and an operator/Telegram
         scan never set it, even though they may otherwise share this scan's shape (no
         symbols, no timeframe).
+
+        ``dedup_exempt_contracts`` skips the recent-duplicate rule for exactly those
+        contracts: an operator's explicit re-evaluation of a card they were refused.
         """
         async with self._scan_lock:
             self.last_scan_summary = {}
@@ -385,7 +403,7 @@ class TradingCopilot:
                     self.halt_reason,
                     extra={"event": "trading_halted_scan_blocked", "reason": self.halt_reason},
                 )
-                return
+                return None
 
             scan_errors = 0
             logger.info("=== Starting Quantitative Scan ===")
@@ -415,7 +433,7 @@ class TradingCopilot:
                     session_reason,
                     extra={"event": "session_blocked", "asset_class": asset_class, "reason": session_reason},
                 )
-                return
+                return None
 
             in_lockout, lock_event = await self.calendar.is_in_lockout_window(
                 pre_minutes=self.config.risk.lockout_pre_event_minutes,
@@ -435,7 +453,7 @@ class TradingCopilot:
                         "event_time": str(lock_event.timestamp),
                     },
                 )
-                return
+                return None
 
             started = time.monotonic()
             if include_fifteen_min is None:
@@ -596,7 +614,7 @@ class TradingCopilot:
                         elif candidate_tf in ("1h", "hourly"):
                             dedup_hours = min(dedup_hours, 4)
 
-                        is_dup = await self.db.is_duplicate_recent(
+                        is_dup = candidate.contract not in dedup_exempt_contracts and await self.db.is_duplicate_recent(
                             candidate.contract,
                             candidate.strategy,
                             hours=dedup_hours,
@@ -707,6 +725,8 @@ class TradingCopilot:
                     for group in self.correlation_groups_of(row["contract"]):
                         groups_used[group] = groups_used.get(group, 0) + 1
             llm_budget = cfg.max_llm_evaluations_per_scan
+            # One session-clock read per contract that actually records a card.
+            session_closes: dict[str, str | None] = {}
             for rank, (candidate, _det_res, account_risk) in enumerate(ranked, 1):
                 # One failed send must not abandon the rest of the ranking or the scan's
                 # own bookkeeping, exactly as the per-contract guard protects COLLECT.
@@ -770,6 +790,11 @@ class TradingCopilot:
                         )
                         continue
 
+                    if candidate.contract not in session_closes:
+                        session_closes[candidate.contract] = await self._card_valid_until(candidate.contract)
+                    valid_until = session_closes[candidate.contract]
+                    validity = {"valid_until": valid_until} if valid_until else {}
+
                     # Record to database
                     sig_id = await self.db.record_signal(
                         timeframe=candidate.timeframe,
@@ -786,6 +811,7 @@ class TradingCopilot:
                             "candidates_considered": len(ranked),
                             "budget": str(budget),
                             "shadow_ranker": shadow_by_rank[rank - 1],
+                            **validity,
                         },
                         contract=eval_res.contract,
                         strategy=candidate.strategy,
@@ -807,6 +833,7 @@ class TradingCopilot:
                             "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars
                             if candidate.probe
                             else None,
+                            **validity,
                         },
                     )
 
@@ -922,6 +949,7 @@ class TradingCopilot:
             # Monitor any active positions for stop loss or take profit crossings
             if not dry_run:
                 await self.monitor_positions()
+            return summary
 
     async def _shadow_blocks(
         self,
@@ -1700,11 +1728,15 @@ class TradingCopilot:
         )
         return TelegramHtmlFormatter.format_manual_close_html(view)
 
-    async def execute_signal_by_id(self, signal_id: int, quantity: float | None = None) -> tuple[bool, str]:
+    async def execute_signal_by_id(self, signal_id: int, quantity: float | None = None) -> ExecutionReply:
         """
         Execute an approved trade setup by signal ID.
         Submits bracket orders to the active broker and registers the position in the database.
         Optionally overrides the order quantity with operator-selected tier size.
+
+        With card freshness enabled, the card is first re-assessed at tap time (current
+        price, session and gates). Only an ``EXECUTE`` outcome continues into the unchanged
+        entry authorization with the original bracket; the assessment never authorizes.
         """
         await self.check_halt_state()
         if self.is_halted:
@@ -1713,19 +1745,18 @@ class TradingCopilot:
                 self.halt_reason,
                 extra={"event": "trading_halted_execution_blocked", "signal_id": signal_id, "reason": self.halt_reason},
             )
-            return False, (
+            return ExecutionReply(
+                False,
                 f"🛑 <b>Execution Blocked:</b> Emergency trading halt active ({html.escape(str(self.halt_reason))}). "
-                "Use /resume to unhalt."
+                "Use /resume to unhalt.",
             )
 
         sig = await self.db.get_signal_by_id(signal_id)
         if not sig:
-            return False, f"❌ Signal #{signal_id} not found in database."
+            return ExecutionReply(False, f"❌ Signal #{signal_id} not found in database.")
 
         if sig["status"] != SignalStatus.PENDING:
-            return False, (
-                f"❌ Signal #{signal_id} is in status <b>{sig['status']}</b> (only PENDING signals can be executed)."
-            )
+            return self._not_pending_reply(signal_id, sig["status"])
 
         contract = sig["contract"]
         direction = sig["direction"].upper()
@@ -1743,7 +1774,7 @@ class TradingCopilot:
 
         multiplier = contract_info.multiplier if contract_info else (1.0 if asset_class == AssetClass.EQUITY else 5.0)
         if quantity is not None and (not math.isfinite(quantity) or quantity <= 0):
-            return False, "Execution Rejected: quantity must be finite and positive."
+            return ExecutionReply(False, "Execution Rejected: quantity must be finite and positive.")
         target_qty = float(quantity) if quantity is not None else float(sig.get("quantity") or 1.0)
         entry_price = float(sig["entry_price"])
         stop_loss = float(sig["stop_loss"])
@@ -1764,16 +1795,24 @@ class TradingCopilot:
             take_profit=take_profit,
             quantity=target_qty,
         )
+        if self.config.execution.card_freshness.enabled:
+            refusal = await self._assess_card_tap(
+                sig, req, ticker=ticker, asset_class=str(asset_class), multiplier=multiplier
+            )
+            if refusal is not None:
+                return refusal
         item, reason = await self.entry_service.authorize(req)
         if item is None:
-            return False, f"⚠️ <b>Execution Rejected:</b> {html.escape(reason)}"
+            return ExecutionReply(False, f"⚠️ <b>Execution Rejected:</b> {html.escape(reason)}")
         if item.status in (WorkStatus.QUEUED, WorkStatus.CHECKING):
-            return (
+            return ExecutionReply(
                 False,
                 f"⏳ Entry #{signal_id} queued as <code>{item.id}</code>. Fresh checks precede submission; final status will be notified.",
             )
         if item.status in (WorkStatus.SUBMITTING, WorkStatus.UNKNOWN):
-            return False, f"⚠️ Entry #{signal_id} awaiting exact broker lookup ({item.id}). No automatic resubmission."
+            return ExecutionReply(
+                False, f"⚠️ Entry #{signal_id} awaiting exact broker lookup ({item.id}). No automatic resubmission."
+            )
         result = item.result
         view = ExecutionResultView(
             signal_id=signal_id,
@@ -1790,7 +1829,365 @@ class TradingCopilot:
             success=item.status == WorkStatus.ACCEPTED,
             error_message=result.get("error_message"),
         )
-        return item.status == WorkStatus.ACCEPTED, TelegramHtmlFormatter.format_execution_html(view)
+        return ExecutionReply(item.status == WorkStatus.ACCEPTED, TelegramHtmlFormatter.format_execution_html(view))
+
+    @staticmethod
+    def _not_pending_reply(signal_id: int, status: str | None) -> ExecutionReply:
+        return ExecutionReply(
+            False, f"❌ Signal #{signal_id} is in status <b>{status}</b> (only PENDING signals can be executed)."
+        )
+
+    async def _current_status_reply(self, signal_id: int) -> ExecutionReply:
+        """A conditional transition lost a race: report the card's current status instead."""
+        current = await self.db.get_signal_by_id(signal_id)
+        return self._not_pending_reply(signal_id, current["status"] if current else None)
+
+    @staticmethod
+    def _next_open_text(info: Any) -> str:
+        """The next regular open in UTC and New York time, or an explicit unavailability."""
+        next_open = getattr(info, "next_open", None)
+        if isinstance(next_open, datetime) and next_open.utcoffset() is not None:
+            return (
+                f"Next regular open: {next_open.astimezone(UTC):%Y-%m-%d %H:%M} UTC "
+                f"({next_open.astimezone(ET_TZ):%H:%M} NY)."
+            )
+        return "Next regular open: unavailable."
+
+    async def _card_valid_until(self, contract: str) -> str | None:
+        """ISO end of the regular session a card is issued in, or None when unknown.
+
+        Recorded only while the contract is in its regular session: outside it a
+        provider's ``next_close`` belongs to a later session, and a card without
+        ``valid_until`` conservatively expires when the New York date changes.
+        """
+        try:
+            info = await self.session_provider.get_session_info(contract)
+        except Exception:
+            logger.warning(
+                "Session close unavailable for %s; card recorded without valid_until",
+                contract,
+                exc_info=True,
+                extra={"event": "card_valid_until_unavailable", "contract": contract},
+            )
+            return None
+        close = getattr(info, "next_close", None)
+        if (
+            getattr(info, "is_open", False) is True
+            and getattr(info, "is_rth", False) is True
+            and isinstance(close, datetime)
+            and close.utcoffset() is not None
+        ):
+            return close.astimezone(UTC).isoformat()
+        return None
+
+    async def _tap_price(self, ticker: str) -> float | None:
+        try:
+            raw = await asyncio.to_thread(self.data_fetcher.fetch_latest_price, ticker)
+        except Exception:
+            logger.warning(
+                "Tap-time price fetch failed for %s", ticker, exc_info=True, extra={"event": "card_tap_price_failed"}
+            )
+            return None
+        try:
+            price = float(raw) if raw is not None else None
+        except TypeError, ValueError:
+            return None
+        return price if price is not None and math.isfinite(price) and price > 0 else None
+
+    async def _earnings_blackout_reason(self, contract: str, now: datetime) -> str | None:
+        """The evaluator's equity earnings gate, failing open on a calendar failure exactly as it does."""
+        blackout_days = self.config.risk.earnings_blackout_days
+        if blackout_days <= 0 or self.earnings_calendar is None:
+            return None
+        try:
+            lookup = await self.earnings_calendar.next_earnings(contract, now=now, horizon_days=blackout_days)
+        except Exception as e:
+            logger.warning(
+                "Earnings calendar lookup failed (%s); failing open (no blackout).",
+                e,
+                extra={"contract": contract, "error": str(e)},
+            )
+            lookup = EarningsLookup(event=None, verified=False, horizon_end=now.date())
+        reason = earnings_blackout_reason(lookup, contract, now, blackout_days)
+        return f"Earnings Blackout: {reason}" if reason else None
+
+    async def _tap_gate_reason(
+        self, request: OrderRequest, sig: dict[str, Any], *, asset_class: str, now: datetime
+    ) -> str | None:
+        """First failing tap-time gate: macro/regime/reward:risk, then the equity earnings blackout."""
+        assert request.entry_price is not None and request.stop_loss is not None
+        # Degenerate levels are MISSED by the assessment itself; the macro check divides by the risk.
+        if abs(request.entry_price - request.stop_loss) > 0:
+            reason = await self._entry_macro_check(request, sig)
+            if reason:
+                return reason
+        if asset_class.upper() == AssetClass.EQUITY:
+            return await self._earnings_blackout_reason(sig["contract"], now)
+        return None
+
+    async def _journal_card_tap(self, signal_id: int, assessment: CardAssessment, tapped_at: datetime) -> None:
+        payload = {
+            "signal_id": signal_id,
+            "outcome": str(assessment.outcome),
+            "reason": assessment.reason,
+            "age_seconds": round(assessment.age_seconds, 3),
+            "price": assessment.price,
+            "r_consumed": assessment.r_consumed,
+            "tapped_at": tapped_at.isoformat(),
+        }
+        logger.info(
+            "Card #%d tap assessed: %s (%s)",
+            signal_id,
+            assessment.outcome,
+            assessment.reason,
+            extra={"event": EventKind.CARD_TAP_ASSESSED, **payload},
+        )
+        try:
+            await self.db.workflows.record_card_tap(signal_id, payload)
+        except Exception:
+            # Evidence only: a journal failure must never block or alter the tap.
+            logger.exception(
+                "Card tap assessment journal failed", extra={"event": "card_tap_journal_failed", "signal_id": signal_id}
+            )
+
+    async def _replacement_card(
+        self,
+        sig: dict[str, Any],
+        assessment: CardAssessment,
+        *,
+        price: float,
+        asset_class: str,
+        multiplier: float,
+        issued_at: datetime,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """``replace_signal`` arguments for a re-priced card, or None with the MISSED reason.
+
+        Same stop, target and thesis; entry at the current price; size re-derived from the
+        original risk dollars (capped by the original notional). The notification mirrors
+        the scan's card payload so the outbox delivers it exactly like a scan card.
+        """
+        signal_id = int(sig["id"])
+        entry, stop, target = float(sig["entry_price"]), float(sig["stop_loss"]), float(sig["take_profit"])
+        quantity = reprice_quantity(
+            original_quantity=float(sig.get("quantity") or 1.0),
+            entry=entry,
+            stop=stop,
+            new_entry=price,
+            multiplier=multiplier,
+            # Fractional shares/contracts are never offered, except for crypto.
+            whole_units=asset_class.upper() != AssetClass.CRYPTO,
+        )
+        if quantity <= 0:
+            return None, "Missed: the re-priced size rounds to zero."
+        stop_distance, target_distance = abs(price - stop), abs(target - price)
+        risk_dollars = round(stop_distance * multiplier * quantity, 2)
+        reward_dollars = round(target_distance * multiplier * quantity, 2)
+        notional_value = round(price * multiplier * quantity, 2)
+        try:
+            original = LLMTradeEvaluation.model_validate_json(sig.get("raw_response") or "")
+            rebuilt = LLMTradeEvaluation.model_validate(
+                {
+                    **original.model_dump(),
+                    "entry_price": price,
+                    "quantity": quantity,
+                    "stop_distance_points": stop_distance,
+                    "target_distance_points": target_distance,
+                    "risk_reward_ratio": target_distance / stop_distance,
+                    "risk_dollars": risk_dollars,
+                    "reward_dollars": reward_dollars,
+                    "notional_value": notional_value,
+                    "effective_leverage": round(notional_value / self.config.portfolio.cash, 2),
+                    # Tiers were sized at the old entry; the replacement offers its own size only.
+                    "sizing_tiers": None,
+                }
+            )
+        except ValueError:
+            logger.warning(
+                "Card #%d cannot be re-priced: its recorded evaluation is unavailable or invalid",
+                signal_id,
+                exc_info=True,
+                extra={"event": "card_reprice_unavailable", "signal_id": signal_id},
+            )
+            return None, "Missed: this card cannot be re-priced (its original evaluation is unavailable)."
+
+        old_provenance = sig.get("decision_provenance")
+        old_provenance = dict(old_provenance) if isinstance(old_provenance, dict) else {}
+        first_issued_at = old_provenance.get("first_issued_at") or issued_at.isoformat()
+        provenance = {
+            **old_provenance,  # carries valid_until, rank, probe tag and the rest unchanged
+            "reprices": signal_id,
+            "first_issued_at": first_issued_at,
+            "tap_latency_seconds": round(assessment.age_seconds, 3),
+            "r_consumed": assessment.r_consumed,
+        }
+        try:
+            regime_summary = (await self.regime_detector.get_regime()).summary_text
+        except Exception:
+            regime_summary = None
+        valid_until = old_provenance.get("valid_until")
+        notification = {
+            "eval_res": rebuilt.model_dump(mode="json"),
+            "strategy": sig["strategy"],
+            "regime_summary": regime_summary,
+            "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars
+            if old_provenance.get(PAPER_PROBE_TAG)
+            else None,
+            **({"valid_until": valid_until} if valid_until else {}),
+            "reprices": signal_id,
+            "first_issued_at": first_issued_at,
+        }
+        fields = {
+            "notification": notification,
+            "decision_provenance": provenance,
+            "contract": sig["contract"],
+            "strategy": sig["strategy"],
+            "timeframe": sig.get("timeframe"),
+            "direction": sig["direction"],
+            "entry_price": price,
+            "stop_loss": stop,
+            "take_profit": target,
+            "risk_dollars": risk_dollars,
+            "reward_dollars": reward_dollars,
+            "notional_value": notional_value,
+            "raw_response": rebuilt.model_dump_json(),
+            "status": SignalStatus.PENDING,
+            "asset_class": asset_class,
+            "quantity": quantity,
+            "alpha_version": sig.get("alpha_version"),
+            "alpha_policy": sig.get("alpha_policy"),
+        }
+        return fields, ""
+
+    async def _assess_card_tap(
+        self, sig: dict[str, Any], request: OrderRequest, *, ticker: str, asset_class: str, multiplier: float
+    ) -> ExecutionReply | None:
+        """Re-judge a PENDING card at tap time; None means ``EXECUTE`` (continue into authorization).
+
+        It never authorizes: ``EXECUTE`` falls through to the unchanged entry path with the
+        original bracket. ``REPRICE`` records a *new* card needing a fresh tap (the approved
+        bracket is immutable); ``MISSED``/``EXPIRED`` expire the card. A price, session or
+        gate read failure refuses the tap and leaves the card PENDING, so a retry is safe.
+        """
+        signal_id = int(sig["id"])
+        contract = sig["contract"]
+        tapped_at = datetime.now(UTC)
+        price = await self._tap_price(ticker)
+        if price is None:
+            return ExecutionReply(False, "⚠️ Current price unavailable; try again shortly.")
+        try:
+            info = await self.session_provider.get_session_info(contract)
+            gate_reason = await self._tap_gate_reason(request, sig, asset_class=asset_class, now=tapped_at)
+        except Exception:
+            logger.warning(
+                "Tap-time session or gate check failed for card #%d; card left PENDING",
+                signal_id,
+                exc_info=True,
+                extra={"event": "card_tap_checks_failed", "signal_id": signal_id},
+            )
+            return ExecutionReply(False, "⚠️ Tap-time market checks unavailable; try again shortly.")
+
+        provenance = sig.get("decision_provenance")
+        raw_valid_until = provenance.get("valid_until") if isinstance(provenance, dict) else None
+        try:
+            valid_until = datetime.fromisoformat(raw_valid_until) if raw_valid_until else None
+        except TypeError, ValueError:
+            valid_until = None
+        if valid_until is not None and valid_until.utcoffset() is None:
+            valid_until = None  # unreadable: fall back to the legacy New York date rule
+        issued_at = datetime.fromisoformat(sig["timestamp"]).replace(tzinfo=UTC)
+        assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
+        assessment = assess_card(
+            direction=request.direction,
+            entry=request.entry_price,
+            stop=request.stop_loss,
+            target=request.take_profit,
+            issued_at=issued_at,
+            valid_until=valid_until,
+            now=tapped_at,
+            price=price,
+            session_is_rth=bool(info.is_open and info.is_rth),
+            gate_reason=gate_reason,
+            min_reward_risk=self.config.risk.min_risk_reward_ratio,
+            policy=self.config.execution.card_freshness,
+        )
+        replacement: dict[str, Any] | None = None
+        if assessment.outcome == CardOutcome.REPRICE:
+            replacement, missed_reason = await self._replacement_card(
+                sig, assessment, price=price, asset_class=asset_class, multiplier=multiplier, issued_at=issued_at
+            )
+            if replacement is None:
+                assessment = dataclass_replace(assessment, outcome=CardOutcome.MISSED, reason=missed_reason)
+        await self._journal_card_tap(signal_id, assessment, tapped_at)
+
+        if assessment.outcome == CardOutcome.EXECUTE:
+            return None
+        if replacement is not None:
+            new_id = await self.db.replace_signal(signal_id, **replacement)
+            if new_id is None:
+                return await self._current_status_reply(signal_id)
+            minutes = round(assessment.age_seconds / 60)
+            return ExecutionReply(
+                False,
+                f"🔄 Card #{signal_id} was {minutes} min old ({assessment.r_consumed or 0.0:+.2f}R since). "
+                f"A re-priced card #{new_id} was sent; review it and tap again to trade.",
+            )
+        if not await self.db.expire_signal(signal_id):
+            return await self._current_status_reply(signal_id)
+        text = f"⌛ {html.escape(assessment.reason)}"
+        if assessment.outcome == CardOutcome.EXPIRED:
+            text += f"\n{self._next_open_text(info)}"
+        return ExecutionReply(False, text, offer_reevaluate=True)
+
+    async def reevaluate_signal(self, signal_id: int) -> ExecutionReply:
+        """Operator re-evaluation of a refused card: a fresh single-contract scan, never the old levels.
+
+        Uses the NONE budget (an explicit operator request) and exempts only this contract
+        from the recent-duplicate rule. Refused outside the contract's regular session.
+        """
+        sig = await self.db.get_signal_by_id(signal_id)
+        if not sig:
+            return ExecutionReply(False, f"❌ Signal #{signal_id} not found in database.")
+        contract = sig["contract"]
+        try:
+            info = await self.session_provider.get_session_info(contract)
+        except Exception:
+            logger.warning(
+                "Session unavailable for re-evaluation of card #%d",
+                signal_id,
+                exc_info=True,
+                extra={"event": "card_reevaluate_session_failed", "signal_id": signal_id},
+            )
+            return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.")
+        if not (info.is_open and info.is_rth):
+            return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}")
+        summary = await self.run_scan(
+            symbols=[contract], budget=ScanBudget.NONE, dedup_exempt_contracts=frozenset({contract})
+        )
+        if summary is None:
+            return ExecutionReply(
+                False,
+                f"No fresh card for {html.escape(contract)}: the scan did not run "
+                "(trading halt, closed session or macro lockout).",
+            )
+        if summary.get("sent", 0) > 0:
+            return ExecutionReply(True, f"📨 Fresh card sent for {html.escape(contract)}.")
+        text = f"No valid setup for {html.escape(contract)} right now"
+        runners_up = summary.get("runners_up") or []
+        detail = None
+        if runners_up:
+            detail = runners_up[0].get("reason")
+        else:
+            for key, label in (
+                ("fetch_failed", "market data unavailable"),
+                ("insufficient", "insufficient market data"),
+                ("coverage_excluded", "excluded by the bar-coverage gate"),
+                ("skipped_closed_session", "session closed"),
+                ("skipped_not_executable", "not executable by this broker"),
+            ):
+                if summary.get(key):
+                    detail = label
+                    break
+        return ExecutionReply(False, f"{text}: {html.escape(str(detail))}." if detail else f"{text}.")
 
     async def _entry_macro_check(self, request: OrderRequest, signal: dict[str, Any]) -> str | None:
         in_lockout, event = await self.calendar.is_in_lockout_window(

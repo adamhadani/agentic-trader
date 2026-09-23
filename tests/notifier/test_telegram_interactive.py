@@ -8,6 +8,7 @@ from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.agent.regime import RegimeSnapshot
 from agentic_trader.config import load_config
 from agentic_trader.constants import AssetClass, Direction, ExitReason, SignalStatus, VolatilityRegime
+from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.notifier.telegram_bot import (
     TelegramNotifier,
     format_alert_card,
@@ -231,7 +232,7 @@ async def test_telegram_commands_and_callbacks(temp_db):
     query_mock.message.reply_text.assert_called_with("<b>Scan: 0 setups</b>", parse_mode="HTML")
 
     # Button exec_42_2 (Execution with tiered quantity override)
-    mock_exec = AsyncMock(return_value=(True, "<b>Order Executed: 2x /MES</b>"))
+    mock_exec = AsyncMock(return_value=ExecutionReply(True, "<b>Order Executed: 2x /MES</b>"))
     notifier.execute_handler = mock_exec
     query_mock.message.reply_text.reset_mock()
     query_mock.data = "exec_42_2"

@@ -21,6 +21,15 @@ def _aware_et(value: datetime) -> datetime:
     return value.astimezone(ET_TZ)
 
 
+@dataclass(frozen=True)
+class ExecutionReply:
+    """The operator-facing result of a card tap (Telegram button or CLI ``execute``)."""
+
+    ok: bool
+    text: str  # HTML, as rendered by Telegram
+    offer_reevaluate: bool = False
+
+
 class CardOutcome(StrEnum):
     EXECUTE = "execute"
     REPRICE = "reprice"

@@ -56,6 +56,7 @@ class EventKind(StrEnum):
     ALPHA_REGISTRY = "alpha_registry"
     ALPHA_FORECAST = "alpha_forecast"
     SCAN_CANDIDATES_RANKED = "scan_candidates_ranked"
+    CARD_TAP_ASSESSED = "card_tap_assessed"
 
 
 class NotificationKind(StrEnum):

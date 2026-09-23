@@ -34,6 +34,9 @@ async def desk(alpaca_http, temp_db, app_config, request):
         send_trailing_stop_alert=AsyncMock(return_value=8),
         send_message=AsyncMock(return_value=9),
     )
+    # These are admission/broker contract tests of a legacy tap; tap-time card freshness
+    # has its own coverage in tests/agent/test_card_freshness_tap.py.
+    app_config.execution.card_freshness.enabled = False
     copilot = TradingCopilot(app_config, db=db, broker=broker, notifier=notifier)
     copilot.entry_service.macro_check = AsyncMock(return_value=None)
     sid = await db.record_signal(
@@ -64,7 +67,7 @@ async def test_entry_partial_full_close_and_performance_use_actual_fills(desk):
     position = venue.position
     venue.position = None
     venue.take_profit["status"] = "held"
-    success, _ = await copilot.execute_signal_by_id(sid)
+    success = (await copilot.execute_signal_by_id(sid)).ok
     assert success
     venue.position = position
     venue.take_profit["status"] = "new"
@@ -154,7 +157,8 @@ async def test_ambiguous_entry_never_replays_and_halts_new_risk(desk, failure):
     venue.override = fail
     venue.position = None
     venue.take_profit["status"] = "held"
-    success, message = await copilot.execute_signal_by_id(sid)
+    reply = await copilot.execute_signal_by_id(sid)
+    success, message = reply.ok, reply.text
     assert not success and "No automatic resubmission" in message
     assert len([1 for method, *_ in venue.calls if method == "POST"]) == 1
     assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.SUBMITTING
@@ -352,7 +356,7 @@ async def test_entry_admission_uses_real_sdk_evidence_before_any_mutation(desk, 
         venue.quote_time -= timedelta(minutes=5)
     elif changed == "price-moved":
         venue.quote_price = 110
-    success, _ = await copilot.execute_signal_by_id(sid)
+    success = (await copilot.execute_signal_by_id(sid)).ok
     assert not success
     assert not any(method in ("POST", "PATCH", "DELETE") for method, *_ in venue.calls)
     assert (await copilot.db.get_signal_by_id(sid))["status"] == SignalStatus.FAILED
@@ -371,7 +375,7 @@ async def test_lost_entry_ack_recovers_client_id_once_through_sdk(desk, broker_o
             return 504, {"code": 50410000, "message": "lost acknowledgement"}
 
     venue.override = accept_then_lose_ack
-    assert not (await copilot.execute_signal_by_id(sid))[0]
+    assert not (await copilot.execute_signal_by_id(sid)).ok
     assert await copilot.entry_service.recover() == 1
     assert await copilot.entry_service.recover() == 0
     assert (await copilot.db.get_signal_by_id(sid))["broker_order_id"] == venue.entry["id"]

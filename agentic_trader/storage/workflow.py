@@ -134,6 +134,18 @@ class WorkflowStore:
                 payload={"success": success, "detail": detail},
             )
 
+    async def record_card_tap(self, signal_id: int, payload: dict[str, Any]) -> None:
+        """Journal one tap-time card assessment; a new event per tap, never deduplicated."""
+        async with self.db.session_factory() as session, session.begin():
+            await self.lock(session)
+            await self.append(
+                session,
+                stream=f"card/{signal_id}",
+                kind=EventKind.CARD_TAP_ASSESSED,
+                payload=payload,
+                key=f"card_tap_assessed/{signal_id}/{uuid4().hex}",
+            )
+
     async def events(self, stream: str | None = None, *, limit: int | None = None) -> list[dict[str, Any]]:
         async with self.db.session_factory() as session:
             stmt = select(DomainEventRecord).where(DomainEventRecord.scope == self.scope)
