@@ -13,6 +13,12 @@ import litellm
 from pydantic import BaseModel, Field
 
 from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
+from agentic_trader.agent.earnings import (
+    EarningsCalendarProtocol,
+    EarningsLookup,
+    earnings_blackout_reason,
+    earnings_note,
+)
 from agentic_trader.agent.position_sizing import (
     calculate_dynamic_sizing,
 )
@@ -73,6 +79,7 @@ class LLMTradeEvaluation(BaseModel):
     sizing_tiers: list[dict[str, Any]] | None = None
     gating_reasons: list[str] | None = None
     session_type: str = "RTH"
+    earnings_note: str | None = None
 
 
 class RiskEvaluator:
@@ -83,12 +90,16 @@ class RiskEvaluator:
         regime_detector: RegimeDetector | None = None,
         data_fetcher: MarketDataFetcher | None = None,
         session_provider: MarketSessionProtocol | None = None,
+        earnings_calendar: EarningsCalendarProtocol | None = None,
     ):
         self.config = config
         self.calendar: BaseEconomicCalendar = calendar or ForexFactoryCalendar()
         self.regime_detector: RegimeDetector = regime_detector or RegimeDetector(config=config.regime)
         self.data_fetcher = data_fetcher
         self.session_provider = session_provider
+        # None by default: never construct a network client implicitly (tests
+        # block network I/O); the gate/note are simply skipped when unset.
+        self.earnings_calendar = earnings_calendar
         litellm.drop_params = True
 
         # Wire up LangSmith tracing if credentials exist in environment
@@ -459,6 +470,51 @@ class RiskEvaluator:
                 asset_class=asset_class,
             )
 
+        # 2b. Check Earnings Blackout (equities only; None calendar or a 0-day
+        # config skips the gate and leaves no note).
+        earnings_note_value: str | None = None
+        if (
+            asset_class == AssetClass.EQUITY
+            and self.config.risk.earnings_blackout_days > 0
+            and self.earnings_calendar is not None
+        ):
+            blackout_days = self.config.risk.earnings_blackout_days
+            try:
+                earnings_lookup = await self.earnings_calendar.next_earnings(
+                    candidate.contract, now=evaluated_at, horizon_days=blackout_days
+                )
+            except Exception as e:
+                logger.warning(
+                    "Earnings calendar lookup failed (%s); failing open (no blackout, unverified note).",
+                    e,
+                    extra={"contract": candidate.contract, "error": str(e)},
+                )
+                earnings_lookup = EarningsLookup(event=None, verified=False, horizon_end=evaluated_at.date())
+
+            blackout_reason = earnings_blackout_reason(earnings_lookup, candidate.contract, evaluated_at, blackout_days)
+            if blackout_reason:
+                return LLMTradeEvaluation(
+                    approved=False,
+                    rejection_reason=f"Earnings Blackout: {blackout_reason}",
+                    contract=candidate.contract,
+                    direction=candidate.direction,
+                    entry_price=entry,
+                    stop_loss=entry,
+                    take_profit=entry,
+                    stop_distance_points=0.0,
+                    target_distance_points=0.0,
+                    risk_reward_ratio=2.0,
+                    risk_dollars=0.0,
+                    reward_dollars=0.0,
+                    notional_value=notional_value,
+                    effective_leverage=effective_leverage,
+                    macro_clearance=True,
+                    thesis_summary=f"Rejected: earnings blackout for {candidate.contract}.",
+                    quantity=quantity,
+                    asset_class=asset_class,
+                )
+            earnings_note_value = earnings_note(earnings_lookup, evaluated_at, blackout_days)
+
         # 3. Check Volatility Regime & Adaptive Strategy Suppression
         if candidate.strategy == StrategyType.SQUEEZE_BREAKOUT and not regime.breakout_allowed:
             macro_detail = ""
@@ -488,6 +544,7 @@ class RiskEvaluator:
                 ),
                 quantity=quantity,
                 asset_class=asset_class,
+                earnings_note=earnings_note_value,
             )
 
         # 4. Check Market Session & Regular Trading Hours (RTH)
@@ -516,6 +573,7 @@ class RiskEvaluator:
                     quantity=quantity,
                     asset_class=asset_class,
                     session_type=current_session_type,
+                    earnings_note=earnings_note_value,
                 )
             if getattr(self.config.session, "enforce_rth", True) and not session_info.is_rth:
                 return LLMTradeEvaluation(
@@ -538,6 +596,7 @@ class RiskEvaluator:
                     quantity=quantity,
                     asset_class=asset_class,
                     session_type=current_session_type,
+                    earnings_note=earnings_note_value,
                 )
 
         macro_summary = await self.calendar.get_macro_summary_for_prompt(
@@ -573,6 +632,7 @@ class RiskEvaluator:
                 ),
                 quantity=quantity,
                 asset_class=asset_class,
+                earnings_note=earnings_note_value,
             )
 
         # 3. Call LLM for final reasoning & thesis synthesis
@@ -663,7 +723,9 @@ class RiskEvaluator:
             data["gating_reasons"] = gating_reasons
             data["session_type"] = current_session_type
 
-            return LLMTradeEvaluation(**data)
+            # Never ask the LLM for the earnings note (prompt/schema stay untouched);
+            # attach it deterministically after the LLM result is parsed.
+            return LLMTradeEvaluation(**data).model_copy(update={"earnings_note": earnings_note_value})
 
         except Exception as e:
             logger.warning(
@@ -693,4 +755,5 @@ class RiskEvaluator:
                 sizing_tiers=sizing_tiers,
                 gating_reasons=gating_reasons,
                 session_type=current_session_type,
+                earnings_note=earnings_note_value,
             )

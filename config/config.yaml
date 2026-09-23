@@ -263,6 +263,7 @@ risk:
   deduplication_hours: 12
   lockout_pre_event_minutes: 60
   lockout_post_event_minutes: 30
+  earnings_blackout_days: 7
 
 regime:
   vix_compressed_threshold: 15.0

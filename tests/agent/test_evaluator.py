@@ -1,12 +1,13 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from agentic_trader.agent.calendar import ForexFactoryCalendar, MacroEvent
+from agentic_trader.agent.earnings import EarningsEvent, EarningsLookup, EarningsTiming
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.constants import AssetClass, StrategyType, VolatilityRegime
@@ -405,3 +406,108 @@ async def test_lockout_gate_and_prompt_summary_share_one_clock_and_window(evalua
     for kwargs in (gate, summary):
         assert kwargs["pre_minutes"] == config.risk.lockout_pre_event_minutes
         assert kwargs["post_minutes"] == config.risk.lockout_post_event_minutes
+
+
+def create_equity_candidate(contract="AAPL", price=150.0, atr=2.0, swing_low=146.0, swing_high=155.0):
+    return ScreenerCandidate(
+        contract=contract,
+        symbol=contract,
+        asset_class=AssetClass.EQUITY,
+        timeframe="4h",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        current_price=price,
+        ema_20=price,
+        ema_50=price - 5,
+        ema_200=price - 10,
+        rsi_14=42.0,
+        atr_14=atr,
+        candle_timestamp="2026-09-12T16:00:00Z",
+        recent_swing_low=swing_low,
+        recent_swing_high=swing_high,
+        trigger_detail="Equity test trigger",
+    )
+
+
+class FakeEarningsCalendar:
+    """Test double: returns a canned lookup (or raises) regardless of the requested horizon."""
+
+    def __init__(self, lookup: EarningsLookup | None = None, exc: Exception | None = None):
+        self.lookup = lookup
+        self.exc = exc
+        self.calls: list[dict] = []
+
+    async def next_earnings(self, symbol: str, now: datetime, horizon_days: int) -> EarningsLookup:
+        self.calls.append({"symbol": symbol, "now": now, "horizon_days": horizon_days})
+        if self.exc is not None:
+            raise self.exc
+        assert self.lookup is not None
+        return self.lookup
+
+
+async def test_earnings_blackout_rejects_event_inside_window(evaluator_factory):
+    today = datetime.now(UTC).date()
+    lookup = EarningsLookup(
+        event=EarningsEvent(symbol="AAPL", date=today + timedelta(days=3), timing=EarningsTiming.AFTER_HOURS),
+        verified=True,
+        horizon_end=today + timedelta(days=30),
+    )
+    fake_calendar = FakeEarningsCalendar(lookup=lookup)
+    evaluator = evaluator_factory(earnings_calendar=fake_calendar)
+
+    eval_res = await evaluator.evaluate_candidate(create_equity_candidate(), use_llm=False)
+
+    assert eval_res.approved is False
+    assert "Earnings Blackout" in eval_res.rejection_reason
+    assert eval_res.macro_clearance is True
+    assert fake_calendar.calls
+
+
+async def test_earnings_outside_window_approved_with_note(evaluator_factory):
+    today = datetime.now(UTC).date()
+    lookup = EarningsLookup(
+        event=EarningsEvent(symbol="AAPL", date=today + timedelta(days=30), timing=EarningsTiming.AFTER_HOURS),
+        verified=True,
+        horizon_end=today + timedelta(days=45),
+    )
+    fake_calendar = FakeEarningsCalendar(lookup=lookup)
+    evaluator = evaluator_factory(earnings_calendar=fake_calendar)
+
+    eval_res = await evaluator.evaluate_candidate(create_equity_candidate(), use_llm=False)
+
+    assert eval_res.approved is True
+    assert eval_res.earnings_note is not None
+    assert "outside" in eval_res.earnings_note
+
+
+async def test_earnings_calendar_failure_fails_open_with_unverified_note(evaluator_factory):
+    fake_calendar = FakeEarningsCalendar(exc=RuntimeError("boom"))
+    evaluator = evaluator_factory(earnings_calendar=fake_calendar)
+
+    eval_res = await evaluator.evaluate_candidate(create_equity_candidate(), use_llm=False)
+
+    assert eval_res.approved is True
+    assert eval_res.earnings_note == "Unverified — earnings calendar unavailable"
+
+
+async def test_futures_candidate_never_calls_earnings_calendar(evaluator_factory):
+    today = datetime.now(UTC).date()
+    fake_calendar = FakeEarningsCalendar(
+        lookup=EarningsLookup(event=None, verified=True, horizon_end=today + timedelta(days=7))
+    )
+    evaluator = evaluator_factory(earnings_calendar=fake_calendar)
+
+    eval_res = await evaluator.evaluate_candidate(create_candidate(), use_llm=False)
+
+    assert eval_res.approved is True
+    assert eval_res.earnings_note is None
+    assert fake_calendar.calls == []
+
+
+async def test_no_earnings_calendar_injected_note_is_none(evaluator_factory):
+    evaluator = evaluator_factory()
+
+    eval_res = await evaluator.evaluate_candidate(create_equity_candidate(), use_llm=False)
+
+    assert eval_res.approved is True
+    assert eval_res.earnings_note is None

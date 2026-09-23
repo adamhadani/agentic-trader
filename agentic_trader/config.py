@@ -194,6 +194,7 @@ class RiskConfig(BaseModel):
     deduplication_hours: int = 12
     lockout_pre_event_minutes: int = 60
     lockout_post_event_minutes: int = 30
+    earnings_blackout_days: int = Field(default=7, ge=0)
 
 
 class TrendPullbackConfig(BaseModel):

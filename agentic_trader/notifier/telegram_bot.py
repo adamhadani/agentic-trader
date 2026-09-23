@@ -70,6 +70,7 @@ def format_alert_card(
     """Format alert message matching Section 8 of the specification."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+    earnings_line = f"• <b>Earnings:</b> {html.escape(eval_res.earnings_note)}\n" if eval_res.earnings_note else ""
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
 
     qty = eval_res.quantity
@@ -164,6 +165,7 @@ def format_alert_card(
         f"• <b>Capital Risk:</b> {risk_pct}% of ${portfolio_cash:,.0f}\n"
         f"• <b>Notional Exposure:</b> ~${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)\n"
         f"• <b>Macro Check:</b> {macro_status}\n"
+        f"{earnings_line}"
         f"{regime_line}"
         f"{sizing_section}\n"
         f"📝 <b>Thesis:</b>\n"
@@ -189,6 +191,7 @@ def format_terminal_card(
     """ASCII/plain text formatted card for terminal display."""
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+    earnings_line = f"• Earnings:         {eval_res.earnings_note}\n" if eval_res.earnings_note else ""
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
 
     qty = eval_res.quantity
@@ -284,7 +287,7 @@ Strategy: {strategy}
 • Capital Risk:     {risk_pct}% of ${portfolio_cash:,.0f}
 • Notional Value:   ${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)
 • Macro Check:      {macro_status}
-{regime_line}{sizing_section}
+{earnings_line}{regime_line}{sizing_section}
 📝 Thesis:
 {eval_res.thesis_summary}
 
