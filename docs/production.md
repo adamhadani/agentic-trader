@@ -109,6 +109,67 @@ healthy observation — a silent whole-universe data failure must be visible in
 | `min_bar_coverage` | 0.8 | Fraction of the reference's active regular-session hourly bars (New York 09:00–15:00 buckets) a name needs to be scanned by strategies. |
 | `coverage_sessions` | 10 | Sessions of hourly bars the coverage gate counts. |
 | `coverage_reference_symbol` | `SPY` | Reference name; if it is unavailable the gate is skipped and the summary says so. |
+| `shadow_ranker_artifact` | unset | Path to a frozen setup-study `ranker.json`, scored in shadow only. A relative path is resolved against the repository root at config load, regardless of the process's working directory. Every scheduled suggestion scan's ranked candidates get a `setup_features_v2` vector, recorded in sent-card provenance (`shadow_ranker`) and in one `scan_candidates_ranked` journal event per scan (`scope=universe`, `trigger=suggestion_scan`); the score is recorded only when the artifact's sha256 and `features_version` verify. It never changes ranking, the budget or any card. |
+
+### Shadow card ranker
+
+`scan.shadow_ranker_artifact` scores every ranked candidate in shadow only, whether or
+not it is configured. Live ranking, the per-scan/per-session/per-group card budgets
+and every card sent are governed by `setup_quality` alone; the shadow block never
+reorders a scan, blocks or replaces a card, and earns no shadow, holdout or promotion
+credit by existing.
+
+Computing and journaling shadow evidence is gated by an explicit `shadow_evidence`
+keyword on `TradingCopilot.run_scan`, set to `True` only by the scheduled
+suggestion-scan job (`make_suggestion_scan`) -- never inferred from a scan's shape.
+The daemon's 4-hourly swing scan, the intraday `non_universe_contracts` job, and an
+unrestricted or symbol-restricted `copilot scan`/Telegram `/scan` all leave it `False`
+and so neither compute nor journal shadow evidence, even though the swing scan and an
+unrestricted manual scan otherwise share the suggestion scan's shape (no symbols, no
+timeframe). A symbol- or timeframe-restricted scan is additionally guarded even if a
+caller mistakenly passes `shadow_evidence=True`, since only the unrestricted universe
+matches the setup study's own population.
+
+What is recorded, and where:
+
+- every sent card from a suggestion scan carries a `shadow_ranker` provenance block
+  (`features_version` `setup_features_v2`, the feature vector, `score` when a verified
+  artifact is configured, and the artifact's `ranker_sha`);
+- one `scan_candidates_ranked` domain event per suggestion scan (`EventKind` in
+  `agentic_trader/execution/durable.py`), journaled under stream `scan/{et_date}`
+  with `"scope": "universe"` and `"trigger": "suggestion_scan"`, readable with
+  `copilot db events --stream scan/<et-date>`. It carries every ranked candidate that
+  scan considered, sent or runner-up, with its entry/stop/target, `setup_quality`,
+  `rank`, `outcome` (`"sent"` or the reason it was skipped) and shadow block.
+
+A `live_cross_section` failure because the universe has no completed daily session yet
+(every symbol's daily frame empty or too short) is an anticipated, recoverable gap: it
+is logged once at WARNING (`shadow_ranker_skipped`) with no traceback, distinct from an
+unexpected exception (`shadow_ranker_failed`, ERROR with traceback). Either way every
+candidate's shadow block is recorded as `None` and the scan itself is unaffected.
+
+`copilot cards outcomes [--days 30]` is a read-only report over those events (filtered
+to `scope=universe`; no other scope is ever journaled today). For each journaled
+candidate it fetches 1-hour bars from the decision time to now (raw adjustment, the
+configured live feed, paced with the same sliding-window `RequestPacer` the setup
+runner uses) and labels the realized bracket outcome with the same `label_bracket` the
+setup-outcome study uses (`DEFAULT_MAX_HOLD_SESSIONS=20`,
+`DEFAULT_COST_BPS_PER_SIDE=5.0` in `agentic_trader/research/setups/outcomes.py`,
+mirroring `config/research/setup-outcomes-v1.json`; the labeler itself is
+`agentic_trader/research/setups/labels.py`). It prints counts by outcome (sent versus
+runner-up), with rows the labeler cannot yet resolve counted separately: IMMATURE (not
+enough elapsed bars yet) and, distinctly, `FETCH_FAILED` (the bar fetch itself raised,
+with its reason recorded and summarized by count); each group's base rates and mean
+cost-adjusted R; and, per scan, the top-1/top-2 mean cost-adjusted R a picker following
+`setup_quality`, the shadow `score` (when recorded) and a random pick would each have
+realized, so an operator can see whether either scorer would have out-selected chance.
+It sends no orders or Telegram messages and writes nothing back to the database.
+
+Switching live ranking away from `setup_quality` to a shadow score is an operator
+decision, not something this report or the shadow block can do by itself. It needs a
+frozen study holdout result plus enough measured evidence from this report and `alpha
+forward`, applied through an explicit config change and the documented restart
+procedure — exactly like promoting any other alpha.
 
 Fetch scaling lives under `market_data:`: `scan_concurrency` (8) bounds the copilot's
 read pool and `max_requests_per_minute` (150) paces provider reads below the 200/minute

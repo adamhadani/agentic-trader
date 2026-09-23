@@ -289,7 +289,9 @@ def make_suggestion_scan(copilot: Any, *, use_llm: bool):
     async def run_suggestion_scan(digest: bool = False) -> None:
         active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
         if active:
-            await copilot.run_scan(use_llm=use_llm, dry_run=False, asset_class="equity", budget=ScanBudget.FULL)
+            await copilot.run_scan(
+                use_llm=use_llm, dry_run=False, asset_class="equity", budget=ScanBudget.FULL, shadow_evidence=True
+            )
         else:
             logger.info(
                 "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}

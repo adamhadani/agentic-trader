@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner
 
+import agentic_trader.cli.commands.cards as cards_module
 from agentic_trader.cli.main import cli
-from agentic_trader.config import ScanBudget
+from agentic_trader.config import ScanBudget, load_config
 from agentic_trader.diagnostics.doctor import ComponentHealth, DiagnosticReport
+from agentic_trader.execution.durable import EventKind
 from agentic_trader.presentation.formatters import PanicReportView
+from agentic_trader.storage.db import SignalDatabase
 
 
 @pytest.fixture
@@ -34,6 +39,7 @@ def test_cli_root_help(runner: CliRunner):
         "gex",
         "pairs",
         "metrics",
+        "cards",
         "panic",
         "resume",
         "db",
@@ -60,6 +66,7 @@ def test_cli_root_help(runner: CliRunner):
         ("backtest", "--trailing-stop-mode"),
         ("stress", "--scenario"),
         ("db", "upgrade"),
+        ("cards", "outcomes"),
         ("explain-macro", "tutorial"),
     ],
 )
@@ -272,3 +279,100 @@ def test_cli_explain_macro_smoke(runner: CliRunner):
             assert result.exit_code == 0
             assert "Evaluating institutional macro indicators" in result.output
             assert "Tutorial: Yield curve is NORMAL_STEEP." in result.output
+
+
+class _FakeBarSource:
+    """A fake ``BarSource``: no network, one canned hourly frame for every symbol."""
+
+    def __init__(self, frame: pd.DataFrame):
+        self.frame = frame
+        self.calls: list[tuple] = []
+
+    def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+        self.calls.append((symbol, timeframe, start, end, adjustment))
+        return self.frame
+
+
+def test_cli_outputs_table_with_fake_sources(runner: CliRunner):
+    """`copilot cards outcomes` reads journaled candidates, labels them, and prints a table.
+
+    No orders, no Telegram, no broker/network I/O: the bar source is a fake, and the
+    only DB access is the read-only journal reader plus the direct seed write below.
+    """
+    fixed_now = datetime(2026, 3, 3, 20, 0, tzinfo=UTC)  # 15:00 ET, after the regular session
+    decided_at = datetime(2026, 3, 3, 15, 0, tzinfo=UTC)  # 10:00 ET, inside the regular session
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    hourly = pd.DataFrame(
+        {
+            "Open": [100.5, 100.6],
+            "High": [100.8, 102.5],
+            "Low": [100.2, 100.3],
+            "Close": [100.6, 102.0],
+        },
+        index=pd.DatetimeIndex(
+            [pd.Timestamp("2026-03-03T15:00:00+00:00"), pd.Timestamp("2026-03-03T16:00:00+00:00")], tz="UTC"
+        ),
+    )
+    fake_bars = _FakeBarSource(hourly)
+
+    async def seed() -> None:
+        db = SignalDatabase(config=load_config())
+        try:
+            payload = {
+                "scan_id": "cli-smoke-scan",
+                "decided_at": decided_at.isoformat(),
+                "scope": "universe",
+                "budget": "full",
+                "ranking_key": "setup_quality",
+                "candidates": [
+                    {
+                        "contract": "AAPL",
+                        "strategy": "BREAKOUT",
+                        "timeframe": "1h",
+                        "direction": "LONG",
+                        "entry": 100.0,
+                        "stop": 99.0,
+                        "target": 102.0,
+                        "atr_14": 1.0,
+                        "setup_quality": 0.8,
+                        "rank": 1,
+                        "outcome": "sent",
+                        "shadow": {"score": 0.7},
+                    }
+                ],
+            }
+            async with db.session_factory() as session, session.begin():
+                await db.workflows.lock(session)
+                await db.workflows.append(
+                    session,
+                    stream="scan/2026-03-03",
+                    kind=EventKind.SCAN_CANDIDATES_RANKED,
+                    payload=payload,
+                    key="scan_candidates_ranked/cli-smoke-scan",
+                )
+        finally:
+            await db.engine.dispose()
+
+    asyncio.run(seed())
+
+    with (
+        patch.object(cards_module, "datetime", _FrozenDateTime),
+        patch.object(cards_module, "build_bar_source", return_value=fake_bars),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes", "--days", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_bars.calls, "expected the fake bar source to be queried for AAPL"
+    assert fake_bars.calls[0][0] == "AAPL"
+    assert fake_bars.calls[0][4] == "raw"
+    assert '"total": 1' in result.output
+    assert "AAPL" in result.output
+    assert "target" in result.output
+    # No orders, no Telegram: only the journal-evidence report is printed.
+    assert "order" not in result.output.lower()
+    assert "telegram" not in result.output.lower()

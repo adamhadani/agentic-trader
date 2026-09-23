@@ -250,16 +250,28 @@ holdouts, and the missing activation lane for cross-sectional forecasts. It refi
 A4 and funnel items 3–5 below into approved workstreams, serving the north star of
 one or two reasonable cards per session:
 
-1. **WS1 — earnings blackout** (in progress). A deterministic evaluator gate rejects
+1. **WS1 — earnings blackout** (delivered, [PR #90](https://github.com/adamhadani/agentic-trader/pull/90)). A deterministic evaluator gate rejects
    equity entries when an announcement is still ahead within
    `risk.earnings_blackout_days`, and each card shows an earnings line. The gate
    fails open with an "Unverified" note when the calendar is down.
-2. **WS2 — panel lane v1 + shadow card ranking** (next; spec → plan). This covers the
-   causal cross-sectional panel over the scan universe: cross-sectional and residual
-   operators, an Alpha158-lite library, Ridge/LightGBM benchmarks, time-interval
-   holdouts and IC/ICIR/turnover. The daily forecast is recorded beside
-   `setup_quality` on every card candidate and compared with realized R. No gate
-   change and no order authority.
+2. **WS2 — measure the cards first, then shadow-rank them** (delivered; re-sequenced
+   from "panel lane v1").
+   - The predeclared [setup-outcome study](setup-outcomes-2026-09-23.md) replays the
+     live native strategies at the live scan clock. It labels 15,644 setups with the
+     live bracket in R, and tests `setup_quality` plus eight causal cross-sectional
+     features under a one-shot time-interval holdout.
+   - Results:
+     - `setup_quality` is uninformative.
+     - The native edge is thin: longs are about +0.03R after costs and shorts are
+       negative.
+     - Only `vol_20` and `sector_rel_mom_60` survive Holm.
+     - The frozen Ridge ranker **failed** its holdout and was worse than
+       `setup_quality`.
+   - Live ranking is unchanged. Scheduled suggestion scans now journal the same
+     `setup_features_v2` vector for every ranked candidate (`scan_candidates_ranked`),
+     and `copilot cards outcomes` labels them prospectively.
+   - The panel-mining lane follows, using this outcome target. Its first hypotheses are
+     the two surviving features and a short-suppression test on fresh data.
 3. **WS3 — dynamic universe.** Liquidity screen plus movers/most-actives for the
    suggestion scan only. The intraday job stays restricted.
 

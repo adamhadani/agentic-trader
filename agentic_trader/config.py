@@ -158,6 +158,18 @@ class ScanConfig(BaseModel):
     min_bar_coverage: float = Field(default=0.8, ge=0, le=1)
     coverage_sessions: int = Field(default=10, ge=1)
     coverage_reference_symbol: str = Field(default="SPY", pattern=r"^[A-Z][A-Z.]{0,5}$")
+    # Frozen setup-study ranker (ranker.json) scored in shadow at RANK. Evidence only:
+    # it never changes ranking, the card budget or any card. None records features only.
+    shadow_ranker_artifact: Path | None = None
+
+    @field_validator("shadow_ranker_artifact", mode="after")
+    @classmethod
+    def _resolve_shadow_ranker_artifact(cls, value: Path | None) -> Path | None:
+        """A relative path must mean the same file for the daemon, an operator CLI
+        invocation and a test alike, regardless of each one's own working directory."""
+        if value is None or value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
 
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
