@@ -174,6 +174,10 @@ unemployment, and the FOMC rate decision (statement, projections, press conferen
 individual Fed speakers and the minutes are not tier-1. Missing VIX fails regime evaluation; missing enrichment
 can leave volatility-only policy. Daily-feed admission age remains a gap.
 GEX is an option-chain/model estimate with quality notes and a required real spot. Replay evidence: [LLM prompt evaluation, 2026-09-22](llm-prompt-eval-2026-09-22.md) (old prompt 0/10 approvals on the traced candidates, new prompt 10/10, lockout control 6/6 rejected).
+A separate deterministic gate right after the macro lockout (step 2b, `agent/earnings.py`) rejects equity
+candidates with an ahead earnings report inside `risk.earnings_blackout_days` (default 7); a failed/unparseable
+lookup fails open (never blocks) and surfaces as an "Unverified" card note instead. The LLM never sees or sets
+this note — the evaluator attaches it deterministically after parsing.
 
 Research outputs do not automatically change running strategy parameters. Legacy
 retuning and config exports are removed; use the canonical journal-backed pipeline.

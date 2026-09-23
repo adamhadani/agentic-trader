@@ -368,3 +368,29 @@ def test_probe_card_is_tagged_and_states_the_cap(eval_res):
     assert tagged.startswith("🧪 <b>PAPER PROBE</b>")
     assert "$100" in tagged and "no promotion credit" in tagged
     assert tagged.endswith(plain)
+
+
+def test_format_alert_card_renders_earnings_line_when_note_set(eval_res):
+    with_note = eval_res.model_copy(update={"earnings_note": "No report within 7 days"})
+    card_html = format_alert_card(with_note, strategy="TREND_PULLBACK")
+    assert "• <b>Earnings:</b> No report within 7 days" in card_html
+
+    card_no_note = format_alert_card(eval_res, strategy="TREND_PULLBACK")
+    assert "<b>Earnings:</b>" not in card_no_note
+
+
+def test_format_alert_card_escapes_earnings_note_html(eval_res):
+    unsafe = eval_res.model_copy(update={"earnings_note": "AAPL reports <script>alert(1)</script>"})
+    card_html = format_alert_card(unsafe, strategy="TREND_PULLBACK")
+    assert "<script>" not in card_html
+    assert "&lt;script&gt;" in card_html
+
+
+def test_format_terminal_card_renders_earnings_line_when_note_set(eval_res):
+    with_note = eval_res.model_copy(update={"earnings_note": "No report within 7 days"})
+    card_term = format_terminal_card(with_note, strategy="TREND_PULLBACK")
+    assert "Earnings:" in card_term
+    assert "No report within 7 days" in card_term
+
+    card_no_note = format_terminal_card(eval_res, strategy="TREND_PULLBACK")
+    assert "Earnings:" not in card_no_note

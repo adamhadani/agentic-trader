@@ -125,6 +125,7 @@ class ConflictResolutionMode(StrEnum):
 FOREX_FACTORY_CALENDAR_URL = "https://www.forexfactory.com/calendar"
 FOREX_FACTORY_JSON_FEED_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 FINNHUB_ECONOMIC_CALENDAR_URL = "https://finnhub.io/api/v1/calendar/economic"
+NASDAQ_EARNINGS_CALENDAR_URL = "https://api.nasdaq.com/api/calendar/earnings"
 
 TRADOVATE_DEMO_URL = "https://demo.tradovateapi.com/v1"
 TRADOVATE_LIVE_URL = "https://live.tradovateapi.com/v1"

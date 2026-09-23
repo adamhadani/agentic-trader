@@ -74,6 +74,18 @@ accepts equities only, so on the Alpaca paper desk futures are not scanned: a fu
 card could never be accepted. The simulator (`EXECUTION_MODE=paper`, including dry
 scans) still scans every configured class.
 
+**Earnings blackout.** The risk evaluator's deterministic gates now include an
+earnings-announcement blackout for equity candidates, right after the macro lockout
+check. It looks ahead from the unofficial, keyless `api.nasdaq.com` earnings
+calendar (same style as the ForexFactory macro feed: short timeout, per-date cache,
+logged warning on failure) and rejects a candidate whose next report lands within
+`risk.earnings_blackout_days` calendar days (default 7; 0 disables the gate and the
+lookup entirely). A card that clears the gate carries a one-line `Earnings:` note
+(e.g. "No report within 7 days"); when the calendar could not be verified for every
+date in the window the note reads "Unverified — earnings calendar unavailable" and
+the gate fails open (never blocks on unverifiable data). Held positions are not yet
+warned ahead of an earnings date — that is a follow-up, not covered by this gate.
+
 **Disabling the cron scans** is a config edit: `scheduler.suggestion_scan_times_et: []`
 registers no cron job, so neither an automatic suggestion scan nor the end-of-session
 digest runs (`Suggestion scans disabled (no times configured)` at startup). Manual

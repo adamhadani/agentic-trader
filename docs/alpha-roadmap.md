@@ -242,6 +242,39 @@ subsequent daily-panel enrollments add their own immutable reservations. Registr
 active 0/shadow 16 are unchanged. No threshold reduction,
 promotion or paper allocation follows from either diagnostic.
 
+### Alpha expansion workstreams (September 23)
+
+The [expansion survey](alpha-expansion-survey-2026-09-23.md) finds that operator
+breadth is not the binding constraint. The constraints are per-symbol statistics and
+holdouts, and the missing activation lane for cross-sectional forecasts. It refines
+A4 and funnel items 3–5 below into approved workstreams, serving the north star of
+one or two reasonable cards per session:
+
+1. **WS1 — earnings blackout** (in progress). A deterministic evaluator gate rejects
+   equity entries when an announcement is still ahead within
+   `risk.earnings_blackout_days`, and each card shows an earnings line. The gate
+   fails open with an "Unverified" note when the calendar is down.
+2. **WS2 — panel lane v1 + shadow card ranking** (next; spec → plan). This covers the
+   causal cross-sectional panel over the scan universe: cross-sectional and residual
+   operators, an Alpha158-lite library, Ridge/LightGBM benchmarks, time-interval
+   holdouts and IC/ICIR/turnover. The daily forecast is recorded beside
+   `setup_quality` on every card candidate and compared with realized R. No gate
+   change and no order authority.
+3. **WS3 — dynamic universe.** Liquidity screen plus movers/most-actives for the
+   suggestion scan only. The intraday job stays restricted.
+
+Later and operator-gated:
+
+- a residual-reversal single-leg feature;
+- the pool-contribution search objective and PBO diagnostic;
+- a foundation-model volatility feature compared with HAR;
+- a panel-driven card source, which needs a horizon/exit-policy decision under
+  semantics v5;
+- a small deep cross-sectional model, only after panel IC exists.
+
+Foundation models for return direction and full LLM-agent miners are deliberately
+not planned.
+
 ## Ordered work queue
 
 | ID | Status | Milestone / acceptance boundary |

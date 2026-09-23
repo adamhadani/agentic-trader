@@ -14,6 +14,7 @@ from typing import Any
 from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
+from agentic_trader.agent.earnings import EarningsCalendarProtocol, NasdaqEarningsCalendar
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.regime import RegimeDetector
@@ -137,6 +138,7 @@ class TradingCopilot:
         self.alpha_shadow = AlphaShadowService(self.alpha_repository)
         self.strategy_engine = StrategyEngine(config)
         self.calendar: BaseEconomicCalendar = ForexFactoryCalendar()
+        self.earnings_calendar: EarningsCalendarProtocol = NasdaqEarningsCalendar()
         self.regime_detector = RegimeDetector(config=config.regime)
         alpaca_client = getattr(self.broker, "client", None)
         if (
@@ -165,6 +167,7 @@ class TradingCopilot:
             regime_detector=self.regime_detector,
             data_fetcher=self.data_fetcher,
             session_provider=self.session_provider,
+            earnings_calendar=self.earnings_calendar,
         )
         self.execution_engine = SlicedExecutionEngine(config=self.config)
         self.options_fetcher = OptionsDataFetcher(
