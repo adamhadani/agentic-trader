@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
+import numpy as np
+import pandas as pd
 from alpaca.data.historical.screener import ScreenerClient
 from alpaca.data.models.screener import MostActives, Movers
 from alpaca.data.requests import MarketMoversRequest, MostActivesBy, MostActivesRequest
@@ -31,7 +33,6 @@ from agentic_trader.transport.alpaca import BoundedTradingClient
 
 
 if TYPE_CHECKING:
-    import pandas as pd
     from alpaca.trading.client import TradingClient
 
     from agentic_trader.config import AppConfig, DynamicUniverseConfig
@@ -42,19 +43,14 @@ _SYMBOL_SHAPE = re.compile(r"^[A-Z]{1,5}$")
 
 _ALLOWED_EXCHANGES = frozenset({"NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"})
 
-# Case-insensitive substrings of the asset name that mark a leveraged/inverse fund.
-_LEVERAGED_MARKERS = (
-    "2x",
-    "3x",
-    "-1x",
-    "ultra",
-    "ultrapro",
-    "bull",
-    "bear",
-    "leveraged",
-    "inverse",
-    "daily target",
+# A leveraged/inverse fund ("Direxion Daily Semiconductor Bear 3X Shares", "ProShares
+# UltraPro QQQ") names both a fund and a whole-word leverage marker; requiring the fund
+# context keeps companies such as Ultragenyx, Bullfrog Gold or Bear Creek Mining.
+_LEVERAGED_MARKERS = re.compile(
+    r"(?<![\w-])-?[123]x\b|\b(?:ultra|ultrapro|ultrashort|bull|bear|leveraged|inverse)\b|daily target",
+    re.IGNORECASE,
 )
+_FUND_CONTEXT = re.compile(r"\b(?:etf|etn|fund|trust|shares|proshares|direxion)\b", re.IGNORECASE)
 
 # Warrants, rights and units trade under plain symbols too; their asset names say so.
 _INSTRUMENT_MARKERS = re.compile(r"\bwarrants?\b|\brights?\b|\bunits?\b", re.IGNORECASE)
@@ -155,8 +151,7 @@ def select_dynamic(
         if _INSTRUMENT_MARKERS.search(asset.name):
             bump("instrument")
             continue
-        name_lower = asset.name.lower()
-        if any(marker in name_lower for marker in _LEVERAGED_MARKERS):
+        if _LEVERAGED_MARKERS.search(asset.name) and _FUND_CONTEXT.search(asset.name):
             bump("leveraged")
             continue
         if entry.price is not None and entry.price < cfg.min_price:
@@ -175,8 +170,14 @@ def liquidity_gate(
     daily_by_symbol: Mapping[str, pd.DataFrame],
     members: Sequence[ScreenerEntry],
     cfg: DynamicUniverseConfig,
+    *,
+    as_of: date | None = None,
 ) -> tuple[list[ScreenerEntry], dict[str, str]]:
     """Apply the median dollar-volume liquidity gate, preserving source order.
+
+    Only completed sessions count: with ``as_of`` (the last completed New York session),
+    later rows such as today's in-progress bar are ignored, and rows with a non-finite
+    Close or Volume never count toward the 20-session window.
 
     A most-actives entry carries no screener price; its price check is deferred here
     against the last daily Close (reason "price"). A movers entry already passed the
@@ -185,7 +186,7 @@ def liquidity_gate(
     excluded: dict[str, str] = {}
     kept: list[ScreenerEntry] = []
     for entry in members:
-        daily = daily_by_symbol.get(entry.symbol)
+        daily = _completed_rows(daily_by_symbol.get(entry.symbol), as_of)
         if daily is None or len(daily) < _LIQUIDITY_WINDOW:
             excluded[entry.symbol] = "insufficient_bars"
             continue
@@ -203,6 +204,16 @@ def liquidity_gate(
     for entry in kept[cfg.max_symbols :]:
         excluded[entry.symbol] = "cap"
     return capped, excluded
+
+
+def _completed_rows(daily: pd.DataFrame | None, as_of: date | None) -> pd.DataFrame | None:
+    if daily is None or daily.empty:
+        return daily
+    finite = daily[np.isfinite(daily["Close"].to_numpy(float)) & np.isfinite(daily["Volume"].to_numpy(float))]
+    if as_of is None or not isinstance(finite.index, pd.DatetimeIndex):
+        return finite
+    index = finite.index if finite.index.tz is not None else finite.index.tz_localize("UTC")
+    return finite[index.tz_convert(ET_TZ).date <= as_of]
 
 
 def synthetic_contract(symbol: str, name: str) -> ContractConfig:

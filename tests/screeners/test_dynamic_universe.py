@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pandas as pd
 import pytest
@@ -451,3 +451,35 @@ async def test_assets_maps_fields_from_the_alpaca_asset(app_config):
     assert info == AssetInfo(
         symbol="AAAA", name="Example Corp", asset_class="us_equity", exchange="NASDAQ", status="active", tradable=True
     )
+
+
+def _dated_daily(closes, volumes, end="2026-09-23"):
+    # Alpaca stamps daily bars at New York midnight.
+    index = pd.date_range(end=pd.Timestamp(end, tz="America/New_York"), periods=len(closes), freq="B").tz_convert("UTC")
+    return pd.DataFrame({"Close": closes, "Volume": volumes}, index=index)
+
+
+def test_liquidity_gate_ignores_todays_partial_bar():
+    members = [entry("AAAA", price=50.0)]
+    # 20 completed sessions at $50M, then today's partial bar with tiny volume.
+    frame = _dated_daily([50.0] * 21, [1_000_000.0] * 20 + [10.0])
+    kept, excluded = liquidity_gate({"AAAA": frame}, members, cfg(), as_of=date(2026, 9, 22))
+    assert [m.symbol for m in kept] == ["AAAA"] and excluded == {}
+
+
+def test_liquidity_gate_non_finite_rows_do_not_count():
+    members = [entry("AAAA", price=50.0)]
+    frame = _dated_daily([50.0] * 19 + [float("nan")], [1_000_000.0] * 20, end="2026-09-22")
+    kept, excluded = liquidity_gate({"AAAA": frame}, members, cfg(), as_of=date(2026, 9, 22))
+    assert kept == [] and excluded == {"AAAA": "insufficient_bars"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Ultragenyx Pharmaceutical Inc. Common Stock", "Bullfrog Gold Corp", "Bear Creek Mining Corp"],
+)
+def test_ordinary_names_containing_leveraged_substrings_are_kept(name):
+    entries = [entry("ABCD")]
+    assets = {"ABCD": asset("ABCD", name=name)}
+    selection = select_dynamic(entries, assets=assets, static_symbols=(), cfg=cfg())
+    assert [member.symbol for member in selection.members] == ["ABCD"]
