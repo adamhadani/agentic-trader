@@ -148,9 +148,9 @@ The new quantity keeps the original risk dollars: `original_quantity*abs(entryâˆ
 **Produces:**
 ```python
 @dataclass(frozen=True)
-class ExecutionReply:           # in agentic_trader/execution/freshness.py
+class ExecutionReply:  # in agentic_trader/execution/freshness.py
     ok: bool
-    text: str                   # HTML, as today
+    text: str  # HTML, as today
     offer_reevaluate: bool = False
 ```
 `TradingCopilot.execute_signal_by_id(signal_id, quantity=None) -> ExecutionReply`. Update every caller: the Telegram `execute_handler` type and `cli/commands/trade.py`. No compatibility tuple.
