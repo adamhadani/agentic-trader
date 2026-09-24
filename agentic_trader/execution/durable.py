@@ -67,6 +67,7 @@ class NotificationKind(StrEnum):
     EXIT = "exit"
     SIGNAL = "signal"
     STOP = "stop"
+    CARD_EXPIRED = "card_expired"
 
 
 @dataclass(frozen=True)

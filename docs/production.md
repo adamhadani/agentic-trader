@@ -236,6 +236,26 @@ exactly as it was — safe to tap again. All tap-time reads share one 15-second 
 without a fresh scan; a multi-tier card only gets back the tier that was actually
 tapped, since the others are not reconstructable from the reply alone.
 
+**Session-close card sweep (September 24).** Correctness never depended on the buttons
+themselves, only on tap-time re-assessment -- but an untapped card's Execute/Dismiss kept
+looking live in Telegram long after its session ended. A `card_expiry_sweep` job (every 5
+minutes, also at startup, regardless of halt state — expiring a card releases no risk and
+adds none) calls `TradingCopilot.expire_stale_cards()`, which runs
+`SignalDatabase.expire_stale_signals(now, configured_contracts=...)`. That method applies
+the exact same rule as a tap (`execution/freshness.py::card_is_stale`, sharing
+`card_session_over`/`parse_valid_until` with `assess_card` so the two paths cannot drift)
+to every `PENDING` card in scope, atomically flips each stale one to `EXPIRED` and enqueues
+one `CARD_EXPIRED` outbox notification per row changed in the same transaction. Delivery
+(`NotificationDispatcher` → `TelegramNotifier.strike_expired_card`) reads the card's
+`telegram_message_id` at send time and edits its keyboard: a single **[🔄 Re-evaluate]**
+button when the contract is still configured, or no buttons at all for a dynamic
+suggestion-universe name. A card that was never delivered to Telegram, or a Telegram edit
+that fails because the message is already gone or unchanged, is acknowledged without
+retry; any other failure is retried by the outbox as usual. A SIGNAL notification that
+retries after the sweep already expired its card is also covered: `send_signal_alert`
+checks the signal's current status at delivery time and sends the expired keyboard instead
+of Execute/Dismiss (Re-evaluate only if the status is `EXPIRED`).
+
 **Duplicate rule and failed cards.** Scans skip a setup that was already carded for
 the same contract, strategy and timeframe within `risk.deduplication_hours` (capped at
 4h for 1h setups and 2h for 15m ones). A `FAILED` card does not count: the system, not

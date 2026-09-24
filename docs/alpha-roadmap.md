@@ -313,13 +313,19 @@ one or two reasonable cards per session:
    `REPRICE` atomically
    replaces the card with its own outbox row, `MISSED`/`EXPIRED` offer a one-tap
    **Re-evaluate** that runs a fresh single-symbol scan, and every card shows its
-   validity window. Follow-ups, out of scope here: proactively striking a card's
-   buttons at session close (needs an outbox "edit message" kind, since today's
-   correctness depends only on tap-time re-assessment, not on the buttons looking
-   dead); labeling delayed entries 1–3h after the decision in the setup-outcome study,
-   to quantify decay against measured tap latency; and a `/scan SYM` Telegram command
-   for an arbitrary symbol (re-evaluate today only covers the contract already on the
-   tapped card).
+   validity window. Proactively striking a card's buttons at session close is now
+   **delivered** (September 24): a `card_expiry_sweep` scheduler job (every 5 minutes,
+   also at startup, independent of halt state) calls `TradingCopilot.expire_stale_cards()`,
+   which runs the shared `card_is_stale`/`card_session_over` rule against every untapped
+   `PENDING` signal, atomically expires the stale ones and enqueues one new
+   `NotificationKind.CARD_EXPIRED` outbox notification per row in the same transaction;
+   delivery (`TelegramNotifier.strike_expired_card`) edits the card's message down to a
+   single Re-evaluate button, or removes the buttons entirely for a non-configured
+   contract (see [production behaviour](production.md#suggestion-scans)). Remaining
+   follow-ups, out of scope here: labeling delayed entries 1–3h after the decision in the
+   setup-outcome study, to quantify decay against measured tap latency; and a `/scan SYM`
+   Telegram command for an arbitrary symbol (re-evaluate today only covers the contract
+   already on the tapped card).
 
 Later and operator-gated:
 

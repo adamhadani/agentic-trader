@@ -59,6 +59,7 @@ from agentic_trader.execution.freshness import (
     CardOutcome,
     ExecutionReply,
     assess_card,
+    parse_valid_until,
     reprice_quantity,
     round_to_tick,
 )
@@ -2469,12 +2470,7 @@ class TradingCopilot:
 
         provenance = sig.get("decision_provenance")
         raw_valid_until = provenance.get("valid_until") if isinstance(provenance, dict) else None
-        try:
-            valid_until = datetime.fromisoformat(raw_valid_until) if raw_valid_until else None
-        except TypeError, ValueError:
-            valid_until = None
-        if valid_until is not None and valid_until.utcoffset() is None:
-            valid_until = None  # unreadable: fall back to the legacy New York date rule
+        valid_until = parse_valid_until(raw_valid_until)
         assert price is not None  # a missing price returned above
         assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
         assessment = assess_card(
@@ -2606,6 +2602,30 @@ class TradingCopilot:
         return ExecutionReply(
             True, f"🔄 Re-evaluating {html.escape(contract)}… a fresh card or a result message will follow."
         )
+
+    async def expire_stale_cards(self) -> None:
+        """Sweep untapped ``PENDING`` cards whose session has ended and strike their buttons.
+
+        Runs on a fixed interval regardless of halt state -- expiring an untapped card adds
+        no risk and releases none, so it must keep running even while new entries are
+        blocked. ``SignalDatabase.expire_stale_signals`` does the actual work atomically
+        (expiry plus its ``CARD_EXPIRED`` outbox notification in one transaction); this
+        wrapper only supplies ``now``/the configured contract set and never raises into the
+        scheduler.
+        """
+        try:
+            expired_ids = await self.db.expire_stale_signals(
+                datetime.now(UTC), configured_contracts=self.config.contracts
+            )
+        except Exception:
+            logger.exception("Card expiry sweep failed", extra={"event": "card_expiry_sweep_failed"})
+            return
+        if expired_ids:
+            logger.info(
+                "Card expiry sweep expired %d stale card(s)",
+                len(expired_ids),
+                extra={"event": "cards_expired", "signal_ids": expired_ids},
+            )
 
     async def cancel_reevaluations(self) -> None:
         """Cancel and await every in-flight background re-evaluation (daemon shutdown)."""

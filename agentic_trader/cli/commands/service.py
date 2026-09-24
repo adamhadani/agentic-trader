@@ -366,6 +366,21 @@ def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, u
     )
 
 
+def register_card_expiry_sweep(scheduler: Any, copilot: Any) -> None:
+    """Register the untapped-card sweep: every 5 minutes, and once at startup.
+
+    Expiring a card releases no risk and adds none, so this job runs regardless of halt
+    state -- unlike the scan jobs above, it is never session- or halt-gated.
+    """
+    scheduler.add_job(
+        copilot.expire_stale_cards,
+        "interval",
+        minutes=5,
+        id="card_expiry_sweep",
+        next_run_time=datetime.now(UTC),
+    )
+
+
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")
 @click.option(
     "--no-llm",
@@ -460,6 +475,8 @@ async def daemon(no_llm: bool) -> None:
         id="position_monitor",
         next_run_time=datetime.now(UTC),
     )
+    # Strike an untapped card's buttons once its session ends; runs regardless of halt.
+    register_card_expiry_sweep(scheduler, copilot)
     # Schedule daily morning macro briefing (Monday - Friday)
     if config.scheduler.macro_briefing_enabled:
         scheduler.add_job(

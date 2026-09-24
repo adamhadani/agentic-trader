@@ -77,6 +77,8 @@ class NotificationDispatcher:
         if kind == NotificationKind.SIGNAL:
             args["eval_res"] = LLMTradeEvaluation.model_validate(args["eval_res"])
             return await self.notifier.send_signal_alert(**args)
+        if kind == NotificationKind.CARD_EXPIRED:
+            return await self.notifier.strike_expired_card(**args)
         return await self.notifier.send_message(args["text"] if args.get("formatted") else html.escape(args["text"]))
 
     async def drain(self) -> int:

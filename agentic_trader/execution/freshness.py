@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from enum import StrEnum
+from typing import Any
 
 from agentic_trader.config import CardFreshnessConfig
 from agentic_trader.constants import Direction
@@ -27,6 +28,42 @@ def _aware_et(value: datetime) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("Card freshness assessment requires timezone-aware datetimes")
     return value.astimezone(ET_TZ)
+
+
+def parse_valid_until(raw_valid_until: str | None) -> datetime | None:
+    """Parse a ``decision_provenance["valid_until"]`` value shared by the tap path and the sweep.
+
+    Returns ``None`` when the value is absent, unparseable, or offset-naive; every caller
+    then falls back to the legacy New-York-date rule via :func:`card_session_over`.
+    """
+    try:
+        value = datetime.fromisoformat(raw_valid_until) if raw_valid_until else None
+    except TypeError, ValueError:
+        return None
+    if value is not None and value.utcoffset() is None:
+        return None  # unreadable: fall back to the legacy New York date rule
+    return value
+
+
+def card_session_over(issued_at: datetime, valid_until: datetime | None, now: datetime) -> bool:
+    """True once a card's issuing session has ended -- the one expiry rule tap and sweep share.
+
+    A legacy card (no usable ``valid_until``) expires when the New York calendar date has
+    moved on from the date it was issued on. All three datetimes must be timezone-aware.
+    """
+    issued_et, now_et = _aware_et(issued_at), _aware_et(now)
+    until_et = _aware_et(valid_until) if valid_until is not None else None
+    return now_et >= until_et if until_et is not None else issued_et.date() != now_et.date()
+
+
+def card_is_stale(*, issued_at: datetime, decision_provenance: dict[str, Any] | None, now: datetime) -> bool:
+    """The sweep's staleness rule for an untapped ``PENDING`` card.
+
+    Identical to the tap-time rule: parse ``decision_provenance["valid_until"]`` the same
+    way ``assess_card`` callers do, then apply the shared :func:`card_session_over` check.
+    """
+    raw_valid_until = decision_provenance.get("valid_until") if isinstance(decision_provenance, dict) else None
+    return card_session_over(issued_at, parse_valid_until(raw_valid_until), now)
 
 
 @dataclass(frozen=True)
@@ -76,12 +113,11 @@ def assess_card(
     policy: CardFreshnessConfig,
 ) -> CardAssessment:
     issued_et, now_et = _aware_et(issued_at), _aware_et(now)
-    until_et = _aware_et(valid_until) if valid_until is not None else None
     age_seconds = (now_et - issued_et).total_seconds()
 
-    # Legacy cards without `valid_until` expire when the New York date changes.
-    session_over = now_et >= until_et if until_et is not None else issued_et.date() != now_et.date()
-    if session_over or not session_is_rth:
+    # Legacy cards without `valid_until` expire when the New York date changes; the sweep
+    # applies this exact rule to untapped cards via the same shared helper.
+    if card_session_over(issued_at, valid_until, now) or not session_is_rth:
         return CardAssessment(CardOutcome.EXPIRED, "Card expired: its session has ended.", None, age_seconds, None)
 
     sign = 1 if direction == Direction.LONG else -1

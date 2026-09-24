@@ -1190,34 +1190,47 @@ class TelegramNotifier:
             first_issued_at=first_issued_at,
         )
 
-        exec_btn_text = _exec_button_label(self.execution_mode)
-
-        tiers = eval_res.sizing_tiers
-        asset_class = eval_res.asset_class
-        if tiers and len(tiers) > 1:
-            tier_buttons = []
-            for t in tiers:
-                t_qty = t.get("quantity", 1.0)
-                t_risk = t.get("risk_dollars", 0.0)
-                star = " ⭐" if t.get("is_default") else ""
-                icon = "🔹" if t.get("tier_id") == "half" else ("⚡" if t.get("tier_id") == "max" else "🚀")
-                if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
-                    btn_label = f"{icon} {t_qty:g} sh (${t_risk:,.0f}){star}"
-                else:
-                    btn_label = f"{icon} {t_qty:g}x (${t_risk:,.0f}){star}"
-                tier_buttons.append(InlineKeyboardButton(btn_label, callback_data=f"exec_{signal_id}_{t_qty:g}"))
-            keyboard = [
-                tier_buttons,
-                [InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}")],
-            ]
+        # A retried SIGNAL delivery can land after the card already left PENDING -- for
+        # example the session-close sweep expired it before this notification was ever
+        # delivered. Never re-offer Execute/Dismiss on a card that is no longer live; only
+        # an EXPIRED card still gets a Re-evaluate button (the handler itself refuses a
+        # non-configured contract with a clear message).
+        current_status = (await self.db.get_signal_by_id(signal_id) or {}).get("status") if self.db else None
+        if current_status is not None and current_status != SignalStatus.PENDING:
+            reply_markup = (
+                InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Re-evaluate", callback_data=f"reval_{signal_id}")]])
+                if current_status == SignalStatus.EXPIRED
+                else None
+            )
         else:
-            keyboard = [
-                [
-                    InlineKeyboardButton(exec_btn_text, callback_data=f"exec_{signal_id}"),
-                    InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}"),
+            exec_btn_text = _exec_button_label(self.execution_mode)
+
+            tiers = eval_res.sizing_tiers
+            asset_class = eval_res.asset_class
+            if tiers and len(tiers) > 1:
+                tier_buttons = []
+                for t in tiers:
+                    t_qty = t.get("quantity", 1.0)
+                    t_risk = t.get("risk_dollars", 0.0)
+                    star = " ⭐" if t.get("is_default") else ""
+                    icon = "🔹" if t.get("tier_id") == "half" else ("⚡" if t.get("tier_id") == "max" else "🚀")
+                    if asset_class == AssetClass.EQUITY or not eval_res.contract.startswith("/"):
+                        btn_label = f"{icon} {t_qty:g} sh (${t_risk:,.0f}){star}"
+                    else:
+                        btn_label = f"{icon} {t_qty:g}x (${t_risk:,.0f}){star}"
+                    tier_buttons.append(InlineKeyboardButton(btn_label, callback_data=f"exec_{signal_id}_{t_qty:g}"))
+                keyboard = [
+                    tier_buttons,
+                    [InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}")],
                 ]
-            ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            else:
+                keyboard = [
+                    [
+                        InlineKeyboardButton(exec_btn_text, callback_data=f"exec_{signal_id}"),
+                        InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}"),
+                    ]
+                ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
             bot = self.app.bot
@@ -1249,6 +1262,41 @@ class TelegramNotifier:
                 extra={"signal_id": signal_id, "contract": eval_res.contract, "error": str(e)},
             )
             return None
+
+    async def strike_expired_card(self, signal_id: int, contract: str, reevaluable: bool) -> str | bool:
+        """CARD_EXPIRED delivery: replace a stale card's Execute/Dismiss with Re-evaluate (or none).
+
+        Reads the message id at delivery time (``get_signal_by_id``) rather than trusting
+        the notification payload, since delivery can lag the sweep. A card that was never
+        delivered to Telegram (no ``telegram_message_id``) is acknowledged without ever
+        calling Telegram -- there is nothing to strike. Telegram refusing an edit because
+        the message is already gone or unchanged is also acknowledged (not retried); any
+        other failure propagates so the outbox retries it.
+        """
+        if not self.is_configured() or not self.app:
+            return "telegram not configured"
+        sig = await self.db.get_signal_by_id(signal_id) if self.db else None
+        message_id = sig.get("telegram_message_id") if sig else None
+        if not message_id:
+            return "no telegram message"
+        markup = (
+            InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Re-evaluate", callback_data=f"reval_{signal_id}")]])
+            if reevaluable
+            else None
+        )
+        try:
+            bot = self.app.bot
+            await bot.edit_message_reply_markup(chat_id=self.chat_id, message_id=message_id, reply_markup=markup)
+            return f"struck buttons on card #{signal_id} ({contract})"
+        except BadRequest as exc:
+            reason = str(exc).lower()
+            if (
+                "message is not modified" in reason
+                or "message to edit not found" in reason
+                or "can't be edited" in reason
+            ):
+                return f"acknowledged unmodifiable card #{signal_id}: {exc}"
+            raise
 
     async def send_exit_alert(
         self,
