@@ -85,8 +85,10 @@ class ExecutionReply:
     ok: bool
     text: str  # HTML, as rendered by Telegram
     offer_reevaluate: bool = False
-    # True only for refusals that left the card PENDING and may succeed on a later tap
-    # (price or tap-time checks unavailable, including timeouts).
+    # True only for refusals that changed nothing and may succeed on a later tap: a card
+    # left PENDING (price or tap-time checks unavailable, including timeouts), or a
+    # re-evaluation that took no claim (session closed/unavailable, daemon shutting down).
+    # Telegram restores the tapped button for these.
     retryable: bool = False
 
 

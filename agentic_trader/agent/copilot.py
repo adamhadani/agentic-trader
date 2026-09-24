@@ -128,6 +128,9 @@ DYNAMIC_UNIVERSE_TIMEOUT_SECONDS = 60.0
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
 OPERATOR_REFERENCE_MAX_AGE = timedelta(days=7)
+# An operator scan request that arrives after daemon shutdown began: its task would never be
+# cancelled or awaited (``cancel_background_scans`` already ran), so it is refused instead.
+SHUTTING_DOWN_TEXT = "Daemon is shutting down; try again after restart."
 # `select_dynamic` reason codes a single operator entry can hit, as an operator refusal
 # (its price is unknown, it is never a configured key and one entry never exceeds a cap).
 _DYNAMIC_FILTER_PHRASES = {
@@ -603,6 +606,8 @@ class TradingCopilot:
                 "skipped_closed_session": [],
                 "skipped_not_executable": [],
                 "coverage_excluded": [],
+                # Contracts with a setup skipped by the recent-duplicate rule.
+                "duplicates": [],
                 "candidates": 0,
                 "approved": 0,
                 "sent": 0,
@@ -822,6 +827,8 @@ class TradingCopilot:
                             alpha_version=candidate.alpha_version,
                         )
                         if is_dup:
+                            if candidate.contract not in summary["duplicates"]:
+                                summary["duplicates"].append(candidate.contract)
                             logger.info(
                                 "Skipping duplicate signal: %s %s already alerted within %d hours.",
                                 candidate.contract,
@@ -2129,7 +2136,7 @@ class TradingCopilot:
             return ExecutionReply(False, f"❌ Signal #{signal_id} not found in database.")
 
         if sig["status"] != SignalStatus.PENDING:
-            return self._not_pending_reply(signal_id, sig["status"])
+            return await self._not_pending_reply(sig)
 
         contract = sig["contract"]
         direction = sig["direction"].upper()
@@ -2207,23 +2214,43 @@ class TradingCopilot:
         )
         return ExecutionReply(item.status == WorkStatus.ACCEPTED, TelegramHtmlFormatter.format_execution_html(view))
 
-    @staticmethod
-    def _not_pending_reply(signal_id: int, status: str | None) -> ExecutionReply:
-        if status == SignalStatus.EXPIRED:
-            # A tap can land on a card the session-close sweep already expired (or one whose
-            # own CARD_EXPIRED strike was acknowledged but not applied, e.g. "message can't
-            # be edited"): the Telegram keyboard may still show Execute/Dismiss even though
-            # the card is terminal. Answer exactly like a tap-time EXPIRED assessment would,
-            # so the operator always has a path to a fresh card instead of a dead end.
-            return ExecutionReply(False, "⌛ Card expired: its session has ended.", offer_reevaluate=True)
-        return ExecutionReply(
-            False, f"❌ Signal #{signal_id} is in status <b>{status}</b> (only PENDING signals can be executed)."
-        )
+    async def _not_pending_reply(self, sig: dict[str, Any]) -> ExecutionReply:
+        """Refuse a tap on a card that is no longer ``PENDING``, saying what the operator can do next."""
+        signal_id, status, contract = sig["id"], sig["status"], sig["contract"]
+        if status != SignalStatus.EXPIRED:
+            return ExecutionReply(
+                False, f"❌ Signal #{signal_id} is in status <b>{status}</b> (only PENDING signals can be executed)."
+            )
+        # EXPIRED by the session-close sweep, a MISSED/EXPIRED tap or a REPRICE -- the card
+        # may still show Execute/Dismiss (a duplicate message, a strike not yet delivered or
+        # one Telegram could not apply). Say only that it is no longer live, never why.
+        name = html.escape(contract)
+        text = f"⌛ Card #{signal_id} is no longer live (expired)."
+        if (live := await self.db.live_signal_id(contract)) is not None:
+            # E.g. its REPRICE replacement: point there; a re-evaluation would be refused.
+            return ExecutionReply(False, f"{text} Card #{live} for {name} is live.")
+        try:
+            async with asyncio.timeout(TAP_CHECK_TIMEOUT_SECONDS):
+                info = await self.session_provider.get_session_info(contract)
+            if not (info.is_open and info.is_rth):
+                text += f"\n{self._next_open_text(info)}"
+        except Exception:
+            # The reply is informational; an unavailable session only omits the next open.
+            logger.warning(
+                "Session unavailable for the reply to a tap on expired card #%d",
+                signal_id,
+                exc_info=True,
+                extra={"event": "card_expired_reply_session_failed", "signal_id": signal_id},
+            )
+        # Re-evaluate covers configured contracts only (a dynamic name is not one).
+        return ExecutionReply(False, text, offer_reevaluate=contract in self.config.contracts)
 
     async def _current_status_reply(self, signal_id: int) -> ExecutionReply:
         """A conditional transition lost a race: report the card's current status instead."""
         current = await self.db.get_signal_by_id(signal_id)
-        return self._not_pending_reply(signal_id, current["status"] if current else None)
+        if current is None:
+            return ExecutionReply(False, f"❌ Signal #{signal_id} not found in database.")
+        return await self._not_pending_reply(current)
 
     @staticmethod
     def _next_open_text(info: Any) -> str:
@@ -2639,8 +2666,13 @@ class TradingCopilot:
         more. The scan runs in the background so the serialized Telegram handler returns at
         once; it uses the NONE budget (an explicit operator request) and exempts only this
         card's exact setup from the recent-duplicate rule. A fresh card is its own result;
-        otherwise the result is queued through the durable outbox.
+        otherwise the result is queued through the durable outbox. Refusals that take no
+        claim (shutdown begun, session closed or unavailable) are ``retryable``, so Telegram
+        restores the Re-evaluate button instead of leaving the card with none.
         """
+        if self._shutdown_event.is_set():
+            # Before the claim, so the card can still be re-evaluated after the restart.
+            return ExecutionReply(False, SHUTTING_DOWN_TEXT, retryable=True)
         sig = await self.db.get_signal_by_id(signal_id)
         if not sig:
             return ExecutionReply(False, f"❌ Signal #{signal_id} not found in database.")
@@ -2666,9 +2698,10 @@ class TradingCopilot:
                 exc_info=True,
                 extra={"event": "card_reevaluate_session_failed", "signal_id": signal_id},
             )
-            return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.")
+            # Retryable (like closed below): no claim was taken, so Telegram restores the button.
+            return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.", retryable=True)
         if not (info.is_open and info.is_rth):
-            return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}")
+            return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}", retryable=True)
         setup = (contract, sig["strategy"], sig.get("timeframe"), sig.get("alpha_version"))
         claimed = await self.db.workflows.claim_card_reevaluation(
             signal_id,
@@ -2715,6 +2748,8 @@ class TradingCopilot:
         blackout and every evaluator gate apply unchanged inside ``run_scan``. A fresh
         card is its own result; otherwise one outbox message follows.
         """
+        if self._shutdown_event.is_set():
+            return ExecutionReply(False, SHUTTING_DOWN_TEXT)
         requested = symbol.strip().upper()
         contract = next(
             (key for key in self.config.contracts if requested in (key.upper(), key.strip("/").upper())),
@@ -2952,8 +2987,11 @@ class TradingCopilot:
         if (code := ((summary.get("dynamic") or {}).get("excluded") or {}).get(contract)) is not None:
             # A gated dynamic name never reached strategy scanning.
             return f"{name} was not scanned: {html.escape(_DYNAMIC_EXCLUSION_PHRASES.get(code, code))}."
-        text = f"No valid setup for {name} right now"
         runners_up = summary.get("runners_up") or []
+        if not runners_up and contract in (summary.get("duplicates") or []):
+            # The setup still exists; the recent-duplicate rule suppressed a second card.
+            return f"No new card for {name}: a matching setup was already carded within the duplicate window."
+        text = f"No valid setup for {name} right now"
         detail = None
         if runners_up:
             detail = runners_up[0].get("reason")

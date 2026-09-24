@@ -1075,9 +1075,10 @@ class TelegramNotifier:
                 await query.answer(f"Submitting order{qty_msg} to broker...")
                 await _safe_clear_markup()
                 reply = await self.execute_handler(signal_id, quantity=quantity)
-                if getattr(reply, "retryable", False):
+                if getattr(reply, "retryable", False) and await self._still_pending(signal_id):
                     # The card is still PENDING (e.g. price/checks unavailable); restore the
-                    # tapped button plus dismiss so the operator can retry. Other tiers on a
+                    # tapped button plus dismiss so the operator can retry. Re-read first: the
+                    # session-close sweep may have struck the card while checks were in flight. Other tiers on a
                     # multi-tier card are not reconstructable here, so only the button that was
                     # actually tapped is restored.
                     restore_label = (
@@ -1132,6 +1133,14 @@ class TelegramNotifier:
                 await query.answer("Re-evaluating…")
                 await _safe_clear_markup()
                 reply = await self.reevaluate_handler(signal_id)
+                if getattr(reply, "retryable", False):
+                    # No claim was taken (session closed/unavailable, shutdown): the card
+                    # keeps its only button, e.g. for a tap after the next open.
+                    await _safe_set_markup(
+                        InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("🔄 Re-evaluate", callback_data=f"reval_{signal_id}")]]
+                        )
+                    )
                 if msg and hasattr(msg, "reply_text"):
                     await msg.reply_text(reply.text, parse_mode="HTML")
             else:
@@ -1277,6 +1286,11 @@ class TelegramNotifier:
                 extra={"signal_id": signal_id, "contract": eval_res.contract, "error": str(e)},
             )
             return None
+
+    async def _still_pending(self, signal_id: int) -> bool:
+        """False only when the card is known to be no longer ``PENDING`` (no database: assume pending)."""
+        sig = await self.db.get_signal_by_id(signal_id) if self.db else None
+        return sig is None or sig["status"] == SignalStatus.PENDING
 
     async def strike_expired_card(self, signal_id: int, contract: str, reevaluable: bool) -> str | bool:
         """CARD_EXPIRED delivery: replace a stale card's Execute/Dismiss with Re-evaluate (or none).

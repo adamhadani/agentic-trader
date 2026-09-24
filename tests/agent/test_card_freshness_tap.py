@@ -228,11 +228,12 @@ async def test_stale_card_is_repriced_into_one_new_pending_card_without_authoriz
     assert event["payload"]["outcome"] == "reprice"
     assert event["payload"]["applied"] is True and event["payload"]["new_signal_id"] == new["id"]
 
-    # A second tap on the re-priced original is refused: it is EXPIRED (not PENDING), and
-    # -- like any EXPIRED card -- still offers a path to a fresh one instead of a dead end.
+    # A second tap on the re-priced original is refused: it is EXPIRED (not PENDING). Its
+    # replacement is the live card, so the reply points there instead of offering a
+    # Re-evaluate that would only be refused ("A live card ... already exists").
     again = await tap_desk.execute_signal_by_id(sid)
-    assert again.ok is False and again.offer_reevaluate is True
-    assert "Card expired: its session has ended." in again.text
+    assert again.ok is False and again.offer_reevaluate is False
+    assert again.text == f"⌛ Card #{sid} is no longer live (expired). Card #{new['id']} for SPY is live."
     tap_desk.entry_service.authorize.assert_not_awaited()
     assert len(await temp_db.workflows.list_work(WorkKind.NOTIFICATION)) == 1
 
@@ -248,7 +249,7 @@ async def test_tap_on_a_card_already_expired_by_the_sweep_offers_reevaluate_not_
     reply = await tap_desk.execute_signal_by_id(sid)
 
     assert reply.ok is False and reply.offer_reevaluate is True
-    assert "Card expired: its session has ended." in reply.text
+    assert reply.text == f"⌛ Card #{sid} is no longer live (expired)."
     tap_desk.entry_service.authorize.assert_not_awaited()
 
 
@@ -267,7 +268,7 @@ async def test_reprice_race_lost_to_a_concurrent_sweep_offers_reevaluate(tap_des
     reply = await tap_desk.execute_signal_by_id(sid)
 
     assert reply.ok is False and reply.offer_reevaluate is True
-    assert "Card expired: its session has ended." in reply.text
+    assert reply.text == f"⌛ Card #{sid} is no longer live (expired)."
 
 
 async def test_reprice_that_rounds_to_zero_shares_is_missed(tap_desk, temp_db):
@@ -818,3 +819,116 @@ def test_cli_execute_prints_the_reply_text():
     assert result.exit_code == 0, result.output
     copilot.execute_signal_by_id.assert_awaited_once_with(7, quantity=2.0)
     assert "Execution Rejected: stale" in result.output
+
+
+# --------------------------------------------------------------------------
+# Final fix pass: non-live replies, retryable re-evaluate refusals, shutdown
+# --------------------------------------------------------------------------
+
+
+async def test_an_expired_card_tapped_while_closed_includes_the_next_open(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    await temp_db.update_signal_status(sid, SignalStatus.EXPIRED)
+    tap_desk.session_provider.get_session_info.return_value = session_info(is_open=False, is_rth=False)
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply == ExecutionReply(
+        False,
+        f"⌛ Card #{sid} is no longer live (expired).\nNext regular open: 2026-09-24 13:30 UTC (09:30 NY).",
+        offer_reevaluate=True,
+    )
+
+
+async def test_an_expired_card_reply_survives_an_unavailable_session_read(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    await temp_db.update_signal_status(sid, SignalStatus.EXPIRED)
+    tap_desk.session_provider.get_session_info.side_effect = RuntimeError("clock down")
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply == ExecutionReply(False, f"⌛ Card #{sid} is no longer live (expired).", offer_reevaluate=True)
+
+
+async def test_a_missed_card_retapped_in_session_is_not_called_session_ended(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 94.0  # through the stop -> MISSED
+    first = await tap_desk.execute_signal_by_id(sid)
+    assert first.offer_reevaluate is True
+
+    again = await tap_desk.execute_signal_by_id(sid)
+
+    assert again == ExecutionReply(False, f"⌛ Card #{sid} is no longer live (expired).", offer_reevaluate=True)
+    assert "session has ended" not in again.text
+
+
+async def test_an_expired_dynamic_card_offers_no_reevaluation(tap_desk, temp_db):
+    sid = await temp_db.record_signal(
+        "NEWA", "TREND_PULLBACK", "LONG", 100.0, 98.0, 104.0, 2.0, asset_class="EQUITY", quantity=1.0
+    )
+    await temp_db.update_signal_status(sid, SignalStatus.EXPIRED)
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply == ExecutionReply(False, f"⌛ Card #{sid} is no longer live (expired).")
+
+
+@pytest.mark.parametrize(
+    ("session", "text"),
+    [
+        pytest.param(
+            {"return_value": session_info(is_open=False, is_rth=False)},
+            "Market closed; Next regular open: 2026-09-24 13:30 UTC (09:30 NY).",
+            id="closed",
+        ),
+        pytest.param(
+            {"side_effect": RuntimeError("clock down")},
+            "⚠️ Market session unavailable; try again shortly.",
+            id="session_unavailable",
+        ),
+    ],
+)
+async def test_reevaluate_refusals_that_take_no_claim_are_retryable(tap_desk, temp_db, session, text):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    tap_desk.session_provider.get_session_info = AsyncMock(**session)
+    tap_desk.run_scan = AsyncMock()
+
+    reply = await tap_desk.reevaluate_signal(sid)
+
+    assert reply == ExecutionReply(False, text, retryable=True)
+    assert tap_desk.background_scan_tasks == set()
+    assert [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.CARD_REEVALUATE_REQUESTED] == []
+
+
+async def test_reevaluate_refusals_after_a_claim_or_for_a_live_card_are_not_retryable(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    tap_desk.run_scan = AsyncMock(return_value={"sent": 1, "runners_up": []})
+    await tap_desk.reevaluate_signal(sid)
+    await finish_reevaluations(tap_desk)
+
+    again = await tap_desk.reevaluate_signal(sid)
+    live = await record_card(temp_db)
+    other = await record_card(temp_db)
+    await temp_db.expire_signal(other)
+    blocked = await tap_desk.reevaluate_signal(other)
+
+    assert again.retryable is False and "already requested" in again.text
+    assert blocked == ExecutionReply(False, f"A live card for SPY already exists (#{live}).")
+
+
+async def test_reevaluate_is_refused_during_shutdown_without_consuming_the_claim(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+    tap_desk.run_scan = AsyncMock(return_value={"sent": 1, "runners_up": []})
+    tap_desk._shutdown_event.set()
+
+    reply = await tap_desk.reevaluate_signal(sid)
+
+    assert reply == ExecutionReply(False, "Daemon is shutting down; try again after restart.", retryable=True)
+    assert tap_desk.background_scan_tasks == set()
+    assert [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.CARD_REEVALUATE_REQUESTED] == []
+    tap_desk._shutdown_event.clear()  # after the restart the same card can still be re-evaluated
+    assert (await tap_desk.reevaluate_signal(sid)).ok is True
+    await finish_reevaluations(tap_desk)

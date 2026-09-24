@@ -15,6 +15,7 @@ import pytest
 
 from agentic_trader.agent import copilot as copilot_module
 from agentic_trader.config import ScanBudget
+from agentic_trader.constants import SignalStatus
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.screeners.dynamic_universe import AssetInfo, ScreenerEntry, StaticReference
@@ -629,3 +630,36 @@ async def test_recent_events_is_scoped_and_empty_without_streams(temp_db):
 
     assert [e["payload"]["scope"] for e in events] == [temp_db.workflows.scope]
     assert await temp_db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=[]) == []
+
+
+# --------------------------------------------------------------------------
+# Final fix pass
+# --------------------------------------------------------------------------
+
+
+async def test_a_duplicate_suppressed_setup_is_reported_as_such_not_as_no_setup(operator_desk, temp_db):
+    """A /scan of a configured contract keeps the duplicate rule; its result must say so."""
+    del operator_desk.db.is_duplicate_recent  # the real rule, not budget_desk's stub
+    earlier = await temp_db.record_signal(
+        "BBB", "TREND_PULLBACK", "LONG", 100, 98, 104, 2, timeframe="4h", decision_provenance={"rank": 1}
+    )
+    await temp_db.update_signal_status(earlier, SignalStatus.DISMISSED)
+
+    await operator_desk.request_symbol_scan("BBB")
+    await finish_background_scans(operator_desk)
+
+    assert [s["id"] for s in await temp_db.get_recent_signals(limit=10)] == [earlier]
+    assert operator_desk.last_scan_summary["duplicates"] == ["BBB"]
+    [text] = await message_texts(temp_db)
+    assert text == "No new card for BBB: a matching setup was already carded within the duplicate window."
+
+
+async def test_symbol_scan_is_refused_once_shutdown_has_begun(tap_desk):  # noqa: F811
+    tap_desk.run_scan = AsyncMock()
+    tap_desk._shutdown_event.set()
+
+    reply = await tap_desk.request_symbol_scan("SPY")
+
+    assert reply == ExecutionReply(False, "Daemon is shutting down; try again after restart.")
+    assert tap_desk.background_scan_tasks == set()
+    tap_desk.run_scan.assert_not_awaited()

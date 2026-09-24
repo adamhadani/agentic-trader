@@ -256,9 +256,13 @@ Telegram edit that fails because the message is already gone, unchanged, or name
 Telegram no longer recognizes, is acknowledged without retry; an unconfigured/unbuilt
 Telegram client instead fails like every sibling sender, so the outbox retries and
 eventually dead-letters rather than reporting a strike that never happened. A tap that
-still lands on a card the sweep already expired (e.g. before its own strike is delivered)
-gets the same `EXPIRED` reply and Re-evaluate offer a tap-time expiry would give, never the
-generic "not PENDING" refusal. A SIGNAL notification that
+still lands on an `EXPIRED` card — swept before its strike was delivered, an earlier
+duplicate message, or a card a previous tap expired or re-priced — never gets the generic
+"not PENDING" refusal. It gets "⌛ Card #N is no longer live (expired).", plus the next
+regular open when the contract's session is closed (omitted if the session read fails,
+15 s bound). It offers **[🔄 Re-evaluate]** only for a configured contract. If another
+card for the contract is live, for example a re-priced replacement, the reply names it
+("Card #M for SYMBOL is live.") and offers no Re-evaluate. A SIGNAL notification that
 retries after the sweep already expired its card is also covered: `send_signal_alert`
 checks the signal's current status at delivery time and sends the expired keyboard instead
 of Execute/Dismiss (Re-evaluate only if the status is `EXPIRED`).
@@ -281,7 +285,16 @@ with a direct reply, not through the outbox:
 - only an `EXPIRED` card can be re-evaluated ("Signal #N is STATUS; nothing to re-evaluate.");
 - a `PENDING` or `SUBMITTING` card for the same contract refuses it ("A live card for
   SYMBOL already exists (#M).");
-- outside the regular session it is refused with the next regular open ("Market closed; …").
+- outside the regular session it is refused with the next regular open ("Market closed; …"),
+  and an unavailable session read with "⚠️ Market session unavailable; try again shortly.";
+- once daemon shutdown has begun it is refused ("Daemon is shutting down; try again after
+  restart.") before the claim, so the card can still be re-evaluated after the restart.
+
+The last three refusals take no claim and are marked retryable. The Telegram handler
+clears the card's keyboard while it handles the tap, then restores the **[🔄 Re-evaluate]**
+button for them. A card the sweep struck at the close therefore keeps its button for a
+tap after the next open. A claimed request, "already requested", a live card or a
+non-`EXPIRED` status leave the keyboard cleared.
 
 It then **claims** the card's single re-evaluation: under the workflow scope lock, in
 one transaction, it checks for and inserts the `card_reevaluate/{signal_id}` domain
@@ -295,12 +308,18 @@ scanner busy, or failed is not retried from the same card.
 The scan runs as a background task, so the serialized Telegram handler replies at once
 ("🔄 Re-evaluating SYMBOL… a fresh card or a result message will follow."). It waits
 at most 120 s (`REEVALUATE_SCAN_WAIT_SECONDS`) for a running scan. A fresh card is its
-own result. "No valid setup … right now" (with the first runner-up reason), "a scan
-is running" and a failure are queued as durable outbox messages, never sent directly.
+own result. "No valid setup … right now" (with the first runner-up reason), "No new
+card for SYMBOL: a matching setup was already carded within the duplicate window." (a
+setup the recent-duplicate rule suppressed, counted in the scan summary's `duplicates`),
+"a scan is running" and a failure are queued as durable outbox messages, never sent
+directly.
 Daemon shutdown cancels and awaits every in-flight background operator scan —
 re-evaluations and `/scan SYMBOL` share one task set
 (`copilot.cancel_background_scans()`) — right after the shutdown event, before the
 trade stream, Telegram and SDK clients close; a cancelled scan reports nothing.
+The Telegram poller stops last, so a request that arrives after the shutdown event
+would start a task nothing cancels or awaits. Re-evaluate and `/scan SYMBOL` therefore
+refuse once the event is set ("Daemon is shutting down; try again after restart.").
 
 **`/scan SYMBOL` (September 24).** Telegram `/scan` with no argument is unchanged (the
 full-universe summary). With exactly one argument (upper-cased; more than one replies
@@ -311,6 +330,7 @@ unconfigured-symbol validation below, runs in one background task with the same 
 set, 120 s scan lock wait and durable outbox result messages. It logs
 `operator_symbol_scan` with `symbol` and `configured`. Direct-reply refusals:
 
+- daemon shutdown already begun ("Daemon is shutting down; try again after restart.");
 - a scan of the same name already in flight ("A scan of SYMBOL is already running.");
 - a `PENDING`/`SUBMITTING` card for the name ("A live card for SYMBOL already exists (#N).");
 - an unconfigured symbol while `universe.dynamic.enabled` is false ("Cannot scan
@@ -320,7 +340,9 @@ set, 120 s scan lock wait and durable outbox result messages. It logs
 
 A **configured contract** matches by its `contracts:` key, with or without a futures
 `/` (`MES` finds `/MES`). It runs `run_scan(symbols=[contract], budget=NONE)` with **no**
-duplicate exemption, so a setup carded within the duplicate window is not re-carded;
+duplicate exemption, so a setup carded within the duplicate window is not re-carded
+(the result says "No new card for SYMBOL: a matching setup was already carded within
+the duplicate window.");
 the NONE budget skips the per-scan, per-session and per-group card caps.
 
 An **unconfigured symbol** is validated in the background task with the
@@ -395,8 +417,12 @@ with no dedicated CLI view yet.
 **Deploy note.** Outbox `SIGNAL` rows written by this release carry `valid_until` and,
 for replacements, `reprices` and `first_issued_at`. An older daemon's
 `send_signal_alert` rejects those arguments, so rolling the daemon back below this
-release dead-letters such rows. Drain the outbox (`copilot db outbox` shows nothing
-queued) before a rollback.
+release dead-letters such rows. `CARD_EXPIRED` rows (kind `card_expired`, the
+session-close sweep's strikes, including the first sweep right after deploy) are unknown
+to earlier revisions: `NotificationKind("card_expired")` raises, so the row retries to
+DEAD, `delivery` readiness turns false and `doctor --monitor` raises an incident. The card
+itself is already `EXPIRED` and taps fail closed. Drain the outbox (`copilot db outbox`
+shows nothing queued) before a rollback.
 
 **Budget.** A `REPRICE` replacement does not spend a fresh session-card slot: the
 budget counts signals whose provenance lacks `reprices`. Re-evaluate and `/scan SYMBOL`
