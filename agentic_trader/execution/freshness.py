@@ -111,6 +111,25 @@ class CardAssessment:
     price: float | None
 
 
+def meets_min_reward_risk(reward: float, risk: float, minimum: float) -> bool:
+    """Whether a bracket's reward:risk, rounded to two decimals, clears ``minimum``.
+
+    The single comparison shared by every place that re-checks a bracket's reward:risk
+    against the configured/regime minimum after the scan already approved it: the
+    tap-time current-price check (:func:`assess_card`), ``TradingCopilot._regime_gate``
+    and admission's ``reservation_rejection``. Two-decimal rounding matches the
+    evaluator's own approval rounding (``round(target_dist / stop_dist, 2)``), so a
+    card the scan approved at exactly "2.0" is never refused later for float noise
+    (e.g. ``21.12 / 10.56 == 1.9999999999999973``, which rounds to ``2.0``).
+
+    ``risk <= 0`` is always False -- a degenerate or inverted bracket never "meets" a
+    minimum, regardless of ``reward``.
+    """
+    if risk <= 0:
+        return False
+    return round(reward / risk, 2) >= minimum
+
+
 def assess_card(
     *,
     direction: str,
@@ -154,18 +173,22 @@ def assess_card(
     if remaining_risk < policy.reprice_min_risk_fraction * risk:
         return CardAssessment(CardOutcome.MISSED, "Too close to the stop.", r_consumed, age_seconds, price)
 
-    reward_remaining = sign * (target - price)
-    actual_reward_risk = reward_remaining / remaining_risk
-    if actual_reward_risk < min_reward_risk:
-        reason = f"reward:risk at {price:.2f} is {actual_reward_risk:.1f} < {min_reward_risk:.1f}"
-        return CardAssessment(CardOutcome.MISSED, reason, r_consumed, age_seconds, price)
-
     if gate_reason is not None:
         return CardAssessment(CardOutcome.MISSED, gate_reason, r_consumed, age_seconds, price)
 
+    # A fresh tap keeps the original limit order resting unchanged: reward:risk at the
+    # CURRENT price is not an EXECUTE condition, only a REPRICE one (spec decision table).
     if age_seconds <= policy.fresh_seconds and abs(r_consumed) <= policy.fresh_max_r:
         reason = f"Fresh: {age_seconds:.0f}s old, {r_consumed:+.2f}R since the card."
         return CardAssessment(CardOutcome.EXECUTE, reason, r_consumed, age_seconds, price)
+
+    # Not fresh enough to keep the original limit: re-pricing at the current price
+    # requires the current-price reward:risk to still clear the minimum.
+    reward_remaining = sign * (target - price)
+    if not meets_min_reward_risk(reward_remaining, remaining_risk, min_reward_risk):
+        actual_reward_risk = reward_remaining / remaining_risk
+        reason = f"Missed: reward:risk at {price:.2f} would be {actual_reward_risk:.2f} < {min_reward_risk:.2f}."
+        return CardAssessment(CardOutcome.MISSED, reason, r_consumed, age_seconds, price)
 
     reason = f"Re-priced at {price:.2f}: {r_consumed:+.2f}R since the card."
     return CardAssessment(CardOutcome.REPRICE, reason, r_consumed, age_seconds, price)

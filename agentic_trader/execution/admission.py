@@ -7,6 +7,7 @@ from typing import Any
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import BROKER_CLOCK_SKEW_TOLERANCE_SECONDS, AssetClass, Direction, OrderSide
+from agentic_trader.execution.freshness import meets_min_reward_risk
 from agentic_trader.risk import drawdown_risk_factor, risk_capital
 
 
@@ -44,7 +45,7 @@ def reservation_rejection(
     sign = 1 if request.direction == Direction.LONG else -1
     risk = (request.entry_price - request.stop_loss) * sign
     reward = (request.take_profit - request.entry_price) * sign
-    if risk <= 0 or reward / risk < config.risk.min_risk_reward_ratio:
+    if not meets_min_reward_risk(reward, risk, config.risk.min_risk_reward_ratio):
         return "Bracket direction or configured risk/reward requirement is no longer valid."
     info = config.contracts.get(request.symbol)
     if info is None and request.asset_class == AssetClass.FUTURES:

@@ -58,7 +58,7 @@ def original_evaluation(*, entry=100.0, stop=95.0, target=120.0, quantity=10.0) 
         take_profit=target,
         stop_distance_points=abs(entry - stop),
         target_distance_points=abs(target - entry),
-        risk_reward_ratio=abs(target - entry) / abs(entry - stop),
+        risk_reward_ratio=round(abs(target - entry) / abs(entry - stop), 2),  # as the evaluator approves
         risk_dollars=abs(entry - stop) * quantity,
         reward_dollars=abs(target - entry) * quantity,
         notional_value=entry * quantity,
@@ -219,7 +219,7 @@ async def test_stale_card_is_repriced_into_one_new_pending_card_without_authoriz
     assert arguments["strategy"] == "TREND_PULLBACK" and arguments["regime_summary"] == "calm"
     rebuilt = LLMTradeEvaluation.model_validate(arguments["eval_res"])
     assert (rebuilt.entry_price, rebuilt.quantity, rebuilt.stop_loss, rebuilt.take_profit) == (102.0, 7.0, 95.0, 120.0)
-    assert rebuilt.risk_reward_ratio == pytest.approx(18 / 7)
+    assert rebuilt.risk_reward_ratio == round(18 / 7, 2)
     assert rebuilt.thesis_summary == "Original thesis"
     # The durable payload must be deliverable by the real Telegram notifier signature.
     inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **{**arguments, "eval_res": rebuilt})
@@ -236,6 +236,21 @@ async def test_stale_card_is_repriced_into_one_new_pending_card_without_authoriz
     assert again.text == f"⌛ Card #{sid} is no longer live (expired). Card #{new['id']} for SPY is live."
     tap_desk.entry_service.authorize.assert_not_awaited()
     assert len(await temp_db.workflows.list_work(WorkKind.NOTIFICATION)) == 1
+
+
+async def test_stale_card_at_a_float_noise_minimum_reward_risk_is_still_repriced(tap_desk, temp_db):
+    # Live card #20 (2026-09-24): these levels give 1.9999999999999973 in floats, 2.00 as approved.
+    sid = await record_card(temp_db, age_seconds=3600, entry=240.46, stop=229.90, target=261.58, quantity=23.0)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 240.46
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    tap_desk.entry_service.authorize.assert_not_awaited()
+    pending = [s for s in await temp_db.get_recent_signals(limit=10) if s["status"] == SignalStatus.PENDING]
+    assert len(pending) == 1 and f"#{pending[0]['id']}" in reply.text
+    [notification] = await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+    rebuilt = LLMTradeEvaluation.model_validate(notification.payload["arguments"]["eval_res"])
+    assert rebuilt.risk_reward_ratio == 2.0
 
 
 async def test_tap_on_a_card_already_expired_by_the_sweep_offers_reevaluate_not_a_dead_end(tap_desk, temp_db):
