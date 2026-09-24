@@ -81,7 +81,9 @@ scans) still scans every configured class.
 (and only that scan: `run_scan(shadow_evidence=True)` with no symbols and no
 timeframe) adds up to `universe.dynamic.max_symbols` in-play US equities to the static
 universe. The swing scan, the intraday `non_universe_contracts` job, and manual or
-Telegram scans (restricted or not) never do. The design and the filter order are in
+Telegram scans (restricted or not) never do; the one exception is Telegram
+`/scan SYMBOL` of an unconfigured equity, which scans that single name as a dynamic
+name (see below). The design and the filter order are in
 [the WS3 spec](superpowers/specs/2026-09-23-dynamic-universe-design.md); the code is
 [`screeners/dynamic_universe.py`](../agentic_trader/screeners/dynamic_universe.py).
 
@@ -295,9 +297,63 @@ The scan runs as a background task, so the serialized Telegram handler replies a
 at most 120 s (`REEVALUATE_SCAN_WAIT_SECONDS`) for a running scan. A fresh card is its
 own result. "No valid setup … right now" (with the first runner-up reason), "a scan
 is running" and a failure are queued as durable outbox messages, never sent directly.
-Daemon shutdown cancels and awaits in-flight re-evaluations
-(`copilot.cancel_reevaluations()`) right after the shutdown event, before the trade
-stream, Telegram and SDK clients close; a cancelled re-evaluation reports nothing.
+Daemon shutdown cancels and awaits every in-flight background operator scan —
+re-evaluations and `/scan SYMBOL` share one task set
+(`copilot.cancel_background_scans()`) — right after the shutdown event, before the
+trade stream, Telegram and SDK clients close; a cancelled scan reports nothing.
+
+**`/scan SYMBOL` (September 24).** Telegram `/scan` with no argument is unchanged (the
+full-universe summary). With exactly one argument (upper-cased; more than one replies
+`Usage: /scan or /scan SYMBOL`) it calls `copilot.request_symbol_scan`, which validates
+synchronously and replies at once ("🔍 Scanning SYMBOL… a card or a result message will
+follow."), then runs one background scan through the same task machinery, 120 s scan
+lock wait and outbox result messages as Re-evaluate. It logs `operator_symbol_scan`
+with `symbol` and `configured`. Refusals, as direct replies:
+
+- a `PENDING`/`SUBMITTING` card for the name ("A live card for SYMBOL already exists (#N).");
+- a scan of the same name already in flight;
+- the name's regular session closed ("Market closed; " plus the next regular open), or
+  the session read unavailable/timed out (15 s, `TAP_CHECK_TIMEOUT_SECONDS`).
+
+A **configured contract** matches by its `contracts:` key, with or without a futures
+`/` (`MES` finds `/MES`). It runs `run_scan(symbols=[contract], budget=NONE)` with **no**
+duplicate exemption, so a setup carded within the duplicate window is not re-carded;
+the NONE budget skips the per-scan, per-session and per-group card caps.
+
+An **unconfigured symbol** is validated with the dynamic-universe machinery, never a
+second rule set:
+
+- **Asset filters.** One `ScreenerEntry(source="operator")` runs through
+  `select_dynamic` against the Alpaca asset list (the per-date cache; 60 s bound).
+  A rejected name is refused with its reason ("Cannot scan SYMBOL: leveraged/inverse
+  fund.", "…not an active Alpaca US equity.", "…warrant/right/unit or
+  volatility/option-income product.", and so on). A missing dynamic source (including
+  `universe.dynamic.enabled: false`, which constructs none) or a failed or timed-out
+  asset read refuses "asset lookup unavailable; try again shortly."
+- **Liquidity reference.** The scan fetches only this one name, so it cannot measure
+  the static percentile itself. It uses the newest `dynamic_universe_built` event from
+  the last seven New York dates whose `threshold` is non-null, whose `feed` equals
+  `market_data.alpaca_feed` and whose `built_at` is at most 7 days old. Its
+  `reference` block is rebuilt as the `StaticReference` for the unchanged
+  `liquidity_gate` (the current `min_median_dollar_volume` floor still applies).
+  Without one the request is refused: "no recent liquidity reference (the scheduled
+  suggestion scan records one); try after the next suggestion scan."
+- **Scan.** `run_scan(symbols=[SYMBOL], budget=NONE, operator_dynamic=…)` adds the
+  synthetic contract exactly like a scheduled dynamic name: fetch/coverage/liquidity
+  gating (`_gate_dynamic_members` with the journaled reference), native strategies
+  only, no alpha shadow observation, `dynamic: true` and `dynamic_source: "operator"`
+  in provenance. It writes no `dynamic_universe_built` event. A gated name reports
+  "SYMBOL was not scanned: below the liquidity threshold." (or "insufficient bar
+  coverage", "market data unavailable").
+- **Dynamic cap.** Unlike a configured contract, the operator name still shares the
+  one-dynamic-card-per-session cap: under NONE only the `dynamic` group is counted
+  (from today's recorded signals) and enforced, so a dynamic card already sent today
+  leaves "correlation group already has a card this session" as the result.
+
+Halt, macro lockout, the earnings blackout and every evaluator gate apply unchanged
+inside `run_scan`; the card budget is not spent. A single-name scan fetches no
+`coverage_reference_symbol`, so, as for Re-evaluate, the coverage gate is skipped
+(the summary's coverage note says so).
 
 **Card rendering.** Every card that carries a `valid_until` (recorded in
 `decision_provenance` when the contract is in RTH at scan/tap time) shows

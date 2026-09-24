@@ -68,12 +68,12 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
     copilot.notifier.is_configured.return_value = True
     copilot.notifier.stop_polling = AsyncMock()
 
-    async def cancel_reevaluations():
-        # Background re-evaluations stop before the stream, Telegram and SDK clients close.
+    async def cancel_background_scans():
+        # Background operator scans stop before the stream, Telegram and SDK clients close.
         copilot.broker.stop_trade_stream.assert_not_awaited()
         copilot.notifier.stop_polling.assert_not_awaited()
 
-    copilot.cancel_reevaluations = AsyncMock(side_effect=cancel_reevaluations)
+    copilot.cancel_background_scans = AsyncMock(side_effect=cancel_background_scans)
 
     async def slow_start():
         # Longer than APScheduler's default one-second misfire window.
@@ -110,7 +110,7 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
         task.cancel()
         await task
     copilot.notifier.stop_polling.assert_awaited_once()
-    copilot.cancel_reevaluations.assert_awaited_once()
+    copilot.cancel_background_scans.assert_awaited_once()
     assert daily_started.is_set() is daily_enabled
     assert daily_drained.is_set() is daily_enabled
 

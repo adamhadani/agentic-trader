@@ -471,7 +471,7 @@ async def message_texts(db):
 
 
 async def finish_reevaluations(copilot):
-    await asyncio.gather(*list(copilot.reevaluation_tasks))
+    await asyncio.gather(*list(copilot.background_scan_tasks))
 
 
 async def test_reevaluate_schedules_a_single_contract_scan_without_budget_or_dedup(tap_desk, temp_db):
@@ -564,7 +564,7 @@ async def test_reevaluate_accepts_only_expired_cards(tap_desk, temp_db, status):
     reply = await tap_desk.reevaluate_signal(sid)
 
     assert reply == ExecutionReply(False, f"Signal #{sid} is {status}; nothing to re-evaluate.")
-    assert tap_desk.reevaluation_tasks == set()
+    assert tap_desk.background_scan_tasks == set()
     tap_desk.run_scan.assert_not_awaited()
 
 
@@ -576,7 +576,7 @@ async def test_reevaluate_is_refused_outside_rth(tap_desk, temp_db):
 
     reply = await tap_desk.reevaluate_signal(sid)
 
-    assert tap_desk.reevaluation_tasks == set()
+    assert tap_desk.background_scan_tasks == set()
     tap_desk.run_scan.assert_not_awaited()
     assert reply.ok is False and reply.text.startswith("Market closed") and "2026-09-24 13:30 UTC" in reply.text
 
@@ -745,7 +745,7 @@ async def test_reevaluate_is_refused_while_a_live_card_exists_for_the_contract(t
     reply = await tap_desk.reevaluate_signal(sid)
 
     assert reply == ExecutionReply(False, f"A live card for SPY already exists (#{live}).")
-    assert tap_desk.reevaluation_tasks == set()
+    assert tap_desk.background_scan_tasks == set()
     tap_desk.run_scan.assert_not_awaited()
 
 
@@ -766,9 +766,9 @@ async def test_shutdown_cancels_and_awaits_in_flight_reevaluations(tap_desk, tem
     await tap_desk.reevaluate_signal(sid)
     await asyncio.wait_for(started.wait(), timeout=1)
 
-    await asyncio.wait_for(tap_desk.cancel_reevaluations(), timeout=1)
+    await asyncio.wait_for(tap_desk.cancel_background_scans(), timeout=1)
 
-    assert cancelled.is_set() and tap_desk.reevaluation_tasks == set()
+    assert cancelled.is_set() and tap_desk.background_scan_tasks == set()
     assert await message_texts(temp_db) == []  # a cancelled re-evaluation reports nothing
 
 

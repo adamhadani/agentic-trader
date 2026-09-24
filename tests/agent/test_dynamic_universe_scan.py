@@ -638,7 +638,7 @@ async def test_a_missed_dynamic_card_offers_no_reevaluation_and_refuses_one(dyna
     dynamic_desk.entry_service.authorize.assert_not_awaited()
     refusal = await dynamic_desk.reevaluate_signal(sid)
     assert refusal.ok is False and "not a configured contract" in refusal.text
-    assert dynamic_desk.reevaluation_tasks == set()
+    assert dynamic_desk.background_scan_tasks == set()
     assert [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.CARD_REEVALUATE_REQUESTED] == []
 
 

@@ -321,11 +321,12 @@ one or two reasonable cards per session:
    `NotificationKind.CARD_EXPIRED` outbox notification per row in the same transaction;
    delivery (`TelegramNotifier.strike_expired_card`) edits the card's message down to a
    single Re-evaluate button, or removes the buttons entirely for a non-configured
-   contract (see [production behaviour](production.md#suggestion-scans)). Remaining
-   follow-ups, out of scope here: labeling delayed entries 1–3h after the decision in the
-   setup-outcome study, to quantify decay against measured tap latency; and a `/scan SYM`
-   Telegram command for an arbitrary symbol (re-evaluate today only covers the contract
-   already on the tapped card).
+   contract (see [production behaviour](production.md#suggestion-scans)). A `/scan SYM`
+   Telegram command for an arbitrary symbol is also **delivered** (September 24): a
+   configured contract or a dynamic-universe-screened US equity, the latter gated by the
+   latest journaled liquidity reference and the one-dynamic-card cap. Remaining
+   follow-up, out of scope here: labeling delayed entries 1–3h after the decision in the
+   setup-outcome study, to quantify decay against measured tap latency.
 
 Later and operator-gated:
 

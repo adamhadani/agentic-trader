@@ -406,6 +406,7 @@ class TelegramNotifier:
         flatten_handler: Callable[[bool], Awaitable[str]] | None = None,
         execute_handler: Callable[..., Awaitable[ExecutionReply]] | None = None,
         reevaluate_handler: Callable[[int], Awaitable[ExecutionReply]] | None = None,
+        symbol_scan_handler: Callable[[str], Awaitable[ExecutionReply]] | None = None,
         perf_provider: Callable[[], Awaitable[str]] | None = None,
         macro_provider: Callable[[], Awaitable[str]] | None = None,
         explain_macro_provider: Callable[[], Awaitable[str]] | None = None,
@@ -440,6 +441,7 @@ class TelegramNotifier:
         self.flatten_handler = flatten_handler
         self.execute_handler = execute_handler
         self.reevaluate_handler = reevaluate_handler
+        self.symbol_scan_handler = symbol_scan_handler
         self.perf_provider = perf_provider
         self.macro_provider = macro_provider
         self.explain_macro_provider = explain_macro_provider
@@ -595,7 +597,7 @@ class TelegramNotifier:
                 BotCommand("pairs", "Statistical arbitrage pairs, cointegration & Z-scores"),
                 BotCommand("gex", "Option-chain gamma estimates and concentration levels"),
                 BotCommand("backtest", "Offline backtest simulation"),
-                BotCommand("scan", "Trigger on-demand quantitative universe scan"),
+                BotCommand("scan", "Universe scan, or /scan SYMBOL for one name"),
                 BotCommand("close", "Close one position without halting trading"),
                 BotCommand("flatten", "Preview or close all positions without a trading halt"),
                 BotCommand("panic", "EMERGENCY: cancel all orders, liquidate positions & halt"),
@@ -747,6 +749,7 @@ class TelegramNotifier:
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
             "• /close &lt;id&gt; - Request broker closure; accounting waits for fills\n"
             "• /scan - Trigger an on-demand quantitative scan across universe\n"
+            "• /scan SYMBOL - Scan one configured contract or liquid US equity (e.g. <code>/scan XOM</code>)\n"
             "• /flatten [confirm] - Preview/close all broker positions; halt state unchanged\n"
             "• /panic [confirm] - 🔴 Emergency kill switch: cancel orders, liquidate &amp; halt\n"
             "• /resume - 🟢 Clear emergency halt and restore normal operations\n"
@@ -990,6 +993,18 @@ class TelegramNotifier:
 
     async def handle_scan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
+            return
+        args = list(getattr(context, "args", None) or [])
+        if len(args) > 1:
+            await update.message.reply_text("Usage: /scan or /scan SYMBOL")
+            return
+        if args:
+            # One symbol: the copilot validates and schedules a background scan, replying at once.
+            if not self.symbol_scan_handler:
+                await update.message.reply_text("Symbol scan handler not attached.")
+                return
+            reply = await self.symbol_scan_handler(args[0].strip().upper())
+            await update.message.reply_text(reply.text, parse_mode="HTML")
             return
         await update.message.reply_text("🔍 Running quantitative scan across universe...")
         if self.scan_runner:
