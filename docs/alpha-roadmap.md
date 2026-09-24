@@ -272,6 +272,11 @@ one or two reasonable cards per session:
      and `copilot cards outcomes` labels them prospectively.
    - The panel-mining lane follows, using this outcome target. Its first hypotheses are
      the two surviving features and a short-suppression test on fresh data.
+   - **Decision (September 24): prospective only.** No historical panel build for
+     `vol_20`/`sector_rel_mom_60`. Every scheduled suggestion scan already journals both
+     features per ranked candidate, so evaluate them on untouched live evidence with
+     `copilot cards outcomes` around October 21 – November 4. If revisited, `alpha
+     panel-study` needs a group-neutralized hypothesis kind and cohorts of at most 64 names.
 3. **WS3 — dynamic universe (September 23) — delivered.** Liquidity screen plus
    movers/most-actives for the scheduled suggestion scan only; the intraday job,
    swing scan and manual scans stay unchanged
