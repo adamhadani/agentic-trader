@@ -10,6 +10,7 @@ from agentic_trader.execution.freshness import (
     assess_card,
     card_is_stale,
     card_session_over,
+    meets_min_reward_risk,
     parse_valid_until,
     reprice_quantity,
     valid_until_from_provenance,
@@ -315,6 +316,92 @@ def test_failing_gate_gives_missed_even_when_fresh():
 def test_no_gate_reason_allows_execute():
     result = _assess(now=ISSUED_AT, price=LONG_ENTRY, gate_reason=None)
     assert result.outcome == CardOutcome.EXECUTE
+
+
+# --- Incident 2026-09-24 #19: current-price reward:risk must not gate a fresh tap ---------
+# Card #19: LONG entry 240.31, stop 229.90, target 261.13 (approved R:R exactly 2.0).
+# Tapped 20s later at 240.40 (+0.009R). The current-price reward:risk there is
+# (261.13-240.40)/(240.40-229.90) = 1.974... < 2.0 -- but the order rests at the
+# original limit (240.31) when EXECUTE fires, so this must never gate a fresh tap.
+
+CARD19_ENTRY, CARD19_STOP, CARD19_TARGET = 240.31, 229.90, 261.13
+CARD19_TAPPED_PRICE = 240.40  # +0.009R uptick; current-price R:R there is ~1.974 < 2.0
+
+
+def test_incident_card_19_fresh_uptick_executes_despite_low_current_price_rr():
+    now = ISSUED_AT + timedelta(seconds=20)
+    result = _assess(entry=CARD19_ENTRY, stop=CARD19_STOP, target=CARD19_TARGET, now=now, price=CARD19_TAPPED_PRICE)
+    assert result.outcome == CardOutcome.EXECUTE
+    assert result.r_consumed == pytest.approx(0.00864, abs=1e-4)
+
+
+def test_incident_card_19_fresh_downtick_still_executes():
+    now = ISSUED_AT + timedelta(seconds=20)
+    price = CARD19_ENTRY - 0.09  # favorable-direction-agnostic small downtick, still within fresh bounds
+    result = _assess(entry=CARD19_ENTRY, stop=CARD19_STOP, target=CARD19_TARGET, now=now, price=price)
+    assert result.outcome == CardOutcome.EXECUTE
+
+
+def test_incident_card_19_stale_uptick_is_missed_with_two_decimal_message():
+    # Same levels/tap price, but now stale (past fresh_seconds): the current-price
+    # reward:risk floor applies to the would-be re-price and this card fails it.
+    now = ISSUED_AT + timedelta(seconds=POLICY.fresh_seconds + 1)
+    result = _assess(entry=CARD19_ENTRY, stop=CARD19_STOP, target=CARD19_TARGET, now=now, price=CARD19_TAPPED_PRICE)
+    assert result.outcome == CardOutcome.MISSED
+    assert result.reason == "Missed: reward:risk at 240.40 would be 1.97 < 2.00."
+
+
+def test_incident_card_19_stale_downtick_is_repriced():
+    now = ISSUED_AT + timedelta(seconds=POLICY.fresh_seconds + 1)
+    price = CARD19_ENTRY - 0.09
+    result = _assess(entry=CARD19_ENTRY, stop=CARD19_STOP, target=CARD19_TARGET, now=now, price=price)
+    assert result.outcome == CardOutcome.REPRICE
+
+
+def test_incident_card_19_short_mirror_fresh_downtick_executes_despite_low_current_price_rr():
+    # SHORT mirror of card #19: entry 240.31, stop 250.72 (risk 10.41), target 219.49
+    # (approved R:R ~2.0). A small favorable downtick to 240.22 (+0.009R) drops the
+    # current-price reward:risk to ~1.974 < 2.0, but the tap is fresh so it EXECUTEs.
+    entry, stop, target = 240.31, 250.72, 219.49
+    now = ISSUED_AT + timedelta(seconds=20)
+    price = entry - 0.09
+    result = _assess(direction="SHORT", entry=entry, stop=stop, target=target, now=now, price=price)
+    assert result.outcome == CardOutcome.EXECUTE
+    assert result.r_consumed == pytest.approx(0.00864, abs=1e-4)
+
+
+def test_gate_reason_still_refuses_a_fresh_tap_after_reordering():
+    now = ISSUED_AT + timedelta(seconds=20)
+    result = _assess(
+        entry=CARD19_ENTRY,
+        stop=CARD19_STOP,
+        target=CARD19_TARGET,
+        now=now,
+        price=CARD19_TAPPED_PRICE,
+        gate_reason="Current macro/volatility policy requires a higher reward/risk ratio.",
+    )
+    assert result.outcome == CardOutcome.MISSED
+    assert result.reason == "Current macro/volatility policy requires a higher reward/risk ratio."
+
+
+# --- meets_min_reward_risk: the shared two-decimal comparison helper ----------------------
+
+
+def test_meets_min_reward_risk_false_for_nonpositive_risk():
+    assert meets_min_reward_risk(10.0, 0.0, 2.0) is False
+    assert meets_min_reward_risk(10.0, -1.0, 2.0) is False
+
+
+def test_meets_min_reward_risk_true_at_float_noise_boundary():
+    # (261.58-240.46)/(240.46-229.90) == 1.9999999999999973 in raw floats (card #20).
+    assert meets_min_reward_risk(1.9999999999999973, 1.0, 2.0) is True
+
+
+def test_meets_min_reward_risk_rounding_boundary():
+    # round(1.994, 2) == 1.99 < 2.0; round(1.995, 2) == 2.0 because the float 1.995 is stored just
+    # above the halfway point. A ratio within about 0.005 below the minimum passes, as it does at approval.
+    assert meets_min_reward_risk(1.994, 1.0, 2.0) is False
+    assert meets_min_reward_risk(1.995, 1.0, 2.0) is True
 
 
 # --- reprice_quantity -----------------------------------------------------------------

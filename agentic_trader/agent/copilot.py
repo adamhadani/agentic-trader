@@ -59,6 +59,7 @@ from agentic_trader.execution.freshness import (
     CardOutcome,
     ExecutionReply,
     assess_card,
+    meets_min_reward_risk,
     reprice_quantity,
     round_to_tick,
     valid_until_from_provenance,
@@ -2433,7 +2434,8 @@ class TradingCopilot:
                     "quantity": quantity,
                     "stop_distance_points": stop_distance,
                     "target_distance_points": target_distance,
-                    "risk_reward_ratio": target_distance / stop_distance,
+                    # Two decimals, as the evaluator approves and `meets_min_reward_risk` compares.
+                    "risk_reward_ratio": round(target_distance / stop_distance, 2),
                     "risk_dollars": risk_dollars,
                     "reward_dollars": reward_dollars,
                     "notional_value": notional_value,
@@ -3032,9 +3034,9 @@ class TradingCopilot:
             return "Current macro/volatility policy suppresses breakout entries."
         assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
         risk_distance = abs(request.entry_price - request.stop_loss)
-        if abs(request.take_profit - request.entry_price) / risk_distance < max(
-            self.config.risk.min_risk_reward_ratio, regime.min_rr_threshold
-        ):
+        reward_distance = abs(request.take_profit - request.entry_price)
+        min_reward_risk = max(self.config.risk.min_risk_reward_ratio, regime.min_rr_threshold)
+        if not meets_min_reward_risk(reward_distance, risk_distance, min_reward_risk):
             return "Current macro/volatility policy requires a higher reward/risk ratio."
         info = self.config.contracts.get(request.symbol)
         risk = risk_distance * request.quantity * (info.multiplier if info else 1)

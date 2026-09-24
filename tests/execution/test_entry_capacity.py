@@ -63,6 +63,38 @@ def test_explicit_order_risk_is_bounded_by_observed_equity(app_config, capacity_
     assert reason is not None and "risk cap" in reason.lower()
 
 
+def test_reward_risk_float_noise_at_the_minimum_is_not_rejected(app_config):
+    # Card #20 (2026-09-24 incident): entry 240.46, stop 229.90, target 261.58. Raw
+    # floats give (261.58-240.46)/(240.46-229.90) == 1.9999999999999973, strictly below
+    # 2.0 by naive float comparison, though the evaluator approved this card at rounded 2.0.
+    app_config.risk.min_risk_reward_ratio = 2.0
+    order = OrderRequest(
+        symbol="CRM",
+        asset_class=AssetClass.EQUITY,
+        direction="LONG",
+        quantity=10,
+        entry_price=240.46,
+        stop_loss=229.90,
+        take_profit=261.58,
+    )
+    assert reservation_rejection(order, [], app_config) is None
+
+
+def test_reward_risk_genuinely_below_minimum_is_rejected(app_config):
+    app_config.risk.min_risk_reward_ratio = 2.0
+    order = OrderRequest(
+        symbol="CRM",
+        asset_class=AssetClass.EQUITY,
+        direction="LONG",
+        quantity=10,
+        entry_price=100.0,
+        stop_loss=90.0,
+        take_profit=119.0,  # risk 10, reward 19 -> rr == 1.9, genuinely below 2.0
+    )
+    reason = reservation_rejection(order, [], app_config)
+    assert reason is not None and "risk/reward" in reason.lower()
+
+
 @pytest.mark.parametrize(
     "values",
     [
