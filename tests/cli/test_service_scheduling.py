@@ -5,6 +5,7 @@ against the session. The 15-minute intraday job only ever scans the explicitly
 configured contracts -- the wide universe is reserved for the session-aligned scans.
 """
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -81,6 +82,20 @@ def test_intraday_scan_is_not_registered_without_explicit_contracts(config):
     scheduler = MagicMock()
     service.register_intraday_scan(scheduler, MagicMock(), config, use_llm=True)
     scheduler.add_job.assert_not_called()
+
+
+def test_card_expiry_sweep_is_a_five_minute_interval_job_that_also_runs_at_startup():
+    scheduler = MagicMock()
+    copilot = MagicMock()
+    service.register_card_expiry_sweep(scheduler, copilot)
+    scheduler.add_job.assert_called_once()
+    call = scheduler.add_job.call_args
+    assert call.args[0] is copilot.expire_stale_cards
+    assert call.args[1] == "interval"
+    assert call.kwargs["minutes"] == 5
+    assert call.kwargs["id"] == "card_expiry_sweep"
+    next_run_time = call.kwargs["next_run_time"]
+    assert isinstance(next_run_time, datetime) and next_run_time.tzinfo is UTC
 
 
 async def test_intraday_scan_runs_only_inside_a_session_and_keeps_its_symbols(config):

@@ -99,6 +99,17 @@ transaction — a crash between the two is impossible, not merely retried. The
 replacement is a brand-new signal with its own id and client order id; it needs its
 own fresh tap and carries no authorization from the card it replaced.
 
+A tap is not the only producer of `EXPIRED`: the session-close `card_expiry_sweep` job
+(`SignalDatabase.expire_stale_signals`, `docs/production.md#suggestion-scans`) applies the
+same `card_session_over`/`card_is_stale` rule to every untapped `PENDING` card on a fixed
+interval, independently of any tap, and enqueues its own `CARD_EXPIRED` outbox row in the
+same transaction as the status change. It never calls `authorize`. A tap that still lands
+on any `EXPIRED` card gets "Card #N is no longer live (expired)." from `_not_pending_reply`.
+This covers a card swept before its Telegram strike was delivered, a duplicate message, or
+a card an earlier tap expired or re-priced. The reply does not claim a reason. It adds the
+next regular open when the session is closed, and offers Re-evaluate only for a configured
+contract with no other live card. It never reaches `authorize`.
+
 `SignalStatus.EXPIRED` is now a live, reachable status rather than a value that only
 existed for completeness. Every status-gated query was re-audited for it: enqueue and
 dismiss still accept `PENDING` only, the recent-duplicate rule still ignores status

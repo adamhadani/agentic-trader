@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Collection
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -59,6 +60,17 @@ if TYPE_CHECKING:
 
 def encode(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str, allow_nan=False)
+
+
+def _event_view(row: DomainEventRecord) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "stream": row.stream,
+        "kind": row.kind,
+        "schema_version": row.schema_version,
+        "recorded_at": row.recorded_at.isoformat(),
+        "payload": json.loads(row.payload),
+    }
 
 
 def work_item(row: WorkItemRecord) -> WorkItem:
@@ -181,17 +193,23 @@ class WorkflowStore:
                 stmt = stmt.order_by(DomainEventRecord.id.desc()).limit(limit)
             else:
                 stmt = stmt.order_by(DomainEventRecord.id)
-            return [
-                {
-                    "id": r.id,
-                    "stream": r.stream,
-                    "kind": r.kind,
-                    "schema_version": r.schema_version,
-                    "recorded_at": r.recorded_at.isoformat(),
-                    "payload": json.loads(r.payload),
-                }
-                for r in (await session.scalars(stmt)).all()
-            ]
+            return [_event_view(r) for r in (await session.scalars(stmt)).all()]
+
+    async def recent_events(self, kind: EventKind, *, streams: Collection[str]) -> list[dict[str, Any]]:
+        """Events of ``kind`` in any of ``streams``, newest first (served by the stream index)."""
+        if not streams:
+            return []
+        async with self.db.session_factory() as session:
+            stmt = (
+                select(DomainEventRecord)
+                .where(
+                    DomainEventRecord.scope == self.scope,
+                    DomainEventRecord.stream.in_(list(streams)),
+                    DomainEventRecord.kind == kind,
+                )
+                .order_by(DomainEventRecord.id.desc())
+            )
+            return [_event_view(r) for r in (await session.scalars(stmt)).all()]
 
     async def list_work(
         self, kind: WorkKind, *, statuses: tuple[WorkStatus, ...] | None = None, limit: int = 100

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Container
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from agentic_trader.constants import (
     SignalStatus,
 )
 from agentic_trader.execution.durable import EventKind, NotificationKind
+from agentic_trader.execution.freshness import card_is_stale
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.runtime import RUN_ID, validate_test_database
 from agentic_trader.storage.migrations import run_migrations_head
@@ -653,6 +655,64 @@ class SignalDatabase:
                 decision_provenance=decision_provenance,
                 **new_signal_fields,
             )
+
+    async def expire_stale_signals(
+        self, now: datetime, *, configured_contracts: Container[str] = frozenset()
+    ) -> list[int]:
+        """Sweep this scope's untapped ``PENDING`` cards and expire the stale ones atomically.
+
+        In one transaction under the workflow lock: select this scope's ``PENDING`` signals,
+        apply the exact tap-time expiry rule (``card_is_stale``, shared with ``assess_card``
+        via ``execution/freshness.py`` so the two paths cannot drift), conditionally update
+        each stale row PENDING -> EXPIRED, and enqueue one ``CARD_EXPIRED`` outbox
+        notification per row actually changed -- in the same transaction as its status
+        change, per the delivery contract. A second call sees no PENDING rows left to
+        expire and both changes nothing and enqueues nothing (``add_notification`` also
+        dedups on its key, belt and suspenders). ``configured_contracts`` decides whether
+        an expired card's contract is offered a **Re-evaluate** button; storage has no
+        config of its own, so the caller (``TradingCopilot.expire_stale_cards``) supplies
+        the configured contract set.
+        """
+        expired_ids: list[int] = []
+        async with self.session_factory() as session, session.begin():
+            await self.workflows.lock(session)
+            # Materialized explicitly (not iterated lazily): later statements in this loop
+            # share the same session, and this must not depend on a driver buffering the
+            # whole result before issuing them (SQLAlchemy's asyncpg dialect does today, but
+            # only without an explicit server-side/streaming cursor).
+            candidates = list(
+                (
+                    await session.scalars(
+                        select(SignalRecord).where(*self._scope(), SignalRecord.status == SignalStatus.PENDING)
+                    )
+                ).all()
+            )
+            for row in candidates:
+                if not card_is_stale(
+                    issued_at=row.timestamp,
+                    decision_provenance=_provenance_document(row.decision_provenance),
+                    now=now,
+                ):
+                    continue
+                result = await session.execute(
+                    update(SignalRecord)
+                    .where(*self._scope(), SignalRecord.id == row.id, SignalRecord.status == SignalStatus.PENDING)
+                    .values(status=SignalStatus.EXPIRED)
+                )
+                if not getattr(result, "rowcount", 0):
+                    continue
+                expired_ids.append(row.id)
+                await self.workflows.add_notification(
+                    session,
+                    f"signal/{row.id}/expired",
+                    NotificationKind.CARD_EXPIRED,
+                    {
+                        "signal_id": row.id,
+                        "contract": row.contract,
+                        "reevaluable": row.contract in configured_contracts,
+                    },
+                )
+        return expired_ids
 
     async def live_signal_id(self, contract: str) -> int | None:
         """The newest PENDING or SUBMITTING signal for ``contract`` in this scope, if any."""

@@ -272,6 +272,11 @@ one or two reasonable cards per session:
      and `copilot cards outcomes` labels them prospectively.
    - The panel-mining lane follows, using this outcome target. Its first hypotheses are
      the two surviving features and a short-suppression test on fresh data.
+   - **Decision (September 24): prospective only.** No historical panel build for
+     `vol_20`/`sector_rel_mom_60`. Every scheduled suggestion scan already journals both
+     features per ranked candidate, so evaluate them on untouched live evidence with
+     `copilot cards outcomes` around October 21 – November 4. If revisited, `alpha
+     panel-study` needs a group-neutralized hypothesis kind and cohorts of at most 64 names.
 3. **WS3 — dynamic universe (September 23) — delivered.** Liquidity screen plus
    movers/most-actives for the scheduled suggestion scan only; the intraday job,
    swing scan and manual scans stay unchanged
@@ -313,13 +318,20 @@ one or two reasonable cards per session:
    `REPRICE` atomically
    replaces the card with its own outbox row, `MISSED`/`EXPIRED` offer a one-tap
    **Re-evaluate** that runs a fresh single-symbol scan, and every card shows its
-   validity window. Follow-ups, out of scope here: proactively striking a card's
-   buttons at session close (needs an outbox "edit message" kind, since today's
-   correctness depends only on tap-time re-assessment, not on the buttons looking
-   dead); labeling delayed entries 1–3h after the decision in the setup-outcome study,
-   to quantify decay against measured tap latency; and a `/scan SYM` Telegram command
-   for an arbitrary symbol (re-evaluate today only covers the contract already on the
-   tapped card).
+   validity window. Proactively striking a card's buttons at session close is now
+   **delivered** (September 24): a `card_expiry_sweep` scheduler job (every 5 minutes,
+   also at startup, independent of halt state) calls `TradingCopilot.expire_stale_cards()`,
+   which runs the shared `card_is_stale`/`card_session_over` rule against every untapped
+   `PENDING` signal, atomically expires the stale ones and enqueues one new
+   `NotificationKind.CARD_EXPIRED` outbox notification per row in the same transaction;
+   delivery (`TelegramNotifier.strike_expired_card`) edits the card's message down to a
+   single Re-evaluate button, or removes the buttons entirely for a non-configured
+   contract (see [production behaviour](production.md#suggestion-scans)). A `/scan SYM`
+   Telegram command for an arbitrary symbol is also **delivered** (September 24): a
+   configured contract or a dynamic-universe-screened US equity, the latter gated by the
+   latest journaled liquidity reference and the one-dynamic-card cap. Remaining
+   follow-up, out of scope here: labeling delayed entries 1–3h after the decision in the
+   setup-outcome study, to quantify decay against measured tap latency.
 
 Later and operator-gated:
 

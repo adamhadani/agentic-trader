@@ -836,3 +836,83 @@ async def test_replacement_card_outbox_row_renders_through_the_real_dispatcher(t
     buttons = send.await_args.kwargs["reply_markup"].inline_keyboard[0]
     assert buttons[0].callback_data == f"exec_{new_id}"
     assert (await temp_db.get_signal_by_id(new_id))["telegram_message_id"] == 41
+
+
+def _reval_query(data: str):
+    query_mock = MagicMock()
+    query_mock.answer = AsyncMock()
+    query_mock.edit_message_reply_markup = AsyncMock()
+    query_mock.message = MagicMock()
+    query_mock.message.reply_text = AsyncMock()
+    query_mock.data = data
+    cb_update = MagicMock()
+    cb_update.callback_query = query_mock
+    cb_update.effective_chat.id = "123456"
+    return query_mock, cb_update
+
+
+@pytest.mark.asyncio
+async def test_reval_retryable_refusal_restores_the_reevaluate_button(temp_db):
+    """A closed-session tap on a swept card's Re-evaluate must not strip the only button."""
+    reply = ExecutionReply(False, "Market closed; Next regular open: 2026-09-24 13:30 UTC (09:30 NY).", retryable=True)
+    notifier = TelegramNotifier(
+        bot_token="test_token", chat_id="123456", db=temp_db, reevaluate_handler=AsyncMock(return_value=reply)
+    )
+    query_mock, cb_update = _reval_query("reval_77")
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    calls = query_mock.edit_message_reply_markup.call_args_list
+    assert calls[0].kwargs["reply_markup"] is None  # cleared while the request is handled
+    [[button]] = calls[-1].kwargs["reply_markup"].inline_keyboard
+    assert (button.text, button.callback_data) == ("🔄 Re-evaluate", "reval_77")
+    query_mock.message.reply_text.assert_called_once_with(reply.text, parse_mode="HTML")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        ExecutionReply(True, "🔄 Re-evaluating SPY… a fresh card or a result message will follow."),
+        ExecutionReply(False, "Re-evaluation of #77 already requested."),
+        ExecutionReply(False, "A live card for SPY already exists (#80)."),
+    ],
+)
+async def test_reval_claimed_or_final_refusal_keeps_the_button_cleared(temp_db, reply):
+    notifier = TelegramNotifier(
+        bot_token="test_token", chat_id="123456", db=temp_db, reevaluate_handler=AsyncMock(return_value=reply)
+    )
+    query_mock, cb_update = _reval_query("reval_77")
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    query_mock.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
+
+
+@pytest.mark.asyncio
+async def test_exec_retry_does_not_restore_buttons_on_a_card_expired_meanwhile(temp_db):
+    """The sweep can strike a card while its tap-time checks are in flight; never undo that."""
+    signal_id = await temp_db.record_signal(
+        contract="SPY",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=100.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        risk_dollars=50.0,
+        asset_class=AssetClass.EQUITY,
+        quantity=10,
+    )
+
+    async def execute(signal_id, quantity=None):
+        await temp_db.update_signal_status(signal_id, SignalStatus.EXPIRED)  # the sweep wins
+        return ExecutionReply(False, "⚠️ Checks unavailable; try again shortly.", retryable=True)
+
+    notifier = TelegramNotifier(
+        bot_token="test_token", chat_id="123456", db=temp_db, execute_handler=AsyncMock(side_effect=execute)
+    )
+    query_mock, cb_update = _reval_query(f"exec_{signal_id}")
+
+    await notifier.handle_button_callback(cb_update, MagicMock())
+
+    query_mock.edit_message_reply_markup.assert_called_once_with(reply_markup=None)

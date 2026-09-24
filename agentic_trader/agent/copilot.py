@@ -6,8 +6,8 @@ import html
 import logging
 import math
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import replace as dataclass_replace
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import UTC, datetime, time as dt_time, timedelta
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -61,6 +61,7 @@ from agentic_trader.execution.freshness import (
     assess_card,
     reprice_quantity,
     round_to_tick,
+    valid_until_from_provenance,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
 from agentic_trader.market.session import ET_TZ, CompositeMarketSessionProvider
@@ -99,6 +100,7 @@ from agentic_trader.screeners.dynamic_universe import (
     AssetInfo,
     DynamicSelection,
     DynamicUniverseSource,
+    ScreenerEntry,
     StaticReference,
     dollar_volume_threshold,
     liquidity_gate,
@@ -122,10 +124,53 @@ logger = logging.getLogger("copilot")
 DYNAMIC_CORRELATION_GROUP = "dynamic"
 # One bound on a suggestion scan's screener and asset-list reads (it holds the scan lock).
 DYNAMIC_UNIVERSE_TIMEOUT_SECONDS = 60.0
+# `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
+# suggestion-scan liquidity reference it is gated against may be.
+OPERATOR_DYNAMIC_SOURCE = "operator"
+OPERATOR_REFERENCE_MAX_AGE = timedelta(days=7)
+# An operator scan request that arrives after daemon shutdown began: its task would never be
+# cancelled or awaited (``cancel_background_scans`` already ran), so it is refused instead.
+SHUTTING_DOWN_TEXT = "Daemon is shutting down; try again after restart."
+# `select_dynamic` reason codes a single operator entry can hit, as an operator refusal
+# (its price is unknown, it is never a configured key and one entry never exceeds a cap).
+_DYNAMIC_FILTER_PHRASES = {
+    "shape": "not a plain US equity symbol (1-5 letters)",
+    "crypto_prefix": "the symbol is routed as crypto",
+    "asset_missing": "not an active Alpaca US equity",
+    "asset_class": "not a US equity",
+    "inactive": "not an active asset",
+    "untradable": "not tradable at Alpaca",
+    "exchange": "not listed on a major US exchange",
+    "instrument": "warrant/right/unit or volatility/option-income product",
+    "leveraged": "leveraged/inverse fund",
+}
+# Why a single-name operator scan dropped its dynamic name before strategy scanning. Such a
+# scan fetches no coverage reference (the coverage gate is skipped, as for Re-evaluate) and
+# always carries a journaled reference, so "coverage" and "no_reference" cannot occur.
+_DYNAMIC_EXCLUSION_PHRASES = {
+    "fetch_failed": "market data unavailable",
+    "insufficient_bars": "fewer than 20 completed daily bars",
+    "dollar_volume": "below the liquidity threshold",
+    "price": "below the minimum price",
+    "gate_error": "the liquidity gate failed; see logs",
+}
 
 
 class ScanBusyError(RuntimeError):
     """A bounded wait for the scan lock expired: another scan is still running."""
+
+
+@dataclass(frozen=True)
+class OperatorDynamicName:
+    """One unconfigured equity an operator asked to scan, already through ``select_dynamic``.
+
+    ``reference`` is rebuilt from the latest journaled suggestion-scan liquidity
+    reference, so the scan's own ``liquidity_gate`` decides without static bars.
+    """
+
+    selection: DynamicSelection
+    asset: AssetInfo
+    reference: StaticReference
 
 
 class TradingCopilot:
@@ -267,6 +312,7 @@ class TradingCopilot:
                 flatten_handler=self.flatten_positions,
                 execute_handler=self.execute_signal_by_id,
                 reevaluate_handler=self.reevaluate_signal,
+                symbol_scan_handler=self.request_symbol_scan,
                 perf_provider=self.get_performance_summary_html,
                 macro_provider=self.get_macro_summary_html,
                 explain_macro_provider=self.get_explain_macro_html,
@@ -331,8 +377,9 @@ class TradingCopilot:
         self._session_scan_stats: dict[str, list[dict[str, Any]]] = {}
         self._shutdown_event = asyncio.Event()
         self._scan_lock = asyncio.Lock()
-        # Strong references to background re-evaluations, so they are never garbage-collected.
-        self.reevaluation_tasks: set[asyncio.Task[None]] = set()
+        # Strong references to background operator scans (card re-evaluations and
+        # `/scan SYMBOL`), so they are never garbage-collected; shutdown cancels them all.
+        self.background_scan_tasks: set[asyncio.Task[None]] = set()
 
     async def ask_copilot(self, query: str, chat_id: str | int = "default") -> str:
         """Handle a natural language conversational turn through the LangGraph copilot."""
@@ -440,6 +487,7 @@ class TradingCopilot:
         shadow_evidence: bool = False,
         dedup_exempt_setups: frozenset[tuple[str, str, str | None, str | None]] = frozenset(),
         scan_lock_timeout: float | None = None,
+        operator_dynamic: OperatorDynamicName | None = None,
     ) -> dict[str, Any] | None:
         """Scan, rank and record cards; returns the scan summary, or None when the scan did not run.
 
@@ -454,6 +502,15 @@ class TradingCopilot:
         re-evaluation of the one expired card, never its contract's other setups.
         ``scan_lock_timeout`` bounds the wait for a running scan; ``ScanBusyError`` is
         raised, before anything else happens, when it is exceeded.
+
+        ``operator_dynamic`` (``/scan SYMBOL`` of an unconfigured equity, with
+        ``symbols=[SYMBOL]``) adds that one name as a dynamic name: a synthetic contract,
+        the dynamic fetch and liquidity gating (median dollar volume against its journaled
+        reference, at least 20 completed daily bars), native strategies only and the
+        ``dynamic`` group. Like Re-evaluate, a single-name scan fetches no
+        ``coverage_reference_symbol``, so the bar-coverage gate is skipped. Even under the
+        NONE budget the name shares the one-dynamic-card-per-session cap. It journals no
+        ``dynamic_universe_built``.
         """
         async with self._hold_scan_lock(scan_lock_timeout):
             self.last_scan_summary = {}
@@ -549,6 +606,8 @@ class TradingCopilot:
                 "skipped_closed_session": [],
                 "skipped_not_executable": [],
                 "coverage_excluded": [],
+                # Contracts with a setup skipped by the recent-duplicate rule.
+                "duplicates": [],
                 "candidates": 0,
                 "approved": 0,
                 "sent": 0,
@@ -576,15 +635,20 @@ class TradingCopilot:
             dynamic_cfg = self.config.universe.dynamic
             attempt_dynamic = shadow_evidence and dynamic_cfg.enabled and not symbols and timeframe is None
             dynamic_selection: DynamicSelection | None = None
+            dynamic_assets: dict[str, AssetInfo] = {}
             dynamic_error: str | None = None
             dynamic_contracts: list[tuple[str, Any]] = []
             if attempt_dynamic:
                 dynamic_selection, dynamic_assets, dynamic_error = await self._select_dynamic_universe()
-                if dynamic_selection is not None:
-                    dynamic_contracts = [
-                        (entry.symbol, synthetic_contract(entry.symbol, dynamic_assets[entry.symbol].name))
-                        for entry in dynamic_selection.members
-                    ]
+            elif operator_dynamic is not None:
+                # An operator's pre-validated name: the requester already ran select_dynamic.
+                dynamic_selection = operator_dynamic.selection
+                dynamic_assets = {operator_dynamic.asset.symbol: operator_dynamic.asset}
+            if dynamic_selection is not None:
+                dynamic_contracts = [
+                    (entry.symbol, synthetic_contract(entry.symbol, dynamic_assets[entry.symbol].name))
+                    for entry in dynamic_selection.members
+                ]
 
             selected: list[tuple[str, Any]] = []
             for contract, info in [*self.config.contracts.items(), *dynamic_contracts]:
@@ -643,10 +707,14 @@ class TradingCopilot:
             dynamic_sources: dict[str, str] = {}
             dynamic_excluded: dict[str, str] = {}
             dynamic_reference: StaticReference | None = None
-            if attempt_dynamic:
+            if attempt_dynamic or operator_dynamic is not None:
                 if dynamic_selection is not None:
                     dynamic_sources, dynamic_excluded, dynamic_reference = self._gate_dynamic_members(
-                        dynamic_selection, selected, datasets, excluded
+                        dynamic_selection,
+                        selected,
+                        datasets,
+                        excluded,
+                        reference=operator_dynamic.reference if operator_dynamic is not None else None,
                     )
                 summary["dynamic"] = {
                     "available": dynamic_selection is not None,
@@ -667,7 +735,7 @@ class TradingCopilot:
                         "floor": dynamic_cfg.min_median_dollar_volume,
                     },
                 }
-                if not dry_run:
+                if not dry_run and attempt_dynamic:
                     await self._journal_dynamic_universe(
                         scan_id=scan_id, selection=dynamic_selection, dynamic=summary["dynamic"], summary=summary
                     )
@@ -759,6 +827,8 @@ class TradingCopilot:
                             alpha_version=candidate.alpha_version,
                         )
                         if is_dup:
+                            if candidate.contract not in summary["duplicates"]:
+                                summary["duplicates"].append(candidate.contract)
                             logger.info(
                                 "Skipping duplicate signal: %s %s already alerted within %d hours.",
                                 candidate.contract,
@@ -850,6 +920,11 @@ class TradingCopilot:
             groups_used: dict[str, int] = {}
             if budget == ScanBudget.NONE:
                 remaining_scan = remaining_session = len(ranked)
+                if operator_dynamic is not None and not dry_run:
+                    # An operator-requested dynamic name shares the one-dynamic-card-per-session
+                    # cap: only the dynamic group is counted and enforced (see capped_groups).
+                    today = await self.db.signals_since(self.session_start_et())
+                    groups_used[DYNAMIC_CORRELATION_GROUP] = sum(1 for row in today if row.get("dynamic", False))
             else:
                 # Durable, derived budget: a restart mid-session must not hand out a
                 # fresh allowance, so today's spend is read back from recorded signals.
@@ -860,6 +935,15 @@ class TradingCopilot:
                     for group in self._scan_groups(row["contract"], dynamic=row.get("dynamic", False)):
                         groups_used[group] = groups_used.get(group, 0) + 1
             llm_budget = cfg.max_llm_evaluations_per_scan
+
+            def capped_groups(contract: str) -> set[str]:
+                """Groups whose per-session card cap this candidate must respect."""
+                dynamic = contract in dynamic_sources
+                if budget != ScanBudget.NONE:
+                    return self._scan_groups(contract, dynamic=dynamic)
+                # NONE skips the group cap, except for an operator-requested dynamic name.
+                return {DYNAMIC_CORRELATION_GROUP} if operator_dynamic is not None and dynamic else set()
+
             # One session-clock read per contract that actually records a card.
             session_closes: dict[str, str | None] = {}
             for rank, (candidate, _det_res, account_risk) in enumerate(ranked, 1):
@@ -871,9 +955,9 @@ class TradingCopilot:
                         reason = "per-scan budget spent"
                     elif remaining_session <= 0:
                         reason = "per-session budget spent"
-                    elif budget != ScanBudget.NONE and any(
+                    elif any(
                         groups_used.get(g, 0) >= cfg.max_cards_per_group_per_session
-                        for g in self._scan_groups(candidate.contract, dynamic=candidate.contract in dynamic_sources)
+                        for g in capped_groups(candidate.contract)
                     ):
                         reason = "correlation group already has a card this session"
                     elif use_llm and llm_budget <= 0:
@@ -1243,6 +1327,8 @@ class TradingCopilot:
         selected: list[tuple[str, Any]],
         datasets: Mapping[str, Any],
         coverage_excluded: set[str],
+        *,
+        reference: StaticReference | None = None,
     ) -> tuple[dict[str, str], dict[str, str], StaticReference | None]:
         """Kept dynamic names -> source (source order, capped), excluded name -> reason, and the reference.
 
@@ -1253,6 +1339,9 @@ class TradingCopilot:
         sides count completed sessions only: as of the last session completed before this
         scan's New York date, the date the shadow cross-section uses. Without a reference
         (too few static equities with a full window) every dynamic name is excluded.
+
+        An explicit ``reference`` (an operator ``/scan SYMBOL``, whose scan fetches no
+        static bars) replaces the reference measured from this scan's static datasets.
         """
         dynamic_symbols = {entry.symbol for entry in selection.members}
         chosen = {contract for contract, _ in selected}
@@ -1271,7 +1360,6 @@ class TradingCopilot:
                 daily[entry.symbol] = data.daily
                 gated.append(entry)
         dynamic_cfg = self.config.universe.dynamic
-        reference: StaticReference | None = None
         try:
             scan_date = self.session_start_et().date()
             frames = {
@@ -1280,15 +1368,16 @@ class TradingCopilot:
                 if isinstance(frame := getattr(data, "daily", None), pd.DataFrame) and not frame.empty
             }
             as_of = last_completed_session(frames, scan_date) or scan_date - timedelta(days=1)
-            equity = normalize_asset_class(AssetClass.EQUITY)
-            static_daily = {
-                contract: frames[contract]
-                for contract, info in selected
-                if contract not in dynamic_symbols
-                and contract in frames
-                and normalize_asset_class(str(getattr(info, "asset_class", ""))) == equity
-            }
-            reference = static_reference(static_daily, dynamic_cfg.min_dollar_volume_static_percentile, as_of=as_of)
+            if reference is None:
+                equity = normalize_asset_class(AssetClass.EQUITY)
+                static_daily = {
+                    contract: frames[contract]
+                    for contract, info in selected
+                    if contract not in dynamic_symbols
+                    and contract in frames
+                    and normalize_asset_class(str(getattr(info, "asset_class", ""))) == equity
+                }
+                reference = static_reference(static_daily, dynamic_cfg.min_dollar_volume_static_percentile, as_of=as_of)
             kept, gate_excluded = liquidity_gate(daily, gated, dynamic_cfg, reference=reference, as_of=as_of)
         except Exception:
             logger.exception(
@@ -2047,7 +2136,7 @@ class TradingCopilot:
             return ExecutionReply(False, f"❌ Signal #{signal_id} not found in database.")
 
         if sig["status"] != SignalStatus.PENDING:
-            return self._not_pending_reply(signal_id, sig["status"])
+            return await self._not_pending_reply(sig)
 
         contract = sig["contract"]
         direction = sig["direction"].upper()
@@ -2125,16 +2214,43 @@ class TradingCopilot:
         )
         return ExecutionReply(item.status == WorkStatus.ACCEPTED, TelegramHtmlFormatter.format_execution_html(view))
 
-    @staticmethod
-    def _not_pending_reply(signal_id: int, status: str | None) -> ExecutionReply:
-        return ExecutionReply(
-            False, f"❌ Signal #{signal_id} is in status <b>{status}</b> (only PENDING signals can be executed)."
-        )
+    async def _not_pending_reply(self, sig: dict[str, Any]) -> ExecutionReply:
+        """Refuse a tap on a card that is no longer ``PENDING``, saying what the operator can do next."""
+        signal_id, status, contract = sig["id"], sig["status"], sig["contract"]
+        if status != SignalStatus.EXPIRED:
+            return ExecutionReply(
+                False, f"❌ Signal #{signal_id} is in status <b>{status}</b> (only PENDING signals can be executed)."
+            )
+        # EXPIRED by the session-close sweep, a MISSED/EXPIRED tap or a REPRICE -- the card
+        # may still show Execute/Dismiss (a duplicate message, a strike not yet delivered or
+        # one Telegram could not apply). Say only that it is no longer live, never why.
+        name = html.escape(contract)
+        text = f"⌛ Card #{signal_id} is no longer live (expired)."
+        if (live := await self.db.live_signal_id(contract)) is not None:
+            # E.g. its REPRICE replacement: point there; a re-evaluation would be refused.
+            return ExecutionReply(False, f"{text} Card #{live} for {name} is live.")
+        try:
+            async with asyncio.timeout(TAP_CHECK_TIMEOUT_SECONDS):
+                info = await self.session_provider.get_session_info(contract)
+            if not (info.is_open and info.is_rth):
+                text += f"\n{self._next_open_text(info)}"
+        except Exception:
+            # The reply is informational; an unavailable session only omits the next open.
+            logger.warning(
+                "Session unavailable for the reply to a tap on expired card #%d",
+                signal_id,
+                exc_info=True,
+                extra={"event": "card_expired_reply_session_failed", "signal_id": signal_id},
+            )
+        # Re-evaluate covers configured contracts only (a dynamic name is not one).
+        return ExecutionReply(False, text, offer_reevaluate=contract in self.config.contracts)
 
     async def _current_status_reply(self, signal_id: int) -> ExecutionReply:
         """A conditional transition lost a race: report the card's current status instead."""
         current = await self.db.get_signal_by_id(signal_id)
-        return self._not_pending_reply(signal_id, current["status"] if current else None)
+        if current is None:
+            return ExecutionReply(False, f"❌ Signal #{signal_id} not found in database.")
+        return await self._not_pending_reply(current)
 
     @staticmethod
     def _next_open_text(info: Any) -> str:
@@ -2467,14 +2583,7 @@ class TradingCopilot:
             )
             return await refuse(checks_unavailable, f"Tap-time checks failed: {type(exc).__name__}.")
 
-        provenance = sig.get("decision_provenance")
-        raw_valid_until = provenance.get("valid_until") if isinstance(provenance, dict) else None
-        try:
-            valid_until = datetime.fromisoformat(raw_valid_until) if raw_valid_until else None
-        except TypeError, ValueError:
-            valid_until = None
-        if valid_until is not None and valid_until.utcoffset() is None:
-            valid_until = None  # unreadable: fall back to the legacy New York date rule
+        valid_until = valid_until_from_provenance(sig.get("decision_provenance"))
         assert price is not None  # a missing price returned above
         assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
         assessment = assess_card(
@@ -2557,8 +2666,13 @@ class TradingCopilot:
         more. The scan runs in the background so the serialized Telegram handler returns at
         once; it uses the NONE budget (an explicit operator request) and exempts only this
         card's exact setup from the recent-duplicate rule. A fresh card is its own result;
-        otherwise the result is queued through the durable outbox.
+        otherwise the result is queued through the durable outbox. Refusals that take no
+        claim (shutdown begun, session closed or unavailable) are ``retryable``, so Telegram
+        restores the Re-evaluate button instead of leaving the card with none.
         """
+        if self._shutdown_event.is_set():
+            # Before the claim, so the card can still be re-evaluated after the restart.
+            return ExecutionReply(False, SHUTTING_DOWN_TEXT, retryable=True)
         sig = await self.db.get_signal_by_id(signal_id)
         if not sig:
             return ExecutionReply(False, f"❌ Signal #{signal_id} not found in database.")
@@ -2570,7 +2684,7 @@ class TradingCopilot:
                 False,
                 f"{html.escape(contract)} is not a configured contract (a dynamic suggestion-universe name); "
                 "re-evaluate covers configured contracts only. A later suggestion scan considers it again "
-                "if it is still in play.",
+                f"if it is still in play, or /scan {html.escape(contract)} scans it now.",
             )
         if (live := await self.db.live_signal_id(contract)) is not None:
             return ExecutionReply(False, f"A live card for {html.escape(contract)} already exists (#{live}).")
@@ -2584,9 +2698,10 @@ class TradingCopilot:
                 exc_info=True,
                 extra={"event": "card_reevaluate_session_failed", "signal_id": signal_id},
             )
-            return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.")
+            # Retryable (like closed below): no claim was taken, so Telegram restores the button.
+            return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.", retryable=True)
         if not (info.is_open and info.is_rth):
-            return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}")
+            return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}", retryable=True)
         setup = (contract, sig["strategy"], sig.get("timeframe"), sig.get("alpha_version"))
         claimed = await self.db.workflows.claim_card_reevaluation(
             signal_id,
@@ -2598,77 +2713,285 @@ class TradingCopilot:
         )
         if not claimed:
             return ExecutionReply(False, f"Re-evaluation of #{signal_id} already requested.")
-        task = asyncio.create_task(
-            self._run_reevaluation(signal_id, contract, setup), name=f"reevaluate-card-{signal_id}"
+        name = html.escape(contract)
+        self._start_background_scan(
+            self._run_background_scan(
+                contract,
+                notice_key=f"reevaluate/{signal_id}",
+                busy_text=(
+                    f"Re-evaluation of #{signal_id} ({name}) did not run: another scan held the scanner. "
+                    "This card cannot be re-evaluated again; the next scheduled suggestion scan will "
+                    "consider the contract once its duplicate window ends."
+                ),
+                failure_text=(
+                    f"Re-evaluation of #{signal_id} ({name}) failed; see logs. Scheduled scans still cover {name}."
+                ),
+                log_extra={"event": "card_reevaluate_failed", "signal_id": signal_id, "contract": contract},
+                dedup_exempt_setups=frozenset({setup}),
+            ),
+            name=f"reevaluate-card-{signal_id}",
         )
-        self.reevaluation_tasks.add(task)
-        task.add_done_callback(self.reevaluation_tasks.discard)
-        return ExecutionReply(
-            True, f"🔄 Re-evaluating {html.escape(contract)}… a fresh card or a result message will follow."
+        return ExecutionReply(True, f"🔄 Re-evaluating {name}… a fresh card or a result message will follow.")
+
+    async def request_symbol_scan(self, symbol: str) -> ExecutionReply:
+        """Operator ``/scan SYMBOL``: one background scan of one configured contract or US equity.
+
+        Only cheap checks run in the serialized Telegram handler, as for
+        ``reevaluate_signal``: no scan of the name already in flight, no live card for it,
+        the dynamic universe enabled for an unconfigured symbol, and its regular session
+        open (one bounded read). Everything else runs in the background task: for an
+        unconfigured symbol, the dynamic universe's asset/instrument filters and the
+        latest journaled liquidity reference, whose refusals are outbox messages. A
+        configured contract is scanned alone under the NONE budget with the
+        recent-duplicate rule intact; an unconfigured equity is scanned as one dynamic
+        name with source ``operator`` (see ``run_scan``). Halt, macro lockout, earnings
+        blackout and every evaluator gate apply unchanged inside ``run_scan``. A fresh
+        card is its own result; otherwise one outbox message follows.
+        """
+        if self._shutdown_event.is_set():
+            return ExecutionReply(False, SHUTTING_DOWN_TEXT)
+        requested = symbol.strip().upper()
+        contract = next(
+            (key for key in self.config.contracts if requested in (key.upper(), key.strip("/").upper())),
+            None,
+        )
+        target = contract or requested
+        name = html.escape(target)
+        task_name = f"symbol-scan-{target}"
+        if any(task.get_name() == task_name for task in self.background_scan_tasks):
+            return ExecutionReply(False, f"A scan of {name} is already running.")
+        if (live := await self.db.live_signal_id(target)) is not None:
+            return ExecutionReply(False, f"A live card for {name} already exists (#{live}).")
+        if contract is None and not self.config.universe.dynamic.enabled:
+            # The WS3 kill switch, checked explicitly even when a source was injected.
+            return ExecutionReply(
+                False, f"Cannot scan {name}: unconfigured symbols need the dynamic universe, which is disabled."
+            )
+        try:
+            async with asyncio.timeout(TAP_CHECK_TIMEOUT_SECONDS):
+                # An unconfigured plain ticker routes to the equity calendar.
+                info = await self.session_provider.get_session_info(target)
+        except Exception:
+            logger.warning(
+                "Session unavailable for a symbol scan of %s",
+                target,
+                exc_info=True,
+                extra={"event": "operator_symbol_scan_session_failed", "symbol": target},
+            )
+            return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.")
+        if not (info.is_open and info.is_rth):
+            return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}")
+        logger.info(
+            "Operator symbol scan requested for %s",
+            target,
+            extra={"event": "operator_symbol_scan", "symbol": target, "configured": contract is not None},
+        )
+        self._start_background_scan(self._run_symbol_scan(target, configured=contract is not None), name=task_name)
+        return ExecutionReply(True, f"🔍 Scanning {name}… a card or a result message will follow.")
+
+    async def _run_symbol_scan(self, target: str, *, configured: bool) -> None:
+        """Background ``/scan SYMBOL``: validate an unconfigured name, then scan; results via the outbox."""
+        name = html.escape(target)
+        notice_key = f"symbol-scan/{target}"
+        failure_text = f"Scan of {name} failed; see logs."
+        log_extra = {"event": "operator_symbol_scan_failed", "symbol": target}
+        options: dict[str, Any] = {}
+        if not configured:
+            try:
+                operator_or_refusal = await self._operator_dynamic_name(target)
+            except Exception:
+                logger.exception("Symbol scan validation of %s failed", target, extra=log_extra)
+                await self._publish_scan_notice(failure_text, notice_key, target, log_extra)
+                return
+            if isinstance(operator_or_refusal, str):
+                await self._publish_scan_notice(
+                    f"Cannot scan {name}: {operator_or_refusal}", notice_key, target, log_extra
+                )
+                return
+            options["operator_dynamic"] = operator_or_refusal
+        await self._run_background_scan(
+            target,
+            notice_key=notice_key,
+            busy_text=f"Scan of {name} did not run: scanner busy, try again shortly.",
+            failure_text=failure_text,
+            log_extra=log_extra,
+            **options,
         )
 
-    async def cancel_reevaluations(self) -> None:
-        """Cancel and await every in-flight background re-evaluation (daemon shutdown)."""
-        tasks = list(self.reevaluation_tasks)
-        for task in tasks:
-            # The card's claim is permanent, so say which re-evaluation ends unreported.
+    async def _operator_dynamic_name(self, symbol: str) -> OperatorDynamicName | str:
+        """Validate an unconfigured symbol as one dynamic name, or the refusal reason.
+
+        Reuses ``select_dynamic`` for the asset and instrument filters (the asset list is
+        bounded by ``DYNAMIC_UNIVERSE_TIMEOUT_SECONDS`` and cached per New York date) and
+        the latest journaled suggestion-scan liquidity reference for the liquidity gate.
+        Runs in the background task, never in the Telegram handler.
+        """
+        source = self.dynamic_universe
+        try:
+            if source is None:
+                raise RuntimeError(self._dynamic_universe_error or "dynamic universe source is not configured")
+            async with asyncio.timeout(DYNAMIC_UNIVERSE_TIMEOUT_SECONDS):
+                assets = await source.assets()
+        except Exception:
             logger.warning(
-                "Cancelling in-flight re-evaluation %s at shutdown; its operator will get no result",
+                "Asset lookup unavailable for a symbol scan of %s",
+                symbol,
+                exc_info=True,
+                extra={"event": "operator_symbol_scan_assets_failed", "symbol": symbol},
+            )
+            return "asset lookup unavailable; try again shortly."
+        entry = ScreenerEntry(symbol=symbol, source=OPERATOR_DYNAMIC_SOURCE, rank=0, price=None, percent_change=None)
+        selection = select_dynamic([entry], assets, self.config.contracts.keys(), self.config.universe.dynamic)
+        if not selection.members:
+            code = next(iter(selection.reasons), "")
+            return f"{_DYNAMIC_FILTER_PHRASES.get(code, code or 'filtered out')}."
+        reference = await self._operator_liquidity_reference()
+        if reference is None:
+            return (
+                "no recent liquidity reference (the scheduled suggestion scan records one); "
+                "try after the next suggestion scan."
+            )
+        return OperatorDynamicName(selection=selection, asset=assets[symbol], reference=reference)
+
+    async def _operator_liquidity_reference(self, now: datetime | None = None) -> StaticReference | None:
+        """The newest journaled suggestion-scan liquidity reference usable for this feed, if any.
+
+        A ``dynamic_universe_built`` event qualifies when its threshold is non-null, its
+        feed is this desk's configured Alpaca feed (volume units differ between feeds) and
+        its ``built_at`` is within the last ``OPERATOR_REFERENCE_MAX_AGE`` (7 days). The age
+        check binds; the ``scan/<ET date>`` streams read (today and the 7 previous New York
+        dates) are just the ones that can hold such an event.
+        """
+        now = now or datetime.now(UTC)
+        today = self.session_start_et(now).date()
+        streams = [
+            f"scan/{(today - timedelta(days=d)).isoformat()}" for d in range(OPERATOR_REFERENCE_MAX_AGE.days + 1)
+        ]
+        feed = self.config.market_data.alpaca_feed
+        for event in await self.db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=streams):
+            payload = event["payload"]
+            if payload.get("threshold") is None or payload.get("feed") != feed:
+                continue
+            try:
+                built_at = datetime.fromisoformat(payload["built_at"])
+                block = payload["reference"]
+                reference = StaticReference(
+                    percentile=float(block["percentile"]), names=int(block["names"]), value=float(block["value"])
+                )
+            except KeyError, TypeError, ValueError:
+                continue
+            if built_at.tzinfo is None or not timedelta(0) <= now - built_at <= OPERATOR_REFERENCE_MAX_AGE:
+                continue
+            return reference
+        return None
+
+    async def expire_stale_cards(self) -> None:
+        """Sweep untapped ``PENDING`` cards whose session has ended and strike their buttons.
+
+        Runs on a fixed interval regardless of halt state -- expiring an untapped card adds
+        no risk and releases none, so it must keep running even while new entries are
+        blocked. ``SignalDatabase.expire_stale_signals`` does the actual work atomically
+        (expiry plus its ``CARD_EXPIRED`` outbox notification in one transaction); this
+        wrapper only supplies ``now``/the configured contract set and never raises into the
+        scheduler.
+        """
+        try:
+            expired_ids = await self.db.expire_stale_signals(
+                datetime.now(UTC), configured_contracts=self.config.contracts
+            )
+        except Exception:
+            logger.exception("Card expiry sweep failed", extra={"event": "card_expiry_sweep_failed"})
+            return
+        if expired_ids:
+            logger.info(
+                "Card expiry sweep expired %d stale card(s)",
+                len(expired_ids),
+                extra={"event": "cards_expired", "signal_ids": expired_ids},
+            )
+
+    async def cancel_background_scans(self) -> None:
+        """Cancel and await every in-flight background operator scan (daemon shutdown)."""
+        tasks = list(self.background_scan_tasks)
+        for task in tasks:
+            # A re-evaluation's claim is permanent, so say which scan ends unreported.
+            logger.warning(
+                "Cancelling in-flight background scan %s at shutdown; its operator will get no result",
                 task.get_name(),
-                extra={"event": "card_reevaluate_cancelled", "task": task.get_name()},
+                extra={"event": "background_scan_cancelled", "task": task.get_name()},
             )
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _run_reevaluation(
-        self, signal_id: int, contract: str, setup: tuple[str, str, str | None, str | None]
-    ) -> None:
-        """Background single-contract scan; any non-card result is delivered through the outbox.
+    def _start_background_scan(self, scan: Coroutine[Any, Any, None], *, name: str) -> None:
+        """Run one operator scan in the background, strongly referenced until it finishes."""
+        task = asyncio.create_task(scan, name=name)
+        self.background_scan_tasks.add(task)
+        task.add_done_callback(self.background_scan_tasks.discard)
 
-        A cancellation (daemon shutdown) propagates and reports nothing.
+    async def _run_background_scan(
+        self,
+        contract: str,
+        *,
+        notice_key: str,
+        busy_text: str,
+        failure_text: str,
+        log_extra: dict[str, Any],
+        **scan_options: Any,
+    ) -> None:
+        """Background single-contract NONE-budget scan; any non-card result goes through the outbox.
+
+        ``scan_options`` are extra ``run_scan`` keywords (a re-evaluation's duplicate
+        exemption, a symbol scan's operator dynamic name). A cancellation (daemon
+        shutdown) propagates and reports nothing.
         """
-        name = html.escape(contract)
         try:
             summary = await self.run_scan(
                 symbols=[contract],
                 budget=ScanBudget.NONE,
-                dedup_exempt_setups=frozenset({setup}),
                 scan_lock_timeout=REEVALUATE_SCAN_WAIT_SECONDS,
+                **scan_options,
             )
         except ScanBusyError:
-            text = (
-                f"Re-evaluation of #{signal_id} ({name}) did not run: another scan held the scanner. "
-                "This card cannot be re-evaluated again; the next scheduled suggestion scan will "
-                "consider the contract once its duplicate window ends."
-            )
+            text = busy_text
         except Exception:
-            logger.exception(
-                "Re-evaluation of card #%d failed",
-                signal_id,
-                extra={"event": "card_reevaluate_failed", "signal_id": signal_id, "contract": contract},
-            )
-            text = f"Re-evaluation of #{signal_id} ({name}) failed; see logs. Scheduled scans still cover {name}."
+            logger.exception("Background scan of %s failed", contract, extra=log_extra)
+            text = failure_text
         else:
             if summary is not None and summary.get("sent", 0) > 0:
                 return  # the fresh card, delivered by the outbox, is the result
-            text = self._reevaluation_result_text(contract, summary)
+            text = self._scan_result_text(contract, summary)
+        await self._publish_scan_notice(text, notice_key, contract, log_extra)
+
+    async def _publish_scan_notice(self, text: str, notice_key: str, contract: str, log_extra: dict[str, Any]) -> None:
+        """Queue one operator-scan result through the durable outbox; never raises."""
         try:
-            await self.outbox.publish_message(text, key=f"reevaluate/{signal_id}/{uuid4().hex}")
+            await self.outbox.publish_message(text, key=f"{notice_key}/{uuid4().hex}")
         except Exception:
             logger.exception(
-                "Re-evaluation result for card #%d could not be queued",
-                signal_id,
-                extra={"event": "card_reevaluate_notice_failed", "signal_id": signal_id},
+                "Background scan result for %s could not be queued",
+                contract,
+                extra={**log_extra, "event": "background_scan_notice_failed"},
             )
 
     @staticmethod
-    def _reevaluation_result_text(contract: str, summary: dict[str, Any] | None) -> str:
+    def _scan_result_text(contract: str, summary: dict[str, Any] | None) -> str:
+        """A single-name operator scan's result when it recorded no card.
+
+        Such a scan fetches no coverage reference, so the bar-coverage gate never
+        excludes its name and no coverage wording appears here.
+        """
         name = html.escape(contract)
         if summary is None:
             return f"No fresh card for {name}: the scan did not run (trading halt, closed session or macro lockout)."
-        text = f"No valid setup for {name} right now"
+        if (code := ((summary.get("dynamic") or {}).get("excluded") or {}).get(contract)) is not None:
+            # A gated dynamic name never reached strategy scanning.
+            return f"{name} was not scanned: {html.escape(_DYNAMIC_EXCLUSION_PHRASES.get(code, code))}."
         runners_up = summary.get("runners_up") or []
+        if not runners_up and contract in (summary.get("duplicates") or []):
+            # The setup still exists; the recent-duplicate rule suppressed a second card.
+            return f"No new card for {name}: a matching setup was already carded within the duplicate window."
+        text = f"No valid setup for {name} right now"
         detail = None
         if runners_up:
             detail = runners_up[0].get("reason")
@@ -2676,7 +2999,6 @@ class TradingCopilot:
             for key, label in (
                 ("fetch_failed", "market data unavailable"),
                 ("insufficient", "insufficient market data"),
-                ("coverage_excluded", "excluded by the bar-coverage gate"),
                 ("skipped_closed_session", "session closed"),
                 ("skipped_not_executable", "not executable by this broker"),
             ):

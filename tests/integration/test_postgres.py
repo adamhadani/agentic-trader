@@ -9,11 +9,12 @@ from uuid import uuid4
 
 import psycopg2
 import pytest
+from sqlalchemy import update
 
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import CloseRequestStatus
 from agentic_trader.diagnostics.incidents import IncidentPhase
-from agentic_trader.execution.durable import WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind, WorkStatus
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.maintenance import RetentionService
@@ -23,7 +24,9 @@ from agentic_trader.storage.migrations import (
     run_migrations_head,
     to_sync_url,
 )
+from agentic_trader.storage.models import SignalRecord
 from agentic_trader.storage.operations import OperationsStore
+from agentic_trader.storage.workflow import WorkflowStore
 
 
 pytestmark = [pytest.mark.postgres, pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
@@ -466,3 +469,86 @@ async def test_postgres_incidents_and_retention_between_independent_clients(post
     finally:
         await first.engine.dispose()
         await second.engine.dispose()
+
+
+async def test_postgres_expire_stale_signals_sweeps_only_stale_pending_cards(postgres_test_db):
+    """The sweep's multi-statement transaction (a SELECT, per-row conditional UPDATEs and
+    ``add_notification`` inserts, all sharing one ``AsyncSession``) against real
+    PostgreSQL/asyncpg, not just SQLite: two stale cards expire and enqueue one
+    CARD_EXPIRED notification each with the correct ``reevaluable`` flag, a fresh card is
+    untouched, and a second call is a no-op."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        past_ny_date = datetime(2026, 9, 23, 14, 0, tzinfo=UTC)  # 10:00 ET Sept 23
+        next_day_now = datetime(2026, 9, 24, 15, 0, tzinfo=UTC)  # 11:00 ET Sept 24
+
+        async def issue_card(contract: str, issued_at: datetime) -> int:
+            signal_id = await db.record_signal(
+                contract=contract,
+                strategy="s",
+                direction="LONG",
+                entry_price=100.0,
+                stop_loss=98.0,
+                take_profit=104.0,
+                risk_dollars=2.0,
+                asset_class="EQUITY",
+                quantity=1,
+            )
+            async with db.session_factory() as session, session.begin():
+                await session.execute(
+                    update(SignalRecord).where(SignalRecord.id == signal_id).values(timestamp=issued_at)
+                )
+            return signal_id
+
+        configured_stale = await issue_card("SPY", past_ny_date)
+        dynamic_stale = await issue_card("DYNAMIC_XYZ", past_ny_date)
+        fresh = await issue_card("QQQ", next_day_now)
+
+        expired = await db.expire_stale_signals(next_day_now, configured_contracts=frozenset({"SPY"}))
+
+        assert set(expired) == {configured_stale, dynamic_stale}
+        assert (await db.get_signal_by_id(configured_stale))["status"] == "EXPIRED"
+        assert (await db.get_signal_by_id(dynamic_stale))["status"] == "EXPIRED"
+        assert (await db.get_signal_by_id(fresh))["status"] == "PENDING"
+
+        notifications = await db.workflows.list_work(WorkKind.NOTIFICATION)
+        card_expired = [n for n in notifications if n.payload["kind"] == NotificationKind.CARD_EXPIRED]
+        assert len(card_expired) == 2
+        by_signal = {n.payload["arguments"]["signal_id"]: n for n in card_expired}
+        assert by_signal[configured_stale].payload["arguments"]["reevaluable"] is True
+        assert by_signal[dynamic_stale].payload["arguments"]["reevaluable"] is False
+
+        second_call = await db.expire_stale_signals(next_day_now, configured_contracts=frozenset({"SPY"}))
+        assert second_call == []
+        assert len(await db.workflows.list_work(WorkKind.NOTIFICATION)) == 2
+    finally:
+        await db.engine.dispose()
+
+
+async def test_postgres_recent_events_reads_one_kind_from_named_streams_in_scope(postgres_test_db):
+    """`/scan SYMBOL`'s journaled liquidity-reference read against real PostgreSQL/asyncpg:
+    the ``stream IN (...)`` + kind filter, newest first, isolated to the workflow scope."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await db.init_db()
+        other = WorkflowStore(db)
+        other.scope = "other-environment/paper"
+        for store, stream, kind, n in [
+            (db.workflows, "scan/2026-09-20", EventKind.DYNAMIC_UNIVERSE_BUILT, 1),
+            (db.workflows, "scan/2026-09-21", EventKind.SCAN_CANDIDATES_RANKED, 2),
+            (db.workflows, "scan/2026-09-21", EventKind.DYNAMIC_UNIVERSE_BUILT, 3),
+            (db.workflows, "scan/2026-09-01", EventKind.DYNAMIC_UNIVERSE_BUILT, 4),
+            (other, "scan/2026-09-21", EventKind.DYNAMIC_UNIVERSE_BUILT, 5),
+        ]:
+            async with db.session_factory() as session, session.begin():
+                await store.lock(session)
+                await store.append(session, stream=stream, kind=kind, payload={"n": n})
+
+        events = await db.workflows.recent_events(
+            EventKind.DYNAMIC_UNIVERSE_BUILT, streams=["scan/2026-09-20", "scan/2026-09-21"]
+        )
+
+        assert [e["payload"]["n"] for e in events] == [3, 1]
+        assert await db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=[]) == []
+    finally:
+        await db.engine.dispose()

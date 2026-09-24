@@ -5,7 +5,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from agentic_trader.config import CardFreshnessConfig
-from agentic_trader.execution.freshness import CardOutcome, assess_card, reprice_quantity
+from agentic_trader.execution.freshness import (
+    CardOutcome,
+    assess_card,
+    card_is_stale,
+    card_session_over,
+    parse_valid_until,
+    reprice_quantity,
+    valid_until_from_provenance,
+)
 
 
 POLICY = CardFreshnessConfig()  # enabled=True, fresh_seconds=1800, fresh_max_r=0.25, reprice_min_risk_fraction=0.5
@@ -375,3 +383,106 @@ def test_naive_datetimes_are_rejected_on_every_path(field):
     naive[field] = naive[field].replace(tzinfo=None)
     with pytest.raises(ValueError, match="timezone-aware"):
         _assess(**naive)
+
+
+# --- parse_valid_until: the shared provenance parser -----------------------------------
+
+
+def test_parse_valid_until_accepts_an_offset_iso_string():
+    value = VALID_UNTIL.isoformat()
+    assert parse_valid_until(value) == VALID_UNTIL
+
+
+@pytest.mark.parametrize("raw", [None, "", "not-a-timestamp", "2026-09-23T20:00:00"])  # last: offset-naive
+def test_parse_valid_until_falls_back_to_none(raw):
+    assert parse_valid_until(raw) is None
+
+
+# --- valid_until_from_provenance: the single extraction point shared by tap and sweep --
+
+
+def test_valid_until_from_provenance_extracts_and_parses_the_key():
+    provenance = {"valid_until": VALID_UNTIL.isoformat(), "setup_quality": 0.9}
+    assert valid_until_from_provenance(provenance) == VALID_UNTIL
+
+
+@pytest.mark.parametrize(
+    "provenance", [None, {}, {"valid_until": None}, {"valid_until": "garbage"}, "not-a-dict", 42, ["valid_until"]]
+)
+def test_valid_until_from_provenance_falls_back_to_none(provenance):
+    assert valid_until_from_provenance(provenance) is None
+
+
+# --- card_session_over: the shared expiry rule behind assess_card and the sweep --------
+
+
+def test_card_session_over_true_at_and_past_valid_until():
+    assert card_session_over(ISSUED_AT, VALID_UNTIL, VALID_UNTIL) is True
+    assert card_session_over(ISSUED_AT, VALID_UNTIL, VALID_UNTIL + timedelta(seconds=1)) is True
+
+
+def test_card_session_over_false_before_valid_until():
+    assert card_session_over(ISSUED_AT, VALID_UNTIL, VALID_UNTIL - timedelta(seconds=1)) is False
+
+
+def test_card_session_over_legacy_same_ny_date_is_not_over():
+    issued_at = datetime(2026, 9, 23, 14, 0, 0, tzinfo=UTC)  # 10:00 ET
+    now = datetime(2026, 9, 23, 15, 0, 0, tzinfo=UTC)  # 11:00 ET, same NY date
+    assert card_session_over(issued_at, None, now) is False
+
+
+def test_card_session_over_legacy_next_ny_date_is_over():
+    issued_at = datetime(2026, 9, 23, 23, 30, 0, tzinfo=UTC)  # 19:30 ET Sept 23
+    now = datetime(2026, 9, 24, 5, 0, 0, tzinfo=UTC)  # 01:00 ET Sept 24
+    assert card_session_over(issued_at, None, now) is True
+
+
+# --- card_is_stale: the sweep rule, exercised through raw provenance ------------------
+
+
+def test_card_is_stale_true_once_now_reaches_valid_until():
+    provenance = {"valid_until": VALID_UNTIL.isoformat()}
+    assert card_is_stale(issued_at=ISSUED_AT, decision_provenance=provenance, now=VALID_UNTIL) is True
+    assert (
+        card_is_stale(issued_at=ISSUED_AT, decision_provenance=provenance, now=VALID_UNTIL - timedelta(seconds=1))
+        is False
+    )
+
+
+def test_card_is_stale_legacy_previous_ny_date_is_stale():
+    issued_at = datetime(2026, 9, 23, 14, 0, 0, tzinfo=UTC)  # 10:00 ET Sept 23
+    now = datetime(2026, 9, 24, 15, 0, 0, tzinfo=UTC)  # 11:00 ET Sept 24
+    assert card_is_stale(issued_at=issued_at, decision_provenance=None, now=now) is True
+
+
+def test_card_is_stale_legacy_same_ny_date_is_not_stale():
+    issued_at = datetime(2026, 9, 23, 14, 0, 0, tzinfo=UTC)  # 10:00 ET Sept 23
+    now = datetime(2026, 9, 23, 20, 0, 0, tzinfo=UTC)  # 16:00 ET Sept 23, still same NY date
+    assert card_is_stale(issued_at=issued_at, decision_provenance=None, now=now) is False
+
+
+def test_card_is_stale_legacy_utc_evening_timestamp_still_same_ny_date():
+    # Crosses UTC midnight but stays within the same New York calendar date (Sept 23,
+    # EDT = UTC-4): a naive UTC-date comparison would wrongly call this stale.
+    issued_at = datetime(2026, 9, 23, 23, 30, 0, tzinfo=UTC)  # 19:30 ET Sept 23
+    now = datetime(2026, 9, 24, 2, 0, 0, tzinfo=UTC)  # 22:00 ET Sept 23, still Sept 23 in NY
+    assert card_is_stale(issued_at=issued_at, decision_provenance=None, now=now) is False
+
+
+@pytest.mark.parametrize("raw_valid_until", ["not-a-timestamp", "2026-09-23T20:00:00", ""])  # unparseable or naive
+def test_card_is_stale_unparseable_or_naive_valid_until_falls_back_to_legacy_rule(raw_valid_until):
+    provenance = {"valid_until": raw_valid_until}
+    # Legacy rule: same NY date as issue -> not stale, even though valid_until is unusable.
+    issued_at = datetime(2026, 9, 23, 14, 0, 0, tzinfo=UTC)
+    same_date_now = datetime(2026, 9, 23, 20, 0, 0, tzinfo=UTC)
+    assert card_is_stale(issued_at=issued_at, decision_provenance=provenance, now=same_date_now) is False
+    next_date_now = datetime(2026, 9, 24, 15, 0, 0, tzinfo=UTC)
+    assert card_is_stale(issued_at=issued_at, decision_provenance=provenance, now=next_date_now) is True
+
+
+def test_card_is_stale_missing_valid_until_key_falls_back_to_legacy_rule():
+    issued_at = datetime(2026, 9, 23, 14, 0, 0, tzinfo=UTC)
+    assert (
+        card_is_stale(issued_at=issued_at, decision_provenance={}, now=datetime(2026, 9, 23, 20, 0, tzinfo=UTC))
+        is False
+    )
