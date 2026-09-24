@@ -71,3 +71,15 @@ async def test_expire_stale_cards_swallows_db_exceptions(sweep_desk, caplog):
 
     failures = [r for r in caplog.records if getattr(r, "event", None) == "card_expiry_sweep_failed"]
     assert len(failures) == 1
+
+
+@pytest.mark.asyncio
+async def test_expire_stale_cards_runs_regardless_of_halt_state(sweep_desk):
+    # Expiring an untapped card releases no risk and adds none, so the sweep must keep
+    # running even while new entries are blocked -- unlike the scan jobs, it is never
+    # halt-gated.
+    sweep_desk.is_halted = True
+
+    await sweep_desk.expire_stale_cards()
+
+    sweep_desk.db.expire_stale_signals.assert_awaited_once()

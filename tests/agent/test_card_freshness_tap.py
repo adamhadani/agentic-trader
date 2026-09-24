@@ -228,11 +228,46 @@ async def test_stale_card_is_repriced_into_one_new_pending_card_without_authoriz
     assert event["payload"]["outcome"] == "reprice"
     assert event["payload"]["applied"] is True and event["payload"]["new_signal_id"] == new["id"]
 
-    # A second tap on the re-priced original is refused: it is no longer PENDING.
+    # A second tap on the re-priced original is refused: it is EXPIRED (not PENDING), and
+    # -- like any EXPIRED card -- still offers a path to a fresh one instead of a dead end.
     again = await tap_desk.execute_signal_by_id(sid)
-    assert again.ok is False and "only PENDING signals can be executed" in again.text
+    assert again.ok is False and again.offer_reevaluate is True
+    assert "Card expired: its session has ended." in again.text
     tap_desk.entry_service.authorize.assert_not_awaited()
     assert len(await temp_db.workflows.list_work(WorkKind.NOTIFICATION)) == 1
+
+
+async def test_tap_on_a_card_already_expired_by_the_sweep_offers_reevaluate_not_a_dead_end(tap_desk, temp_db):
+    # The session-close sweep (or a duplicate SIGNAL delivery already struck) can expire a
+    # card before the operator's tap ever reaches it. Before this fix that hit the generic
+    # "only PENDING signals can be executed" refusal with no Re-evaluate button -- a
+    # dead end, since Telegram had already cleared the keyboard on tap.
+    sid = await record_card(temp_db)
+    await temp_db.update_signal_status(sid, SignalStatus.EXPIRED)
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply.ok is False and reply.offer_reevaluate is True
+    assert "Card expired: its session has ended." in reply.text
+    tap_desk.entry_service.authorize.assert_not_awaited()
+
+
+async def test_reprice_race_lost_to_a_concurrent_sweep_offers_reevaluate(tap_desk, temp_db):
+    # Simulates the sweep committing between the tap-time read and the atomic replace:
+    # `replace_signal`'s conditional PENDING->EXPIRED update finds the row already EXPIRED
+    # and returns None, so `_current_status_reply` must not dead-end on the generic message.
+    sid = await record_card(temp_db, age_seconds=3600)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0  # +0.4R -> REPRICE, not MISSED
+
+    async def racing_replace_signal(*args, **kwargs):
+        await temp_db.update_signal_status(sid, SignalStatus.EXPIRED)
+
+    tap_desk.db.replace_signal = racing_replace_signal
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    assert reply.ok is False and reply.offer_reevaluate is True
+    assert "Card expired: its session has ended." in reply.text
 
 
 async def test_reprice_that_rounds_to_zero_shares_is_missed(tap_desk, temp_db):

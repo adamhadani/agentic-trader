@@ -1270,11 +1270,16 @@ class TelegramNotifier:
         the notification payload, since delivery can lag the sweep. A card that was never
         delivered to Telegram (no ``telegram_message_id``) is acknowledged without ever
         calling Telegram -- there is nothing to strike. Telegram refusing an edit because
-        the message is already gone or unchanged is also acknowledged (not retried); any
-        other failure propagates so the outbox retries it.
+        the message is already gone or unchanged, or names an id that never existed or
+        belongs to another chat (``MESSAGE_ID_INVALID``, e.g. after a chat migration), is
+        also acknowledged (not retried) rather than dead-lettering noisily; any other
+        failure propagates so the outbox retries it. An unconfigured/unbuilt Telegram
+        client returns falsy, exactly like every sibling sender (``send_signal_alert``,
+        ``send_exit_alert``, ``send_message``): the outbox retries and eventually dead-letters
+        instead of silently reporting a strike that never happened.
         """
         if not self.is_configured() or not self.app:
-            return "telegram not configured"
+            return False
         sig = await self.db.get_signal_by_id(signal_id) if self.db else None
         message_id = sig.get("telegram_message_id") if sig else None
         if not message_id:
@@ -1294,6 +1299,7 @@ class TelegramNotifier:
                 "message is not modified" in reason
                 or "message to edit not found" in reason
                 or "can't be edited" in reason
+                or "message_id_invalid" in reason
             ):
                 return f"acknowledged unmodifiable card #{signal_id}: {exc}"
             raise

@@ -56,14 +56,26 @@ def card_session_over(issued_at: datetime, valid_until: datetime | None, now: da
     return now_et >= until_et if until_et is not None else issued_et.date() != now_et.date()
 
 
+def valid_until_from_provenance(provenance: object) -> datetime | None:
+    """Extract and parse ``decision_provenance["valid_until"]``, shared by the tap path and the sweep.
+
+    The one place that knows the provenance key/shape, so a future rename or nesting change
+    cannot make the tap and the sweep disagree about which cards are legacy. Non-dict
+    ``provenance`` (missing, unreadable, or of an unexpected type) and every failure mode
+    :func:`parse_valid_until` handles both fall back to ``None`` -- the legacy New York date
+    rule via :func:`card_session_over`.
+    """
+    raw_valid_until = provenance.get("valid_until") if isinstance(provenance, dict) else None
+    return parse_valid_until(raw_valid_until)
+
+
 def card_is_stale(*, issued_at: datetime, decision_provenance: dict[str, Any] | None, now: datetime) -> bool:
     """The sweep's staleness rule for an untapped ``PENDING`` card.
 
-    Identical to the tap-time rule: parse ``decision_provenance["valid_until"]`` the same
-    way ``assess_card`` callers do, then apply the shared :func:`card_session_over` check.
+    Identical to the tap-time rule: extract and parse ``decision_provenance["valid_until"]``
+    via the shared :func:`valid_until_from_provenance`, then apply :func:`card_session_over`.
     """
-    raw_valid_until = decision_provenance.get("valid_until") if isinstance(decision_provenance, dict) else None
-    return card_session_over(issued_at, parse_valid_until(raw_valid_until), now)
+    return card_session_over(issued_at, valid_until_from_provenance(decision_provenance), now)
 
 
 @dataclass(frozen=True)

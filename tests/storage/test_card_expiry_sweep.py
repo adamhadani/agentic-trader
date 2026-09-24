@@ -7,6 +7,7 @@ outbox notification.
 """
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import update
@@ -158,3 +159,66 @@ async def test_sweep_is_idempotent(temp_db):
     assert second == []
     notifications = await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
     assert len(notifications) == 1
+
+
+@pytest.mark.asyncio
+async def test_sweep_rolls_back_the_status_change_when_add_notification_fails(temp_db, monkeypatch):
+    # The status flip and its outbox row share one transaction (CLAUDE.md contract 6): a
+    # refactor that moved them into separate transactions would silently leave a card
+    # EXPIRED with no notice, or vice versa. A raising `add_notification` must roll back
+    # everything, not just skip the notice.
+    stale_id = await _issue_card(temp_db, issued_at=PAST_NY_DATE)
+    monkeypatch.setattr(temp_db.workflows, "add_notification", AsyncMock(side_effect=RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await temp_db.expire_stale_signals(NEXT_DAY_NOW)
+
+    assert (await temp_db.get_signal_by_id(stale_id))["status"] == SignalStatus.PENDING
+    assert await temp_db.workflows.list_work(WorkKind.NOTIFICATION) == []
+
+
+@pytest.mark.asyncio
+async def test_expire_signal_tap_path_enqueues_no_card_expired_notification(temp_db):
+    """Requirement 6: the tap paths edit their own markup and must never also enqueue the
+    sweep's CARD_EXPIRED notice, even when they expire a card that is independently stale."""
+    stale_id = await _issue_card(temp_db, issued_at=PAST_NY_DATE)
+
+    assert await temp_db.expire_signal(stale_id) is True
+
+    assert await temp_db.workflows.list_work(WorkKind.NOTIFICATION) == []
+
+
+@pytest.mark.asyncio
+async def test_replace_signal_tap_path_enqueues_only_its_own_signal_notification(temp_db):
+    stale_id = await _issue_card(temp_db, issued_at=PAST_NY_DATE)
+
+    new_id = await temp_db.replace_signal(
+        stale_id,
+        notification={"contract": "SPY"},
+        decision_provenance={"reprices": stale_id},
+        **_signal_kwargs(entry_price=101.0),
+    )
+
+    assert new_id is not None
+    notifications = await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+    assert [n.payload["kind"] for n in notifications] == [NotificationKind.SIGNAL]
+
+
+@pytest.mark.asyncio
+async def test_sweep_ignores_rows_outside_this_environment_scope(temp_db):
+    # `temp_db` (no AppConfig) has execution_mode == UNKNOWN_EXECUTION_MODE, which makes
+    # `_scope()` match every execution_mode by design (see `SignalDatabase._scope`), so
+    # environment is the one scope dimension a plain `temp_db` can exercise; execution_mode
+    # scoping is exercised end-to-end wherever an AppConfig-backed db is already covered
+    # (e.g. the duplicate-rule and freshness suites).
+    stale_id = await _issue_card(temp_db, issued_at=PAST_NY_DATE)
+    async with temp_db.session_factory() as session, session.begin():
+        await session.execute(update(SignalRecord).where(SignalRecord.id == stale_id).values(environment="other_env"))
+
+    expired = await temp_db.expire_stale_signals(NEXT_DAY_NOW)
+
+    assert expired == []
+    async with temp_db.session_factory() as session:
+        rec = await session.get(SignalRecord, stale_id)
+    assert rec.status == SignalStatus.PENDING
+    assert await temp_db.workflows.list_work(WorkKind.NOTIFICATION) == []

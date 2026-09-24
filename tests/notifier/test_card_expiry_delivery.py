@@ -73,10 +73,47 @@ def eval_res():
 
 
 @pytest.mark.asyncio
-async def test_strike_expired_card_acknowledges_without_calling_telegram_when_not_configured(temp_db):
+async def test_strike_expired_card_returns_false_when_never_configured(temp_db):
+    # Never reachable through the dispatcher (`dispatch_one` returns early while
+    # `is_configured()` is False), but the method itself must still fail closed here too.
     notifier = TelegramNotifier(bot_token=None, chat_id=None, db=temp_db)
     result = await notifier.strike_expired_card(1, "SPY", True)
-    assert result
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_strike_expired_card_returns_false_when_configured_but_app_unbuilt(temp_db):
+    # The one branch of "not configured or no app" the dispatcher can actually reach: token
+    # and chat id are present (`is_configured()` is True, so `dispatch_one` claims the item),
+    # but `ApplicationBuilder` never produced an `app`. Every sibling sender
+    # (`send_signal_alert`, `send_exit_alert`, `send_message`) returns a falsy value here so
+    # the outbox retries and eventually dead-letters, instead of reporting a strike that
+    # never happened as delivered.
+    notifier = TelegramNotifier(bot_token="test_token", chat_id="123456", db=temp_db)
+    notifier.app = None
+
+    result = await notifier.strike_expired_card(1, "SPY", True)
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_retries_card_expired_when_telegram_app_is_unbuilt(temp_db):
+    signal_id = await temp_db.record_signal(**_signal_kwargs())
+    await temp_db.update_telegram_message_id(signal_id, 42)
+    async with temp_db.session_factory() as session, session.begin():
+        await session.execute(update(SignalRecord).where(SignalRecord.id == signal_id).values(timestamp=PAST_NY_DATE))
+    await temp_db.expire_stale_signals(NEXT_DAY_NOW, configured_contracts=frozenset({"SPY"}))
+
+    notifier = TelegramNotifier(bot_token="test_token", chat_id="123456", db=temp_db)
+    notifier.app = None
+
+    dispatched = await NotificationDispatcher(temp_db.workflows, notifier, load_config().execution).dispatch_one()
+
+    assert dispatched is True
+    notifications = await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+    assert notifications[0].status == WorkStatus.QUEUED  # retried, not silently DELIVERED
+    assert notifications[0].attempts == 1
 
 
 @pytest.mark.asyncio
@@ -132,6 +169,7 @@ async def test_strike_expired_card_removes_buttons_when_not_reevaluable(temp_db)
         "Bad Request: message is not modified",
         "Bad Request: message to edit not found",
         "Bad Request: message can't be edited",
+        "Bad Request: MESSAGE_ID_INVALID",
     ],
 )
 async def test_strike_expired_card_acknowledges_known_unmodifiable_badrequests(temp_db, message):

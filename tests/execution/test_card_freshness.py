@@ -12,6 +12,7 @@ from agentic_trader.execution.freshness import (
     card_session_over,
     parse_valid_until,
     reprice_quantity,
+    valid_until_from_provenance,
 )
 
 
@@ -395,6 +396,21 @@ def test_parse_valid_until_accepts_an_offset_iso_string():
 @pytest.mark.parametrize("raw", [None, "", "not-a-timestamp", "2026-09-23T20:00:00"])  # last: offset-naive
 def test_parse_valid_until_falls_back_to_none(raw):
     assert parse_valid_until(raw) is None
+
+
+# --- valid_until_from_provenance: the single extraction point shared by tap and sweep --
+
+
+def test_valid_until_from_provenance_extracts_and_parses_the_key():
+    provenance = {"valid_until": VALID_UNTIL.isoformat(), "setup_quality": 0.9}
+    assert valid_until_from_provenance(provenance) == VALID_UNTIL
+
+
+@pytest.mark.parametrize(
+    "provenance", [None, {}, {"valid_until": None}, {"valid_until": "garbage"}, "not-a-dict", 42, ["valid_until"]]
+)
+def test_valid_until_from_provenance_falls_back_to_none(provenance):
+    assert valid_until_from_provenance(provenance) is None
 
 
 # --- card_session_over: the shared expiry rule behind assess_card and the sweep --------

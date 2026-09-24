@@ -676,8 +676,16 @@ class SignalDatabase:
         expired_ids: list[int] = []
         async with self.session_factory() as session, session.begin():
             await self.workflows.lock(session)
-            candidates = await session.scalars(
-                select(SignalRecord).where(*self._scope(), SignalRecord.status == SignalStatus.PENDING)
+            # Materialized explicitly (not iterated lazily): later statements in this loop
+            # share the same session, and this must not depend on a driver buffering the
+            # whole result before issuing them (SQLAlchemy's asyncpg dialect does today, but
+            # only without an explicit server-side/streaming cursor).
+            candidates = list(
+                (
+                    await session.scalars(
+                        select(SignalRecord).where(*self._scope(), SignalRecord.status == SignalStatus.PENDING)
+                    )
+                ).all()
             )
             for row in candidates:
                 if not card_is_stale(

@@ -59,9 +59,9 @@ from agentic_trader.execution.freshness import (
     CardOutcome,
     ExecutionReply,
     assess_card,
-    parse_valid_until,
     reprice_quantity,
     round_to_tick,
+    valid_until_from_provenance,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
 from agentic_trader.market.session import ET_TZ, CompositeMarketSessionProvider
@@ -2128,6 +2128,13 @@ class TradingCopilot:
 
     @staticmethod
     def _not_pending_reply(signal_id: int, status: str | None) -> ExecutionReply:
+        if status == SignalStatus.EXPIRED:
+            # A tap can land on a card the session-close sweep already expired (or one whose
+            # own CARD_EXPIRED strike was acknowledged but not applied, e.g. "message can't
+            # be edited"): the Telegram keyboard may still show Execute/Dismiss even though
+            # the card is terminal. Answer exactly like a tap-time EXPIRED assessment would,
+            # so the operator always has a path to a fresh card instead of a dead end.
+            return ExecutionReply(False, "⌛ Card expired: its session has ended.", offer_reevaluate=True)
         return ExecutionReply(
             False, f"❌ Signal #{signal_id} is in status <b>{status}</b> (only PENDING signals can be executed)."
         )
@@ -2468,9 +2475,7 @@ class TradingCopilot:
             )
             return await refuse(checks_unavailable, f"Tap-time checks failed: {type(exc).__name__}.")
 
-        provenance = sig.get("decision_provenance")
-        raw_valid_until = provenance.get("valid_until") if isinstance(provenance, dict) else None
-        valid_until = parse_valid_until(raw_valid_until)
+        valid_until = valid_until_from_provenance(sig.get("decision_provenance"))
         assert price is not None  # a missing price returned above
         assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
         assessment = assess_card(
