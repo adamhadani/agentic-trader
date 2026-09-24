@@ -128,11 +128,11 @@ DYNAMIC_UNIVERSE_TIMEOUT_SECONDS = 60.0
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
 OPERATOR_REFERENCE_MAX_AGE = timedelta(days=7)
-# `select_dynamic` reason codes, as an operator refusal.
+# `select_dynamic` reason codes a single operator entry can hit, as an operator refusal
+# (its price is unknown, it is never a configured key and one entry never exceeds a cap).
 _DYNAMIC_FILTER_PHRASES = {
     "shape": "not a plain US equity symbol (1-5 letters)",
     "crypto_prefix": "the symbol is routed as crypto",
-    "static": "already a configured contract",
     "asset_missing": "not an active Alpaca US equity",
     "asset_class": "not a US equity",
     "inactive": "not an active asset",
@@ -140,19 +140,16 @@ _DYNAMIC_FILTER_PHRASES = {
     "exchange": "not listed on a major US exchange",
     "instrument": "warrant/right/unit or volatility/option-income product",
     "leveraged": "leveraged/inverse fund",
-    "price": "below the minimum price",
-    "cap": "the dynamic candidate cap is zero",
 }
-# Why a gated dynamic name never reached strategy scanning, as an operator result.
+# Why a single-name operator scan dropped its dynamic name before strategy scanning. Such a
+# scan fetches no coverage reference (the coverage gate is skipped, as for Re-evaluate) and
+# always carries a journaled reference, so "coverage" and "no_reference" cannot occur.
 _DYNAMIC_EXCLUSION_PHRASES = {
     "fetch_failed": "market data unavailable",
-    "coverage": "insufficient bar coverage",
-    "insufficient_bars": "insufficient bar coverage",
+    "insufficient_bars": "fewer than 20 completed daily bars",
     "dollar_volume": "below the liquidity threshold",
     "price": "below the minimum price",
-    "no_reference": "no liquidity reference",
     "gate_error": "the liquidity gate failed; see logs",
-    "cap": "the dynamic name cap is zero",
 }
 
 
@@ -505,9 +502,12 @@ class TradingCopilot:
 
         ``operator_dynamic`` (``/scan SYMBOL`` of an unconfigured equity, with
         ``symbols=[SYMBOL]``) adds that one name as a dynamic name: a synthetic contract,
-        the same fetch/coverage/liquidity gating against its journaled reference, native
-        strategies only and the ``dynamic`` group. Even under the NONE budget it shares
-        the one-dynamic-card-per-session cap. It journals no ``dynamic_universe_built``.
+        the dynamic fetch and liquidity gating (median dollar volume against its journaled
+        reference, at least 20 completed daily bars), native strategies only and the
+        ``dynamic`` group. Like Re-evaluate, a single-name scan fetches no
+        ``coverage_reference_symbol``, so the bar-coverage gate is skipped. Even under the
+        NONE budget the name shares the one-dynamic-card-per-session cap. It journals no
+        ``dynamic_universe_built``.
         """
         async with self._hold_scan_lock(scan_lock_timeout):
             self.last_scan_summary = {}
@@ -2703,14 +2703,17 @@ class TradingCopilot:
     async def request_symbol_scan(self, symbol: str) -> ExecutionReply:
         """Operator ``/scan SYMBOL``: one background scan of one configured contract or US equity.
 
-        Validates synchronously and returns at once, like ``reevaluate_signal``: no live
-        card for the name, its regular session open, and -- for an unconfigured symbol --
-        the dynamic universe's asset/instrument filters plus a recent journaled liquidity
-        reference (all bounded reads). A configured contract is scanned alone under the
-        NONE budget with the recent-duplicate rule intact; an unconfigured equity is
-        scanned as one dynamic name with source ``operator`` (see ``run_scan``). Halt,
-        macro lockout, earnings blackout and every evaluator gate apply unchanged inside
-        ``run_scan``. A fresh card is its own result; otherwise one outbox message follows.
+        Only cheap checks run in the serialized Telegram handler, as for
+        ``reevaluate_signal``: no scan of the name already in flight, no live card for it,
+        the dynamic universe enabled for an unconfigured symbol, and its regular session
+        open (one bounded read). Everything else runs in the background task: for an
+        unconfigured symbol, the dynamic universe's asset/instrument filters and the
+        latest journaled liquidity reference, whose refusals are outbox messages. A
+        configured contract is scanned alone under the NONE budget with the
+        recent-duplicate rule intact; an unconfigured equity is scanned as one dynamic
+        name with source ``operator`` (see ``run_scan``). Halt, macro lockout, earnings
+        blackout and every evaluator gate apply unchanged inside ``run_scan``. A fresh
+        card is its own result; otherwise one outbox message follows.
         """
         requested = symbol.strip().upper()
         contract = next(
@@ -2724,6 +2727,11 @@ class TradingCopilot:
             return ExecutionReply(False, f"A scan of {name} is already running.")
         if (live := await self.db.live_signal_id(target)) is not None:
             return ExecutionReply(False, f"A live card for {name} already exists (#{live}).")
+        if contract is None and not self.config.universe.dynamic.enabled:
+            # The WS3 kill switch, checked explicitly even when a source was injected.
+            return ExecutionReply(
+                False, f"Cannot scan {name}: unconfigured symbols need the dynamic universe, which is disabled."
+            )
         try:
             async with asyncio.timeout(TAP_CHECK_TIMEOUT_SECONDS):
                 # An unconfigured plain ticker routes to the equity calendar.
@@ -2738,29 +2746,42 @@ class TradingCopilot:
             return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.")
         if not (info.is_open and info.is_rth):
             return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}")
-        operator: OperatorDynamicName | None = None
-        if contract is None:
-            operator_or_refusal = await self._operator_dynamic_name(requested)
-            if isinstance(operator_or_refusal, str):
-                return ExecutionReply(False, f"Cannot scan {name}: {operator_or_refusal}")
-            operator = operator_or_refusal
         logger.info(
             "Operator symbol scan requested for %s",
             target,
             extra={"event": "operator_symbol_scan", "symbol": target, "configured": contract is not None},
         )
-        self._start_background_scan(
-            self._run_background_scan(
-                target,
-                notice_key=f"symbol-scan/{target}",
-                busy_text=f"Scan of {name} did not run: scanner busy, try again shortly.",
-                failure_text=f"Scan of {name} failed; see logs.",
-                log_extra={"event": "operator_symbol_scan_failed", "symbol": target},
-                **({"operator_dynamic": operator} if operator is not None else {}),
-            ),
-            name=task_name,
-        )
+        self._start_background_scan(self._run_symbol_scan(target, configured=contract is not None), name=task_name)
         return ExecutionReply(True, f"🔍 Scanning {name}… a card or a result message will follow.")
+
+    async def _run_symbol_scan(self, target: str, *, configured: bool) -> None:
+        """Background ``/scan SYMBOL``: validate an unconfigured name, then scan; results via the outbox."""
+        name = html.escape(target)
+        notice_key = f"symbol-scan/{target}"
+        failure_text = f"Scan of {name} failed; see logs."
+        log_extra = {"event": "operator_symbol_scan_failed", "symbol": target}
+        options: dict[str, Any] = {}
+        if not configured:
+            try:
+                operator_or_refusal = await self._operator_dynamic_name(target)
+            except Exception:
+                logger.exception("Symbol scan validation of %s failed", target, extra=log_extra)
+                await self._publish_scan_notice(failure_text, notice_key, target, log_extra)
+                return
+            if isinstance(operator_or_refusal, str):
+                await self._publish_scan_notice(
+                    f"Cannot scan {name}: {operator_or_refusal}", notice_key, target, log_extra
+                )
+                return
+            options["operator_dynamic"] = operator_or_refusal
+        await self._run_background_scan(
+            target,
+            notice_key=notice_key,
+            busy_text=f"Scan of {name} did not run: scanner busy, try again shortly.",
+            failure_text=failure_text,
+            log_extra=log_extra,
+            **options,
+        )
 
     async def _operator_dynamic_name(self, symbol: str) -> OperatorDynamicName | str:
         """Validate an unconfigured symbol as one dynamic name, or the refusal reason.
@@ -2768,6 +2789,7 @@ class TradingCopilot:
         Reuses ``select_dynamic`` for the asset and instrument filters (the asset list is
         bounded by ``DYNAMIC_UNIVERSE_TIMEOUT_SECONDS`` and cached per New York date) and
         the latest journaled suggestion-scan liquidity reference for the liquidity gate.
+        Runs in the background task, never in the Telegram handler.
         """
         source = self.dynamic_universe
         try:
@@ -2801,7 +2823,9 @@ class TradingCopilot:
 
         A ``dynamic_universe_built`` event qualifies when its threshold is non-null, its
         feed is this desk's configured Alpaca feed (volume units differ between feeds) and
-        it was built within ``OPERATOR_REFERENCE_MAX_AGE``.
+        its ``built_at`` is within the last ``OPERATOR_REFERENCE_MAX_AGE`` (7 days). The age
+        check binds; the ``scan/<ET date>`` streams read (today and the 7 previous New York
+        dates) are just the ones that can hold such an event.
         """
         now = now or datetime.now(UTC)
         today = self.session_start_et(now).date()
@@ -2902,6 +2926,10 @@ class TradingCopilot:
             if summary is not None and summary.get("sent", 0) > 0:
                 return  # the fresh card, delivered by the outbox, is the result
             text = self._scan_result_text(contract, summary)
+        await self._publish_scan_notice(text, notice_key, contract, log_extra)
+
+    async def _publish_scan_notice(self, text: str, notice_key: str, contract: str, log_extra: dict[str, Any]) -> None:
+        """Queue one operator-scan result through the durable outbox; never raises."""
         try:
             await self.outbox.publish_message(text, key=f"{notice_key}/{uuid4().hex}")
         except Exception:
@@ -2913,7 +2941,11 @@ class TradingCopilot:
 
     @staticmethod
     def _scan_result_text(contract: str, summary: dict[str, Any] | None) -> str:
-        """An operator scan's result when it recorded no card."""
+        """A single-name operator scan's result when it recorded no card.
+
+        Such a scan fetches no coverage reference, so the bar-coverage gate never
+        excludes its name and no coverage wording appears here.
+        """
         name = html.escape(contract)
         if summary is None:
             return f"No fresh card for {name}: the scan did not run (trading halt, closed session or macro lockout)."
@@ -2929,7 +2961,6 @@ class TradingCopilot:
             for key, label in (
                 ("fetch_failed", "market data unavailable"),
                 ("insufficient", "insufficient market data"),
-                ("coverage_excluded", "excluded by the bar-coverage gate"),
                 ("skipped_closed_session", "session closed"),
                 ("skipped_not_executable", "not executable by this broker"),
             ):

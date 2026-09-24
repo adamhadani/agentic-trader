@@ -14,7 +14,7 @@ from sqlalchemy import update
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import CloseRequestStatus
 from agentic_trader.diagnostics.incidents import IncidentPhase
-from agentic_trader.execution.durable import NotificationKind, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind, WorkStatus
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.maintenance import RetentionService
@@ -26,6 +26,7 @@ from agentic_trader.storage.migrations import (
 )
 from agentic_trader.storage.models import SignalRecord
 from agentic_trader.storage.operations import OperationsStore
+from agentic_trader.storage.workflow import WorkflowStore
 
 
 pytestmark = [pytest.mark.postgres, pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
@@ -520,5 +521,34 @@ async def test_postgres_expire_stale_signals_sweeps_only_stale_pending_cards(pos
         second_call = await db.expire_stale_signals(next_day_now, configured_contracts=frozenset({"SPY"}))
         assert second_call == []
         assert len(await db.workflows.list_work(WorkKind.NOTIFICATION)) == 2
+    finally:
+        await db.engine.dispose()
+
+
+async def test_postgres_recent_events_reads_one_kind_from_named_streams_in_scope(postgres_test_db):
+    """`/scan SYMBOL`'s journaled liquidity-reference read against real PostgreSQL/asyncpg:
+    the ``stream IN (...)`` + kind filter, newest first, isolated to the workflow scope."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await db.init_db()
+        other = WorkflowStore(db)
+        other.scope = "other-environment/paper"
+        for store, stream, kind, n in [
+            (db.workflows, "scan/2026-09-20", EventKind.DYNAMIC_UNIVERSE_BUILT, 1),
+            (db.workflows, "scan/2026-09-21", EventKind.SCAN_CANDIDATES_RANKED, 2),
+            (db.workflows, "scan/2026-09-21", EventKind.DYNAMIC_UNIVERSE_BUILT, 3),
+            (db.workflows, "scan/2026-09-01", EventKind.DYNAMIC_UNIVERSE_BUILT, 4),
+            (other, "scan/2026-09-21", EventKind.DYNAMIC_UNIVERSE_BUILT, 5),
+        ]:
+            async with db.session_factory() as session, session.begin():
+                await store.lock(session)
+                await store.append(session, stream=stream, kind=kind, payload={"n": n})
+
+        events = await db.workflows.recent_events(
+            EventKind.DYNAMIC_UNIVERSE_BUILT, streams=["scan/2026-09-20", "scan/2026-09-21"]
+        )
+
+        assert [e["payload"]["n"] for e in events] == [3, 1]
+        assert await db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=[]) == []
     finally:
         await db.engine.dispose()

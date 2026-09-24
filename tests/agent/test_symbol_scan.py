@@ -18,6 +18,7 @@ from agentic_trader.config import ScanBudget
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.screeners.dynamic_universe import AssetInfo, ScreenerEntry, StaticReference
+from agentic_trader.storage.workflow import WorkflowStore
 from tests.agent.test_card_freshness_tap import (  # noqa: F401  (tap_desk is a fixture)
     message_texts,
     record_card,
@@ -36,6 +37,8 @@ from tests.agent.test_dynamic_universe_scan import (  # noqa: F401  (fixtures)
 
 
 SCANNING = "🔍 Scanning {}… a card or a result message will follow."
+# `journal_reference` default: the threshold equals the reference value.
+_DEFAULT = object()
 
 
 async def finish_background_scans(copilot):
@@ -46,7 +49,7 @@ async def journal_reference(
     desk,
     *,
     value: float | None = 1.0e8,
-    threshold: float | None = "default",
+    threshold: float | None | object = _DEFAULT,
     feed: str | None = None,
     built_at: datetime | None = None,
     percentile: float = 0.25,
@@ -65,7 +68,7 @@ async def journal_reference(
         "scanned": [],
         "excluded": {},
         "feed": feed or desk.config.market_data.alpaca_feed,
-        "threshold": value if threshold == "default" else threshold,
+        "threshold": value if threshold is _DEFAULT else threshold,
         "reference": {"percentile": percentile, "names": names, "value": value, "floor": 0},
     }
     workflows = desk.db.workflows
@@ -278,41 +281,102 @@ def named(symbol: str, name: str, **fields) -> AssetInfo:
     )
 
 
+async def refusal_notice(desk, symbol: str) -> str:
+    """Request a symbol scan that the background validation refuses; returns its outbox text."""
+    desk.run_scan = AsyncMock()
+    reply = await desk.request_symbol_scan(symbol)
+    assert reply == ExecutionReply(True, SCANNING.format(symbol.strip().upper()))
+    await finish_background_scans(desk)
+    desk.run_scan.assert_not_awaited()
+    [text] = await message_texts(desk.db)
+    return text
+
+
 @pytest.mark.parametrize(
-    ("assets", "phrase"),
+    ("symbol", "assets", "phrase"),
     [
-        pytest.param({}, "not an active Alpaca US equity", id="asset_missing"),
+        pytest.param("SOXS", {}, "not an active Alpaca US equity", id="asset_missing"),
         pytest.param(
+            "SOXS",
             {"SOXS": named("SOXS", "Direxion Daily Semiconductor Bear 3X Shares")},
             "leveraged/inverse fund",
             id="leveraged",
         ),
         pytest.param(
+            "SOXS",
             {"SOXS": named("SOXS", "Acme Acquisition Corp Warrants")},
             "warrant/right/unit or volatility/option-income product",
             id="instrument",
         ),
-        pytest.param({"SOXS": named("SOXS", "Acme Inc", exchange="OTC")}, "exchange", id="exchange"),
+        pytest.param(
+            "SOXS",
+            {"SOXS": named("SOXS", "Acme Inc", exchange="OTC")},
+            "not listed on a major US exchange",
+            id="exchange",
+        ),
+        pytest.param(
+            "SOXS", {"SOXS": named("SOXS", "Acme Inc", status="inactive")}, "not an active asset", id="inactive"
+        ),
+        pytest.param(
+            "SOXS", {"SOXS": named("SOXS", "Acme Inc", tradable=False)}, "not tradable at Alpaca", id="untradable"
+        ),
+        pytest.param(
+            "SOXS", {"SOXS": named("SOXS", "Acme Inc", asset_class="crypto")}, "not a US equity", id="asset_class"
+        ),
+        pytest.param("BTCX", {"BTCX": named("BTCX", "Acme Inc")}, "the symbol is routed as crypto", id="crypto_prefix"),
+        pytest.param("BRK.B", {}, "not a plain US equity symbol (1-5 letters)", id="shape"),
     ],
 )
-async def test_an_unconfigured_symbol_failing_the_asset_filters_is_refused(operator_desk, assets, phrase):
+async def test_an_unconfigured_symbol_failing_the_asset_filters_is_refused_through_the_outbox(
+    operator_desk, symbol, assets, phrase
+):
     operator_desk.dynamic_universe = FakeSource([], assets)
+    await journal_reference(operator_desk)
+
+    text = await refusal_notice(operator_desk, symbol)
+
+    assert text == f"Cannot scan {symbol}: {phrase}."
+
+
+async def test_the_asset_list_is_read_in_the_background_not_in_the_handler(operator_desk):
+    """A cold Alpaca asset list must never hold the serialized Telegram handler."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_assets():
+        started.set()
+        await release.wait()
+        return {"NEWA": asset("NEWA")}
+
+    operator_desk.dynamic_universe.assets = slow_assets
+    await journal_reference(operator_desk)
+    operator_desk.run_scan = AsyncMock(return_value={"sent": 1, "runners_up": []})
+
+    reply = await asyncio.wait_for(operator_desk.request_symbol_scan("NEWA"), timeout=1)
+
+    assert reply == ExecutionReply(True, SCANNING.format("NEWA")) and not release.is_set()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    # The task is registered before any await, so a repeat is refused at once.
+    assert await operator_desk.request_symbol_scan("NEWA") == ExecutionReply(
+        False, "A scan of NEWA is already running."
+    )
+    release.set()
+    await finish_background_scans(operator_desk)
+    operator_desk.run_scan.assert_awaited_once()
+
+
+async def test_a_disabled_dynamic_universe_refuses_unconfigured_symbols_directly(operator_desk, app_config):
+    """The WS3 kill switch is honoured even with a source injected."""
+    app_config.universe.dynamic.enabled = False
     await journal_reference(operator_desk)
     operator_desk.run_scan = AsyncMock()
 
-    reply = await operator_desk.request_symbol_scan("SOXS")
+    reply = await operator_desk.request_symbol_scan("NEWA")
 
-    assert reply.ok is False and reply.text.startswith("Cannot scan SOXS: ") and phrase in reply.text
+    assert reply == ExecutionReply(
+        False, "Cannot scan NEWA: unconfigured symbols need the dynamic universe, which is disabled."
+    )
     assert operator_desk.background_scan_tasks == set()
-    operator_desk.run_scan.assert_not_awaited()
-
-
-async def test_a_malformed_symbol_is_refused_by_the_shape_filter(operator_desk):
-    operator_desk.run_scan = AsyncMock()
-
-    reply = await operator_desk.request_symbol_scan("BRK.B")
-
-    assert reply.ok is False and "BRK.B" in reply.text and "plain US equity symbol" in reply.text
+    assert operator_desk.dynamic_universe.assets_calls == 0
     operator_desk.run_scan.assert_not_awaited()
 
 
@@ -330,12 +394,20 @@ async def test_an_unavailable_asset_lookup_is_refused(operator_desk, monkeypatch
             return {}
 
         operator_desk.dynamic_universe.assets = slow_assets
-    operator_desk.run_scan = AsyncMock()
 
-    reply = await operator_desk.request_symbol_scan("NEWA")
+    text = await refusal_notice(operator_desk, "NEWA")
 
-    assert reply == ExecutionReply(False, "Cannot scan NEWA: asset lookup unavailable; try again shortly.")
-    operator_desk.run_scan.assert_not_awaited()
+    assert text == "Cannot scan NEWA: asset lookup unavailable; try again shortly."
+
+
+async def test_a_failing_reference_read_is_reported_as_a_failure(operator_desk, caplog):
+    operator_desk.db.workflows.recent_events = AsyncMock(side_effect=RuntimeError("db down"))
+
+    with caplog.at_level("ERROR", logger="copilot"):
+        text = await refusal_notice(operator_desk, "NEWA")
+
+    assert text == "Scan of NEWA failed; see logs."
+    assert any(getattr(r, "event", None) == "operator_symbol_scan_failed" for r in caplog.records)
 
 
 NO_REFERENCE = (
@@ -350,18 +422,29 @@ NO_REFERENCE = (
         pytest.param(None, id="none"),
         pytest.param({"feed": "other"}, id="wrong_feed"),
         pytest.param({"built_at": datetime.now(UTC) - timedelta(days=7, hours=1)}, id="too_old"),
+        pytest.param({"built_at": datetime.now(UTC) + timedelta(hours=1)}, id="future"),
         pytest.param({"value": None, "threshold": None}, id="null_threshold"),
     ],
 )
 async def test_an_unconfigured_symbol_without_a_recent_reference_is_refused(operator_desk, reference):
     if reference is not None:
         await journal_reference(operator_desk, **reference)
-    operator_desk.run_scan = AsyncMock()
 
-    reply = await operator_desk.request_symbol_scan("NEWA")
+    text = await refusal_notice(operator_desk, "NEWA")
 
-    assert reply == ExecutionReply(False, NO_REFERENCE)
-    operator_desk.run_scan.assert_not_awaited()
+    assert text == NO_REFERENCE
+
+
+async def test_a_newer_wrong_feed_reference_never_shadows_an_older_valid_one(operator_desk):
+    await journal_reference(operator_desk, value=6.0e7, built_at=datetime.now(UTC) - timedelta(days=2))
+    await journal_reference(operator_desk, value=9.0e9, feed="other")
+    operator_desk.run_scan = AsyncMock(return_value={"sent": 1, "runners_up": []})
+
+    await operator_desk.request_symbol_scan("NEWA")
+    await finish_background_scans(operator_desk)
+
+    reference = operator_desk.run_scan.await_args.kwargs["operator_dynamic"].reference
+    assert reference == StaticReference(percentile=0.25, names=25, value=6.0e7)
 
 
 async def test_the_latest_usable_reference_is_reconstructed_and_passed_to_run_scan(operator_desk, caplog):
@@ -441,7 +524,7 @@ async def test_a_configured_contract_under_none_ignores_the_group_cap(operator_d
     ("daily", "phrase"),
     [
         pytest.param({"volume": 1_000.0}, "below the liquidity threshold", id="dollar_volume"),
-        pytest.param({"sessions": 10}, "insufficient bar coverage", id="insufficient_bars"),
+        pytest.param({"sessions": 10}, "fewer than 20 completed daily bars", id="insufficient_bars"),
     ],
 )
 async def test_a_gated_operator_name_reports_why(operator_desk, temp_db, dailies, daily, phrase):  # noqa: F811
@@ -527,3 +610,22 @@ async def test_recent_events_reads_one_kind_from_the_named_streams_newest_first(
     )
 
     assert [e["payload"]["n"] for e in events] == [3, 1]
+
+
+async def test_recent_events_is_scoped_and_empty_without_streams(temp_db):
+    other = WorkflowStore(temp_db)
+    other.scope = "other-environment/paper"
+    for store in (temp_db.workflows, other):
+        async with temp_db.session_factory() as session, session.begin():
+            await store.lock(session)
+            await store.append(
+                session,
+                stream="scan/2026-09-21",
+                kind=EventKind.DYNAMIC_UNIVERSE_BUILT,
+                payload={"scope": store.scope},
+            )
+
+    events = await temp_db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=["scan/2026-09-21"])
+
+    assert [e["payload"]["scope"] for e in events] == [temp_db.workflows.scope]
+    assert await temp_db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=[]) == []
