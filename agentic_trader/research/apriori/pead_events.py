@@ -6,9 +6,13 @@ For a report dated on session D (observed NYSE sessions only):
   close(D+1) and ``sigma_i`` the sample standard deviation of the ``vol_window`` daily log
   returns ending D-1 -- never the report day itself;
 - liquidity exactly as the live dynamic-universe gate computes it at the D+2 decision:
-  ``median_dollar_volume(daily, as_of=D+1)`` against
-  ``static_reference(static equities, percentile, as_of=D+1)`` and the ``as_of`` close
-  against ``min_price`` (the live functions are reused, not reimplemented);
+  ``median_dollar_volume(raw daily, as_of=D+1)`` against
+  ``static_reference(static equities' raw daily, percentile, as_of=D+1)`` and the raw
+  ``as_of`` close against ``min_price`` (the live functions are reused, not
+  reimplemented). The gate reads **raw (unadjusted)** bars, as a live scan saw prices at
+  the time: split/dividend-adjusted history depends on later corporate actions (2016
+  NVDA is ~$1 adjusted), which would be lookahead. Reaction, sigma and ATR use the
+  adjusted bars;
 - ``ATR`` = the simple mean of the last ``atr_window`` true ranges through D+1.
 
 Every liquid event with the needed bars is a control event; it is additionally a leg
@@ -31,12 +35,13 @@ import pandas as pd
 from agentic_trader.agent.earnings import CalendarRow
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import PeadEntry, PeadEvent
-from agentic_trader.screeners.dynamic_universe import median_dollar_volume, static_reference
+from agentic_trader.screeners.dynamic_universe import StaticReference, median_dollar_volume, static_reference
 
 
 __all__ = ["EVENT_COLUMNS", "SUPPORTED_SYMBOL", "MarketData", "build_events", "decision_at", "surprise_pct"]
 
 SUPPORTED_SYMBOL = re.compile(r"^[A-Z]{1,5}$")
+_SURPRISE_DECIMALS = 9
 
 EVENT_COLUMNS: tuple[str, ...] = (
     "symbol",
@@ -60,8 +65,9 @@ EVENT_COLUMNS: tuple[str, ...] = (
 @dataclass(frozen=True)
 class MarketData:
     trading_days: tuple[date, ...]  # sorted observed sessions
-    daily: Mapping[str, pd.DataFrame]  # by symbol; tz-aware or UTC-naive index, OHLCV
+    daily: Mapping[str, pd.DataFrame]  # adjusted ("all") bars by symbol; tz-aware or UTC-naive index, OHLCV
     static_symbols: tuple[str, ...]  # static-universe equities for the liquidity reference
+    liquidity_daily: Mapping[str, pd.DataFrame]  # raw (unadjusted) bars for the liquidity gate only
 
 
 def surprise_pct(row: CalendarRow, event: PeadEvent) -> float | None:
@@ -69,7 +75,9 @@ def surprise_pct(row: CalendarRow, event: PeadEvent) -> float | None:
         return None
     if row.n_estimates < event.min_estimates or abs(row.eps_forecast) < event.min_abs_forecast:
         return None
-    return 100.0 * (row.eps - row.eps_forecast) / abs(row.eps_forecast)
+    # Rounded to 9 decimals so cent-granular EPS lands exactly on the +/- threshold
+    # (100 * (0.21 - 0.20) / 0.20 is 4.99999999999999 in binary floating point).
+    return round(100.0 * (row.eps - row.eps_forecast) / abs(row.eps_forecast), _SURPRISE_DECIMALS)
 
 
 def decision_at(day: date, clock: time) -> datetime:
@@ -126,8 +134,9 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
     vol_window, atr_window = entry.event.vol_window, entry.trade.atr_window
     clock = entry.trade.decision_time()
     keyed: dict[str, pd.DataFrame] = {}
-    references: dict[date, float | None] = {}
-    static_daily = {s: market.daily[s] for s in market.static_symbols if s in market.daily}
+    keyed_raw: dict[str, pd.DataFrame] = {}
+    references: dict[date, StaticReference] = {}
+    static_daily = {s: market.liquidity_daily[s] for s in market.static_symbols if s in market.liquidity_daily}
     benchmark = entry.event.benchmark
     bench = _by_session(market.daily[benchmark])
 
@@ -143,8 +152,9 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
         if not SUPPORTED_SYMBOL.fullmatch(row.symbol):
             skip("unsupported_symbol", row.date)
             continue
-        raw = market.daily.get(row.symbol)
-        if raw is None or raw.empty:
+        adjusted = market.daily.get(row.symbol)
+        raw = market.liquidity_daily.get(row.symbol)
+        if adjusted is None or adjusted.empty or raw is None or raw.empty:
             skip("no_daily_bars", row.date)
             continue
         i = position.get(row.date)
@@ -159,8 +169,8 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
             skip("outside_window", row.date)
             continue
         if as_of not in references:
-            references[as_of] = static_reference(static_daily, entry.universe.static_percentile, as_of=as_of).value
-        reference = references[as_of]
+            references[as_of] = static_reference(static_daily, entry.universe.static_percentile, as_of=as_of)
+        reference = references[as_of].value
         if reference is None:
             skip("no_reference", row.date)
             continue
@@ -168,13 +178,14 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
         if dollar_volume is None:
             skip("short_history", row.date)
             continue
-        sym = keyed.setdefault(row.symbol, _by_session(raw))
-        if as_of not in sym.index:
+        sym = keyed.setdefault(row.symbol, _by_session(adjusted))
+        if as_of not in sym.index or not math.isfinite(float(sym.at[as_of, "Close"])):
             skip("no_reaction_bars", row.date)
             continue
-        as_of_close = float(sym.at[as_of, "Close"])
+        liquidity = keyed_raw.setdefault(row.symbol, _by_session(raw))
+        as_of_close = float(liquidity.at[as_of, "Close"]) if as_of in liquidity.index else math.nan
         if not math.isfinite(as_of_close):
-            skip("no_reaction_bars", row.date)
+            skip("no_raw_close", row.date)
             continue
         if as_of_close < entry.universe.min_price:
             skip("illiquid_price", row.date)
@@ -223,5 +234,7 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
         "events": len(frame),
         "reasons": dict(reasons),
         "reasons_by_year": {reason: dict(years) for reason, years in by_year.items()},
+        # Static names with a full raw window, for every as_of date the gate evaluated.
+        "reference_names": {day.isoformat(): ref.names for day, ref in sorted(references.items())},
     }
     return frame, counts

@@ -1,10 +1,13 @@
 """Paced historical acquisition of the Nasdaq earnings calendar for a priori studies.
 
 One GET per weekday, at most one request per ``interval_seconds``, with bounded retries
-(GET only). Each accepted page is saved verbatim with its SHA-256 and receipt time; a
-rerun reuses saved pages after re-checking their hashes and never re-fetches a saved
-date. A date that still fails is recorded, not saved, so the caller can fail closed on
-a gappy sample. Parsing uses the live blackout's parser (``agent.earnings``).
+(GET only). A page is accepted only with HTTP 200, a JSON object body and Nasdaq's own
+``status.rCode == 200`` (a 200 response carrying another rCode is a soft error). Each
+accepted page is saved verbatim with its SHA-256 and receipt time; a rerun reuses saved
+pages after re-checking their hashes and never re-fetches a saved date. A date that
+still fails is recorded, not saved, so the caller can fail closed on a gappy sample;
+accepted pages that parse to zero rows are listed in ``empty_dates`` for the same
+reason. Parsing uses the live blackout's parser (``agent.earnings``).
 """
 
 from __future__ import annotations
@@ -93,10 +96,15 @@ class CalendarPageStore:
 @dataclass(frozen=True)
 class CalendarAcquisition:
     rows: tuple[CalendarRow, ...]
-    requested_dates: int
+    days: tuple[date, ...]  # every requested date, in request order
     fetched_dates: int
     reused_dates: int
     failed_dates: tuple[date, ...]
+    empty_dates: tuple[date, ...]  # accepted (fetched or reused) pages that parsed to zero rows
+
+    @property
+    def requested_dates(self) -> int:
+        return len(self.days)
 
     @property
     def failed_fraction(self) -> float:
@@ -126,6 +134,23 @@ def dedupe_rows(rows: Iterable[CalendarRow]) -> tuple[list[CalendarRow], int]:
     return kept, duplicates
 
 
+def _accepted(payload: object) -> bool:
+    """A JSON object whose ``status.rCode`` is 200; a missing status or rCode is a failure."""
+    if not isinstance(payload, dict):
+        return False
+    status = payload.get("status")
+    return isinstance(status, dict) and status.get("rCode") == 200
+
+
+def _rcode(response: httpx.Response) -> object:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    status = payload.get("status") if isinstance(payload, dict) else None
+    return status.get("rCode") if isinstance(status, dict) else None
+
+
 async def _get_page(
     client: httpx.AsyncClient,
     day: date,
@@ -133,16 +158,18 @@ async def _get_page(
     sleep: Callable[[float], Awaitable[None]],
     retry_delays: Sequence[float],
 ) -> bytes | None:
-    """The page body for ``day`` when the endpoint returns HTTP 200 and a JSON object, else None."""
+    """The page body for ``day`` when the endpoint returns an accepted page (``_accepted``), else None."""
     for delay in (*retry_delays, None):
         await sleep(interval_seconds)
         try:
             response = await client.get(
                 NASDAQ_EARNINGS_CALENDAR_URL, params={"date": day.isoformat()}, headers=NASDAQ_REQUEST_HEADERS
             )
-            if response.status_code == 200 and isinstance(response.json(), dict):
+            if response.status_code == 200 and _accepted(response.json()):
                 return response.content
-            logger.warning("Nasdaq calendar HTTP %s for %s", response.status_code, day.isoformat())
+            logger.warning(
+                "Nasdaq calendar HTTP %s (rCode %s) for %s", response.status_code, _rcode(response), day.isoformat()
+            )
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("Nasdaq calendar request failed for %s: %s", day.isoformat(), exc)
         if delay is None:
@@ -163,6 +190,7 @@ async def acquire_calendar(
     rows: list[CalendarRow] = []
     fetched = reused = 0
     failed: list[date] = []
+    empty: list[date] = []
     async with httpx.AsyncClient(transport=transport, timeout=_TIMEOUT_SECONDS) as client:
         for day in days:
             body = store.load(day)
@@ -175,11 +203,15 @@ async def acquire_calendar(
                     continue
                 store.save(day, body, datetime.now(UTC))
                 fetched += 1
-            rows.extend(parse_calendar_payload(json.loads(body), day))
+            parsed = parse_calendar_payload(json.loads(body), day)
+            if not parsed:
+                empty.append(day)
+            rows.extend(parsed)
     return CalendarAcquisition(
         rows=tuple(rows),
-        requested_dates=len(days),
+        days=tuple(days),
         fetched_dates=fetched,
         reused_dates=reused,
         failed_dates=tuple(failed),
+        empty_dates=tuple(empty),
     )

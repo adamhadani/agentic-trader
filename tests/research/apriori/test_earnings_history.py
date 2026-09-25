@@ -13,9 +13,12 @@ from agentic_trader.research.apriori.earnings_history import (
 )
 
 
-def _body(*symbols: str) -> bytes:
+def _body(*symbols: str, status: dict | None = None) -> bytes:
     rows = [{"symbol": s, "eps": "$1.10", "epsForecast": "$1.00", "noOfEsts": "4"} for s in symbols]
-    return json.dumps({"data": {"rows": rows}}).encode()
+    payload = {"data": {"rows": rows}, "status": {"rCode": 200, "bCodeMessage": None, "developerMessage": None}}
+    if status is not None:
+        payload["status"] = status
+    return json.dumps(payload).encode()
 
 
 class _Recorder:
@@ -137,3 +140,58 @@ def test_dedupe_keeps_the_first_row_per_symbol_and_date():
 
     rows, duplicates = dedupe_rows([row("AAA", 1.0), row("AAA", 2.0), row("BBB", 1.0)])
     assert [(r.symbol, r.eps) for r in rows] == [("AAA", 1.0), ("BBB", 1.0)] and duplicates == 1
+
+
+async def _acquire_one(tmp_path, responses):
+    store = CalendarPageStore(tmp_path / "nasdaq")
+    recorder = _Recorder({"2021-04-29": responses})
+    result = await acquire_calendar(
+        [date(2021, 4, 29)],
+        store,
+        interval_seconds=1.0,
+        transport=httpx.MockTransport(recorder),
+        sleep=_no_sleep,
+        retry_delays=(0.0, 0.0),
+    )
+    return result, recorder, store
+
+
+async def test_a_soft_error_rcode_is_retried_then_failed_not_saved(tmp_path):
+    soft = _body(status={"rCode": 400, "bCodeMessage": [{"code": 1001, "errorMessage": "Throttled"}]})
+    result, recorder, store = await _acquire_one(tmp_path, [(200, soft)] * 3)
+    assert len(recorder.calls) == 3
+    assert result.failed_dates == (date(2021, 4, 29),) and result.empty_dates == ()
+    assert store.load(date(2021, 4, 29)) is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        json.dumps({"data": {"rows": []}}).encode(),  # no status at all
+        json.dumps({"data": {"rows": []}, "status": {}}).encode(),  # no rCode
+        json.dumps({"data": {"rows": []}, "status": None}).encode(),
+    ],
+)
+async def test_a_page_without_a_200_rcode_is_a_failure(tmp_path, body):
+    result, recorder, store = await _acquire_one(tmp_path, [(200, body)] * 3)
+    assert len(recorder.calls) == 3 and result.failed_dates == (date(2021, 4, 29),)
+    assert store.load(date(2021, 4, 29)) is None
+
+
+async def test_a_soft_error_then_a_good_page_is_accepted(tmp_path):
+    result, recorder, _ = await _acquire_one(tmp_path, [(200, _body(status={"rCode": 500})), (200, _body("AAA"))])
+    assert len(recorder.calls) == 2 and result.failed_dates == () and [r.symbol for r in result.rows] == ["AAA"]
+
+
+async def test_accepted_pages_with_no_rows_are_recorded_as_empty_dates(tmp_path):
+    store = CalendarPageStore(tmp_path / "nasdaq")
+    recorder = _Recorder({"2021-04-29": [(200, _body())], "2021-04-30": [(200, _body("AAA"))]})
+    days = [date(2021, 4, 29), date(2021, 4, 30)]
+    first = await acquire_calendar(
+        days, store, interval_seconds=1.0, transport=httpx.MockTransport(recorder), sleep=_no_sleep
+    )
+    assert first.empty_dates == (date(2021, 4, 29),)
+    again = await acquire_calendar(
+        days, store, interval_seconds=1.0, transport=httpx.MockTransport(recorder), sleep=_no_sleep
+    )
+    assert again.empty_dates == (date(2021, 4, 29),) and again.reused_dates == 2  # reused pages are counted too

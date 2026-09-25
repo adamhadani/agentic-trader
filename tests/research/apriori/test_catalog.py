@@ -33,6 +33,8 @@ def test_frozen_entry_loads_with_the_spec_values():
         0.01,
     )
     assert entry.max_failed_calendar_fraction == 0.02 and entry.calendar_request_interval_seconds == 1.0
+    assert entry.universe.liquidity_adjustment == "raw"
+    assert entry.max_empty_session_fraction_per_year == 0.10
 
 
 def _document() -> dict:
@@ -51,6 +53,8 @@ def _document() -> dict:
         lambda d: d["trade"].update(secondary_hold_sessions=10),
         lambda d: d["universe"].update(dollar_volume_window=30),
         lambda d: d["pass_rule"].update(trim_fraction=0.6),
+        lambda d: d["universe"].update(liquidity_adjustment="all"),
+        lambda d: d.update(max_empty_session_fraction_per_year=1.0),
     ],
 )
 def test_invalid_entries_are_rejected(mutate):

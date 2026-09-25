@@ -56,6 +56,9 @@ class PeadUniverse(BaseModel, frozen=True, extra="forbid"):
     # The live liquidity rule (`median_dollar_volume`) is fixed at 20 sessions; the study reuses it.
     dollar_volume_window: Literal[20]
     static_percentile: float = Field(gt=0, lt=1)
+    # The gate reads unadjusted bars, as a live scan saw prices at the time; adjusted
+    # history divides by later splits, which would make the price floor lookahead.
+    liquidity_adjustment: Literal["raw"]
 
 
 class PeadTrade(BaseModel, frozen=True, extra="forbid"):
@@ -117,6 +120,8 @@ class PeadEntry(BaseModel, frozen=True, extra="forbid"):
     bootstrap: BootstrapSpec
     pass_rule: PassRule
     max_failed_calendar_fraction: float = Field(ge=0, lt=1)
+    # Accepted pages with zero rows on observed trading sessions, per calendar year.
+    max_empty_session_fraction_per_year: float = Field(ge=0, lt=1)
     calendar_request_interval_seconds: float = Field(gt=0)
 
     @model_validator(mode="after")

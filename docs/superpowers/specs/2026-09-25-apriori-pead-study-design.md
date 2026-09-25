@@ -45,14 +45,21 @@ never an edit. Fields:
 - `event`: `min_abs_forecast: 0.05`, `min_estimates: 1`, `surprise_pct: 5.0`,
   `reaction_sigma: 1.0`, `vol_window: 20`, `benchmark: "SPY"`;
 - `universe`: `min_price: 10.0`, `dollar_volume_window: 20`,
-  `static_percentile: 0.25`, `static_universe: "config/config.yaml contracts (equities)"`;
+  `static_percentile: 0.25`, `liquidity_adjustment: "raw"` (the static universe is the
+  configured equity contracts, recorded in each result; see "Liquidity");
 - `trade`: `decision_time_et: "10:35"`, `entry_session_offset: 2`,
   `stop_atr_multiple: 2.0`, `atr_window: 14`, `target_r: 3.0`, `max_hold_sessions: 20`,
   `secondary_hold_sessions: 60`;
 - `costs_bps_per_side: [0.0, 5.0]` (5.0 decides);
 - `bootstrap`: `block_mean: 10`, `draws: 2000`, `seed: 20260925`, `ci: 0.90`, one-sided;
 - `pass_rule`: `min_events: 300`, `min_recent_events: 100`, `trim_fraction: 0.01`;
-- `max_failed_calendar_fraction: 0.02`, `calendar_request_interval_seconds: 1.0`.
+- `max_failed_calendar_fraction: 0.02`, `max_empty_session_fraction_per_year: 0.10`,
+  `calendar_request_interval_seconds: 1.0`.
+
+Version 1 was amended once, before any data was read, after the final code review
+(2026-09-25): `liquidity_adjustment` and `max_empty_session_fraction_per_year` were added
+and the surprise is rounded to 9 decimals. Its SHA-256 changed accordingly; it has never
+been run.
 
 ## Data
 
@@ -61,9 +68,17 @@ never an edit. Fields:
 - Source: the Nasdaq earnings calendar endpoint already used by the earnings blackout
   (`NASDAQ_EARNINGS_CALENDAR_URL`, `agent/earnings.py`). One request per weekday in the
   decision window (≈2,700), paced at ≤1 request/second, bounded retries on GET only.
+  A page is accepted only with HTTP 200, a JSON object body and Nasdaq's own
+  `status.rCode == 200`; a 200 response with another (or no) `rCode` is a soft error,
+  retried and then recorded as a failed date, never saved as an empty day.
 - Every raw page is saved under the run's private output directory with its SHA-256 and
   receipt time. Re-runs reuse saved pages (checked against their hashes) and never
   re-fetch a saved date.
+- Fail closed on a gappy sample: more than `max_failed_calendar_fraction` (2%) failed
+  dates, or, in any calendar year, accepted pages with zero rows on more than
+  `max_empty_session_fraction_per_year` (10%) of that year's requested observed trading
+  sessions (an empty session page cannot be told apart from a truncated one; empty
+  weekend/holiday pages do not count). Empty session pages per year are reported.
 - Parsed fields per row: `symbol`, `date` (the calendar date), `eps`, `eps_forecast`,
   `surprise_pct_reported`, `n_estimates`, `fiscal_quarter`. `marketCap` is ignored
   (current, not point-in-time). `time` is ignored (historically always
@@ -73,15 +88,19 @@ never an edit. Fields:
   timing only). No duplicate parser.
 - Surprise used by the rule is recomputed:
   `surprise_pct = 100 × (eps − eps_forecast) / |eps_forecast|`, defined only when both are
-  present, `|eps_forecast| ≥ 0.05` and `n_estimates ≥ 1`. Nasdaq's own `surprise` field is
+  present, `|eps_forecast| ≥ 0.05` and `n_estimates ≥ 1`, rounded to 9 decimal places so
+  cent-granular EPS lands exactly on the ±5% boundary (`100 × (0.21 − 0.20)/0.20` is
+  `4.99999999999999` in binary floating point). Nasdaq's own `surprise` field is
   a cross-check reported as a diagnostic (count of sign disagreements).
 - Rows with the same symbol and date are de-duplicated (first row kept, count reported).
 
 ### Prices
 
-- Alpaca SIP, adjustment `all`: daily bars (reaction, volatility, ATR, liquidity) for
-  every event symbol, SPY and the static universe equities, fetched once per symbol over
-  the whole window; hourly bars (decision price and bracket labelling) only for symbols
+- Alpaca SIP, adjustment `all`: daily bars (reaction, volatility, ATR) for every event
+  symbol, SPY and the static universe equities, fetched once per symbol over the whole
+  window. The liquidity gate instead reads **raw (unadjusted)** daily bars, fetched the
+  same way for every event symbol and static equity (not SPY) and cached separately
+  (`bars_raw`): see "Liquidity". Hourly bars (decision price and bracket labelling) only for symbols
   with at least one liquid event, over that symbol's event span. Reuse the setup study's
   bar cache (`research/setups/runner.py`, `.npz` datasets with range claims). The bar
   evidence store is not used (the cache files and their digests are the study's bar
@@ -101,6 +120,19 @@ close × volume over the 20 completed sessions through `as_of`) must be at least
 Both functions are the live dynamic-universe code (`screeners/dynamic_universe.py`),
 reused, not reimplemented. A date without a reference (fewer than its minimum names) is
 skipped and counted.
+
+The gate (the `$10` floor, the symbol's median dollar volume and the static reference)
+uses **raw (unadjusted) daily bars**, as a live scan saw prices at the time. With
+adjustment `all`, historical closes are divided by every later split (2016 NVDA is ≈$1)
+and inflated by later reverse splits, so an adjusted floor and, slightly, an adjusted
+dollar-volume screen would depend on future corporate actions — lookahead. Reaction,
+σ, ATR, levels and labels keep the adjusted bars. A symbol without raw bars is counted
+`no_daily_bars`; one without a raw `as_of` close is counted `no_raw_close`.
+
+The result records the static universe actually used (`universe.static_symbols`, sorted,
+and the SHA-256 of their newline-joined list), the configured static equities without raw
+bars with their failure reasons, and the number of reference names per evaluated `as_of`
+date (min/median/max and the full per-date map).
 
 ## Event and trade rule
 
@@ -172,8 +204,10 @@ distribution of events per session (earnings-season clustering).
 - Run order: write `protocol.json` (copy) and `manifest.json` (entry id/version, SHA-256,
   code revision, `authorizes_promotion: false`) **before** any provider access; then
   events, bars, labels (`events.csv.gz`, `labels.csv.gz`; no parquet engine is a
-  dependency), then `result.json`. More than 2% failed calendar dates fails the run
-  closed (`status: failed`) rather than testing on a gappy sample.
+  dependency), then `result.json`. More than 2% failed calendar dates, or more than 10%
+  empty trading-session pages in any calendar year, fails the run closed
+  (`status: failed`) rather than testing on a gappy sample. Missing labels are counted
+  by reason, year and leg.
 - No database writes, no registry or trial credit, no notifications, no broker access.
 
 ## Documentation (same PR; no docs-only PR)
@@ -205,10 +239,11 @@ distribution of events per session (earnings-season clustering).
 
 ## Runtime estimate
 
-≈2,700 calendar requests (≈45–60 minutes at one per second); one daily request per event
-symbol (several thousand, ≈45 minutes at 150 requests/minute); hourly bars in one-year
-chunks for the symbols with a liquid event (≈2k symbols, ≈2–3 hours). Roughly 4–5 hours
-end to end, all cached for re-runs.
+≈2,700 calendar requests (≈45–60 minutes at one per second); one adjusted daily request
+per event symbol (several thousand, ≈45 minutes at 150 requests/minute) and one raw daily
+request per event symbol and static equity for the liquidity gate (≈45 minutes more);
+hourly bars in one-year chunks for the symbols with a liquid event (≈2k symbols, ≈2–3
+hours). Roughly 5–6 hours end to end, all cached for re-runs.
 
 ## Caveats
 

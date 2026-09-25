@@ -1,12 +1,15 @@
 """Provider access for the PEAD study: trading calendar, Nasdaq pages and SIP bars.
 
 Called only from inside ``execute_pead_study``'s ``build`` callable, after the manifest
-exists. Daily bars are fetched once per symbol over the whole window in a single request
-(well under one page); hourly bars only for symbols with at least one liquid event, over
-that symbol's event span, in the setup study's one-year chunks. Both reuse the setup
-study's immutable ``.npz`` cache with its range claim, so a rerun with ``--cache`` never
-re-fetches. A symbol whose bars fail is recorded in ``bar_failures`` and its events are
-counted as missing, never silently dropped.
+exists. Adjusted (``all``) daily bars are fetched once per symbol over the whole window in
+a single request (well under one page), and raw (unadjusted) daily bars likewise for every
+symbol except the benchmark: the liquidity gate reads raw prices, as a live scan saw
+them. Hourly bars are fetched only for symbols with at least one liquid event, over that
+symbol's event span, in the setup study's one-year chunks. All reuse the setup study's
+immutable ``.npz`` cache with its range claim -- raw bars in the sibling ``bars_raw``
+directory, because the cache is keyed by symbol and timeframe only -- so a rerun with
+``--cache`` never re-fetches. A symbol whose bars fail is recorded in ``bar_failures``
+and its events are counted as missing, never silently dropped.
 """
 
 from __future__ import annotations
@@ -41,15 +44,22 @@ async def _bars_or_failure(
     start: datetime,
     end: datetime,
     pace: Callable[[], Awaitable[None]],
+    *,
+    adjustment: str = "all",
     **kwargs,
 ) -> tuple[pd.DataFrame | None, str | None]:
+    label = "hourly" if timeframe == "1h" else "daily_raw" if adjustment == "raw" else "daily"
     try:
-        frame = await _fetch_cached(symbol, timeframe, bars, cache_dir, start, end, "all", pace, **kwargs)
+        frame = await _fetch_cached(symbol, timeframe, bars, cache_dir, start, end, adjustment, pace, **kwargs)
     except Exception as exc:
-        return None, f"{'daily' if timeframe == '1d' else 'hourly'}: {type(exc).__name__}: {exc}"
+        return None, f"{label}: {type(exc).__name__}: {exc}"
     if frame.empty:
-        return None, f"{'daily' if timeframe == '1d' else 'hourly'}: empty"
+        return None, f"{label}: empty"
     return frame, None
+
+
+def _record(failures: dict[str, str], symbol: str, reason: str) -> None:
+    failures[symbol] = f"{failures[symbol]}; {reason}" if symbol in failures else reason
 
 
 async def build_pead_inputs(
@@ -77,25 +87,41 @@ async def build_pead_inputs(
     )
     rows, duplicates = dedupe_rows(acquisition.rows)
 
-    bar_dir = cache_dir / "bars"
+    bar_dir, raw_dir = cache_dir / "bars", cache_dir / "bars_raw"
     start = datetime.combine(first - _CALENDAR_PAD, time.min, tzinfo=UTC)
     end = datetime.combine(bars_through, time.max, tzinfo=UTC)
     _claim_cache_range(bar_dir, start, end)
+    _claim_cache_range(raw_dir, start, end)
 
     benchmark = entry.event.benchmark
-    symbols = sorted({benchmark, *static_symbols, *(r.symbol for r in rows if SUPPORTED_SYMBOL.fullmatch(r.symbol))})
+    liquidity_symbols = {*static_symbols, *(r.symbol for r in rows if SUPPORTED_SYMBOL.fullmatch(r.symbol))}
     daily: dict[str, pd.DataFrame] = {}
+    liquidity_daily: dict[str, pd.DataFrame] = {}
     failures: dict[str, str] = {}
-    for symbol in symbols:
+    for symbol in sorted({benchmark, *liquidity_symbols}):
         frame, failure = await _bars_or_failure(symbol, "1d", bars, bar_dir, start, end, pace, chunk=end - start)
         if frame is None:
-            failures[symbol] = failure or "daily: unavailable"
+            _record(failures, symbol, failure or "daily: unavailable")
         else:
             daily[symbol] = frame
+        if symbol not in liquidity_symbols:
+            continue  # the benchmark is only used for the reaction
+        frame, failure = await _bars_or_failure(
+            symbol, "1d", bars, raw_dir, start, end, pace, adjustment="raw", chunk=end - start
+        )
+        if frame is None:
+            _record(failures, symbol, failure or "daily_raw: unavailable")
+        else:
+            liquidity_daily[symbol] = frame
     if benchmark not in daily:
         raise ValueError(f"benchmark {benchmark} has no daily bars: {failures.get(benchmark)}")
 
-    market = MarketData(trading_days, daily, tuple(s for s in static_symbols if s in daily))
+    market = MarketData(
+        trading_days,
+        daily,
+        tuple(s for s in static_symbols if s in liquidity_daily),
+        liquidity_daily=liquidity_daily,
+    )
     events, _ = await asyncio.to_thread(build_events, rows, market, entry)
     hourly: dict[str, pd.DataFrame] = {}
     for symbol, group in events.groupby("symbol"):
@@ -103,7 +129,7 @@ async def build_pead_inputs(
         span_end = min(datetime.combine(max(group["session"]), time.max, tzinfo=UTC) + _HOURLY_TAIL, end)
         frame, failure = await _bars_or_failure(str(symbol), "1h", bars, bar_dir, span_start, span_end, pace)
         if frame is None:
-            failures[str(symbol)] = failure or "hourly: unavailable"
+            _record(failures, str(symbol), failure or "hourly: unavailable")
         else:
             hourly[str(symbol)] = frame
     return PeadInputs(
@@ -113,4 +139,5 @@ async def build_pead_inputs(
         market=market,
         hourly=hourly,
         bar_failures=failures,
+        static_requested=tuple(static_symbols),
     )

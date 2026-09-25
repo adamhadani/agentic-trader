@@ -51,7 +51,7 @@ def market_with(event_closes_after, *, days=None, static=25, static_volume=1_000
     daily = {"XYZ": daily_frame(days, xyz, volume=volume), "SPY": daily_frame(days, wiggle(len(days), 400.0))}
     for i in range(static):
         daily[f"S{i:02d}"] = daily_frame(days, wiggle(len(days)), volume=static_volume)
-    return MarketData(tuple(days), daily, tuple(f"S{i:02d}" for i in range(static))), days
+    return MarketData(tuple(days), daily, tuple(f"S{i:02d}" for i in range(static)), liquidity_daily=daily), days
 
 
 def entry_with_window(start, end):
@@ -92,7 +92,7 @@ def test_reaction_uses_adjacent_sessions_across_a_holiday_and_no_report_day_vola
     xyz = market.daily["XYZ"].copy()
     xyz.loc[xyz.index[40], "Close"] *= 5.0  # a huge move ON the report day must not enter sigma
     daily = dict(market.daily, XYZ=xyz)
-    market = MarketData(market.trading_days, daily, market.static_symbols)
+    market = MarketData(market.trading_days, daily, market.static_symbols, liquidity_daily=daily)
     events, _ = build_events([report("XYZ", days[40])], market, entry_with_window(days[0], days[-1]))
     [event] = events.to_dict("records")
     closes = xyz["Close"].to_numpy()
@@ -149,7 +149,8 @@ def test_symbol_nan_close_at_d_plus_1_is_counted_not_emitted():
     market, days = market_with(1.10)
     xyz = market.daily["XYZ"].copy()
     xyz.loc[xyz.index[41], "Close"] = np.nan  # D+1 close missing
-    market = MarketData(market.trading_days, dict(market.daily, XYZ=xyz), market.static_symbols)
+    daily = dict(market.daily, XYZ=xyz)
+    market = MarketData(market.trading_days, daily, market.static_symbols, liquidity_daily=daily)
     entry = entry_with_window(days[0], days[-1])
     events, counts = build_events([report("XYZ", days[40])], market, entry)
     assert events.empty
@@ -161,9 +162,86 @@ def test_benchmark_nan_close_at_d_plus_1_is_counted_not_emitted():
     market, days = market_with(1.10)
     spy = market.daily["SPY"].copy()
     spy.loc[spy.index[41], "Close"] = np.nan  # D+1 close missing for the benchmark
-    market = MarketData(market.trading_days, dict(market.daily, SPY=spy), market.static_symbols)
+    daily = dict(market.daily, SPY=spy)
+    market = MarketData(market.trading_days, daily, market.static_symbols, liquidity_daily=daily)
     entry = entry_with_window(days[0], days[-1])
     events, counts = build_events([report("XYZ", days[40])], market, entry)
     assert events.empty
     assert counts["reasons"] == {"no_reaction_bars": 1}
     assert counts["rows"] == counts["events"] + sum(counts["reasons"].values())
+
+
+@pytest.mark.parametrize("eps, forecast", [(0.21, 0.20), (0.42, 0.40), (0.84, 0.80)])
+def test_an_exact_five_percent_beat_is_a_long_surprise(eps, forecast):
+    surprise = surprise_pct(report("A", date(2021, 4, 1), eps, forecast), ENTRY.event)
+    assert surprise == 5.0
+    market, days = market_with(1.10)
+    events, _ = build_events(
+        [report("XYZ", days[40], eps=eps, forecast=forecast)], market, entry_with_window(days[0], days[-1])
+    )
+    assert bool(events.iloc[0]["surprise_long"]) and events.iloc[0]["leg"] == "LONG"
+
+
+@pytest.mark.parametrize("eps, forecast", [(0.19, 0.20), (0.38, 0.40)])
+def test_an_exact_five_percent_miss_is_a_short_surprise(eps, forecast):
+    surprise = surprise_pct(report("A", date(2021, 4, 1), eps, forecast), ENTRY.event)
+    assert surprise == -5.0
+    market, days = market_with(0.9)
+    events, _ = build_events(
+        [report("XYZ", days[40], eps=eps, forecast=forecast)], market, entry_with_window(days[0], days[-1])
+    )
+    assert bool(events.iloc[0]["surprise_short"]) and events.iloc[0]["leg"] == "SHORT"
+
+
+def _with_raw(market, **raw_frames):
+    return MarketData(
+        market.trading_days,
+        market.daily,
+        market.static_symbols,
+        liquidity_daily=dict(market.liquidity_daily, **raw_frames),
+    )
+
+
+def test_the_price_floor_uses_the_raw_close_not_the_split_adjusted_one():
+    # Adjusted closes fall to ~5 (a later split divides history), but the raw close was ~20.
+    market, days = market_with(0.1)
+    raw = market.daily["XYZ"].copy()
+    raw[["Open", "High", "Low", "Close"]] *= 4.0
+    entry = entry_with_window(days[0], days[-1])
+    events, counts = build_events([report("XYZ", days[40])], _with_raw(market, XYZ=raw), entry)
+    assert counts["events"] == 1 and "illiquid_price" not in counts["reasons"]
+    assert events.iloc[0]["median_dollar_volume"] == pytest.approx(
+        float((raw["Close"] * raw["Volume"]).iloc[22:42].median())
+    )
+
+    # And vice versa: an adjusted ~$55 close whose raw close was ~$5.5 is illiquid on price.
+    market, days = market_with(1.10)
+    raw = market.daily["XYZ"].copy()
+    raw[["Open", "High", "Low", "Close"]] *= 0.1
+    raw["Volume"] *= 1000.0  # keep the raw dollar volume liquid so only the price floor binds
+    events, counts = build_events([report("XYZ", days[40])], _with_raw(market, XYZ=raw), entry)
+    assert events.empty and counts["reasons"] == {"illiquid_price": 1}
+
+
+def test_the_static_reference_uses_raw_bars():
+    market, days = market_with(1.10)
+    # Raw static volumes are far larger than the adjusted ones: the reference follows raw.
+    raw_static = {s: market.daily[s].assign(Volume=1e9) for s in market.static_symbols}
+    events, counts = build_events(
+        [report("XYZ", days[40])], _with_raw(market, **raw_static), entry_with_window(days[0], days[-1])
+    )
+    assert events.empty and counts["reasons"] == {"illiquid_volume": 1}
+
+
+def test_a_symbol_without_raw_bars_is_counted_no_daily_bars():
+    market, days = market_with(1.10)
+    raw = {s: f for s, f in market.liquidity_daily.items() if s != "XYZ"}
+    market = MarketData(market.trading_days, market.daily, market.static_symbols, liquidity_daily=raw)
+    events, counts = build_events([report("XYZ", days[40])], market, entry_with_window(days[0], days[-1]))
+    assert events.empty and counts["reasons"] == {"no_daily_bars": 1}
+
+
+def test_reference_names_are_recorded_per_evaluated_as_of_date():
+    market, days = market_with(1.10)
+    _, counts = build_events([report("XYZ", days[40])], market, entry_with_window(days[0], days[-1]))
+    assert counts["reference_names"] == {days[41].isoformat(): 25}

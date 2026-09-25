@@ -29,7 +29,8 @@
   "universe": {
     "min_price": 10.0,
     "dollar_volume_window": 20,
-    "static_percentile": 0.25
+    "static_percentile": 0.25,
+    "liquidity_adjustment": "raw"
   },
   "trade": {
     "decision_time_et": "10:35",
@@ -53,5 +54,6 @@
     "trim_fraction": 0.01
   },
   "max_failed_calendar_fraction": 0.02,
+  "max_empty_session_fraction_per_year": 0.10,
   "calendar_request_interval_seconds": 1.0
 }

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -6,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from agentic_trader.agent.earnings import CalendarRow, EarningsTiming
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.earnings_history import CalendarAcquisition
@@ -179,7 +181,12 @@ async def test_execute_writes_manifest_before_building_and_records_failure(tmp_p
 
 async def test_execute_fails_closed_on_a_gappy_calendar(tmp_path):
     acquisition = CalendarAcquisition(
-        rows=(), requested_dates=100, fetched_dates=97, reused_dates=0, failed_dates=tuple(_sessions(3))
+        rows=(),
+        days=tuple(_sessions(100)),
+        fetched_dates=97,
+        reused_dates=0,
+        failed_dates=tuple(_sessions(3)),
+        empty_dates=(),
     )
 
     async def build():
@@ -187,10 +194,191 @@ async def test_execute_fails_closed_on_a_gappy_calendar(tmp_path):
             acquisition=acquisition,
             rows=(),
             duplicates=0,
-            market=MarketData((), {}, ()),
+            market=MarketData((), {}, (), liquidity_daily={}),
             hourly={},
             bar_failures={},
+            static_requested=(),
         )
 
     result = await execute_pead_study(LOADED, tmp_path / "run", build=build, environment={})
     assert result["status"] == "failed" and "calendar" in result["error"]
+
+
+def _event(symbol: str, session: date, leg: str | None, atr: float = 1.0) -> dict:
+    return {
+        "symbol": symbol,
+        "report_date": session - timedelta(days=2),
+        "session": session,
+        "decision_at": decision_at(session, time(10, 35)),
+        "z": 2.0,
+        "surprise_pct": 10.0,
+        "surprise_pct_reported": 10.0,
+        "atr": atr,
+        "median_dollar_volume": 1e8,
+        "reference": 1e7,
+        "leg": leg,
+        "surprise_long": leg == "LONG",
+        "surprise_short": leg == "SHORT",
+        "reaction_long": leg == "LONG",
+        "reaction_short": leg == "SHORT",
+    }
+
+
+def test_label_events_counts_missing_labels_by_year_and_leg():
+    day, hourly = _market_and_hourly()
+    late = date(2022, 3, 1)
+    hourly = dict(hourly, LATE=hourly_bars(late, [100.0] * 7))  # one session only: immature
+    events = pd.DataFrame(
+        [
+            _event("GONE", day, "LONG"),  # no hourly bars
+            _event("GONE", date(2022, 2, 1), None),  # no hourly bars, no leg
+            _event("XYZ", day + timedelta(days=5), "SHORT"),  # a Saturday: no bar on its decision date
+            _event("XYZ", day, "SHORT", atr=20.0),  # SHORT target below zero: degenerate, the leg's side
+            _event("XYZ", day, "LONG", atr=20.0),  # degenerate SHORT side only: not a LONG-leg miss
+            _event("LATE", late, "LONG"),  # both directions immature
+        ]
+    )
+    _, counts = label_events(events, hourly, ENTRY)
+    assert counts["no_hourly_bars"] == 2 and counts["no_decision_price"] == 1
+    assert counts["degenerate_levels"] == 2 and counts["immature"] == 2
+    assert counts["by_year"] == {
+        "no_hourly_bars": {2021: 1, 2022: 1},
+        "no_decision_price": {2021: 1},
+        "degenerate_levels": {2021: 2},
+        "immature": {2022: 2},
+    }
+    # A per-direction miss counts against a leg only when it is the leg's own direction.
+    assert counts["legs"] == {
+        "no_hourly_bars": {"LONG": 1, "SHORT": 0},
+        "no_decision_price": {"LONG": 0, "SHORT": 1},
+        "degenerate_levels": {"LONG": 0, "SHORT": 1},
+        "immature": {"LONG": 1, "SHORT": 0},
+    }
+
+
+# --- Executor end to end on synthetic inputs ------------------------------------------------
+
+_HOLIDAY = date(2021, 4, 2)
+
+
+def _daily(days, closes, volume=2_000_000.0):
+    index = pd.DatetimeIndex([datetime.combine(d, time(5, 0), tzinfo=UTC) for d in days])
+    closes = np.asarray(closes, dtype=float)
+    return pd.DataFrame(
+        {"Open": closes, "High": closes + 0.5, "Low": closes - 0.5, "Close": closes, "Volume": volume},
+        index=index,
+    )
+
+
+def _synthetic_inputs(*, empty_dates=(), static_extra=()) -> PeadInputs:
+    weekdays = [d.date() for d in pd.bdate_range("2021-03-01", periods=61)]
+    days = [d for d in weekdays if d != _HOLIDAY]
+    base = 50.0 + np.array([0.2 if i % 2 else 0.0 for i in range(len(days))])
+    up, down = base.copy(), base.copy()
+    up[40:] *= 1.10
+    down[40:] *= 0.90
+    daily = {
+        "SPY": _daily(days, base * 8),
+        "UP": _daily(days, up),
+        "DN": _daily(days, down),
+        "MIX": _daily(days, base),
+        **{f"S{i:02d}": _daily(days, base, volume=1_000_000.0) for i in range(25)},
+    }
+    liquidity = {s: f for s, f in daily.items() if s != "SPY"}
+    static = tuple(f"S{i:02d}" for i in range(25))
+    report_day, session = days[40], days[42]
+
+    def row(symbol, eps):
+        return CalendarRow(symbol, report_day, EarningsTiming.UNSPECIFIED, eps, 1.00, None, 5, "Mar/2021")
+
+    rows = (row("UP", 1.10), row("DN", 0.80), row("MIX", 1.10))
+    flat = pd.concat([hourly_bars(d.date(), [100.0] * 7) for d in pd.bdate_range(session, periods=30)])
+    acquisition = CalendarAcquisition(
+        rows=rows,
+        days=tuple(weekdays),
+        fetched_dates=len(weekdays),
+        reused_dates=0,
+        failed_dates=(),
+        empty_dates=tuple(empty_dates),
+    )
+    return PeadInputs(
+        acquisition=acquisition,
+        rows=rows,
+        duplicates=0,
+        market=MarketData(tuple(days), daily, static, liquidity_daily=liquidity),
+        hourly={"UP": flat, "DN": flat},  # MIX has no hourly bars
+        bar_failures={s: "daily_raw: RuntimeError: gone" for s in static_extra},
+        static_requested=(*static, *static_extra),
+    )
+
+
+def _small_window_entry():
+    window = ENTRY.window.model_copy(
+        update={
+            "decisions": (date(2021, 3, 1), date(2021, 6, 30)),
+            "bars_through": date(2021, 8, 31),
+            "recent_from": date(2021, 4, 1),
+        }
+    )
+    entry = ENTRY.model_copy(update={"window": window})
+    return type(LOADED)(entry=entry, sha256=LOADED.sha256, path=LOADED.path)
+
+
+async def test_execute_completes_on_synthetic_inputs(tmp_path):
+    inputs = _synthetic_inputs(empty_dates=(_HOLIDAY, date(2021, 3, 10)), static_extra=("S99",))
+
+    async def build():
+        return inputs
+
+    output = tmp_path / "run"
+    result = await execute_pead_study(_small_window_entry(), output, build=build, environment={})
+    assert result["status"] == "completed", result.get("error")
+    assert result["authorizes_promotion"] is False
+    for name in ("events.csv.gz", "labels.csv.gz", "result.json", "manifest.json", "protocol.json"):
+        assert (output / name).stat().st_mode & 0o777 == 0o600
+    for direction in ("LONG", "SHORT"):
+        assert {"p1", "p2", "p3", "p4", "passes"} <= set(result["legs"][direction])
+        assert result["legs"][direction]["p4"]["n"] == 1 and result["decisions"][direction] == "failed"
+    assert result["labels"]["no_hourly_bars"] == 1 and result["events"]["events"] == 3
+
+    # F3: only the empty *session* page counts (the holiday page does not).
+    assert result["calendar"]["empty_sessions_by_year"] == {2021: 1}
+    assert result["calendar"]["requested_sessions_by_year"] == {2021: 60}
+    # F4: the static liquidity universe actually used is recorded.
+    universe = result["universe"]
+    used = [f"S{i:02d}" for i in range(25)]
+    assert universe["static_symbols"] == used
+    assert universe["static_symbols_sha256"] == hashlib.sha256("\n".join(used).encode()).hexdigest()
+    assert universe["static_missing"] == {"S99": "daily_raw: RuntimeError: gone"}
+    assert universe["reference_names"] == {"min": 25, "median": 25.0, "max": 25, "dates": 1}
+
+    saved = json.loads((output / "result.json").read_text())
+    assert saved["status"] == "completed" and saved["universe"]["static_symbols"] == used
+    assert saved["calendar"]["empty_sessions_by_year"] == {"2021": 1}
+
+
+async def test_execute_fails_closed_on_too_many_empty_session_pages(tmp_path):
+    sessions = [d.date() for d in pd.bdate_range("2021-03-22", periods=11) if d.date() != _HOLIDAY]
+    assert len(sessions) == 10
+    acquisition = CalendarAcquisition(
+        rows=(),
+        days=tuple(sorted([*sessions, _HOLIDAY])),
+        fetched_dates=11,
+        reused_dates=0,
+        failed_dates=(),
+        empty_dates=(_HOLIDAY, *sessions[:3]),  # 3/10 empty trading-session pages; the holiday is not one
+    )
+
+    async def build():
+        return PeadInputs(
+            acquisition=acquisition,
+            rows=(),
+            duplicates=0,
+            market=MarketData(tuple(sessions), {}, (), liquidity_daily={}),
+            hourly={},
+            bar_failures={},
+            static_requested=(),
+        )
+
+    result = await execute_pead_study(_small_window_entry(), tmp_path / "run", build=build, environment={})
+    assert result["status"] == "failed" and "2021" in result["error"] and "empty" in result["error"]

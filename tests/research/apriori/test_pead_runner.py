@@ -5,10 +5,16 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pandas as pd
+import pytest
 
 from agentic_trader.market.session import ET_TZ, MarketCalendarDay
 from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.pead_runner import build_pead_inputs
+
+
+@pytest.fixture(autouse=True)
+def _no_bar_retry_delays(monkeypatch):
+    monkeypatch.setattr("agentic_trader.research.setups.runner._RETRY_DELAYS", (0.0, 0.0))
 
 
 ENTRY = load_pead_entry(Path(__file__).resolve().parents[3] / "config/research/apriori/pead-v1.json").entry
@@ -35,13 +41,14 @@ class Calendar:
 
 
 class Bars:
-    def __init__(self, missing=()):
+    def __init__(self, missing=(), missing_raw=()):
         self.calls = []
         self.missing = set(missing)
+        self.missing_raw = set(missing_raw)
 
     def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
         self.calls.append((symbol, timeframe, start, end, adjustment))
-        if symbol in self.missing:
+        if symbol in self.missing or (adjustment == "raw" and symbol in self.missing_raw):
             raise RuntimeError("unknown symbol")
         if timeframe == "1d":
             days = pd.bdate_range(start.date(), end.date())
@@ -67,7 +74,8 @@ def calendar_transport(symbols_by_day):
         rows = [
             {"symbol": s, "eps": "$1.10", "epsForecast": "$1.00", "noOfEsts": "4"} for s in symbols_by_day.get(day, [])
         ]
-        return httpx.Response(200, content=json.dumps({"data": {"rows": rows}}).encode())
+        payload = {"data": {"rows": rows}, "status": {"rCode": 200}}
+        return httpx.Response(200, content=json.dumps(payload).encode())
 
     return httpx.MockTransport(handler)
 
@@ -98,8 +106,31 @@ async def test_builds_inputs_and_records_bar_failures(tmp_path):
     assert inputs.bar_failures["GONE"].startswith("daily:")
     assert not any(call[0] == "BRK/B" for call in bars.calls)  # unsupported symbols are never fetched
     daily_calls = [c for c in bars.calls if c[1] == "1d" and c[0] == "XYZ"]
-    assert len(daily_calls) == 1  # one chunk for daily bars
-    assert all(call[4] == "all" for call in bars.calls)
+    # One chunk each: adjusted daily bars (reaction, sigma, ATR) and raw ones (liquidity gate).
+    assert sorted(c[4] for c in daily_calls) == ["all", "raw"]
+    assert all(call[4] == "all" for call in bars.calls if call[1] == "1h")
+    assert not any(c[0] == "SPY" and c[4] == "raw" for c in bars.calls)  # the benchmark needs no raw bars
+    assert set(inputs.market.liquidity_daily) == set(inputs.market.daily) - {"SPY"}
+    assert inputs.static_requested == tuple(f"S{i:02d}" for i in range(25))
+    assert (tmp_path / "bars").is_dir() and (tmp_path / "bars_raw").is_dir()
+    assert {p.name for p in (tmp_path / "bars_raw").iterdir() if p.is_dir()} >= {"XYZ_1d", "S00_1d"}
+
+
+async def test_raw_bar_failures_are_recorded_and_exclude_static_names(tmp_path):
+    bars = Bars(missing_raw={"S03"})
+    inputs = await build_pead_inputs(
+        tiny_entry(),
+        bars=bars,
+        calendar=Calendar(),
+        cache_dir=tmp_path,
+        static_symbols=[f"S{i:02d}" for i in range(25)],
+        pace=_pace,
+        calendar_transport=calendar_transport({}),
+        calendar_sleep=_no_sleep,
+    )
+    assert inputs.bar_failures["S03"].startswith("daily_raw: ")
+    assert "S03" in inputs.market.daily and "S03" not in inputs.market.liquidity_daily
+    assert "S03" not in inputs.market.static_symbols and len(inputs.market.static_symbols) == 24
 
 
 async def test_rerun_reuses_pages_and_bars(tmp_path):

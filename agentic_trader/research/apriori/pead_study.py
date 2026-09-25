@@ -13,19 +13,22 @@ P2's paired draw resampling each session once for both means.
 
 ``execute_pead_study`` writes ``protocol.json`` and ``manifest.json`` before calling
 ``build`` (the only provider access), and records any failure as ``status: failed`` in
-``result.json`` instead of raising.
+``result.json`` instead of raising. It fails closed on a gappy calendar (too many failed
+dates overall, or too many empty trading-session pages in any year) and records the
+static liquidity universe it actually used.
 """
 
 from __future__ import annotations
 
 import asyncio
 import gzip
+import hashlib
 import math
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -65,7 +68,8 @@ class PeadInputs:
     duplicates: int
     market: MarketData
     hourly: Mapping[str, pd.DataFrame]
-    bar_failures: Mapping[str, str]  # symbol -> reason
+    bar_failures: Mapping[str, str]  # symbol -> reason(s), "; "-joined
+    static_requested: tuple[str, ...]  # the configured static equities, before any bar failure
 
 
 def _utc_index(frame: pd.DataFrame) -> pd.DatetimeIndex:
@@ -108,23 +112,34 @@ def label_events(
     events: pd.DataFrame, hourly: Mapping[str, pd.DataFrame], entry: PeadEntry
 ) -> tuple[pd.DataFrame, dict]:
     counts: Counter[str] = Counter()
+    by_year: dict[str, Counter[int]] = defaultdict(Counter)
+    legs: dict[str, Counter[str]] = {}
     rows: list[dict] = []
+
+    def miss(reason: str, event: dict, direction: str | None = None) -> None:
+        # A per-direction miss counts against a leg only on the leg's own direction.
+        counts[reason] += 1
+        by_year[reason][event["session"].year] += 1
+        leg = event["leg"] if isinstance(event["leg"], str) else None  # a missing leg may read back as NaN
+        if leg is not None and direction in (None, leg):
+            legs.setdefault(reason, Counter(dict.fromkeys(_DIRECTIONS, 0)))[leg] += 1
+
     for event in events.to_dict("records"):
         bars = hourly.get(event["symbol"])
         if bars is None or bars.empty:
-            counts["no_hourly_bars"] += 1
+            miss("no_hourly_bars", event)
             continue
         when = event["decision_at"]
         index = _utc_index(bars)
         window = bars.loc[(index >= when - timedelta(days=1)) & (index <= when + _LABEL_SPAN)]
         price = decision_price(window, when)
         if price is None:
-            counts["no_decision_price"] += 1
+            miss("no_decision_price", event)
             continue
         for direction in _DIRECTIONS:
             levels = levels_for(direction, price, float(event["atr"]), entry)
             if levels is None:
-                counts["degenerate_levels"] += 1
+                miss("degenerate_levels", event, direction)
                 continue
             costs = {
                 _cost_column(cost): label_bracket(
@@ -134,7 +149,7 @@ def label_events(
             }
             decisive = costs[_cost_column(entry.decision_cost_bps)]
             if decisive.hit == BracketHit.IMMATURE:
-                counts["immature"] += 1
+                miss("immature", event, direction)
                 continue
             secondary = label_bracket(
                 levels,
@@ -156,7 +171,10 @@ def label_events(
                     "holding_sessions": decisive.holding_sessions,
                 }
             )
-    return pd.DataFrame(rows), dict(counts)
+    summary: dict = dict(counts)
+    summary["by_year"] = {reason: dict(years) for reason, years in by_year.items()}
+    summary["legs"] = {reason: dict(sides) for reason, sides in legs.items()}
+    return pd.DataFrame(rows), summary
 
 
 # --- Statistics ----------------------------------------------------------------------------
@@ -283,6 +301,47 @@ def _diagnostics(labels: pd.DataFrame, events: pd.DataFrame, entry: PeadEntry) -
     return out
 
 
+def _empty_sessions(acquisition: CalendarAcquisition, trading_days: tuple[date, ...], entry: PeadEntry) -> dict:
+    """Accepted-but-empty calendar pages on observed trading sessions, per calendar year.
+
+    Raises when any year's share exceeds the frozen limit: an empty page on a session is
+    indistinguishable from a silently truncated one, so a gappy year fails the run closed.
+    """
+    sessions = set(trading_days)
+    requested = Counter(day.year for day in acquisition.days if day in sessions)
+    empty = Counter(day.year for day in acquisition.empty_dates if day in sessions)
+    limit = entry.max_empty_session_fraction_per_year
+    for year in sorted(requested):
+        if empty[year] / requested[year] > limit:
+            raise ValueError(
+                f"calendar pages for {empty[year]}/{requested[year]} trading sessions in {year} were empty, "
+                f"above the frozen {limit:.0%} per-year limit"
+            )
+    return {"empty": dict(sorted(empty.items())), "requested": dict(sorted(requested.items()))}
+
+
+def _universe(inputs: PeadInputs, reference_names: Mapping[str, int]) -> dict:
+    market = inputs.market
+    used = sorted(s for s in market.static_symbols if s in market.liquidity_daily)
+    names = np.asarray(list(reference_names.values()), dtype=float)
+    return {
+        "static_symbols": used,
+        "static_symbols_sha256": hashlib.sha256("\n".join(used).encode()).hexdigest(),
+        "static_missing": {
+            s: inputs.bar_failures.get(s, "no raw daily bars")
+            for s in sorted(inputs.static_requested)
+            if s not in market.liquidity_daily
+        },
+        "reference_names": {
+            "min": int(names.min()) if names.size else None,
+            "median": float(np.median(names)) if names.size else None,
+            "max": int(names.max()) if names.size else None,
+            "dates": int(names.size),
+        },
+        "reference_names_by_date": dict(reference_names),
+    }
+
+
 def _save_frame(frame: pd.DataFrame, path: Path) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as target:
@@ -318,7 +377,9 @@ async def execute_pead_study(
                 f"calendar acquisition failed for {len(acquisition.failed_dates)}/{acquisition.requested_dates} dates, "
                 f"above the frozen {entry.max_failed_calendar_fraction:.0%} limit"
             )
+        empty_sessions = _empty_sessions(acquisition, inputs.market.trading_days, entry)
         events, event_counts = await asyncio.to_thread(build_events, inputs.rows, inputs.market, entry)
+        reference_names = event_counts.pop("reference_names")
         labels, label_counts = await asyncio.to_thread(label_events, events, inputs.hourly, entry)
         await asyncio.to_thread(_save_frame, events, directory / "events.csv.gz")
         await asyncio.to_thread(_save_frame, labels, directory / "labels.csv.gz")
@@ -333,9 +394,13 @@ async def execute_pead_study(
                 "fetched_dates": acquisition.fetched_dates,
                 "reused_dates": acquisition.reused_dates,
                 "failed_dates": [d.isoformat() for d in acquisition.failed_dates],
+                "empty_dates": [d.isoformat() for d in acquisition.empty_dates],
+                "empty_sessions_by_year": empty_sessions["empty"],
+                "requested_sessions_by_year": empty_sessions["requested"],
                 "rows": len(inputs.rows),
                 "duplicates": inputs.duplicates,
             },
+            "universe": _universe(inputs, reference_names),
             "events": event_counts,
             "labels": label_counts,
             "bar_failures": dict(inputs.bar_failures),

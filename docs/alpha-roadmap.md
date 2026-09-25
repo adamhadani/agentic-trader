@@ -191,7 +191,7 @@ research run or runtime policy change was made for this review.
    (see [production operations](production.md#suggestion-scans)). Further recorded
    follow-ups: process-wide per-feed pacer; `setup_quality` cross-strategy scale
    calibration.
-9. **A priori alpha catalog (September 25).** The [a priori catalog](docs/apriori-alphas.md)
+9. **A priori alpha catalog (September 25).** The [a priori catalog](apriori-alphas.md)
    tests literature anomalies as one frozen hypothesis per leg (`config/research/apriori/*.json`),
    pooled across many names to avoid the mining funnel's multiple-testing penalty. Studies
    are research only (no registry/trial/shadow/broker credit); a passing leg becomes
