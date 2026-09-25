@@ -555,6 +555,26 @@ async def test_long_histories_are_fetched_in_bounded_contiguous_chunks(tmp_path)
     assert frame.index.is_unique and frame.index.is_monotonic_increasing
 
 
+async def test_fetch_cached_honours_a_single_chunk(tmp_path):
+    calls = []
+
+    class Bars:
+        def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+            calls.append((start, end))
+            index = pd.DatetimeIndex([start], tz="UTC")
+            return pd.DataFrame(
+                {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0], "Volume": [1.0]}, index=index
+            )
+
+    async def pace():
+        return None
+
+    start = datetime(2016, 1, 1, tzinfo=UTC)
+    end = datetime(2026, 9, 1, tzinfo=UTC)
+    await runner._fetch_cached("AAA", "1d", Bars(), tmp_path, start, end, "all", pace, chunk=end - start)
+    assert calls == [(start, end)]
+
+
 class _FlakySource(FakeBarSource):
     """Fails the first request for chosen (symbol, timeframe) pairs, then succeeds."""
 

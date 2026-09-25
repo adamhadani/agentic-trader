@@ -130,6 +130,8 @@ async def _fetch_cached(
     end: datetime,
     adjustment: str,
     pace: Callable[[], Awaitable[None]],
+    *,
+    chunk: timedelta = _FETCH_CHUNK,
 ) -> pd.DataFrame:
     # One immutable .npz artifact per (symbol, timeframe) via the research dataset
     # adapter (no pickles). Provider attrs are not cached: the study reads only OHLCV.
@@ -142,7 +144,7 @@ async def _fetch_cached(
     parts = []
     chunk_start = start
     while chunk_start < end:
-        chunk_end = min(chunk_start + _FETCH_CHUNK, end)
+        chunk_end = min(chunk_start + chunk, end)
         parts.append(await _fetch_with_retry(bars, symbol, timeframe, chunk_start, chunk_end, adjustment, pace))
         chunk_start = chunk_end
     frame = pd.concat([part for part in parts if not part.empty]) if any(not p.empty for p in parts) else parts[0]
