@@ -95,8 +95,12 @@ def _reaction_z(sym: pd.DataFrame, bench: pd.DataFrame, days: Sequence[date], i:
     sigma = float(np.std(np.diff(np.log(closes)), ddof=1))
     if not math.isfinite(sigma) or sigma <= 0:
         return None
-    r_i = float(sym.at[days[i + 1], "Close"] / sym.at[days[i - 1], "Close"] - 1.0)
-    r_m = float(bench.at[days[i + 1], "Close"] / bench.at[days[i - 1], "Close"] - 1.0)
+    sym_prev, sym_next = float(sym.at[days[i - 1], "Close"]), float(sym.at[days[i + 1], "Close"])
+    bench_prev, bench_next = float(bench.at[days[i - 1], "Close"]), float(bench.at[days[i + 1], "Close"])
+    if not all(math.isfinite(v) and v > 0 for v in (sym_prev, sym_next, bench_prev, bench_next)):
+        return None
+    r_i = sym_next / sym_prev - 1.0
+    r_m = bench_next / bench_prev - 1.0
     return (r_i - r_m) / (sigma * math.sqrt(2.0))
 
 
@@ -168,7 +172,11 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
         if as_of not in sym.index:
             skip("no_reaction_bars", row.date)
             continue
-        if float(sym.at[as_of, "Close"]) < entry.universe.min_price:
+        as_of_close = float(sym.at[as_of, "Close"])
+        if not math.isfinite(as_of_close):
+            skip("no_reaction_bars", row.date)
+            continue
+        if as_of_close < entry.universe.min_price:
             skip("illiquid_price", row.date)
             continue
         if dollar_volume < reference:

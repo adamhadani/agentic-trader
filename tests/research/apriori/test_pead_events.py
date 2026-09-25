@@ -133,6 +133,7 @@ def test_skip_reasons():
         "outside_window": 1,
     }
     assert counts["reasons_by_year"]["non_session_date"] == {2021: 1}
+    assert counts["rows"] == counts["events"] + sum(counts["reasons"].values())
 
 
 def test_negative_surprise_and_drop_is_a_short_leg_event_and_mixed_signals_are_control_only():
@@ -142,3 +143,27 @@ def test_negative_surprise_and_drop_is_a_short_leg_event_and_mixed_signals_are_c
     assert events.iloc[0]["leg"] == "SHORT"
     events, _ = build_events([report("XYZ", days[40], eps=1.20, forecast=1.00)], market, entry)
     assert events.iloc[0]["leg"] is None and events.iloc[0]["reaction_short"] and events.iloc[0]["surprise_long"]
+
+
+def test_symbol_nan_close_at_d_plus_1_is_counted_not_emitted():
+    market, days = market_with(1.10)
+    xyz = market.daily["XYZ"].copy()
+    xyz.loc[xyz.index[41], "Close"] = np.nan  # D+1 close missing
+    market = MarketData(market.trading_days, dict(market.daily, XYZ=xyz), market.static_symbols)
+    entry = entry_with_window(days[0], days[-1])
+    events, counts = build_events([report("XYZ", days[40])], market, entry)
+    assert events.empty
+    assert counts["reasons"] == {"no_reaction_bars": 1}
+    assert counts["rows"] == counts["events"] + sum(counts["reasons"].values())
+
+
+def test_benchmark_nan_close_at_d_plus_1_is_counted_not_emitted():
+    market, days = market_with(1.10)
+    spy = market.daily["SPY"].copy()
+    spy.loc[spy.index[41], "Close"] = np.nan  # D+1 close missing for the benchmark
+    market = MarketData(market.trading_days, dict(market.daily, SPY=spy), market.static_symbols)
+    entry = entry_with_window(days[0], days[-1])
+    events, counts = build_events([report("XYZ", days[40])], market, entry)
+    assert events.empty
+    assert counts["reasons"] == {"no_reaction_bars": 1}
+    assert counts["rows"] == counts["events"] + sum(counts["reasons"].values())
