@@ -10,10 +10,12 @@ a gappy sample. Parsing uses the live blackout's parser (``agent.earnings``).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import os
+import tempfile
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -41,11 +43,23 @@ _TIMEOUT_SECONDS = 15.0
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as target:
-        target.write(data)
-        target.flush()
-        os.fsync(target.fileno())
+    """Write ``data`` to ``path`` atomically and re-savably: a temp file (mode 0600,
+    fsynced) is renamed onto ``path`` so a crash between the page and meta writes
+    leaves at most an orphaned temp file, never a half-written or unreplaceable
+    final file, and a later ``save`` for the same day simply overwrites it.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as target:
+            target.write(data)
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 class CalendarPageStore:

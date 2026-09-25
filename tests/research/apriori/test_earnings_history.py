@@ -91,6 +91,29 @@ async def test_a_page_that_no_longer_matches_its_hash_is_refused(tmp_path):
         store.load(day)
 
 
+async def test_recovers_from_an_orphaned_page_with_no_meta_file(tmp_path):
+    """A crash between writing the page and its meta file leaves an orphaned page.
+
+    ``load`` must not treat it as cached (no meta => re-fetch), and ``save`` must not
+    raise trying to recreate the already-existing page file.
+    """
+    store = CalendarPageStore(tmp_path / "nasdaq")
+    day = date(2021, 4, 29)
+    orphan_page = store.directory / "2021-04-29.json"
+    orphan_page.write_bytes(b"leftover from a crashed run, no sibling meta file")
+    orphan_page.chmod(0o600)
+    assert store.load(day) is None
+
+    recorder = _Recorder({"2021-04-29": [(200, _body("AAA"))]})
+    result = await acquire_calendar(
+        [day], store, interval_seconds=1.0, transport=httpx.MockTransport(recorder), sleep=_no_sleep
+    )
+    assert len(recorder.calls) == 1
+    assert (result.fetched_dates, result.reused_dates, result.failed_dates) == (1, 0, ())
+    assert [row.symbol for row in result.rows] == ["AAA"]
+    assert store.load(day) == _body("AAA")
+
+
 async def test_paces_every_request(tmp_path):
     slept: list[float] = []
 
