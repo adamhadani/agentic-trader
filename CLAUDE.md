@@ -167,6 +167,12 @@ controls on one complete declared cohort, and records turnover plus signal-bar
 market beta. A full-history run fails closed when current members lack bars; the
 short recent diagnostic is descriptive only and cannot promote an alpha.
 
+The [a priori alpha catalog](docs/apriori-alphas.md) tests literature anomalies as one
+frozen hypothesis per leg (`config/research/apriori/*.json`, SHA-256 in each manifest;
+a change is a new version). `alpha apriori-study` is research only: manifest before any
+provider access, no DB/registry/broker/Telegram, no promotion credit. A passing leg only
+becomes eligible for a separately specified capped paper probe.
+
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
 now bound traded notional, reject pending inventory, require matching forecast/risk
