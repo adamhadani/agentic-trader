@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
@@ -51,6 +52,28 @@ class EarningsEvent:
     timing: EarningsTiming
 
 
+NASDAQ_REQUEST_HEADERS: dict[str, str] = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+
+
+@dataclass(frozen=True)
+class CalendarRow:
+    """One Nasdaq calendar row: the report date plus the EPS fields the calendar serves today.
+
+    Shared by the live earnings blackout (which reads only ``symbol``/``date``/``timing``)
+    and the a priori PEAD study. The EPS values are as the endpoint serves them now, not
+    guaranteed point-in-time.
+    """
+
+    symbol: str
+    date: date
+    timing: EarningsTiming
+    eps: float | None
+    eps_forecast: float | None
+    surprise_pct_reported: float | None
+    n_estimates: int | None
+    fiscal_quarter: str | None
+
+
 @dataclass(frozen=True)
 class EarningsLookup:
     """Result of an earnings lookahead scan.
@@ -68,6 +91,62 @@ class EarningsLookup:
 @runtime_checkable
 class EarningsCalendarProtocol(Protocol):
     async def next_earnings(self, symbol: str, now: datetime, horizon_days: int) -> EarningsLookup: ...
+
+
+def _number(raw: object) -> float | None:
+    """``'$1.07'`` -> 1.07, ``'($0.95)'`` -> -0.95, ``'$1,234.50'`` -> 1234.5; blank, ``N/A`` or junk -> None."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text.upper() == "N/A":
+        return None
+    negative = text.startswith("(") and text.endswith(")")
+    cleaned = text.strip("()").replace("$", "").replace(",", "").strip()
+    try:
+        value = float(cleaned)
+    except ValueError:
+        return None
+    if not math.isfinite(value):
+        return None
+    return -abs(value) if negative else value
+
+
+def _count(raw: object) -> int | None:
+    value = _number(raw)
+    if value is None or value < 0 or not value.is_integer():
+        return None
+    return int(value)
+
+
+def parse_calendar_payload(payload: object, day: date) -> list[CalendarRow]:
+    """Rows of one Nasdaq calendar response for ``day``.
+
+    A missing or null ``data``/``rows`` is an empty day (the endpoint serves
+    ``data: null`` on some non-trading dates); rows without a symbol are skipped.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    raw_rows = data.get("rows") if isinstance(data, dict) else None
+    rows: list[CalendarRow] = []
+    for row in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        quarter = str(row.get("fiscalQuarterEnding") or "").strip()
+        rows.append(
+            CalendarRow(
+                symbol=symbol,
+                date=day,
+                timing=_parse_timing(row.get("time")),
+                eps=_number(row.get("eps")),
+                eps_forecast=_number(row.get("epsForecast")),
+                surprise_pct_reported=_number(row.get("surprise")),
+                n_estimates=_count(row.get("noOfEsts")),
+                fiscal_quarter=quarter or None,
+            )
+        )
+    return rows
 
 
 class NasdaqEarningsCalendar:
@@ -119,7 +198,7 @@ class NasdaqEarningsCalendar:
                 resp = await client.get(
                     NASDAQ_EARNINGS_CALENDAR_URL,
                     params={"date": day.isoformat()},
-                    headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                    headers=NASDAQ_REQUEST_HEADERS,
                 )
                 if resp.status_code != 200:
                     logger.warning(
@@ -132,20 +211,10 @@ class NasdaqEarningsCalendar:
             return None
 
         try:
-            data = payload.get("data") if isinstance(payload, dict) else None
-            raw_rows = data.get("rows") if isinstance(data, dict) else None
-            rows_map: dict[str, EarningsEvent] = {}
-            if isinstance(raw_rows, list):
-                for row in raw_rows:
-                    if not isinstance(row, dict):
-                        continue
-                    symbol = row.get("symbol")
-                    if not symbol:
-                        continue
-                    symbol_upper = str(symbol).upper()
-                    rows_map[symbol_upper] = EarningsEvent(
-                        symbol=symbol_upper, date=day, timing=_parse_timing(row.get("time"))
-                    )
+            rows_map = {
+                row.symbol: EarningsEvent(symbol=row.symbol, date=day, timing=row.timing)
+                for row in parse_calendar_payload(payload, day)
+            }
         except Exception as e:
             logger.warning(
                 "Failed to parse Nasdaq earnings calendar payload", extra={"date": day.isoformat(), "error": str(e)}
@@ -217,6 +286,8 @@ def earnings_note(lookup: EarningsLookup, now: datetime, blackout_days: int) -> 
 
 
 __all__ = [
+    "NASDAQ_REQUEST_HEADERS",
+    "CalendarRow",
     "EarningsCalendarProtocol",
     "EarningsEvent",
     "EarningsLookup",
@@ -224,4 +295,5 @@ __all__ = [
     "NasdaqEarningsCalendar",
     "earnings_blackout_reason",
     "earnings_note",
+    "parse_calendar_payload",
 ]
