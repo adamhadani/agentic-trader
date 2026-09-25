@@ -96,6 +96,17 @@ def test_evaluate_leg_fails_p4_on_too_few_events():
     assert not result["p4"]["holds"] and not result["passes"]
 
 
+def test_evaluate_leg_fails_p2_when_the_control_matches_the_leg():
+    # No separate control rows: every direction row is a leg row with the same value, so
+    # mean_diff == 0 everywhere -- P1 (an unconditional positive mean) still holds, but P2
+    # (an edge over control) cannot.
+    data = {s: [("LONG", True, 0.3)] for s in _sessions(400, date(2022, 6, 1))}
+    result = evaluate_leg(_labels(data), "LONG", ENTRY)
+    assert result["p1"]["holds"]
+    assert not result["p2"]["holds"] and result["p2"]["mean_diff"] == 0.0
+    assert not result["passes"]
+
+
 def _market_and_hourly():
     day = date(2021, 4, 5)
     # 30 flat sessions: neither bracket level is touched, so both directions time out at 20 sessions.
@@ -158,7 +169,7 @@ async def test_execute_writes_manifest_before_building_and_records_failure(tmp_p
         raise RuntimeError("provider down")
 
     result = await execute_pead_study(LOADED, output, build=build, environment={"revision": "abc"})
-    assert result == {"status": "failed", "error": "RuntimeError: provider down"}
+    assert result == {"status": "failed", "error": "RuntimeError: provider down", "authorizes_promotion": False}
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["sha256"] == LOADED.sha256 and manifest["authorizes_promotion"] is False
     assert json.loads((output / "result.json").read_text())["status"] == "failed"

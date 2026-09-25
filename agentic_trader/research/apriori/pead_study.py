@@ -36,6 +36,7 @@ from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import LoadedEntry, PeadEntry
 from agentic_trader.research.apriori.earnings_history import CalendarAcquisition
 from agentic_trader.research.apriori.pead_events import MarketData, build_events
+from agentic_trader.research.setups.baserates import _ci90, _p_one_sided_positive, _weighted
 from agentic_trader.research.setups.labels import BracketHit, SetupLevels, label_bracket
 from agentic_trader.research.setups.study import _finite_json, _stationary_index_draws
 from agentic_trader.screeners.coverage import REGULAR_SESSION_HOURS_NY
@@ -161,28 +162,9 @@ def label_events(
 # --- Statistics ----------------------------------------------------------------------------
 
 
-def _ci90(boot: np.ndarray) -> list[float]:
-    finite = boot[np.isfinite(boot)]
-    if finite.size == 0:
-        return [float("nan"), float("nan")]
-    return [float(np.percentile(finite, 5)), float(np.percentile(finite, 95))]
-
-
-def _p_positive(boot: np.ndarray) -> float:
-    finite = boot[np.isfinite(boot)]
-    if finite.size == 0:
-        return float("nan")
-    return (int(np.sum(finite <= 0.0)) + 1) / (finite.size + 1)
-
-
 def _sums(frame: pd.DataFrame, sessions: pd.Index) -> tuple[np.ndarray, np.ndarray]:
     grouped = frame.groupby("session")["r_cost"].agg(["sum", "count"]).reindex(sessions, fill_value=0)
     return grouped["sum"].to_numpy(float), grouped["count"].to_numpy(float)
-
-
-def _weighted(sums: np.ndarray, counts: np.ndarray, rows: np.ndarray) -> float:
-    n = counts[rows].sum()
-    return float(sums[rows].sum() / n) if n > 0 else float("nan")
 
 
 def _draws(n: int, entry: PeadEntry) -> np.ndarray:
@@ -195,13 +177,15 @@ def _mean_test(leg: pd.DataFrame, entry: PeadEntry) -> dict:
     sums, counts = _sums(leg, sessions)
     boot = np.array([_weighted(sums, counts, rows) for rows in _draws(len(sessions), entry)], dtype=float)
     ci90 = _ci90(boot)
+    mean_r_cost = _weighted(sums, counts, np.arange(len(sessions))) if len(sessions) else float("nan")
     return {
         "n": int(counts.sum()),
         "n_sessions": len(sessions),
-        "mean_r_cost": _weighted(sums, counts, np.arange(len(sessions))) if len(sessions) else float("nan"),
+        "mean_r_cost": mean_r_cost,
         "ci90": ci90,
-        "p_one_sided": _p_positive(boot),
-        "holds": bool(np.isfinite(ci90[0]) and ci90[0] > 0.0),
+        "finite_draws": int(np.isfinite(boot).sum()),
+        "p_one_sided": _p_one_sided_positive(boot),
+        "holds": bool(np.isfinite(mean_r_cost) and mean_r_cost > 0.0 and np.isfinite(ci90[0]) and ci90[0] > 0.0),
     }
 
 
@@ -215,15 +199,17 @@ def _paired_test(leg: pd.DataFrame, control: pd.DataFrame, entry: PeadEntry) -> 
 
     boot = np.array([diff(rows) for rows in _draws(len(sessions), entry)], dtype=float)
     ci90 = _ci90(boot)
+    mean_diff = diff(np.arange(len(sessions))) if len(sessions) else float("nan")
     return {
         "n_leg": int(leg_n.sum()),
         "n_control": int(ctl_n.sum()),
         "n_sessions": len(sessions),
         "control_mean_r_cost": _weighted(ctl_sums, ctl_n, np.arange(len(sessions))) if len(sessions) else float("nan"),
-        "mean_diff": diff(np.arange(len(sessions))) if len(sessions) else float("nan"),
+        "mean_diff": mean_diff,
         "ci90": ci90,
-        "p_one_sided": _p_positive(boot),
-        "holds": bool(np.isfinite(ci90[0]) and ci90[0] > 0.0),
+        "finite_draws": int(np.isfinite(boot).sum()),
+        "p_one_sided": _p_one_sided_positive(boot),
+        "holds": bool(np.isfinite(mean_diff) and mean_diff > 0.0 and np.isfinite(ci90[0]) and ci90[0] > 0.0),
     }
 
 
@@ -356,6 +342,6 @@ async def execute_pead_study(
             "authorizes_promotion": False,
         }
     except Exception as exc:
-        result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "authorizes_promotion": False}
     save_json_report(_finite_json(result), directory / "result.json")
     return result
