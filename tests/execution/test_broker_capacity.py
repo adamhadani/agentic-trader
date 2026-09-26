@@ -289,7 +289,7 @@ def test_terminal_exit_execution_cannot_be_hidden_by_same_size_reopened_holding(
         assess(capacity_case, [reservation()])
 
 
-@pytest.mark.parametrize("status", ["held", "pending_new", "accepted", "pending_replace"])
+@pytest.mark.parametrize("status", ["pending_new", "accepted", "pending_replace"])
 def test_nonworking_exit_does_not_establish_active_protection(capacity_case, status):
     context = capacity_case[1]
     context.positions = (
@@ -303,3 +303,101 @@ def test_nonworking_exit_does_not_establish_active_protection(capacity_case, sta
     )
     with pytest.raises(ValueError, match="protection"):
         assess(capacity_case, [reservation()])
+
+
+# Card #21 CRM incident (2026-09-24): XOM 46 @ 161.32 filled bracket entry (root
+# limit 161.9), take-profit leg 172.48 status `new`, stop leg 156.61 status `held`.
+# Alpaca holds a filled bracket's stop of an OCO exit pair; it is real protection.
+def incident_orders(*, stop_status="held", tp_status="new", stop_quantity="46"):
+    root = observed_order("root", symbol="XOM", status="filled", filled="46").model_copy(
+        update={"quantity": "46", "limit_price": "161.9", "average_fill_price": "161.32"}
+    )
+    profit = observed_order("profit", symbol="XOM", side="sell", status=tp_status, parent="root").model_copy(
+        update={"quantity": "46", "limit_price": "172.48"}
+    )
+    stop = observed_order(
+        "stop", symbol="XOM", side="sell", status=stop_status, parent="root", stop="156.61"
+    ).model_copy(update={"quantity": stop_quantity})
+    return root, profit, stop
+
+
+def incident_reservation(**updates):
+    return reservation(
+        contract="XOM",
+        quantity=46,
+        entry_price=161.32,
+        stop_loss=156.61,
+        take_profit=172.48,
+        broker_order_id="root",
+        **updates,
+    )
+
+
+@pytest.fixture
+def incident_capacity_case(capacity_case):
+    context = capacity_case[1]
+    context.positions = (
+        BrokerPosition(
+            symbol="XOM", asset_class="EQUITY", direction="LONG", quantity=46, entry_price=161.32, current_price=164.14
+        ),
+    )
+    context.orders = incident_orders()
+    return capacity_case
+
+
+# aggregate_stop_risk also includes the candidate SPY order's own risk (10 * |100-95| == 50).
+INCIDENT_STOP_DISTANCE_RISK = Decimal(46) * (Decimal("164.14") - Decimal("156.61"))
+
+
+def test_incident_held_bracket_stop_is_exact_protection(incident_capacity_case):
+    result = assess(incident_capacity_case, [incident_reservation()])
+    assert result.aggregate_stop_risk == INCIDENT_STOP_DISTANCE_RISK + Decimal(50)
+
+
+def test_incident_new_stop_is_unchanged(incident_capacity_case):
+    context = incident_capacity_case[1]
+    context.orders = incident_orders(stop_status="new")
+    result = assess(incident_capacity_case, [incident_reservation()])
+    assert result.aggregate_stop_risk == INCIDENT_STOP_DISTANCE_RISK + Decimal(50)
+
+
+def test_incident_canceled_stop_still_refuses_with_the_same_message(incident_capacity_case):
+    context = incident_capacity_case[1]
+    context.orders = incident_orders(stop_status="canceled")
+    with pytest.raises(ValueError, match="Exact active stop protection is unavailable"):
+        assess(incident_capacity_case, [incident_reservation()])
+
+
+def test_incident_missing_stop_refuses_with_the_same_message(incident_capacity_case):
+    context = incident_capacity_case[1]
+    root, profit, _ = incident_orders()
+    context.orders = (root, profit)
+    with pytest.raises(ValueError, match="Exact active stop protection is unavailable"):
+        assess(incident_capacity_case, [incident_reservation()])
+
+
+def test_incident_two_held_stops_refuse(incident_capacity_case):
+    context = incident_capacity_case[1]
+    root, profit, stop = incident_orders()
+    second_stop = stop.model_copy(update={"order_id": "stop2", "client_order_id": "stop2-client"})
+    context.orders = (root, profit, stop, second_stop)
+    with pytest.raises(ValueError, match="Exact active stop protection is unavailable"):
+        assess(incident_capacity_case, [incident_reservation()])
+
+
+def test_incident_held_stop_wrong_quantity_refuses(incident_capacity_case):
+    context = incident_capacity_case[1]
+    context.orders = incident_orders(stop_quantity="45")
+    with pytest.raises(ValueError, match="Exact protection differs"):
+        assess(incident_capacity_case, [incident_reservation()])
+
+
+def test_incident_mark_at_or_below_held_stop_refuses(incident_capacity_case):
+    context = incident_capacity_case[1]
+    context.positions = (
+        BrokerPosition(
+            symbol="XOM", asset_class="EQUITY", direction="LONG", quantity=46, entry_price=161.32, current_price=156.61
+        ),
+    )
+    with pytest.raises(ValueError, match="reconcile before new exposure"):
+        assess(incident_capacity_case, [incident_reservation()])

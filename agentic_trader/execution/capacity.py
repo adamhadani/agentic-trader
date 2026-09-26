@@ -44,6 +44,9 @@ WORKING_STATUSES: Final = frozenset((OrderStatus.NEW, OrderStatus.ACCEPTED, Orde
 TERMINAL_STATUSES: Final = frozenset(
     (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.EXPIRED, OrderStatus.REJECTED, OrderStatus.REPLACED)
 )
+# Alpaca holds a filled bracket's stop leg of an OCO exit pair in status `held`,
+# not `new`; it is still the real, broker-triggered protective order.
+PROTECTIVE_STOP_STATUSES: Final = frozenset((OrderStatus.NEW, OrderStatus.HELD))
 
 
 class CapacityAssessment(BaseModel):
@@ -160,7 +163,7 @@ def _exposure(reservations: list[dict[str, Any]], context: BrokerEntryContext) -
                 orders[identity]
                 for identity in family - {root_id}
                 if orders[identity].order_type in (OrderType.STOP.lower(), OrderType.STOP_LIMIT.lower())
-                and orders[identity].status == OrderStatus.NEW
+                and orders[identity].status in PROTECTIVE_STOP_STATUSES
             ]
             if len(stops) != 1:
                 raise ValueError("Exact active stop protection is unavailable for existing exposure")
