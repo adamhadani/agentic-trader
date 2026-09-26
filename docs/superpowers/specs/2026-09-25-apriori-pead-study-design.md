@@ -267,3 +267,13 @@ path (new `source`), an `EarningsDrift` strategy emitting candidates with a froz
 catalog identity, a time-exit policy on those cards enforced by the existing
 lifetime/close services, probe-style caps, and tolerance of the unofficial calendar
 endpoint's outages. It gets its own spec.
+
+## Version 2 (2026-09-26)
+
+Version 1 (`pead-v1.json`) was run on 2026-09-25 and **failed closed before any outcome was
+computed**: Nasdaq's calendar history is empty for nearly every session from 2016-06-06 to
+2016-07-08, so 25 of 2016's 218 requested trading sessions had empty pages, above the frozen 10%
+per-year limit. Every other year had 6–10 empty sessions (holidays and quiet days). No returns,
+labels or statistics were produced. `pead-v2.json` is identical except that decisions start on
+2016-08-01, after the gap; the rule that a change needs a non-overlapping window protects against
+re-testing inspected outcomes, and version 1 inspected none. The threshold was not changed.
