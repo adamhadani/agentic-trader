@@ -19,4 +19,5 @@ Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output 
 
 | Entry | Version | Hypothesis | Long | Short | Result |
 | --- | --- | --- | --- | --- | --- |
-| `pead` | 1 | Post-earnings drift when EPS surprise and price reaction agree | pending | pending | [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |
+| `pead` | 1 | Post-earnings drift when EPS surprise and price reaction agree | — | — | Failed closed on calendar coverage (Nasdaq gap 2016-06-06..07-08); no outcomes computed |
+| `pead` | 2 | Same, decisions from 2016-08-01 | **eligible** (+0.149R; +0.055R vs control) | failed (−0.064R) | [result](apriori-pead-2026-09-26.md), [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |

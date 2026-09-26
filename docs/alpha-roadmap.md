@@ -195,8 +195,13 @@ research run or runtime policy change was made for this review.
    tests literature anomalies as one frozen hypothesis per leg (`config/research/apriori/*.json`),
    pooled across many names to avoid the mining funnel's multiple-testing penalty. Studies
    are research only (no registry/trial/shadow/broker credit); a passing leg becomes
-   eligible for a separately specified capped paper probe (Part 2). The PEAD (post-earnings
-   drift) entry is pending study; see [PEAD study design](superpowers/specs/2026-09-25-apriori-pead-study-design.md).
+   eligible for a separately specified capped paper probe (Part 2). **PEAD result
+   (September 26, [write-up](apriori-pead-2026-09-26.md)):** the LONG leg passed all four
+   criteria (+0.149R per trade after costs, +0.055R over the every-reporter control, 4,726
+   trades); the SHORT leg failed. Next: the Part 2 spec for a capped live paper probe of
+   long PEAD cards (live earnings-event source, time exits on cards, probe caps, calendar
+   outage tolerance). Version 1 failed closed on a June 2016 Nasdaq calendar gap before any
+   outcome was computed.
 
 - **Later: overcome sparse per-symbol trade histories in alpha mining** (operator,
   2026-09-25). The funnel qualifies per symbol, so each hypothesis sees few trades and
