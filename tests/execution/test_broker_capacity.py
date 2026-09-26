@@ -376,10 +376,35 @@ def test_incident_missing_stop_refuses_with_the_same_message(incident_capacity_c
         assess(incident_capacity_case, [incident_reservation()])
 
 
-def test_incident_two_held_stops_refuse(incident_capacity_case):
+def test_held_stop_with_terminal_take_profit_sibling_refuses(incident_capacity_case):
+    # Round 1 fix, scenario A: root filled, TP canceled/expired, stop held. Alpaca only holds
+    # the stop while its OCO take-profit sibling is live; a terminal TP sibling means the held
+    # stop is an anomaly/transient, not confirmed exact protection, even though the leg loop
+    # skips a terminal sibling entirely.
     context = incident_capacity_case[1]
-    root, profit, stop = incident_orders()
-    second_stop = stop.model_copy(update={"order_id": "stop2", "client_order_id": "stop2-client"})
+    context.orders = incident_orders(tp_status="canceled")
+    with pytest.raises(ValueError, match="Exact active stop protection is unavailable"):
+        assess(incident_capacity_case, [incident_reservation()])
+
+
+def test_held_stop_with_held_take_profit_sibling_refuses(incident_capacity_case):
+    # Round 1 fix, scenario B: root filled, TP held, stop held. HELD is in WORKING_STATUSES, so
+    # the trailing leg loop alone would accept this; the take-profit sibling must specifically
+    # be NEW (live), not merely non-terminal.
+    context = incident_capacity_case[1]
+    context.orders = incident_orders(tp_status="held")
+    with pytest.raises(ValueError, match="Exact active stop protection is unavailable"):
+        assess(incident_capacity_case, [incident_reservation()])
+
+
+def test_incident_new_and_held_stop_together_refuse(incident_capacity_case):
+    # One NEW and one HELD stop leg: each individually satisfies PROTECTIVE_STOP_STATUSES, so
+    # this only refuses if the code actually enforces "exactly one" rather than picking the
+    # first/any protective match. A NEW-only filter would wrongly find just the NEW stop and
+    # admit, silently ignoring the duplicate HELD stop anomaly.
+    context = incident_capacity_case[1]
+    root, profit, stop = incident_orders(stop_status="new")
+    second_stop = stop.model_copy(update={"order_id": "stop2", "client_order_id": "stop2-client", "status": "held"})
     context.orders = (root, profit, stop, second_stop)
     with pytest.raises(ValueError, match="Exact active stop protection is unavailable"):
         assess(incident_capacity_case, [incident_reservation()])
