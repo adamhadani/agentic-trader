@@ -471,7 +471,16 @@ class AlpacaBroker(BaseBroker):
             if len(legs) >= ALPACA_BRACKET_ORDER_COUNT or any(self._field(leg, "legs") for leg in legs):
                 raise ValueError("Entry order group exceeds supported bracket structure")
             root_id = str(self._field(root, "id"))
-            for order, parent in [(root, None), *((leg, root_id) for leg in legs)]:
+            # A nested root's legs can still show a stale `replaced` leg (e.g. after a trailing-
+            # stop ratchet); the live replacement is frequently HELD and absent from the OPEN
+            # query, so it can only be recovered by following `replaced_by` here, the same exact
+            # bounded/verified chain `_expand_close_orders` already follows for closes.
+            resolved_legs = list(legs)
+            for leg in legs:
+                current = await self._current_order(leg)
+                if str(self._field(current, "id")) != str(self._field(leg, "id")):
+                    resolved_legs.append(current)
+            for order, parent in [(root, None), *((leg, root_id) for leg in resolved_legs)]:
                 if any(
                     self._field(order, key) is None
                     for key in ("id", "client_order_id", "symbol", "qty", "filled_qty", "updated_at")

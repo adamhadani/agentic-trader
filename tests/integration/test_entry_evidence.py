@@ -9,6 +9,7 @@ import pytest
 
 from agentic_trader.broker.base import BrokerEntryContext, OrderRequest, SimulatedEntryContext
 from agentic_trader.broker.paper import PaperBroker
+from agentic_trader.execution.capacity import _exposure
 
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1"])]
@@ -303,4 +304,83 @@ async def test_duplicate_leg_with_material_timestamp_difference_still_fails_clos
     skewed = _shift_timestamps(venue.take_profit, -timedelta(milliseconds=2))
     venue.override = lambda method, path, query, body: (200, [skewed]) if path == "/v2/orders" else None
     with pytest.raises(ValueError, match="Conflicting duplicate"):
+        await broker.entry_market_context(entry_request, entry_order_ids=(venue.entry["id"],))
+
+
+async def test_admission_evidence_follows_a_replaced_stop_to_its_current_held_leg(alpaca_http, entry_request):
+    # Round 1 fix: after a trailing-stop ratchet (frequent), the root's nested legs still show
+    # the stale `replaced` stop; the live replacement is often `held` and absent from the OPEN
+    # query. Admission evidence must follow `replaced_by` (the same bounded, verified chain
+    # `_current_order`/`_expand_close_orders` already use for closes) or capacity wrongly finds
+    # zero stops and refuses every new entry again.
+    venue, broker = alpaca_http
+    venue.replacement_status = "held"
+    # 98 tightens the sell-stop protecting the long SPY position (original stop 95, mark 105);
+    # a looser price is a documented no-op in modify_order_stop and would never PATCH/replace.
+    result = await broker.modify_order_stop(order_id=venue.entry["id"], symbol="SPY", new_stop_price=98)
+    assert result.success
+    new_stop_id = result.order_id
+    assert venue.stop["status"] == "replaced" and venue.stop["replaced_by"] == new_stop_id
+    assert venue.orders[new_stop_id]["status"] == "held"
+    open_orders = [o["id"] for o in venue.dispatch("GET", "/v2/orders", {}, None)[1]]
+    assert new_stop_id not in open_orders and venue.stop["id"] not in open_orders
+
+    context = await broker.entry_market_context(entry_request, entry_order_ids=(venue.entry["id"],))
+    orders = {order.order_id: order for order in context.orders}
+    assert new_stop_id in orders
+    new_stop = orders[new_stop_id]
+    assert new_stop.status == "held" and new_stop.parent_order_id == venue.entry["id"]
+    assert new_stop.side == "sell" and Decimal(new_stop.stop_price) == Decimal(98)
+    # the superseded stop is retained too, as terminal evidence, not silently discarded.
+    assert orders[venue.stop["id"]].status == "replaced"
+
+    reservation = {
+        "contract": "SPY",
+        "asset_class": "EQUITY",
+        "status": "EXECUTED",
+        "direction": "LONG",
+        "quantity": 10,
+        "entry_price": 100,
+        "stop_loss": 98,
+        "risk_dollars": 50,
+        "notional_value": 1000,
+        "broker_order_id": venue.entry["id"],
+        "take_profit": 110,
+    }
+    # Capacity admits: the existing holding's protection resolves to the new held stop, not a
+    # refusal from the stale replaced leg or a missing-stop error. Exercised through `_exposure`
+    # directly (the exact function `capacity.py` uses for this check) rather than the full
+    # `assess_entry_capacity` pipeline, whose separate same-symbol netting policy would refuse a
+    # second SPY entry regardless of protection evidence.
+    exposure = _exposure([reservation], context)
+    assert len(exposure) == 1
+    assert exposure[0]["risk_dollars"] == Decimal(10) * (Decimal(105) - Decimal(98))
+
+
+async def test_admission_evidence_follows_a_bounded_multi_hop_replacement_chain(
+    alpaca_http, entry_request, broker_order_payload
+):
+    # Two ratchets: stop -> mid (replaced) -> final (held). `_current_order` resolves a leg
+    # straight to its live head in one pass (mirroring `_expand_close_orders`), so only the raw
+    # stale leg from the nested root (`stop`) and the fully-resolved current leg (`final`) are
+    # retained as evidence; the intermediate `mid` hop is chain-following detail, not evidence.
+    venue, broker = alpaca_http
+    mid = broker_order_payload(type="stop", status="replaced", stop_price="96", replaces=venue.stop["id"])
+    final = broker_order_payload(type="stop", status="held", stop_price="97", replaces=mid["id"])
+    venue.stop["status"], venue.stop["replaced_by"] = "replaced", mid["id"]
+    mid["replaced_by"] = final["id"]
+    venue.orders[mid["id"]] = mid
+    venue.orders[final["id"]] = final
+
+    context = await broker.entry_market_context(entry_request, entry_order_ids=(venue.entry["id"],))
+    orders = {order.order_id: order for order in context.orders}
+    assert {venue.stop["id"], final["id"]} <= set(orders)
+    assert orders[final["id"]].status == "held" and orders[final["id"]].parent_order_id == venue.entry["id"]
+    assert (
+        orders[venue.stop["id"]].status == "replaced" and orders[venue.stop["id"]].parent_order_id == venue.entry["id"]
+    )
+
+    # Bounded: a cyclic replacement chain fails closed instead of looping forever.
+    final["replaced_by"] = venue.stop["id"]
+    with pytest.raises(ValueError, match="[Cc]yclic|replacement chain"):
         await broker.entry_market_context(entry_request, entry_order_ids=(venue.entry["id"],))

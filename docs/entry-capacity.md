@@ -72,11 +72,13 @@ bound on subsequent price moves.
 An order is a protective exit only through exact parent/replacement identity.
 Symbol and opposite side are insufficient. Pending entries must retain their
 exact approved bracket. Filled entries require matching inventory and confirmed
-entry cost basis, plus one exact
-`new` stop of the correct side and full quantity. Held, accepted, pending or
-partially filled exits do not establish verified active protection. Any exit fill,
-partial ownership, broker-only holding, unrelated order or missing evidence blocks
-new risk until reconciliation/review. Admission does not cancel or repair those orders.
+entry cost basis, plus one exact stop of the correct side and full quantity in
+status `new` or `held`: Alpaca holds a filled bracket's stop leg of its OCO exit
+pair in `held`, and that is still real, broker-triggered protection, not a
+missing one. Accepted, pending or partially filled exits, or any other status,
+do not establish verified active protection. Any exit fill, partial ownership,
+broker-only holding, unrelated order or missing evidence blocks new risk until
+reconciliation/review. Admission does not cancel or repair those orders.
 
 ## Audit, tests and operations
 
