@@ -1,0 +1,59 @@
+{
+  "id": "pead",
+  "version": 1,
+  "title": "Post-earnings-announcement drift: surprise and price reaction agree",
+  "references": [
+    "Ball and Brown (1968), An Empirical Evaluation of Accounting Income Numbers",
+    "Bernard and Thomas (1989), Post-Earnings-Announcement Drift: Delayed Price Response or Risk Premium?",
+    "Chan, Jegadeesh and Lakonishok (1996), Momentum Strategies",
+    "Brandt, Kishore, Santa-Clara and Venkatachalam (2008), Earnings Announcements are Full of Surprises",
+    "Martineau (2022), Rest in Peace Post-Earnings Announcement Drift"
+  ],
+  "hypotheses": "For each leg separately, over decisions 2016-03-01..2026-07-31 (entry at 10:35 New York on the second session after the Nasdaq report date D; 2 x ATR14 stop, 3R target, 20-session time exit; 5 bps per side): LONG = surprise >= +5% and SPY-relative D-1..D+1 reaction >= +1 sigma; SHORT = surprise <= -5% and reaction <= -1 sigma. P1: mean R_cost > 0 with the bootstrap ci90 lower bound > 0. P2: mean R_cost(leg) - mean R_cost(control, same direction) > 0 with the paired ci90 lower bound > 0; control = every liquid reporter's same bracket. P3: the 1%-trimmed mean > 0 and the mean over decisions from 2023-01-01 > 0. P4: at least 300 labelled events, at least 100 from 2023-01-01. Stationary session-block bootstrap, block mean 10, 2000 draws, seed 20260925; ci90 = [5th, 95th] percentiles. See docs/superpowers/specs/2026-09-25-apriori-pead-study-design.md.",
+  "decision_rule": "A leg for which P1, P2, P3 and P4 all hold becomes eligible for Part 2 (a capped live paper probe with its own spec). Otherwise the leg stays off and is recorded as failed. No threshold is revisited after the run; any change is a new version with a new, non-overlapping window.",
+  "window": {
+    "decisions": ["2016-03-01", "2026-07-31"],
+    "bars_through": "2026-09-01",
+    "recent_from": "2023-01-01"
+  },
+  "feed": "alpaca:sip",
+  "adjustment": "all",
+  "event": {
+    "min_abs_forecast": 0.05,
+    "min_estimates": 1,
+    "surprise_pct": 5.0,
+    "reaction_sigma": 1.0,
+    "vol_window": 20,
+    "benchmark": "SPY"
+  },
+  "universe": {
+    "min_price": 10.0,
+    "dollar_volume_window": 20,
+    "static_percentile": 0.25,
+    "liquidity_adjustment": "raw"
+  },
+  "trade": {
+    "decision_time_et": "10:35",
+    "entry_session_offset": 2,
+    "stop_atr_multiple": 2.0,
+    "atr_window": 14,
+    "target_r": 3.0,
+    "max_hold_sessions": 20,
+    "secondary_hold_sessions": 60
+  },
+  "costs_bps_per_side": [0.0, 5.0],
+  "decision_cost_bps": 5.0,
+  "bootstrap": {
+    "block_mean": 10,
+    "draws": 2000,
+    "seed": 20260925
+  },
+  "pass_rule": {
+    "min_events": 300,
+    "min_recent_events": 100,
+    "trim_fraction": 0.01
+  },
+  "max_failed_calendar_fraction": 0.02,
+  "max_empty_session_fraction_per_year": 0.10,
+  "calendar_request_interval_seconds": 1.0
+}

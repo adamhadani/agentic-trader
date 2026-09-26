@@ -3,12 +3,14 @@ from datetime import UTC, date, datetime, timedelta
 import httpx
 
 from agentic_trader.agent.earnings import (
+    CalendarRow,
     EarningsEvent,
     EarningsLookup,
     EarningsTiming,
     NasdaqEarningsCalendar,
     earnings_blackout_reason,
     earnings_note,
+    parse_calendar_payload,
 )
 
 
@@ -249,3 +251,59 @@ def test_note_for_unverified():
     lookup = EarningsLookup(event=None, verified=False, horizon_end=TODAY + timedelta(days=7))
     note = earnings_note(lookup, NOW, blackout_days=7)
     assert note == "Unverified — earnings calendar unavailable"
+
+
+# --- parse_calendar_payload: row parsing and field formatting ---------------
+
+
+def _payload(*rows):
+    return {"data": {"asOf": "Thu, Apr 29, 2021", "rows": list(rows)}}
+
+
+def test_parse_calendar_payload_reads_eps_fields():
+    row = {
+        "symbol": "amzn",
+        "time": "time-not-supplied",
+        "eps": "$15.79",
+        "epsForecast": "$9.75",
+        "surprise": "61.95",
+        "noOfEsts": "15",
+        "fiscalQuarterEnding": "Mar/2021",
+        "marketCap": "$2,750,294,260,000",
+    }
+    [parsed] = parse_calendar_payload(_payload(row), date(2021, 4, 29))
+    assert parsed == CalendarRow(
+        symbol="AMZN",
+        date=date(2021, 4, 29),
+        timing=EarningsTiming.UNSPECIFIED,
+        eps=15.79,
+        eps_forecast=9.75,
+        surprise_pct_reported=61.95,
+        n_estimates=15,
+        fiscal_quarter="Mar/2021",
+    )
+
+
+def test_parse_calendar_payload_value_formats():
+    rows = [
+        {"symbol": "NEG", "eps": "($0.95)", "epsForecast": "($1.07)", "surprise": "-16", "noOfEsts": "3"},
+        {"symbol": "BIG", "eps": "$1,234.50", "epsForecast": "$2", "surprise": "N/A", "noOfEsts": "N/A"},
+        {"symbol": "BLANK", "eps": "", "epsForecast": "", "surprise": "", "noOfEsts": ""},
+        {"symbol": "JUNK", "eps": "abc", "epsForecast": None, "surprise": "nan", "noOfEsts": "2.5"},
+    ]
+    parsed = {row.symbol: row for row in parse_calendar_payload(_payload(*rows), date(2021, 4, 29))}
+    assert (parsed["NEG"].eps, parsed["NEG"].eps_forecast, parsed["NEG"].surprise_pct_reported) == (-0.95, -1.07, -16.0)
+    assert parsed["NEG"].n_estimates == 3
+    assert (parsed["BIG"].eps, parsed["BIG"].eps_forecast, parsed["BIG"].surprise_pct_reported) == (1234.5, 2.0, None)
+    assert parsed["BIG"].n_estimates is None
+    for symbol in ("BLANK", "JUNK"):
+        row = parsed[symbol]
+        assert (row.eps, row.eps_forecast, row.surprise_pct_reported, row.n_estimates) == (None, None, None, None)
+
+
+def test_parse_calendar_payload_empty_and_malformed_days():
+    day = date(2021, 5, 1)
+    assert parse_calendar_payload({"data": None}, day) == []
+    assert parse_calendar_payload({"data": {"rows": None}}, day) == []
+    assert parse_calendar_payload([], day) == []
+    assert parse_calendar_payload(_payload("not a row", {"symbol": ""}, {"eps": "$1"}), day) == []

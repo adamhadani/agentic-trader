@@ -191,6 +191,24 @@ research run or runtime policy change was made for this review.
    (see [production operations](production.md#suggestion-scans)). Further recorded
    follow-ups: process-wide per-feed pacer; `setup_quality` cross-strategy scale
    calibration.
+9. **A priori alpha catalog (September 25).** The [a priori catalog](apriori-alphas.md)
+   tests literature anomalies as one frozen hypothesis per leg (`config/research/apriori/*.json`),
+   pooled across many names to avoid the mining funnel's multiple-testing penalty. Studies
+   are research only (no registry/trial/shadow/broker credit); a passing leg becomes
+   eligible for a separately specified capped paper probe (Part 2). **PEAD result
+   (September 26, [write-up](apriori-pead-2026-09-26.md)):** the LONG leg passed all four
+   criteria (+0.149R per trade after costs, +0.055R over the every-reporter control, 4,726
+   trades); the SHORT leg failed. Next: the Part 2 spec for a capped live paper probe of
+   long PEAD cards (live earnings-event source, time exits on cards, probe caps, calendar
+   outage tolerance). Version 1 failed closed on a June 2016 Nasdaq calendar gap before any
+   outcome was computed.
+
+- **Later: overcome sparse per-symbol trade histories in alpha mining** (operator,
+  2026-09-25). The funnel qualifies per symbol, so each hypothesis sees few trades and
+  planted-signal power is 0/64. Research how quant practice handles this — pooled or
+  cross-sectional panel estimation, hierarchical/shrinkage estimators, meta-labeling,
+  event pooling, cross-asset transfer, synthetic or bootstrapped paths — then design ways
+  to unblock the mining funnel. Research online first; no build until reviewed.
 
 No threshold was lowered, alpha promoted or trading configuration changed by this
 survey. Zero promotions alone proves neither correct pruning nor absence of alpha.

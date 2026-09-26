@@ -12,6 +12,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
 from pathlib import Path
+from typing import Self
 from uuid import uuid4
 
 import click
@@ -20,6 +21,7 @@ import yfinance as yf
 
 from agentic_trader.cli.utils import artifact_directory, coro, session_source
 from agentic_trader.config import load_config
+from agentic_trader.constants import AssetClass, normalize_asset_class
 from agentic_trader.data.evidence import BarAcquisitionError, BarEvidenceStore
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.execution.lifetime_policy import MAX_TRADE_LIFETIME_SECONDS, TradeLifetimePolicy
@@ -78,9 +80,12 @@ from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_volume_study
+from agentic_trader.research.apriori.catalog import load_pead_entry
+from agentic_trader.research.apriori.pead_runner import build_pead_inputs
+from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
-from agentic_trader.research.setups.runner import build_setup_frames, build_window_frames
+from agentic_trader.research.setups.runner import _build_pacer, build_setup_frames, build_window_frames
 from agentic_trader.research.setups.study import SetupStudyProtocol, execute_setup_study
 from agentic_trader.runtime import runtime_identity, state_directory
 from agentic_trader.storage.alpha import AlphaRepository
@@ -1176,3 +1181,75 @@ async def alpha_setup_baserates_cmd(protocol_path, output, max_workers, cache):
     click.echo(json.dumps(result, indent=2, default=str))
     if result.get("status") == "failed":
         raise click.ClickException("Setup base-rate test failed; see result.json for the reason")
+
+
+class _AprioriClients:
+    """Alpaca calendar and SIP data clients for the a priori study; sessions closed on exit."""
+
+    def __init__(self):
+        self._stack = ExitStack()
+
+    def __enter__(self) -> Self:
+        config = load_config()
+        calendar_client = BoundedTradingClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            paper=config.alpaca_paper,
+            request_timeout=config.market_data.timeout_seconds,
+        )
+        self._stack.callback(calendar_client._session.close)
+        data_client = BoundedStockDataClient(
+            config.alpaca_api_key, config.alpaca_api_secret, request_timeout=config.market_data.timeout_seconds
+        )
+        self._stack.callback(data_client._session.close)
+        # No bar evidence store: the study's cache files and digests are its bar artifact
+        # (raw evidence for thousands of symbols would be many gigabytes).
+        self.bars = AlpacaDataProvider(stock_client=data_client, feed="sip")
+        self.calendar = AlpacaCalendarProvider(trading_client=calendar_client)
+        self.static_symbols = sorted(
+            contract
+            for contract, info in config.contracts.items()
+            if normalize_asset_class(str(info.asset_class)) == normalize_asset_class(AssetClass.EQUITY)
+        )
+        self.pace = _build_pacer(config)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stack.close()
+
+
+def _apriori_clients() -> _AprioriClients:
+    return _AprioriClients()
+
+
+@alpha_group.command("apriori-study")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option(
+    "--cache", type=click.Path(path_type=Path), default=None, help="Page/bar cache directory; defaults to OUTPUT/raw"
+)
+@coro
+async def alpha_apriori_study_cmd(protocol_path, output, cache):
+    """Run a frozen a priori catalog study (research only; grants no credit)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded = await asyncio.to_thread(load_pead_entry, protocol_path)
+    cache_dir = cache if cache is not None else output / "raw"
+    environment = await asyncio.to_thread(research_environment)
+
+    with _apriori_clients() as clients:
+
+        async def build():
+            return await build_pead_inputs(
+                loaded.entry,
+                bars=clients.bars,
+                calendar=clients.calendar,
+                cache_dir=cache_dir,
+                static_symbols=clients.static_symbols,
+                pace=clients.pace,
+            )
+
+        result = await execute_pead_study(loaded, output, build=build, environment=environment)
+    click.echo(json.dumps({k: result.get(k) for k in ("status", "decisions", "error")}, indent=2, default=str))
+    if result.get("status") == "failed":
+        raise click.ClickException("A priori study failed; see result.json for the reason")
