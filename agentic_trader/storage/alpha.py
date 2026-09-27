@@ -746,6 +746,9 @@ class AlphaRepository:
             # Probes place orders, so the installed record must name them too.
             "probe": [d.version_id for d in snapshot.probe],
         }
+        if snapshot.catalog_probes:
+            # Only when present, so a record without catalog probes keeps its exact shape.
+            payload["catalog_probe"] = [d["version_id"] for d in snapshot.catalog_probes]
         async with self.store.db.session_factory() as session, session.begin():
             await self.store.lock(session, resource="alpha")
             if await self._get(session, "runtime/registry") != payload:
@@ -765,6 +768,7 @@ class AlphaRepository:
             "active": len(snapshot.active),
             "shadow": len(snapshot.shadow),
             "probe": len(snapshot.probe),
+            "catalog_probe": len(snapshot.catalog_probes),
             "installed": installed,
             "latest_research": await self.get("research/latest"),
             "latest_observation": await self.get("observation/latest"),

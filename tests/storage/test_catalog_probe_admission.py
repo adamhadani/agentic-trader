@@ -107,3 +107,35 @@ async def test_an_expired_catalog_probe_is_blocked(db, repository, definition):
         definition, actor="op", expected_generation=0, days=1, now=datetime.now(UTC) - timedelta(days=2)
     )
     assert (await rejection(db, definition)).startswith("Paper probe blocked:")
+
+
+async def gate(db, strategy, *, alpha_version=None, alpha_policy=None):
+    sid = await db.record_signal(
+        "NVDA",
+        strategy,
+        "LONG",
+        100,
+        95,
+        115,
+        100.0,
+        asset_class="EQUITY",
+        quantity=1,
+        timeframe="1d",
+        alpha_version=alpha_version,
+        alpha_policy=alpha_policy,
+    )
+    async with db.session_factory() as session, session.begin():
+        return await db.workflows._alpha_entry_rejection(session, await session.get(SignalRecord, sid))
+
+
+@pytest.mark.parametrize("strategy", ["pead_long", "PEAD_LONG", "pead_short"])
+async def test_a_catalog_strategy_signal_without_its_version_fails_closed(db, repository, definition, strategy):
+    """A producer bug or rebuilt card must not bypass probe liveness and the contract check."""
+    await repository.enrol_catalog_probe(definition, actor="op", expected_generation=0)
+    reason = await gate(db, strategy, alpha_policy=definition["execution"])
+    assert reason == "Alpha version is not active/qualified; request a fresh scan after qualification."
+
+
+async def test_a_native_strategy_without_a_version_stays_outside_the_alpha_gate(db, repository, definition):
+    await repository.enrol_catalog_probe(definition, actor="op", expected_generation=0)
+    assert await gate(db, "pullback") is None

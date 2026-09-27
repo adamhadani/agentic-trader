@@ -285,6 +285,35 @@ async def test_sweep_retires_an_expired_catalog_probe_with_one_notice(db, reposi
     assert len(retirements) == 1 and "pead_long" in retirements[0] and "expired" in retirements[0]
 
 
+async def test_acknowledge_names_live_catalog_probes_only_when_present(repository, definition):
+    # status() reads the real clock, so every enrolment uses it too.
+    real_now = datetime.now(UTC)
+    dsl = make_definition()
+    await seed(repository, dsl)
+    await repository.enrol_probe(dsl.version_id, actor="op", expected_generation=0, now=real_now)
+    await repository.acknowledge(await repository.snapshot(now=real_now), run_id="run-1")
+    # Without a catalog probe the installed record keeps its exact pre-catalog shape.
+    assert await repository.get("runtime/registry") == {
+        "generation": 1,
+        "run_id": "run-1",
+        "active": [],
+        "probe": [dsl.version_id],
+    }
+    status = await repository.status(run_id="run-1")
+    assert (status["ready"], status["probe"], status["catalog_probe"]) == (True, 1, 0)
+    await repository.enrol_catalog_probe(definition, actor="op", expected_generation=1, now=real_now)
+    await repository.acknowledge(await repository.snapshot(now=real_now), run_id="run-1")
+    assert await repository.get("runtime/registry") == {
+        "generation": 2,
+        "run_id": "run-1",
+        "active": [],
+        "probe": [dsl.version_id],
+        "catalog_probe": [definition["version_id"]],
+    }
+    status = await repository.status(run_id="run-1")
+    assert (status["ready"], status["probe"], status["catalog_probe"]) == (True, 1, 1)
+
+
 def test_cli_enrols_a_catalog_probe_once(tmp_path, monkeypatch):
     """Plain function: the CLI owns its own event loop (see tests/cli/test_alpha_probe_cli.py)."""
     directory = study(tmp_path)

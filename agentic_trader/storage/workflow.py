@@ -38,7 +38,7 @@ from agentic_trader.execution.durable import (
 )
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.validation import ValidationPolicy
-from agentic_trader.research.apriori.probe import CATALOG_KIND
+from agentic_trader.research.apriori.probe import CATALOG_KIND, CATALOG_STRATEGY_IDS
 from agentic_trader.risk import drawdown_risk_factor, requires_account_risk
 from agentic_trader.storage.models import (
     AlphaProjectionRecord,
@@ -461,7 +461,8 @@ class WorkflowStore:
             return work_item(row)
 
     async def _alpha_entry_rejection(self, session: AsyncSession, signal: SignalRecord) -> str | None:
-        if not signal.alpha_version and not signal.strategy.lower().startswith("alpha_"):
+        strategy = signal.strategy.lower()
+        if not signal.alpha_version and not strategy.startswith("alpha_") and strategy not in CATALOG_STRATEGY_IDS:
             return None
         # Consistent lock order: trading admission, then alpha registry. Registry
         # changes use the alpha lock, so demotion cannot race submission commit.

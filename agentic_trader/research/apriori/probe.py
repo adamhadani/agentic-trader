@@ -17,8 +17,19 @@ from agentic_trader.research.apriori.catalog import load_pead_entry, pead_execut
 
 
 CATALOG_KIND = "apriori"
+CATALOG_ENTRY_IDS = ("pead",)
+LEGS = ("LONG", "SHORT")
 LIVE_LEGS = ("LONG",)
 ELIGIBLE = "eligible_for_probe"
+
+
+def catalog_alpha_id(entry_id: str, leg: str) -> str:
+    return f"{entry_id}_{leg.lower()}"
+
+
+# Every strategy ID a catalog leg can sign a signal with. Admission fails closed for these
+# when a signal lacks its alpha version, exactly as for the DSL lane's ``alpha_`` prefix.
+CATALOG_STRATEGY_IDS = frozenset(catalog_alpha_id(entry_id, leg) for entry_id in CATALOG_ENTRY_IDS for leg in LEGS)
 
 
 def catalog_version_id(entry_id: str, version: int, leg: str, sha256: str) -> str:
@@ -31,7 +42,7 @@ def is_catalog_definition(definition: Mapping[str, Any] | None) -> bool:
 
 def load_catalog_probe(entry_path: Path, study_dir: Path, leg: str) -> dict[str, Any]:
     leg = leg.upper()
-    if leg not in ("LONG", "SHORT"):
+    if leg not in LEGS:
         raise ValueError(f"Unknown leg {leg!r}; expected LONG or SHORT")
     loaded = load_pead_entry(entry_path)
     manifest_bytes = (study_dir / "manifest.json").read_bytes()
@@ -55,7 +66,7 @@ def load_catalog_probe(entry_path: Path, study_dir: Path, leg: str) -> dict[str,
     return {
         "kind": CATALOG_KIND,
         "version_id": version_id,
-        "alpha_id": f"{entry.id}_{leg.lower()}",
+        "alpha_id": catalog_alpha_id(entry.id, leg),
         "entry_id": entry.id,
         "entry_version": entry.version,
         "entry_sha256": loaded.sha256,
