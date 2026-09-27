@@ -1,8 +1,16 @@
 """Pure elapsed-time contract shared by research and broker lifecycle services."""
 
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, time, timedelta
+from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
+
+
+if TYPE_CHECKING:
+    from agentic_trader.market.session import MarketCalendarDay
 
 MAX_TRADE_LIFETIME_SECONDS = int(timedelta(days=31).total_seconds())
 TRADE_LIFETIME_VERSION = "elapsed_utc_v1"
@@ -61,3 +69,78 @@ def daily_entry_lifetime() -> TradeLifetimePolicy:
         holding_seconds=None,
         version=TRADE_LIFETIME_VERSION_INDEPENDENT,
     )
+
+
+SESSION_LIFETIME_VERSION = "session_count_v1"
+MAX_HOLDING_SESSIONS = 60
+SESSION_CLOSE_BUFFER = timedelta(minutes=15)
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+class SessionEvidenceError(ValueError):
+    """The broker calendar cannot establish a session-counted deadline; callers REVIEW, never guess."""
+
+
+def _clock(value: str) -> time:
+    try:
+        hours, minutes = (int(part) for part in value.split(":"))
+        return time(hours, minutes)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("close_time_et requires HH:MM") from exc
+
+
+@dataclass(frozen=True)
+class SessionLifetimePolicy:
+    """One-session resting entry, then a holding exit at ``close_time_et`` New York on session N.
+
+    The fill's own regular session is session 1, exactly as the study's ``label_bracket``
+    counts it. On an early-close session the exit moves to 15 minutes before that close.
+    """
+
+    resting_seconds: int
+    holding_sessions: int
+    close_time_et: str = "15:45"
+    version: str = SESSION_LIFETIME_VERSION
+
+    def __post_init__(self):
+        if self.version != SESSION_LIFETIME_VERSION:
+            raise ValueError("Unsupported session lifetime version")
+        if type(self.resting_seconds) is not int or not 1 <= self.resting_seconds <= MAX_TRADE_LIFETIME_SECONDS:
+            raise ValueError("Trade lifetimes require bounded positive integer seconds")
+        if type(self.holding_sessions) is not int or not 1 <= self.holding_sessions <= MAX_HOLDING_SESSIONS:
+            raise ValueError(f"Holding sessions must be an integer in 1..{MAX_HOLDING_SESSIONS}")
+        _clock(self.close_time_et)
+
+    def entry_deadline(self, submitted_at: datetime) -> datetime:
+        return aware_utc(submitted_at) + timedelta(seconds=self.resting_seconds)
+
+    def holding_deadline(self, filled_at: datetime, sessions: Sequence[MarketCalendarDay]) -> datetime:
+        fill = aware_utc(filled_at).astimezone(_NEW_YORK)
+        regular = sorted(
+            (d for d in sessions if d.is_trading_day and d.open_time is not None and d.close_time is not None),
+            key=lambda d: d.date,
+        )
+        first = next((d for d in regular if d.date == fill.date()), None)
+        if first is None or first.open_time is None or first.close_time is None:
+            raise SessionEvidenceError("fill_outside_regular_session")
+        if not first.open_time <= fill.time().replace(tzinfo=None) <= first.close_time:
+            raise SessionEvidenceError("fill_outside_regular_session")
+        held = [d for d in regular if d.date >= first.date]
+        if len(held) < self.holding_sessions:
+            raise SessionEvidenceError("session_calendar_short")
+        last = held[self.holding_sessions - 1]
+        if last.close_time is None:
+            raise SessionEvidenceError("session_calendar_short")
+        target = datetime.combine(last.date, _clock(self.close_time_et), tzinfo=_NEW_YORK)
+        close = datetime.combine(last.date, last.close_time, tzinfo=_NEW_YORK)
+        return min(target, close - SESSION_CLOSE_BUFFER).astimezone(UTC)
+
+
+LifetimePolicy = TradeLifetimePolicy | SessionLifetimePolicy
+
+
+def lifetime_from_dict(document: Mapping[str, Any]) -> LifetimePolicy:
+    """Deserialize a stored lifetime without rewriting historical documents."""
+    if document.get("version") == SESSION_LIFETIME_VERSION:
+        return SessionLifetimePolicy(**document)
+    return TradeLifetimePolicy(**document)

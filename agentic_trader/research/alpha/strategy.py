@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
-from agentic_trader.execution.lifetime_policy import TradeLifetimePolicy, daily_entry_lifetime
+from agentic_trader.execution.lifetime_policy import SessionLifetimePolicy, TradeLifetimePolicy, daily_entry_lifetime
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 
 
@@ -74,8 +75,53 @@ class TimedAlphaExecutionPolicy(AlphaExecutionPolicy):
             raise TypeError("Explicit validated lifetime policy required")
 
 
-def execution_policy_from_dict(document: dict) -> AlphaExecutionPolicy:
+APRIORI_BRACKET_KIND = "apriori_bracket_v1"
+
+
+@dataclass(frozen=True, kw_only=True)
+class AprioriBracketPolicy:
+    """A catalog study's fixed bracket: ``stop_atr`` x ATR, ``reward_risk`` R, never trailed.
+
+    A separate kind rather than new ``AlphaExecutionPolicy`` fields, so every existing
+    policy document, and every version hash derived from one, stays byte-identical.
+    """
+
+    stop_atr: float
+    atr_window: int
+    reward_risk: float
+    lifetime: SessionLifetimePolicy
+    tick_size: float = 0.01
+    kind: str = APRIORI_BRACKET_KIND
+
+    def __post_init__(self):
+        if self.kind != APRIORI_BRACKET_KIND:
+            raise ValueError("Unsupported execution policy kind")
+        for name in ("stop_atr", "reward_risk", "tick_size"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"Invalid execution policy {name}")
+        if type(self.atr_window) is not int or not 2 <= self.atr_window <= 252:
+            raise ValueError("Invalid execution lookback/buffer")
+        if not isinstance(self.lifetime, SessionLifetimePolicy):
+            raise TypeError("A session-counted lifetime policy is required")
+
+    def to_dict(self):
+        return asdict(self)
+
+
+def policy_trails(document: Mapping[str, Any] | None) -> bool:
+    """False only for a catalog bracket: its protection is fixed for the whole hold."""
+    return not (document and document.get("kind") == APRIORI_BRACKET_KIND)
+
+
+def execution_policy_from_dict(document: dict) -> AlphaExecutionPolicy | AprioriBracketPolicy:
     """Deserialize versioned policy without rewriting historical financial identity."""
+    if "kind" in document:
+        if document["kind"] != APRIORI_BRACKET_KIND:
+            raise ValueError("Unsupported execution policy kind")
+        fields = dict(document)
+        fields["lifetime"] = SessionLifetimePolicy(**fields["lifetime"])
+        return AprioriBracketPolicy(**fields)
     if "lifetime" in document:
         fields = dict(document)
         fields["lifetime"] = TradeLifetimePolicy(**fields["lifetime"])
@@ -116,8 +162,22 @@ def entry_directions(scores: pd.Series, definition: AlphaDefinition) -> pd.Serie
 
 
 def bracket_prices(
-    entry: float, direction: int, atr: float, swing_low: float, swing_high: float, policy: AlphaExecutionPolicy
+    entry: float,
+    direction: int,
+    atr: float,
+    swing_low: float,
+    swing_high: float,
+    policy: AlphaExecutionPolicy | AprioriBracketPolicy,
 ) -> tuple[float, float]:
+    if isinstance(policy, AprioriBracketPolicy):
+        if direction not in (-1, 1) or not all(math.isfinite(x) and x > 0 for x in (entry, atr)):
+            raise ValueError("Bracket observations must be finite and positive")
+        ticks = math.ceil(policy.stop_atr * atr / policy.tick_size - 1e-10)
+        stop = round(entry - direction * ticks * policy.tick_size, 8)
+        target = round(entry + direction * math.ceil(ticks * policy.reward_risk - 1e-10) * policy.tick_size, 8)
+        if min(stop, target) <= 0:
+            raise ValueError("Bracket would cross zero")
+        return stop, target
     if direction not in (-1, 1) or not all(math.isfinite(x) and x > 0 for x in (entry, atr, swing_low, swing_high)):
         raise ValueError("Bracket observations must be finite and positive")
     structural = (
@@ -136,15 +196,22 @@ def bracket_prices(
 
 
 def trailing_price(
-    entry: float, current: float, stop: float, initial_risk: float, direction: int, policy: AlphaExecutionPolicy
+    entry: float,
+    current: float,
+    stop: float,
+    initial_risk: float,
+    direction: int,
+    policy: AlphaExecutionPolicy | AprioriBracketPolicy,
 ) -> float:
+    if isinstance(policy, AprioriBracketPolicy):
+        return stop
     if direction * (current - entry) < policy.trail_trigger_r * initial_risk:
         return stop
     proposed = current - direction * max(initial_risk, policy.trail_distance_r * initial_risk)
     return max(stop, proposed) if direction == 1 else min(stop, proposed)
 
 
-def strategy_atr(bars: pd.DataFrame, policy: AlphaExecutionPolicy) -> pd.Series:
+def strategy_atr(bars: pd.DataFrame, policy: AlphaExecutionPolicy | AprioriBracketPolicy) -> pd.Series:
     """Finite-window ATR gives identical protection with different history prefixes."""
     frame = bars.rename(columns=str.lower)
     previous = frame.close.shift(1)
@@ -153,5 +220,5 @@ def strategy_atr(bars: pd.DataFrame, policy: AlphaExecutionPolicy) -> pd.Series:
     return true_range.rolling(policy.atr_window, min_periods=policy.atr_window).mean()
 
 
-def entry_limit(price: float, policy: AlphaExecutionPolicy) -> float:
+def entry_limit(price: float, policy: AlphaExecutionPolicy | AprioriBracketPolicy) -> float:
     return round(round(price / policy.tick_size) * policy.tick_size, 8)
