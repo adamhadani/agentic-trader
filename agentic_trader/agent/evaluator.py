@@ -729,8 +729,10 @@ class RiskEvaluator:
             if candidate.catalog_event is not None:
                 # A catalog probe tests the unfiltered study rule: record the LLM's verdict,
                 # show its text as commentary, never let it veto (deterministic gates already ran).
+                verdict = data.get("approved")
                 data["llm_verdict"] = {
-                    "approved": bool(data.get("approved")),
+                    # Only an explicit true approves: bool("false") would record a veto as approval.
+                    "approved": verdict is True or (isinstance(verdict, str) and verdict.lower() == "true"),
                     "rejection_reason": data.get("rejection_reason"),
                 }
                 data["approved"], data["rejection_reason"] = True, None

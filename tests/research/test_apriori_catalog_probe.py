@@ -162,6 +162,20 @@ async def test_a_dsl_definition_is_not_a_catalog_enrolment(repository):
         await repository.enrol_catalog_probe(make_definition().to_dict(), actor="op", expected_generation=0, now=NOW)
 
 
+async def test_the_repository_itself_refuses_a_leg_the_live_path_does_not_trade(repository, definition):
+    """SHORT failed its study; a hand-built SHORT definition is refused at the repository, not only the loader."""
+    short = {
+        **definition,
+        "leg": "SHORT",
+        "alpha_id": "pead_short",
+        "version_id": catalog_version_id("pead", 2, "SHORT", SHA),
+    }
+    with pytest.raises(ValueError, match="live path trades only LONG"):
+        await repository.enrol_catalog_probe(short, actor="op", expected_generation=0, now=NOW)
+    assert await repository.get("registry") is None
+    assert await repository.get(f"version/{short['version_id']}") is None
+
+
 async def test_stale_generation_and_term_bounds_are_refused(repository, definition):
     with pytest.raises(ValueError, match="Registry changed"):
         await repository.enrol_catalog_probe(definition, actor="op", expected_generation=4, now=NOW)
@@ -358,3 +372,36 @@ def test_cli_enrols_a_catalog_probe_once(tmp_path, monkeypatch):
 
     listed = asyncio.run(registry())
     assert listed["probe"] == [version_id] and listed["generation"] == 1
+
+
+def test_cli_enrolment_warns_when_the_decision_time_is_not_scheduled(tmp_path, monkeypatch, app_config):
+    directory = study(tmp_path)
+
+    async def init():
+        database = paper_database(tmp_path)
+        await database.init_db()
+        await database.engine.dispose()
+
+    asyncio.run(init())
+
+    @asynccontextmanager
+    async def manager():
+        fresh = paper_database(tmp_path)
+        try:
+            yield AlphaRepository(fresh.workflows)
+        finally:
+            await fresh.engine.dispose()
+
+    app_config.scheduler.suggestion_scan_times_et = ["14:35"]
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.alpha_repository", manager)
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.load_config", lambda: app_config)
+    arguments = ["alpha", "apriori-probe", str(ENTRY), "--study", str(directory), "--generation", "0"]
+    result = CliRunner().invoke(cli, arguments)
+    assert result.exit_code == 0, result.output
+    assert "Warning: PEAD decision time 10:35 New York is not a scheduled suggestion scan time" in result.output
+    assert "14:35" in result.output
+
+    app_config.scheduler.suggestion_scan_times_et = ["10:35", "14:35"]
+    renewed = CliRunner().invoke(cli, [*arguments[:-1], "1", "--renew"])
+    assert renewed.exit_code == 0, renewed.output
+    assert "Warning" not in renewed.output

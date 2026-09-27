@@ -55,6 +55,13 @@ def test_drift_card_shows_the_event_and_the_time_exit(eval_res):
     assert text.endswith(format_alert_card(eval_res, "pead_long"))
 
 
+def test_drift_card_renders_an_early_close_exit_time_and_date(eval_res):
+    # 2026-11-27 closes at 13:00 New York: the exit is 12:45 NY (17:45 UTC), not 15:45.
+    text = format_alert_card(eval_res, "pead_long", drift={**DRIFT, "time_exit_at": "2026-11-27T17:45:00+00:00"})
+    assert "⏱️ 20-session hold · time exit 12:45 NY on 2026-11-27 unless the stop or target fills first" in text
+    assert "15:45" not in text
+
+
 def test_drift_card_without_an_exit_date_names_the_session(eval_res):
     text = format_alert_card(eval_res, "pead_long", probe_risk_cap=100.0, drift={**DRIFT, "time_exit_at": None})
     assert "⏱️ 20-session hold · time exit 15:45 NY on session 20 unless the stop or target fills first" in text

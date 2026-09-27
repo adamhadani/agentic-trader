@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from agentic_trader.constants import AssetClass
 from agentic_trader.execution.lifetime_policy import SessionLifetimePolicy
 from agentic_trader.research.apriori.catalog import load_pead_entry
@@ -27,11 +29,14 @@ from agentic_trader.screeners.indicators import calculate_ema, calculate_rsi
 
 
 __all__ = [
+    "NO_INTRADAY_PRICE",
     "PEAD_DECISION_TIME_ET",
     "PEAD_STRATEGY_ID",
+    "STALE_INTRADAY_PRICE",
     "DriftPreparation",
     "EarningsDriftService",
     "drift_card_facts",
+    "unscheduled_decision_time",
 ]
 
 logger = logging.getLogger(__name__)
@@ -42,6 +47,9 @@ PEAD_STRATEGY_ID = catalog_alpha_id("pead", "LONG")
 # all. A test pins it to the committed entry file.
 PEAD_DECISION_TIME_ET = "10:35"
 NEW_YORK = ZoneInfo("America/New_York")
+# Why an event produced no candidate; journaled as that event's outcome.
+NO_INTRADAY_PRICE = "no intraday price"
+STALE_INTRADAY_PRICE = "stale intraday price"
 # Calendar days looked ahead from the decision session; comfortably covers the frozen
 # 20-session hold (session_count_v1) even across long holiday clusters.
 _EXIT_CALENDAR_DAYS = 45
@@ -55,11 +63,15 @@ class DriftPreparation:
     policy: dict | None = None
     events: tuple[dict, ...] = ()
     skipped: dict[str, str] = field(default_factory=dict)
+    # The owner-skipped events' full documents: still part of the study's counterfactual set.
+    skipped_events: tuple[dict, ...] = ()
     counts: dict = field(default_factory=dict)
     reason: str | None = None
     report_date: str | None = None
     page_sha256: str | None = None
     time_exit_at: str | None = None
+    # Wall time of the preparation (calendar, bars, events), set by the scan that ran it.
+    elapsed_seconds: float | None = None
 
 
 def _finite(value: Any, default: float) -> float:
@@ -137,11 +149,12 @@ class EarningsDriftService:
         }
         if result.status != "ok":
             return DriftPreparation("unavailable", session, reason=result.reason, **common)
-        events, skipped = [], {}
+        events, skipped, skipped_events = [], {}, []
         for event in result.events:
             reason = owned.get(event["symbol"])
             if reason:
                 skipped[event["symbol"]] = reason
+                skipped_events.append(event)
             else:
                 events.append(event)
         return DriftPreparation(
@@ -149,22 +162,30 @@ class EarningsDriftService:
             session,
             events=tuple(events),
             skipped=skipped,
+            skipped_events=tuple(skipped_events),
             time_exit_at=await self._time_exit(now, version["execution"]),
             **common,
         )
 
-    def candidate(self, event: dict, data: Any, prep: DriftPreparation) -> ScreenerCandidate | None:
-        if data is None or isinstance(data, BaseException):
-            return None
+    def candidate(self, event: dict, data: Any, prep: DriftPreparation) -> ScreenerCandidate | str:
+        """The locked drift candidate, or the reason there is none (journaled as the event's outcome)."""
+        if isinstance(data, BaseException):
+            return f"fetch failed: {type(data).__name__}"
+        if data is None:
+            return NO_INTRADAY_PRICE
         intraday = getattr(data, "hourly", None)
         if intraday is None or intraday.empty:
             intraday = getattr(data, "four_hour", None)
         daily = getattr(data, "daily", None)
         if intraday is None or intraday.empty or daily is None or len(daily) < 20:
-            return None
+            return NO_INTRADAY_PRICE
+        stamp = pd.Timestamp(intraday.index[-1])
+        stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
+        if stamp.tz_convert(NEW_YORK).date() != prep.session:
+            return STALE_INTRADAY_PRICE
         price = float(intraday["Close"].iloc[-1])
         if not math.isfinite(price) or price <= 0:
-            return None
+            return NO_INTRADAY_PRICE
         close = daily["Close"]
         exit_text = f"time exit {prep.time_exit_at[:10]} 15:45 NY" if prep.time_exit_at else "20-session time exit"
         return ScreenerCandidate(
@@ -203,3 +224,18 @@ def drift_card_facts(event: dict, prep: DriftPreparation, holding_sessions: int)
         "holding_sessions": holding_sessions,
         "time_exit_at": prep.time_exit_at,
     }
+
+
+def unscheduled_decision_time(decision_time_et: str, scan_times_et: Sequence[str]) -> str | None:
+    """Why an enrolled PEAD probe would never scan, or None when its decision time is scheduled.
+
+    Only the scheduled suggestion scan whose time equals the entry's decision time produces
+    drift cards, so a schedule without it leaves an enrolled probe silently idle.
+    """
+    if decision_time_et in scan_times_et:
+        return None
+    scheduled = ", ".join(scan_times_et) or "none"
+    return (
+        f"PEAD decision time {decision_time_et} New York is not a scheduled suggestion scan time "
+        f"(scheduler.suggestion_scan_times_et: {scheduled}); an enrolled PEAD probe produces no drift cards."
+    )

@@ -82,6 +82,16 @@ def test_decision_frame_on_no_payloads_has_the_right_columns_and_is_empty():
     assert "session" in frame.columns
 
 
+def test_owner_skipped_events_count_as_events_but_never_as_carded():
+    payloads = [_payload("scan-1", events=[_event("AAA", "sent"), _event("OWND", "skipped: open position")])]
+
+    frame = decision_frame(payloads)
+    summary = summarize_probe(frame, pd.DataFrame(), [], None, None)
+
+    assert sorted(frame["symbol"]) == ["AAA", "OWND"]
+    assert (summary["events"], summary["carded"]) == (2, 1)
+
+
 def _signal(*, status, executed_at=None, realized_pnl=None, risk_dollars=100.0) -> dict:
     return {
         "status": status,

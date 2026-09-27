@@ -94,3 +94,22 @@ def test_lifetime_from_dict_dispatches_on_version_and_keeps_old_documents():
     assert lifetime_from_dict(old) == TradeLifetimePolicy(**old)
     new = {"resting_seconds": 57_600, "holding_sessions": 20, "close_time_et": "15:45", "version": "session_count_v1"}
     assert lifetime_from_dict(new) == SessionLifetimePolicy(**new)
+
+
+def test_a_closing_print_fill_just_after_the_close_counts_as_session_one():
+    closing_print = datetime.combine(date(2026, 11, 2), time(16, 0, 0, 250_000), tzinfo=NY)
+    deadline = POLICY.holding_deadline(closing_print, nyse_days(date(2026, 11, 2), date(2026, 12, 15)))
+    assert deadline == et(date(2026, 11, 30), 15, 45).astimezone(UTC)
+
+
+def test_an_early_close_fill_within_the_grace_counts_as_session_one():
+    # Nov 27 closes 13:00: session 1; Nov 30 .. Dec 24 are sessions 2..20.
+    after_early_close = datetime.combine(date(2026, 11, 27), time(13, 0, 30), tzinfo=NY)
+    deadline = POLICY.holding_deadline(after_early_close, nyse_days(date(2026, 11, 20), date(2027, 1, 15)))
+    assert deadline == et(date(2026, 12, 24), 15, 45).astimezone(UTC)
+
+
+def test_a_fill_beyond_the_grace_is_still_outside_the_session():
+    late = datetime.combine(date(2026, 11, 2), time(16, 1, 30), tzinfo=NY)
+    with pytest.raises(SessionEvidenceError, match="fill_outside_regular_session"):
+        POLICY.holding_deadline(late, nyse_days(date(2026, 10, 26), date(2026, 12, 31)))

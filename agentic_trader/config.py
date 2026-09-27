@@ -176,6 +176,9 @@ class AprioriConfig(BaseModel):
     enabled: bool = True
     pead_entry_path: str = "config/research/apriori/pead-v2.json"
     max_drift_cards_per_session: int = Field(default=1, ge=0)
+    # Open PEAD positions (20-session holds) at or above which the 10:35 scan sends no
+    # drift card, so the probe can never crowd native cards out of max_concurrent_positions.
+    max_open_drift_positions: int = Field(default=4, ge=0)
 
 
 class ScanBudget(StrEnum):

@@ -23,7 +23,7 @@ from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.research.alpha.models import AlphaDefinition, DecisionStatus, RegistrySnapshot
 from agentic_trader.research.alpha.probe import ProbePolicy, assess_probe, is_paper_scope, policy_document
 from agentic_trader.research.alpha.validation import ValidationPolicy
-from agentic_trader.research.apriori.probe import catalog_version_id, is_catalog_definition
+from agentic_trader.research.apriori.probe import LIVE_LEGS, catalog_version_id, is_catalog_definition
 from agentic_trader.storage.models import AlphaProjectionRecord, DomainEventRecord
 from agentic_trader.storage.probe_state import load_enrolment, load_forward_record, probe_block_reason
 from agentic_trader.storage.workflow import WorkflowStore, encode
@@ -515,6 +515,10 @@ class AlphaRepository:
         now = _aware(now) if now else datetime.now(UTC)
         if not is_catalog_definition(definition):
             raise ValueError("Catalog enrolment requires a catalog definition")
+        if definition.get("leg") not in LIVE_LEGS:
+            raise ValueError(
+                f"The live path trades only {', '.join(LIVE_LEGS)}; leg {definition.get('leg')!r} is refused"
+            )
         version_id = definition["version_id"]
         if version_id != catalog_version_id(
             definition["entry_id"], definition["entry_version"], definition["leg"], definition["entry_sha256"]

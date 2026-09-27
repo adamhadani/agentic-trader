@@ -96,7 +96,8 @@ A fourth difference cannot be fixed; it is measured instead (see "Known limits")
 - `TradeLifetimeService` gains an injected `MarketCalendarProtocol` (the daemon's
   existing composite calendar).
 - For a `session_count_v1` position, `assess_lifetime` receives the sessions from the
-  fill date through fill date + 40 calendar days.
+  fill date through fill date + 40 calendar days (as delivered, the span is derived
+  from the policy: `ceil(holding_sessions × 7 / 5) + 14` calendar days).
 - Everything else is unchanged:
   - the 1-minute `position_monitor` job;
   - `PositionCloseService.close_signal` with the stable `hold-<sha256>` request ID;
@@ -252,7 +253,8 @@ A fourth difference cannot be fixed; it is measured instead (see "Known limits")
 - Every qualifying live event is journaled at the decision, whether it was carded,
   skipped, tapped, filled or unfilled. This is the set that the study would have traded.
 - `copilot cards outcomes` gains a probe section:
-  - carded count, tap rate and fill rate;
+  - carded count, tap rate and fill rate (as delivered, the report counts carded,
+    `executed` and closed signals; it does not compute a tap or fill rate);
   - realized R per closed trade and cumulative R against −4R;
   - the counterfactual label of every journaled event, labelled later by
     `pead_study.label_events` on SIP hourly bars once mature, compared against the

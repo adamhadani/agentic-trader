@@ -85,12 +85,6 @@ def _ny_hhmm(value: str | None) -> str | None:
     return parsed.strftime("%H:%M") if parsed else None
 
 
-def _ny_date(value: str | None) -> str | None:
-    """Convert an aware ISO-8601 timestamp string to its New York date as an ISO string (or None)."""
-    parsed = _ny_datetime(value)
-    return parsed.date().isoformat() if parsed else None
-
-
 def _exec_button_label(execution_mode: str) -> str:
     mode_lower = execution_mode.lower()
     if mode_lower == ExecutionMode.PAPER:
@@ -213,11 +207,18 @@ def format_alert_card(
 
     drift_block = ""
     if drift:
-        exit_day = _ny_date(drift.get("time_exit_at")) or f"session {drift['holding_sessions']}"
+        # The computed deadline carries an early close's earlier exit; only when it is
+        # unknown does the card fall back to the frozen 15:45 on the last session.
+        exit_at = _ny_datetime(drift.get("time_exit_at"))
+        exit_text = (
+            f"{exit_at:%H:%M} NY on {exit_at.date().isoformat()}"
+            if exit_at
+            else f"15:45 NY on session {drift['holding_sessions']}"
+        )
         drift_block = (
             f"📈 <b>PEAD</b> — EPS beat {drift['surprise_pct']:+.1f}%, reaction {drift['z']:+.1f}σ vs SPY "
             f"(report {html.escape(str(drift['report_date']))})\n"
-            f"⏱️ {drift['holding_sessions']}-session hold · time exit 15:45 NY on {exit_day} "
+            f"⏱️ {drift['holding_sessions']}-session hold · time exit {exit_text} "
             "unless the stop or target fills first\n\n"
         )
 

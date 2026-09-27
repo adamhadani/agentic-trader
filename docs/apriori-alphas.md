@@ -56,6 +56,13 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   (`card_groups(contract, drift=True)` returns `correlation_groups_of(contract)`).
   Ties on multiple qualifying events break by the largest reaction z, then
   symbol.
+- **Open-position cap.** Each PEAD position holds for up to 20 sessions, so the
+  probe could otherwise fill `portfolio.max_concurrent_positions` and block native
+  cards at tap. `apriori.max_open_drift_positions` (default 4) caps it: when the
+  scan's executed `pead_long` positions reach the cap, the 10:35 scan still
+  prepares and journals the session's events (outcome `"drift position cap
+  reached"`, `status` stays `"ok"`, payload `open_drift_positions`) but sends no
+  drift card and reads no drift-only bars.
 - **LLM commentary only.** The evaluator's LLM call still runs, but its verdict is
   stored as `llm_verdict` in the signal's evaluation and never gates the card; the
   thesis is prefixed "LLM commentary (not a gate): …". The bracket, quantity and
@@ -67,7 +74,15 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   failure is a lifecycle `REVIEW` that halts new risk, never a guessed date. If
   the drift service itself fails to construct while a catalog probe is enrolled,
   the 10:35 scan journals `status: "unavailable"` with a debounced Telegram
-  notice; native cards are unaffected either way.
+  notice; native cards are unaffected either way. A 10:35 scan that returns early
+  because trading is halted or a macro lockout is active still journals one
+  `pead_decision` with `status: "skipped"` and the reason (`"trading halted: …"`,
+  `"macro lockout: <title>"`), without a notice. A drift event whose intraday
+  price is missing, stale (the last bar is not from the decision session) or
+  failed to fetch is journaled as `"no intraday price"`, `"stale intraday price"`
+  or `"fetch failed: <Type>"`. The daemon logs `pead_decision_time_unscheduled`
+  at startup when the entry's decision time is not a configured suggestion scan
+  time.
 - **Enrolment.** A passing leg is enrolled (or renewed) explicitly by the
   operator — never automatically:
 
@@ -91,12 +106,16 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   exact CLI options.
 - **Measurement.** `copilot cards outcomes` reports the probe alongside the
   native scan-outcome report: every journaled `pead_decision` event in the
-  window (`agentic_trader/research/apriori/probe_outcomes.py`), how many became
-  a card (`outcome == "sent"`), how many were executed/closed, the closed
+  window (`agentic_trader/research/apriori/probe_outcomes.py`), including events
+  skipped because the name was already owned (outcome `"skipped: <reason>"`,
+  counted as events but never as carded), how many became a card
+  (`outcome == "sent"`), how many were executed (a broker fill; no tap or fill
+  rate is computed) and closed, the closed
   trades' realized mean R, and — from the study's own `label_events` — the
   counterfactual mean `r_cost` over every mature LONG-leg event the scan saw,
   carded or not. `report_date`/`session` round-trip to `date` and `decision_at`
-  to an aware `datetime`; a bar-fetch failure for one symbol is recorded in
+  to an aware `datetime`; each `pead_decision` also records the preparation's
+  wall time (`elapsed_seconds`); a bar-fetch failure for one symbol is recorded in
   `bar_failures` and never aborts the rest of the report. Realized and
   counterfactual results are not comparable until the probe has at least 10
   closed trades. `/alphas` shows the probe's forward record

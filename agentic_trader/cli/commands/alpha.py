@@ -89,6 +89,7 @@ from agentic_trader.research.setups.features import SECTOR_ETF
 from agentic_trader.research.setups.runner import _build_pacer, build_setup_frames, build_window_frames
 from agentic_trader.research.setups.study import SetupStudyProtocol, execute_setup_study
 from agentic_trader.runtime import runtime_identity, state_directory
+from agentic_trader.screeners.earnings_drift import unscheduled_decision_time
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.artifacts import save_json_report
 from agentic_trader.storage.db import SignalDatabase
@@ -491,8 +492,10 @@ async def alpha_apriori_probe_cmd(entry_path, study_dir, leg, generation, days, 
     """Enrol (or renew) a passing catalog leg as a capped, expiring Alpaca paper probe. Never automatic."""
     try:
         definition = await asyncio.to_thread(load_catalog_probe, entry_path, study_dir, leg)
+        decision_time_et = load_pead_entry(entry_path).entry.trade.decision_time_et
     except (OSError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
+    unscheduled = unscheduled_decision_time(decision_time_et, load_config().scheduler.suggestion_scan_times_et)
     version_id = definition["version_id"]
     async with alpha_repository() as repository:
         try:
@@ -516,6 +519,8 @@ async def alpha_apriori_probe_cmd(entry_path, study_dir, leg, generation, days, 
             "Paper account only; earns no shadow, holdout or promotion credit. "
             "Leaving probe never closes or modifies a position."
         )
+        if unscheduled:
+            click.echo(f"Warning: {unscheduled}")
 
 
 @alpha_group.command("inspect")

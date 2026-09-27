@@ -81,16 +81,24 @@ class Bars:
     caller sees, rather than being silently absorbed by one shared frame set.
     """
 
-    def __init__(self, adjusted: dict[str, pd.DataFrame], raw: dict[str, pd.DataFrame], *, fail: bool = False):
+    def __init__(
+        self,
+        adjusted: dict[str, pd.DataFrame],
+        raw: dict[str, pd.DataFrame],
+        *,
+        fail: bool = False,
+        message: str = "bars unavailable",
+    ):
         self.adjusted = adjusted
         self.raw = raw
         self.fail = fail
+        self.message = message
         self.calls: list[tuple] = []
 
     def fetch_daily_many(self, symbols, start, end, *, adjustment):
         self.calls.append((tuple(symbols), start, end, adjustment))
         if self.fail:
-            raise RuntimeError("bars unavailable")
+            raise RuntimeError(self.message)
         source = self.adjusted if adjustment == "all" else self.raw
         return {s: source[s] for s in symbols if s in source}
 
@@ -294,3 +302,12 @@ async def test_unavailable_reasons(overrides, fragment):
     assert result.status == "unavailable"
     assert result.events == ()
     assert fragment in (result.reason or "")
+
+
+async def test_a_bar_fetch_failure_keeps_the_exception_message_bounded():
+    result = await live_events(**base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True)))
+    assert result.reason == "bars_unavailable: RuntimeError: bars unavailable"
+
+    long = await live_events(**base_kwargs(bars=Bars(ADJUSTED_FRAMES, RAW_FRAMES, fail=True, message="x" * 500)))
+    assert long.reason == ("bars_unavailable: RuntimeError: " + "x" * 500)[:200]
+    assert len(long.reason) == 200

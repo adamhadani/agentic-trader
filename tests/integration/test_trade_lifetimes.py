@@ -435,21 +435,29 @@ class AllDaysCalendar:
 
 
 async def use_session_policy(c, *, fill_days_ago):
+    """Pin the service clock to 15:50 New York today, five minutes past the 15:45 time exit.
+
+    The fill is at noon ``fill_days_ago`` days earlier, so the outcome never depends on
+    the wall-clock time of day the test runs at.
+    """
     ny = ZoneInfo("America/New_York")
     policy = AprioriBracketPolicy(
         stop_atr=2.0,
         atr_window=14,
         reward_risk=3.0,
-        lifetime=SessionLifetimePolicy(resting_seconds=57_600, holding_sessions=20, close_time_et="00:01"),
+        lifetime=SessionLifetimePolicy(resting_seconds=57_600, holding_sessions=20, close_time_et="15:45"),
     )
     async with c.db.session_factory() as session, session.begin():
         row = await session.get(SignalRecord, c.signal_id)
         row.alpha_policy, row.timeframe = json.dumps(policy.to_dict(), allow_nan=False), "1d"
     filled_position(c)
-    fill = datetime.now(ny).replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=fill_days_ago)
+    today = datetime.now(ny).date()
+    now = datetime.combine(today, dt_time(15, 50), tzinfo=ny).astimezone(UTC)
+    fill = datetime.combine(today - timedelta(days=fill_days_ago), dt_time(12, 0), tzinfo=ny)
     c.venue.entry.update(filled_at=fill.astimezone(UTC).isoformat())
     for service in c.services:
         service.calendar = AllDaysCalendar()
+        service.clock = lambda: now
 
 
 async def test_session_policy_closes_once_on_session_twenty(lifecycle_case):

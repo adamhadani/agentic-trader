@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
@@ -42,9 +43,16 @@ class LifetimeAction(StrEnum):
 
 
 BRACKET_EXIT_COUNT = 2
-HOLDING_CALENDAR_SPAN_DAYS = 40
 UNFILLED_TERMINAL = frozenset({"canceled", "expired", "rejected"})
 WORKING_ENTRY = frozenset({"new", "accepted", "pending_new", "accepted_for_bidding", "done_for_day"})
+
+
+def holding_calendar_span_days(holding_sessions: int) -> int:
+    """Calendar days from the fill date that always cover ``holding_sessions`` regular sessions.
+
+    Five sessions per seven days, plus two weeks of margin for holidays and closures.
+    """
+    return math.ceil(holding_sessions * 7 / 5) + 14
 
 
 @dataclass(frozen=True)
@@ -152,7 +160,8 @@ class TradeLifetimeService:
         if self.calendar is None:
             raise RuntimeError("Session-counted lifetime requires a market calendar")
         start = aware_utc(parent.filled_at).astimezone(NEW_YORK).date()
-        days = await self.calendar.get_calendar_range(start, start + timedelta(days=HOLDING_CALENDAR_SPAN_DAYS))
+        span = timedelta(days=holding_calendar_span_days(lifetime.holding_sessions))
+        days = await self.calendar.get_calendar_range(start, start + span)
         return [day for day in days if day.is_trading_day]
 
     async def _recover_cancel(

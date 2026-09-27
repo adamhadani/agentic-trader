@@ -160,6 +160,7 @@ async def test_ok_events_skip_owned_symbols_with_reasons(tmp_path, definition, s
     assert prep.status == "ok"
     assert [event["symbol"] for event in prep.events] == ["WINR"]
     assert prep.skipped == {"ABCD": "open position"}
+    assert prep.skipped_events == (events[1],)  # the full document, for the counterfactual set
     assert prep.policy == definition["execution"]
     assert prep.version_id == definition["version_id"]
 
@@ -241,14 +242,46 @@ def test_candidate_is_a_locked_probe_card(tmp_path, definition, snapshot):
     assert "+2.1σ" in candidate.trigger_detail
 
 
-def test_candidate_without_intraday_bars_is_none(tmp_path):
+def test_candidate_without_intraday_bars_has_a_reason(tmp_path):
     service = _service(tmp_path)
     event = _event("WINR", 2.1)
     empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
     data = SimpleNamespace(daily=_daily_frame(), hourly=empty, four_hour=empty)
     prep = DriftPreparation("ok", date(2026, 10, 28))
 
-    assert service.candidate(event, data, prep) is None
+    assert service.candidate(event, data, prep) == "no intraday price"
+    assert service.candidate(event, None, prep) == "no intraday price"
+    short_daily = SimpleNamespace(daily=_daily_frame(rows=5), hourly=_hourly_frame())
+    assert service.candidate(event, short_daily, prep) == "no intraday price"
+
+
+def test_candidate_fetch_failure_names_the_exception(tmp_path):
+    service = _service(tmp_path)
+    prep = DriftPreparation("ok", date(2026, 10, 28))
+
+    assert service.candidate(_event("WINR", 2.1), TimeoutError("slow"), prep) == "fetch failed: TimeoutError"
+
+
+def test_candidate_with_a_previous_session_price_is_stale(tmp_path):
+    service = _service(tmp_path)
+    # The last hourly bar is 2026-10-27 (New York); the decision session is 2026-10-28.
+    yesterday = _hourly_frame()
+    yesterday.index = yesterday.index - pd.Timedelta(days=1)
+    data = SimpleNamespace(daily=_daily_frame(), hourly=yesterday)
+    prep = DriftPreparation("ok", date(2026, 10, 28))
+
+    assert service.candidate(_event("WINR", 2.1), data, prep) == "stale intraday price"
+
+
+def test_candidate_reads_a_naive_intraday_stamp_as_utc(tmp_path):
+    service = _service(tmp_path)
+    # 2026-10-29 02:00 UTC is still 2026-10-28 22:00 in New York: the same session.
+    late = _hourly_frame(rows=1)
+    late.index = pd.DatetimeIndex([pd.Timestamp("2026-10-29 02:00")])
+    data = SimpleNamespace(daily=_daily_frame(), hourly=late)
+    prep = DriftPreparation("ok", date(2026, 10, 28))
+
+    assert not isinstance(service.candidate(_event("WINR", 2.1), data, prep), str)
 
 
 def test_drift_card_facts_reports_the_frozen_card_terms():

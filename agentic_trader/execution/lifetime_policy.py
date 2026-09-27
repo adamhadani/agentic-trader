@@ -74,6 +74,9 @@ def daily_entry_lifetime() -> TradeLifetimePolicy:
 SESSION_LIFETIME_VERSION = "session_count_v1"
 MAX_HOLDING_SESSIONS = 60
 SESSION_CLOSE_BUFFER = timedelta(minutes=15)
+# A closing-auction print can be stamped just after the bell (16:00:00.250, or 13:00:00.x on an
+# early close). It is still that session's fill, so it counts as session 1.
+SESSION_FILL_GRACE = timedelta(seconds=60)
 _NEW_YORK = ZoneInfo("America/New_York")
 
 
@@ -123,7 +126,9 @@ class SessionLifetimePolicy:
         first = next((d for d in regular if d.date == fill.date()), None)
         if first is None or first.open_time is None or first.close_time is None:
             raise SessionEvidenceError("fill_outside_regular_session")
-        if not first.open_time <= fill.time().replace(tzinfo=None) <= first.close_time:
+        opened = datetime.combine(first.date, first.open_time, tzinfo=_NEW_YORK)
+        closed = datetime.combine(first.date, first.close_time, tzinfo=_NEW_YORK)
+        if not opened <= fill <= closed + SESSION_FILL_GRACE:
             raise SessionEvidenceError("fill_outside_regular_session")
         held = [d for d in regular if d.date >= first.date]
         if len(held) < self.holding_sessions:

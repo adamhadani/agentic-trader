@@ -77,12 +77,16 @@ session-counted holding deadline:
 
 - The regular session the entry actually fills in is **session 1** — exactly how
   the setup study's `label_bracket` counts holding sessions, so the live exit and
-  the research label agree. `holding_sessions` sessions later, the position
+  the research label agree. A fill stamped up to `SESSION_FILL_GRACE` (60 s) after
+  that session's close (a closing-auction print at 16:00:00.250, or just after an
+  early close) still counts as that session. `holding_sessions` sessions later, the position
   closes at `close_time_et` (New York, default `"15:45"`) — or, on an early
   close, 15 minutes before that session's close, whichever is earlier
   (`SESSION_CLOSE_BUFFER`).
 - The broker's own trading calendar is required to count sessions and locate
-  each one's close; there is no synthetic weekday fallback.
+  each one's close; there is no synthetic weekday fallback. The service reads
+  `ceil(holding_sessions × 7 / 5) + 14` calendar days from the fill date
+  (`holding_calendar_span_days`), so a longer policy never falls short by design.
   `TradeLifetimeService` passes `sessions=None` when the calendar call itself
   fails, and `SessionLifetimePolicy.holding_deadline` raises
   `SessionEvidenceError` (a fill outside the regular session, or a calendar

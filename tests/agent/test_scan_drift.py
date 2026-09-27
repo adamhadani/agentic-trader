@@ -8,8 +8,9 @@ spend the LLM evaluation budget, and every decision is journaled as one
 """
 
 import asyncio
+import dataclasses
 import inspect
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -18,8 +19,8 @@ import pytest
 
 import agentic_trader.agent.copilot as copilot_module
 from agentic_trader.agent.copilot import TradingCopilot
-from agentic_trader.config import ScanBudget
-from agentic_trader.constants import SignalStatus
+from agentic_trader.config import AprioriConfig, ScanBudget
+from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
@@ -70,8 +71,12 @@ class FakeDrift:
             raise self.prep
         return self.prep
 
+    def live_version(self, snapshot):
+        probes = getattr(snapshot, "catalog_probes", ())
+        return probes[0] if probes else None
+
     def candidate(self, event, data, prep):
-        return self.candidates.get(event["symbol"])
+        return self.candidates.get(event["symbol"], "no intraday price")
 
 
 def today_ny() -> date:
@@ -395,6 +400,168 @@ async def test_a_failing_drift_candidate_never_stops_the_scan(drift_desk, temp_d
     assert summary["drift"]["sent"] == 0
 
 
+async def test_a_candidate_reason_is_journaled_as_the_event_outcome(drift_desk, temp_db):
+    drift_desk.earnings_drift.candidates = {"WINR": "stale intraday price"}
+
+    await suggestion_scan(drift_desk)
+
+    assert [s for s in await _signals(temp_db) if s["strategy"] == PEAD_STRATEGY_ID] == []
+    [event] = await _drift_events(temp_db)
+    assert _outcomes(event) == {"WINR": "stale intraday price"}
+
+
+# --- F2: open drift positions are capped ----------------------------------------------------
+
+
+async def _open_position(db, contract: str, strategy: str = PEAD_STRATEGY_ID) -> None:
+    signal_id = await db.record_signal(
+        contract=contract,
+        direction="LONG",
+        strategy=strategy,
+        entry_price=50.0,
+        stop_loss=48.0,
+        take_profit=56.0,
+        risk_dollars=100.0,
+        quantity=1.0,
+        asset_class="EQUITY",
+    )
+    await db.update_signal_execution(
+        signal_id=signal_id,
+        broker_order_id=f"ord-{contract}",
+        fill_price=50.0,
+        status=SignalStatus.EXECUTED,
+        quantity=1.0,
+        notional_value=50.0,
+        risk_dollars=100.0,
+    )
+
+
+def _fetched(desk) -> list[str]:
+    return [call.args[0] for call in desk.data_fetcher.fetch_data.call_args_list]
+
+
+def test_the_open_drift_position_cap_defaults_to_four():
+    assert AprioriConfig().max_open_drift_positions == 4
+
+
+async def test_at_the_open_drift_position_cap_no_drift_card_is_sent(drift_desk, temp_db, app_config):
+    app_config.apriori.max_drift_cards_per_session = 10  # isolate the position cap from the card budget
+    app_config.apriori.max_open_drift_positions = 2
+    for symbol in ("OLD1", "OLD2"):
+        await _open_position(temp_db, symbol)
+    drift_desk.monitor_positions = AsyncMock(return_value=0)  # no broker behind the open positions
+    drift_desk.earnings_drift.prep = ok_prep("WINR", "ZETA")
+
+    summary = await suggestion_scan(drift_desk)
+
+    recorded = [s["contract"] for s in await _signals(temp_db)]
+    assert "WINR" not in recorded and "ZETA" not in recorded
+    assert "DDD" in recorded  # native cards unaffected
+    [event] = await _drift_events(temp_db)
+    payload = event["payload"]
+    assert payload["status"] == "ok"
+    assert payload["open_drift_positions"] == 2
+    assert _outcomes(event) == {"WINR": "drift position cap reached", "ZETA": "drift position cap reached"}
+    assert summary["drift"]["sent"] == 0
+    assert "WINR" not in _fetched(drift_desk)  # a capped session reads no drift-only bars
+
+
+async def test_below_the_open_drift_position_cap_the_drift_card_is_sent(drift_desk, temp_db, app_config):
+    app_config.apriori.max_drift_cards_per_session = 10
+    app_config.apriori.max_open_drift_positions = 2
+    await _open_position(temp_db, "OLD1")
+    await _open_position(temp_db, "NATV", strategy="TREND_PULLBACK")  # a native position never counts
+    drift_desk.monitor_positions = AsyncMock(return_value=0)
+
+    await suggestion_scan(drift_desk)
+
+    assert "WINR" in {s["contract"] for s in await _signals(temp_db)}
+    [event] = await _drift_events(temp_db)
+    assert event["payload"]["open_drift_positions"] == 1
+    assert _outcomes(event) == {"WINR": "sent"}
+
+
+# --- F12/F13: preparation wall time and owner-skipped events --------------------------------
+
+
+async def test_the_decision_records_the_preparation_wall_time(drift_desk, temp_db):
+    drift_desk.earnings_drift.delay = 0.2
+
+    await suggestion_scan(drift_desk)
+
+    [event] = await _drift_events(temp_db)
+    elapsed = event["payload"]["elapsed_seconds"]
+    assert 0.2 <= elapsed < 5.0
+    assert elapsed == round(elapsed, 1)
+
+
+async def test_owner_skipped_events_are_journaled_with_their_full_documents(drift_desk, temp_db):
+    owned = drift_event("OWND")
+    drift_desk.earnings_drift.prep = dataclasses.replace(
+        ok_prep("WINR"), skipped={"OWND": "open position"}, skipped_events=(owned,)
+    )
+
+    await suggestion_scan(drift_desk)
+
+    [event] = await _drift_events(temp_db)
+    payload = event["payload"]
+    assert _outcomes(event) == {"WINR": "sent", "OWND": "skipped: open position"}
+    assert [e for e in payload["events"] if e["symbol"] == "OWND"] == [{**owned, "outcome": "skipped: open position"}]
+    assert payload["skipped"] == {"OWND": "open position"}
+    assert "OWND" not in _fetched(drift_desk)  # a skipped event is never fetched or carded
+
+
+# --- F11: a gated decision scan still journals its PEAD decision ------------------------------
+
+
+async def _gate(desk, db, gate: str) -> str:
+    if gate == "halt":
+        await db.set_state(SystemStateKey.TRADING_HALTED, "true")
+        await db.set_state(SystemStateKey.TRADING_HALT_REASON, "operator kill")
+        return "trading halted: operator kill"
+    desk.calendar.is_in_lockout_window.return_value = (
+        True,
+        SimpleNamespace(title="CPI release", timestamp=datetime(2026, 10, 28, 12, 30, tzinfo=UTC)),
+    )
+    return "macro lockout: CPI release"
+
+
+@pytest.mark.parametrize("gate", ["halt", "lockout"])
+async def test_a_gated_decision_scan_journals_a_skipped_pead_decision(drift_desk, temp_db, gate):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+    reason = await _gate(drift_desk, temp_db, gate)
+
+    assert await suggestion_scan(drift_desk) is None
+
+    [event] = await _drift_events(temp_db)
+    payload = event["payload"]
+    assert (payload["status"], payload["reason"]) == ("skipped", reason)
+    assert payload["version_id"] == VERSION and payload["events"] == []
+    assert payload["session"] == today_ny().isoformat()
+    assert event["stream"] == f"scan/{today_ny().isoformat()}"
+    assert drift_desk.earnings_drift.prepare_calls == 0
+    assert await temp_db.workflows.list_work(WorkKind.NOTIFICATION) == []  # no notice
+
+
+@pytest.mark.parametrize("case", ["no-catalog-probe", "other-time", "dry-run", "restricted"])
+async def test_a_gated_scan_journals_no_pead_decision_otherwise(drift_desk, temp_db, case):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+    await _gate(drift_desk, temp_db, "halt")
+    kwargs = {}
+    if case == "no-catalog-probe":
+        drift_desk.alpha_repository.snapshot.return_value = RegistrySnapshot(0, (), ())
+    elif case == "other-time":
+        kwargs["scheduled_time_et"] = "14:35"
+    elif case == "dry-run":
+        kwargs["dry_run"] = True
+    else:
+        kwargs["symbols"] = ["AAA"]
+
+    await suggestion_scan(drift_desk, **kwargs)
+
+    assert await _drift_events(temp_db) == []
+
+
 async def test_drift_is_absent_from_the_shadow_ranking_journal(drift_desk, temp_db):
     await suggestion_scan(drift_desk)
 
@@ -433,6 +600,27 @@ def test_the_drift_source_is_injectable_or_disabled(app_config, temp_db, mock_no
     assert _copilot(app_config, temp_db, mock_notifier, earnings_drift=fake).earnings_drift is fake
     app_config.apriori.enabled = False
     assert _copilot(app_config, temp_db, mock_notifier).earnings_drift is None
+
+
+def _unscheduled_warnings(caplog) -> list:
+    return [r for r in caplog.records if r.__dict__.get("event") == "pead_decision_time_unscheduled"]
+
+
+def test_an_unscheduled_decision_time_is_warned_at_construction(app_config, temp_db, mock_notifier, caplog):
+    app_config.scheduler.suggestion_scan_times_et = ["09:45", "14:35"]
+    with caplog.at_level("WARNING", logger="copilot"):
+        copilot = _copilot(app_config, temp_db, mock_notifier)
+    assert isinstance(copilot.earnings_drift, EarningsDriftService)
+    [record] = _unscheduled_warnings(caplog)
+    message = record.getMessage()
+    assert "10:35" in message and "09:45, 14:35" in message
+
+
+def test_a_scheduled_decision_time_is_not_warned(app_config, temp_db, mock_notifier, caplog):
+    assert "10:35" in app_config.scheduler.suggestion_scan_times_et
+    with caplog.at_level("WARNING", logger="copilot"):
+        _copilot(app_config, temp_db, mock_notifier)
+    assert _unscheduled_warnings(caplog) == []
 
 
 def test_a_missing_entry_leaves_no_drift_source(app_config, temp_db, mock_notifier, tmp_path):
@@ -549,6 +737,17 @@ async def test_an_unavailable_drift_service_is_journaled_while_a_catalog_probe_i
     assert len(await _unavailable_notices(temp_db)) == 1
     assert summary["drift"]["status"] == "unavailable"
     assert [s["contract"] for s in await _signals(temp_db)] == ["DDD"]  # native cards unaffected
+
+
+async def test_a_halted_scan_journals_a_skipped_decision_even_without_a_drift_service(broken_drift_desk, temp_db):
+    reason = await _gate(broken_drift_desk, temp_db, "halt")
+
+    await suggestion_scan(broken_drift_desk)
+
+    [event] = await _drift_events(temp_db)
+    assert (event["payload"]["status"], event["payload"]["reason"]) == ("skipped", reason)
+    assert event["payload"]["version_id"] == VERSION
+    assert await _unavailable_notices(temp_db) == []
 
 
 @pytest.mark.parametrize("case", ["no-catalog-probe", "other-time", "disabled", "no-error"])

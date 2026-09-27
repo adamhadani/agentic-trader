@@ -117,6 +117,7 @@ from agentic_trader.screeners.earnings_drift import (
     DriftPreparation,
     EarningsDriftService,
     drift_card_facts,
+    unscheduled_decision_time,
 )
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
@@ -137,6 +138,8 @@ DYNAMIC_UNIVERSE_TIMEOUT_SECONDS = 60.0
 # One bound on the 10:35 scan's PEAD drift preparation (calendar and bar reads, also under
 # the scan lock and before the native fetch); exceeding it is an unavailable session.
 DRIFT_PREPARE_TIMEOUT_SECONDS = 60.0
+# A 10:35 event's outcome when apriori.max_open_drift_positions PEAD positions are already open.
+DRIFT_POSITION_CAP_REACHED = "drift position cap reached"
 # `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
@@ -323,6 +326,18 @@ class TradingCopilot:
                     "PEAD drift source unavailable: %s",
                     self._earnings_drift_error,
                     extra={"event": "earnings_drift_unavailable", "error": self._earnings_drift_error},
+                )
+        if self.earnings_drift is not None:
+            unscheduled = unscheduled_decision_time(
+                self.earnings_drift.decision_time_et, config.scheduler.suggestion_scan_times_et
+            )
+            if unscheduled:
+                logger.warning(
+                    unscheduled,
+                    extra={
+                        "event": "pead_decision_time_unscheduled",
+                        "decision_time_et": self.earnings_drift.decision_time_et,
+                    },
                 )
         self.evaluator = RiskEvaluator(
             config,
@@ -601,6 +616,10 @@ class TradingCopilot:
             self.strategy_engine.registry.install_alphas(alpha_snapshot.active, alpha_snapshot.probe)
             if not dry_run:
                 await self.alpha_repository.acknowledge(alpha_snapshot, run_id=RUN_ID)
+            # Only the scheduled full-universe suggestion scan may run PEAD drift (see below).
+            drift_scan = (
+                not dry_run and budget != ScanBudget.NONE and shadow_evidence and not symbols and timeframe is None
+            )
             await self.check_halt_state()
             if self.is_halted:
                 logger.warning(
@@ -608,6 +627,10 @@ class TradingCopilot:
                     self.halt_reason,
                     extra={"event": "trading_halted_scan_blocked", "reason": self.halt_reason},
                 )
+                if drift_scan:
+                    await self._journal_skipped_drift(
+                        alpha_snapshot, scheduled_time_et, reason=f"trading halted: {self.halt_reason}"
+                    )
                 return None
 
             scan_errors = 0
@@ -658,6 +681,10 @@ class TradingCopilot:
                         "event_time": str(lock_event.timestamp),
                     },
                 )
+                if drift_scan:
+                    await self._journal_skipped_drift(
+                        alpha_snapshot, scheduled_time_et, reason=f"macro lockout: {lock_event.title}"
+                    )
                 return None
 
             started = time.monotonic()
@@ -726,14 +753,19 @@ class TradingCopilot:
             # for their drift candidate only (a synthetic per-scan contract, never scanned).
             drift_prep: DriftPreparation | None = None
             drift_only: set[str] = set()
-            drift_scan = (
-                not dry_run and budget != ScanBudget.NONE and shadow_evidence and not symbols and timeframe is None
-            )
+            # Open PEAD positions hold for 20 sessions; at the cap the session's events are
+            # still prepared and journaled (the counterfactual set), but none is carded.
+            open_drift_positions = sum(1 for p in active_positions if p.get("strategy") == PEAD_STRATEGY_ID)
+            drift_capped = open_drift_positions >= self.config.apriori.max_open_drift_positions
             if drift_scan and self.earnings_drift is not None and self.earnings_drift.applies(scheduled_time_et):
                 drift_prep = await self._prepare_drift(alpha_snapshot, active_positions)
-                known = {c.strip("/").upper() for c in self.config.contracts} | {s for s, _ in dynamic_contracts}
-                drift_only = {event["symbol"] for event in drift_prep.events} - known
-                dynamic_contracts = [*dynamic_contracts, *((s, synthetic_contract(s, s)) for s in sorted(drift_only))]
+                if not drift_capped:
+                    known = {c.strip("/").upper() for c in self.config.contracts} | {s for s, _ in dynamic_contracts}
+                    drift_only = {event["symbol"] for event in drift_prep.events} - known
+                    dynamic_contracts = [
+                        *dynamic_contracts,
+                        *((s, synthetic_contract(s, s)) for s in sorted(drift_only)),
+                    ]
             elif (
                 drift_scan
                 and self.earnings_drift is None
@@ -940,10 +972,13 @@ class TradingCopilot:
             if drift_prep is not None and drift_prep.status == "ok" and self.earnings_drift is not None:
                 for event in drift_prep.events:
                     symbol = event["symbol"]
+                    if drift_capped:
+                        drift_outcomes[symbol] = DRIFT_POSITION_CAP_REACHED
+                        continue
                     try:
                         cand = self.earnings_drift.candidate(event, datasets.get(symbol), drift_prep)
-                        if cand is None:
-                            drift_outcomes[symbol] = "no intraday price"
+                        if isinstance(cand, str):
+                            drift_outcomes[symbol] = cand
                             continue
                         admitted, reason = await self._admit_candidate(
                             cand,
@@ -1252,7 +1287,13 @@ class TradingCopilot:
                     "events": len(drift_prep.events),
                     "sent": sum(1 for outcome in drift_outcomes.values() if outcome == "sent"),
                 }
-                await self._journal_drift(scan_id=scan_id, prep=drift_prep, outcomes=drift_outcomes, summary=summary)
+                await self._journal_drift(
+                    scan_id=scan_id,
+                    prep=drift_prep,
+                    outcomes=drift_outcomes,
+                    summary=summary,
+                    open_drift_positions=open_drift_positions,
+                )
 
             summary["candidates"] = total_candidates
             summary["sent"] = total_alerts
@@ -1531,6 +1572,7 @@ class TradingCopilot:
         service = self.earnings_drift
         if service is None:
             return DriftPreparation("unavailable", session, reason="drift source unavailable")
+        started = time.monotonic()
         try:
             owned: dict[str, str] = {}
             for position in active_positions:
@@ -1539,20 +1581,51 @@ class TradingCopilot:
                 for symbol in definition.eligible_symbols or ():
                     owned.setdefault(symbol.strip("/").upper(), f"owned by {definition.alpha_id}")
             async with asyncio.timeout(DRIFT_PREPARE_TIMEOUT_SECONDS):
-                return await service.prepare(now=now, snapshot=alpha_snapshot, owned=owned)
+                prep = await service.prepare(now=now, snapshot=alpha_snapshot, owned=owned)
         except TimeoutError:
             logger.warning(
                 "PEAD drift preparation exceeded %ss; no drift card this session",
                 DRIFT_PREPARE_TIMEOUT_SECONDS,
                 extra={"event": "pead_prepare_timeout", "timeout_seconds": DRIFT_PREPARE_TIMEOUT_SECONDS},
             )
-            return DriftPreparation("unavailable", session, reason="timeout")
+            prep = DriftPreparation("unavailable", session, reason="timeout")
         except Exception as exc:
             logger.exception(
                 "PEAD drift preparation failed; no drift card this session",
                 extra={"event": "pead_prepare_failed", "error": type(exc).__name__},
             )
-            return DriftPreparation("unavailable", session, reason=f"error: {type(exc).__name__}")
+            prep = DriftPreparation("unavailable", session, reason=f"error: {type(exc).__name__}")
+        return dataclass_replace(prep, elapsed_seconds=round(time.monotonic() - started, 1))
+
+    async def _journal_skipped_drift(self, alpha_snapshot: Any, scheduled_time_et: str | None, *, reason: str) -> None:
+        """Journal the 10:35 PEAD decision a halted or macro-locked scan never reached; never raises.
+
+        Only when the scan would otherwise have run drift: its scheduled time is the entry's
+        decision time and a live catalog probe is in the snapshot. No notice: the halt or
+        lockout already has its own.
+        """
+        service = self.earnings_drift
+        if service is not None:
+            version = service.live_version(alpha_snapshot) if service.applies(scheduled_time_et) else None
+        elif (
+            self.config.apriori.enabled
+            and self._earnings_drift_error is not None
+            and scheduled_time_et == PEAD_DECISION_TIME_ET
+        ):
+            probes = getattr(alpha_snapshot, "catalog_probes", ())
+            version = probes[0] if probes else None
+        else:
+            version = None
+        if version is None:
+            return
+        prep = DriftPreparation(
+            "skipped",
+            datetime.now(UTC).astimezone(ET_TZ).date(),
+            version_id=version.get("version_id"),
+            policy=version.get("execution"),
+            reason=reason,
+        )
+        await self._journal_drift(scan_id=uuid4().hex, prep=prep, outcomes={}, summary=self.last_scan_summary)
 
     async def _journal_drift(
         self,
@@ -1561,8 +1634,13 @@ class TradingCopilot:
         prep: DriftPreparation,
         outcomes: Mapping[str, str],
         summary: dict[str, Any],
+        open_drift_positions: int | None = None,
     ) -> None:
-        """Append one ``pead_decision`` event, plus the session's one unavailable notice, in one transaction; never raises."""
+        """Append one ``pead_decision`` event, plus the session's one unavailable notice, in one transaction; never raises.
+
+        ``events`` holds every event the study would have traded: the considered ones with
+        their card outcome, then the owner-skipped ones as ``skipped: <reason>``.
+        """
         try:
             session_date = prep.session.isoformat()
             payload = {
@@ -1576,8 +1654,14 @@ class TradingCopilot:
                 "counts": prep.counts,
                 "skipped": prep.skipped,
                 "time_exit_at": prep.time_exit_at,
+                "elapsed_seconds": prep.elapsed_seconds,
+                "open_drift_positions": open_drift_positions,
                 "events": [
-                    {**event, "outcome": outcomes.get(event["symbol"], "not considered")} for event in prep.events
+                    *({**event, "outcome": outcomes.get(event["symbol"], "not considered")} for event in prep.events),
+                    *(
+                        {**event, "outcome": f"skipped: {prep.skipped.get(event['symbol'], 'owned')}"}
+                        for event in prep.skipped_events
+                    ),
                 ],
             }
             workflows = self.db.workflows

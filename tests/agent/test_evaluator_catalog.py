@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from agentic_trader.constants import AssetClass
 from agentic_trader.research.alpha.strategy import bracket_prices, entry_limit
 from agentic_trader.research.apriori.catalog import load_pead_entry, pead_execution_policy
@@ -53,8 +55,9 @@ def drift_candidate(**updates) -> ScreenerCandidate:
     return candidate.model_copy(update=updates)
 
 
-def veto_completion(monkeypatch) -> AsyncMock:
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(LLM_VETO)))])
+def veto_completion(monkeypatch, **overrides) -> AsyncMock:
+    content = json.dumps({**LLM_VETO, **overrides})
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
     completion = AsyncMock(return_value=response)
     monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", completion)
     return completion
@@ -78,6 +81,26 @@ async def test_llm_verdict_on_a_catalog_probe_is_commentary_not_a_gate(evaluator
         entry, 1, candidate.atr_14, candidate.recent_swing_low, candidate.recent_swing_high, POLICY
     )
     assert (result.stop_loss, result.take_profit) == (stop, target)
+
+
+@pytest.mark.parametrize(
+    ("approved", "recorded"),
+    [("false", False), ("FALSE", False), ("no", False), (1, False), (None, False), ("True", True), (True, True)],
+)
+async def test_the_recorded_llm_verdict_is_true_only_for_an_explicit_true(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+    approved,
+    recorded,
+):
+    evaluator = evaluator_factory()
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    veto_completion(monkeypatch, approved=approved)
+
+    result = await evaluator.evaluate_candidate(drift_candidate(), use_llm=True)
+
+    assert result.approved is True
+    assert result.llm_verdict["approved"] is recorded
 
 
 async def test_the_same_llm_veto_still_rejects_a_native_candidate(evaluator_factory, monkeypatch):  # noqa: F811

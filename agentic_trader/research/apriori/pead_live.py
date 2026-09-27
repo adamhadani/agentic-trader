@@ -34,6 +34,8 @@ __all__ = ["LOOKBACK_CALENDAR_DAYS", "DailyBars", "LiveEvents", "event_document"
 # Calendar days looked back from the decision session for the trading-day list; must
 # comfortably cover the event's vol_window/atr_window plus the D, D+1, D+2=session triplet.
 LOOKBACK_CALENDAR_DAYS = 120
+# A journaled unavailable reason keeps the provider's message, bounded.
+REASON_MAX_CHARS = 200
 
 
 class DailyBars(Protocol):
@@ -135,7 +137,8 @@ async def live_events(
             bars.fetch_daily_many, sorted({*reporters, *static_symbols}), start, end, adjustment="raw"
         )
     except Exception as exc:
-        return _unavailable(session, f"bars_unavailable: {type(exc).__name__}", report_date=report_date, page=page)
+        reason = f"bars_unavailable: {type(exc).__name__}: {exc}"[:REASON_MAX_CHARS]
+        return _unavailable(session, reason, report_date=report_date, page=page)
 
     if not _benchmark_bars_available(adjusted.get(benchmark), d_minus_1, as_of):
         return _unavailable(session, "benchmark_bars_unavailable", report_date=report_date, page=page)
