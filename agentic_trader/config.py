@@ -169,6 +169,15 @@ class UniverseConfig(BaseModel):
         return {name: sorted(members) for name, members in sorted(groups.items())}
 
 
+class AprioriConfig(BaseModel):
+    """Catalog paper probes (see docs/apriori-alphas.md). Enabled means eligible to run;
+    nothing trades unless an operator enrolled the catalog version and it is live."""
+
+    enabled: bool = True
+    pead_entry_path: str = "config/research/apriori/pead-v2.json"
+    max_drift_cards_per_session: int = Field(default=1, ge=0)
+
+
 class ScanBudget(StrEnum):
     FULL = "full"  # scheduled scans: per-scan, per-session and per-group limits
     SESSION = "session"  # operator scans: per-session and per-group limits only
@@ -663,6 +672,7 @@ class AppConfig(BaseModel):
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     contracts: dict[str, ContractConfig] = Field(default_factory=dict)
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
+    apriori: AprioriConfig = Field(default_factory=AprioriConfig)
     scan: ScanConfig = Field(default_factory=ScanConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)

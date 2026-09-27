@@ -44,6 +44,7 @@ class ScreenerCandidate(BaseModel):
     alpha_policy: dict[str, Any] | None = None
     contributors: tuple[str, ...] = ()
     probe: bool = False
+    catalog_event: dict[str, Any] | None = None
     setup_quality: float = Field(default=0.0, ge=0.0, le=1.0)
 
     def model_post_init(self, context: Any, /) -> None:
