@@ -85,3 +85,54 @@ def test_fetch_daily_many_passes_the_requested_adjustment(start_end):
     request = client.requests[0]
     assert request.feed == DataFeed.IEX
     assert request.adjustment == Adjustment.ALL
+
+
+class _CountingBarSet:
+    """A `BarSet` stand-in whose `.df` is a property, like the real SDK's (see
+    `alpaca.data.models.base.TimeSeriesMixin.df`): every access rebuilds the frame from
+    scratch, so a normalizer that reads it once per symbol instead of once per chunk pays
+    for that rebuild `len(chunk)` times over.
+    """
+
+    def __init__(self, frame: pd.DataFrame, reads: list[int]):
+        self._frame = frame
+        self._reads = reads
+        self._count = 0
+
+    @property
+    def df(self) -> pd.DataFrame:
+        self._count += 1
+        self._reads.append(self._count)
+        return self._frame
+
+
+class CountingStockClient:
+    def __init__(self, reads: list[int]):
+        self.reads = reads
+
+    def get_stock_bars(self, request):
+        dates = pd.date_range("2026-09-01", periods=3, freq="D", tz="UTC")
+        frames = []
+        for symbol in request.symbol_or_symbols:
+            index = pd.MultiIndex.from_product([[symbol], dates], names=["symbol", "timestamp"])
+            frames.append(
+                pd.DataFrame(
+                    {"open": [1.0] * 3, "high": [1.0] * 3, "low": [1.0] * 3, "close": [1.0] * 3, "volume": [1] * 3},
+                    index=index,
+                )
+            )
+        return _CountingBarSet(pd.concat(frames), self.reads)
+
+
+def test_fetch_daily_many_reads_the_expensive_df_property_once_per_chunk(start_end):
+    start, end = start_end
+    symbols = _symbols(150)  # two chunks: 100 + 50
+    reads: list[int] = []
+    provider = AlpacaDataProvider(stock_client=CountingStockClient(reads), feed="sip")
+
+    result = provider.fetch_daily_many(symbols, start, end, adjustment="raw")
+
+    assert len(result) == 150
+    # One `.df` read per chunk (a fresh BarSet per chunk, each read exactly once), not
+    # once per symbol: normalizing 100 symbols from one chunk must not cost 100 rebuilds.
+    assert reads == [1, 1]

@@ -251,7 +251,12 @@ class AlpacaDataProvider:
                             adjustment=adjustment_kind,
                         )
                     )
-            df, normalization = self._normalize_bars(bars, clean_sym)
+            # `BarSet.df` rebuilds its DataFrame from scratch on every access (it re-walks
+            # every symbol's raw bar list); read it once here rather than inside
+            # `_normalize_bars`, which would otherwise be paid again per symbol in a
+            # multi-symbol batch (see `fetch_daily_many`).
+            bars_df: pd.DataFrame = bars.df  # type: ignore[union-attr]
+            df, normalization = self._normalize_bars(bars_df, clean_sym)
             quality = BarSourceQuality(
                 raw_rows if isinstance(client, BoundedTransport) else None,
                 normalization["parsed_rows"],
@@ -272,8 +277,14 @@ class AlpacaDataProvider:
         return df
 
     @staticmethod
-    def _normalize_bars(bars, symbol: str) -> tuple[pd.DataFrame, dict]:
-        df: pd.DataFrame = bars.df
+    def _normalize_bars(bars_df: pd.DataFrame, symbol: str) -> tuple[pd.DataFrame, dict]:
+        """Normalize one symbol's slice of an already-materialized multi-symbol bars frame.
+
+        Takes the frame itself, not the SDK `BarSet`/response object, so a caller
+        normalizing many symbols from one batch (`fetch_daily_many`) reads the
+        expensive `.df` property once per batch rather than once per symbol.
+        """
+        df = bars_df
         if isinstance(df.index, pd.MultiIndex):
             df = df.xs(symbol, level="symbol")
         rename_map = {name: name.title() for name in OHLCV}
@@ -321,12 +332,15 @@ class AlpacaDataProvider:
                 )
             )
             # The SDK's stub types this as `BarSet | dict[str, Any]` for the raw_data client
-            # mode this provider never uses; it is always the `BarSet` with a `.df` property.
+            # mode this provider never uses; it is always the `BarSet` with a `.df`
+            # property. Read it exactly once per chunk: the property rebuilds the whole
+            # multi-symbol frame from scratch on every access, so calling it again per
+            # symbol would cost O(chunk size) full rebuilds instead of one.
             batch_df: pd.DataFrame = bars.df  # type: ignore[union-attr]
             present = set(batch_df.index.get_level_values("symbol")) if not batch_df.empty else set()
             for symbol in chunk:
                 if symbol in present:
-                    frame, _ = self._normalize_bars(bars, symbol)
+                    frame, _ = self._normalize_bars(batch_df, symbol)
                     if not frame.empty:
                         frames[symbol] = frame
         return frames
