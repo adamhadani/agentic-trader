@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -102,6 +102,9 @@ def parse_period_to_timedelta(period: str) -> timedelta:
     if p.endswith("h"):
         return timedelta(hours=int(p[:-1]))
     return timedelta(days=365)
+
+
+DAILY_BATCH_SYMBOLS = 100
 
 
 class AlpacaDataProvider:
@@ -292,6 +295,41 @@ class AlpacaDataProvider:
             "frame_hash": hashlib.sha256(pd.util.hash_pandas_object(cleaned, index=True).values.tobytes()).hexdigest(),
         }
         return cleaned, normalization
+
+    def fetch_daily_many(
+        self, symbols: Sequence[str], start: datetime, end: datetime, *, adjustment: str = "raw"
+    ) -> dict[str, pd.DataFrame]:
+        """Daily bars for many equities in batched requests; symbols without bars are absent.
+
+        No bar-evidence capture: a live PEAD decision journals its own event evidence,
+        as the study kept its own cache.
+        """
+        if self.stock_client is None:
+            raise UnsupportedSymbolError("No Alpaca stock client available")
+        clean = sorted({symbol.strip().upper() for symbol in symbols if "/" not in symbol})
+        frames: dict[str, pd.DataFrame] = {}
+        for index in range(0, len(clean), DAILY_BATCH_SYMBOLS):
+            chunk = clean[index : index + DAILY_BATCH_SYMBOLS]
+            bars = self.stock_client.get_stock_bars(
+                StockBarsRequest(
+                    symbol_or_symbols=chunk,
+                    timeframe=TimeFrame.Day,
+                    start=start,
+                    end=end,
+                    feed=self.feed,
+                    adjustment=Adjustment(adjustment),
+                )
+            )
+            # The SDK's stub types this as `BarSet | dict[str, Any]` for the raw_data client
+            # mode this provider never uses; it is always the `BarSet` with a `.df` property.
+            batch_df: pd.DataFrame = bars.df  # type: ignore[union-attr]
+            present = set(batch_df.index.get_level_values("symbol")) if not batch_df.empty else set()
+            for symbol in chunk:
+                if symbol in present:
+                    frame, _ = self._normalize_bars(bars, symbol)
+                    if not frame.empty:
+                        frames[symbol] = frame
+        return frames
 
     def fetch_latest_price(self, symbol: str) -> float | None:
         if not self.supports_symbol(symbol):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from dataclasses import dataclass
@@ -149,6 +150,22 @@ def parse_calendar_payload(payload: object, day: date) -> list[CalendarRow]:
     return rows
 
 
+@dataclass(frozen=True)
+class ReportedPage:
+    """Every row Nasdaq listed for ``day``, or the reason it could not be trusted.
+
+    ``rows is None`` means unavailable: no page was ever guessed. ``body_sha256`` is
+    the accepted or rejected response body's hash, so a caller can journal exactly
+    what was seen without keeping the raw bytes.
+    """
+
+    day: date
+    rows: tuple[CalendarRow, ...] | None
+    http_status: int | None
+    detail: str | None
+    body_sha256: str | None
+
+
 class NasdaqEarningsCalendar:
     """Earnings calendar backed by the unofficial, keyless Nasdaq calendar endpoint.
 
@@ -222,6 +239,33 @@ class NasdaqEarningsCalendar:
             return None
         return rows_map
 
+    async def reported_rows(self, day: date) -> ReportedPage:
+        """Every row Nasdaq lists for ``day``; unusable pages are ``rows=None``, never guessed.
+
+        Acceptance matches the study's acquisition: HTTP 200, a JSON object and
+        ``status.rCode == 200``. Uncached: a live PEAD decision reads the page once.
+        """
+        try:
+            async with httpx.AsyncClient(transport=self._transport, timeout=6.0) as client:
+                resp = await client.get(
+                    NASDAQ_EARNINGS_CALENDAR_URL, params={"date": day.isoformat()}, headers=NASDAQ_REQUEST_HEADERS
+                )
+        except Exception as exc:
+            return ReportedPage(day, None, None, f"request failed: {type(exc).__name__}", None)
+        digest = hashlib.sha256(resp.content).hexdigest()
+        if resp.status_code != 200:
+            return ReportedPage(day, None, resp.status_code, f"HTTP {resp.status_code}", digest)
+        try:
+            payload = resp.json()
+        except ValueError:
+            return ReportedPage(day, None, 200, "body is not JSON", digest)
+        if not isinstance(payload, dict):
+            return ReportedPage(day, None, 200, "body is not a JSON object", digest)
+        code = (payload.get("status") or {}).get("rCode") if isinstance(payload.get("status"), dict) else None
+        if code != 200:
+            return ReportedPage(day, None, 200, f"status.rCode {code!r}", digest)
+        return ReportedPage(day, tuple(parse_calendar_payload(payload, day)), 200, None, digest)
+
     async def next_earnings(self, symbol: str, now: datetime, horizon_days: int) -> EarningsLookup:
         symbol_upper = symbol.upper()
         today = ensure_et(now, target_tz=ET_TZ).date()
@@ -293,6 +337,7 @@ __all__ = [
     "EarningsLookup",
     "EarningsTiming",
     "NasdaqEarningsCalendar",
+    "ReportedPage",
     "earnings_blackout_reason",
     "earnings_note",
     "parse_calendar_payload",

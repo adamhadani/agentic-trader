@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -307,3 +308,77 @@ def test_parse_calendar_payload_empty_and_malformed_days():
     assert parse_calendar_payload({"data": {"rows": None}}, day) == []
     assert parse_calendar_payload([], day) == []
     assert parse_calendar_payload(_payload("not a row", {"symbol": ""}, {"eps": "$1"}), day) == []
+
+
+# --- NasdaqEarningsCalendar.reported_rows: every row for one report day ---
+
+
+async def test_reported_rows_parses_a_200_page():
+    body = {
+        "status": {"rCode": 200},
+        "data": {
+            "rows": [
+                {
+                    "symbol": "NVDA",
+                    "eps": "$1.10",
+                    "epsForecast": "$1.00",
+                    "surprise": "10",
+                    "noOfEsts": "5",
+                    "time": "time-not-supplied",
+                    "fiscalQuarterEnding": "Oct/2026",
+                }
+            ]
+        },
+    }
+    response_bytes = httpx.Response(200, json=body).content
+    expected_digest = hashlib.sha256(response_bytes).hexdigest()
+
+    calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
+    page = await calendar.reported_rows(date(2026, 10, 26))
+
+    assert page.rows is not None
+    assert len(page.rows) == 1
+    assert page.rows[0].symbol == "NVDA"
+    assert page.rows[0].eps == 1.10
+    assert page.http_status == 200
+    assert page.detail is None
+    assert page.body_sha256 == expected_digest
+
+
+async def test_reported_rows_http_error_is_unavailable():
+    calendar = NasdaqEarningsCalendar(
+        transport=httpx.MockTransport(lambda request: httpx.Response(503, text="service unavailable"))
+    )
+    page = await calendar.reported_rows(date(2026, 10, 26))
+
+    assert page.rows is None
+    assert page.http_status == 503
+
+
+async def test_reported_rows_non_200_rcode_is_unavailable():
+    body = {"status": {"rCode": 400}, "data": None}
+    calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
+    page = await calendar.reported_rows(date(2026, 10, 26))
+
+    assert page.rows is None
+    assert page.detail is not None
+    assert "rCode" in page.detail
+
+
+async def test_reported_rows_list_body_is_unavailable():
+    calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[1, 2])))
+    page = await calendar.reported_rows(date(2026, 10, 26))
+
+    assert page.rows is None
+
+
+async def test_reported_rows_transport_exception_is_unavailable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("connection reset")
+
+    calendar = NasdaqEarningsCalendar(transport=httpx.MockTransport(handler))
+    page = await calendar.reported_rows(date(2026, 10, 26))
+
+    assert page.rows is None
+    assert page.detail is not None
+    assert "RuntimeError" in page.detail
