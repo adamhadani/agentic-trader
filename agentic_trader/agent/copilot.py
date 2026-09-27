@@ -84,7 +84,7 @@ from agentic_trader.presentation.formatters import (
 from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
-from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
+from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
 from agentic_trader.research.setups.ranker import (
     cached_ranker,
     finite_or_none,
@@ -218,13 +218,6 @@ class TradingCopilot:
             broker if broker is not None else create_broker(config=config, data_fetcher=self.data_fetcher)
         )
         self.close_service = close_service if close_service is not None else PositionCloseService(self.broker, self.db)
-        self.lifetime_service = (
-            lifetime_service
-            if lifetime_service is not None
-            else TradeLifetimeService(
-                LifetimeRepository(self.db.workflows), self.broker, self.close_service, config=config.execution
-            )
-        )
         self.alpha_repository = (
             alpha_repository
             if alpha_repository is not None
@@ -270,6 +263,17 @@ class TradingCopilot:
         self.session_provider = CompositeMarketSessionProvider(
             config=config,
             alpaca_client=alpaca_client,
+        )
+        self.lifetime_service = (
+            lifetime_service
+            if lifetime_service is not None
+            else TradeLifetimeService(
+                LifetimeRepository(self.db.workflows),
+                self.broker,
+                self.close_service,
+                config=config.execution,
+                calendar=self.session_provider.calendar,
+            )
         )
         self.evaluator = RiskEvaluator(
             config,
@@ -1761,6 +1765,8 @@ class TradingCopilot:
                 continue
             if self.broker.authoritative_positions and not pos.get("executed_at"):
                 continue
+            if not policy_trails(pos.get("alpha_policy")):
+                continue  # A catalog bracket keeps its original protection for the whole hold.
             try:
                 info = self.config.contracts.get(contract)
                 if info is None and normalize_asset_class(str(pos.get("asset_class") or "")) == normalize_asset_class(

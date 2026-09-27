@@ -5,23 +5,33 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from agentic_trader.constants import CloseRequestStatus
 from agentic_trader.execution.durable import OrderObservation, WorkItem, WorkKind, WorkStatus
-from agentic_trader.execution.lifetime_policy import TradeLifetimePolicy, aware_utc
+from agentic_trader.execution.lifetime_policy import (
+    LifetimePolicy,
+    SessionEvidenceError,
+    SessionLifetimePolicy,
+    aware_utc,
+    lifetime_from_dict,
+)
 
 
 if TYPE_CHECKING:
     from agentic_trader.broker.base import BaseBroker
     from agentic_trader.config import ExecutionConfig
     from agentic_trader.execution.closing import PositionCloseService
+    from agentic_trader.market.session import MarketCalendarDay, MarketCalendarProtocol
     from agentic_trader.storage.lifetimes import LifetimeRepository
+
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 class LifetimeAction(StrEnum):
@@ -32,6 +42,7 @@ class LifetimeAction(StrEnum):
 
 
 BRACKET_EXIT_COUNT = 2
+HOLDING_CALENDAR_SPAN_DAYS = 40
 UNFILLED_TERMINAL = frozenset({"canceled", "expired", "rejected"})
 WORKING_ENTRY = frozenset({"new", "accepted", "pending_new", "accepted_for_bidding", "done_for_day"})
 
@@ -65,7 +76,11 @@ class LifetimeDecision:
 
 
 def assess_lifetime(
-    policy: TradeLifetimePolicy, identity: EntryIdentity, order: OrderObservation, now: datetime
+    policy: LifetimePolicy,
+    identity: EntryIdentity,
+    order: OrderObservation,
+    now: datetime,
+    sessions: Sequence[MarketCalendarDay] | None = None,
 ) -> LifetimeDecision:
     now = aware_utc(now)
     quantity, filled = Decimal(order.quantity), Decimal(order.filled_quantity)
@@ -80,7 +95,16 @@ def assess_lifetime(
     if filled == quantity and order.status == "filled":
         if order.filled_at is None or aware_utc(order.filled_at) > now:
             return LifetimeDecision(LifetimeAction.REVIEW, "missing_or_future_fill_time")
-        deadline = policy.holding_deadline(order.filled_at)
+        deadline: datetime | None
+        if isinstance(policy, SessionLifetimePolicy):
+            if sessions is None:
+                return LifetimeDecision(LifetimeAction.REVIEW, "session_calendar_unavailable")
+            try:
+                deadline = policy.holding_deadline(order.filled_at, sessions)
+            except SessionEvidenceError as exc:
+                return LifetimeDecision(LifetimeAction.REVIEW, str(exc))
+        else:
+            deadline = policy.holding_deadline(order.filled_at)
         if deadline is None:
             return LifetimeDecision(LifetimeAction.NONE, "holding_lifetime_disabled")
         return LifetimeDecision(
@@ -113,11 +137,23 @@ class TradeLifetimeService:
         *,
         config: ExecutionConfig,
         clock: Callable[[], datetime] | None = None,
+        calendar: MarketCalendarProtocol | None = None,
     ):
         self.repository, self.broker, self.close_service = repository, broker, close_service
         self.store = repository.store
         self.config = config
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.calendar = calendar
+
+    async def _sessions(self, lifetime: LifetimePolicy, parent: OrderObservation) -> list | None:
+        """Broker sessions from the fill date; ``None`` when this policy counts no sessions."""
+        if not isinstance(lifetime, SessionLifetimePolicy) or parent.filled_at is None:
+            return None
+        if self.calendar is None:
+            raise RuntimeError("Session-counted lifetime requires a market calendar")
+        start = aware_utc(parent.filled_at).astimezone(NEW_YORK).date()
+        days = await self.calendar.get_calendar_range(start, start + timedelta(days=HOLDING_CALENDAR_SPAN_DAYS))
+        return [day for day in days if day.is_trading_day]
 
     async def _recover_cancel(
         self, item: WorkItem, *, owner_finished: bool = False, transport_error: str | None = None
@@ -167,7 +203,7 @@ class TradeLifetimeService:
             if "lifetime" not in signal["alpha_policy"] or signal["id"] in blocked:
                 continue
             try:
-                lifetime = TradeLifetimePolicy(**signal["alpha_policy"]["lifetime"])
+                lifetime = lifetime_from_dict(signal["alpha_policy"]["lifetime"])
                 await self._reconcile_signal(signal, lifetime)
             except Exception as exc:
                 await self.repository.review(signal["id"], f"lifecycle_evidence_unavailable:{type(exc).__name__}", {})
@@ -179,14 +215,15 @@ class TradeLifetimeService:
             if "lifetime" not in (signal.get("alpha_policy") or {}):
                 continue
             try:
-                lifetime = TradeLifetimePolicy(**signal["alpha_policy"]["lifetime"])
+                lifetime = lifetime_from_dict(signal["alpha_policy"]["lifetime"])
                 identity = await self._entry_identity(signal)
                 if identity is None:
                     blocked.append(signal["id"])
                     continue
                 orders = await self.broker.read_entry_group(identity.order_id)
                 parent = next(o for o in orders if o.order_id == identity.order_id)
-                decision = assess_lifetime(lifetime, identity, parent, self.clock())
+                sessions = await self._sessions(lifetime, parent)
+                decision = assess_lifetime(lifetime, identity, parent, self.clock(), sessions)
                 close = await self.store.db.get_close_request(self._holding_request_id(signal["id"], identity.order_id))
                 if (
                     decision.action == LifetimeAction.REVIEW
@@ -215,7 +252,7 @@ class TradeLifetimeService:
             str(request["quantity"]),
         )
 
-    async def _reconcile_signal(self, signal: dict[str, Any], lifetime: TradeLifetimePolicy) -> None:
+    async def _reconcile_signal(self, signal: dict[str, Any], lifetime: LifetimePolicy) -> None:
         identity = await self._entry_identity(signal)
         if identity is None:
             await self.repository.review(signal["id"], "missing_durable_entry_identity", {})
@@ -223,7 +260,7 @@ class TradeLifetimeService:
         orders = await self.broker.read_entry_group(identity.order_id)
         await self.store.observe_orders(orders)
         parent = next(o for o in orders if o.order_id == identity.order_id)
-        decision = assess_lifetime(lifetime, identity, parent, self.clock())
+        decision = assess_lifetime(lifetime, identity, parent, self.clock(), await self._sessions(lifetime, parent))
         if decision.action == LifetimeAction.REVIEW:
             await self.repository.review(signal["id"], decision.reason, parent.model_dump(mode="json"))
         elif decision.action == LifetimeAction.CANCEL_ENTRY:
