@@ -62,11 +62,11 @@ from agentic_trader.telemetry.collector import MetricsCollector, global_metrics
 logger = logging.getLogger(__name__)
 
 
-def _ny_hhmm(value: str | None) -> str | None:
-    """Convert an aware ISO-8601 timestamp string to an ``HH:MM`` New York clock string.
+def _ny_datetime(value: str | None) -> datetime | None:
+    """An aware ISO-8601 timestamp string in New York time.
 
     Returns None for a missing, unparseable or naive value, so a card renders without
-    the affected line rather than raising.
+    the affected line (or with its fallback wording) rather than raising.
     """
     if not value:
         return None
@@ -76,7 +76,19 @@ def _ny_hhmm(value: str | None) -> str | None:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
-    return parsed.astimezone(ET_TZ).strftime("%H:%M")
+    return parsed.astimezone(ET_TZ)
+
+
+def _ny_hhmm(value: str | None) -> str | None:
+    """Convert an aware ISO-8601 timestamp string to an ``HH:MM`` New York clock string (or None)."""
+    parsed = _ny_datetime(value)
+    return parsed.strftime("%H:%M") if parsed else None
+
+
+def _ny_date(value: str | None) -> str | None:
+    """Convert an aware ISO-8601 timestamp string to its New York date as an ISO string (or None)."""
+    parsed = _ny_datetime(value)
+    return parsed.date().isoformat() if parsed else None
 
 
 def _exec_button_label(execution_mode: str) -> str:
@@ -100,8 +112,13 @@ def format_alert_card(
     valid_until: str | None = None,
     reprices: int | None = None,
     first_issued_at: str | None = None,
+    drift: dict[str, Any] | None = None,
 ) -> str:
-    """Format alert message matching Section 8 of the specification."""
+    """Format alert message matching Section 8 of the specification.
+
+    ``drift`` (a PEAD catalog-probe card's ``drift_card_facts``) adds the event and
+    holding facts between the probe header and the card; None leaves the card unchanged.
+    """
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     earnings_line = f"• <b>Earnings:</b> {html.escape(eval_res.earnings_note)}\n" if eval_res.earnings_note else ""
@@ -194,8 +211,19 @@ def format_alert_card(
             sizing_lines.extend(f"  <i>🛡️ {html.escape(str(g))}</i>" for g in gating)
         sizing_section = "\n".join(sizing_lines) + "\n"
 
+    drift_block = ""
+    if drift:
+        exit_day = _ny_date(drift.get("time_exit_at")) or f"session {drift['holding_sessions']}"
+        drift_block = (
+            f"📈 <b>PEAD</b> — EPS beat {drift['surprise_pct']:+.1f}%, reaction {drift['z']:+.1f}σ vs SPY "
+            f"(report {html.escape(str(drift['report_date']))})\n"
+            f"⏱️ {drift['holding_sessions']}-session hold · time exit 15:45 NY on {exit_day} "
+            "unless the stop or target fills first\n\n"
+        )
+
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
+        f"{drift_block}"
         f"{updated_card_prefix}"
         f"🚨 <b>TRADE SIGNAL: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
         f"<b>Strategy:</b> {html.escape(strategy)}\n\n"
@@ -1178,9 +1206,11 @@ class TelegramNotifier:
         valid_until: str | None = None,
         reprices: int | None = None,
         first_issued_at: str | None = None,
+        drift: dict[str, Any] | None = None,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
-        # by the scan and by tap-time re-pricing; rendered on both cards below.
+        # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
+        # (a PEAD catalog-probe scan card only) is rendered on the Telegram card.
         # Always output to terminal/logs
         print(
             format_terminal_card(
@@ -1212,6 +1242,7 @@ class TelegramNotifier:
             valid_until=valid_until,
             reprices=reprices,
             first_issued_at=first_issued_at,
+            drift=drift,
         )
 
         # A retried SIGNAL delivery can land after the card already left PENDING -- for

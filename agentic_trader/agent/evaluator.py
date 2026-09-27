@@ -80,6 +80,8 @@ class LLMTradeEvaluation(BaseModel):
     gating_reasons: list[str] | None = None
     session_type: str = "RTH"
     earnings_note: str | None = None
+    # A catalog probe's LLM verdict, recorded but never applied (commentary only).
+    llm_verdict: dict[str, Any] | None = None
 
 
 class RiskEvaluator:
@@ -722,6 +724,17 @@ class RiskEvaluator:
             data["sizing_tiers"] = sizing_tiers
             data["gating_reasons"] = gating_reasons
             data["session_type"] = current_session_type
+
+            data.pop("llm_verdict", None)  # only ever set below, never taken from the LLM
+            if candidate.catalog_event is not None:
+                # A catalog probe tests the unfiltered study rule: record the LLM's verdict,
+                # show its text as commentary, never let it veto (deterministic gates already ran).
+                data["llm_verdict"] = {
+                    "approved": bool(data.get("approved")),
+                    "rejection_reason": data.get("rejection_reason"),
+                }
+                data["approved"], data["rejection_reason"] = True, None
+                data["thesis_summary"] = f"LLM commentary (not a gate): {data.get('thesis_summary') or ''}".strip()
 
             # Never ask the LLM for the earnings note (prompt/schema stay untouched);
             # attach it deterministically after the LLM result is parsed.

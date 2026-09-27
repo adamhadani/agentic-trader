@@ -25,7 +25,8 @@ def test_suggestion_scans_are_cron_jobs_in_new_york_on_weekdays(config):
         assert call.kwargs["hour"] == hour and call.kwargs["minute"] == minute
         assert call.kwargs["day_of_week"] == "mon-fri"
         assert call.kwargs["timezone"] == ZoneInfo("America/New_York")
-    assert calls[0].kwargs["kwargs"] == {"digest": False} and calls[1].kwargs["kwargs"] == {"digest": True}
+    assert calls[0].kwargs["kwargs"] == {"digest": False, "scheduled_time_et": "10:35"}
+    assert calls[1].kwargs["kwargs"] == {"digest": True, "scheduled_time_et": "14:35"}
 
 
 def test_suggestion_scans_never_overlap_and_tolerate_a_late_start(config):
@@ -50,8 +51,31 @@ async def test_suggestion_scan_runs_full_budget_only_when_the_equity_session_is_
     copilot.session_provider.is_session_active = AsyncMock(return_value=(True, "open"))
     await job(digest=False)
     copilot.run_scan.assert_awaited_once_with(
-        use_llm=True, dry_run=False, asset_class="equity", budget=ScanBudget.FULL, shadow_evidence=True
+        use_llm=True,
+        dry_run=False,
+        asset_class="equity",
+        budget=ScanBudget.FULL,
+        shadow_evidence=True,
+        scheduled_time_et=None,
     )
+
+
+def test_each_suggestion_scan_job_names_its_scheduled_time(config):
+    config.scheduler.suggestion_scan_times_et = ["09:45", "10:35", "14:35"]
+    scheduler = MagicMock()
+    service.register_suggestion_scans(scheduler, MagicMock(), config, use_llm=True)
+    registered = [call.kwargs["kwargs"]["scheduled_time_et"] for call in scheduler.add_job.call_args_list]
+    assert registered == ["09:45", "10:35", "14:35"]
+
+
+async def test_the_scheduled_time_reaches_the_scan(config):
+    """Only the scan whose scheduled time is the PEAD decision time may produce a drift card."""
+    copilot = MagicMock()
+    copilot.run_scan = AsyncMock()
+    copilot.session_provider.is_session_active = AsyncMock(return_value=(True, "open"))
+    job = service.make_suggestion_scan(copilot, use_llm=False)
+    await job(digest=False, scheduled_time_et="10:35")
+    assert copilot.run_scan.await_args.kwargs["scheduled_time_et"] == "10:35"
 
 
 def test_intraday_scan_is_restricted_to_non_universe_contracts(config):
