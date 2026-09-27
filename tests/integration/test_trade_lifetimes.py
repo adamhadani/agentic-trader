@@ -22,7 +22,7 @@ from agentic_trader.execution.lifetime_policy import (
     TradeLifetimePolicy,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.market.session import MarketCalendarDay
+from agentic_trader.market.session import AlpacaCalendarProvider, MarketCalendarDay
 from agentic_trader.research.alpha.strategy import AprioriBracketPolicy, TimedAlphaExecutionPolicy, session_entry_policy
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.lifetimes import LifetimeRepository
@@ -465,6 +465,10 @@ async def test_session_policy_waits_before_session_twenty(lifecycle_case):
     await use_session_policy(c, fill_days_ago=18)  # today is session 19
     await asyncio.gather(*(service.reconcile() for service in c.services))
     assert not any(call[0] != "GET" for call in c.venue.calls)
+    # A REVIEW also makes only GET calls, so also pin that this is a genuine wait
+    # (no halt, no journaled lifetime review) rather than an evidence review.
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert not await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
 
 
 async def test_session_policy_calendar_failure_reviews_and_never_closes(lifecycle_case):
@@ -480,3 +484,31 @@ async def test_session_policy_calendar_failure_reviews_and_never_closes(lifecycl
     await c.services[0].reconcile()
     assert not any(call[0] != "GET" for call in c.venue.calls)
     assert c.signal_id in await c.services[0].resume_blockers()
+    events = await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
+    assert any(
+        e["kind"] == EventKind.LIFETIME_REVIEW
+        and e["payload"]["reason"] == "lifecycle_evidence_unavailable:RuntimeError"
+        for e in events
+    )
+
+
+async def test_session_policy_alpaca_calendar_provider_failure_reviews_and_never_closes(lifecycle_case):
+    """The strict provider actually wired in production, not a bespoke fake, reaches review."""
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=25)
+
+    class RaisingAlpacaTradingClient:
+        def get_calendar(self, req):
+            raise RuntimeError("calendar down")
+
+    for service in c.services:
+        service.calendar = AlpacaCalendarProvider(trading_client=RaisingAlpacaTradingClient())
+    await c.services[0].reconcile()
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert c.signal_id in await c.services[0].resume_blockers()
+    events = await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
+    assert any(
+        e["kind"] == EventKind.LIFETIME_REVIEW
+        and e["payload"]["reason"] == "lifecycle_evidence_unavailable:RuntimeError"
+        for e in events
+    )

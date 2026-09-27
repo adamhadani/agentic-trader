@@ -65,7 +65,7 @@ from agentic_trader.execution.freshness import (
     valid_until_from_provenance,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.market.session import ET_TZ, CompositeMarketSessionProvider
+from agentic_trader.market.session import ET_TZ, AlpacaCalendarProvider, CompositeMarketSessionProvider
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
@@ -272,7 +272,10 @@ class TradingCopilot:
                 self.broker,
                 self.close_service,
                 config=config.execution,
-                calendar=self.session_provider.calendar,
+                # A strict broker calendar, never the composite's silent
+                # Alpaca->Finnhub->deterministic fallback: a read failure here must
+                # surface as a lifecycle review, never a guessed holiday calendar.
+                calendar=AlpacaCalendarProvider(trading_client=alpaca_client) if alpaca_client is not None else None,
             )
         )
         self.evaluator = RiskEvaluator(
