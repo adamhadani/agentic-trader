@@ -27,6 +27,7 @@ from agentic_trader.screeners.indicators import calculate_ema, calculate_rsi
 
 
 __all__ = [
+    "PEAD_DECISION_TIME_ET",
     "PEAD_STRATEGY_ID",
     "DriftPreparation",
     "EarningsDriftService",
@@ -36,6 +37,10 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 PEAD_STRATEGY_ID = catalog_alpha_id("pead", "LONG")
+# The frozen entry's decision time (spec). The service reads its own from the entry; this
+# copy only places the "service unavailable" decision when the entry cannot be loaded at
+# all. A test pins it to the committed entry file.
+PEAD_DECISION_TIME_ET = "10:35"
 NEW_YORK = ZoneInfo("America/New_York")
 # Calendar days looked ahead from the decision session; comfortably covers the frozen
 # 20-session hold (session_count_v1) even across long holiday clusters.

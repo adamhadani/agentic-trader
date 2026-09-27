@@ -112,6 +112,7 @@ from agentic_trader.screeners.dynamic_universe import (
     synthetic_contract,
 )
 from agentic_trader.screeners.earnings_drift import (
+    PEAD_DECISION_TIME_ET,
     PEAD_STRATEGY_ID,
     DriftPreparation,
     EarningsDriftService,
@@ -133,6 +134,9 @@ logger = logging.getLogger("copilot")
 DYNAMIC_CORRELATION_GROUP = "dynamic"
 # One bound on a suggestion scan's screener and asset-list reads (it holds the scan lock).
 DYNAMIC_UNIVERSE_TIMEOUT_SECONDS = 60.0
+# One bound on the 10:35 scan's PEAD drift preparation (calendar and bar reads, also under
+# the scan lock and before the native fetch); exceeding it is an unavailable session.
+DRIFT_PREPARE_TIMEOUT_SECONDS = 60.0
 # `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
@@ -502,6 +506,15 @@ class TradingCopilot:
         return groups | {DYNAMIC_CORRELATION_GROUP} if dynamic else groups
 
     @staticmethod
+    def _counts_as_dynamic(row: Mapping[str, Any]) -> bool:
+        """Whether a card recorded today counts toward the ``dynamic`` group.
+
+        A PEAD drift card is selected by the earnings calendar, never by the screener, so
+        it never counts, even if its provenance were ever tagged dynamic.
+        """
+        return bool(row.get("dynamic", False)) and row.get("strategy") != PEAD_STRATEGY_ID
+
+    @staticmethod
     def _dynamic_tag(contract: str, dynamic_sources: Mapping[str, str]) -> dict[str, Any]:
         """Provenance/journal keys marking a dynamic name; absent (empty) for a static one."""
         source = dynamic_sources.get(contract)
@@ -713,19 +726,29 @@ class TradingCopilot:
             # for their drift candidate only (a synthetic per-scan contract, never scanned).
             drift_prep: DriftPreparation | None = None
             drift_only: set[str] = set()
-            if (
-                not dry_run
-                and budget != ScanBudget.NONE
-                and shadow_evidence
-                and not symbols
-                and timeframe is None
-                and self.earnings_drift is not None
-                and self.earnings_drift.applies(scheduled_time_et)
-            ):
+            drift_scan = (
+                not dry_run and budget != ScanBudget.NONE and shadow_evidence and not symbols and timeframe is None
+            )
+            if drift_scan and self.earnings_drift is not None and self.earnings_drift.applies(scheduled_time_et):
                 drift_prep = await self._prepare_drift(alpha_snapshot, active_positions)
                 known = {c.strip("/").upper() for c in self.config.contracts} | {s for s, _ in dynamic_contracts}
                 drift_only = {event["symbol"] for event in drift_prep.events} - known
                 dynamic_contracts = [*dynamic_contracts, *((s, synthetic_contract(s, s)) for s in sorted(drift_only))]
+            elif (
+                drift_scan
+                and self.earnings_drift is None
+                and self.config.apriori.enabled
+                and self._earnings_drift_error is not None
+                and scheduled_time_et == PEAD_DECISION_TIME_ET
+                and bool(getattr(alpha_snapshot, "catalog_probes", ()))
+            ):
+                # The drift source failed to build but a catalog probe is live: journal the
+                # unavailable decision (and its one notice) rather than go silently dead.
+                drift_prep = DriftPreparation(
+                    "unavailable",
+                    datetime.now(UTC).astimezone(ET_TZ).date(),
+                    reason=f"service unavailable: {self._earnings_drift_error}",
+                )
 
             selected: list[tuple[str, Any]] = []
             for contract, info in [*self.config.contracts.items(), *dynamic_contracts]:
@@ -984,7 +1007,7 @@ class TradingCopilot:
                     # An operator-requested dynamic name shares the one-dynamic-card-per-session
                     # cap: only the dynamic group is counted and enforced (see capped_groups).
                     today = await self.db.signals_since(self.session_start_et())
-                    groups_used[DYNAMIC_CORRELATION_GROUP] = sum(1 for row in today if row.get("dynamic", False))
+                    groups_used[DYNAMIC_CORRELATION_GROUP] = sum(1 for row in today if self._counts_as_dynamic(row))
             else:
                 # Durable, derived budget: a restart mid-session must not hand out a
                 # fresh allowance, so today's spend is read back from recorded signals.
@@ -1000,16 +1023,24 @@ class TradingCopilot:
                 )
                 remaining_scan = cfg.max_cards_per_scan if budget == ScanBudget.FULL else len(ranked)
                 for row in today:
-                    for group in self._scan_groups(row["contract"], dynamic=row.get("dynamic", False)):
+                    for group in self._scan_groups(row["contract"], dynamic=self._counts_as_dynamic(row)):
                         groups_used[group] = groups_used.get(group, 0) + 1
             llm_budget = cfg.max_llm_evaluations_per_scan
 
-            def capped_groups(contract: str) -> set[str]:
+            def card_groups(contract: str, *, drift: bool) -> set[str]:
+                """Groups a card on this contract counts toward. A drift card is never a
+                dynamic name (the earnings calendar chose it, not the screener), but its
+                configured sector groups still apply."""
+                if drift:
+                    return self.correlation_groups_of(contract)
+                return self._scan_groups(contract, dynamic=contract in dynamic_sources)
+
+            def capped_groups(contract: str, *, drift: bool = False) -> set[str]:
                 """Groups whose per-session card cap this candidate must respect."""
-                dynamic = contract in dynamic_sources
                 if budget != ScanBudget.NONE:
-                    return self._scan_groups(contract, dynamic=dynamic)
+                    return card_groups(contract, drift=drift)
                 # NONE skips the group cap, except for an operator-requested dynamic name.
+                dynamic = contract in dynamic_sources and not drift
                 return {DYNAMIC_CORRELATION_GROUP} if operator_dynamic is not None and dynamic else set()
 
             # One session-clock read per contract that actually records a card.
@@ -1028,7 +1059,7 @@ class TradingCopilot:
                         reason = "per-session budget spent"
                     elif any(
                         groups_used.get(g, 0) >= cfg.max_cards_per_group_per_session
-                        for g in capped_groups(candidate.contract)
+                        for g in capped_groups(candidate.contract, drift=is_drift)
                     ):
                         reason = "correlation group already has a card this session"
                     elif use_llm and not is_drift and llm_budget <= 0:
@@ -1103,9 +1134,13 @@ class TradingCopilot:
                             "candidates_considered": len(drift_ranked) if is_drift else native_count,
                             "budget": str(budget),
                             "shadow_ranker": shadow_by_rank[rank - 1],
-                            **self._dynamic_tag(candidate.contract, dynamic_sources),
-                            # Catalog admission requires this same-session event naming the contract.
-                            **({"pead_event": candidate.catalog_event} if is_drift else {}),
+                            # A drift card is never tagged dynamic; catalog admission requires
+                            # its same-session event naming the contract.
+                            **(
+                                {"pead_event": candidate.catalog_event}
+                                if is_drift
+                                else self._dynamic_tag(candidate.contract, dynamic_sources)
+                            ),
                             **validity,
                         },
                         contract=eval_res.contract,
@@ -1151,7 +1186,7 @@ class TradingCopilot:
                     else:
                         remaining_scan -= 1
                         remaining_session -= 1
-                    for group in self._scan_groups(candidate.contract, dynamic=candidate.contract in dynamic_sources):
+                    for group in card_groups(candidate.contract, drift=is_drift):
                         groups_used[group] = groups_used.get(group, 0) + 1
 
                     logger.info(
@@ -1487,26 +1522,37 @@ class TradingCopilot:
 
         A name is owned by an open position or by a live registry alpha (active or probe)
         whose eligible symbols include it; the service skips it with that reason. Any
-        failure (the calendar, the bars, the entry) makes the whole session unavailable.
+        failure (the calendar, the bars, the entry) makes the whole session unavailable,
+        as does exceeding ``DRIFT_PREPARE_TIMEOUT_SECONDS``: the reads run under the scan
+        lock before the native fetch, so a slow provider must not hold the native cards.
         """
-        owned: dict[str, str] = {}
-        for position in active_positions:
-            owned[str(position["contract"]).strip("/").upper()] = "open position"
-        for definition in (*alpha_snapshot.active, *alpha_snapshot.probe):
-            for symbol in definition.eligible_symbols or ():
-                owned.setdefault(symbol.strip("/").upper(), f"owned by {definition.alpha_id}")
         now = datetime.now(UTC)
+        session = now.astimezone(ET_TZ).date()
         service = self.earnings_drift
         if service is None:
-            return DriftPreparation("unavailable", now.astimezone(ET_TZ).date(), reason="drift source unavailable")
+            return DriftPreparation("unavailable", session, reason="drift source unavailable")
         try:
-            return await service.prepare(now=now, snapshot=alpha_snapshot, owned=owned)
+            owned: dict[str, str] = {}
+            for position in active_positions:
+                owned[str(position["contract"]).strip("/").upper()] = "open position"
+            for definition in (*alpha_snapshot.active, *alpha_snapshot.probe):
+                for symbol in definition.eligible_symbols or ():
+                    owned.setdefault(symbol.strip("/").upper(), f"owned by {definition.alpha_id}")
+            async with asyncio.timeout(DRIFT_PREPARE_TIMEOUT_SECONDS):
+                return await service.prepare(now=now, snapshot=alpha_snapshot, owned=owned)
+        except TimeoutError:
+            logger.warning(
+                "PEAD drift preparation exceeded %ss; no drift card this session",
+                DRIFT_PREPARE_TIMEOUT_SECONDS,
+                extra={"event": "pead_prepare_timeout", "timeout_seconds": DRIFT_PREPARE_TIMEOUT_SECONDS},
+            )
+            return DriftPreparation("unavailable", session, reason="timeout")
         except Exception as exc:
             logger.exception(
                 "PEAD drift preparation failed; no drift card this session",
                 extra={"event": "pead_prepare_failed", "error": type(exc).__name__},
             )
-            return DriftPreparation("unavailable", now.astimezone(ET_TZ).date(), reason=f"error: {type(exc).__name__}")
+            return DriftPreparation("unavailable", session, reason=f"error: {type(exc).__name__}")
 
     async def _journal_drift(
         self,

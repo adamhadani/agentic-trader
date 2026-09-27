@@ -7,13 +7,16 @@ spend the LLM evaluation budget, and every decision is journaled as one
 ``pead_decision`` event; an unavailable session queues one debounced notice.
 """
 
+import asyncio
 import inspect
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import agentic_trader.agent.copilot as copilot_module
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import ScanBudget
 from agentic_trader.constants import SignalStatus
@@ -21,8 +24,20 @@ from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKi
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.research.alpha.models import RegistrySnapshot
-from agentic_trader.screeners.earnings_drift import PEAD_STRATEGY_ID, DriftPreparation, EarningsDriftService
+from agentic_trader.research.apriori.catalog import load_pead_entry
+from agentic_trader.screeners.earnings_drift import (
+    PEAD_DECISION_TIME_ET,
+    PEAD_STRATEGY_ID,
+    DriftPreparation,
+    EarningsDriftService,
+)
 from agentic_trader.storage.models import SignalRecord
+from tests.agent.test_dynamic_universe_scan import (  # noqa: F401  (dailies/dynamic_desk are fixtures)
+    QUALITIES,
+    STATIC,
+    dailies,
+    dynamic_desk,
+)
 from tests.agent.test_scan_budget import (  # noqa: F401  (budget_desk is a fixture)
     budget_desk,
     candidate,
@@ -41,6 +56,7 @@ class FakeDrift:
     def __init__(self, prep, candidates):
         self.prep, self.candidates, self.prepare_calls = prep, candidates, 0
         self.owned: dict[str, str] | None = None
+        self.delay = 0.0
 
     def applies(self, scheduled):
         return scheduled == "10:35"
@@ -48,6 +64,8 @@ class FakeDrift:
     async def prepare(self, *, now, snapshot, owned):
         self.prepare_calls += 1
         self.owned = dict(owned)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if isinstance(self.prep, BaseException):
             raise self.prep
         return self.prep
@@ -422,3 +440,136 @@ def test_a_missing_entry_leaves_no_drift_source(app_config, temp_db, mock_notifi
     copilot = _copilot(app_config, temp_db, mock_notifier)
     assert copilot.earnings_drift is None
     assert copilot._earnings_drift_error.startswith("FileNotFoundError")
+
+
+# --- R1: a drift card is never a dynamic name ---------------------------------------------
+
+
+def _native_setups_on(desk, symbols) -> None:
+    desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: (
+        [candidate(data.contract, QUALITIES[data.contract])] if data.contract in symbols else []
+    )
+
+
+async def test_a_drift_card_on_a_dynamic_member_follows_a_native_dynamic_card(dynamic_desk, temp_db):  # noqa: F811
+    """NEWA (native, dynamic) takes the dynamic group's card; the drift card on dynamic
+    member NEWB is still sent, untagged, because it is not a dynamic name."""
+    dynamic_desk.earnings_drift = FakeDrift(ok_prep("NEWB"), {"NEWB": drift_candidate("NEWB")})
+
+    await suggestion_scan(dynamic_desk)
+
+    cards = {(s["contract"], s["strategy"]): s["decision_provenance"] for s in await _signals(temp_db)}
+    assert set(cards) == {("NEWA", "TREND_PULLBACK"), ("NEWB", PEAD_STRATEGY_ID)}
+    assert cards[("NEWA", "TREND_PULLBACK")]["dynamic"] is True
+    drift = cards[("NEWB", PEAD_STRATEGY_ID)]
+    assert "dynamic" not in drift and "dynamic_source" not in drift
+    [event] = await _drift_events(temp_db)
+    assert _outcomes(event) == {"NEWB": "sent"}
+    assert "dynamic" not in event["payload"]["events"][0]
+
+
+async def test_a_sent_drift_card_does_not_consume_the_dynamic_group(dynamic_desk, temp_db):  # noqa: F811
+    # 10:35: only the static names have native setups; the drift card lands on dynamic member NEWA.
+    dynamic_desk.earnings_drift = FakeDrift(ok_prep("NEWA"), {"NEWA": drift_candidate("NEWA")})
+    _native_setups_on(dynamic_desk, STATIC)
+    await suggestion_scan(dynamic_desk)
+    first = sorted((s["contract"], s["strategy"]) for s in await _signals(temp_db))
+    assert first == [("DDD", "TREND_PULLBACK"), ("NEWA", PEAD_STRATEGY_ID)]
+
+    # 14:35: NEWA's own native (dynamic) setup may still take the dynamic group's card.
+    _native_setups_on(dynamic_desk, QUALITIES)
+    await suggestion_scan(dynamic_desk, scheduled_time_et="14:35")
+    native_newa = [s for s in await _signals(temp_db) if s["contract"] == "NEWA" and s["strategy"] != PEAD_STRATEGY_ID]
+    assert len(native_newa) == 1 and native_newa[0]["decision_provenance"]["dynamic"] is True
+
+
+async def test_a_dynamic_tagged_drift_row_never_counts_toward_the_dynamic_group(dynamic_desk, temp_db):  # noqa: F811
+    await temp_db.record_signal(
+        "OLDP", PEAD_STRATEGY_ID, "LONG", 100, 98, 104, 2, decision_provenance={"dynamic": True, "rank": 1}
+    )
+
+    await suggestion_scan(dynamic_desk, scheduled_time_et="14:35")
+
+    assert "NEWA" in {s["contract"] for s in await _signals(temp_db)}
+
+
+async def test_a_sector_group_cap_still_blocks_a_drift_card(drift_desk, temp_db, app_config):
+    app_config.portfolio.correlation_groups = {**app_config.portfolio.correlation_groups, "sector_w": ["WINR", "ZZZ"]}
+    await temp_db.record_signal("ZZZ", "TREND_PULLBACK", "LONG", 100, 98, 104, 2, decision_provenance={"rank": 1})
+
+    await suggestion_scan(drift_desk)
+
+    assert [s for s in await _signals(temp_db) if s["strategy"] == PEAD_STRATEGY_ID] == []
+    assert "DDD" in {s["contract"] for s in await _signals(temp_db)}  # native cards unaffected
+    [event] = await _drift_events(temp_db)
+    assert _outcomes(event) == {"WINR": "correlation group already has a card this session"}
+
+
+# --- R2: a slow preparation never holds the native cards ----------------------------------
+
+
+async def test_a_slow_preparation_times_out_as_an_unavailable_session(drift_desk, temp_db, monkeypatch):
+    monkeypatch.setattr(copilot_module, "DRIFT_PREPARE_TIMEOUT_SECONDS", 0.05)
+    drift_desk.earnings_drift.delay = 5.0
+
+    summary = await suggestion_scan(drift_desk)
+
+    assert summary["drift"] == {"status": "unavailable", "reason": "timeout", "events": 0, "sent": 0}
+    assert len(await _unavailable_notices(temp_db)) == 1
+    assert [s["contract"] for s in await _signals(temp_db)] == ["DDD"]
+
+
+def test_the_drift_prepare_bound_mirrors_the_dynamic_universe_bound():
+    assert copilot_module.DRIFT_PREPARE_TIMEOUT_SECONDS == 60
+
+
+# --- R3: an enrolled probe is never silently dead -----------------------------------------
+
+
+def _catalog_snapshot() -> RegistrySnapshot:
+    return RegistrySnapshot(0, (), (), catalog_probes=({"version_id": VERSION, "alpha_id": PEAD_STRATEGY_ID},))
+
+
+@pytest.fixture
+def broken_drift_desk(budget_desk):  # noqa: F811
+    budget_desk.earnings_drift = None
+    budget_desk._earnings_drift_error = "FileNotFoundError: [Errno 2] No such file or directory: 'pead-v2.json'"
+    budget_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+    return budget_desk
+
+
+async def test_an_unavailable_drift_service_is_journaled_while_a_catalog_probe_is_live(broken_drift_desk, temp_db):
+    summary = await suggestion_scan(broken_drift_desk)
+
+    [event] = await _drift_events(temp_db)
+    payload = event["payload"]
+    assert payload["status"] == "unavailable" and payload["events"] == []
+    assert payload["reason"].startswith("service unavailable: FileNotFoundError")
+    assert payload["session"] == today_ny().isoformat()
+    assert len(await _unavailable_notices(temp_db)) == 1
+    assert summary["drift"]["status"] == "unavailable"
+    assert [s["contract"] for s in await _signals(temp_db)] == ["DDD"]  # native cards unaffected
+
+
+@pytest.mark.parametrize("case", ["no-catalog-probe", "other-time", "disabled", "no-error"])
+async def test_an_unavailable_drift_service_is_silent_otherwise(broken_drift_desk, temp_db, app_config, case):
+    kwargs = {}
+    if case == "no-catalog-probe":
+        broken_drift_desk.alpha_repository.snapshot.return_value = RegistrySnapshot(0, (), ())
+    elif case == "other-time":
+        kwargs["scheduled_time_et"] = "14:35"
+    elif case == "disabled":
+        app_config.apriori.enabled = False
+    else:
+        broken_drift_desk._earnings_drift_error = None
+
+    await suggestion_scan(broken_drift_desk, **kwargs)
+
+    assert await _drift_events(temp_db) == []
+    assert await _unavailable_notices(temp_db) == []
+    assert "drift" not in broken_drift_desk.last_scan_summary
+
+
+def test_the_fallback_decision_time_is_the_frozen_entry_s(app_config):
+    entry = load_pead_entry(Path(app_config.apriori.pead_entry_path)).entry
+    assert entry.trade.decision_time_et == PEAD_DECISION_TIME_ET
