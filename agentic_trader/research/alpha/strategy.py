@@ -161,6 +161,17 @@ def entry_directions(scores: pd.Series, definition: AlphaDefinition) -> pd.Serie
     return result
 
 
+def _rounded_bracket(
+    entry: float, direction: int, ticks: int, policy: AlphaExecutionPolicy | AprioriBracketPolicy
+) -> tuple[float, float]:
+    """Round protection outwards, then the reward outwards, to retain the minimum RR."""
+    stop = round(entry - direction * ticks * policy.tick_size, 8)
+    target = round(entry + direction * math.ceil(ticks * policy.reward_risk - 1e-10) * policy.tick_size, 8)
+    if min(stop, target) <= 0:
+        raise ValueError("Bracket would cross zero")
+    return stop, target
+
+
 def bracket_prices(
     entry: float,
     direction: int,
@@ -173,11 +184,7 @@ def bracket_prices(
         if direction not in (-1, 1) or not all(math.isfinite(x) and x > 0 for x in (entry, atr)):
             raise ValueError("Bracket observations must be finite and positive")
         ticks = math.ceil(policy.stop_atr * atr / policy.tick_size - 1e-10)
-        stop = round(entry - direction * ticks * policy.tick_size, 8)
-        target = round(entry + direction * math.ceil(ticks * policy.reward_risk - 1e-10) * policy.tick_size, 8)
-        if min(stop, target) <= 0:
-            raise ValueError("Bracket would cross zero")
-        return stop, target
+        return _rounded_bracket(entry, direction, ticks, policy)
     if direction not in (-1, 1) or not all(math.isfinite(x) and x > 0 for x in (entry, atr, swing_low, swing_high)):
         raise ValueError("Bracket observations must be finite and positive")
     structural = (
@@ -186,13 +193,8 @@ def bracket_prices(
         else swing_high + policy.structural_buffer_ticks * policy.tick_size
     )
     distance = max(direction * (entry - structural), policy.stop_atr * atr)
-    # Round protection outwards, then the reward outwards to retain the minimum RR.
     ticks = math.ceil(distance / policy.tick_size - 1e-10)
-    stop = round(entry - direction * ticks * policy.tick_size, 8)
-    target = round(entry + direction * math.ceil(ticks * policy.reward_risk - 1e-10) * policy.tick_size, 8)
-    if min(stop, target) <= 0:
-        raise ValueError("Bracket would cross zero")
-    return stop, target
+    return _rounded_bracket(entry, direction, ticks, policy)
 
 
 def trailing_price(
