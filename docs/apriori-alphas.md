@@ -42,12 +42,20 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   `pead_events.build_events` — the identical liquidity gate, reaction z and ATR
   the study used, never a reimplementation. A missing Nasdaq calendar page, an
   empty page, a missing SPY D-1/D+1 close or a bar-fetch failure fails the whole
-  session closed (`status: "unavailable"`), never partially.
+  session closed (`status: "unavailable"`), never partially. The whole
+  preparation (calendar, bars and event construction) is bounded at
+  `DRIFT_PREPARE_TIMEOUT_SECONDS` (60 s, `agent/copilot.py`); exceeding it is
+  also `"unavailable"` (`reason: "timeout"`) — the reads run under the scan lock
+  before the native fetch, so a slow provider must never hold up native cards.
 - **Budget.** At most one drift card per session, outside the native suggestion
-  budget (`apriori.max_drift_cards_per_session`, default 1). Drift cards never
-  join the dynamic sector-correlation group and neither count toward nor are
-  capped by it; the per-scan/per-session native budgets are unaffected. Ties on
-  multiple qualifying events break by the largest reaction z, then symbol.
+  budget (`apriori.max_drift_cards_per_session`, default 1); the per-scan/
+  per-session native budgets are unaffected. A drift card is never counted as a
+  dynamic-universe name (the earnings calendar chose it, not the screener), so
+  it neither counts toward nor is capped by the dynamic group. Configured sector
+  correlation groups still apply and still cap it exactly like a native card
+  (`card_groups(contract, drift=True)` returns `correlation_groups_of(contract)`).
+  Ties on multiple qualifying events break by the largest reaction z, then
+  symbol.
 - **LLM commentary only.** The evaluator's LLM call still runs, but its verdict is
   stored as `llm_verdict` in the signal's evaluation and never gates the card; the
   thesis is prefixed "LLM commentary (not a gate): …". The bracket, quantity and
