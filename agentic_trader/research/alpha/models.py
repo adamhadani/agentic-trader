@@ -251,3 +251,5 @@ class RegistrySnapshot:
     active: tuple[AlphaDefinition, ...]
     shadow: tuple[AlphaDefinition, ...]
     probe: tuple[AlphaDefinition, ...] = ()
+    # Live catalog (a priori) probes: raw definition documents, never AlphaDefinitions.
+    catalog_probes: tuple[dict[str, Any], ...] = ()

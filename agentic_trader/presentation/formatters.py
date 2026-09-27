@@ -567,22 +567,29 @@ class TelegramHtmlFormatter:
             "🧪 <b>ALPHA RESEARCH</b>",
             f"<b>{len(snapshot.active)} enabled for signals</b> · {len(snapshot.shadow)} research candidates",
         ]
-        if snapshot.probe:
-            count = len(snapshot.probe)
+        names = [d.alpha_id for d in snapshot.probe] + [d["alpha_id"] for d in snapshot.catalog_probes]
+        if names:
+            count = len(names)
             lines.append(
                 f"🧪 <b>{count} paper probe{'s' if count != 1 else ''}</b> trading with capped risk on the paper account: "
-                + html.escape(", ".join(d.alpha_id for d in snapshot.probe))
+                + html.escape(", ".join(names))
             )
             for row in probes or ():
                 if not row.get("live"):
                     continue
                 forward = row["forward"]
-                symbols = html.escape(", ".join(row.get("symbols") or []))
-                lines.append(
+                if row.get("kind") == "apriori":
+                    symbols = "any liquid reporter"
+                else:
+                    symbols = html.escape(", ".join(row.get("symbols") or []))
+                line = (
                     f"• {html.escape(row['alpha_id'])} ({symbols}) — {row['days_remaining']:.0f}d left · "
                     f"{forward['trades']} trades · {forward['cumulative_r']:+.2f}R · "
                     f"{row['kill_distance_r']:.2f}R to kill"
                 )
+                if row.get("study_mean_r") is not None:
+                    line += f" · study {row['study_mean_r']:+.3f}R/trade"
+                lines.append(line)
         if not snapshot.active:
             lines.append("No alpha strategies enabled. Other configured strategies may still suggest trades.")
         lines.extend(

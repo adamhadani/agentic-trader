@@ -36,7 +36,9 @@ from agentic_trader.execution.durable import (
     WorkKind,
     WorkStatus,
 )
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.validation import ValidationPolicy
+from agentic_trader.research.apriori.probe import CATALOG_KIND
 from agentic_trader.risk import drawdown_risk_factor, requires_account_risk
 from agentic_trader.storage.models import (
     AlphaProjectionRecord,
@@ -71,6 +73,26 @@ def _event_view(row: DomainEventRecord) -> dict[str, Any]:
         "recorded_at": row.recorded_at.isoformat(),
         "payload": json.loads(row.payload),
     }
+
+
+def _catalog_signal_rejection(signal: SignalRecord, definition: dict) -> str | None:
+    """A catalog probe has no symbol universe: its signal must carry a same-session event
+    naming its own symbol, the frozen leg and the frozen bracket policy."""
+    provenance = json.loads(signal.decision_provenance or "{}")
+    event = provenance.get("pead_event") if isinstance(provenance, dict) else None
+    session = signal.timestamp.astimezone(ET_TZ).date().isoformat()
+    if (
+        signal.strategy != definition["alpha_id"]
+        or signal.timeframe != definition["timeframe"]
+        or str(signal.direction).upper() != definition["leg"]
+        or not signal.alpha_policy
+        or json.loads(signal.alpha_policy) != definition["execution"]
+        or not isinstance(event, dict)
+        or event.get("symbol") != signal.contract.upper()
+        or event.get("session") != session
+    ):
+        return "Catalog signal differs from its immutable strategy contract."
+    return None
 
 
 def work_item(row: WorkItemRecord) -> WorkItem:
@@ -470,6 +492,10 @@ class WorkflowStore:
             if blocked:
                 return f"Paper probe blocked: {blocked}."
         definition = json.loads(row.payload)["definition"]
+        if definition.get("kind") == CATALOG_KIND:
+            if is_active:
+                return "Catalog alphas run only as paper probes."
+            return _catalog_signal_rejection(signal, definition)
         if definition.get("clock") is not None:
             return "Alpha session-clock execution remains diagnostic; new risk is disabled."
         if (

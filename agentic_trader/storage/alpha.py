@@ -23,6 +23,7 @@ from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.research.alpha.models import AlphaDefinition, DecisionStatus, RegistrySnapshot
 from agentic_trader.research.alpha.probe import ProbePolicy, assess_probe, is_paper_scope, policy_document
 from agentic_trader.research.alpha.validation import ValidationPolicy
+from agentic_trader.research.apriori.probe import catalog_version_id, is_catalog_definition
 from agentic_trader.storage.models import AlphaProjectionRecord, DomainEventRecord
 from agentic_trader.storage.probe_state import load_enrolment, load_forward_record, probe_block_reason
 from agentic_trader.storage.workflow import WorkflowStore, encode
@@ -56,6 +57,10 @@ def _aware(now):
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("Timezone-aware datetime required")
     return now
+
+
+async def _no_owner_conflict(others) -> None:
+    """A catalog probe has no symbol universe, so it never claims an instrument."""
 
 
 class AlphaRepository:
@@ -273,13 +278,25 @@ class AlphaRepository:
             version = await self._get(session, f"version/{version_id}")
             if not version:
                 raise ValueError("Unknown alpha version")
+            if is_catalog_definition(version["definition"]) and mode != "inactive":
+                raise ValueError("Catalog alphas run only as paper probes; enrol them with `alpha apriori-probe`")
+            alpha_id = version["definition"]["alpha_id"]
             registry = _normalized(await self._get(session, REGISTRY_KEY))
             if registry["generation"] != expected_generation:
                 raise ValueError("Registry changed; refresh generation before retrying")
-            definition = AlphaDefinition.from_dict(version["definition"])
+            # Only a DSL version reaches a probe or active transition (catalog refused above).
             if mode == "probe":
-                await self._authorize_probe(session, registry, definition, days=days, renew=renew, actor=actor, now=now)
+                await self._authorize_probe(
+                    session,
+                    registry,
+                    AlphaDefinition.from_dict(version["definition"]),
+                    days=days,
+                    renew=renew,
+                    actor=actor,
+                    now=now,
+                )
             if mode == "active":
+                definition = AlphaDefinition.from_dict(version["definition"])
                 if definition.clock is not None:
                     raise ValueError("Session-clock activation requires live acquisition and execution evidence")
                 if definition.data_feed not in ("alpaca:iex", "alpaca:sip"):
@@ -331,7 +348,7 @@ class AlphaRepository:
                 keep = []
                 for existing in registry[field]:
                     old = await self._get(session, f"version/{existing}")
-                    if old["definition"]["alpha_id"] != definition.alpha_id:
+                    if old["definition"]["alpha_id"] != alpha_id:
                         keep.append(existing)
                 registry[field] = keep
             if mode in ("active", "shadow", "probe"):
@@ -354,6 +371,8 @@ class AlphaRepository:
         """The first of ``owner_ids`` with a different alpha_id sharing an eligible symbol."""
         for current_id in owner_ids:
             current = await self._get(session, f"version/{current_id}")
+            if is_catalog_definition(current["definition"]):
+                continue  # No symbol universe: a catalog probe never owns an instrument.
             incumbent = AlphaDefinition.from_dict(current["definition"])
             if incumbent.alpha_id != definition.alpha_id and set(incumbent.eligible_symbols or ()) & set(
                 definition.eligible_symbols
@@ -395,11 +414,6 @@ class AlphaRepository:
             current = await self._get(session, f"version/{current_id}")
             if current["definition"]["alpha_id"] == definition.alpha_id:
                 raise ValueError("Alpha is active; demote it before enrolling a paper probe")
-        days = self.policy.probe_term_days if days is None else days
-        # `type(...) is not int` rather than isinstance: bool is an int subclass and
-        # `alpha probe --days True` is not a one-day term.
-        if type(days) is not int or not 1 <= days <= self.probe_policy.max_term_days:
-            raise ValueError(f"Probe term must be 1..{self.probe_policy.max_term_days} days")
         if definition.clock is not None or definition.timeframe != "1d":
             raise ValueError("Paper probes require an unclocked native daily definition")
         if definition.data_feed not in ("alpaca:iex", "alpaca:sip"):
@@ -409,6 +423,33 @@ class AlphaRepository:
         assessment = assess_probe(await self._get(session, f"qualification/{version_id}"), self.probe_policy)
         if not assessment.eligible:
             raise ValueError("Probe policy not met: " + ", ".join(assessment.reasons))
+
+        def owner_check(others):
+            return self._symbol_owner_conflict(session, definition, (*registry["active"], *others))
+
+        await self._record_probe_enrolment(
+            session,
+            registry,
+            version_id,
+            alpha_id=definition.alpha_id,
+            label=", ".join(definition.eligible_symbols),
+            owner_check=owner_check,
+            assessment=assessment.to_dict(),
+            days=days,
+            renew=renew,
+            actor=actor,
+            now=now,
+        )
+
+    async def _record_probe_enrolment(
+        self, session, registry, version_id, *, alpha_id, label, owner_check, assessment, days, renew, actor, now
+    ):
+        """The enrolment tail both probe kinds share: term, sticky kill, renewal, slots, owner, journal, notice."""
+        days = self.policy.probe_term_days if days is None else days
+        # `type(...) is not int` rather than isinstance: bool is an int subclass and
+        # `alpha probe --days True` is not a one-day term.
+        if type(days) is not int or not 1 <= days <= self.probe_policy.max_term_days:
+            raise ValueError(f"Probe term must be 1..{self.probe_policy.max_term_days} days")
         previous = await load_enrolment(session, self.store.scope, version_id)
         first = datetime.fromisoformat(previous["first_enrolled_at"]) if previous else now
         record = await load_forward_record(session, self.store.db, version_id, first, self.probe_policy)
@@ -422,7 +463,7 @@ class AlphaRepository:
         others = [v for v in live if v != version_id]
         if len(others) >= self.policy.max_probes:
             raise ValueError(f"All {self.policy.max_probes} probe slots are in use")
-        if await self._symbol_owner_conflict(session, definition, (*registry["active"], *others)) is not None:
+        if await owner_check(others) is not None:
             raise ValueError("Instrument already has an alpha owner; demote it or wait for its probe to end")
         expires_at = (now + timedelta(days=days)).isoformat()
         payload = {
@@ -430,7 +471,7 @@ class AlphaRepository:
             # Operator limits in force at enrolment, pinned as evidence only: they
             # are deliberately outside `policy`, which is the liveness identity.
             "limits": {"max_probes": self.policy.max_probes, "probe_risk_dollars": self.policy.probe_risk_dollars},
-            "assessment": assessment.to_dict(),
+            "assessment": assessment,
             "first_enrolled_at": first.isoformat(),
             "enrolled_at": now.isoformat(),
             "expires_at": expires_at,
@@ -445,8 +486,8 @@ class AlphaRepository:
             f"alpha-probe/{version_id}/{action}/{now.isoformat()}",
             NotificationKind.MESSAGE,
             {
-                "text": f"🧪 Paper probe {definition.alpha_id} {action} by {actor}: "
-                f"{', '.join(definition.eligible_symbols)}; expires {expires_at}; "
+                "text": f"🧪 Paper probe {alpha_id} {action} by {actor}: "
+                f"{label}; expires {expires_at}; "
                 f"risk capped at ${self.policy.probe_risk_dollars:,.0f}; paper account only.",
                 "formatted": False,
             },
@@ -462,6 +503,69 @@ class AlphaRepository:
             renew=renew,
             now=now,
         )
+
+    async def enrol_catalog_probe(
+        self, definition, *, actor, expected_generation, days=None, renew=False, now=None
+    ) -> int:
+        """Enrol (or renew) a passing catalog leg as a paper probe; never promoted or shadowed.
+
+        The catalog version row is immutable: a changed entry file or study result is a
+        new version ID, never a rewrite. Liveness stays ``probe_block_reason``'s alone.
+        """
+        now = _aware(now) if now else datetime.now(UTC)
+        if not is_catalog_definition(definition):
+            raise ValueError("Catalog enrolment requires a catalog definition")
+        version_id = definition["version_id"]
+        if version_id != catalog_version_id(
+            definition["entry_id"], definition["entry_version"], definition["leg"], definition["entry_sha256"]
+        ):
+            raise ValueError("Catalog version ID differs from its entry identity")
+        async with self.store.db.session_factory() as session, session.begin():
+            # Enrolment enqueues a notification. Lock order everywhere: admission, then alpha.
+            await self.store.lock(session)
+            await self.store.lock(session, resource="alpha")
+            if not is_paper_scope(self.store.scope):
+                raise ValueError("Paper probes run only on the Alpaca paper account scope")
+            key = f"version/{version_id}"
+            existing = await self._get(session, key)
+            if existing is not None and existing["definition"] != definition:
+                raise ValueError("Catalog version evidence differs; a changed entry or study is a new version")
+            registry = _normalized(await self._get(session, REGISTRY_KEY))
+            if registry["generation"] != expected_generation:
+                raise ValueError("Registry changed; refresh generation before retrying")
+            if version_id in registry["active"] or version_id in registry["shadow"]:
+                raise ValueError("Catalog alphas run only as paper probes")
+            if existing is None:
+                await self._append(session, key, {"definition": definition}, EventKind.ALPHA_RESEARCH, actor)
+            await self._record_probe_enrolment(
+                session,
+                registry,
+                version_id,
+                alpha_id=definition["alpha_id"],
+                label=f"{definition['entry_id']} v{definition['entry_version']} {definition['leg']} "
+                "(any liquid reporter)",
+                owner_check=_no_owner_conflict,
+                assessment={
+                    "study_result_sha256": definition["study_result_sha256"],
+                    "study_mean_r": definition["study_mean_r"],
+                },
+                days=days,
+                renew=renew,
+                actor=actor,
+                now=now,
+            )
+            # One current version per logical alpha, while immutable history remains.
+            for field in ("active", "shadow", "probe"):
+                keep = []
+                for current_id in registry[field]:
+                    current = await self._get(session, f"version/{current_id}")
+                    if current["definition"]["alpha_id"] != definition["alpha_id"]:
+                        keep.append(current_id)
+                registry[field] = keep
+            registry["probe"] = sorted([*registry["probe"], version_id])
+            registry["generation"] += 1
+            await self._append(session, REGISTRY_KEY, registry, EventKind.ALPHA_REGISTRY, actor)
+            return registry["generation"]
 
     async def sweep_probes(self, *, now=None) -> list[str]:
         """Make derived expiry/kill durable. Correctness never depends on this running."""
@@ -532,6 +636,8 @@ class AlphaRepository:
                 row = {
                     "version_id": version_id,
                     "alpha_id": version["definition"]["alpha_id"],
+                    "kind": version["definition"].get("kind", "dsl"),
+                    "study_mean_r": version["definition"].get("study_mean_r"),
                     "symbols": version["definition"].get("eligible_symbols") or [],
                     "expires_at": None,
                     "renewals": None,
@@ -562,15 +668,29 @@ class AlphaRepository:
                 "probe": await self._live_probes(session, registry, now),
             }
             groups = {}
+            catalog = []
             for field, version_ids in members.items():
                 versions = []
                 for version_id in version_ids:
                     row = await self._get(session, f"version/{version_id}")
                     if not row:
                         raise ValueError("Registry references missing immutable version")
+                    if is_catalog_definition(row["definition"]):
+                        # A catalog alpha is not a DSL formula and only ever runs as a probe.
+                        if field == "probe":
+                            catalog.append({**row["definition"], "version_id": version_id})
+                        else:
+                            logger.error("Catalog version %s listed as %s; ignoring it", version_id, field)
+                        continue
                     versions.append(AlphaDefinition.from_dict(row["definition"]))
                 groups[field] = tuple(versions)
-            return RegistrySnapshot(registry["generation"], groups["active"], groups["shadow"], groups["probe"])
+            return RegistrySnapshot(
+                registry["generation"],
+                groups["active"],
+                groups["shadow"],
+                groups["probe"],
+                catalog_probes=tuple(catalog),
+            )
 
     async def versions(self):
         async with self.store.db.session_factory() as session:
@@ -579,7 +699,9 @@ class AlphaRepository:
                 .where(AlphaProjectionRecord.scope == self.store.scope, AlphaProjectionRecord.key.like("version/%"))
                 .order_by(AlphaProjectionRecord.key)
             )
-            return [AlphaDefinition.from_dict(json.loads(row.payload)["definition"]) for row in rows]
+            definitions = (json.loads(row.payload)["definition"] for row in rows)
+            # Catalog versions are not DSL definitions; `snapshot().catalog_probes` names live ones.
+            return [AlphaDefinition.from_dict(d) for d in definitions if not is_catalog_definition(d)]
 
     async def record_forecast(self, key: str, payload: dict):
         async with self.store.db.session_factory() as session, session.begin():

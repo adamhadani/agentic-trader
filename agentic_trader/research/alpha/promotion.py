@@ -77,6 +77,10 @@ class AlphaPromotionService:
         definition_row = await self.repository.get(f"version/{version_id}")
         if not definition_row:
             raise ValueError("Unknown finalist version")
+        # A catalog (a priori) document carries a top-level "kind" no DSL definition has.
+        # Checked structurally: importing research.apriori here would be an import cycle.
+        if "kind" in definition_row["definition"]:
+            raise ValueError("Catalog alphas run only as paper probes; they are never qualified")
         definition = AlphaDefinition.from_dict(definition_row["definition"])
         if definition.clock is not None:
             raise ValueError("Session-clock qualification requires live acquisition and execution evidence")
