@@ -769,6 +769,100 @@ async def test_an_unavailable_drift_service_is_silent_otherwise(broken_drift_des
     assert "drift" not in broken_drift_desk.last_scan_summary
 
 
+# --- A late decision scan never prices a drift card (September 28 misfire) ----------------
+
+
+def _late(minutes: float) -> datetime:
+    """The due instant of a 10:35 slot that the scan reaches ``minutes`` late."""
+    return datetime.now(UTC) - timedelta(minutes=minutes)
+
+
+async def _message_notices(db) -> list:
+    return [
+        n for n in await db.workflows.list_work(WorkKind.NOTIFICATION) if n.payload["kind"] != NotificationKind.SIGNAL
+    ]
+
+
+def test_the_drift_lateness_cap_defaults_to_fifteen_minutes():
+    assert AprioriConfig().max_drift_lateness_seconds == 900
+
+
+@pytest.mark.parametrize("seconds", [0, -5])
+def test_the_drift_lateness_cap_must_be_positive(seconds):
+    with pytest.raises(ValueError):
+        AprioriConfig(max_drift_lateness_seconds=seconds)
+
+
+async def test_a_late_decision_scan_journals_a_skipped_pead_decision(drift_desk, temp_db):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+
+    summary = await suggestion_scan(drift_desk, scheduled_at=_late(22.5))
+
+    reason = "late decision: 22 min after 10:35 NY"
+    assert drift_desk.earnings_drift.prepare_calls == 0  # no calendar or bar reads
+    assert [s["contract"] for s in await _signals(temp_db)] == ["DDD"]  # native cards unaffected
+    assert "WINR" not in _fetched(drift_desk)
+    [event] = await _drift_events(temp_db)
+    payload = event["payload"]
+    assert (payload["status"], payload["reason"]) == ("skipped", reason)
+    assert payload["version_id"] == VERSION and payload["events"] == []
+    assert payload["scan_id"] == summary["scan_id"]
+    assert payload["session"] == today_ny().isoformat()
+    assert summary["drift"] == {"status": "skipped", "reason": reason, "events": 0, "sent": 0}
+    assert await _message_notices(temp_db) == []  # journaled, no unavailable notice
+
+
+async def test_a_decision_scan_within_the_lateness_cap_still_prepares_drift(drift_desk, temp_db):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+
+    await suggestion_scan(drift_desk, scheduled_at=_late(5))
+
+    assert drift_desk.earnings_drift.prepare_calls == 1
+    [event] = await _drift_events(temp_db)
+    assert event["payload"]["status"] == "ok"
+    assert _outcomes(event) == {"WINR": "sent"}
+
+
+async def test_the_drift_lateness_cap_is_configured(drift_desk, temp_db, app_config):
+    app_config.apriori.max_drift_lateness_seconds = 60
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+
+    await suggestion_scan(drift_desk, scheduled_at=_late(2))
+
+    assert drift_desk.earnings_drift.prepare_calls == 0
+    [event] = await _drift_events(temp_db)
+    assert event["payload"]["reason"] == "late decision: 2 min after 10:35 NY"
+
+
+async def test_a_late_scan_without_a_live_catalog_probe_journals_nothing(drift_desk, temp_db):
+    await suggestion_scan(drift_desk, scheduled_at=_late(30))
+
+    assert drift_desk.earnings_drift.prepare_calls == 0
+    assert await _drift_events(temp_db) == []
+    assert "drift" not in drift_desk.last_scan_summary
+    assert [s["contract"] for s in await _signals(temp_db)] == ["DDD"]
+
+
+async def test_a_late_other_slot_is_unaffected(drift_desk, temp_db):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+
+    await suggestion_scan(drift_desk, scheduled_time_et="14:35", scheduled_at=_late(30))
+
+    assert await _drift_events(temp_db) == []
+    assert [s["contract"] for s in await _signals(temp_db)] == ["DDD"]
+
+
+async def test_a_late_scan_with_an_unavailable_drift_service_is_skipped_not_unavailable(broken_drift_desk, temp_db):
+    await suggestion_scan(broken_drift_desk, scheduled_at=_late(20))
+
+    [event] = await _drift_events(temp_db)
+    assert (event["payload"]["status"], event["payload"]["reason"]) == (
+        "skipped",
+        "late decision: 20 min after 10:35 NY",
+    )
+    assert await _unavailable_notices(temp_db) == []
+
+
 def test_the_fallback_decision_time_is_the_frozen_entry_s(app_config):
     entry = load_pead_entry(Path(app_config.apriori.pead_entry_path)).entry
     assert entry.trade.decision_time_et == PEAD_DECISION_TIME_ET

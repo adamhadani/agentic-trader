@@ -179,6 +179,9 @@ class AprioriConfig(BaseModel):
     # Open PEAD positions (20-session holds) at or above which the 10:35 scan sends no
     # drift card, so the probe can never crowd native cards out of max_concurrent_positions.
     max_open_drift_positions: int = Field(default=4, ge=0)
+    # The frozen study entered at 10:35 prices: a decision scan that reaches its drift
+    # decision more than this long after its slot journals the decision skipped instead.
+    max_drift_lateness_seconds: int = Field(default=900, gt=0)
 
 
 class ScanBudget(StrEnum):
@@ -292,6 +295,9 @@ class StrategyConfig(BaseModel):
 
 class SchedulerConfig(BaseModel):
     misfire_grace_seconds: int = Field(default=60, gt=0)
+    # The suggestion-scan cron jobs only: a sleeping host's late wake still runs the scan;
+    # the session check, card freshness and apriori.max_drift_lateness_seconds bound it.
+    suggestion_scan_misfire_grace_seconds: int = Field(default=1800, gt=0)
     cron_hour_interval: int = 4
     macro_briefing_enabled: bool = True
     macro_briefing_hour: int = 12

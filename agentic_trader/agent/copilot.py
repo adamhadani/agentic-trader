@@ -567,6 +567,7 @@ class TradingCopilot:
         scan_lock_timeout: float | None = None,
         operator_dynamic: OperatorDynamicName | None = None,
         scheduled_time_et: str | None = None,
+        scheduled_at: datetime | None = None,
     ) -> dict[str, Any] | None:
         """Scan, rank and record cards; returns the scan summary, or None when the scan did not run.
 
@@ -597,6 +598,12 @@ class TradingCopilot:
         ranking and the shadow journal, spend their own derived per-session budget (never
         the native one, nor the LLM budget; the LLM writes commentary only) and every
         decision is journaled as one ``pead_decision`` event.
+
+        ``scheduled_at`` is the instant that scheduled slot was due. The frozen study
+        entered at the decision time's prices, so a scan reaching its drift decision point
+        more than ``apriori.max_drift_lateness_seconds`` later (a late wake, a long
+        scan-lock wait) prepares no drift candidates and journals the decision ``skipped``
+        (``late decision: N min after HH:MM NY``). None applies no lateness bound.
         """
         async with self._hold_scan_lock(scan_lock_timeout):
             self.last_scan_summary = {}
@@ -757,7 +764,26 @@ class TradingCopilot:
             # still prepared and journaled (the counterfactual set), but none is carded.
             open_drift_positions = sum(1 for p in active_positions if p.get("strategy") == PEAD_STRATEGY_ID)
             drift_capped = open_drift_positions >= self.config.apriori.max_open_drift_positions
-            if drift_scan and self.earnings_drift is not None and self.earnings_drift.applies(scheduled_time_et):
+            drift_late_by = datetime.now(UTC) - scheduled_at if drift_scan and scheduled_at is not None else None
+            max_drift_lateness = timedelta(seconds=self.config.apriori.max_drift_lateness_seconds)
+            if drift_late_by is not None and drift_late_by > max_drift_lateness:
+                # Never priced late: the decision is journaled skipped (None when this scan
+                # would not have run drift at all), with no calendar or bar reads. Lateness
+                # is measured here, after the scan-lock wait and the dynamic-universe read.
+                late_minutes = int(drift_late_by.total_seconds() // 60)
+                late_reason = f"late decision: {late_minutes} min after {scheduled_time_et} NY"
+                drift_prep = self._skipped_drift(alpha_snapshot, scheduled_time_et, reason=late_reason)
+                if drift_prep is not None:
+                    logger.warning(
+                        "PEAD drift decision skipped, reached past the lateness cap: %s",
+                        late_reason,
+                        extra={
+                            "event": "pead_decision_late",
+                            "late_seconds": round(drift_late_by.total_seconds(), 1),
+                            "max_lateness_seconds": self.config.apriori.max_drift_lateness_seconds,
+                        },
+                    )
+            elif drift_scan and self.earnings_drift is not None and self.earnings_drift.applies(scheduled_time_et):
                 drift_prep = await self._prepare_drift(alpha_snapshot, active_positions)
                 if not drift_capped:
                     known = {c.strip("/").upper() for c in self.config.contracts} | {s for s, _ in dynamic_contracts}
@@ -1600,9 +1626,19 @@ class TradingCopilot:
     async def _journal_skipped_drift(self, alpha_snapshot: Any, scheduled_time_et: str | None, *, reason: str) -> None:
         """Journal the 10:35 PEAD decision a halted or macro-locked scan never reached; never raises.
 
-        Only when the scan would otherwise have run drift: its scheduled time is the entry's
-        decision time and a live catalog probe is in the snapshot. No notice: the halt or
-        lockout already has its own.
+        No notice: the halt or lockout already has its own.
+        """
+        prep = self._skipped_drift(alpha_snapshot, scheduled_time_et, reason=reason)
+        if prep is not None:
+            await self._journal_drift(scan_id=uuid4().hex, prep=prep, outcomes={}, summary=self.last_scan_summary)
+
+    def _skipped_drift(
+        self, alpha_snapshot: Any, scheduled_time_et: str | None, *, reason: str
+    ) -> DriftPreparation | None:
+        """The ``skipped`` PEAD decision of a gated scan, or None when it would not have run drift.
+
+        A scan would otherwise have run drift when its scheduled time is the entry's
+        decision time and a live catalog probe is in the snapshot.
         """
         service = self.earnings_drift
         if service is not None:
@@ -1617,15 +1653,14 @@ class TradingCopilot:
         else:
             version = None
         if version is None:
-            return
-        prep = DriftPreparation(
+            return None
+        return DriftPreparation(
             "skipped",
             datetime.now(UTC).astimezone(ET_TZ).date(),
             version_id=version.get("version_id"),
             policy=version.get("execution"),
             reason=reason,
         )
-        await self._journal_drift(scan_id=uuid4().hex, prep=prep, outcomes={}, summary=self.last_scan_summary)
 
     async def _journal_drift(
         self,

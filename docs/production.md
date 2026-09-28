@@ -44,12 +44,41 @@ atomically between scans; external config edits still require restart.
 Two APScheduler cron jobs (`suggestion_scan_0`, `suggestion_scan_1`) run
 `run_scan(asset_class="equity")` at `scheduler.suggestion_scan_times_et`, default
 `["10:35", "14:35"]` New York, Monday to Friday, with `coalesce`, `max_instances=1`
-and a 600-second misfire grace. Both times follow a completed hourly bar and leave a
-card's four-hour validity inside the regular session. A closed equity session is
-logged (`suggestion_scan_skipped`) and skipped. The last configured time publishes an
-end-of-session **digest** through the durable outbox under the key
-`scan-digest/{et_date}`; the digest runs even when the session was closed, so a quiet
-day still reports.
+and a misfire grace of `scheduler.suggestion_scan_misfire_grace_seconds` (default
+1800, must be positive; every other job keeps `scheduler.misfire_grace_seconds`).
+Both times follow a completed hourly bar and leave a card's four-hour validity inside
+the regular session. A closed equity session is logged (`suggestion_scan_skipped`)
+and skipped. The last configured time publishes an end-of-session **digest** through
+the durable outbox under the key `scan-digest/{et_date}`; the digest runs even when
+the session was closed, so a quiet day still reports.
+
+**Late and missed slots (September 28).** With the host in clamshell sleep, a dark
+maintenance wake fired the 10:35 job 14m38s late and the former 600-second grace
+dropped it: no scan, no PEAD decision, no cards, and only an APScheduler `WARNING`
+line. The grace is now 30 minutes, so a late wake still runs the scan once; the
+session check inside the job, the cards' freshness/expiry rules and the PEAD
+lateness cap still bound what a late scan may do. The cap
+(`apriori.max_drift_lateness_seconds`, default 900) is measured at the scan's PEAD
+decision point — after any wait for the scan lock and the dynamic-universe read,
+not when the job fires: a 10:35 scan that reaches it later journals `pead_decision`
+`status: "skipped"`, `reason: "late decision: N min after 10:35 NY"`, and prepares
+nothing (see [the probe](apriori-alphas.md#part-2-live-paper-probe)). Native cards
+are unaffected by the PEAD cap. A run still dropped past the grace
+(`EVENT_JOB_MISSED` for a `suggestion_scan_*` job) logs `suggestion_scan_missed`
+(slot, scheduled run time, `late_seconds`) and queues one durable Telegram notice
+through the outbox, deduplicated per slot and New York date
+(`suggestion-scan-missed/{et_date}/{HH:MM}`), for example "⚠️ 10:35 NY suggestion
+scan was missed (the scheduler woke 47 min late — host asleep or event loop
+blocked). If the market was open, this slot produced no cards (and no PEAD
+decision)." The listener never reads the market calendar, so on an exchange holiday
+the notice is conditional rather than a claimed loss. A dropped last slot adds that
+the end-of-session digest was not published. The listener only schedules the outbox
+write on the event loop; a failure to queue logs
+`suggestion_scan_missed_notice_failed` and never propagates into the scheduler.
+Coverage is not complete: `coalesce` folds a sleep spanning several weekdays into a
+single missed run, so it produces one notice (for the last missed date only), and a
+daemon that is down across a slot produces no notice at all (its jobs reschedule
+from startup) — the external monitor and `/readyz` readiness remain the signal there.
 
 The digest reports: number of scans, instruments actually scanned, names with
 insufficient data, candidates found, cards sent, runners-up with their
@@ -754,6 +783,9 @@ Telegram/metrics initialize before immediate jobs receive their first deadline.
 and allow one concurrent instance per job. This prevents initialization latency
 from silently skipping the first scan/monitor run. The deployment log review
 reproduced a 1.5-second delay exceeding APScheduler's former one-second default.
+The suggestion-scan cron jobs alone use the wider
+`scheduler.suggestion_scan_misfire_grace_seconds` (default 1800) and notify the
+operator when a slot is still dropped (see [suggestion scans](#suggestion-scans)).
 
 Old Telegram messages can retain removed callback names. Use `/help` or the current
 command menu for `/macro`; historical `/regime` buttons are no longer active.
@@ -937,7 +969,10 @@ historical fetch to pass verification. No schema change or alpha activation is n
 
 launchd supervises process exits; it does not keep this Mac awake. During sleep,
 scans, reconciliation, notifications and collection pause; dark wakes can generate
-transport failures and scheduler misfires. After a full wake, inspect current-run
+transport failures and scheduler misfires. A suggestion-scan slot dropped past its
+grace queues a `suggestion-scan-missed/…` Telegram notice (delivered once the host
+is awake), and a 10:35 scan that reaches its PEAD decision more than 15 minutes
+late journals that decision skipped. After a full wake, inspect current-run
 `/readyz`, watchdog progress and `scripts/verify_runtime.py`. The same healthy process
 may resume and reconnect without a restart. Restart only if recovery fails, preserving
 evidence and the single-poller rule. Broker-held protection remains at Alpaca while
