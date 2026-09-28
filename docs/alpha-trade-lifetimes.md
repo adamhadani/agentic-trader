@@ -65,6 +65,41 @@ Intrabar fills are located only to their minute bar; simulated holding time star
 
 Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation.
 
+## `session_count_v1`
+
+A second, session-counted holding policy (`SessionLifetimePolicy`,
+`agentic_trader/execution/lifetime_policy.py`) for definitions that hold for a
+fixed number of trading sessions rather than elapsed seconds — currently the
+[a priori PEAD catalog probe](apriori-alphas.md#part-2-live-paper-probe)'s
+`apriori_bracket_v1` bracket. It pairs a plain elapsed-seconds resting deadline
+(`resting_seconds`, identical in kind to `TradeLifetimePolicy`'s) with a
+session-counted holding deadline:
+
+- The regular session the entry actually fills in is **session 1** — exactly how
+  the setup study's `label_bracket` counts holding sessions, so the live exit and
+  the research label agree. A fill stamped up to `SESSION_FILL_GRACE` (60 s) after
+  that session's close (a closing-auction print at 16:00:00.250, or just after an
+  early close) still counts as that session. `holding_sessions` sessions later, the position
+  closes at `close_time_et` (New York, default `"15:45"`) — or, on an early
+  close, 15 minutes before that session's close, whichever is earlier
+  (`SESSION_CLOSE_BUFFER`).
+- The broker's own trading calendar is required to count sessions and locate
+  each one's close; there is no synthetic weekday fallback. The service reads
+  `ceil(holding_sessions × 7 / 5) + 14` calendar days from the fill date
+  (`holding_calendar_span_days`), so a longer policy never falls short by design.
+  `TradeLifetimeService` passes `sessions=None` when the calendar call itself
+  fails, and `SessionLifetimePolicy.holding_deadline` raises
+  `SessionEvidenceError` (a fill outside the regular session, or a calendar
+  shorter than `holding_sessions`) otherwise; either way `assess_lifetime`
+  returns `LifetimeAction.REVIEW`, never a guessed deadline. A `REVIEW` halts
+  new risk exactly like every other lifecycle uncertainty in this document;
+  `/resume` does not waive it.
+- Every existing `elapsed_utc_v1`/`elapsed_utc_v2` policy, hash and position is
+  unchanged: `lifetime_from_dict` dispatches on the document's own `version`
+  field, and `SessionLifetimePolicy` is a distinct dataclass with its own
+  `version: "session_count_v1"` — it can never round-trip as, or collide with,
+  a `TradeLifetimePolicy` document.
+
 ## Native-daily one-session entries (semantics version 5)
 
 `AlphaDefinition.semantics_version == 5` is the production native-daily contract:

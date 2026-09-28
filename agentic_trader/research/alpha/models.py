@@ -157,6 +157,11 @@ class AlphaDefinition:
             clock = FixedDailyClockPolicy(**clock_data)
         else:
             raise ValueError("Unsupported alpha clock layout")
+        execution = execution_policy_from_dict(data.get("execution", {}))
+        if not isinstance(execution, AlphaExecutionPolicy):
+            # A formulaic alpha definition is a separate lane from the apriori catalog's
+            # fixed-bracket policies; this guard keeps that boundary explicit at deserialization.
+            raise TypeError("Unsupported execution policy kind")
         return cls(
             alpha_id=str(data["alpha_id"]),
             name=str(data.get("name", data["alpha_id"])),
@@ -168,7 +173,7 @@ class AlphaDefinition:
             origin=str(data.get("origin", AlphaOrigin.MINED)),
             eligible_symbols=eligible_symbols,
             normalization_window=data.get("normalization_window", NORMALIZATION_WINDOW),
-            execution=execution_policy_from_dict(data.get("execution", {})),
+            execution=execution,
             semantics_version=data.get("semantics_version", 2),
             data_feed=str(data.get("data_feed", "unverified")),
             adjustment=str(data.get("adjustment", "raw")),
@@ -246,3 +251,5 @@ class RegistrySnapshot:
     active: tuple[AlphaDefinition, ...]
     shadow: tuple[AlphaDefinition, ...]
     probe: tuple[AlphaDefinition, ...] = ()
+    # Live catalog (a priori) probes: raw definition documents, never AlphaDefinitions.
+    catalog_probes: tuple[dict[str, Any], ...] = ()

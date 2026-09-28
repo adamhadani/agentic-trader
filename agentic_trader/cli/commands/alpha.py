@@ -83,11 +83,13 @@ from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_
 from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
+from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
 from agentic_trader.research.setups.runner import _build_pacer, build_setup_frames, build_window_frames
 from agentic_trader.research.setups.study import SetupStudyProtocol, execute_setup_study
 from agentic_trader.runtime import runtime_identity, state_directory
+from agentic_trader.screeners.earnings_drift import unscheduled_decision_time
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.artifacts import save_json_report
 from agentic_trader.storage.db import SignalDatabase
@@ -467,6 +469,60 @@ async def alpha_probe_cmd(version_id, generation, days, renew):
         )
 
 
+@alpha_group.command("apriori-probe")
+@click.argument("entry_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--study",
+    "study_dir",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Completed study output directory (manifest.json + result.json) for this exact entry file",
+)
+@click.option("--leg", type=click.Choice(["long", "short"]), default="long", show_default=True)
+@click.option("--generation", type=int, required=True, help="Observed registry generation; stale changes are rejected")
+@click.option(
+    "--days",
+    type=click.IntRange(1, MAX_PROBE_TERM_DAYS),
+    default=None,
+    help="Probe term; defaults to alpha_pipeline.probe_term_days",
+)
+@click.option("--renew", is_flag=True, help="Extend a current, unkilled probe from now")
+@coro
+async def alpha_apriori_probe_cmd(entry_path, study_dir, leg, generation, days, renew):
+    """Enrol (or renew) a passing catalog leg as a capped, expiring Alpaca paper probe. Never automatic."""
+    try:
+        definition = await asyncio.to_thread(load_catalog_probe, entry_path, study_dir, leg)
+        decision_time_et = load_pead_entry(entry_path).entry.trade.decision_time_et
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    unscheduled = unscheduled_decision_time(decision_time_et, load_config().scheduler.suggestion_scan_times_et)
+    version_id = definition["version_id"]
+    async with alpha_repository() as repository:
+        try:
+            updated = await repository.enrol_catalog_probe(
+                definition, actor="cli_operator", expected_generation=generation, days=days, renew=renew
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        record = await repository.get(f"probe/{version_id}")
+        click.echo(
+            f"{'Renewed' if renew else 'Enrolled'} catalog paper probe {version_id}; registry generation {updated}; "
+            f"expires {record['expires_at']}. Effective next scan."
+        )
+        click.echo(
+            f"Entry {definition['entry_id']} v{definition['entry_version']} SHA-256 {definition['entry_sha256']}; "
+            f"study {definition['study_mean_r']:+.3f}R/trade (result SHA-256 {definition['study_result_sha256']})."
+        )
+        click.echo(
+            f"Limits: {record['limits']['max_probes']} probe slots; risk capped at "
+            f"${record['limits']['probe_risk_dollars']:,.0f} per trade. "
+            "Paper account only; earns no shadow, holdout or promotion credit. "
+            "Leaving probe never closes or modifies a position."
+        )
+        if unscheduled:
+            click.echo(f"Warning: {unscheduled}")
+
+
 @alpha_group.command("inspect")
 @click.argument("identity")
 @coro
@@ -474,6 +530,10 @@ async def alpha_inspect_cmd(identity):
     """Inspect exact persisted evidence, or a catalog hypothesis without recomputing it."""
     async with alpha_repository() as repository:
         row = await repository.get(f"version/{identity}")
+        if row and is_catalog_definition(row["definition"]):
+            # A catalog version has no DSL qualification; its evidence is the pinned study.
+            click.echo(json.dumps(row, indent=2))
+            return
         if row:
             click.echo(
                 json.dumps({**row, "qualification": await repository.get(f"qualification/{identity}")}, indent=2)

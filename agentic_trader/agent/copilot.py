@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import UTC, datetime, time as dt_time, timedelta
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from uuid import uuid4
@@ -47,9 +48,10 @@ from agentic_trader.constants import (
     normalize_asset_class,
 )
 from agentic_trader.data.market_data import MarketDataFetcher
+from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
 from agentic_trader.execution.closing import PositionCloseService
-from agentic_trader.execution.durable import EventKind, OrderObservation, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, NotificationKind, OrderObservation, WorkKind, WorkStatus
 from agentic_trader.execution.engine import SlicedExecutionEngine
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.execution.freshness import (
@@ -65,7 +67,7 @@ from agentic_trader.execution.freshness import (
     valid_until_from_provenance,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.market.session import ET_TZ, CompositeMarketSessionProvider
+from agentic_trader.market.session import ET_TZ, AlpacaCalendarProvider, CompositeMarketSessionProvider
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
@@ -84,7 +86,7 @@ from agentic_trader.presentation.formatters import (
 from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
-from agentic_trader.research.alpha.strategy import execution_policy_from_dict, trailing_price
+from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
 from agentic_trader.research.setups.ranker import (
     cached_ranker,
     finite_or_none,
@@ -109,6 +111,14 @@ from agentic_trader.screeners.dynamic_universe import (
     static_reference,
     synthetic_contract,
 )
+from agentic_trader.screeners.earnings_drift import (
+    PEAD_DECISION_TIME_ET,
+    PEAD_STRATEGY_ID,
+    DriftPreparation,
+    EarningsDriftService,
+    drift_card_facts,
+    unscheduled_decision_time,
+)
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
@@ -125,6 +135,11 @@ logger = logging.getLogger("copilot")
 DYNAMIC_CORRELATION_GROUP = "dynamic"
 # One bound on a suggestion scan's screener and asset-list reads (it holds the scan lock).
 DYNAMIC_UNIVERSE_TIMEOUT_SECONDS = 60.0
+# One bound on the 10:35 scan's PEAD drift preparation (calendar and bar reads, also under
+# the scan lock and before the native fetch); exceeding it is an unavailable session.
+DRIFT_PREPARE_TIMEOUT_SECONDS = 60.0
+# A 10:35 event's outcome when apriori.max_open_drift_positions PEAD positions are already open.
+DRIFT_POSITION_CAP_REACHED = "drift position cap reached"
 # `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
@@ -195,6 +210,7 @@ class TradingCopilot:
         ledger: AccountLedgerService | None = None,
         alpha_repository: AlphaRepository | None = None,
         dynamic_universe: DynamicUniverseSource | None = None,
+        earnings_drift: EarningsDriftService | None = None,
     ):
         self._dry_run_directory: TemporaryDirectory[str] | None = None
         self._reconciliation_lock = asyncio.Lock()
@@ -218,13 +234,6 @@ class TradingCopilot:
             broker if broker is not None else create_broker(config=config, data_fetcher=self.data_fetcher)
         )
         self.close_service = close_service if close_service is not None else PositionCloseService(self.broker, self.db)
-        self.lifetime_service = (
-            lifetime_service
-            if lifetime_service is not None
-            else TradeLifetimeService(
-                LifetimeRepository(self.db.workflows), self.broker, self.close_service, config=config.execution
-            )
-        )
         self.alpha_repository = (
             alpha_repository
             if alpha_repository is not None
@@ -271,6 +280,65 @@ class TradingCopilot:
             config=config,
             alpaca_client=alpaca_client,
         )
+        self.lifetime_service = (
+            lifetime_service
+            if lifetime_service is not None
+            else TradeLifetimeService(
+                LifetimeRepository(self.db.workflows),
+                self.broker,
+                self.close_service,
+                config=config.execution,
+                # A strict broker calendar, never the composite's silent
+                # Alpaca->Finnhub->deterministic fallback: a read failure here must
+                # surface as a lifecycle review, never a guessed holiday calendar.
+                calendar=AlpacaCalendarProvider(trading_client=alpaca_client) if alpaca_client is not None else None,
+            )
+        )
+        # The PEAD catalog probe's drift source for the 10:35 suggestion scan. Construction
+        # reads the frozen entry file only; every provider read happens inside a scan.
+        self.earnings_drift: EarningsDriftService | None = earnings_drift
+        self._earnings_drift_error: str | None = None
+        if earnings_drift is None and config.apriori.enabled:
+            try:
+                equity = normalize_asset_class(AssetClass.EQUITY)
+                static_symbols = sorted(
+                    contract
+                    for contract, info in config.contracts.items()
+                    if normalize_asset_class(str(info.asset_class)) == equity
+                )
+                self.earnings_drift = EarningsDriftService(
+                    Path(config.apriori.pead_entry_path),
+                    earnings=self.earnings_calendar,
+                    calendar=self.session_provider.calendar,
+                    bars=AlpacaDataProvider(
+                        api_key=config.alpaca_api_key,
+                        api_secret=config.alpaca_api_secret,
+                        feed="sip",
+                        request_timeout=config.market_data.timeout_seconds,
+                    ),
+                    static_symbols=static_symbols,
+                )
+            except Exception as exc:
+                # A missing entry file must not stop the daemon: native cards continue and
+                # the 10:35 scan simply has no drift source.
+                self._earnings_drift_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "PEAD drift source unavailable: %s",
+                    self._earnings_drift_error,
+                    extra={"event": "earnings_drift_unavailable", "error": self._earnings_drift_error},
+                )
+        if self.earnings_drift is not None:
+            unscheduled = unscheduled_decision_time(
+                self.earnings_drift.decision_time_et, config.scheduler.suggestion_scan_times_et
+            )
+            if unscheduled:
+                logger.warning(
+                    unscheduled,
+                    extra={
+                        "event": "pead_decision_time_unscheduled",
+                        "decision_time_et": self.earnings_drift.decision_time_et,
+                    },
+                )
         self.evaluator = RiskEvaluator(
             config,
             calendar=self.calendar,
@@ -453,6 +521,15 @@ class TradingCopilot:
         return groups | {DYNAMIC_CORRELATION_GROUP} if dynamic else groups
 
     @staticmethod
+    def _counts_as_dynamic(row: Mapping[str, Any]) -> bool:
+        """Whether a card recorded today counts toward the ``dynamic`` group.
+
+        A PEAD drift card is selected by the earnings calendar, never by the screener, so
+        it never counts, even if its provenance were ever tagged dynamic.
+        """
+        return bool(row.get("dynamic", False)) and row.get("strategy") != PEAD_STRATEGY_ID
+
+    @staticmethod
     def _dynamic_tag(contract: str, dynamic_sources: Mapping[str, str]) -> dict[str, Any]:
         """Provenance/journal keys marking a dynamic name; absent (empty) for a static one."""
         source = dynamic_sources.get(contract)
@@ -489,6 +566,7 @@ class TradingCopilot:
         dedup_exempt_setups: frozenset[tuple[str, str, str | None, str | None]] = frozenset(),
         scan_lock_timeout: float | None = None,
         operator_dynamic: OperatorDynamicName | None = None,
+        scheduled_time_et: str | None = None,
     ) -> dict[str, Any] | None:
         """Scan, rank and record cards; returns the scan summary, or None when the scan did not run.
 
@@ -512,6 +590,13 @@ class TradingCopilot:
         ``coverage_reference_symbol``, so the bar-coverage gate is skipped. Even under the
         NONE budget the name shares the one-dynamic-card-per-session cap. It journals no
         ``dynamic_universe_built``.
+
+        ``scheduled_time_et`` is the configured New York time of the scheduled suggestion
+        scan. Only that full-universe scan at the PEAD entry's decision time (10:35)
+        prepares drift candidates (``EarningsDriftService``): they skip ``setup_quality``
+        ranking and the shadow journal, spend their own derived per-session budget (never
+        the native one, nor the LLM budget; the LLM writes commentary only) and every
+        decision is journaled as one ``pead_decision`` event.
         """
         async with self._hold_scan_lock(scan_lock_timeout):
             self.last_scan_summary = {}
@@ -531,6 +616,10 @@ class TradingCopilot:
             self.strategy_engine.registry.install_alphas(alpha_snapshot.active, alpha_snapshot.probe)
             if not dry_run:
                 await self.alpha_repository.acknowledge(alpha_snapshot, run_id=RUN_ID)
+            # Only the scheduled full-universe suggestion scan may run PEAD drift (see below).
+            drift_scan = (
+                not dry_run and budget != ScanBudget.NONE and shadow_evidence and not symbols and timeframe is None
+            )
             await self.check_halt_state()
             if self.is_halted:
                 logger.warning(
@@ -538,6 +627,10 @@ class TradingCopilot:
                     self.halt_reason,
                     extra={"event": "trading_halted_scan_blocked", "reason": self.halt_reason},
                 )
+                if drift_scan:
+                    await self._journal_skipped_drift(
+                        alpha_snapshot, scheduled_time_et, reason=f"trading halted: {self.halt_reason}"
+                    )
                 return None
 
             scan_errors = 0
@@ -588,6 +681,10 @@ class TradingCopilot:
                         "event_time": str(lock_event.timestamp),
                     },
                 )
+                if drift_scan:
+                    await self._journal_skipped_drift(
+                        alpha_snapshot, scheduled_time_et, reason=f"macro lockout: {lock_event.title}"
+                    )
                 return None
 
             started = time.monotonic()
@@ -651,6 +748,40 @@ class TradingCopilot:
                     for entry in dynamic_selection.members
                 ]
 
+            # PEAD DRIFT: only the scheduled full-universe suggestion scan at the entry's
+            # decision time. Event names outside the static and dynamic universes are fetched
+            # for their drift candidate only (a synthetic per-scan contract, never scanned).
+            drift_prep: DriftPreparation | None = None
+            drift_only: set[str] = set()
+            # Open PEAD positions hold for 20 sessions; at the cap the session's events are
+            # still prepared and journaled (the counterfactual set), but none is carded.
+            open_drift_positions = sum(1 for p in active_positions if p.get("strategy") == PEAD_STRATEGY_ID)
+            drift_capped = open_drift_positions >= self.config.apriori.max_open_drift_positions
+            if drift_scan and self.earnings_drift is not None and self.earnings_drift.applies(scheduled_time_et):
+                drift_prep = await self._prepare_drift(alpha_snapshot, active_positions)
+                if not drift_capped:
+                    known = {c.strip("/").upper() for c in self.config.contracts} | {s for s, _ in dynamic_contracts}
+                    drift_only = {event["symbol"] for event in drift_prep.events} - known
+                    dynamic_contracts = [
+                        *dynamic_contracts,
+                        *((s, synthetic_contract(s, s)) for s in sorted(drift_only)),
+                    ]
+            elif (
+                drift_scan
+                and self.earnings_drift is None
+                and self.config.apriori.enabled
+                and self._earnings_drift_error is not None
+                and scheduled_time_et == PEAD_DECISION_TIME_ET
+                and bool(getattr(alpha_snapshot, "catalog_probes", ()))
+            ):
+                # The drift source failed to build but a catalog probe is live: journal the
+                # unavailable decision (and its one notice) rather than go silently dead.
+                drift_prep = DriftPreparation(
+                    "unavailable",
+                    datetime.now(UTC).astimezone(ET_TZ).date(),
+                    reason=f"service unavailable: {self._earnings_drift_error}",
+                )
+
             selected: list[tuple[str, Any]] = []
             for contract, info in [*self.config.contracts.items(), *dynamic_contracts]:
                 clean_contract = contract.strip("/").upper()
@@ -673,9 +804,12 @@ class TradingCopilot:
 
             datasets, receipts = await self._fetch_universe(selected, include_fifteen_min=include_fifteen_min)
 
+            # Drift-only names never reach the coverage gate, the dynamic liquidity reference
+            # or strategy scanning: the native scan sees exactly the universe it did before.
+            scan_selected = [(c, i) for c, i in selected if c not in drift_only]
             equities = {
                 c
-                for c, i in selected
+                for c, i in scan_selected
                 if normalize_asset_class(str(getattr(i, "asset_class", ""))) == normalize_asset_class("equity")
             }
             try:
@@ -712,8 +846,8 @@ class TradingCopilot:
                 if dynamic_selection is not None:
                     dynamic_sources, dynamic_excluded, dynamic_reference = self._gate_dynamic_members(
                         dynamic_selection,
-                        selected,
-                        datasets,
+                        scan_selected,
+                        {c: d for c, d in datasets.items() if c not in drift_only},
                         excluded,
                         reference=operator_dynamic.reference if operator_dynamic is not None else None,
                     )
@@ -741,7 +875,7 @@ class TradingCopilot:
                         scan_id=scan_id, selection=dynamic_selection, dynamic=summary["dynamic"], summary=summary
                     )
 
-            for contract, info in selected:
+            for contract, info in scan_selected:
                 if contract in dynamic_excluded:
                     # Fetch failures, coverage and liquidity exclusions of dynamic names are
                     # recorded in summary["dynamic"]; they never reach strategy scanning.
@@ -811,85 +945,62 @@ class TradingCopilot:
                             },
                         )
 
-                        # Deduplication check
-                        dedup_hours = self.config.risk.deduplication_hours
-                        candidate_tf = getattr(candidate, "timeframe", "4h").lower()
-                        if candidate_tf in ("15m", "15min", "fifteen_minute"):
-                            dedup_hours = min(dedup_hours, 2)
-                        elif candidate_tf in ("1h", "hourly"):
-                            dedup_hours = min(dedup_hours, 4)
-
-                        setup = (candidate.contract, candidate.strategy, candidate.timeframe, candidate.alpha_version)
-                        is_dup = setup not in dedup_exempt_setups and await self.db.is_duplicate_recent(
-                            candidate.contract,
-                            candidate.strategy,
-                            hours=dedup_hours,
-                            timeframe=candidate.timeframe,
-                            alpha_version=candidate.alpha_version,
+                        admitted, reason = await self._admit_candidate(
+                            candidate,
+                            dedup_exempt_setups=dedup_exempt_setups,
+                            current_exposure=current_exposure,
+                            active_positions=active_positions,
+                            dry_run=dry_run,
                         )
-                        if is_dup:
+                        if reason == "duplicate":
                             if candidate.contract not in summary["duplicates"]:
                                 summary["duplicates"].append(candidate.contract)
-                            logger.info(
-                                "Skipping duplicate signal: %s %s already alerted within %d hours.",
-                                candidate.contract,
-                                candidate.strategy,
-                                dedup_hours,
-                                extra={
-                                    "event": "duplicate_signal_skipped",
-                                    "contract": candidate.contract,
-                                    "strategy": candidate.strategy,
-                                },
-                            )
-                            continue
-
-                        # Risk evaluation
-                        account_risk = None
-                        if not dry_run and requires_account_risk(self.config):
-                            try:
-                                if self.ledger is None:
-                                    raise ValueError("Observed account risk service is unavailable")
-                                account_risk = await self.ledger.current_risk()
-                                if account_risk.equity <= 0:
-                                    raise ValueError("Observed account equity is nonpositive; new entries blocked")
-                            except ValueError as exc:
-                                scan_errors += 1
-                                logger.warning(
-                                    "Candidate blocked: account risk unavailable: %s",
-                                    exc,
-                                    extra={"event": "candidate_risk_unavailable", "contract": candidate.contract},
-                                )
-                                continue
-                        # Deterministic pass: it decides which candidates may compete for
-                        # a card. The winners are re-evaluated below with the caller's
-                        # use_llm, and that second result is the one recorded.
-                        det_res = await self.evaluator.evaluate_candidate(
-                            candidate,
-                            current_open_notional=current_exposure,
-                            use_llm=False,
-                            active_positions=active_positions,
-                            current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
-                            current_equity=float(account_risk.equity) if account_risk else None,
-                        )
-
-                        if not det_res.approved:
-                            logger.info(
-                                "Candidate rejected by risk engine: %s",
-                                det_res.rejection_reason,
-                                extra={
-                                    "event": "candidate_rejected",
-                                    "phase": "collect",
-                                    "contract": candidate.contract,
-                                    "rejection_reason": det_res.rejection_reason,
-                                },
-                            )
-                            continue
-
-                        approved_candidates.append((candidate, det_res, account_risk))
+                        elif reason is not None and reason.startswith("account risk unavailable"):
+                            scan_errors += 1
+                        elif admitted is not None:
+                            approved_candidates.append(admitted)
 
                 except Exception:
                     scan_errors += 1
                     logger.exception(f"Error scanning {contract}")
+
+            # DRIFT COLLECT: the prepared events, already in the study's order (reaction z
+            # descending, then symbol), through the same dedup/account-risk/deterministic
+            # gates as native candidates. They never enter the setup_quality ranking.
+            drift_ranked: list[tuple[Any, Any, Any]] = []
+            drift_outcomes: dict[str, str] = {}
+            if drift_prep is not None and drift_prep.status == "ok" and self.earnings_drift is not None:
+                for event in drift_prep.events:
+                    symbol = event["symbol"]
+                    if drift_capped:
+                        drift_outcomes[symbol] = DRIFT_POSITION_CAP_REACHED
+                        continue
+                    try:
+                        cand = self.earnings_drift.candidate(event, datasets.get(symbol), drift_prep)
+                        if isinstance(cand, str):
+                            drift_outcomes[symbol] = cand
+                            continue
+                        admitted, reason = await self._admit_candidate(
+                            cand,
+                            dedup_exempt_setups=dedup_exempt_setups,
+                            current_exposure=current_exposure,
+                            active_positions=active_positions,
+                            dry_run=dry_run,
+                        )
+                        if admitted is None:
+                            drift_outcomes[symbol] = reason or "rejected"
+                            if reason and reason.startswith("account risk unavailable"):
+                                scan_errors += 1
+                        else:
+                            drift_ranked.append(admitted)
+                    except Exception as exc:
+                        scan_errors += 1
+                        drift_outcomes[symbol] = f"error: {type(exc).__name__}"
+                        logger.exception(
+                            "PEAD drift candidate failed for %s",
+                            symbol,
+                            extra={"event": "pead_candidate_failed", "contract": symbol},
+                        )
 
             # RANK AND SEND: best setup first, ties broken deterministically so a rerun
             # of the same universe spends the budget on the same names.
@@ -897,9 +1008,10 @@ class TradingCopilot:
                 approved_candidates,
                 key=lambda item: (-self._setup_quality(item[0]), item[0].contract, item[0].strategy),
             )
+            native_count = len(ranked)
             # Deterministic approvals eligible for ranking, not cards sent: the budget,
             # the send-phase evaluation and send failures all thin this number down.
-            summary["approved"] = len(ranked)
+            summary["approved"] = native_count
             # SHADOW: evidence only. It reads `ranked` and never reorders, filters or
             # gates it; a failure leaves every block None and the scan unchanged.
             # `shadow_evidence` is an explicit keyword the caller must opt into -- only
@@ -916,33 +1028,54 @@ class TradingCopilot:
             shadow_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             if not dry_run and ranked and compute_shadow_evidence:
                 shadow_by_rank = await self._shadow_blocks(ranked, datasets, decided_at, summary)
+            # Drift candidates follow the whole native ranking, in their own (event) order;
+            # they have no shadow block and are never journaled as ranked candidates.
+            ranked = [*ranked, *drift_ranked]
+            shadow_by_rank = [*shadow_by_rank, *([None] * len(drift_ranked))]
             outcomes: list[str | None] = [None] * len(ranked)
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
             if budget == ScanBudget.NONE:
                 remaining_scan = remaining_session = len(ranked)
+                remaining_drift = 0  # drift never runs without a budget
                 if operator_dynamic is not None and not dry_run:
                     # An operator-requested dynamic name shares the one-dynamic-card-per-session
                     # cap: only the dynamic group is counted and enforced (see capped_groups).
                     today = await self.db.signals_since(self.session_start_et())
-                    groups_used[DYNAMIC_CORRELATION_GROUP] = sum(1 for row in today if row.get("dynamic", False))
+                    groups_used[DYNAMIC_CORRELATION_GROUP] = sum(1 for row in today if self._counts_as_dynamic(row))
             else:
                 # Durable, derived budget: a restart mid-session must not hand out a
                 # fresh allowance, so today's spend is read back from recorded signals.
                 today = await self.db.signals_since(self.session_start_et())
-                remaining_session = max(0, cfg.max_cards_per_session - len(today))
+                # Drift cards spend their own derived budget, outside the native one; the
+                # correlation-group caps below still count every card recorded today.
+                native_today = [row for row in today if row["strategy"] != PEAD_STRATEGY_ID]
+                remaining_session = max(0, cfg.max_cards_per_session - len(native_today))
+                remaining_drift = max(
+                    0,
+                    self.config.apriori.max_drift_cards_per_session
+                    - sum(1 for row in today if row["strategy"] == PEAD_STRATEGY_ID),
+                )
                 remaining_scan = cfg.max_cards_per_scan if budget == ScanBudget.FULL else len(ranked)
                 for row in today:
-                    for group in self._scan_groups(row["contract"], dynamic=row.get("dynamic", False)):
+                    for group in self._scan_groups(row["contract"], dynamic=self._counts_as_dynamic(row)):
                         groups_used[group] = groups_used.get(group, 0) + 1
             llm_budget = cfg.max_llm_evaluations_per_scan
 
-            def capped_groups(contract: str) -> set[str]:
+            def card_groups(contract: str, *, drift: bool) -> set[str]:
+                """Groups a card on this contract counts toward. A drift card is never a
+                dynamic name (the earnings calendar chose it, not the screener), but its
+                configured sector groups still apply."""
+                if drift:
+                    return self.correlation_groups_of(contract)
+                return self._scan_groups(contract, dynamic=contract in dynamic_sources)
+
+            def capped_groups(contract: str, *, drift: bool = False) -> set[str]:
                 """Groups whose per-session card cap this candidate must respect."""
-                dynamic = contract in dynamic_sources
                 if budget != ScanBudget.NONE:
-                    return self._scan_groups(contract, dynamic=dynamic)
+                    return card_groups(contract, drift=drift)
                 # NONE skips the group cap, except for an operator-requested dynamic name.
+                dynamic = contract in dynamic_sources and not drift
                 return {DYNAMIC_CORRELATION_GROUP} if operator_dynamic is not None and dynamic else set()
 
             # One session-clock read per contract that actually records a card.
@@ -950,27 +1083,31 @@ class TradingCopilot:
             for rank, (candidate, _det_res, account_risk) in enumerate(ranked, 1):
                 # One failed send must not abandon the rest of the ranking or the scan's
                 # own bookkeeping, exactly as the per-contract guard protects COLLECT.
+                is_drift = getattr(candidate, "catalog_event", None) is not None
                 try:
                     reason = None
-                    if remaining_scan <= 0:
+                    if is_drift and remaining_drift <= 0:
+                        reason = "drift budget spent"
+                    elif not is_drift and remaining_scan <= 0:
                         reason = "per-scan budget spent"
-                    elif remaining_session <= 0:
+                    elif not is_drift and remaining_session <= 0:
                         reason = "per-session budget spent"
                     elif any(
                         groups_used.get(g, 0) >= cfg.max_cards_per_group_per_session
-                        for g in capped_groups(candidate.contract)
+                        for g in capped_groups(candidate.contract, drift=is_drift)
                     ):
                         reason = "correlation group already has a card this session"
-                    elif use_llm and llm_budget <= 0:
+                    elif use_llm and not is_drift and llm_budget <= 0:
                         # Only an LLM scan spends this budget; a deterministic scan is
-                        # bounded by the card budget alone.
+                        # bounded by the card budget alone. A drift candidate's LLM pass is
+                        # commentary only and never spends it.
                         reason = "LLM evaluation budget spent"
                     if reason:
                         outcomes[rank - 1] = reason
                         summary["runners_up"].append(self._runner_up(candidate, reason))
                         continue
 
-                    if use_llm:
+                    if use_llm and not is_drift:
                         llm_budget -= 1
                     eval_res = await self.evaluator.evaluate_candidate(
                         candidate,
@@ -1027,11 +1164,18 @@ class TradingCopilot:
                             "account_risk_fingerprint": account_risk.fingerprint if account_risk else None,
                             PAPER_PROBE_TAG: candidate.probe,
                             "setup_quality": self._setup_quality(candidate),
-                            "rank": rank,
-                            "candidates_considered": len(ranked),
+                            # A drift card's rank is its place among this scan's drift candidates.
+                            "rank": rank - native_count if is_drift else rank,
+                            "candidates_considered": len(drift_ranked) if is_drift else native_count,
                             "budget": str(budget),
                             "shadow_ranker": shadow_by_rank[rank - 1],
-                            **self._dynamic_tag(candidate.contract, dynamic_sources),
+                            # A drift card is never tagged dynamic; catalog admission requires
+                            # its same-session event naming the contract.
+                            **(
+                                {"pead_event": candidate.catalog_event}
+                                if is_drift
+                                else self._dynamic_tag(candidate.contract, dynamic_sources)
+                            ),
                             **validity,
                         },
                         contract=eval_res.contract,
@@ -1054,6 +1198,15 @@ class TradingCopilot:
                             "probe_risk_cap": self.config.alpha_pipeline.probe_risk_dollars
                             if candidate.probe
                             else None,
+                            **(
+                                {
+                                    "drift": drift_card_facts(
+                                        candidate.catalog_event, drift_prep, self.earnings_drift.holding_sessions
+                                    )
+                                }
+                                if is_drift and drift_prep is not None and self.earnings_drift is not None
+                                else {}
+                            ),
                             **validity,
                         },
                     )
@@ -1063,9 +1216,12 @@ class TradingCopilot:
                     # never leave a recorded card uncharged.
                     total_alerts += 1
                     outcomes[rank - 1] = "sent"
-                    remaining_scan -= 1
-                    remaining_session -= 1
-                    for group in self._scan_groups(candidate.contract, dynamic=candidate.contract in dynamic_sources):
+                    if is_drift:
+                        remaining_drift -= 1
+                    else:
+                        remaining_scan -= 1
+                        remaining_session -= 1
+                    for group in card_groups(candidate.contract, drift=is_drift):
                         groups_used[group] = groups_used.get(group, 0) + 1
 
                     logger.info(
@@ -1110,16 +1266,33 @@ class TradingCopilot:
                     logger.exception(f"Error scanning {candidate.contract}")
                     continue
 
-            if not dry_run and budget != ScanBudget.NONE and ranked and compute_shadow_evidence:
+            if not dry_run and budget != ScanBudget.NONE and native_count and compute_shadow_evidence:
                 await self._journal_scan_ranking(
                     scan_id=scan_id,
                     decided_at=decided_at,
                     budget=budget,
-                    ranked=ranked,
-                    outcomes=outcomes,
-                    shadow_by_rank=shadow_by_rank,
+                    ranked=ranked[:native_count],
+                    outcomes=outcomes[:native_count],
+                    shadow_by_rank=shadow_by_rank[:native_count],
                     dynamic_sources=dynamic_sources,
                     summary=summary,
+                )
+
+            if drift_prep is not None:
+                for index, (cand, _det, _risk) in enumerate(drift_ranked, start=native_count):
+                    drift_outcomes[cand.contract] = outcomes[index] or "not sent"
+                summary["drift"] = {
+                    "status": drift_prep.status,
+                    "reason": drift_prep.reason,
+                    "events": len(drift_prep.events),
+                    "sent": sum(1 for outcome in drift_outcomes.values() if outcome == "sent"),
+                }
+                await self._journal_drift(
+                    scan_id=scan_id,
+                    prep=drift_prep,
+                    outcomes=drift_outcomes,
+                    summary=summary,
+                    open_drift_positions=open_drift_positions,
                 )
 
             summary["candidates"] = total_candidates
@@ -1155,11 +1328,11 @@ class TradingCopilot:
             scan_errors += n_fetch_failed
             # A selection that reached strategy scanning for nothing at all is a silent
             # whole-scan failure even when every individual name looked merely thin.
-            scanned_nothing = bool(selected) and summary["scanned"] == 0
+            scanned_nothing = bool(scan_selected) and summary["scanned"] == 0
             if not dry_run:
                 if scanned_nothing:
                     detail = (
-                        f"0 of {len(selected)} instruments scanned ({n_fetch_failed} fetch failed, "
+                        f"0 of {len(scan_selected)} instruments scanned ({n_fetch_failed} fetch failed, "
                         f"{n_insufficient} insufficient, {len(summary['coverage_excluded'])} coverage excluded)"
                     )
                 else:
@@ -1172,6 +1345,94 @@ class TradingCopilot:
             if not dry_run:
                 await self.monitor_positions()
             return summary
+
+    async def _admit_candidate(
+        self,
+        candidate: Any,
+        *,
+        dedup_exempt_setups: frozenset[tuple[str, str, str | None, str | None]],
+        current_exposure: float,
+        active_positions: list[dict[str, Any]],
+        dry_run: bool,
+    ) -> tuple[tuple[Any, Any, Any] | None, str | None]:
+        """Dedup, account risk and the deterministic evaluation shared by native and drift candidates.
+
+        Returns ``((candidate, det_res, account_risk), None)`` or ``(None, reason)``, where
+        reason is ``"duplicate"``, ``"account risk unavailable: …"`` or ``"rejected: …"``.
+        Any other exception propagates to the caller's own guard.
+        """
+        # Deduplication check
+        dedup_hours = self.config.risk.deduplication_hours
+        candidate_tf = getattr(candidate, "timeframe", "4h").lower()
+        if candidate_tf in ("15m", "15min", "fifteen_minute"):
+            dedup_hours = min(dedup_hours, 2)
+        elif candidate_tf in ("1h", "hourly"):
+            dedup_hours = min(dedup_hours, 4)
+
+        setup = (candidate.contract, candidate.strategy, candidate.timeframe, candidate.alpha_version)
+        is_dup = setup not in dedup_exempt_setups and await self.db.is_duplicate_recent(
+            candidate.contract,
+            candidate.strategy,
+            hours=dedup_hours,
+            timeframe=candidate.timeframe,
+            alpha_version=candidate.alpha_version,
+        )
+        if is_dup:
+            logger.info(
+                "Skipping duplicate signal: %s %s already alerted within %d hours.",
+                candidate.contract,
+                candidate.strategy,
+                dedup_hours,
+                extra={
+                    "event": "duplicate_signal_skipped",
+                    "contract": candidate.contract,
+                    "strategy": candidate.strategy,
+                },
+            )
+            return None, "duplicate"
+
+        # Risk evaluation
+        account_risk = None
+        if not dry_run and requires_account_risk(self.config):
+            try:
+                if self.ledger is None:
+                    raise ValueError("Observed account risk service is unavailable")
+                account_risk = await self.ledger.current_risk()
+                if account_risk.equity <= 0:
+                    raise ValueError("Observed account equity is nonpositive; new entries blocked")
+            except ValueError as exc:
+                logger.warning(
+                    "Candidate blocked: account risk unavailable: %s",
+                    exc,
+                    extra={"event": "candidate_risk_unavailable", "contract": candidate.contract},
+                )
+                return None, f"account risk unavailable: {exc}"
+        # Deterministic pass: it decides which candidates may compete for a card. The
+        # winners are re-evaluated in the send phase with the caller's use_llm, and that
+        # second result is the one recorded.
+        det_res = await self.evaluator.evaluate_candidate(
+            candidate,
+            current_open_notional=current_exposure,
+            use_llm=False,
+            active_positions=active_positions,
+            current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
+            current_equity=float(account_risk.equity) if account_risk else None,
+        )
+
+        if not det_res.approved:
+            logger.info(
+                "Candidate rejected by risk engine: %s",
+                det_res.rejection_reason,
+                extra={
+                    "event": "candidate_rejected",
+                    "phase": "collect",
+                    "contract": candidate.contract,
+                    "rejection_reason": det_res.rejection_reason,
+                },
+            )
+            return None, f"rejected: {det_res.rejection_reason}"
+
+        return (candidate, det_res, account_risk), None
 
     async def _shadow_blocks(
         self,
@@ -1295,6 +1556,141 @@ class TradingCopilot:
             summary["scan_journal_error"] = f"{type(exc).__name__}: {exc}"
             logger.exception(
                 "Scan ranking journal failed; cards and budget are unaffected", extra={"event": "scan_journal_failed"}
+            )
+
+    async def _prepare_drift(self, alpha_snapshot: Any, active_positions: list[dict[str, Any]]) -> DriftPreparation:
+        """This session's PEAD drift events, minus owned names; never raises.
+
+        A name is owned by an open position or by a live registry alpha (active or probe)
+        whose eligible symbols include it; the service skips it with that reason. Any
+        failure (the calendar, the bars, the entry) makes the whole session unavailable,
+        as does exceeding ``DRIFT_PREPARE_TIMEOUT_SECONDS``: the reads run under the scan
+        lock before the native fetch, so a slow provider must not hold the native cards.
+        """
+        now = datetime.now(UTC)
+        session = now.astimezone(ET_TZ).date()
+        service = self.earnings_drift
+        if service is None:
+            return DriftPreparation("unavailable", session, reason="drift source unavailable")
+        started = time.monotonic()
+        try:
+            owned: dict[str, str] = {}
+            for position in active_positions:
+                owned[str(position["contract"]).strip("/").upper()] = "open position"
+            for definition in (*alpha_snapshot.active, *alpha_snapshot.probe):
+                for symbol in definition.eligible_symbols or ():
+                    owned.setdefault(symbol.strip("/").upper(), f"owned by {definition.alpha_id}")
+            async with asyncio.timeout(DRIFT_PREPARE_TIMEOUT_SECONDS):
+                prep = await service.prepare(now=now, snapshot=alpha_snapshot, owned=owned)
+        except TimeoutError:
+            logger.warning(
+                "PEAD drift preparation exceeded %ss; no drift card this session",
+                DRIFT_PREPARE_TIMEOUT_SECONDS,
+                extra={"event": "pead_prepare_timeout", "timeout_seconds": DRIFT_PREPARE_TIMEOUT_SECONDS},
+            )
+            prep = DriftPreparation("unavailable", session, reason="timeout")
+        except Exception as exc:
+            logger.exception(
+                "PEAD drift preparation failed; no drift card this session",
+                extra={"event": "pead_prepare_failed", "error": type(exc).__name__},
+            )
+            prep = DriftPreparation("unavailable", session, reason=f"error: {type(exc).__name__}")
+        return dataclass_replace(prep, elapsed_seconds=round(time.monotonic() - started, 1))
+
+    async def _journal_skipped_drift(self, alpha_snapshot: Any, scheduled_time_et: str | None, *, reason: str) -> None:
+        """Journal the 10:35 PEAD decision a halted or macro-locked scan never reached; never raises.
+
+        Only when the scan would otherwise have run drift: its scheduled time is the entry's
+        decision time and a live catalog probe is in the snapshot. No notice: the halt or
+        lockout already has its own.
+        """
+        service = self.earnings_drift
+        if service is not None:
+            version = service.live_version(alpha_snapshot) if service.applies(scheduled_time_et) else None
+        elif (
+            self.config.apriori.enabled
+            and self._earnings_drift_error is not None
+            and scheduled_time_et == PEAD_DECISION_TIME_ET
+        ):
+            probes = getattr(alpha_snapshot, "catalog_probes", ())
+            version = probes[0] if probes else None
+        else:
+            version = None
+        if version is None:
+            return
+        prep = DriftPreparation(
+            "skipped",
+            datetime.now(UTC).astimezone(ET_TZ).date(),
+            version_id=version.get("version_id"),
+            policy=version.get("execution"),
+            reason=reason,
+        )
+        await self._journal_drift(scan_id=uuid4().hex, prep=prep, outcomes={}, summary=self.last_scan_summary)
+
+    async def _journal_drift(
+        self,
+        *,
+        scan_id: str,
+        prep: DriftPreparation,
+        outcomes: Mapping[str, str],
+        summary: dict[str, Any],
+        open_drift_positions: int | None = None,
+    ) -> None:
+        """Append one ``pead_decision`` event, plus the session's one unavailable notice, in one transaction; never raises.
+
+        ``events`` holds every event the study would have traded: the considered ones with
+        their card outcome, then the owner-skipped ones as ``skipped: <reason>``.
+        """
+        try:
+            session_date = prep.session.isoformat()
+            payload = {
+                "scan_id": scan_id,
+                "session": session_date,
+                "status": prep.status,
+                "reason": prep.reason,
+                "version_id": prep.version_id,
+                "report_date": prep.report_date,
+                "page_sha256": prep.page_sha256,
+                "counts": prep.counts,
+                "skipped": prep.skipped,
+                "time_exit_at": prep.time_exit_at,
+                "elapsed_seconds": prep.elapsed_seconds,
+                "open_drift_positions": open_drift_positions,
+                "events": [
+                    *({**event, "outcome": outcomes.get(event["symbol"], "not considered")} for event in prep.events),
+                    *(
+                        {**event, "outcome": f"skipped: {prep.skipped.get(event['symbol'], 'owned')}"}
+                        for event in prep.skipped_events
+                    ),
+                ],
+            }
+            workflows = self.db.workflows
+            async with self.db.session_factory() as session, session.begin():
+                await workflows.lock(session)
+                await workflows.append(
+                    session,
+                    stream=f"scan/{session_date}",
+                    kind=EventKind.PEAD_DECISION,
+                    payload=payload,
+                    key=f"pead_decision/{scan_id}",
+                )
+                if prep.status == "unavailable":
+                    # Debounced per New York session by the outbox dedup key.
+                    await workflows.add_notification(
+                        session,
+                        f"pead-unavailable/{session_date}",
+                        NotificationKind.MESSAGE,
+                        {
+                            "text": f"🧪 PEAD probe: no drift card this session — {prep.reason} "
+                            f"(report date {prep.report_date or 'unknown'}). Native cards are unaffected.",
+                            "formatted": False,
+                        },
+                    )
+        except Exception as exc:
+            summary["drift_journal_error"] = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "PEAD decision journal failed; cards and budget are unaffected",
+                extra={"event": "pead_decision_journal_failed"},
             )
 
     async def _select_dynamic_universe(self) -> tuple[DynamicSelection | None, dict[str, AssetInfo], str | None]:
@@ -1761,6 +2157,8 @@ class TradingCopilot:
                 continue
             if self.broker.authoritative_positions and not pos.get("executed_at"):
                 continue
+            if not policy_trails(pos.get("alpha_policy")):
+                continue  # A catalog bracket keeps its original protection for the whole hold.
             try:
                 info = self.config.contracts.get(contract)
                 if info is None and normalize_asset_class(str(pos.get("asset_class") or "")) == normalize_asset_class(

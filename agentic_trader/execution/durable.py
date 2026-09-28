@@ -59,6 +59,7 @@ class EventKind(StrEnum):
     DYNAMIC_UNIVERSE_BUILT = "dynamic_universe_built"
     CARD_TAP_ASSESSED = "card_tap_assessed"
     CARD_REEVALUATE_REQUESTED = "card_reevaluate_requested"
+    PEAD_DECISION = "pead_decision"
 
 
 class NotificationKind(StrEnum):

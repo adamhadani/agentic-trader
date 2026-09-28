@@ -1013,6 +1013,42 @@ Rank IC 0.0136 and +3.63% at 1 bp per side, but −4.27% at 5 bp and concentrate
 gains. All formulas remain research-only; active alphas remain zero. The [persistent-book follow-up](alpha-persistent-book-2026-09-17.md) is also complete;
 use the [current roadmap](alpha-roadmap.md#source-calibration-and-individual-equities--current-ordered-priorities) for next work. [Automatic Alpaca bar evidence](market-data-evidence.md) now retains raw pages and normalization outcomes.
 
+### PEAD catalog paper probe runbook
+
+The [live PEAD catalog probe](apriori-alphas.md#part-2-live-paper-probe) trades
+only when explicitly enrolled; a completed a priori study never activates it by
+itself.
+
+- **Enrol** (once, after a leg passes its study): `copilot alpha apriori-probe
+  config/research/apriori/pead-v2.json --study STUDY_DIR --leg long --generation
+  N`, where `N` is the observed registry generation (`alpha status`/`alpha
+  export`). There is no interactive confirmation prompt (neither `alpha probe`
+  nor `alpha apriori-probe` asks): the explicit command and the observed
+  `--generation` are the operator's confirmation. The command validates the study
+  directory against the exact entry file before enrolling `pead_long`, and prints
+  a warning when the entry's decision time (10:35) is not one of
+  `scheduler.suggestion_scan_times_et` — an enrolled probe then never scans.
+- **Renew** a current, unkilled probe before its term expires: the same command
+  plus `--renew` (optionally `--days N`; defaults to `alpha_pipeline.probe_term_days`).
+- **Demote** (retire the probe without any position action): `copilot alpha
+  demote VERSION_ID --generation N`. Demoting never closes or modifies an open
+  position; existing protection is retained.
+- **Verify** enrolment took effect: `/alphas` shows `pead_long (any liquid
+  reporter)` once enrolled and live (`probe_block_reason` clear). `copilot alpha
+  status` and `copilot alpha export` show the same registry.
+- **Read the evidence**: `copilot alpha status` or Telegram `/alphas` for the
+  probe's term and forward record (`kind == "apriori"`; `alpha forward` covers the
+  DSL alphas' forward observations, not this probe); `copilot cards outcomes` for
+  the fuller measurement report — journaled `pead_decision` events, carded/
+  executed/closed counts (`executed` is the number of probe signals with a
+  broker fill; the report does not compute a tap rate or fill rate), realized
+  mean R over closed probe trades, and the study's own counterfactual label over
+  every mature event the scan saw. Neither report sends orders or notifications.
+- Effective next scan after enrolment/renewal/demotion, exactly like the DSL
+  registry's promote/shadow/demote. Confirm a `pead_decision` journal event
+  (`ok`, `unavailable` or empty) at the next scheduled 10:35 New York scan, and,
+  if an event qualified, the drift card in Telegram.
+
 ## Provider read and forecast hardening
 
 See [forecast contract hardening](forecast-contract-hardening.md). Active `doctor` includes

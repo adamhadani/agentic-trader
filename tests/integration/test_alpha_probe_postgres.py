@@ -9,10 +9,13 @@ import pytest
 
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.config import AppConfig
+from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.apriori.probe import load_catalog_probe
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
-from agentic_trader.storage.models import LedgerCheckpointRecord
+from agentic_trader.storage.models import LedgerCheckpointRecord, SignalRecord
 from tests.research.probe_fixtures import make_definition, seed  # created in Task 6
+from tests.research.test_apriori_catalog_probe import ENTRY, study
 from tests.workflows.test_alpha_probe_admission import _funded_ledger_checkpoint
 
 
@@ -95,5 +98,43 @@ async def test_probe_demoted_between_claim_and_submission_blocks_commit_across_c
     await b.demote(definition.version_id, actor="op", expected_generation=generation)
     reason = await first.workflows.begin_submission(claim, app_config)
     assert reason is not None and "alpha" in reason.lower()
+    await first.engine.dispose()
+    await second.engine.dispose()
+
+
+async def test_catalog_probe_enrols_snapshots_and_admits_a_matching_signal(postgres_test_db, tmp_path):
+    """A catalog definition round-trips PostgreSQL JSON projections and the admission gate."""
+    config = AppConfig(execution_mode="alpaca", alpaca_paper=True)
+    first = SignalDatabase(db_url=postgres_test_db, config=config)
+    second = SignalDatabase(db_url=postgres_test_db, config=config)
+    await first.init_db()
+    a, b = AlphaRepository(first.workflows), AlphaRepository(second.workflows)
+    definition = load_catalog_probe(ENTRY, study(tmp_path), "long")
+    assert await a.enrol_catalog_probe(definition, actor="op", expected_generation=0) == 1
+    snapshot = await b.snapshot()
+    assert snapshot.probe == () and snapshot.catalog_probes == (definition,)
+    assert await b.versions() == []
+    sid = await first.record_signal(
+        "NVDA",
+        definition["alpha_id"],
+        "LONG",
+        100,
+        95,
+        115,
+        100.0,
+        asset_class="EQUITY",
+        quantity=1,
+        timeframe="1d",
+        alpha_version=definition["version_id"],
+        alpha_policy=definition["execution"],
+    )
+    async with second.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, sid)
+        session_day = row.timestamp.astimezone(ET_TZ).date().isoformat()
+        row.decision_provenance = json.dumps({"pead_event": {"symbol": "NVDA", "session": session_day}})
+        await session.flush()
+        assert await second.workflows._alpha_entry_rejection(session, row) is None
+    await b.demote(definition["version_id"], actor="op", expected_generation=1)
+    assert (await a.snapshot()).catalog_probes == ()
     await first.engine.dispose()
     await second.engine.dispose()

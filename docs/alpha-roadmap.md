@@ -201,7 +201,13 @@ research run or runtime policy change was made for this review.
    trades); the SHORT leg failed. Next: the Part 2 spec for a capped live paper probe of
    long PEAD cards (live earnings-event source, time exits on cards, probe caps, calendar
    outage tolerance). Version 1 failed closed on a June 2016 Nasdaq calendar gap before any
-   outcome was computed.
+   outcome was computed. **Part 2 delivered (PR #101):** catalog probe lane —
+   `apriori_bracket_v1` fixed bracket with a `session_count_v1` time exit, the live
+   `EarningsDriftService` event source, a one-drift-card-per-session budget outside the
+   native scan budget, commentary-only LLM, fail-closed admission/calendar behaviour, the
+   `alpha apriori-probe` enrolment CLI and a `cards outcomes` measurement section (see
+   [Part 2](apriori-alphas.md#part-2-live-paper-probe)). Awaiting operator enrolment and
+   the first term's evidence; zero PEAD trades taken to date.
 
 - **Later: overcome sparse per-symbol trade histories in alpha mining** (operator,
   2026-09-25). The funnel qualifies per symbol, so each hypothesis sees few trades and

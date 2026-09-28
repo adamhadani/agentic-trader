@@ -18,8 +18,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from agentic_trader.execution.lifetime_policy import DAILY_ENTRY_LIFETIME_SECONDS, SessionLifetimePolicy
+from agentic_trader.research.alpha.strategy import AprioriBracketPolicy
 
-__all__ = ["LoadedEntry", "PeadEntry", "load_pead_entry"]
+
+__all__ = ["LoadedEntry", "PeadEntry", "load_pead_entry", "pead_execution_policy"]
 
 # Every labelled decision needs its full holding window of bars before the data cutoff.
 _MIN_MATURATION_DAYS = 30
@@ -141,3 +144,17 @@ class LoadedEntry:
 def load_pead_entry(path: Path) -> LoadedEntry:
     raw = path.read_bytes()
     return LoadedEntry(entry=PeadEntry.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path)
+
+
+def pead_execution_policy(entry: PeadEntry) -> AprioriBracketPolicy:
+    """The live bracket of a PEAD leg: the study's trade block, one-session entry, 15:45 time exit."""
+    return AprioriBracketPolicy(
+        stop_atr=entry.trade.stop_atr_multiple,
+        atr_window=entry.trade.atr_window,
+        reward_risk=entry.trade.target_r,
+        lifetime=SessionLifetimePolicy(
+            resting_seconds=DAILY_ENTRY_LIFETIME_SECONDS,
+            holding_sessions=entry.trade.max_hold_sessions,
+            close_time_et="15:45",
+        ),
+    )

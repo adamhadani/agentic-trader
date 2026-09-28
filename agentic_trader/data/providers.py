@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -102,6 +102,9 @@ def parse_period_to_timedelta(period: str) -> timedelta:
     if p.endswith("h"):
         return timedelta(hours=int(p[:-1]))
     return timedelta(days=365)
+
+
+DAILY_BATCH_SYMBOLS = 100
 
 
 class AlpacaDataProvider:
@@ -248,7 +251,12 @@ class AlpacaDataProvider:
                             adjustment=adjustment_kind,
                         )
                     )
-            df, normalization = self._normalize_bars(bars, clean_sym)
+            # `BarSet.df` rebuilds its DataFrame from scratch on every access (it re-walks
+            # every symbol's raw bar list); read it once here rather than inside
+            # `_normalize_bars`, which would otherwise be paid again per symbol in a
+            # multi-symbol batch (see `fetch_daily_many`).
+            bars_df: pd.DataFrame = bars.df  # type: ignore[union-attr]
+            df, normalization = self._normalize_bars(bars_df, clean_sym)
             quality = BarSourceQuality(
                 raw_rows if isinstance(client, BoundedTransport) else None,
                 normalization["parsed_rows"],
@@ -269,8 +277,14 @@ class AlpacaDataProvider:
         return df
 
     @staticmethod
-    def _normalize_bars(bars, symbol: str) -> tuple[pd.DataFrame, dict]:
-        df: pd.DataFrame = bars.df
+    def _normalize_bars(bars_df: pd.DataFrame, symbol: str) -> tuple[pd.DataFrame, dict]:
+        """Normalize one symbol's slice of an already-materialized multi-symbol bars frame.
+
+        Takes the frame itself, not the SDK `BarSet`/response object, so a caller
+        normalizing many symbols from one batch (`fetch_daily_many`) reads the
+        expensive `.df` property once per batch rather than once per symbol.
+        """
+        df = bars_df
         if isinstance(df.index, pd.MultiIndex):
             df = df.xs(symbol, level="symbol")
         rename_map = {name: name.title() for name in OHLCV}
@@ -292,6 +306,44 @@ class AlpacaDataProvider:
             "frame_hash": hashlib.sha256(pd.util.hash_pandas_object(cleaned, index=True).values.tobytes()).hexdigest(),
         }
         return cleaned, normalization
+
+    def fetch_daily_many(
+        self, symbols: Sequence[str], start: datetime, end: datetime, *, adjustment: str = "raw"
+    ) -> dict[str, pd.DataFrame]:
+        """Daily bars for many equities in batched requests; symbols without bars are absent.
+
+        No bar-evidence capture: a live PEAD decision journals its own event evidence,
+        as the study kept its own cache.
+        """
+        if self.stock_client is None:
+            raise UnsupportedSymbolError("No Alpaca stock client available")
+        clean = sorted({symbol.strip().upper() for symbol in symbols if "/" not in symbol})
+        frames: dict[str, pd.DataFrame] = {}
+        for index in range(0, len(clean), DAILY_BATCH_SYMBOLS):
+            chunk = clean[index : index + DAILY_BATCH_SYMBOLS]
+            bars = self.stock_client.get_stock_bars(
+                StockBarsRequest(
+                    symbol_or_symbols=chunk,
+                    timeframe=TimeFrame.Day,
+                    start=start,
+                    end=end,
+                    feed=self.feed,
+                    adjustment=Adjustment(adjustment),
+                )
+            )
+            # The SDK's stub types this as `BarSet | dict[str, Any]` for the raw_data client
+            # mode this provider never uses; it is always the `BarSet` with a `.df`
+            # property. Read it exactly once per chunk: the property rebuilds the whole
+            # multi-symbol frame from scratch on every access, so calling it again per
+            # symbol would cost O(chunk size) full rebuilds instead of one.
+            batch_df: pd.DataFrame = bars.df  # type: ignore[union-attr]
+            present = set(batch_df.index.get_level_values("symbol")) if not batch_df.empty else set()
+            for symbol in chunk:
+                if symbol in present:
+                    frame, _ = self._normalize_bars(batch_df, symbol)
+                    if not frame.empty:
+                        frames[symbol] = frame
+        return frames
 
     def fetch_latest_price(self, symbol: str) -> float | None:
         if not self.supports_symbol(symbol):

@@ -13,9 +13,13 @@ import pytest
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import AppConfig
+from agentic_trader.presentation.formatters import TelegramHtmlFormatter
+from agentic_trader.research.alpha.models import RegistrySnapshot
+from agentic_trader.research.apriori.probe import load_catalog_probe
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 from tests.research.probe_fixtures import make_definition, seed
+from tests.research.test_apriori_catalog_probe import ENTRY, study
 
 
 @pytest.fixture
@@ -69,3 +73,32 @@ async def test_alphas_summary_renders_without_probe_detail_when_the_report_fails
     assert "1 paper probe" in html
     assert "d left" not in html
     assert any(r.__dict__.get("event") == "probe_report_failed" for r in caplog.records)
+
+
+def test_alphas_dashboard_names_a_catalog_probe_and_its_study_evidence():
+    snapshot = RegistrySnapshot(1, (), (), (), catalog_probes=({"alpha_id": "pead_long", "version_id": "apriori:x"},))
+    row = {
+        "kind": "apriori",
+        "alpha_id": "pead_long",
+        "study_mean_r": 0.1489,
+        "live": True,
+        "days_remaining": 29.0,
+        "kill_distance_r": 4.0,
+        "forward": {"trades": 0, "cumulative_r": 0.0},
+    }
+    html = TelegramHtmlFormatter.format_alphas_dashboard_html(
+        snapshot, evidence={"days": 7, "truncated": False, "candidates": []}, probes=[row]
+    )
+    assert "1 paper probe</b>" in html and ": pead_long" in html
+    assert "pead_long (any liquid reporter)" in html
+    assert "study +0.149R/trade" in html
+
+
+async def test_alphas_summary_reports_an_enrolled_catalog_probe(alphas_copilot, probe_repository, tmp_path):
+    definition = load_catalog_probe(ENTRY, study(tmp_path), "long")
+    await probe_repository.enrol_catalog_probe(definition, actor="op", expected_generation=0)
+
+    html = await alphas_copilot.get_alphas_summary_html()
+
+    assert "pead_long (any liquid reporter)" in html
+    assert "study +0.149R/trade" in html

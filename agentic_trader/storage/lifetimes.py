@@ -19,7 +19,7 @@ from agentic_trader.execution.durable import (
     WorkKind,
     WorkStatus,
 )
-from agentic_trader.execution.lifetime_policy import TradeLifetimePolicy
+from agentic_trader.execution.lifetime_policy import lifetime_from_dict
 from agentic_trader.execution.lifetimes import UNFILLED_TERMINAL, EntryIdentity, LifetimeAction, assess_lifetime
 from agentic_trader.storage.models import (
     CloseRequestRecord,
@@ -97,7 +97,7 @@ class LifetimeRepository:
             if (
                 projection is None
                 or assess_lifetime(
-                    TradeLifetimePolicy(**lifetime),
+                    lifetime_from_dict(lifetime),
                     identity,
                     OrderObservation.model_validate_json(projection.payload),
                     now,

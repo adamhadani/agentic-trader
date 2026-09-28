@@ -171,7 +171,11 @@ The [a priori alpha catalog](docs/apriori-alphas.md) tests literature anomalies 
 frozen hypothesis per leg (`config/research/apriori/*.json`, SHA-256 in each manifest;
 a change is a new version). `alpha apriori-study` is research only: manifest before any
 provider access, no DB/registry/broker/Telegram, no promotion credit. A passing leg only
-becomes eligible for a separately specified capped paper probe.
+becomes eligible for a separately specified capped paper probe. A passing leg runs only
+as a catalog paper probe (`alpha apriori-probe`): registry `probe` list,
+`probe_block_reason` liveness, `apriori_bracket_v1` fixed bracket with
+`session_count_v1` time exit, LLM commentary only, one drift card per session outside
+the native budget, fail-closed on Nasdaq/SIP gaps.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)

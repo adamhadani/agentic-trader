@@ -286,11 +286,18 @@ async def run_daily_panel_worker(config, repository, readiness, metrics, shutdow
 def make_suggestion_scan(copilot: Any, *, use_llm: bool):
     """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest."""
 
-    async def run_suggestion_scan(digest: bool = False) -> None:
+    async def run_suggestion_scan(digest: bool = False, scheduled_time_et: str | None = None) -> None:
         active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
         if active:
             await copilot.run_scan(
-                use_llm=use_llm, dry_run=False, asset_class="equity", budget=ScanBudget.FULL, shadow_evidence=True
+                use_llm=use_llm,
+                dry_run=False,
+                asset_class="equity",
+                budget=ScanBudget.FULL,
+                shadow_evidence=True,
+                # The configured New York time of this job: only the PEAD decision time
+                # (10:35) may produce a drift card.
+                scheduled_time_et=scheduled_time_et,
             )
         else:
             logger.info(
@@ -324,7 +331,7 @@ def register_suggestion_scans(scheduler: Any, copilot: Any, config: AppConfig, *
             minute=minute,
             timezone=ET_TZ,
             id=f"suggestion_scan_{index}",
-            kwargs={"digest": index == len(times) - 1},
+            kwargs={"digest": index == len(times) - 1, "scheduled_time_et": item},
             # A scan still running at the next trigger is skipped and logged rather than
             # overlapped; a late start within ten minutes still runs exactly once.
             coalesce=True,

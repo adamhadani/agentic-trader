@@ -31,6 +31,8 @@ def scan_desk(app_config, temp_db, mock_notifier):
         four_hour=pd.DataFrame({"Close": [100.0]}),
     )
     copilot.alpha_shadow = AsyncMock()
+    # No PEAD drift source: scan tests opt in with their own fake (tests/agent/test_scan_drift.py).
+    copilot.earnings_drift = None
     copilot.session_provider = AsyncMock()
     copilot.session_provider.is_session_active.return_value = (True, "Open")
     copilot.calendar = AsyncMock()

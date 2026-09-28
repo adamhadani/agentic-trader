@@ -6,8 +6,9 @@ Fixtures seed already-accepted timed orders; session-alpha admission stays disab
 import asyncio
 import json
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time as dt_time, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -15,9 +16,14 @@ from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import EventKind, WorkKind, WorkStatus
-from agentic_trader.execution.lifetime_policy import DAILY_ENTRY_LIFETIME_SECONDS, TradeLifetimePolicy
+from agentic_trader.execution.lifetime_policy import (
+    DAILY_ENTRY_LIFETIME_SECONDS,
+    SessionLifetimePolicy,
+    TradeLifetimePolicy,
+)
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.research.alpha.strategy import TimedAlphaExecutionPolicy, session_entry_policy
+from agentic_trader.market.session import AlpacaCalendarProvider, MarketCalendarDay
+from agentic_trader.research.alpha.strategy import AprioriBracketPolicy, TimedAlphaExecutionPolicy, session_entry_policy
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.lifetimes import LifetimeRepository
 from agentic_trader.storage.models import SignalRecord, WorkItemRecord
@@ -413,3 +419,104 @@ async def test_daily_entry_only_policy_never_schedules_a_holding_close(lifecycle
     await asyncio.gather(*(service.reconcile() for service in c.services))
     assert not any(call[0] != "GET" for call in c.venue.calls)
     assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+
+
+class AllDaysCalendar:
+    def __init__(self):
+        self.calls = 0
+
+    async def get_calendar_range(self, start, end):
+        self.calls += 1
+        days, day = [], start
+        while day <= end:
+            days.append(MarketCalendarDay(day, True, False, dt_time(0, 0), dt_time(23, 59, 59)))
+            day += timedelta(days=1)
+        return days
+
+
+async def use_session_policy(c, *, fill_days_ago):
+    """Pin the service clock to 15:50 New York today, five minutes past the 15:45 time exit.
+
+    The fill is at noon ``fill_days_ago`` days earlier, so the outcome never depends on
+    the wall-clock time of day the test runs at.
+    """
+    ny = ZoneInfo("America/New_York")
+    policy = AprioriBracketPolicy(
+        stop_atr=2.0,
+        atr_window=14,
+        reward_risk=3.0,
+        lifetime=SessionLifetimePolicy(resting_seconds=57_600, holding_sessions=20, close_time_et="15:45"),
+    )
+    async with c.db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, c.signal_id)
+        row.alpha_policy, row.timeframe = json.dumps(policy.to_dict(), allow_nan=False), "1d"
+    filled_position(c)
+    today = datetime.now(ny).date()
+    now = datetime.combine(today, dt_time(15, 50), tzinfo=ny).astimezone(UTC)
+    fill = datetime.combine(today - timedelta(days=fill_days_ago), dt_time(12, 0), tzinfo=ny)
+    c.venue.entry.update(filled_at=fill.astimezone(UTC).isoformat())
+    for service in c.services:
+        service.calendar = AllDaysCalendar()
+        service.clock = lambda: now
+
+
+async def test_session_policy_closes_once_on_session_twenty(lifecycle_case):
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=19)  # the fill day is session 1, today is session 20
+    await asyncio.gather(*(service.reconcile() for service in c.services))
+    posts = [call for call in c.venue.calls if call[0] == "POST"]
+    assert len(posts) == 1 and posts[0][3]["client_order_id"].startswith("hold-")
+
+
+async def test_session_policy_waits_before_session_twenty(lifecycle_case):
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=18)  # today is session 19
+    await asyncio.gather(*(service.reconcile() for service in c.services))
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    # A REVIEW also makes only GET calls, so also pin that this is a genuine wait
+    # (no halt, no journaled lifetime review) rather than an evidence review.
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert not await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
+
+
+async def test_session_policy_calendar_failure_reviews_and_never_closes(lifecycle_case):
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=25)
+
+    class Down:
+        async def get_calendar_range(self, start, end):
+            raise RuntimeError("calendar down")
+
+    for service in c.services:
+        service.calendar = Down()
+    await c.services[0].reconcile()
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert c.signal_id in await c.services[0].resume_blockers()
+    events = await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
+    assert any(
+        e["kind"] == EventKind.LIFETIME_REVIEW
+        and e["payload"]["reason"] == "lifecycle_evidence_unavailable:RuntimeError"
+        for e in events
+    )
+
+
+async def test_session_policy_alpaca_calendar_provider_failure_reviews_and_never_closes(lifecycle_case):
+    """The strict provider actually wired in production, not a bespoke fake, reaches review."""
+    c = lifecycle_case
+    await use_session_policy(c, fill_days_ago=25)
+
+    class RaisingAlpacaTradingClient:
+        def get_calendar(self, req):
+            raise RuntimeError("calendar down")
+
+    for service in c.services:
+        service.calendar = AlpacaCalendarProvider(trading_client=RaisingAlpacaTradingClient())
+    await c.services[0].reconcile()
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert c.signal_id in await c.services[0].resume_blockers()
+    events = await c.db.workflows.events(f"signal/{c.signal_id}/lifetime")
+    assert any(
+        e["kind"] == EventKind.LIFETIME_REVIEW
+        and e["payload"]["reason"] == "lifecycle_evidence_unavailable:RuntimeError"
+        for e in events
+    )

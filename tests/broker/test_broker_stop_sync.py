@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ from agentic_trader.broker.base import BaseBroker, OrderRequest, OrderResult
 from agentic_trader.broker.paper import PaperBroker
 from agentic_trader.broker.tradovate import TradovateBroker
 from agentic_trader.config import AppConfig
+from agentic_trader.research.apriori.catalog import load_pead_entry, pead_execution_policy
 
 
 class DummyBroker(BaseBroker):
@@ -94,3 +96,39 @@ async def test_copilot_syncs_broker_stop_on_ratchet(config: AppConfig, temp_db, 
     await copilot.outbox.drain()
     mock_notifier.send_trailing_stop_alert.assert_awaited_once()
     assert mock_notifier.send_trailing_stop_alert.call_args.kwargs["broker_synced"] is True
+
+
+@pytest.mark.asyncio
+async def test_copilot_never_trails_a_catalog_bracket_policy(config: AppConfig, temp_db, mock_notifier):
+    copilot = TradingCopilot(config=config, db=temp_db, notifier=mock_notifier)
+
+    # Mock broker that supports order modification
+    mock_broker = MagicMock()
+    mock_broker.authoritative_positions = False
+    mock_broker.supports_order_modification = True
+    mock_broker.modify_order_stop = AsyncMock(return_value=OrderResult(success=True, order_id="MOCK-STOP-1"))
+    copilot.broker = mock_broker
+
+    # Mock market data fetcher with high market price that would otherwise trigger a ratchet
+    mock_fetcher = MagicMock()
+    mock_fetcher.fetch_latest_price.return_value = 5950.0  # Big favorable move
+    copilot.data_fetcher = mock_fetcher
+
+    policy = pead_execution_policy(load_pead_entry(Path("config/research/apriori/pead-v2.json")).entry)
+    sid = await temp_db.record_signal(
+        contract="/MES",
+        direction="LONG",
+        strategy="ratchet",
+        entry_price=5800,
+        stop_loss=5750,
+        take_profit=5950,
+        risk_dollars=250,
+        quantity=1,
+        status="EXECUTED",
+        alpha_policy=policy.to_dict(),
+    )
+    await temp_db.update_signal_execution(sid, "ORD-BROKER-99")
+    active_positions = await temp_db.get_active_positions()
+    updated = await copilot.manage_trailing_stops(active_positions)
+    assert updated == 0
+    mock_broker.modify_order_stop.assert_not_awaited()
