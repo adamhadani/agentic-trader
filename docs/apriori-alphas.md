@@ -47,6 +47,21 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   `DRIFT_PREPARE_TIMEOUT_SECONDS` (60 s, `agent/copilot.py`); exceeding it is
   also `"unavailable"` (`reason: "timeout"`) — the reads run under the scan lock
   before the native fetch, so a slow provider must never hold up native cards.
+- **Lateness cap.** The frozen study entered at 10:35 prices, so a 10:35 scan
+  that reaches its PEAD decision point more than
+  `apriori.max_drift_lateness_seconds` (default 900, must be positive) after the
+  slot was due prepares no drift candidates and reads no calendar or bars. The
+  lateness is measured at that decision point — after any wait for the scan lock
+  (e.g. behind a swing scan) and the bounded dynamic-universe read — not when the
+  job fires, so both a late wake of a sleeping host and a long lock wait count.
+  It journals one `pead_decision` with `status: "skipped"` and
+  `reason: "late decision: N min after 10:35 NY"` (logged as
+  `pead_decision_late`), without a notice; native cards from the same scan are
+  unaffected. The bound applies only to the scheduled job, which passes the
+  slot's due instant (`run_scan(scheduled_at=...)`). A 10:35 slot that the
+  scheduler drops entirely (past `scheduler.suggestion_scan_misfire_grace_seconds`)
+  journals nothing but queues one "suggestion scan was missed" notice (see
+  [suggestion scans](production.md#suggestion-scans)).
 - **Budget.** At most one drift card per session, outside the native suggestion
   budget (`apriori.max_drift_cards_per_session`, default 1); the per-scan/
   per-session native budgets are unaffected. A drift card is never counted as a

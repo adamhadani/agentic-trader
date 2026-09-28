@@ -7,12 +7,14 @@ import json
 import logging
 import os
 import sys
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Any
 
 import click
 import httpx
+from apscheduler.events import EVENT_JOB_MISSED, JobExecutionEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import artifact_directory, coro, get_copilot_and_config, session_source
@@ -32,6 +34,7 @@ from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.observation import SessionObservationService
 from agentic_trader.runtime import runtime_identity
+from agentic_trader.screeners.earnings_drift import PEAD_DECISION_TIME_ET
 from agentic_trader.storage.alpha_daily import DailyCampaignRepository
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.maintenance import RetentionService
@@ -283,6 +286,11 @@ async def run_daily_panel_worker(config, repository, readiness, metrics, shutdow
         await shutdown.wait()
 
 
+def _slot_due_at(slot_et: str) -> datetime:
+    """The instant a New York ``HH:MM`` suggestion-scan slot was due today."""
+    return datetime.combine(datetime.now(ET_TZ).date(), dt_time.fromisoformat(slot_et), tzinfo=ET_TZ)
+
+
 def make_suggestion_scan(copilot: Any, *, use_llm: bool):
     """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest."""
 
@@ -298,6 +306,8 @@ def make_suggestion_scan(copilot: Any, *, use_llm: bool):
                 # The configured New York time of this job: only the PEAD decision time
                 # (10:35) may produce a drift card.
                 scheduled_time_et=scheduled_time_et,
+                # When that slot was due: a drift decision reached too late is skipped.
+                scheduled_at=_slot_due_at(scheduled_time_et) if scheduled_time_et else None,
             )
         else:
             logger.info(
@@ -321,8 +331,10 @@ def register_suggestion_scans(scheduler: Any, copilot: Any, config: AppConfig, *
         logger.info("Suggestion scans disabled (no times configured).")
         return
     job = make_suggestion_scan(copilot, use_llm=use_llm)
+    slots: dict[str, tuple[str, bool]] = {}
     for index, item in enumerate(times):
         hour, minute = (int(part) for part in item.split(":"))
+        job_id, digest = f"suggestion_scan_{index}", index == len(times) - 1
         scheduler.add_job(
             job,
             "cron",
@@ -330,15 +342,96 @@ def register_suggestion_scans(scheduler: Any, copilot: Any, config: AppConfig, *
             hour=hour,
             minute=minute,
             timezone=ET_TZ,
-            id=f"suggestion_scan_{index}",
-            kwargs={"digest": index == len(times) - 1, "scheduled_time_et": item},
+            id=job_id,
+            kwargs={"digest": digest, "scheduled_time_et": item},
             # A scan still running at the next trigger is skipped and logged rather than
-            # overlapped; a late start within ten minutes still runs exactly once.
+            # overlapped. A late start within the (wide) grace still runs exactly once: a
+            # sleeping host's maintenance wake can be ~15 minutes late (September 28). The
+            # session check, card freshness/expiry and the PEAD lateness cap bound it.
             coalesce=True,
             max_instances=1,
-            misfire_grace_time=600,
+            misfire_grace_time=config.scheduler.suggestion_scan_misfire_grace_seconds,
         )
+        slots[job_id] = (item, digest)
+    # A run dropped past its grace is otherwise only an APScheduler WARNING line.
+    scheduler.add_listener(MissedSuggestionScanNotice(copilot.outbox, slots), EVENT_JOB_MISSED)
     logger.info("Scheduled suggestion scans at %s New York on weekdays.", ", ".join(times))
+
+
+def missed_scan_text(slot_et: str, late: timedelta, *, digest: bool) -> str:
+    """The operator notice for a suggestion-scan slot APScheduler dropped past its grace.
+
+    Conditional on the session: the listener never reads the market calendar, and on an
+    exchange holiday the job would have skipped its scan anyway.
+    """
+    lost = "If the market was open, this slot produced no cards" + (
+        " (and no PEAD decision)." if slot_et == PEAD_DECISION_TIME_ET else "."
+    )
+    if digest:
+        lost += " The end-of-session digest was not published."
+    minutes = max(0, int(late.total_seconds() // 60))
+    return (
+        f"⚠️ {slot_et} NY suggestion scan was missed (the scheduler woke {minutes} min late — "
+        f"host asleep or event loop blocked). {lost}"
+    )
+
+
+class MissedSuggestionScanNotice:
+    """``EVENT_JOB_MISSED`` listener: one durable notice per dropped suggestion-scan slot.
+
+    APScheduler calls listeners synchronously, here from the asyncio executor's done
+    callback on the event loop. The listener only logs ``suggestion_scan_missed`` and
+    schedules the outbox write as a task, referenced in ``pending`` until it finishes; it
+    never blocks and never raises. The outbox dedup key
+    ``suggestion-scan-missed/<ET date>/<HH:MM>`` keeps it to one notice per slot and date.
+    """
+
+    def __init__(self, outbox: NotificationDispatcher, slots: Mapping[str, tuple[str, bool]]):
+        self.outbox = outbox
+        # Job id -> (configured New York slot, whether that slot publishes the digest).
+        self.slots = dict(slots)
+        self.pending: set[asyncio.Task[None]] = set()
+
+    def __call__(self, event: JobExecutionEvent) -> None:
+        try:
+            slot = self.slots.get(event.job_id)
+            if slot is None:
+                return
+            slot_et, digest = slot
+            late = datetime.now(UTC) - event.scheduled_run_time
+            key = f"suggestion-scan-missed/{event.scheduled_run_time.astimezone(ET_TZ).date().isoformat()}/{slot_et}"
+            logger.warning(
+                "Suggestion scan %s NY was missed: the scheduler woke %s late",
+                slot_et,
+                late,
+                extra={
+                    "event": "suggestion_scan_missed",
+                    "job_id": event.job_id,
+                    "slot_et": slot_et,
+                    "scheduled_run_time": event.scheduled_run_time.isoformat(),
+                    "late_seconds": round(late.total_seconds(), 1),
+                    "dedup_key": key,
+                },
+            )
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self._publish(missed_scan_text(slot_et, late, digest=digest), key))
+        except Exception:
+            logger.exception(
+                "Missed suggestion-scan notice could not be scheduled",
+                extra={"event": "suggestion_scan_missed_notice_failed", "job_id": getattr(event, "job_id", None)},
+            )
+            return
+        self.pending.add(task)
+        task.add_done_callback(self.pending.discard)
+
+    async def _publish(self, text: str, key: str) -> None:
+        try:
+            await self.outbox.publish_message(text, key=key)
+        except Exception:
+            logger.exception(
+                "Missed suggestion-scan notice could not be queued",
+                extra={"event": "suggestion_scan_missed_notice_failed", "dedup_key": key},
+            )
 
 
 def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
