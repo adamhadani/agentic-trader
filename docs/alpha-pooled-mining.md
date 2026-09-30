@@ -236,7 +236,8 @@ Pass rule, all of which must hold:
 The bootstrap uses block mean 20 and 2,000 draws. A pass makes the entry eligible for a
 separately specified capped paper probe; nothing else. A failed entry is written up and
 marked failed. Thresholds are never revisited; a change is a new version. Status of
-both entries: frozen, not yet run.
+both entries: run on 2026-09-30 and failed (P2 and P3); see
+[First runs](#first-runs).
 
 Each entry is a single bootstrap test and inherits the size caveat described under
 [what power check A does and does not show](#what-power-check-a-does-and-does-not-show):
@@ -320,6 +321,17 @@ relaxed once a literature result exists.
 confirmation, with the ledger injected) exists and is what power check A runs, against
 an in-memory ledger. The campaign runner, the journal-backed ledger, the genetic search
 and search check B arrive in Part 1b. There is no `pooled campaign` command yet.
+
+## First runs
+
+Power check A and both literature entries ran on 2026-09-30. Power check A passed
+(detection 0.98 at delta = 0.15, false acceptance 0.00 at delta = 0) after a first
+attempt failed closed on an hourly read timeout; see the
+[power result](alpha-pooled-power-2026-09-30.md). Both entries failed on P2 and P3: the
+picks earned about +0.15R, the session-paired edge was about +0.01R; see the
+[literature result](alpha-pooled-literature-2026-09-30.md). The cube holds about 85
+eligible names per session and 130 of the 353 cohort names were ever eligible, so the
+lane mostly mines the scan-universe equities.
 
 ## Power check A
 

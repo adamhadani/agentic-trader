@@ -372,8 +372,8 @@ one or two reasonable cards per session:
      the two frozen literature entries, the campaign protocol and stage logic, power
      check A and `alpha pooled power|study`
      ([contract](alpha-pooled-mining.md),
-     [literature report](alpha-pooled-mining-research-2026-09-28.md)). Running power
-     check A and the two studies follows the final review. Part 1b is next: the campaign
+     [literature report](alpha-pooled-mining-research-2026-09-28.md)). Power
+     check A and the two studies have since run (results below). Part 1b is next: the campaign
      runner, the journal-backed ledger, the genetic search and search check B.
    - Part 1b requirements fixed by the final review of Part 1a (2026-09-30):
      - **Literature overlap rule** (decided before any literature study was run): a
@@ -390,6 +390,22 @@ one or two reasonable cards per session:
      - It should add a false-acceptance check with real DSL expressions: power check A
        uses label-independent AR(1) nulls and cannot certify factor-loaded formulas
        ([limits](alpha-pooled-mining.md#what-power-check-a-does-and-does-not-show)).
+   - **Results (2026-09-30).** Power check A passed on the real cube
+     ([result](alpha-pooled-power-2026-09-30.md)): detection 0.98 at +0.15R (0.92 at
+     +0.10R, 0.68 at +0.08R, 0.10 at +0.05R) and false acceptance 0.00 at every delta.
+     The first attempt failed closed on a CVX hourly read timeout and the rerun resumed
+     from the cache, as designed. Both literature entries **failed**
+     ([result](alpha-pooled-literature-2026-09-30.md)): the picks earned about +0.15R per
+     trade, but the session-paired edge was +0.012R (`high52-v1`) and +0.008R
+     (`reversal-lowmax-v1`), with ci90 lower bounds below zero (P2) and negative edges
+     since 2023 (P3). No Part 2 probe; thresholds unchanged.
+   - **Breadth finding and Part 1b.** The cube has 214,308 eligible cells over 2,514
+     sessions, about 85 eligible names per session, and only 130 of the 353 cohort
+     names were ever eligible. 98.2% of eligible cells come from the 127 scan-universe
+     names; the snapshot-only names contribute 1.8% (43 and 34 of roughly 7,300 picks).
+     The lane is effectively mining the scan universe. For Part 1b, consider replacing
+     the random 300-name snapshot with a liquidity-screened cohort to widen breadth.
+     That is an operator decision and is not made here; a new cohort is a new identity.
    - **Weekly ETF32 miner paused (2026-09-28).** The operator disabled and unloaded
      `com.agentictrader.alphaminer` (`launchctl disable` and `bootout`; the plist is
      kept) so it stops charging 512 trials a week to the family that deflates every future
