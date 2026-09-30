@@ -357,6 +357,32 @@ one or two reasonable cards per session:
    follow-up, out of scope here: labeling delayed entries 1–3h after the decision in the
    setup-outcome study, to quantify decay against measured tap latency.
 
+6. **Pooled mining lane (September 28).**
+   - Diagnosis: the weekly per-symbol ETF32 miner charged 512 trials on 2026-09-26 and
+     produced 0 discovery finalists (median 14 trades per formula in validation), while
+     the global trial family reached 8,879 trials on 2026-09-28 and deflates every future
+     per-symbol qualification.
+   - Operator decisions (2026-09-28): the lane keeps its own confirmation-window ledger,
+     and the first campaign confirms on 2024-01-02 to 2026-07-31. Families with a
+     positive result in a study that read 2021-2026 are excluded (`vol_20`,
+     sector-relative momentum, residual momentum, volatility-scaled momentum). Both
+     tracks run: two literature entries and one budgeted genetic campaign. The cohort is
+     the scan-universe equities plus the 300-name snapshot.
+   - Part 1a is delivered in its PR: cohort, label cube, formula selection, statistics,
+     the two frozen literature entries, the campaign protocol and stage logic, power
+     check A and `alpha pooled power|study`
+     ([contract](alpha-pooled-mining.md),
+     [literature report](alpha-pooled-mining-research-2026-09-28.md)). Running power
+     check A and the two studies follows the final review. Part 1b is next: the campaign
+     runner, the journal-backed ledger, the genetic search and search check B.
+   - **Weekly ETF32 miner paused (2026-09-28).** The operator disabled and unloaded
+     `com.agentictrader.alphaminer` (`launchctl disable` and `bootout`; the plist is
+     kept) so it stops charging 512 trials a week to the family that deflates every future
+     qualification, with essentially no discovery chance. Resume with
+     `launchctl enable gui/$(id -u)/com.agentictrader.alphaminer && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agentictrader.alphaminer.plist`.
+     The September 24 decision that `vol_20` and `sector_rel_mom_60` are prospective-only
+     is already recorded under WS2.
+
 Later and operator-gated:
 
 - a residual-reversal single-leg feature;
