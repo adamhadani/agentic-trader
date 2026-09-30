@@ -11,20 +11,40 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
+from itertools import pairwise
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol
 
+import numpy as np
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.research.alpha.search import MUTATION_OPERATORS
 from agentic_trader.research.pooled.cohort import UniverseSpec
-from agentic_trader.research.pooled.cube import BracketSpec, CoverageSpec, CubeSpec
-from agentic_trader.research.pooled.formula import require_dimensionless
+from agentic_trader.research.pooled.cube import BracketSpec, CoverageSpec, CubeSpec, CubeView, LabelCube
+from agentic_trader.research.pooled.formula import Picks, require_dimensionless, select_picks
+from agentic_trader.research.pooled.stats import (
+    bootstrap_draws,
+    leg_mean_test,
+    paired_edge_test,
+    session_table,
+    trimmed_mean,
+)
+from agentic_trader.research.setups.study import holm
 
 
-__all__ = ["CampaignProtocol", "LoadedProtocol", "load_campaign_protocol"]
+__all__ = [
+    "CampaignProtocol",
+    "CampaignWindows",
+    "InMemoryLedger",
+    "Ledger",
+    "LoadedProtocol",
+    "ScoredFormula",
+    "load_campaign_protocol",
+    "run_stages",
+]
 
 
 def _calls(expression: str) -> set[str]:
@@ -207,3 +227,236 @@ def load_campaign_protocol(path: Path) -> LoadedProtocol:
     return LoadedProtocol(
         protocol=CampaignProtocol.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path
     )
+
+
+@dataclass(frozen=True)
+class ScoredFormula:
+    formula_id: str
+    nodes: int
+    # (scores[S, N], allowed[S, N]) for the given view's sessions.
+    panel: Callable[[CubeView], tuple[np.ndarray, np.ndarray]]
+
+
+class Ledger(Protocol):
+    def consume_confirmation(
+        self, *, cohort_sha256: str, interval: tuple[date, date], campaign_id: str, candidates: tuple[str, ...]
+    ) -> None: ...
+
+
+class InMemoryLedger:
+    """Power checks and tests: the same single-use rule as the journal ledger, in memory."""
+
+    def __init__(self) -> None:
+        self.consumed: list[dict] = []
+
+    def consume_confirmation(
+        self, *, cohort_sha256: str, interval: tuple[date, date], campaign_id: str, candidates: tuple[str, ...]
+    ) -> None:
+        start, end = interval
+        for item in self.consumed:
+            if item["cohort_sha256"] == cohort_sha256 and not (
+                end < item["interval"][0] or item["interval"][1] < start
+            ):
+                raise ValueError(f"confirmation interval already consumed by campaign {item['campaign_id']}")
+        self.consumed.append(
+            {"cohort_sha256": cohort_sha256, "interval": interval, "campaign_id": campaign_id, "candidates": candidates}
+        )
+
+
+class CampaignWindows:
+    """Opens the stage windows in order; confirmation only after its consumption is recorded."""
+
+    def __init__(self, cube: LabelCube, windows: StageWindows, cohort_sha256: str):
+        self._cube = cube
+        self._windows = windows
+        self._cohort_sha256 = cohort_sha256
+        self._opened: list[str] = []
+
+    @property
+    def opened(self) -> tuple[str, ...]:
+        return tuple(self._opened)
+
+    def discovery(self) -> CubeView:
+        self._opened.append("discovery")
+        return self._cube.window(*self._windows.discovery)
+
+    def selection(self) -> CubeView:
+        self._opened.append("selection")
+        return self._cube.window(*self._windows.selection)
+
+    def confirmation(self, ledger: Ledger, *, campaign_id: str, candidates: tuple[str, ...]) -> CubeView:
+        ledger.consume_confirmation(
+            cohort_sha256=self._cohort_sha256,
+            interval=self._windows.confirmation,
+            campaign_id=campaign_id,
+            candidates=candidates,
+        )
+        self._opened.append("confirmation")
+        return self._cube.window(*self._windows.confirmation)
+
+
+def _picks(formula: ScoredFormula, view: CubeView, k: int) -> Picks:
+    scores, allowed = formula.panel(view)
+    return select_picks(scores, allowed, view, k)
+
+
+def _restrict(picks: Picks, lo: int, hi: int) -> Picks:
+    keep = (picks.session_idx >= lo) & (picks.session_idx < hi)
+    return Picks(picks.session_idx[keep] - lo, picks.symbol_idx[keep])
+
+
+def _draws(view: CubeView, count: int, protocol: CampaignProtocol) -> np.ndarray:
+    return bootstrap_draws(len(view.sessions), protocol.bootstrap.block_mean, count, protocol.bootstrap.seed)
+
+
+def _jaccard(a: set, b: set) -> float:
+    union = len(a | b)
+    return len(a & b) / union if union else 0.0
+
+
+def _discovery(
+    formulas: Sequence[ScoredFormula], view: CubeView, protocol: CampaignProtocol
+) -> tuple[list[dict], list[str]]:
+    gate = protocol.discovery_gate
+    draws = _draws(view, protocol.bootstrap.discovery_draws, protocol)
+    bounds = np.linspace(0, len(view.sessions), gate.blocks + 1).astype(int)
+    results: list[dict[str, Any]] = []
+    cells: dict[str, set[tuple[int, int]]] = {}
+    for formula in formulas:
+        picks = _picks(formula, view, protocol.k)
+        table = session_table(picks, view, purge=True)
+        edge = paired_edge_test(table, draws)
+        leg = leg_mean_test(table, draws)
+        block_means = []
+        for lo, hi in pairwise(bounds.tolist()):
+            sub = session_table(_restrict(picks, lo, hi), view.sub(lo, hi), purge=True)
+            weight = np.isfinite(sub.edge)
+            block_means.append(float(sub.edge[weight].mean()) if weight.any() else float("nan"))
+        positive = sum(1 for m in block_means if np.isfinite(m) and m > 0)
+        t = edge["t"]
+        passes = bool(
+            np.isfinite(t)
+            and t >= gate.min_t
+            and positive >= gate.min_positive_blocks
+            and np.isfinite(leg["mean"])
+            and leg["mean"] > 0
+            and edge["n_sessions"] >= gate.min_sessions
+        )
+        fitness = (t if np.isfinite(t) else float("-inf")) - protocol.complexity_penalty_per_node * formula.nodes
+        results.append(
+            {
+                "formula_id": formula.formula_id,
+                "edge": edge,
+                "leg": leg,
+                "block_means": block_means,
+                "passes": passes,
+                "fitness": fitness,
+            }
+        )
+        cells[formula.formula_id] = picks.cells()
+    passing = sorted((r for r in results if r["passes"]), key=lambda r: (-r["fitness"], r["formula_id"]))
+    kept: list[dict[str, Any]] = []
+    for candidate in passing:
+        if all(
+            _jaccard(cells[candidate["formula_id"]], cells[k["formula_id"]]) < protocol.dedupe_jaccard for k in kept
+        ):
+            kept.append(candidate)
+    return results, [r["formula_id"] for r in kept[: gate.carry]]
+
+
+def _selection(
+    formulas: Sequence[ScoredFormula],
+    carried: Sequence[str],
+    discovery: Sequence[dict],
+    view: CubeView,
+    protocol: CampaignProtocol,
+) -> tuple[list[dict], list[str]]:
+    gate = protocol.selection_gate
+    draws = _draws(view, protocol.bootstrap.selection_draws, protocol)
+    by_id = {f.formula_id: f for f in formulas}
+    discovered = {r["formula_id"]: r["edge"]["mean"] for r in discovery}
+    results: list[dict[str, Any]] = []
+    for formula_id in carried:
+        table = session_table(_picks(by_id[formula_id], view, protocol.k), view, purge=True)
+        edge = paired_edge_test(table, draws)
+        keep = bool(
+            np.isfinite(edge["mean"])
+            and edge["mean"] > 0
+            and edge["mean"] >= gate.min_fraction_of_discovery * discovered[formula_id]
+            and edge["n_sessions"] >= gate.min_sessions
+        )
+        results.append({"formula_id": formula_id, "edge": edge, "kept": keep})
+    return results, [r["formula_id"] for r in results if r["kept"]]
+
+
+def _months_before(day: date, months: int) -> date:
+    year, month = divmod(day.year * 12 + day.month - 1 - months, 12)
+    return date(year, month + 1, min(day.day, 28))
+
+
+def _confirmation(
+    formulas: Sequence[ScoredFormula], frozen: Sequence[str], view: CubeView, protocol: CampaignProtocol
+) -> tuple[list[dict], list[str]]:
+    gate = protocol.confirmation_gate
+    draws = _draws(view, protocol.bootstrap.confirmation_draws, protocol)
+    by_id = {f.formula_id: f for f in formulas}
+    recent_from = _months_before(view.sessions[-1], gate.recent_months)
+    recent_lo = next((i for i, d in enumerate(view.sessions) if d > recent_from), len(view.sessions))
+    results: dict[str, dict] = {}
+    for formula_id in frozen:
+        picks = _picks(by_id[formula_id], view, protocol.k)
+        table = session_table(picks, view, purge=False)
+        recent = table.edge[recent_lo:]
+        recent = recent[np.isfinite(recent)]
+        results[formula_id] = {
+            "edge": paired_edge_test(table, draws),
+            "leg": leg_mean_test(table, draws),
+            "trimmed_mean": trimmed_mean(table.pick_rows["r_cost"].to_numpy(float), gate.trim_fraction),
+            "recent_edge": float(recent.mean()) if recent.size else float("nan"),
+        }
+    adjusted = holm({fid: r["edge"]["p_one_sided"] for fid, r in results.items()})
+    rows, confirmed = [], []
+    for formula_id, r in results.items():
+        passes = bool(
+            adjusted[formula_id] <= gate.alpha
+            and np.isfinite(r["leg"]["ci90"][0])
+            and r["leg"]["ci90"][0] > 0
+            and np.isfinite(r["trimmed_mean"])
+            and r["trimmed_mean"] > 0
+            and np.isfinite(r["recent_edge"])
+            and r["recent_edge"] > 0
+            and r["edge"]["n_sessions"] >= gate.min_sessions
+        )
+        rows.append({"formula_id": formula_id, **r, "holm_p": adjusted[formula_id], "passes": passes})
+        if passes:
+            confirmed.append(formula_id)
+    return rows, confirmed
+
+
+def run_stages(
+    formulas: Sequence[ScoredFormula],
+    windows: CampaignWindows,
+    ledger: Ledger,
+    protocol: CampaignProtocol,
+    *,
+    campaign_id: str,
+) -> dict:
+    discovery, carried = _discovery(formulas, windows.discovery(), protocol)
+    outcome: dict = {
+        "discovery": discovery,
+        "carried": carried,
+        "selection": [],
+        "frozen": [],
+        "confirmation": [],
+        "confirmed": [],
+    }
+    if not carried:
+        return {**outcome, "status": "no_finalists"}
+    selection, frozen = _selection(formulas, carried, discovery, windows.selection(), protocol)
+    outcome.update(selection=selection, frozen=frozen)
+    if not frozen:
+        return {**outcome, "status": "no_confirmation_candidates"}
+    view = windows.confirmation(ledger, campaign_id=campaign_id, candidates=tuple(frozen))
+    confirmation, confirmed = _confirmation(formulas, frozen, view, protocol)
+    outcome.update(confirmation=confirmation, confirmed=confirmed)
+    return {**outcome, "status": "confirmed" if confirmed else "none_confirmed"}
