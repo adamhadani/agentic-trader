@@ -1,5 +1,7 @@
 # tests/research/pooled/test_study.py
 import asyncio
+import gzip
+import io
 import json
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -9,6 +11,7 @@ import pandas as pd
 import pytest
 
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.pooled import study as study_module
 from agentic_trader.research.pooled.cohort import Cohort, CohortSource, LoadedCohort
 from agentic_trader.research.pooled.cube import LabelCube
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
@@ -80,6 +83,81 @@ def _power(cube_sha256: str | None = None) -> dict:
     }
 
 
+def _strict_json(path) -> dict:
+    def refuse(token):
+        raise AssertionError(f"non-finite JSON constant {token}")
+
+    return json.loads(path.read_text(), parse_constant=refuse)
+
+
+def _run_gated(tmp_path, power_result):
+    build = _build()
+    calls = []
+
+    async def tracked():
+        calls.append(1)
+        return build
+
+    result = asyncio.run(
+        execute_pooled_study(
+            LOADED, tmp_path / "out", cohort=COHORT, build=tracked, power_result=power_result, environment={}
+        )
+    )
+    saved = _strict_json(tmp_path / "out" / "result.json")
+    assert result["status"] == "failed" and saved["status"] == "failed"
+    assert saved["authorizes_promotion"] is False
+    assert not (tmp_path / "out" / "picks.csv.gz").exists()
+    return result, calls, build
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"status": "gate_failed"},
+        {"cohort_sha256": "0" * 64},
+        {"campaign_protocol_sha256": "1" * 64},
+    ],
+)
+def test_executor_refuses_without_a_matching_passed_power_check(tmp_path, override):
+    result, calls, _ = _run_gated(tmp_path, {**_power(), **override})
+    assert "power" in result["error"]
+    assert calls == []
+
+
+def test_executor_refuses_a_power_check_on_a_different_cube(tmp_path):
+    result, calls, _ = _run_gated(tmp_path, _power("f" * 64))
+    assert calls == [1]
+    assert "cube" in result["error"]
+
+
+def test_newey_west_lag_follows_the_hold_not_the_bootstrap(tmp_path, monkeypatch):
+    lags = []
+    real = study_module.calendar_time_newey_west
+
+    def spy(rows, n_sessions, lag):
+        lags.append(lag)
+        return real(rows, n_sessions, lag=lag)
+
+    monkeypatch.setattr(study_module, "calendar_time_newey_west", spy)
+    build = _build()
+
+    async def fake_build():
+        return build
+
+    result = asyncio.run(
+        execute_pooled_study(
+            LOADED,
+            tmp_path / "out",
+            cohort=COHORT,
+            build=fake_build,
+            power_result=_power(build.cube.sha256),
+            environment={},
+        )
+    )
+    assert result["status"] == "completed", result.get("error")
+    assert lags == [LOADED.entry.bracket.max_hold_sessions - 1]
+
+
 def test_power_gate_refuses_a_failed_or_mismatched_result():
     kwargs = {
         "cohort_sha256": LOADED.entry.cohort_sha256,
@@ -116,6 +194,9 @@ def test_study_writes_manifest_first_and_a_complete_result(tmp_path):
     assert result["decision"] in ("eligible_for_probe", "failed")
     assert set(result["pass_rule"]) == {"p1", "p2", "p3", "p4", "passes"}
     assert "two_way_clustered" in result["cross_checks"]
+    _strict_json(tmp_path / "out" / "result.json")
+    picks = pd.read_csv(io.BytesIO(gzip.decompress((tmp_path / "out" / "picks.csv.gz").read_bytes())))
+    assert {"session", "symbol"} <= set(picks.columns)
     manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
     assert manifest["authorizes_promotion"] is False
     assert manifest["campaign_protocol_sha256"] == LOADED.entry.campaign_protocol_sha256
@@ -132,3 +213,5 @@ def test_study_records_failure_instead_of_raising(tmp_path):
         )
     )
     assert result["status"] == "failed" and "provider down" in result["error"]
+    saved = _strict_json(tmp_path / "out" / "result.json")
+    assert saved["status"] == "failed" and saved["authorizes_promotion"] is False

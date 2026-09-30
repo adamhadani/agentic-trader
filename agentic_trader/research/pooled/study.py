@@ -157,8 +157,10 @@ async def execute_pooled_study(
             "pass_rule": verdict,
             "cross_checks": {
                 "two_way_clustered": two_way_clustered(rows),
+                # Each pick's residual is spread across its hold, so calendar-time serial
+                # dependence reaches max_hold - 1 sessions (a hold property, not the bootstrap's).
                 "calendar_time_newey_west": calendar_time_newey_west(
-                    rows, len(view.sessions), lag=int(entry.bootstrap.block_mean) - 1
+                    rows, len(view.sessions), lag=entry.bracket.max_hold_sessions - 1
                 ),
                 "design_effect": design_effect(rows),
             },
