@@ -138,8 +138,9 @@ Unit: `R_cost` at 5 bps per side (0 bps reported alongside).
   and the one-sided helpers in `research/setups/baserates.py`. `ci90` is the
   [5th, 95th] percentile interval; a criterion holds when its lower bound is above
   zero. The one-sided p-value is the share of bootstrap means ≤ 0.
-- **Cross-checks, reported, never decisive.** A calendar-time portfolio (each
-  session's open picks' daily mark-to-market R, averaged) with Newey-West lag 19; two-way
+- **Cross-checks, reported, never decisive.** A calendar-time portfolio (each pick's
+  residual R spread evenly over its holding sessions — the cube stores final R, not a
+  daily path — averaged over the picks open each session) with Newey-West lag 19; two-way
   date × symbol clustered standard errors on the pick rows; the design effect
   `1 + (m̄−1)ρ̂` and effective sample size. A disagreement is reported.
 - **Descriptive.** Target/stop/timeout shares, results by year and by liquidity
