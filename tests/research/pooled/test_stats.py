@@ -123,7 +123,32 @@ def test_two_way_clustering_and_design_effect_on_a_reference_case():
     assert deff["deff"] == pytest.approx(2.0)
 
 
-def test_calendar_time_series_is_finite_and_reports_t():
+def test_calendar_time_newey_west_matches_hand_computed_reference():
     rows = pd.DataFrame({"session_idx": [0, 1, 2, 3], "holding": [2, 2, 1, 1], "residual": [1.0, 0.5, 0.2, 0.1]})
     result = calendar_time_newey_west(rows, n_sessions=5, lag=2)
-    assert np.isfinite(result["mean"]) and np.isfinite(result["t"])
+    # Spread: pick0 -> 0.5 on sessions 0,1; pick1 -> 0.25 on 1,2; pick2 -> 0.2 on 2; pick3 -> 0.1 on 3.
+    # Per-session mean of open picks: [0.5, (0.5+0.25)/2, (0.25+0.2)/2, 0.1] = [0.5, 0.375, 0.225, 0.1].
+    assert result["sessions"] == 4
+    assert result["mean"] == pytest.approx(0.3)
+    # Demeaned: [0.2, 0.075, -0.075, -0.2], T = 4.
+    gamma0 = (0.04 + 0.005625 + 0.005625 + 0.04) / 4
+    gamma1 = (0.2 * 0.075 + 0.075 * -0.075 + -0.075 * -0.2) / 4
+    gamma2 = (0.2 * -0.075 + 0.075 * -0.2) / 4
+    long_run = gamma0 + 2 * (2 / 3) * gamma1 + 2 * (1 / 3) * gamma2  # Bartlett 1 - k/3
+    se = np.sqrt(long_run / 4)
+    assert result["se"] == pytest.approx(se)
+    assert result["se"] == pytest.approx(0.0805256170, abs=1e-9)
+    assert result["t"] == pytest.approx(0.3 / se)
+    assert result["t"] == pytest.approx(3.7255225234, abs=1e-8)
+
+
+def test_draws_must_cover_exactly_the_table_sessions():
+    r = np.array([[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
+    table = session_table(picks([(0, 0), (1, 0), (2, 0)]), cube_view(r), purge=False)
+    for test in (paired_edge_test, leg_mean_test):
+        with pytest.raises(ValueError, match="cover 2 sessions but the table has 3"):
+            test(table, bootstrap_draws(2, 20, 10, 1))
+
+
+def test_cached_bootstrap_draws_are_read_only():
+    assert not bootstrap_draws(5, 20, 10, 1).flags.writeable

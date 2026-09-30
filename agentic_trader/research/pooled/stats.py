@@ -107,10 +107,15 @@ def session_table(picks: Picks, view: CubeView, *, purge: bool, column: str = "r
 
 @lru_cache(maxsize=16)
 def bootstrap_draws(n: int, block_mean: float, draws: int, seed: int) -> np.ndarray:
-    return _stationary_index_draws(n, block_mean, draws, seed)
+    """Cached, shared and read-only: callers must not mutate the returned array."""
+    out = _stationary_index_draws(n, block_mean, draws, seed)
+    out.flags.writeable = False
+    return out
 
 
 def _ratio_boot(numerator: np.ndarray, weight: np.ndarray, draws: np.ndarray) -> np.ndarray:
+    if draws.shape[1] != len(numerator):
+        raise ValueError(f"bootstrap draws cover {draws.shape[1]} sessions but the table has {len(numerator)}")
     if draws.shape[1] == 0:
         return np.full(draws.shape[0], np.nan)
     num = numerator[draws].sum(axis=1)
