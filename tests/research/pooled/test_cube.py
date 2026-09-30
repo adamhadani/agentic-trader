@@ -11,6 +11,7 @@ from agentic_trader.research.pooled.cube import (
     BracketSpec,
     CoverageSpec,
     CubeSpec,
+    LabelCube,
     build_cube,
     check_coverage,
     load_cube,
@@ -150,3 +151,31 @@ def test_spec_identity_is_stable_and_sensitive():
     assert SPEC.identity == CubeSpec.model_validate(SPEC.model_dump()).identity
     changed = SPEC.model_copy(update={"decision_cost_bps": 0.0})
     assert changed.identity != SPEC.identity
+
+
+def test_views_are_read_only_and_the_callers_arrays_stay_writeable():
+    days = weekdays(date(2021, 3, 1), 5)
+    grid = np.ones((2, 1), dtype=bool)
+    arrays = {
+        "eligible": grid.copy(),
+        "labelled": grid.copy(),
+        "r_gross": np.zeros((2, 1)),
+        "r_cost": np.zeros((2, 1)),
+        "holding": np.ones((2, 1), dtype=np.int16),
+        "hit": np.zeros((2, 1), dtype=np.int8),
+        "tiebreak": np.zeros((2, 1), dtype=np.uint64),
+        "dollar_volume": np.ones((2, 1)),
+    }
+    cube = LabelCube(
+        spec_identity="s", cohort_sha256="c", sessions=tuple(days[:2]), symbols=("AAA",), arrays=arrays, coverage={}
+    )
+    view = cube.window(days[0], days[1])
+    with pytest.raises(ValueError):
+        view.r_cost[0, 0] = 9.0
+    with pytest.raises(ValueError):
+        view.sub(0, 1).r_cost[0, 0] = 9.0
+    assert arrays["r_cost"].flags.writeable
+    shifted = cube.with_shift(np.array([0]), np.array([0]), 0.5)
+    with pytest.raises(ValueError):
+        shifted.window(days[0], days[0]).r_cost[0, 0] = 9.0
+    assert shifted.window(days[0], days[0]).r_cost[0, 0] == pytest.approx(0.5)

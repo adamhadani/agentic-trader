@@ -119,6 +119,12 @@ class CubeView:
         )
 
 
+def _read_only(array: np.ndarray) -> np.ndarray:
+    view = np.asarray(array).view()
+    view.flags.writeable = False
+    return view
+
+
 class LabelCube:
     """Holds the labels privately; ``window`` is the only way to read them."""
 
@@ -139,7 +145,8 @@ class LabelCube:
         self._cohort_sha256 = cohort_sha256
         self._sessions = tuple(sessions)
         self._symbols = tuple(symbols)
-        self._arrays = {name: np.asarray(arrays[name]) for name in _ARRAYS}
+        # Read-only views: windows are slices of these, so in-place edits cannot corrupt the cube.
+        self._arrays = {name: _read_only(arrays[name]) for name in _ARRAYS}
         self._coverage = dict(coverage)
         self._sha256: str | None = None
 
