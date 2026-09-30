@@ -13,7 +13,7 @@ worker count.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -26,6 +26,7 @@ from agentic_trader.research.pooled.campaign import (
     CampaignWindows,
     InMemoryLedger,
     LoadedProtocol,
+    PowerSpec,
     ScoredFormula,
     run_stages,
 )
@@ -75,13 +76,43 @@ def ar1_scores(shape: tuple[int, int], phi: float, seed: int) -> np.ndarray:
     return out
 
 
-def _formula(formula_id: str, seed: int, phi: float, total_shape: tuple[int, int]) -> ScoredFormula:
+def _formula(formula_id: str, seed: int, phi: float, names: int) -> ScoredFormula:
     def panel(view: CubeView):
         # Only the prefix through this window is needed; the field is deterministic in (seed, shape).
-        scores = ar1_scores((view.offset + len(view.sessions), total_shape[1]), phi, seed)
+        scores = ar1_scores((view.offset + len(view.sessions), names), phi, seed)
         return scores[view.offset :], np.ones(view.eligible.shape, dtype=bool)
 
     return ScoredFormula(formula_id=formula_id, nodes=3, panel=panel)
+
+
+def tally_confirmed(confirmed: Iterable[str]) -> tuple[bool, bool]:
+    """(planted formula confirmed, any null formula confirmed) for one campaign run."""
+    ids = set(confirmed)
+    return PLANTED in ids, bool(ids - {PLANTED})
+
+
+def summarize_power(results: Mapping[int, Mapping[float, tuple[bool, bool]]], spec: PowerSpec) -> dict:
+    """Detection/false-acceptance curve and the gate decision from per-replicate tallies."""
+    detected = {d: sum(results[r][d][0] for r in results) for d in spec.deltas}
+    false = {d: sum(results[r][d][1] for r in results) for d in spec.deltas}
+    curve = {
+        f"{delta:g}" if delta else "0.0": {
+            "detection": detected[delta] / spec.replicates,
+            "false_acceptance": false[delta] / spec.replicates,
+        }
+        for delta in spec.deltas
+    }
+    detection = detected[spec.detection_delta] / spec.replicates
+    false_acceptance = false[0.0] / spec.replicates
+    passed = detection >= spec.min_detection and false_acceptance <= spec.max_false_acceptance
+    return {
+        "status": "passed" if passed else "gate_failed",
+        "curve": curve,
+        "detection_at_gate": detection,
+        "false_acceptance_at_zero": false_acceptance,
+        "replicates": spec.replicates,
+        "null_formulas": spec.null_formulas,
+    }
 
 
 def _replicate(
@@ -89,12 +120,12 @@ def _replicate(
 ) -> dict[float, tuple[bool, bool]]:
     """One replicate: per delta, (planted confirmed, any null confirmed)."""
     spec = protocol.power
-    shape = (len(calendar), len(base.symbols))
+    names = len(base.symbols)
     rng = np.random.default_rng([spec.seed, rep])
     cube = synthetic_cube(base, calendar, rng, protocol.bootstrap.block_mean)
     seeds = rng.integers(0, 2**31, spec.null_formulas + 1)
-    planted = _formula(PLANTED, int(seeds[0]), spec.ar_phi, shape)
-    nulls = [_formula(f"null-{i:03d}", int(s), spec.ar_phi, shape) for i, s in enumerate(seeds[1:])]
+    planted = _formula(PLANTED, int(seeds[0]), spec.ar_phi, names)
+    nulls = [_formula(f"null-{i:03d}", int(s), spec.ar_phi, names) for i, s in enumerate(seeds[1:])]
     rows, cols = [], []
     for start, end in (protocol.windows.discovery, protocol.windows.selection, protocol.windows.confirmation):
         view = cube.window(start, end)
@@ -109,7 +140,7 @@ def _replicate(
         windows = CampaignWindows(shifted, protocol.windows, cohort_sha256=cohort_sha256)
         outcome = run_stages([planted, *nulls], windows, InMemoryLedger(), protocol, campaign_id=f"power-{rep}-{delta}")
         confirmed = set(outcome["confirmed"])
-        out[delta] = (PLANTED in confirmed, bool(confirmed - {PLANTED}))
+        out[delta] = tally_confirmed(confirmed)
     return out
 
 
@@ -143,35 +174,21 @@ def run_power(
             progress(f"replicate {len(results)}/{spec.replicates}")
 
     if workers > 1:
-        with ProcessPoolExecutor(
+        pool = ProcessPoolExecutor(
             max_workers=workers, initializer=_init_worker, initargs=(protocol, base, tuple(calendar), cohort_sha256)
-        ) as pool:
+        )
+        try:
             for future in as_completed([pool.submit(_worker_replicate, rep) for rep in range(spec.replicates)]):
                 done(*future.result())
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)  # stop promptly instead of finishing every replicate
+            raise
+        pool.shutdown()
     else:
         for rep in range(spec.replicates):
             done(rep, _replicate(protocol, base, calendar, cohort_sha256, rep))
 
-    detected = {d: sum(results[r][d][0] for r in results) for d in spec.deltas}
-    false = {d: sum(results[r][d][1] for r in results) for d in spec.deltas}
-    curve = {
-        f"{delta:g}" if delta else "0.0": {
-            "detection": detected[delta] / spec.replicates,
-            "false_acceptance": false[delta] / spec.replicates,
-        }
-        for delta in spec.deltas
-    }
-    detection = detected[spec.detection_delta] / spec.replicates
-    false_acceptance = false[0.0] / spec.replicates
-    passed = detection >= spec.min_detection and false_acceptance <= spec.max_false_acceptance
-    return {
-        "status": "passed" if passed else "gate_failed",
-        "curve": curve,
-        "detection_at_gate": detection,
-        "false_acceptance_at_zero": false_acceptance,
-        "replicates": spec.replicates,
-        "null_formulas": spec.null_formulas,
-    }
+    return summarize_power(results, spec)
 
 
 async def execute_power_check(
