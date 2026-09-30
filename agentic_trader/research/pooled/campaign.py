@@ -10,6 +10,7 @@ unchanged on synthetic cubes with an in-memory ledger.
 from __future__ import annotations
 
 import ast
+import calendar
 import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -390,8 +391,9 @@ def _selection(
 
 
 def _months_before(day: date, months: int) -> date:
-    year, month = divmod(day.year * 12 + day.month - 1 - months, 12)
-    return date(year, month + 1, min(day.day, 28))
+    year, month_index = divmod(day.year * 12 + day.month - 1 - months, 12)
+    month = month_index + 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
 
 
 def _confirmation(
@@ -441,6 +443,10 @@ def run_stages(
     *,
     campaign_id: str,
 ) -> dict:
+    ids = [formula.formula_id for formula in formulas]
+    if len(set(ids)) != len(ids):
+        duplicated = sorted({i for i in ids if ids.count(i) > 1})
+        raise ValueError(f"duplicate formula_id in campaign: {duplicated}")
     discovery, carried = _discovery(formulas, windows.discovery(), protocol)
     outcome: dict = {
         "discovery": discovery,
