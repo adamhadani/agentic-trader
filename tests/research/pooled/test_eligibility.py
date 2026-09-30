@@ -114,3 +114,59 @@ def test_atr_and_dollar_volume_are_recorded_for_eligible_cells():
     )
     assert result.atr[0, 0] == pytest.approx(0.4)  # high-low = 20*0.02 every day
     assert result.dollar_volume[0, 0] == pytest.approx(4e7)
+
+
+def _without(frame: pd.DataFrame, position: int) -> pd.DataFrame:
+    return frame.drop(frame.index[position])
+
+
+@pytest.mark.parametrize(
+    ("reason", "odd_raw", "odd_adjusted"),
+    [
+        # $20 x 1e5 = $2e6 of dollar volume, below the $2e7 static reference.
+        ("illiquid_volume", lambda s: daily(s, 20.0, volume=1e5), lambda s: daily(s, 20.0)),
+        # The D-1 raw bar is missing although 20 earlier completed sessions exist.
+        ("no_raw_close", lambda s: _without(daily(s, 20.0), 39), lambda s: daily(s, 20.0)),
+        # Only ten completed raw sessions through D-1: no 20-session median.
+        ("short_history", lambda s: daily(s[30:], 20.0), lambda s: daily(s, 20.0)),
+        # A missing adjusted bar inside the 14 true ranges ending D-1.
+        ("no_atr", lambda s: daily(s, 20.0), lambda s: _without(daily(s, 20.0), 35)),
+    ],
+)
+def test_each_ineligibility_reason_is_counted(reason, odd_raw, odd_adjusted):
+    sessions = days(60)
+    decision = sessions[40]
+    raw = {"AAA": daily(sessions, 20.0), "BBB": daily(sessions, 20.0), "ODD": odd_raw(sessions)}
+    adjusted = {"AAA": raw["AAA"], "BBB": raw["BBB"], "ODD": odd_adjusted(sessions)}
+    result = point_in_time_eligibility(
+        sessions,
+        (decision, decision),
+        ["AAA", "BBB", "ODD"],
+        adjusted,
+        raw,
+        reference(sessions),
+        universe=UNIVERSE,
+        atr_window=14,
+    )
+    assert result.reasons == {reason: 1}
+    assert result.eligible[0].tolist() == [True, True, False]
+    assert np.isnan(result.atr[0, 2]) and np.isnan(result.dollar_volume[0, 2])
+
+
+def test_eligibility_reports_progress_about_every_hundred_sessions():
+    sessions = days(280)
+    raw = {"AAA": daily(sessions, 20.0), "BBB": daily(sessions, 20.0)}
+    messages: list[str] = []
+    result = point_in_time_eligibility(
+        sessions,
+        (sessions[30], sessions[-1]),
+        ["AAA", "BBB"],
+        raw,
+        raw,
+        reference(sessions),
+        universe=UNIVERSE,
+        atr_window=14,
+        progress=messages.append,
+    )
+    assert len(result.sessions) == 250 and result.eligible.all()
+    assert messages == ["eligibility 100/250 sessions", "eligibility 200/250 sessions"]

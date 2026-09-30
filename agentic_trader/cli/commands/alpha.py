@@ -1336,15 +1336,21 @@ def _pooled_build(clients, cohort, spec, cache_dir):
             cache_dir=cache_dir,
             static_symbols=clients.static_symbols,
             pace=clients.pace,
+            progress=lambda message: click.echo(message, err=True),
         )
 
     return build
 
 
+# Required on both commands: a study passes the power gate only on the cube the power check
+# built, and that cube (with its bars) lives in this directory.
+_POOLED_CACHE_HELP = "Shared bar and cube cache directory; give `power` and every `study` the same one"
+
+
 @alpha_pooled_group.command("power")
 @click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
-@click.option("--cache", type=click.Path(path_type=Path), default=None, help="Bar/cube cache; defaults to OUTPUT/raw")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
 @click.option(
     "--workers",
     type=click.IntRange(min=1),
@@ -1361,14 +1367,13 @@ async def alpha_pooled_power_cmd(protocol_path, output, cache, workers):
     cohort = await asyncio.to_thread(load_cohort, REPO_ROOT / loaded.protocol.cohort)
     if cohort.sha256 != loaded.protocol.cohort_sha256:
         raise click.ClickException("Cohort file does not match the protocol's cohort_sha256")
-    cache_dir = cache if cache is not None else output / "raw"
     environment = await asyncio.to_thread(research_environment)
     with _apriori_clients() as clients:
         result = await execute_power_check(
             loaded,
             output,
             cohort=cohort,
-            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache_dir),
+            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
             environment=environment,
             progress=lambda message: click.echo(message, err=True),
             workers=workers,
@@ -1382,7 +1387,7 @@ async def alpha_pooled_power_cmd(protocol_path, output, cache, workers):
 @click.argument("entry_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
-@click.option("--cache", type=click.Path(path_type=Path), default=None, help="Bar/cube cache; defaults to OUTPUT/raw")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
 @coro
 async def alpha_pooled_study_cmd(entry_path, power_dir, output, cache):
     """Run a frozen pooled literature entry (research only; grants no credit)."""
@@ -1404,14 +1409,13 @@ async def alpha_pooled_study_cmd(entry_path, power_dir, output, cache):
         raise click.ClickException(str(exc)) from exc
     if cohort.sha256 != loaded.entry.cohort_sha256:
         raise click.ClickException("Cohort file does not match the entry's cohort_sha256")
-    cache_dir = cache if cache is not None else output / "raw"
     environment = await asyncio.to_thread(research_environment)
     with _apriori_clients() as clients:
         result = await execute_pooled_study(
             loaded,
             output,
             cohort=cohort,
-            build=_pooled_build(clients, cohort, loaded.entry.cube_spec(), cache_dir),
+            build=_pooled_build(clients, cohort, loaded.entry.cube_spec(), cache),
             power_result=power_result,
             environment=environment,
         )

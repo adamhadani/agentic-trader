@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -39,6 +39,7 @@ __all__ = [
 ]
 
 SUPPORTED_SYMBOL = re.compile(r"^[A-Z]{1,5}$")
+_PROGRESS_SESSIONS = 100
 
 
 class CohortSource(BaseModel, frozen=True, extra="forbid"):
@@ -153,12 +154,14 @@ def point_in_time_eligibility(
     *,
     universe: UniverseSpec,
     atr_window: int,
+    progress: Callable[[str], None] | None = None,
 ) -> Eligibility:
     """Eligibility at each decision session D exactly as the live dynamic-universe gate sees it.
 
     ``as_of`` is D-1, the last completed session. The $10 floor and the dollar-volume screen
     read **raw** bars (adjusted history depends on later corporate actions); ATR reads the
     adjusted bars. Eligibility never depends on a formula, so every formula shares one control.
+    ``progress`` is told the session count about every ``_PROGRESS_SESSIONS`` sessions.
     """
     days = tuple(trading_days)
     start, end = decisions
@@ -179,6 +182,8 @@ def point_in_time_eligibility(
     keyed = {s: _by_session(f) for s, f in adjusted.items() if f is not None and not f.empty}
 
     for row, i in enumerate(rows):
+        if progress is not None and row and row % _PROGRESS_SESSIONS == 0:
+            progress(f"eligibility {row}/{len(rows)} sessions")
         as_of = days[i - 1]
         ref = static_reference(
             {s: sl.upto(as_of) for s, sl in static_slicers.items()}, universe.static_percentile, as_of=as_of

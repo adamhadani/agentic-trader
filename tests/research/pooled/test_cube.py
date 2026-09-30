@@ -179,3 +179,51 @@ def test_views_are_read_only_and_the_callers_arrays_stay_writeable():
     with pytest.raises(ValueError):
         shifted.window(days[0], days[0]).r_cost[0, 0] = 9.0
     assert shifted.window(days[0], days[0]).r_cost[0, 0] == pytest.approx(0.5)
+
+
+COVERAGE = CoverageSpec(max_no_reference_fraction=0.02, max_unlabelled_fraction_per_year=0.05)
+
+
+def test_provenance_is_stored_in_the_coverage_and_never_changes_the_cube_hash(tmp_path):
+    days = weekdays(date(2021, 3, 1), 10)
+    bars = {"AAA": hourly(days, [100.0, 100.0, 100.0, 106.0])}
+    grid = eligibility(days[:1], ["AAA"], [[True]])
+    plain = build_cube(grid, bars, SPEC, cohort_sha256="c" * 64)
+    provenance = {"bar_failures": {"ZZZ": "1d/raw: empty"}, "static_used": ["R00"], "bars_sha256": "b" * 64}
+    stamped = build_cube(grid, bars, SPEC, cohort_sha256="c" * 64, provenance=provenance)
+    assert stamped.sha256 == plain.sha256  # same labels, same cube
+    assert {k: stamped.coverage[k] for k in provenance} == provenance
+    assert {k: v for k, v in stamped.coverage.items() if k not in provenance} == plain.coverage
+    save_cube(stamped, tmp_path / "cube.npz")
+    loaded = load_cube(tmp_path / "cube.npz")
+    assert loaded.sha256 == plain.sha256 and loaded.coverage == stamped.coverage
+
+
+def test_the_build_reports_progress_about_every_hundred_sessions():
+    days = weekdays(date(2021, 3, 1), 250)
+    messages: list[str] = []
+    build_cube(eligibility(days, ["AAA"], [[True]] * 250), {}, SPEC, cohort_sha256="c" * 64, progress=messages.append)
+    assert messages == ["cube build 100/250 sessions", "cube build 200/250 sessions"]
+
+
+def test_a_cube_without_an_eligible_cell_is_a_coverage_failure():
+    days = weekdays(date(2021, 3, 1), 5)
+    cube = build_cube(eligibility(days[:2], ["AAA"], [[False], [False]]), {}, SPEC, cohort_sha256="c" * 64)
+    with pytest.raises(ValueError, match="no eligible cell"):
+        check_coverage(cube, COVERAGE)
+
+
+def test_a_cube_without_a_labelled_cell_is_a_coverage_failure():
+    days = weekdays(date(2021, 3, 1), 10)
+    bars = {"AAA": hourly(days, [100.0] * 80)}
+    # ATR 60 puts the stop below zero: the one eligible cell is unlabelled without being an hourly gap.
+    cube = build_cube(eligibility(days[:1], ["AAA"], [[True]], atr=60.0), bars, SPEC, cohort_sha256="c" * 64)
+    assert cube.coverage["unlabelled_by_year"] == {"degenerate_levels": {"2021": 1}}
+    with pytest.raises(ValueError, match="none of the 1 eligible cells is labelled"):
+        check_coverage(cube, COVERAGE)
+
+
+def test_a_labelled_cube_passes_the_coverage_check():
+    days = weekdays(date(2021, 3, 1), 10)
+    bars = {"AAA": hourly(days, [100.0, 100.0, 100.0, 106.0])}
+    check_coverage(build_cube(eligibility(days[:1], ["AAA"], [[True]]), bars, SPEC, cohort_sha256="c" * 64), COVERAGE)

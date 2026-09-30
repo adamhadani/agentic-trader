@@ -7,7 +7,8 @@ per-name AR(1) fields, adds delta R to the planted formula's picks, and runs the
 campaign's ``run_stages`` unchanged with an in-memory ledger.
 
 Each replicate is seeded only by ``[seed, replicate]``, so the curve is identical for any
-worker count.
+worker count. Besides the curve, every replicate records where the planted formula stopped
+(``planted_detail``), so a failed gate says which stage to redesign.
 """
 
 from __future__ import annotations
@@ -41,6 +42,11 @@ from agentic_trader.storage.artifacts import save_json_report
 __all__ = ["ar1_scores", "execute_power_check", "run_power", "synthetic_cube"]
 
 PLANTED = "planted"
+# Where the planted formula ended in one campaign run, in stage order.
+STAGES = ("failed_discovery", "not_carried", "failed_selection", "failed_confirmation", "confirmed")
+
+Tally = dict[float, tuple[bool, bool]]  # per delta: (planted confirmed, any null confirmed)
+Detail = dict[str, dict]  # per delta key: ``planted_detail`` of that campaign run
 
 
 def synthetic_cube(base: CubeView, calendar: Sequence[date], rng: np.random.Generator, block_mean: float) -> LabelCube:
@@ -91,12 +97,78 @@ def tally_confirmed(confirmed: Iterable[str]) -> tuple[bool, bool]:
     return PLANTED in ids, bool(ids - {PLANTED})
 
 
+def _delta_key(delta: float) -> str:
+    return f"{delta:g}" if delta else "0.0"
+
+
+def _planted_row(rows: Sequence[Mapping]) -> Mapping | None:
+    return next((row for row in rows if row["formula_id"] == PLANTED), None)
+
+
+def planted_detail(outcome: Mapping) -> dict:
+    """Where the planted formula stopped in one ``run_stages`` outcome, and any confirmed null.
+
+    Strict-JSON safe: a non-finite statistic is stored as None.
+    """
+    discovery = _planted_row(outcome["discovery"])
+    selection = _planted_row(outcome["selection"])
+    confirmation = _planted_row(outcome["confirmation"])
+    if discovery is None:
+        raise ValueError("the campaign outcome has no discovery row for the planted formula")
+    carried = PLANTED in outcome["carried"]
+    if not discovery["passes"]:
+        stage = "failed_discovery"
+    elif not carried:
+        stage = "not_carried"
+    elif selection is None or not selection["kept"]:
+        stage = "failed_selection"
+    elif PLANTED not in outcome["confirmed"]:
+        stage = "failed_confirmation"
+    else:
+        stage = "confirmed"
+    return _finite_json(
+        {
+            "stage": stage,
+            "discovery": {
+                "passes": bool(discovery["passes"]),
+                "edge_t": discovery["edge"]["t"],
+                "edge_mean": discovery["edge"]["mean"],
+                "leg_mean": discovery["leg"]["mean"],
+                "positive_blocks": sum(1 for mean in discovery["block_means"] if np.isfinite(mean) and mean > 0),
+                "n_sessions": int(discovery["edge"]["n_sessions"]),
+            },
+            "carried": carried,
+            "selection": None
+            if selection is None
+            else {"kept": bool(selection["kept"]), "edge_mean": selection["edge"]["mean"]},
+            "confirmation": None
+            if confirmation is None
+            else {
+                "passes": bool(confirmation["passes"]),
+                "holm_p": confirmation["holm_p"],
+                "edge_mean": confirmation["edge"]["mean"],
+                "leg_ci90_low": confirmation["leg"]["ci90"][0],
+                "trimmed_mean": confirmation["trimmed_mean"],
+                "recent_edge": confirmation["recent_edge"],
+                "n_sessions": int(confirmation["edge"]["n_sessions"]),
+            },
+            "confirmed_nulls": sorted(set(outcome["confirmed"]) - {PLANTED}),
+        }
+    )
+
+
+def stage_counts(details: Sequence[Mapping[str, Mapping]], spec: PowerSpec) -> dict:
+    """Per delta, how many replicates ended at each stage (every stage listed, in order)."""
+    keys = [_delta_key(delta) for delta in spec.deltas]
+    return {key: {stage: sum(1 for d in details if d[key]["stage"] == stage) for stage in STAGES} for key in keys}
+
+
 def summarize_power(results: Mapping[int, Mapping[float, tuple[bool, bool]]], spec: PowerSpec) -> dict:
     """Detection/false-acceptance curve and the gate decision from per-replicate tallies."""
     detected = {d: sum(results[r][d][0] for r in results) for d in spec.deltas}
     false = {d: sum(results[r][d][1] for r in results) for d in spec.deltas}
     curve = {
-        f"{delta:g}" if delta else "0.0": {
+        _delta_key(delta): {
             "detection": detected[delta] / spec.replicates,
             "false_acceptance": false[delta] / spec.replicates,
         }
@@ -117,8 +189,8 @@ def summarize_power(results: Mapping[int, Mapping[float, tuple[bool, bool]]], sp
 
 def _replicate(
     protocol: CampaignProtocol, base: CubeView, calendar: Sequence[date], cohort_sha256: str, rep: int
-) -> dict[float, tuple[bool, bool]]:
-    """One replicate: per delta, (planted confirmed, any null confirmed)."""
+) -> tuple[Tally, Detail]:
+    """One replicate: per delta, (planted confirmed, any null confirmed) and the planted detail."""
     spec = protocol.power
     names = len(base.symbols)
     rng = np.random.default_rng([spec.seed, rep])
@@ -134,14 +206,15 @@ def _replicate(
         rows.append(picks.session_idx + view.offset)
         cols.append(picks.symbol_idx)
     cells = (np.concatenate(rows), np.concatenate(cols))
-    out: dict[float, tuple[bool, bool]] = {}
+    tally: Tally = {}
+    detail: Detail = {}
     for delta in spec.deltas:
         shifted = cube.with_shift(*cells, delta) if delta else cube
         windows = CampaignWindows(shifted, protocol.windows, cohort_sha256=cohort_sha256)
         outcome = run_stages([planted, *nulls], windows, InMemoryLedger(), protocol, campaign_id=f"power-{rep}-{delta}")
-        confirmed = set(outcome["confirmed"])
-        out[delta] = tally_confirmed(confirmed)
-    return out
+        tally[delta] = tally_confirmed(outcome["confirmed"])
+        detail[_delta_key(delta)] = planted_detail(outcome)
+    return tally, detail
 
 
 _WORKER: dict = {}
@@ -151,7 +224,7 @@ def _init_worker(protocol: CampaignProtocol, base: CubeView, calendar: Sequence[
     _WORKER.update(protocol=protocol, base=base, calendar=calendar, cohort_sha256=cohort_sha256)
 
 
-def _worker_replicate(rep: int) -> tuple[int, dict[float, tuple[bool, bool]]]:
+def _worker_replicate(rep: int) -> tuple[int, tuple[Tally, Detail]]:
     w = _WORKER
     return rep, _replicate(w["protocol"], w["base"], w["calendar"], w["cohort_sha256"], rep)
 
@@ -166,10 +239,11 @@ def run_power(
     workers: int = 1,
 ) -> dict:
     spec = protocol.power
-    results: dict[int, dict[float, tuple[bool, bool]]] = {}
+    results: dict[int, Tally] = {}
+    details: dict[int, Detail] = {}
 
-    def done(rep: int, outcome: dict[float, tuple[bool, bool]]) -> None:
-        results[rep] = outcome
+    def done(rep: int, outcome: tuple[Tally, Detail]) -> None:
+        results[rep], details[rep] = outcome
         if progress is not None:
             progress(f"replicate {len(results)}/{spec.replicates}")
 
@@ -188,7 +262,12 @@ def run_power(
         for rep in range(spec.replicates):
             done(rep, _replicate(protocol, base, calendar, cohort_sha256, rep))
 
-    return summarize_power(results, spec)
+    ordered = [details[rep] for rep in sorted(details)]  # replicate order, whatever order they finished in
+    return {
+        **summarize_power(results, spec),
+        "planted_stage_counts": stage_counts(ordered, spec),
+        "replicates_detail": ordered,
+    }
 
 
 async def execute_power_check(
@@ -232,7 +311,15 @@ async def execute_power_check(
         outcome = await asyncio.to_thread(
             run_power, protocol, view, calendar, cohort_sha256=cohort.sha256, progress=progress, workers=workers
         )
-        result = {**outcome, **base, "cube_sha256": built.cube.sha256}
+        result = {
+            **outcome,
+            **base,
+            "cube_sha256": built.cube.sha256,
+            # This run builds the cube every study reuses: record what the build saw.
+            "cube": {"sha256": built.cube.sha256, "coverage": built.cube.coverage},
+            "bar_failures": dict(built.bar_failures),
+            "static_used": list(built.static_used),
+        }
     except Exception as exc:
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", **base}
     save_json_report(_finite_json(result), directory / "result.json")

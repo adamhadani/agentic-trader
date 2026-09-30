@@ -27,6 +27,8 @@ from agentic_trader.research.pooled.stats import (
     bootstrap_draws,
     calendar_time_newey_west,
     design_effect,
+    leg_mean_test,
+    paired_edge_test,
     session_table,
     two_way_clustered,
 )
@@ -145,6 +147,8 @@ async def execute_pooled_study(
             len(view.sessions), entry.bootstrap.block_mean, entry.bootstrap.draws, entry.bootstrap.seed
         )
         verdict = evaluate_entry(table, entry, draws)
+        # The same picks and draws at 0 bps, reported alongside; the decisive cost alone decides.
+        gross = session_table(picks, view, purge=False, column="r_gross")
         rows = table.pick_rows
         picks_frame = rows.assign(
             session=[view.sessions[i].isoformat() for i in rows["session_idx"]],
@@ -155,6 +159,7 @@ async def execute_pooled_study(
             "status": "completed",
             "decision": "eligible_for_probe" if verdict["passes"] else "failed",
             "pass_rule": verdict,
+            "gross": {"paired_edge": paired_edge_test(gross, draws), "leg_mean": leg_mean_test(gross, draws)},
             "cross_checks": {
                 "two_way_clustered": two_way_clustered(rows),
                 # Each pick's residual is spread across its hold, so calendar-time serial
@@ -171,6 +176,7 @@ async def execute_pooled_study(
                 "dropped_purged": table.dropped_purged,
             },
             "cube": {"sha256": built.cube.sha256, "coverage": built.cube.coverage},
+            # As stored in the cube's coverage by the run that built it (the power check).
             "bar_failures": dict(built.bar_failures),
             "static_used": list(built.static_used),
             "authorizes_promotion": False,

@@ -323,6 +323,25 @@ def test_purging_drops_picks_whose_hold_runs_past_the_window_or_block_end():
     assert row["block_means"][0] > 0  # the pick crossing the block end is purged, not averaged in
 
 
+def test_selection_purges_a_pick_whose_hold_crosses_into_the_confirmation_window():
+    hold = 3
+    sessions = SEL.stop - SEL.start
+    picks = list(range(0, sessions, hold))  # a held name is picked again only after its exit
+    crossing = [i for i in picks if i + hold - 1 > sessions - 1]
+    assert len(crossing) == 1  # its label resolves inside the confirmation window
+    r = returns()
+    r[DISC, 0] += 0.5
+    r[SEL, 0] += 0.5
+    r[SEL.start + crossing[0], 0] = -200.0  # averaged in, it would turn the selection edge negative
+    outcome = run_stages(
+        [favourite("f", 0)], windows_of(cube_of(r, holding=hold)), InMemoryLedger(), P1, campaign_id="p"
+    )
+    (row,) = outcome["selection"]
+    assert row["edge"]["n_sessions"] == len(picks) - 1 >= PROTOCOL.selection_gate.min_sessions
+    assert row["edge"]["mean"] > 0.25 and row["kept"]
+    assert outcome["frozen"] == ["f"]
+
+
 def test_confirmation_keeps_picks_whose_hold_runs_past_the_window_end():
     hold = 6
     r = returns()

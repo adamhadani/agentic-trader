@@ -11,9 +11,12 @@ from agentic_trader.research.pooled import power
 from agentic_trader.research.pooled.campaign import LoadedProtocol, load_campaign_protocol
 from agentic_trader.research.pooled.cube import _ARRAYS, CubeView, LabelCube
 from agentic_trader.research.pooled.power import (
+    STAGES,
     ar1_scores,
     execute_power_check,
+    planted_detail,
     run_power,
+    stage_counts,
     summarize_power,
     synthetic_cube,
     tally_confirmed,
@@ -95,6 +98,24 @@ def test_power_detects_a_huge_edge_and_rejects_the_null_on_a_small_run():
     assert result["status"] == "passed"
     assert result["curve"]["0.0"]["false_acceptance"] == 0.0
     assert result["curve"]["1.5"]["false_acceptance"] == 0.0
+    # The diagnostics say where the planted formula stopped, per replicate and per delta.
+    assert set(result["planted_stage_counts"]) == set(result["curve"]) == {"0.0", "1.5"}
+    assert result["planted_stage_counts"]["1.5"] == {**dict.fromkeys(STAGES, 0), "confirmed": 2}
+    assert sum(result["planted_stage_counts"]["0.0"].values()) == 2
+    assert result["planted_stage_counts"]["0.0"]["confirmed"] == 0
+    assert len(result["replicates_detail"]) == 2
+    for detail in result["replicates_detail"]:
+        assert set(detail) == {"0.0", "1.5"}
+        planted = detail["1.5"]
+        assert planted["stage"] == "confirmed" and planted["carried"] and planted["confirmed_nulls"] == []
+        assert planted["discovery"]["passes"] and planted["discovery"]["edge_t"] >= PROTOCOL.discovery_gate.min_t
+        assert planted["discovery"]["positive_blocks"] == 4 and planted["discovery"]["n_sessions"] >= 400
+        assert planted["selection"]["kept"] and planted["selection"]["edge_mean"] > 1.0
+        assert planted["confirmation"]["passes"] and planted["confirmation"]["holm_p"] <= 0.05
+        assert planted["confirmation"]["leg_ci90_low"] > 0 and planted["confirmation"]["n_sessions"] >= 300
+        null = detail["0.0"]
+        assert null["stage"] != "confirmed" and null["discovery"]["edge_mean"] < planted["discovery"]["edge_mean"]
+    json.dumps(result, allow_nan=False)  # strict JSON: no NaN anywhere in the diagnostics
 
 
 def test_curve_is_identical_for_any_worker_count_and_progress_reports_each_replicate():
@@ -104,6 +125,8 @@ def test_curve_is_identical_for_any_worker_count_and_progress_reports_each_repli
         tiny_protocol(), base_view(), calendar(), cohort_sha256="c" * 64, workers=2, progress=seen.append
     )
     assert parallel == serial
+    assert parallel["replicates_detail"] == serial["replicates_detail"] and len(serial["replicates_detail"]) == 2
+    assert parallel["planted_stage_counts"] == serial["planted_stage_counts"]
     assert sorted(seen) == ["replicate 1/2", "replicate 2/2"]
 
 
@@ -144,6 +167,98 @@ def test_tally_confirmed_separates_planted_from_null_acceptance():
     assert tally_confirmed({"planted"}) == (True, False)
     assert tally_confirmed({"null-001"}) == (False, True)
     assert tally_confirmed(set()) == (False, False)
+
+
+def _stats(mean=0.2, t=4.0, n=450, ci_low=0.05):
+    return {"mean": mean, "t": t, "ci90": (ci_low, 0.4), "n_sessions": n}
+
+
+def _outcome(*, passes=True, carried=True, kept=None, confirmed=None, nulls=()):
+    """A ``run_stages`` outcome for the planted formula with the rows each stage produces."""
+    discovery = {
+        "formula_id": "planted",
+        "edge": _stats(),
+        "leg": {"mean": 0.1},
+        "block_means": [0.3, float("nan"), 0.1, -0.2],
+        "passes": passes,
+    }
+    outcome = {
+        "discovery": [{**discovery, "formula_id": "null-000", "passes": False}, discovery],
+        "carried": ["planted"] if carried else [],
+        "selection": [],
+        "confirmation": [],
+        "confirmed": list(nulls),
+    }
+    if kept is not None:
+        outcome["selection"] = [{"formula_id": "planted", "edge": _stats(mean=0.15), "kept": kept}]
+    if confirmed is not None:
+        outcome["confirmation"] = [
+            {
+                "formula_id": "planted",
+                "edge": _stats(mean=0.12, n=320),
+                "leg": {"ci90": (-0.01, 0.3)},
+                "trimmed_mean": float("nan"),
+                "recent_edge": 0.07,
+                "holm_p": 0.2,
+                "passes": confirmed,
+            }
+        ]
+        if confirmed:
+            outcome["confirmed"].append("planted")
+    return outcome
+
+
+@pytest.mark.parametrize(
+    ("outcome", "stage"),
+    [
+        (_outcome(passes=False, carried=False), "failed_discovery"),
+        (_outcome(carried=False), "not_carried"),  # passed the gate; deduplicated or beyond the carry cap
+        (_outcome(kept=False), "failed_selection"),
+        (_outcome(kept=True, confirmed=False), "failed_confirmation"),
+        (_outcome(kept=True, confirmed=True), "confirmed"),
+    ],
+)
+def test_planted_detail_names_the_stage_where_the_planted_formula_stopped(outcome, stage):
+    detail = planted_detail(outcome)
+    assert detail["stage"] == stage and stage in STAGES
+    assert detail["discovery"] == {
+        "passes": outcome["discovery"][1]["passes"],
+        "edge_t": 4.0,
+        "edge_mean": 0.2,
+        "leg_mean": 0.1,
+        "positive_blocks": 2,
+        "n_sessions": 450,
+    }
+    assert detail["carried"] == bool(outcome["carried"])
+    assert (detail["selection"] is None) == (not outcome["selection"])
+    assert (detail["confirmation"] is None) == (not outcome["confirmation"])
+    json.dumps(detail, allow_nan=False)
+
+
+def test_planted_detail_reports_the_later_stage_rows_and_any_confirmed_null():
+    detail = planted_detail(_outcome(kept=True, confirmed=False, nulls=("null-007", "null-002")))
+    assert detail["selection"] == {"kept": True, "edge_mean": 0.15}
+    assert detail["confirmation"] == {
+        "passes": False,
+        "holm_p": 0.2,
+        "edge_mean": 0.12,
+        "leg_ci90_low": -0.01,
+        "trimmed_mean": None,  # non-finite values are stored as null
+        "recent_edge": 0.07,
+        "n_sessions": 320,
+    }
+    assert detail["confirmed_nulls"] == ["null-002", "null-007"]
+
+
+def test_stage_counts_tally_every_replicate_per_delta():
+    details = [
+        {"0.0": {"stage": "failed_discovery"}, "0.15": {"stage": "confirmed"}},
+        {"0.0": {"stage": "failed_discovery"}, "0.15": {"stage": "failed_selection"}},
+    ]
+    counts = stage_counts(details, _spec())
+    assert counts["0.0"] == {**dict.fromkeys(STAGES, 0), "failed_discovery": 2}
+    assert counts["0.15"] == {**dict.fromkeys(STAGES, 0), "confirmed": 1, "failed_selection": 1}
+    assert list(counts["0.15"]) == list(STAGES)
 
 
 def _spec(**update):
@@ -201,9 +316,17 @@ def _built() -> CubeBuild:
         sessions=cal,
         symbols=base.symbols,
         arrays={name: getattr(cube.window(cal[0], cal[-1]), name) for name in _ARRAYS},
-        coverage={"sessions": len(cal), "skipped_sessions": {}, "unlabelled_by_year": {}, "eligible_by_year": {}},
+        coverage={
+            "sessions": len(cal),
+            "skipped_sessions": {},
+            "unlabelled_by_year": {},
+            "eligible_by_year": {},
+            "bars_sha256": "b" * 64,
+        },
     )
-    return CubeBuild(cube=real, trading_days=cal, adjusted={}, bar_failures={}, static_used=())
+    return CubeBuild(
+        cube=real, trading_days=cal, adjusted={}, bar_failures={"ZZZ": "1d/raw: empty"}, static_used=("R00", "R01")
+    )
 
 
 def _executor_inputs(cohort_sha=COHORT):
@@ -231,9 +354,16 @@ def test_execute_power_check_writes_manifest_first_and_a_strict_result(tmp_path)
     assert result["campaign_protocol_sha256"] == "p" * 64
     assert result["cube_sha256"] == built.cube.sha256
     assert result["authorizes_promotion"] is False
+    # The run that builds the shared cube records what the build saw.
+    assert result["cube"] == {"sha256": built.cube.sha256, "coverage": built.cube.coverage}
+    assert result["cube"]["coverage"]["bars_sha256"] == "b" * 64
+    assert result["bar_failures"] == {"ZZZ": "1d/raw: empty"}
+    assert result["static_used"] == ["R00", "R01"]
     on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
     assert on_disk["status"] == "passed"
     assert on_disk["authorizes_promotion"] is False
+    for key in ("cube", "bar_failures", "static_used", "planted_stage_counts", "replicates_detail"):
+        assert on_disk[key] == result[key]
 
 
 def test_execute_power_check_records_a_build_failure(tmp_path):

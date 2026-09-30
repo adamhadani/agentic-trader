@@ -375,6 +375,21 @@ one or two reasonable cards per session:
      [literature report](alpha-pooled-mining-research-2026-09-28.md)). Running power
      check A and the two studies follows the final review. Part 1b is next: the campaign
      runner, the journal-backed ledger, the genetic search and search check B.
+   - Part 1b requirements fixed by the final review of Part 1a (2026-09-30):
+     - **Literature overlap rule** (decided before any literature study was run): a
+       campaign finalist whose discovery-window pick set overlaps a literature entry's at
+       Jaccard >= `dedupe_jaccard` (0.5) is reported as "already tested by literature
+       entry `<id>`", keeps its Holm slot in the confirmation family and gains no probe
+       eligibility beyond that entry's own verdict
+       ([contract](alpha-pooled-mining.md#literature-overlap-rule-part-1b-requirement)).
+     - The runner hands search code only `CampaignWindows`, never the `LabelCube`.
+     - It checks `cube.cohort_sha256` against its ledger key before any stage runs.
+     - DSL panels are label-blind: a panel builder reads only a view's `offset`,
+       `sessions` and `eligible`.
+     - Mutation honours `forbidden_operators`.
+     - It should add a false-acceptance check with real DSL expressions: power check A
+       uses label-independent AR(1) nulls and cannot certify factor-loaded formulas
+       ([limits](alpha-pooled-mining.md#what-power-check-a-does-and-does-not-show)).
    - **Weekly ETF32 miner paused (2026-09-28).** The operator disabled and unloaded
      `com.agentictrader.alphaminer` (`launchctl disable` and `bootout`; the plist is
      kept) so it stops charging 512 trials a week to the family that deflates every future

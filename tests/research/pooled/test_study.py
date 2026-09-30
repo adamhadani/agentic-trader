@@ -35,7 +35,7 @@ COHORT = LoadedCohort(
 )
 
 
-def _build() -> CubeBuild:
+def _build(gross_shift: float = 0.0) -> CubeBuild:
     days = []
     d = date(2016, 1, 4)
     while d <= date(2026, 7, 31):
@@ -49,7 +49,7 @@ def _build() -> CubeBuild:
     arrays = {
         "eligible": np.ones((s, n), bool),
         "labelled": np.ones((s, n), bool),
-        "r_gross": r,
+        "r_gross": r + gross_shift,
         "r_cost": r,
         "holding": np.full((s, n), 5, np.int16),
         "hit": np.ones((s, n), np.int8),
@@ -71,7 +71,13 @@ def _build() -> CubeBuild:
         adjusted[symbol] = pd.DataFrame(
             {"Open": close, "High": close, "Low": close, "Close": close, "Volume": 1e6}, index=index
         )
-    return CubeBuild(cube=cube, trading_days=tuple(days), adjusted=adjusted, bar_failures={}, static_used=())
+    return CubeBuild(
+        cube=cube,
+        trading_days=tuple(days),
+        adjusted=adjusted,
+        bar_failures={"ZZZ": "1d/raw: empty"},
+        static_used=("R00", "R01"),
+    )
 
 
 def _power(cube_sha256: str | None = None) -> dict:
@@ -201,6 +207,43 @@ def test_study_writes_manifest_first_and_a_complete_result(tmp_path):
     assert manifest["authorizes_promotion"] is False
     assert manifest["campaign_protocol_sha256"] == LOADED.entry.campaign_protocol_sha256
     assert (tmp_path / "out" / "picks.csv.gz").exists()
+    # The study reports what the cube's build recorded.
+    assert result["bar_failures"] == {"ZZZ": "1d/raw: empty"} and result["static_used"] == ["R00", "R01"]
+    assert result["cube"] == {"sha256": build.cube.sha256, "coverage": build.cube.coverage}
+
+
+def _completed(tmp_path, build: CubeBuild) -> dict:
+    async def fake_build():
+        return build
+
+    result = asyncio.run(
+        execute_pooled_study(
+            LOADED,
+            tmp_path / "out",
+            cohort=COHORT,
+            build=fake_build,
+            power_result=_power(build.cube.sha256),
+            environment={},
+        )
+    )
+    assert result["status"] == "completed", result.get("error")
+    return result
+
+
+def test_the_zero_cost_edge_is_reported_alongside_and_equals_the_decisive_one_without_costs(tmp_path):
+    result = _completed(tmp_path, _build())  # r_gross == r_cost in this fixture
+    assert result["gross"] == {"paired_edge": result["pass_rule"]["p2"], "leg_mean": result["pass_rule"]["p1"]}
+    assert _strict_json(tmp_path / "out" / "result.json")["gross"]["paired_edge"]["n_sessions"] > 0
+
+
+def test_the_zero_cost_edge_reads_the_gross_column(tmp_path):
+    result = _completed(tmp_path, _build(gross_shift=0.1))  # every cell: R at 0 bps = R at 5 bps + 0.1
+    cost_leg, cost_edge = result["pass_rule"]["p1"], result["pass_rule"]["p2"]
+    assert result["gross"]["leg_mean"]["mean"] == pytest.approx(cost_leg["mean"] + 0.1)
+    assert result["gross"]["leg_mean"]["n"] == cost_leg["n"]
+    # The control moves with the picks, so the paired edge is unchanged.
+    assert result["gross"]["paired_edge"]["mean"] == pytest.approx(cost_edge["mean"])
+    assert result["gross"]["paired_edge"]["n_sessions"] == cost_edge["n_sessions"]
 
 
 def test_study_records_failure_instead_of_raising(tmp_path):

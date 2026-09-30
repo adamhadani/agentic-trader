@@ -1,6 +1,8 @@
 # Pooled alpha mining: one formula across the cohort (Part 1)
 
 **Status:** design approved in conversation 2026-09-28; awaiting written-spec review.
+Amended 2026-09-30 after the final review of Part 1a; each amendment is marked in place
+and the original text is kept.
 **Scope:** research only. No live trading behaviour, schema migration, registry or
 Telegram change. Part 1 ships as two PRs under this spec (1a, then 1b). Live cards
 for a passing formula are Part 2, a separate spec, built only if something passes.
@@ -66,6 +68,11 @@ is compared with the same control. A formula can pick only eligible names whose 
 is finite (a name without enough history for the formula's lookback has no score). A
 session with fewer than 30 eligible names is skipped and counted.
 
+> **Amendment (2026-09-30).** The static reference set is the configured equity
+> contracts **including the ETFs**, as in the live gate and PEAD. "ETFs excluded" in the
+> decisions table is about the cohort, not the reference set. The set the build actually
+> used is recorded in the cube's coverage.
+
 ## Data
 
 - Alpaca SIP. Daily bars, adjustment `all` (formulas, ATR) and `raw` (eligibility), for
@@ -77,6 +84,15 @@ session with fewer than 30 eligible names is skipped and counted.
 - Decisions: 2016-08-01 → 2026-07-31. Labels need 20 further sessions of bars.
 - A symbol without bars for part of the window is ineligible there and counted by
   year; a symbol with no bars at all is listed.
+
+> **Amendment (2026-09-30).** Daily bars start **2016-01-01**, not 2015-07-01: SIP daily
+> history begins there, so a 252-session formula has no score until early 2017. Hourly
+> bars are fetched over one span that depends only on the spec (first decision minus 7
+> days through 2026-09-01), not over each symbol's eligible span, so a cached frame is
+> never too short for a later build. A fetch that still raises after its retries fails
+> the build once every symbol has been attempted (a rerun resumes from the cache); an
+> empty frame is recorded and the name is ineligible or unlabelled. The cache directory
+> is an explicit, required `--cache` argument; there is no default.
 
 ## Label cube
 
@@ -93,6 +109,13 @@ Stored per cell: eligibility, `r_cost_0bps`, `r_cost_5bps`, hit, `holding_sessio
 decision price, ATR. The cube is written once as a hash-identified artifact
 (`labels.npz` plus a JSON index of symbols, sessions and source-bar digests) and reused
 by every Part 1 run on the same cohort, bracket and window.
+
+> **Amendment (2026-09-30).** The cube stores, per cell: eligibility, R at 0 and 5 bps,
+> hit, holding sessions, the tie-break key and the raw dollar volume. **Decision price
+> and ATR are not stored.** It is one `.npz` file whose coverage report (outside the cube
+> hash) holds the counts and the build's provenance: bar failures, the static reference
+> set used and one digest over every bar cache file read. A cube with no eligible or no
+> labelled cell is a coverage failure.
 
 **Window guard.** Code reads the cube only through `LabelCube.window(start, end)`. The
 cube build reports coverage counts only, never a return statistic. The campaign runner
@@ -146,6 +169,11 @@ Unit: `R_cost` at 5 bps per side (0 bps reported alongside).
 - **Descriptive.** Target/stop/timeout shares, results by year and by liquidity
   tercile, picks per session, share of picks from the 300 cohort vs scan equities.
 
+> **Amendment (2026-09-30).** A study result also reports the paired edge and leg mean at
+> 0 bps (`gross`). Picks per sector (see the caveats) are computed for the result
+> document from `picks.csv.gz`, for the symbols whose sector is known; the executor does
+> not compute them.
+
 ## Part 1a — literature entries (single hypotheses)
 
 Two entries, each committed before any data is read, one test each at the PEAD bar.
@@ -176,6 +204,17 @@ A passing entry becomes eligible for a Part 2 probe; a failing one is written up
 marked failed. Thresholds are never revisited after a run; a change is a new version.
 
 ## Part 1b — the budgeted genetic campaign
+
+> **Amendment (2026-09-30): literature overlap rule.** Decided before any literature
+> study was run. A campaign finalist whose discovery-window pick set overlaps a
+> literature entry's discovery-window pick set at Jaccard ≥ `dedupe_jaccard` (0.5) is
+> reported as "already tested by literature entry `<id>`". It keeps its Holm slot in the
+> confirmation family (it is not removed to make the others' thresholds easier) and gains
+> no probe eligibility beyond that literature entry's own verdict. Why: the two entries
+> are evaluated on 2016-08-01 → 2026-07-31, which contains the campaign's confirmation
+> window, and the `high52`, `reversal` and `max_lottery` families contain their formulas
+> or close relatives, so without the rule those formulas would get a second look at
+> 2024–2026. The Part 1b runner must implement it.
 
 ### Protocol (frozen in Part 1a's PR, run in 1b)
 
@@ -280,6 +319,16 @@ Uses only discovery-window cells (2016-08-01 → 2021-12-31):
   confirmed) per δ.
 - **Acceptance:** detection ≥ 80% at δ = 0.15R; false acceptance ≤ 5% at δ = 0. A
   failure stops Part 1 for redesign; no real formula outcome is computed.
+- **Caveat (amendment, 2026-09-30).** Check A certifies the stage machinery and the
+  statistic under label-independent AR(1) null formulas only. In a reviewer simulation
+  (20-session −1R/+3R brackets, 120 names, true null) picks sharing a persistent exposure
+  to a zero-mean common factor rejected at about 6.5–6.8% at a nominal 5% (sd of t ≈
+  1.16–1.26), and longer bootstrap blocks did not repair it, so the false-acceptance
+  figure does not certify momentum-like or 52-week-high-like formulas. The detection
+  figure is an upper bound (a constant +δ on every pick, a Holm family of about one, and
+  2016–2021 market drift feeding the leg-mean gates). The literature entries' single
+  tests inherit the size caveat; a pass grants only a capped paper probe. Part 1b should
+  add a false-acceptance check with real DSL expressions.
 
 **B. Search power (Part 1b; gates the campaign's real run).**
 On real discovery-window bars and cells: for 10 seeds, hide a random expression from

@@ -17,7 +17,7 @@ import math
 import os
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, time, timedelta
 from pathlib import Path
@@ -51,6 +51,7 @@ HIT_CODES = {BracketHit.IMMATURE: 0, BracketHit.TARGET: 1, BracketHit.STOP: 2, B
 # 20 sessions span at most ~30 calendar days; the slice handed to the labeller is trimmed to this.
 _LABEL_SPAN = timedelta(days=45)
 _ARRAYS = ("eligible", "labelled", "r_gross", "r_cost", "holding", "hit", "tiebreak", "dollar_volume")
+_PROGRESS_SESSIONS = 100
 
 
 class BracketSpec(BaseModel, frozen=True, extra="forbid"):
@@ -234,8 +235,21 @@ class _Hourly:
 
 
 def build_cube(
-    eligibility: Eligibility, hourly: Mapping[str, pd.DataFrame], spec: CubeSpec, *, cohort_sha256: str
+    eligibility: Eligibility,
+    hourly: Mapping[str, pd.DataFrame],
+    spec: CubeSpec,
+    *,
+    cohort_sha256: str,
+    provenance: Mapping[str, object] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> LabelCube:
+    """Label every eligible cell.
+
+    ``provenance`` (what the build read: bar failures, the static reference set, bar-file
+    digests) is stored in the coverage report, which is outside the cube hash: the same
+    labels are the same cube whatever is recorded about how they were acquired.
+    ``progress`` is told the session count about every ``_PROGRESS_SESSIONS`` sessions.
+    """
     shape = eligibility.eligible.shape
     labelled = np.zeros(shape, dtype=bool)
     r_gross = np.full(shape, np.nan)
@@ -249,6 +263,8 @@ def build_cube(
     prepared = {s: _Hourly(f) for s, f in hourly.items() if f is not None and not f.empty}
     clock = spec.bracket.decision_clock()
     for row, day in enumerate(eligibility.sessions):
+        if progress is not None and row and row % _PROGRESS_SESSIONS == 0:
+            progress(f"cube build {row}/{len(eligibility.sessions)} sessions")
         year = str(day.year)
         when = decision_at(day, clock)
         for col, symbol in enumerate(eligibility.symbols):
@@ -287,6 +303,7 @@ def build_cube(
             holding[row, col] = outcome.holding_sessions
             hit[row, col] = HIT_CODES[outcome.hit]
     coverage = {
+        **(provenance or {}),
         "sessions": len(eligibility.sessions),
         "skipped_sessions": dict(eligibility.skipped_sessions),
         "eligibility_reasons": dict(eligibility.reasons),
@@ -336,6 +353,12 @@ def check_coverage(cube: LabelCube, coverage: CoverageSpec) -> None:
                 f"{gaps[year]}/{eligible} eligible cells in {year} have no hourly decision data, above the frozen "
                 f"{coverage.max_unlabelled_fraction_per_year:.0%} limit"
             )
+    # An empty sample is a gap too (no threshold: nothing at all can be tested on it).
+    eligible_cells, labelled_cells = (int(cube._arrays[name].sum()) for name in ("eligible", "labelled"))
+    if eligible_cells == 0:
+        raise ValueError("the cube has no eligible cell; nothing can be tested on it")
+    if labelled_cells == 0:
+        raise ValueError(f"none of the {eligible_cells} eligible cells is labelled; nothing can be tested on the cube")
 
 
 def save_cube(cube: LabelCube, path: Path) -> None:
