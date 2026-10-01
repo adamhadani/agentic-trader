@@ -22,6 +22,19 @@ Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output 
 | `pead` | 1 | Post-earnings drift when EPS surprise and price reaction agree | — | — | Failed closed on calendar coverage (Nasdaq gap 2016-06-06..07-08); no outcomes computed |
 | `pead` | 2 | Same, decisions from 2016-08-01 | **eligible** (+0.149R; +0.055R vs control) | failed (−0.064R) | [result](apriori-pead-2026-09-26.md), [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |
 
+## Pooled literature entries
+
+Two further single-hypothesis entries run on the [pooled mining lane](alpha-pooled-mining.md)
+(`config/research/pooled/`, one formula across a frozen 353-symbol cohort, session-paired
+edge, PEAD's P1-P4 bar). They were tested with `copilot alpha pooled study` after
+[power check A](alpha-pooled-power-2026-09-30.md) passed (detection 0.98 at +0.15R,
+false acceptance 0.00), not with `alpha apriori-study`.
+
+| Entry | Version | Hypothesis | Status |
+| --- | --- | --- | --- |
+| `high52` | 1 | Names nearest their 52-week high keep outperforming (George & Hwang, 2004) | failed (2026-09-30): +0.162R per trade, paired edge +0.012R (ci90 [-0.011, +0.036]); fails P2 and P3; [result](alpha-pooled-literature-2026-09-30.md) |
+| `reversal-lowmax` | 1 | One-month losers outperform among low-MAX names (Jegadeesh, 1990; Bali, Cakici & Whitelaw, 2011) | failed (2026-09-30): +0.153R per trade, paired edge +0.008R (ci90 [-0.016, +0.032]); fails P2 and P3; [result](alpha-pooled-literature-2026-09-30.md) |
+
 ## Part 2: live paper probe
 
 A passing leg runs only as a catalog paper probe — never automatically, never active

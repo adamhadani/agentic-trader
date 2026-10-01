@@ -177,6 +177,13 @@ as a catalog paper probe (`alpha apriori-probe`): registry `probe` list,
 `session_count_v1` time exit, LLM commentary only, one drift card per session outside
 the native budget, fail-closed on Nasdaq/SIP gaps.
 
+The [pooled mining lane](docs/alpha-pooled-mining.md) evaluates one dimensionless DSL
+formula across a frozen cohort (`config/research/pooled/cohort-v1.json`) on a
+hash-identified long-bracket label cube, testing a session-paired edge with a
+session-block bootstrap. `alpha pooled power` (power check A) must pass before
+`alpha pooled study`; campaigns confirm once on their own ledger's window. Research only:
+no DB, registry, broker, Telegram or promotion credit.
+
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
 now bound traded notional, reject pending inventory, require matching forecast/risk

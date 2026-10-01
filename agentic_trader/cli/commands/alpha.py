@@ -84,6 +84,12 @@ from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
+from agentic_trader.research.pooled.campaign import load_campaign_protocol
+from agentic_trader.research.pooled.cohort import load_cohort
+from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
+from agentic_trader.research.pooled.power import execute_power_check
+from agentic_trader.research.pooled.runner import build_cube_inputs
+from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
 from agentic_trader.research.setups.runner import _build_pacer, build_setup_frames, build_window_frames
@@ -1313,3 +1319,106 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache):
     click.echo(json.dumps({k: result.get(k) for k in ("status", "decisions", "error")}, indent=2, default=str))
     if result.get("status") == "failed":
         raise click.ClickException("A priori study failed; see result.json for the reason")
+
+
+@alpha_group.group("pooled")
+def alpha_pooled_group():
+    """Pooled alpha mining: one formula across the frozen cohort (research only)."""
+
+
+def _pooled_build(clients, cohort, spec, cache_dir):
+    async def build():
+        return await build_cube_inputs(
+            cohort,
+            spec,
+            bars=clients.bars,
+            calendar=clients.calendar,
+            cache_dir=cache_dir,
+            static_symbols=clients.static_symbols,
+            pace=clients.pace,
+            progress=lambda message: click.echo(message, err=True),
+        )
+
+    return build
+
+
+# Required on both commands: a study passes the power gate only on the cube the power check
+# built, and that cube (with its bars) lives in this directory.
+_POOLED_CACHE_HELP = "Shared bar and cube cache directory; give `power` and every `study` the same one"
+
+
+@alpha_pooled_group.command("power")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Replicates run in this many processes; the result is identical for any worker count.",
+)
+@coro
+async def alpha_pooled_power_cmd(protocol_path, output, cache, workers):
+    """Power check A: detect a planted pooled edge and reject noise (discovery cells only)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded = await asyncio.to_thread(load_campaign_protocol, protocol_path)
+    cohort = await asyncio.to_thread(load_cohort, REPO_ROOT / loaded.protocol.cohort)
+    if cohort.sha256 != loaded.protocol.cohort_sha256:
+        raise click.ClickException("Cohort file does not match the protocol's cohort_sha256")
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_power_check(
+            loaded,
+            output,
+            cohort=cohort,
+            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
+            environment=environment,
+            progress=lambda message: click.echo(message, err=True),
+            workers=workers,
+        )
+    click.echo(json.dumps({k: result.get(k) for k in ("status", "curve", "error")}, indent=2, default=str))
+    if result.get("status") != "passed":
+        raise click.ClickException(f"Power check A {result.get('status')}; see result.json")
+
+
+@alpha_pooled_group.command("study")
+@click.argument("entry_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@coro
+async def alpha_pooled_study_cmd(entry_path, power_dir, output, cache):
+    """Run a frozen pooled literature entry (research only; grants no credit)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded = await asyncio.to_thread(load_pooled_entry, entry_path)
+    cohort = await asyncio.to_thread(load_cohort, REPO_ROOT / loaded.entry.cohort)
+    result_path = power_dir / "result.json"
+    if not result_path.exists():
+        raise click.ClickException(f"No power result at {result_path}")
+    power_result = json.loads(await asyncio.to_thread(result_path.read_text))
+    try:
+        check_power_gate(
+            power_result,
+            cohort_sha256=loaded.entry.cohort_sha256,
+            campaign_protocol_sha256=loaded.entry.campaign_protocol_sha256,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if cohort.sha256 != loaded.entry.cohort_sha256:
+        raise click.ClickException("Cohort file does not match the entry's cohort_sha256")
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_pooled_study(
+            loaded,
+            output,
+            cohort=cohort,
+            build=_pooled_build(clients, cohort, loaded.entry.cube_spec(), cache),
+            power_result=power_result,
+            environment=environment,
+        )
+    click.echo(json.dumps({k: result.get(k) for k in ("status", "decision", "error")}, indent=2, default=str))
+    if result.get("status") == "failed":
+        raise click.ClickException("Pooled study failed; see result.json for the reason")

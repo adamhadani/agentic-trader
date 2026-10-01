@@ -1,0 +1,61 @@
+{
+  "id": "reversal-lowmax",
+  "version": 1,
+  "title": "Pooled literature entry: one-month reversal among low-MAX names (long top 3 per session)",
+  "references": [
+    "Jegadeesh, N. (1990). Evidence of Predictable Behavior of Security Returns. Journal of Finance 45(3).",
+    "Bali, T. G., Cakici, N. & Whitelaw, R. F. (2011). Maxing Out: Stocks as Lotteries and the Cross-Section of Expected Returns. Journal of Financial Economics 99(2)."
+  ],
+  "hypothesis": "Among names whose largest daily return over the past month is at or below the cohort median (not lottery-like), last month's biggest losers outperform the eligible cohort over the next 20 sessions; lottery-like losers are excluded because they keep underperforming.",
+  "decision_rule": "Passes only if P1 (leg mean R after 5 bps, CI lower bound > 0), P2 (session-paired edge over all eligible names, CI lower bound > 0), P3 (1%-trimmed leg mean > 0 and paired edge since 2023-01-01 > 0) and P4 (>= 500 sessions with a pick, >= 150 since 2023-01-01) all hold. A pass makes the entry eligible for a capped Part 2 paper probe; nothing else.",
+  "cohort": "config/research/pooled/cohort-v1.json",
+  "cohort_sha256": "966b67c53ad617d698089dd5b5786b05d4d5248f8844e3326d7addbe8d4ac5a9",
+  "campaign_protocol_sha256": "897fd8e59d912975de9377389a75d8954a747ab49dfa6ae368a30879059ca5ba",
+  "feed": "alpaca:sip",
+  "window": {
+    "decisions": [
+      "2016-08-01",
+      "2026-07-31"
+    ],
+    "bars_from": "2016-01-01",
+    "bars_through": "2026-09-01",
+    "recent_from": "2023-01-01"
+  },
+  "formula": {
+    "score": "-1.0 * roc(close, 21)",
+    "filters": [
+      {
+        "expression": "ts_max(returns, 21)",
+        "max_quantile": 0.5
+      }
+    ],
+    "k": 3
+  },
+  "bracket": {
+    "decision_time_et": "10:35",
+    "stop_atr_multiple": 2.0,
+    "atr_window": 14,
+    "target_r": 3.0,
+    "max_hold_sessions": 20
+  },
+  "universe": {
+    "min_price": 10.0,
+    "static_percentile": 0.25,
+    "min_eligible_names": 30
+  },
+  "decision_cost_bps": 5.0,
+  "coverage": {
+    "max_no_reference_fraction": 0.02,
+    "max_unlabelled_fraction_per_year": 0.05
+  },
+  "bootstrap": {
+    "block_mean": 20,
+    "draws": 2000,
+    "seed": 20260929
+  },
+  "pass_rule": {
+    "min_sessions": 500,
+    "min_recent_sessions": 150,
+    "trim_fraction": 0.01
+  }
+}
