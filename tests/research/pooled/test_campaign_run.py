@@ -7,7 +7,7 @@ import pytest
 from agentic_trader.research.pooled import campaign_run
 from agentic_trader.research.pooled.campaign import CampaignWindows, LoadedProtocol
 from agentic_trader.research.pooled.campaign_run import check_gate, execute_campaign, require_clean_revision
-from agentic_trader.research.pooled.formula import Formula
+from agentic_trader.research.pooled.formula import Formula, FormulaFilter
 from agentic_trader.research.pooled.scoring import ScoreBook, formula_id
 from agentic_trader.storage.alpha import AlphaRepository
 from tests.research.pooled.mini_world import COHORT, cube_build, mini_protocol, planted_cube
@@ -15,7 +15,9 @@ from tests.research.pooled.mini_world import COHORT, cube_build, mini_protocol, 
 
 PLANTED = "-1.0 * roc(close, 21)"
 CAMPAIGN = "pooled-campaign-v1-" + "p" * 16
-LITERATURE = [SimpleNamespace(entry=SimpleNamespace(id="lit-reversal", formula=Formula(score=PLANTED, k=3)))]
+LITERATURE = [
+    SimpleNamespace(entry=SimpleNamespace(id="lit-reversal", formula=Formula(score=PLANTED, k=3)), sha256="l" * 64)
+]
 
 
 @pytest.fixture
@@ -84,14 +86,25 @@ async def test_confirmation_is_read_only_after_the_journal_consumed_it(tmp_path,
     real = repository.consume_pooled_confirmation
     opened_at_consumption = []
 
+    at_consumption = {}
+
     async def consume(**kwargs):
         opened_at_consumption.append(created[0].opened)
+        record = await repository.get(f"pooled/campaign/{CAMPAIGN}")
+        at_consumption["status"] = record["status"]
+        at_consumption["already_tested"] = record["details"]["frozen"]["already_tested"]
+        at_consumption["files"] = sorted(p.stem for p in (tmp_path / "out" / "frozen").glob("*.json"))
+        at_consumption["candidates"] = sorted(kwargs["candidates"])
         await real(**kwargs)
 
     monkeypatch.setattr(repository, "consume_pooled_confirmation", consume)
     result = await run(tmp_path, repository, planted_cube(PLANTED, 1.0))
     assert result["status"] == "confirmed"
     assert opened_at_consumption == [("discovery", "selection")]
+    assert at_consumption["status"] == "frozen"
+    assert at_consumption["files"] == at_consumption["candidates"] != []
+    assert at_consumption["already_tested"] == {formula_id(PLANTED): "lit-reversal"}
+    assert created[0].opened == ("discovery", "selection", "confirmation")
 
 
 async def test_a_crash_mid_family_keeps_its_charges_and_a_rerun_resumes_without_recharging(
@@ -187,3 +200,78 @@ def test_require_clean_revision_refuses_dirty_or_unknown_code(revision):
     with pytest.raises(ValueError, match="dirty or unknown"):
         require_clean_revision({"runtime": {"revision": revision}})
     assert require_clean_revision({"runtime": {"revision": "abc1234"}}) == "abc1234"
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("cohort", "cohort file does not match"),
+        ("missing", "checks A, B and C must all be given"),
+        ("split", "did not all run on one cube"),
+        ("status", "has not passed"),
+        ("nocube", "records no cube"),
+    ],
+)
+async def test_bad_gate_inputs_are_refused_before_reserving(tmp_path, repository, case, message):
+    cube = planted_cube(PLANTED, 1.0)
+    loaded = LoadedProtocol(protocol=mini_protocol(), sha256="p" * 64, path=Path("campaign.json"))
+    gates = {name: {"status": "passed", "cube_sha256": cube.sha256} for name in ("power", "search_power", "null_check")}
+    cohort = COHORT
+    if case == "cohort":
+        cohort = "d" * 64
+    elif case == "missing":
+        del gates["null_check"]
+    elif case == "split":
+        gates["null_check"] = {"status": "passed", "cube_sha256": "y" * 64}
+    elif case == "status":
+        gates["power"] = {"status": "gate_failed", "cube_sha256": cube.sha256}
+    else:
+        gates["power"] = {"status": "passed", "cube_sha256": ""}
+
+    async def build():
+        return cube_build(cube)
+
+    result = await execute_campaign(
+        loaded,
+        tmp_path / "out",
+        cohort=SimpleNamespace(sha256=cohort),
+        build=build,
+        gates=gates,
+        repository=repository,
+        entries=LITERATURE,
+        environment={"runtime": {"revision": "abc1234"}},
+    )
+    assert result["status"] == "failed" and message in result["error"]
+    assert await repository.get("pooled/ledger") is None
+
+
+def test_a_missing_revision_is_unknown():
+    with pytest.raises(ValueError, match="dirty or unknown"):
+        require_clean_revision({"runtime": {"revision": None}})
+    with pytest.raises(ValueError, match="dirty or unknown"):
+        require_clean_revision({})
+
+
+async def test_a_failure_after_consumption_keeps_the_outcome(tmp_path, repository, monkeypatch):
+    def boom(path, records):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(campaign_run, "_write_records", boom)
+    result = await run(tmp_path, repository, planted_cube(PLANTED, 1.0))
+    target = formula_id(PLANTED)
+    assert result["status"] == "failed" and "disk full" in result["error"]
+    assert target in result["outcome"]["confirmed"] and result["outcome_file"] == "outcome.json"
+    saved = json.loads((tmp_path / "out" / "outcome.json").read_text())
+    assert any(row["formula_id"] == target for row in saved["confirmation"])
+    campaign = await repository.get(f"pooled/campaign/{CAMPAIGN}")
+    assert "confirmation_consumed" in campaign["stages"]
+
+
+def test_a_literature_entry_with_a_filter_yields_cells():
+    build = cube_build(planted_cube(PLANTED, 1.0))
+    book = ScoreBook(build.adjusted, build.trading_days, build.cube.sessions, build.cube.symbols)
+    formula = Formula(score=PLANTED, filters=(FormulaFilter(expression="ts_max(returns, 21)", max_quantile=0.5),), k=3)
+    entry = SimpleNamespace(entry=SimpleNamespace(id="filtered", formula=formula))
+    view = build.cube.window(*mini_protocol().windows.discovery)
+    cells = campaign_run.literature_cells([entry], view, book)
+    assert isinstance(cells["filtered"], frozenset)

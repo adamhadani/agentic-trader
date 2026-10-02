@@ -64,7 +64,8 @@ def campaign_id_for(loaded: LoadedProtocol) -> str:
 
 
 def require_clean_revision(environment: Mapping) -> str:
-    revision = str(environment.get("runtime", {}).get("revision", "unavailable"))
+    raw = environment.get("runtime", {}).get("revision")
+    revision = str(raw) if raw else "unavailable"
     if revision == "unavailable" or revision.endswith("-dirty"):
         raise ValueError(f"refusing to run from a dirty or unknown code revision ({revision}); commit first")
     return revision
@@ -117,7 +118,11 @@ def already_tested(
 
 
 def _write_frozen(
-    directory: Path, frozen: Sequence[str], search: SearchOutcome, protocol: CampaignProtocol
+    directory: Path,
+    frozen: Sequence[str],
+    search: SearchOutcome,
+    protocol: CampaignProtocol,
+    marked: Mapping[str, str],
 ) -> list[dict]:
     documents = []
     for fid in frozen:
@@ -129,10 +134,12 @@ def _write_frozen(
                 "expression": search.expressions[fid],
                 "formula": formula.model_dump(mode="json"),
                 "identity": formula.identity,
+                "already_tested_by": marked.get(fid),
+                "authorizes_promotion": False,
             },
             directory / f"{fid}.json",
         )
-        documents.append({"formula_id": fid, "identity": formula.identity})
+        documents.append({"formula_id": fid, "identity": formula.identity, "already_tested_by": marked.get(fid)})
     return documents
 
 
@@ -170,7 +177,7 @@ async def execute_campaign(
                 name: {"status": gate.get("status"), "cube_sha256": gate.get("cube_sha256")}
                 for name, gate in gates.items()
             },
-            "literature_entries": [entry.entry.id for entry in entries],
+            "literature_entries": {entry.entry.id: getattr(entry, "sha256", None) for entry in entries},
             "environment": environment,
             "started_at": datetime.now(UTC).isoformat(),
             "authorizes_promotion": False,
@@ -184,6 +191,7 @@ async def execute_campaign(
         "authorizes_promotion": False,
     }
     reserved = False
+    outcome = None
     try:
         protocol.require_campaign_ready()
         revision = require_clean_revision(environment)
@@ -191,6 +199,11 @@ async def execute_campaign(
             raise ValueError("cohort file does not match the protocol's cohort_sha256")
         if set(gates) != {name for name, _ in GATES}:
             raise ValueError("checks A, B and C must all be given")
+        for name, gate in gates.items():
+            if gate.get("status") != "passed":
+                raise ValueError(f"check {name} has not passed (status {gate.get('status')!r})")
+            if not gate.get("cube_sha256"):
+                raise ValueError(f"check {name} records no cube")
         cubes = {gate.get("cube_sha256") for gate in gates.values()}
         if len(cubes) != 1:
             raise ValueError("checks A, B and C did not all run on one cube")
@@ -213,11 +226,17 @@ async def execute_campaign(
         book = ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)
         windows = CampaignWindows(built.cube, protocol.windows, cohort_sha256=cohort.sha256)
         ledger = JournalLedger(repository, asyncio.get_running_loop(), campaign_id)
+        # Overlap is fixed from discovery picks before the search, read straight from the cube so the
+        # windows' opened trail stays discovery, selection, confirmation.
+        literature = await asyncio.to_thread(
+            literature_cells, entries, built.cube.window(*protocol.windows.discovery), book
+        )
         frozen_documents: list[dict] = []
 
         def on_frozen(frozen: list[str], search: SearchOutcome) -> None:
-            frozen_documents.extend(_write_frozen(directory / "frozen", frozen, search, protocol))
-            ledger.advance("frozen", {"candidates": frozen_documents})
+            marked_frozen = already_tested(frozen, search.cells, literature, protocol.dedupe_jaccard)
+            frozen_documents.extend(_write_frozen(directory / "frozen", frozen, search, protocol, marked_frozen))
+            ledger.advance("frozen", {"candidates": frozen_documents, "already_tested": marked_frozen})
 
         outcome, search = await asyncio.to_thread(
             run_search_stages,
@@ -230,7 +249,12 @@ async def execute_campaign(
             on_frozen=on_frozen,
             progress=progress,
         )
-        literature = await asyncio.to_thread(literature_cells, entries, windows.discovery(), book)
+        save_json_report(
+            _finite_json(
+                {k: outcome[k] for k in ("status", "carried", "selection", "frozen", "confirmation", "confirmed")}
+            ),
+            directory / "outcome.json",
+        )
         marked = already_tested(outcome["carried"], search.cells, literature, protocol.dedupe_jaccard)
         confirmed = list(outcome["confirmed"])
         probe_eligible = [fid for fid in confirmed if fid not in marked]
@@ -280,6 +304,9 @@ async def execute_campaign(
         )
     except Exception as exc:
         result = {**base, "status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        if outcome is not None:
+            result["outcome"] = {k: outcome[k] for k in ("status", "confirmed", "frozen")}
+            result["outcome_file"] = "outcome.json"
         if reserved:
             try:
                 await repository.advance_pooled_campaign(campaign_id, "failed", {"error": result["error"]})
