@@ -524,16 +524,29 @@ def pin_formulas(n_names: int = 24) -> list[ScoredFormula]:
     return formulas
 
 
+def _six_figures(value):
+    """Floats to 6 significant figures: platforms differ in the last bits of summed floats."""
+    if isinstance(value, float):
+        return float(f"{value:.6g}")
+    if isinstance(value, dict):
+        return {key: _six_figures(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_six_figures(item) for item in value]
+    return value
+
+
 def test_run_stages_output_is_unchanged_by_the_discovery_split():
-    # Digest recorded on the unsplit stages (378ab95): power check A's machinery must not change.
+    # Power check A's machinery must not change. The exact digest of this output was recorded
+    # on the unsplit stages (378ab95) and matched after the split on the same machine; this
+    # pin hashes 6-significant-figure values so it is identical on every platform.
     cube = pin_cube()
     outcome = run_stages(
         pin_formulas(), CampaignWindows(cube, PROTOCOL.windows, "c" * 64), InMemoryLedger(), PROTOCOL, campaign_id="pin"
     )
-    encoded = json.dumps(_finite_json(outcome), sort_keys=True, default=str)
+    encoded = json.dumps(_six_figures(_finite_json(outcome)), sort_keys=True, default=str)
     assert outcome["status"] == "confirmed" and outcome["confirmed"] == ["fav-3"]
     assert hashlib.sha256(encoded.encode()).hexdigest() == (
-        "13a006d5bfa98383b98496d3f1660acb630442f54be0f5427894f78bea84386e"
+        "d2560f0a51efe09865501d843698c6e028e7a4505b5d546ac4da4777d7c11c29"
     )
 
 
