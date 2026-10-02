@@ -373,15 +373,17 @@ one or two reasonable cards per session:
      check A and `alpha pooled power|study`
      ([contract](alpha-pooled-mining.md),
      [literature report](alpha-pooled-mining-research-2026-09-28.md)). Power
-     check A and the two studies have since run (results below). Part 1b is next: the campaign
-     runner, the journal-backed ledger, the genetic search and search check B.
+     check A and the two studies have since run (results below). Part 1b (this workstream):
+     cohort v2 by liquidity screen, campaign protocol v2, the per-family genetic search, the
+     journal ledger, checks B and C and the campaign runner
+     ([spec](superpowers/specs/2026-10-02-pooled-alpha-mining-part1b-design.md)).
    - Part 1b requirements fixed by the final review of Part 1a (2026-09-30):
      - **Literature overlap rule** (decided before any literature study was run): a
        campaign finalist whose discovery-window pick set overlaps a literature entry's at
        Jaccard >= `dedupe_jaccard` (0.5) is reported as "already tested by literature
        entry `<id>`", keeps its Holm slot in the confirmation family and gains no probe
        eligibility beyond that entry's own verdict
-       ([contract](alpha-pooled-mining.md#literature-overlap-rule-part-1b-requirement)).
+       ([contract](alpha-pooled-mining.md#literature-overlap-rule)).
      - The runner hands search code only `CampaignWindows`, never the `LabelCube`.
      - It checks `cube.cohort_sha256` against its ledger key before any stage runs.
      - DSL panels are label-blind: a panel builder reads only a view's `offset`,
@@ -405,7 +407,7 @@ one or two reasonable cards per session:
      names; the snapshot-only names contribute 1.8% (43 and 34 of roughly 7,300 picks).
      The lane is effectively mining the scan universe. For Part 1b, consider replacing
      the random 300-name snapshot with a liquidity-screened cohort to widen breadth.
-     That is an operator decision and is not made here; a new cohort is a new identity.
+     The operator chose a liquidity-screened cohort v2 (2026-10-01).
    - **Weekly ETF32 miner paused (2026-09-28).** The operator disabled and unloaded
      `com.agentictrader.alphaminer` (`launchctl disable` and `bootout`; the plist is
      kept) so it stops charging 512 trials a week to the family that deflates every future

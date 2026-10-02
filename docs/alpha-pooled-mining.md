@@ -2,16 +2,18 @@
 
 The pooled lane evaluates **one formula across a frozen cohort of equities** and tests a
 session-paired bracket-R edge with a session-block bootstrap. It is research only: no
-database, registry, broker or Telegram access, no trial, shadow or promotion credit.
+registry, broker or Telegram access, no trial, shadow or promotion credit. Its only
+database writes are the campaign's pooled-ledger research events.
 Every manifest and result carries `"authorizes_promotion": false`.
 
-This page is the contract for what Part 1a builds. It follows the
-[design spec](superpowers/specs/2026-09-28-pooled-alpha-mining-design.md); where the
-built code sharpens the spec, this page describes the code. Part 1a delivers the cohort,
-label cube, formula selection, statistics, two literature entries, the campaign
+This page is the contract for the lane. It follows the
+[design spec](superpowers/specs/2026-09-28-pooled-alpha-mining-design.md) and the
+[Part 1b addendum](superpowers/specs/2026-10-02-pooled-alpha-mining-part1b-design.md);
+where the built code sharpens a spec, this page describes the code. Part 1a delivered the
+cohort, label cube, formula selection, statistics, two literature entries, the campaign
 protocol and its stage logic, power check A and the `alpha pooled power|study`
-commands. Part 1b, next, adds the campaign runner, the journal-backed ledger, the
-genetic search and search check B.
+commands. Part 1b adds cohort v2 by liquidity screen, campaign protocol v2, the
+per-family genetic search, the journal ledger, checks B and C and the campaign runner.
 
 ## Purpose
 
@@ -39,6 +41,11 @@ the lane can detect paired edges of about 0.08-0.10R. Smaller edges remain the
 identity is the SHA-256 of its bytes (table below); a changed file is a new version. `load_cohort` validates that `symbols` is the sorted union of the
 sources' supported symbols.
 
+**Cohort v2** (`config/research/pooled/cohort-v2.json`, 452 names) replaces the random
+300-name snapshot with the liquidity screen's top 400 plus the scan equities (the 127
+`mega_caps` and `research_cohort` symbols, as in v1). The campaign v2 protocol pins it;
+v1 below is the cohort the literature entries and the first power check ran on.
+
 - 353 supported symbols. Sources: the config groups `mega_caps` and `research_cohort`
   (127 symbols, the scan universe's equities) and the 300 symbols of the prospective
   equity snapshot v2 ([equity universe](alpha-equity-universe.md)). The two overlap.
@@ -46,9 +53,10 @@ sources' supported symbols.
   `.WS` and `.U` warrant and unit forms).
 - `survivorship`: "current membership (2026-09); not point-in-time".
 
-The snapshot is a random hash sample of currently tradable names. It still contains
+The v1 snapshot is a random hash sample of currently tradable names. It still contains
 SPAC units, warrants and preferreds whose tickers match `^[A-Z]{1,5}$`; the per-session
-price and liquidity gate below removes most of them.
+price and liquidity gate below removes most of them. Only 130 of its 353 names were ever
+eligible, which is why v2 exists.
 
 Frozen identities (SHA-256 of file bytes):
 
@@ -56,11 +64,48 @@ Frozen identities (SHA-256 of file bytes):
 | --- | --- |
 | `cohort-v1.json` | `966b67c53ad617d698089dd5b5786b05d4d5248f8844e3326d7addbe8d4ac5a9` |
 | `campaign-v1.json` | `897fd8e59d912975de9377389a75d8954a747ab49dfa6ae368a30879059ca5ba` |
+| `cohort-v2.json` | `c2c7941014932075110b33a7b853db7899f7b8fa43d5433d38b2e92bab1407df` |
+| `campaign-v2.json` | `6470ca97a50f5dd0f0af89136590d63f942331c21d46c64387d9c7c8c7feaba1` |
 | `high52-v1.json` | `9c3369278cb667db6016e93453cea7a55231234362718b3643d7bcce31626930` |
 | `reversal-lowmax-v1.json` | `da39ef0b49e2af96ebbc328bbc9c59fc0802a449bc94e456b4f46b3fb9c18967` |
 
 Entries and the campaign protocol pin the cohort and campaign SHA-256, so the campaign
-is provably frozen before any literature result exists.
+is provably frozen before any literature result exists. The v2 protocol pins
+`cohort-v2.json`; the literature entries keep their v1 pins and are not rerun.
+
+### Cohort v2: the liquidity screen
+
+`config/research/pooled/screen-v2.json` is committed before the screen reads any bars; its
+SHA-256 is recorded in the cohort file. The rule:
+
+- **Snapshot.** The prospective equity snapshot v2 (id
+  `bf162c80350e390248813ad461c437787731f76efc15c5f6c5bf49693da9735f`, file SHA-256
+  `41a7d11eb264cecf57f5e97b447cc17dc2f931bf4f624dcd733e3137a40f303c`, observed
+  2026-09-17), `listed_non_etf_equity_candidate` members only. A snapshot file with a
+  different hash is refused.
+- **Window.** SIP raw daily bars for the 60 sessions ending 2023-12-29, the last session
+  before the confirmation window, so the ranking does not favour names whose dollar
+  volume grew with their 2024-2026 rallies. At least 55 of the 60 sessions must have
+  bars, and the raw close on 2023-12-29 must be at least $10.
+- **Rank.** Median raw close x volume over the window, descending, ties by symbol; the
+  first 400 are taken (the cutoff was about $145M a day).
+
+Exclusions, each recorded per symbol with its reason in `screen.csv`:
+
+- **Symbol form:** anything outside `^[A-Z]{1,5}$` (the NYSE `.U`, `.WS` and `.A` forms).
+- **NASDAQ fifth letter:** a five-letter symbol ending in `P`, `Q`, `R`, `U`, `V`, `W` or
+  `Z` (preferred, bankruptcy, rights, units, when-issued, warrants, miscellaneous).
+- **Security name** (case-insensitive): warrants; rights listed as such
+  (`-\s*rights?\.?\s*$`; a bare `\brights?\b` would drop ADRs "representing the right to
+  receive" shares); preferreds; fixed income (`%`, notes, debentures); funds; SPAC and
+  structured units.
+
+Kept kinds: MLP common units, ADRs and multiple share classes (`CMCSA`, `GOOGL`).
+
+`copilot alpha pooled screen` writes `screen.csv` (every candidate with its exclusion
+reason or rank, median dollar volume, last close and sessions with bars) and
+`cohort.json`, which is copied unchanged to `cohort-v2.json`. It reads no returns and no
+labels. Eligibility per session is unchanged: the screen only chooses candidates.
 
 ## Point-in-time eligibility
 
@@ -245,13 +290,42 @@ both formulas load on persistent common factors, so their nominal 5% level is li
 somewhat optimistic. That is one reason a pass grants a capped paper probe and nothing
 more. Both entries are evaluated on the whole decision window, which includes the
 campaign's confirmation window; the
-[literature overlap rule](#literature-overlap-rule-part-1b-requirement) fixes what that
+[literature overlap rule](#literature-overlap-rule) fixes what that
 means for the campaign.
 
 ## Campaign protocol and stages
 
 `config/research/pooled/campaign-v1.json` is frozen before any real-data run of either
-entry, so their results cannot shape it.
+entry, so their results cannot shape it. It remains the record of the literature runs and
+power check A on cohort v1; it cannot run a campaign.
+
+`campaign-v2.json` equals v1 except for the cohort pin, `version: 2` and three additions:
+
+- **Per-family `windows`**: the set integer constants inside a family's expressions may
+  mutate to (wrapper operators such as `ts_mean(x, w)` keep the global set 3, 5, 8, 10,
+  14, 20, 30, 60). Without it a 252-session family would mutate into the reversal
+  horizon.
+
+  | Family | `windows` |
+  | --- | --- |
+  | high52 | 126, 189, 252 |
+  | reversal | 3, 5, 10, 21 |
+  | max_lottery | 5, 10, 21, 42 |
+  | momentum_12_1 | 21, 63, 105, 126, 189, 252 |
+  | momentum_12_7 | 84, 105, 126, 147, 168 |
+  | range_location | 10, 20, 40, 60, 120 |
+  | trend_slope | 10, 20, 40, 60, 120 |
+  | abnormal_volume | 5, 10, 20, 50, 100 |
+  | overnight_intraday | 5, 10, 21, 42 |
+  | price_volume_corr | 5, 10, 21, 42 |
+  | signed_volume | 5, 10, 20, 40 |
+  | hl_spread | 5, 10, 21, 42 |
+
+- **`power_search.seed`** (20261002): the random source for check B's hidden expressions.
+- **`null_check`**: `{"replicates": 40, "max_false_acceptances": 2, "seed": 20261003}`.
+
+The new fields are optional in the model, so v1 still loads with its hash; a protocol
+without `null_check` cannot run a campaign.
 
 - **Windows.** Discovery 2016-08-01 to 2021-12-31; selection 2022-01-03 to 2023-12-29;
   confirmation 2024-01-02 to 2026-07-31.
@@ -261,9 +335,9 @@ entry, so their results cannot shape it.
   intraday return, price-volume correlation, signed volume, high-low spread). Each
   family has seed expressions and a mutation-operator subset. Realized-volatility
   operators (`realized_vol`, `ts_std`, `ts_mad`) are forbidden, and a family or seed
-  that uses one is rejected at load. Splitting the budget evenly across the families
-  (the remainder to the first families in file order) and keeping mutation away from the
-  forbidden operators are Part 1b search logic; neither is built yet.
+  that uses one is rejected at load. The search splits the budget across the families
+  and keeps mutation away from the forbidden operators (see
+  [the genetic search](#the-genetic-search)).
 - **Bootstrap.** Block mean 20 throughout; 1,000 draws for discovery, 1,000 for
   selection and 10,000 for confirmation.
 - **Excluded families** (positive results in studies that read 2021-2026, which the
@@ -290,16 +364,81 @@ entry, so their results cannot shape it.
   session (month length clamped).
 
 The pooled lane keeps **its own ledger** of confirmation windows, separate from the
-per-symbol family. The durable, journal-backed ledger is **Part 1b and not built**: Part
-1a has only the in-memory ledger that power check A and the tests use, which enforces the
-same single-use rule within one process. The first campaign confirms on 2024-01-02 to
-2026-07-31. Later campaigns cannot reuse that window: they need prospective data or a new
-cohort identity, and a new protocol version.
+per-symbol family ([the pooled ledger](#the-pooled-ledger)). The in-memory ledger used by
+power check A, check C and the tests enforces the same single-use rule within one process.
+The first campaign confirms on 2024-01-02 to 2026-07-31. The consumption is **lane-wide**:
+a later campaign that overlaps a consumed interval is refused whatever its cohort, so a
+new cohort identity cannot re-test 2024-2026. It needs prospective data after 2026-07-31
+(a 12-month window around August 2027) or a spec that defines a disjoint cohort rule.
 
-### Literature overlap rule (Part 1b requirement)
+### The genetic search
 
-**Decided on 2026-09-30, before any literature study was run. The Part 1b campaign runner
-must implement it; Part 1a contains no code for it.**
+`TypedGeneticSearch` (`research/alpha/search.py`) takes optional `seeds`, `operators` and
+`windows`; the defaults are the module constants, so the per-symbol miner is unchanged.
+The campaign builds one search per family (`research/pooled/genetic.py`):
+
+- seeds are the family's seeds, operators its `mutation_operators`, constant windows its
+  `windows`; the random seed is `search.seed * 100 + index` (the family's index in file
+  order); the archive size is `search.archive_size`;
+- the mutation fallback and empty-archive parents use the family's seeds, never the global
+  list, which contains forbidden operators.
+
+**Budget.** 200 formulas split evenly, the remainder going to the first families in file
+order: 17 each for the first eight families and 16 each for the last four (17 x 8 + 16 x 4).
+
+**Rejected without charge**, counted per reason and never evaluated: not dimensionless,
+calls a forbidden operator (any letter case), fails to compile, or already proposed in this
+campaign. After 200 consecutive rejections a family stops short and the shortfall is
+reported.
+
+**Charge before scoring.** Each formula is charged to the ledger before it is evaluated. A
+formula that raises during scoring is recorded as an error, stays charged and is told to
+the search with fitness minus infinity.
+
+**Label blindness.** Search code receives a `CampaignWindows` object, never the
+`LabelCube`. It checks the cube's cohort SHA-256 against the protocol, and `ScoreBook`
+panels read only a view's `offset`, `sessions` and `eligible` arrays; fitness comes back as
+a number. Scores are computed once per expression over the full calendar from adjusted
+daily bars, read at D-1, and cached in a bounded in-memory cache.
+
+### The pooled ledger
+
+The ledger is held by `AlphaRepository` methods that write `ALPHA_RESEARCH` journal events
+and projections under the alpha lock. There is no schema migration, and the pooled lane
+never touches `family/all`. A `JournalLedger` adapter implements the campaign's `Ledger`
+protocol from the worker thread. Five keys:
+
+- `pooled/campaign/<campaign_id>`, where `campaign_id =
+  pooled-campaign-v<version>-<protocol sha16>`: the protocol, cohort and cube SHA-256, the
+  code revision, budget, status and stage timestamps;
+- `pooled/campaign/<campaign_id>/family/<family_id>`: that family's reserved budget,
+  written before its search;
+- `pooled/formula/<campaign_id>/<expression sha16>`: one charge per evaluated formula
+  (family, canonical expression, nodes);
+- `pooled/ledger`: cumulative formulas charged, campaigns and confirmation intervals
+  consumed;
+- `pooled/confirmation`: the lane-wide consumed intervals, each with the campaign id,
+  cohort SHA-256 and frozen candidate hashes.
+
+Rules:
+
+- **Reservation before any read.** The campaign is reserved before it reads anything. Its
+  immutable fields (protocol, cohort, cube, code revision, budget) can never change, so a
+  protocol runs at most once.
+- **Charges.** Charging the same expression again in a campaign is a no-op; a family's
+  charges can never exceed its reservation; a crash keeps its charges.
+- **Resume.** A rerun after a crash resumes only if the immutable fields match and the
+  confirmation window has not been consumed. The search is deterministic, so a resume
+  evaluates the same formulas in the same order.
+- **Confirmation.** Consumption is lane-wide and any overlap is refused. The campaign
+  records it, with the frozen candidate hashes, before it reads the window.
+
+`copilot alpha status` shows `pooled_ledger`.
+
+### Literature overlap rule
+
+**Decided on 2026-09-30, before any literature study was run. The campaign runner
+implements it.**
 
 The two literature entries are evaluated on 2016-08-01 to 2026-07-31, which includes the
 campaign's confirmation window (2024-01-02 to 2026-07-31), and the campaign's `high52`,
@@ -308,7 +447,9 @@ Without a rule, such a formula would get a second look at 2024-2026. The rule:
 
 - A campaign finalist whose **discovery-window pick set** overlaps a literature entry's
   discovery-window pick set at Jaccard >= the protocol's `dedupe_jaccard` (0.5) is
-  reported as **"already tested by literature entry `<id>`"**.
+  reported as **"already tested by literature entry `<id>`"** (`already_tested_by` in its
+  frozen document and the result). The entries' formulas are evaluated on the v2 cube;
+  their 2026-09-30 verdicts stand and they are not rerun.
 - It **keeps its Holm slot** in the confirmation family. It is not removed to make the
   other candidates' thresholds easier.
 - It gains **no probe eligibility beyond that literature entry's own verdict**: if the
@@ -317,10 +458,11 @@ Without a rule, such a formula would get a second look at 2024-2026. The rule:
 The rule is deliberately conservative. It may be tightened later; it cannot honestly be
 relaxed once a literature result exists.
 
-**Status.** The stage logic (`run_stages`: discovery, dedupe, selection, one-shot
-confirmation, with the ledger injected) exists and is what power check A runs, against
-an in-memory ledger. The campaign runner, the journal-backed ledger, the genetic search
-and search check B arrive in Part 1b. There is no `pooled campaign` command yet.
+**Implementation.** The campaign computes the overlap before the search, from the
+discovery view, and journals `already_tested` at freeze, before the confirmation is
+consumed. The stage logic (`run_stages`: discovery, dedupe, selection, one-shot
+confirmation, with the ledger injected) is what power check A and check C run against an
+in-memory ledger; the campaign runs the same pieces with the journal ledger.
 
 ## First runs
 
@@ -358,7 +500,7 @@ reads discovery-window cells only.
 The result records the campaign protocol, cohort and cube SHA-256. Because this is the
 run that builds the shared cube, it also records the build: `cube` (`sha256` and the
 whole `coverage`, provenance included), `bar_failures` and `static_used`. Search check B
-(real bars, planted expressions recovered by a family search) belongs to Part 1b.
+(real bars, planted expressions recovered by a family search) is described [below](#checks-b-and-c).
 
 **Diagnostics.** A failed gate has to leave something to redesign from, so the result
 also says where the planted formula stopped:
@@ -397,18 +539,79 @@ figures with these limits.
 - **The literature entries inherit the size caveat.** Each is a single bootstrap test of
   a factor-loaded formula. A pass grants only a capped paper probe, whose own risk cap
   and -4R kill bound the cost of a false pass.
-- **Part 1b** should add a false-acceptance check with real DSL expressions on real
+- **Check C** (below) is the false-acceptance check with real DSL expressions on real
   bars, which this check cannot provide.
+
+## Checks B and C
+
+Both read discovery-window cells only, charge nothing, and gate the campaign. Both take
+`--power A_DIR` and run on the cube check A built.
+
+### Check B: search power
+
+For seed i in 0..9:
+
+1. Take family `power_search.families[i mod 3]` (reversal, range_location,
+   abnormal_volume).
+2. Draw a hidden expression with an RNG seeded `[power_search.seed, i]`: one or two
+   mutations (equal odds), using that family's operators and windows, of one of its seeds
+   chosen uniformly. Redraw until it compiles, is dimensionless, is not one of the family's
+   seeds and has at least 400 discovery sessions with a pick.
+3. Add delta = 0.15R, at both cost levels, to the hidden expression's discovery picks
+   (`LabelCube.with_shift`).
+4. Run that family's real search (its campaign seed and budget) on the shifted discovery
+   view, applying the discovery gate and dedupe.
+5. The seed **recovers** when a formula passing the discovery gate has pick-set Jaccard
+   >= 0.5 with the hidden expression's picks.
+
+**Acceptance:** at least 8 of 10 recovered (`power_search.min_recovered`). The result
+reports each hidden expression, the best Jaccard and where the search stopped.
+
+Check B certifies recovery of edges **near the family seeds**, which is the only place a
+16-17 formula budget can search. It does not show that the search finds edges far from them.
+
+### Check C: real-formula false acceptance
+
+For replicate r in 0..39, with an RNG seeded `[null_check.seed, r]`:
+
+1. **Null panel.** Stationary-block-resample whole discovery sessions (block mean 20) onto
+   the full calendar, as check A does. Then, at each cost level, replace every labelled R
+   with `R - mu_name + mu_all` (each mean over eligible, labelled discovery cells). Each
+   cross-section is a real session, so names keep their real co-movement and factor
+   exposures; each name's mean is the cohort mean, so no formula has a true edge. The leg
+   mean keeps its real level, so the leg gates behave as they will on real data.
+2. **Campaign.** Run the full campaign unchanged: the real per-family search with the
+   protocol's seed and budget, discovery, dedupe, selection, and confirmation with an
+   in-memory ledger. Scores use real bars; bars are inputs to scoring, not outcomes.
+3. **Count.** The replicate is a false acceptance if any formula is confirmed.
+
+**Acceptance:** at most 2 of 40 false acceptances (`null_check.max_false_acceptances`,
+5%). Check C reports, without gating on them, the rate with its Clopper-Pearson 95% upper
+bound, stage counts per replicate, and the **discovery t of each family's seed expressions
+across the 40 replicates (mean and standard deviation)**. Seeds are evaluated in every
+replicate before any selection, so their t values are an unselected null sample. A standard
+deviation well above 1 means the bootstrap understates the variance of persistent-exposure
+formulas, the issue the final review of Part 1a simulated. Results are identical for any
+`--workers` count.
+
+Check C covers the size problem only. A formula that tilts toward names that outperformed
+because they survived would still be flattered on real data; the demeaned nulls carry real
+co-movement but no persistent name effects.
 
 ## Commands
 
 ```bash
+copilot alpha pooled screen RULE --snapshot SNAPSHOT --output DIR --cache DIR
 copilot alpha pooled power PROTOCOL --output DIR --cache DIR [--workers N]
 copilot alpha pooled study ENTRY --power POWER_DIR --output DIR --cache DIR
+copilot alpha pooled search-power PROTOCOL --power A_DIR --output DIR --cache DIR
+copilot alpha pooled null-check PROTOCOL --power A_DIR --output DIR --cache DIR [--workers N]
+copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null-check C_DIR --output DIR --cache DIR
 ```
 
-- `PROTOCOL` is `config/research/pooled/campaign-v1.json`; `ENTRY` is a literature
-  entry file. `--workers` runs the power replicates in N processes.
+- `PROTOCOL` is `config/research/pooled/campaign-v1.json` for `study` and the literature
+  runs, and `campaign-v2.json` for `search-power`, `null-check` and `campaign`; `ENTRY` is
+  a literature entry file. `--workers` runs the power replicates in N processes.
 - `--cache` is **required** on both commands and must be the same directory for the
   power check and every study: it holds the bars and the one cube, and a study passes the
   power gate only on the cube the power check built.
@@ -429,12 +632,35 @@ copilot alpha pooled study ENTRY --power POWER_DIR --output DIR --cache DIR
 - A study result reports the pass rule, the 0 bps figures (`gross`), cross-checks,
   diagnostics, dropped-pick counts, the cube's SHA-256 and coverage, the build's
   `bar_failures` and `static_used` as stored in that coverage, and `picks.csv.gz`.
+- **Gate binding.** `campaign` refuses to start unless checks A, B and C each passed for
+  this cohort, protocol and one cube, at the same clean code revision as the running
+  command. A dirty or unknown revision is refused. The executor also refuses, before
+  reserving anything, non-passed gates, gates without a cube, gates on different cubes, a
+  cohort mismatch and a v1 protocol.
+- **Circuit breaker.** Five consecutive failed provider fetches stop acquisition (screen or
+  cube build) with a `failed` result; a rerun resumes from the cache.
+- **Bar-file re-check.** On a cube-cache hit the runner re-checks the cube's `bars_sha256`
+  against the bar files it reads; a mismatch fails closed.
+- **Campaign statuses.** `no_finalists` (selection and confirmation stay unread),
+  `no_confirmation_candidates` (confirmation unread and unconsumed), `none_confirmed`,
+  `confirmed` (with a `probe_eligible` list that excludes `already_tested_by` formulas) and
+  `failed` (with the error; charges remain). `outcome.json` is written immediately after
+  the stages, so a failure after the confirmation was consumed keeps the outcome.
+- **Campaign outputs.** `protocol.json`, `manifest.json` (with the literature entries'
+  SHA-256), `outcome.json`, `formulas.jsonl` (every proposal, including rejections and
+  their reasons, with discovery statistics for evaluated formulas), `frozen/<id>.json`
+  (each with `authorizes_promotion: false` and `already_tested_by`) and `result.json`. A
+  confirmed, probe-eligible formula earns eligibility for a Part 2 spec and nothing more.
+- `screen`, `search-power`, `null-check` and `campaign` follow the same output rules as
+  `power`: they refuse an existing output directory and write the manifest before any
+  provider access.
 - `power` exits non-zero unless the gate passed. `study` exits non-zero only when the
   run failed; a completed study whose entry failed its pass rule exits zero.
 
 ## What it never does
 
-No database or registry write, no broker or Telegram access, no charge to the global
+No registry write (the campaign's only database writes are the pooled ledger's research
+events, never `family/all`), no broker or Telegram access, no charge to the global
 trial family, no shadow credit and no promotion. A passing entry or formula becomes
 eligible for a capped paper probe, which needs its own spec (Part 2).
 
@@ -443,8 +669,12 @@ eligible for a capped paper probe, which needs its own spec (Part 2).
 - **Survivorship.** Today's membership flatters long R. The paired edge cancels the
   shared part, but a formula that selects future survivors is still flattered. Absolute
   claims wait for a point-in-time listing and delisting source.
-- **Cohort hygiene.** SPAC units, warrants and preferreds pass the symbol pattern; the
-  price and liquidity gate removes most of them, not all.
+- **Cohort hygiene.** Cohort v1 let SPAC units, warrants and preferreds through the
+  symbol pattern; v2's screen excludes them by NASDAQ fifth letter and security name.
+- **Survivorship is stronger in v2.** Membership requires being listed on 2026-09-17 and
+  liquid in late 2023. Ranking before the confirmation window avoids selecting on
+  2024-2026 dollar volume, but not on survival; check C does not cover a tilt toward
+  survivors.
 - **Confirmation freshness** rests on the pooled ledger. Earlier studies read 2021-2026
   for other hypotheses, which is why their positive families are excluded. The paper
   probe is the forward check.
@@ -456,6 +686,6 @@ eligible for a capped paper probe, which needs its own spec (Part 2).
   upper bound and its false-acceptance figure does not cover factor-loaded formulas
   ([limits](#what-power-check-a-does-and-does-not-show)).
 - **Literature entries and the campaign share 2024-2026.** The
-  [overlap rule](#literature-overlap-rule-part-1b-requirement) removes the second look.
+  [overlap rule](#literature-overlap-rule) removes the second look.
 - **Sector concentration** is not capped in research; live cards keep their existing
   correlation caps.

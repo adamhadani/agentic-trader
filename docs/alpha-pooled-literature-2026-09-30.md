@@ -199,7 +199,7 @@ descriptive and the small sectors are too thin to read.
 - **No Part 2 paper probe for either entry.** Thresholds are not revisited. A changed
   formula, filter, `k` or bracket is a new version tested on new data.
 - **Overlap rule now applies.** The
-  [pre-committed rule](alpha-pooled-mining.md#literature-overlap-rule-part-1b-requirement)
+  [pre-committed rule](alpha-pooled-mining.md#literature-overlap-rule)
   governs the campaign's `high52`, `reversal` and `max_lottery` families. A finalist
   whose discovery-window pick set overlaps an entry's at Jaccard >= 0.5 is reported as
   already tested by that entry, keeps its Holm slot and gains no probe eligibility
