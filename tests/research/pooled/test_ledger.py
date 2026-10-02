@@ -1,10 +1,11 @@
 # tests/research/pooled/test_ledger.py
 import asyncio
+import inspect
 from datetime import date
 
 import pytest
 
-from agentic_trader.research.pooled.ledger import JournalLedger
+from agentic_trader.research.pooled.ledger import CampaignAborted, JournalLedger
 from agentic_trader.storage.alpha import AlphaRepository
 
 
@@ -14,6 +15,7 @@ RECORD = {
     "cube_sha256": "k" * 64,
     "code_revision": "abc1234",
     "budget": 200,
+    "journal_scope": "test/paper",
 }
 OTHER = {**RECORD, "protocol_sha256": "q" * 64, "cohort_sha256": "d" * 64}
 INTERVAL = (date(2024, 1, 2), date(2026, 7, 31))
@@ -32,6 +34,8 @@ async def test_a_reservation_is_immutable_and_a_resume_returns_it(repository):
     assert await repository.reserve_pooled_campaign("cmp", RECORD) == first
     with pytest.raises(ValueError, match="immutable"):
         await repository.reserve_pooled_campaign("cmp", {**RECORD, "code_revision": "def5678"})
+    with pytest.raises(ValueError, match="immutable"):
+        await repository.reserve_pooled_campaign("cmp", {**RECORD, "journal_scope": "production/alpaca:paper"})
     assert (await repository.get("pooled/ledger"))["campaigns"] == 1
     assert await repository.get("family/all") is None  # the pooled lane never touches the global family
 
@@ -124,3 +128,47 @@ async def test_the_journal_ledger_runs_from_a_worker_thread_and_refuses_the_even
         await asyncio.to_thread(
             ledger.consume_confirmation, cohort_sha256="c" * 64, interval=INTERVAL, campaign_id="x", candidates=()
         )
+
+
+async def test_an_aborted_journal_ledger_starts_no_further_write(repository, monkeypatch):
+    await repository.reserve_pooled_campaign("cmp", RECORD)
+    ledger = JournalLedger(repository, asyncio.get_running_loop(), "cmp")
+    await asyncio.to_thread(ledger.reserve_family, "rev", 2)
+    refused = []
+    real_charge = repository.charge_pooled_formula
+
+    def watched_charge(*args, **kwargs):
+        refused.append(real_charge(*args, **kwargs))
+        return refused[-1]
+
+    monkeypatch.setattr(repository, "charge_pooled_formula", watched_charge)
+    ledger.abort()
+
+    def work():
+        with pytest.raises(CampaignAborted):
+            ledger.charge("rev", "returns", "f1", 2)
+        with pytest.raises(CampaignAborted):
+            ledger.consume_confirmation(cohort_sha256="c" * 64, interval=INTERVAL, campaign_id="cmp", candidates=())
+        with pytest.raises(CampaignAborted):
+            ledger.advance("frozen", {"candidates": []})
+
+    await asyncio.to_thread(work)
+    # The refused coroutine was closed, never scheduled or left unawaited.
+    assert [inspect.getcoroutinestate(coroutine) for coroutine in refused] == [inspect.CORO_CLOSED]
+    assert (await repository.get("pooled/campaign/cmp/family/rev"))["charged"] == 0
+    assert await repository.get("pooled/confirmation") is None
+    assert (await repository.get("pooled/campaign/cmp"))["status"] == "reserved"
+
+
+async def test_a_journal_call_that_never_finishes_times_out(repository, monkeypatch):
+    release = asyncio.Event()
+
+    async def stuck(*args, **kwargs):
+        await release.wait()
+
+    monkeypatch.setattr(repository, "reserve_pooled_family", stuck)
+    ledger = JournalLedger(repository, asyncio.get_running_loop(), "cmp", timeout=0.05)
+    with pytest.raises(TimeoutError, match="did not finish"):
+        await asyncio.to_thread(ledger.reserve_family, "rev", 1)
+    release.set()  # the write that started is allowed to finish
+    await asyncio.sleep(0.01)

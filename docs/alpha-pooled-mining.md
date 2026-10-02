@@ -411,7 +411,7 @@ protocol from the worker thread. Five keys:
 
 - `pooled/campaign/<campaign_id>`, where `campaign_id =
   pooled-campaign-v<version>-<protocol sha16>`: the protocol, cohort and cube SHA-256, the
-  code revision, budget, status and stage timestamps;
+  code revision, budget, journal scope, status and stage timestamps;
 - `pooled/campaign/<campaign_id>/family/<family_id>`: that family's reserved budget,
   written before its search;
 - `pooled/formula/<campaign_id>/<expression sha16>`: one charge per evaluated formula
@@ -424,13 +424,21 @@ protocol from the worker thread. Five keys:
 Rules:
 
 - **Reservation before any read.** The campaign is reserved before it reads anything. Its
-  immutable fields (protocol, cohort, cube, code revision, budget) can never change, so a
-  protocol runs at most once.
+  immutable fields (protocol, cohort, cube, code revision, budget, journal scope) can never
+  change, so a protocol runs at most once.
+- **Journal scope.** "Lane-wide" means per journal scope (`<environment>/<execution
+  mode>`, `WorkflowStore.scope`): a run against another database or mode would consume in a
+  parallel ledger. The reservation pins the scope; `manifest.json` and `result.json` record
+  the journal's scope, dialect and database name (never credentials). `campaign` takes a
+  required `--journal-scope` and refuses, right after opening the journal and before any
+  reservation, a scope that differs from the opened journal's or a journal that is not
+  PostgreSQL.
 - **Charges.** Charging the same expression again in a campaign is a no-op; a family's
   charges can never exceed its reservation; a crash keeps its charges.
-- **Resume.** A rerun after a crash resumes only if the immutable fields match and the
-  confirmation window has not been consumed. The search is deterministic, so a resume
-  evaluates the same formulas in the same order.
+- **Resume.** A rerun after a crash or a cancellation resumes only if the immutable fields
+  match, the confirmation window has not been consumed and the campaign has not completed.
+  A consumed or completed campaign is refused. The search is deterministic, so a resume
+  evaluates the same formulas in the same order and charges nothing twice.
 - **Confirmation.** Consumption is lane-wide and any overlap is refused. The campaign
   records it, with the frozen candidate hashes, before it reads the window.
 
@@ -599,6 +607,17 @@ Check C covers the size problem only. A formula that tilts toward names that out
 because they survived would still be flattered on real data; the demeaned nulls carry real
 co-movement but no persistent name effects.
 
+Demeaning removes each name's **raw** mean over its labelled discovery cells, not its
+session-relative mean (its R minus each session's cross-section). A name labelled mostly in
+weak or strong sessions keeps a residual offset against the sessions it trades in. That
+offset is an edge the search can find, so the null panels hold slightly more apparent edge
+than an exact null: false acceptances are, if anything, overstated. The check is
+conservative.
+
+Checks B and C also report `errors_total`, the formulas whose evaluation raised (B per seed,
+C per replicate). It must be 0 before a campaign: a systematic evaluation error would charge
+the campaign's budget for formulas that are never scored.
+
 ## Commands
 
 ```bash
@@ -607,7 +626,7 @@ copilot alpha pooled power PROTOCOL --output DIR --cache DIR [--workers N]
 copilot alpha pooled study ENTRY --power POWER_DIR --output DIR --cache DIR
 copilot alpha pooled search-power PROTOCOL --power A_DIR --output DIR --cache DIR
 copilot alpha pooled null-check PROTOCOL --power A_DIR --output DIR --cache DIR [--workers N]
-copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null-check C_DIR --output DIR --cache DIR
+copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null-check C_DIR --output DIR --cache DIR --journal-scope SCOPE [--recover]
 ```
 
 - `PROTOCOL` is `config/research/pooled/campaign-v1.json` for `study` and the literature
@@ -618,6 +637,9 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null
   `null-check` and `campaign` it must be the same directory: it holds the bars and the one
   cube, and each later command passes its gate only on the cube the power check built.
   For `screen` it holds the screen's batched raw bars.
+- **Cache hit required.** `search-power`, `null-check` and `campaign` never build a cube:
+  without the cached cube for this cohort and spec they fail with `no cached cube ...; run
+  alpha pooled power first`, before any provider access.
 - Progress goes to stderr. A build reports the trading calendar, daily bars every 25
   symbols, eligibility start and end (and every 100 sessions), hourly bars every 25
   symbols, and the cube build start and end with its cell counts (and every 100
@@ -638,25 +660,54 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null
   `bar_failures` and `static_used` as stored in that coverage, and `picks.csv.gz`.
 - **Gate binding.** `campaign` refuses to start unless checks A, B and C each passed for
   this cohort, protocol and one cube, at the same clean code revision as the running
-  command. A dirty or unknown revision is refused. The executor also refuses, before
-  reserving anything, non-passed gates, gates without a cube, gates on different cubes, a
-  cohort mismatch and a v1 protocol.
+  command. A dirty or unknown revision is refused, and so is any uncommitted or untracked
+  file under `agentic_trader`, `config` or `tests` (`git status --porcelain`; `git describe
+  --dirty` misses untracked files). The executor also refuses, before reserving anything,
+  non-passed gates, gates without a cube, gates on different cubes, a cohort mismatch and a
+  v1 protocol. `--journal-scope` must name the opened PostgreSQL journal's scope (see
+  [the pooled ledger](#the-pooled-ledger)).
+- **Preflight.** After loading the cube and before any family is reserved, the campaign
+  computes, label-blind, every family's seed panels on the discovery window and one wrapped
+  expression per mutation operator (`op(first seed, first constant window)`). Nothing is
+  selected, evaluated or charged. An exception, or a seed whose scores are entirely NaN
+  over the discovery window, fails the campaign with zero charges and an error naming the
+  expression; the reservation stays resumable.
 - **Circuit breaker.** Five consecutive failed provider fetches stop acquisition (screen or
   cube build) with a `failed` result; a rerun resumes from the cache.
 - **Bar-file re-check.** On a cube-cache hit the runner re-checks the cube's `bars_sha256`
   against the bar files it reads; a mismatch fails closed.
 - **Campaign statuses.** `no_finalists` (selection and confirmation stay unread),
   `no_confirmation_candidates` (confirmation unread and unconsumed), `none_confirmed`,
-  `confirmed` (with a `probe_eligible` list that excludes `already_tested_by` formulas) and
-  `failed` (with the error; charges remain). `outcome.json` is written immediately after
-  the stages, so a failure after the confirmation was consumed keeps the outcome.
+  `confirmed` (with a `probe_eligible` list that excludes `already_tested_by` formulas),
+  `failed` (with the error; charges remain) and `cancelled`. Every result records
+  `confirmation_consumed`, read back from the ledger on failure and cancellation.
+- **`result.json` on every exit**, cancellation included. Ctrl-C or SIGTERM cancels the
+  campaign. The search's worker thread cannot be cancelled, so the journal ledger is aborted
+  (no further journal write starts; one in flight may finish) and the worker is waited for.
+  Before consumption it stops at its next ledger call: nothing is consumed and a rerun
+  resumes. After consumption it only computes, so the outcome survives. The result is
+  `status: cancelled` with `confirmation_consumed`, the ledger is advanced to `failed`
+  (`{"error": "cancelled"}`) and the command exits on the interrupt. Do not interrupt a
+  campaign; this path only limits the damage.
+- **The outcome is kept after consumption.** `outcome.json` is written as soon as the
+  stages return, including on cancellation. If the confirmation was consumed but no outcome
+  was kept (for example, an error inside the confirmation computation), rerun the same
+  command with `--recover` and a new `--output`. Recovery runs only for this protocol's
+  campaign when the ledger records the consumption and the campaign is not completed, at the
+  reservation's code revision and on its cube (refused otherwise; the gate directories are
+  still required and checked). It takes the frozen ids from the lane-wide
+  `pooled/confirmation` record, each expression from its charge and the overlap marks from
+  the freeze, recomputes the confirmation on the consumed window, writes `outcome.json` and
+  `result.json` (`recovered: true`) and completes the campaign. It charges and consumes
+  nothing.
 - **Campaign outputs.** `protocol.json`, `manifest.json` (with the literature entries'
   SHA-256), `outcome.json`, `formulas.jsonl` (every proposal, including rejections and
   their reasons, with discovery statistics for evaluated formulas), `frozen/<id>.json`
   (each with `authorizes_promotion: false` and `already_tested_by`) and `result.json`. A
   confirmed, probe-eligible formula earns eligibility for a Part 2 spec and nothing more.
-- `power` exits non-zero unless the gate passed. `study` exits non-zero only when the
-  run failed; a completed study whose entry failed its pass rule exits zero.
+- `power`, `search-power` and `null-check` exit non-zero unless the gate passed. `study` and
+  `campaign` exit non-zero only when the run failed (or was cancelled); a completed study
+  whose entry failed its pass rule exits zero.
 
 ## What it never does
 

@@ -339,3 +339,30 @@ def test_five_consecutive_raised_fetches_stop_acquisition_early(tmp_path):
         build(bars, tmp_path, progress=messages.append)
     assert len({call[0] for call in bars.calls}) < len(STATIC) + 2  # stopped before every symbol
     assert any("fetch failed: AAA 1d/all: RuntimeError: provider down" in message for message in messages)
+
+
+def test_a_required_cache_hit_refuses_a_missing_cube_before_any_provider_access(tmp_path):
+    class Untouchable:
+        async def get_calendar_range(self, start, end):
+            raise AssertionError("the calendar must not be read")
+
+    def required(bars, calendar):
+        return asyncio.run(
+            build_cube_inputs(
+                cohort(),
+                SPEC,
+                bars=bars,
+                calendar=calendar,
+                cache_dir=tmp_path,
+                static_symbols=STATIC,
+                pace=_no_pace,
+                require_cached=True,
+            )
+        )
+
+    bars = FakeBars()
+    with pytest.raises(ValueError, match="no cached cube .* run alpha pooled power first"):
+        required(bars, Untouchable())
+    assert bars.calls == []
+    built = build(FakeBars(), tmp_path)  # check A's build caches the cube
+    assert required(FakeBars(), FakeCalendar()).cube.sha256 == built.cube.sha256

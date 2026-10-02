@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 ALPHA_EVENT_KINDS = (EventKind.ALPHA_RESEARCH, EventKind.ALPHA_REGISTRY, EventKind.ALPHA_FORECAST)
 # The pooled lane (research/pooled) keeps its own ledger and never touches family/all.
-POOLED_IMMUTABLE = ("protocol_sha256", "cohort_sha256", "cube_sha256", "code_revision", "budget")
+# journal_scope pins the reservation to one journal scope (``WorkflowStore.scope``): lane-wide
+# means per scope, so a run against another database or mode would consume in a parallel ledger.
+POOLED_IMMUTABLE = ("protocol_sha256", "cohort_sha256", "cube_sha256", "code_revision", "budget", "journal_scope")
 POOLED_LEDGER_KEY = "pooled/ledger"
 POOLED_CONFIRMATION_KEY = "pooled/confirmation"
 REGISTRY_KEY = "registry"
@@ -1054,8 +1056,8 @@ class AlphaRepository:
             if existing is not None:
                 if {k: existing[k] for k in POOLED_IMMUTABLE} != immutable:
                     raise ValueError(
-                        "Pooled campaign reservation is immutable; a changed protocol, cohort, cube or code "
-                        "revision needs a new protocol version"
+                        "Pooled campaign reservation is immutable; a changed protocol, cohort, cube, code "
+                        "revision or journal scope needs a new protocol version"
                     )
                 if "confirmation_consumed" in existing["stages"] or existing["status"] == "completed":
                     raise ValueError(f"Pooled campaign {campaign_id} cannot run again (status {existing['status']})")

@@ -102,6 +102,7 @@ def null_replicate(
         "carried": len(outcome["carried"]),
         "frozen": len(outcome["frozen"]),
         "evaluated": len(search.scores),
+        "errors": sum(run.errors for run in search.runs),  # charged formulas whose evaluation raised
         "seed_t": seed_t,
     }
 
@@ -121,6 +122,8 @@ def summarize_null(replicates: Sequence[Mapping], spec: NullCheckSpec) -> dict:
         "false_acceptance_rate": false / n if n else float("nan"),
         "false_acceptance_upper95": upper,
         "max_false_acceptances": spec.max_false_acceptances,
+        # Formulas whose evaluation raised, over all replicates: must be 0 before a campaign.
+        "errors_total": sum(replicate["errors"] for replicate in replicates),
         "stage_counts": {
             "with_survivors": sum(1 for replicate in replicates if replicate["survivors"]),
             "with_carried": sum(1 for replicate in replicates if replicate["carried"]),

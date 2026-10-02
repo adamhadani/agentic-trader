@@ -5624,8 +5624,11 @@ If A fails, stop: write the result doc and report. No B, C or campaign follows.
 
 - [ ] **Step 3: Check B, then check C**
 
+Both are long; launch each in the background with a log, never in the foreground. Both need
+check A's cached cube (a cache miss is refused before any provider access).
+
 ```bash
-cd /Users/adamhadani/Development/agentic-trader-pooled1b && (set -a; source /Users/adamhadani/Development/agentic-trader/.envrc >/dev/null 2>&1; set +a; env -u VIRTUAL_ENV uv run copilot alpha pooled search-power config/research/pooled/campaign-v2.json --power ~/agentic-trader-research/pooled-power-a-v2-YYYYMMDD --output ~/agentic-trader-research/pooled-search-power-v2-$(date +%Y%m%d) --cache ~/agentic-trader-research/pooled-cache-v1)
+cd /Users/adamhadani/Development/agentic-trader-pooled1b && (set -a; source /Users/adamhadani/Development/agentic-trader/.envrc >/dev/null 2>&1; set +a; nohup env -u VIRTUAL_ENV uv run copilot alpha pooled search-power config/research/pooled/campaign-v2.json --power ~/agentic-trader-research/pooled-power-a-v2-YYYYMMDD --output ~/agentic-trader-research/pooled-search-power-v2-$(date +%Y%m%d) --cache ~/agentic-trader-research/pooled-cache-v1 > ~/agentic-trader-research/logs/pooled-search-power-v2-$(date +%Y%m%d).log 2>&1 &)
 cd /Users/adamhadani/Development/agentic-trader-pooled1b && (set -a; source /Users/adamhadani/Development/agentic-trader/.envrc >/dev/null 2>&1; set +a; nohup env -u VIRTUAL_ENV uv run copilot alpha pooled null-check config/research/pooled/campaign-v2.json --power ~/agentic-trader-research/pooled-power-a-v2-YYYYMMDD --output ~/agentic-trader-research/pooled-null-check-v2-$(date +%Y%m%d) --cache ~/agentic-trader-research/pooled-cache-v1 --workers 6 > ~/agentic-trader-research/logs/pooled-null-check-v2-$(date +%Y%m%d).log 2>&1 &)
 ```
 
@@ -5637,15 +5640,24 @@ The campaign is irreversible:
 - it consumes the lane's confirmation window (2024-01-02 → 2026-07-31) for good;
 - it writes research events to the live journal database (the daemon's PostgreSQL) under the alpha lock.
 
-Report A, B and C in a few lines (including C's seed-t standard deviation) and **ask for explicit approval** to run it.
+Report A, B and C in a few lines and **ask for explicit approval** to run it. The go/no-go must include:
+- C's seed-t standard deviation;
+- B's and C's `errors_total`, which **must be 0** (a nonzero count is a systematic evaluation error: stop and fix it, no campaign);
+- the journal scope the campaign will pin: the daemon's `<environment>/<execution mode>` (for the paper daemon the mode is `alpaca:paper`), taken from the daemon's own configuration. Step 5 passes it as `--journal-scope`; the command refuses any other scope and any non-PostgreSQL journal before reserving anything.
 
 - [ ] **Step 5: Run the campaign (after approval, outside the scan windows)**
 
+Launch in the background with a log, never in the foreground. The run **must not be interrupted**: cancellation (Ctrl-C or SIGTERM) is handled and keeps whatever was consumed and computed, but recovery may be needed. `--journal-scope` is the scope approved in Step 4.
+
 ```bash
-cd /Users/adamhadani/Development/agentic-trader-pooled1b && (set -a; source /Users/adamhadani/Development/agentic-trader/.envrc >/dev/null 2>&1; set +a; env -u VIRTUAL_ENV uv run copilot alpha pooled campaign config/research/pooled/campaign-v2.json --power ~/agentic-trader-research/pooled-power-a-v2-YYYYMMDD --search-power ~/agentic-trader-research/pooled-search-power-v2-YYYYMMDD --null-check ~/agentic-trader-research/pooled-null-check-v2-YYYYMMDD --output ~/agentic-trader-research/pooled-campaign-v2-$(date +%Y%m%d) --cache ~/agentic-trader-research/pooled-cache-v1)
+cd /Users/adamhadani/Development/agentic-trader-pooled1b && (set -a; source /Users/adamhadani/Development/agentic-trader/.envrc >/dev/null 2>&1; set +a; nohup env -u VIRTUAL_ENV uv run copilot alpha pooled campaign config/research/pooled/campaign-v2.json --power ~/agentic-trader-research/pooled-power-a-v2-YYYYMMDD --search-power ~/agentic-trader-research/pooled-search-power-v2-YYYYMMDD --null-check ~/agentic-trader-research/pooled-null-check-v2-YYYYMMDD --output ~/agentic-trader-research/pooled-campaign-v2-$(date +%Y%m%d) --cache ~/agentic-trader-research/pooled-cache-v1 --journal-scope <the daemon's scope> > ~/agentic-trader-research/logs/pooled-campaign-v2-$(date +%Y%m%d).log 2>&1 &)
 ```
 
 Then confirm the ledger with `env -u VIRTUAL_ENV uv run copilot alpha status` (same sourced environment). Check `pooled_ledger`: formulas charged ≤ 200, campaigns 1, confirmations 1 if a candidate was frozen.
+
+If `result.json` is `failed` or `cancelled`, read `confirmation_consumed`:
+- `false`: nothing was consumed; rerun the same command with a new `--output` (the campaign resumes and charges nothing twice).
+- `true` without an `outcome.json`: rerun the same command with `--recover` and a new `--output`. It recomputes the confirmation for the journaled frozen candidates and charges and consumes nothing.
 
 - [ ] **Step 6: Result documents and the PR**
 

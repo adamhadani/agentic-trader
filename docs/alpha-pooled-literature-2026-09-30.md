@@ -203,7 +203,7 @@ descriptive and the small sectors are too thin to read.
   governs the campaign's `high52`, `reversal` and `max_lottery` families. A finalist
   whose discovery-window pick set overlaps an entry's at Jaccard >= 0.5 is reported as
   already tested by that entry, keeps its Holm slot and gains no probe eligibility
-  beyond the entry's own verdict, which is failure. Part 1b must implement it.
+  beyond the entry's own verdict, which is failure. The rule is implemented by Part 1b.
 
 **Artifacts** (private, not in Git):
 

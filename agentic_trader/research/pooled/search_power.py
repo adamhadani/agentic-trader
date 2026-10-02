@@ -131,6 +131,8 @@ def run_search_power(
         "seeds_run": spec.seeds,
         "min_recovered": spec.min_recovered,
         "delta": spec.delta,
+        # Formulas whose evaluation raised, over all seeds: must be 0 before a campaign.
+        "errors_total": sum(seed["errors"] for seed in seeds),
         "seeds": seeds,
     }
 

@@ -7,6 +7,7 @@ import hashlib
 import json
 import platform
 import re
+import subprocess
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -90,6 +91,8 @@ from agentic_trader.research.pooled.campaign_run import (
     LITERATURE_ENTRIES,
     check_gate,
     execute_campaign,
+    execute_campaign_recovery,
+    journal_identity,
     require_clean_revision,
 )
 from agentic_trader.research.pooled.cohort import load_cohort
@@ -1336,7 +1339,9 @@ def alpha_pooled_group():
     """Pooled alpha mining: one formula across the frozen cohort (research only)."""
 
 
-def _pooled_build(clients, cohort, spec, cache_dir):
+def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False):
+    """``require_cached``: checks B and C and the campaign run only on the cube check A built."""
+
     async def build():
         return await build_cube_inputs(
             cohort,
@@ -1347,6 +1352,7 @@ def _pooled_build(clients, cohort, spec, cache_dir):
             static_symbols=clients.static_symbols,
             pace=clients.pace,
             progress=lambda message: click.echo(message, err=True),
+            require_cached=require_cached,
         )
 
     return build
@@ -1523,12 +1529,13 @@ async def alpha_pooled_search_power_cmd(protocol_path, power_dir, output, cache)
             loaded,
             output,
             cohort=cohort,
-            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
+            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True),
             power_result=power_result,
             environment=environment,
             progress=lambda message: click.echo(message, err=True),
         )
-    click.echo(json.dumps({k: result.get(k) for k in ("status", "recovered", "error")}, indent=2, default=str))
+    summary = ("status", "recovered", "errors_total", "error")
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
     if result.get("status") != "passed":
         raise click.ClickException(f"Check B {result.get('status')}; see result.json")
 
@@ -1558,16 +1565,46 @@ async def alpha_pooled_null_check_cmd(protocol_path, power_dir, output, cache, w
             loaded,
             output,
             cohort=cohort,
-            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
+            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True),
             power_result=power_result,
             environment=environment,
             progress=lambda message: click.echo(message, err=True),
             workers=workers,
         )
-    summary = ("status", "false_acceptances", "replicates", "seed_t", "error")
+    summary = ("status", "false_acceptances", "replicates", "seed_t", "errors_total", "error")
     click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
     if result.get("status") != "passed":
         raise click.ClickException(f"Check C {result.get('status')}; see result.json")
+
+
+def _uncommitted_research_files() -> str:
+    """``git status --porcelain`` under the code, config and tests a campaign binds to.
+
+    Untracked files are listed too, which ``git describe --dirty`` (the recorded revision) misses.
+    """
+    completed = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--", "agentic_trader", "config", "tests"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    return completed.stdout.strip()
+
+
+def _require_journal(repository, scope: str) -> None:
+    """Refuse, before any reservation, a journal that is not the declared scope on PostgreSQL."""
+    journal = journal_identity(repository)
+    if journal["scope"] != scope:
+        raise click.ClickException(
+            f"--journal-scope {scope!r} does not match this journal's scope {journal['scope']!r}; "
+            "refusing before any reservation"
+        )
+    if journal["dialect"] != "postgresql":
+        raise click.ClickException(
+            f"the campaign runs only on the PostgreSQL journal; this one is {journal['dialect']} "
+            f"({journal['database']}); refusing before any reservation"
+        )
 
 
 @alpha_pooled_group.command("campaign")
@@ -1577,8 +1614,22 @@ async def alpha_pooled_null_check_cmd(protocol_path, power_dir, output, cache, w
 @click.option("--null-check", "null_dir", type=click.Path(exists=True, path_type=Path), required=True)
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
 @click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@click.option(
+    "--journal-scope",
+    required=True,
+    help="The journal scope (environment/execution mode) the campaign must write to; refused unless it is "
+    "the opened journal's scope, on PostgreSQL.",
+)
+@click.option(
+    "--recover",
+    is_flag=True,
+    help="Recompute the outcome of this protocol's campaign after it consumed its confirmation window but "
+    "did not complete; charges and consumes nothing.",
+)
 @coro
-async def alpha_pooled_campaign_cmd(protocol_path, power_dir, search_dir, null_dir, output, cache):
+async def alpha_pooled_campaign_cmd(
+    protocol_path, power_dir, search_dir, null_dir, output, cache, journal_scope, recover
+):
     """Run the budgeted pooled campaign once; writes the pooled ledger (research only; grants no credit)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
@@ -1586,29 +1637,64 @@ async def alpha_pooled_campaign_cmd(protocol_path, power_dir, search_dir, null_d
     environment = await asyncio.to_thread(research_environment)
     try:
         revision = require_clean_revision(environment)
+        changes = await asyncio.to_thread(_uncommitted_research_files)
+        if changes:
+            raise ValueError(
+                "refusing to run with uncommitted or untracked files under agentic_trader, config or tests; "
+                f"commit or remove them first:\n{changes}"
+            )
         gates = {
             name: check_gate(
                 directory, check=check, cohort_sha256=cohort.sha256, protocol_sha256=loaded.sha256, revision=revision
             )
             for (name, check), directory in zip(GATES, (power_dir, search_dir, null_dir), strict=True)
         }
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise click.ClickException(str(exc)) from exc
-    entries = [await asyncio.to_thread(load_pooled_entry, REPO_ROOT / path) for path in LITERATURE_ENTRIES]
+    entries = (
+        [] if recover else [await asyncio.to_thread(load_pooled_entry, REPO_ROOT / path) for path in LITERATURE_ENTRIES]
+    )
+
+    def progress(message: str) -> None:
+        click.echo(message, err=True)
+
     async with alpha_repository() as repository:
+        _require_journal(repository, journal_scope)
         with _apriori_clients() as clients:
-            result = await execute_campaign(
-                loaded,
-                output,
-                cohort=cohort,
-                build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
-                gates=gates,
-                repository=repository,
-                entries=entries,
-                environment=environment,
-                progress=lambda message: click.echo(message, err=True),
-            )
-    summary = ("status", "campaign_id", "confirmed", "probe_eligible", "already_tested", "error")
+            build = _pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True)
+            if recover:
+                result = await execute_campaign_recovery(
+                    loaded,
+                    output,
+                    cohort=cohort,
+                    build=build,
+                    repository=repository,
+                    environment=environment,
+                    progress=progress,
+                )
+            else:
+                result = await execute_campaign(
+                    loaded,
+                    output,
+                    cohort=cohort,
+                    build=build,
+                    gates=gates,
+                    repository=repository,
+                    entries=entries,
+                    environment=environment,
+                    progress=progress,
+                )
+    summary = (
+        "status",
+        "campaign_id",
+        "recovered",
+        "confirmation_consumed",
+        "confirmed",
+        "probe_eligible",
+        "already_tested",
+        "error",
+    )
     click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
     if result.get("status") == "failed":
-        raise click.ClickException("Pooled campaign failed; see result.json for the reason")
+        what = "recovery" if recover else "campaign"
+        raise click.ClickException(f"Pooled {what} failed; see result.json for the reason")

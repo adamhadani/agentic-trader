@@ -19,6 +19,7 @@ RECORD = {
     "cube_sha256": "k" * 64,
     "code_revision": "abc1234",
     "budget": 200,
+    "journal_scope": "test/alpaca:paper",
 }
 
 

@@ -245,7 +245,7 @@ def search_campaign(
             note = f"; stopped: {run.stopped_short}" if run.stopped_short else ""
             progress(
                 f"family {family.id}: {run.charged}/{run.budget} charged, {len(run.scores)} evaluated, "
-                f"{sum(run.rejected.values())} rejected{note}"
+                f"{run.errors} errors, {sum(run.rejected.values())} rejected{note}"
             )
     return SearchOutcome(tuple(runs))
 

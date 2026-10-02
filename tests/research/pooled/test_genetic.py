@@ -149,3 +149,20 @@ def test_each_family_search_is_seeded_by_the_protocol_seed_and_its_index(monkeyp
         seen=set(),
     )
     assert seeds == [protocol.search.seed * 100 + index]
+
+
+def test_each_family_progress_line_reports_its_evaluation_errors(monkeypatch):
+    protocol = mini_protocol()
+    real = DiscoveryEvaluator.score
+    broken = formula_id("volume / ts_mean(volume, 50)")
+
+    def score(self, formula):
+        if formula.formula_id == broken:
+            raise FloatingPointError("overflow")
+        return real(self, formula)
+
+    monkeypatch.setattr(DiscoveryEvaluator, "score", score)
+    lines: list[str] = []
+    search_campaign(protocol, discovery_view(protocol), book(), RecordingCharger(), progress=lines.append)
+    assert [line.split(":")[0] for line in lines] == [f"family {f.id}" for f in protocol.families]
+    assert "0 errors" in lines[0] and "1 errors" in lines[2]

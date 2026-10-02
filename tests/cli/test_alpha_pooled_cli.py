@@ -310,7 +310,10 @@ def _gates(tmp_path, revision="abc1234", **revisions) -> list[Path]:
     return dirs
 
 
-def _campaign(tmp_path, dirs):
+SCOPE = "production/alpaca:paper"
+
+
+def _campaign(tmp_path, dirs, *extra, scope=SCOPE):
     power, search, null = dirs
     return _invoke(
         "campaign",
@@ -325,6 +328,8 @@ def _campaign(tmp_path, dirs):
         str(tmp_path / "out"),
         "--cache",
         str(tmp_path / "cache"),
+        *(() if scope is None else ("--journal-scope", scope)),
+        *extra,
     )
 
 
@@ -333,6 +338,31 @@ def _forbid_repository(monkeypatch):
         raise AssertionError("the ledger must not be opened")
 
     monkeypatch.setattr(alpha_cli, "alpha_repository", boom)
+
+
+def _clean_tree(monkeypatch, changes=""):
+    monkeypatch.setattr(alpha_cli, "_uncommitted_research_files", lambda: changes)
+
+
+def _journal(monkeypatch, *, scope=SCOPE, dialect="postgresql"):
+    """A fake journal: its scope and dialect are what the campaign command checks."""
+    engine = SimpleNamespace(dialect=SimpleNamespace(name=dialect), url=SimpleNamespace(database="trader"))
+    fake = SimpleNamespace(store=SimpleNamespace(scope=scope, db=SimpleNamespace(engine=engine)))
+
+    @asynccontextmanager
+    async def repository():
+        yield fake
+
+    monkeypatch.setattr(alpha_cli, "alpha_repository", repository)
+    return fake
+
+
+def _campaign_clients(monkeypatch):
+    @contextmanager
+    def clients():
+        yield SimpleNamespace(bars=None, calendar=None, static_symbols=[], pace=None)
+
+    monkeypatch.setattr(alpha_cli, "_apriori_clients", clients)
 
 
 def test_search_power_refuses_a_failed_power_check_without_creating_clients(tmp_path, monkeypatch):
@@ -395,6 +425,7 @@ def test_campaign_refuses_a_dirty_revision_before_opening_the_ledger(tmp_path, m
 def test_campaign_refuses_a_gate_from_another_revision(tmp_path, monkeypatch):
     _forbid_clients(monkeypatch)
     _forbid_repository(monkeypatch)
+    _clean_tree(monkeypatch)
     monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
     result = _campaign(tmp_path, _gates(tmp_path, null="def5678"))
     assert result.exit_code != 0 and "null_check ran at code revision 'def5678'" in result.output
@@ -402,25 +433,135 @@ def test_campaign_refuses_a_gate_from_another_revision(tmp_path, monkeypatch):
 
 def test_campaign_hands_the_checked_gates_and_the_literature_entries_to_the_executor(tmp_path, monkeypatch):
     seen = {}
-
-    @asynccontextmanager
-    async def repository():
-        yield "repository"
-
-    @contextmanager
-    def clients():
-        yield SimpleNamespace(bars=None, calendar=None, static_symbols=[], pace=None)
+    journal = _journal(monkeypatch)
+    _campaign_clients(monkeypatch)
+    _clean_tree(monkeypatch)
 
     async def fake_execute(loaded, output, **kwargs):
         seen.update(kwargs)
         return {"status": "none_confirmed"}
 
-    monkeypatch.setattr(alpha_cli, "alpha_repository", repository)
-    monkeypatch.setattr(alpha_cli, "_apriori_clients", clients)
     monkeypatch.setattr(alpha_cli, "execute_campaign", fake_execute)
     monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
     result = _campaign(tmp_path, _gates(tmp_path))
     assert result.exit_code == 0, result.output
     assert set(seen["gates"]) == {"power", "search_power", "null_check"}
-    assert seen["repository"] == "repository"
+    assert seen["repository"] is journal
     assert [entry.entry.id for entry in seen["entries"]] == ["high52", "reversal-lowmax"]
+
+
+def test_campaign_requires_the_journal_scope(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    result = _campaign(tmp_path, _gates(tmp_path), scope=None)
+    assert result.exit_code != 0 and "Missing option '--journal-scope'" in result.output
+
+
+@pytest.mark.parametrize(
+    ("scope", "dialect", "message"),
+    [
+        ("development/paper", "postgresql", "does not match this journal's scope 'production/alpaca:paper'"),
+        (SCOPE, "sqlite", "only on the PostgreSQL journal"),
+    ],
+)
+def test_campaign_refuses_another_journal_before_any_reservation(tmp_path, monkeypatch, scope, dialect, message):
+    _journal(monkeypatch, scope=SCOPE, dialect=dialect)
+    _forbid_clients(monkeypatch)
+    _clean_tree(monkeypatch)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("nothing may be reserved")
+
+    monkeypatch.setattr(alpha_cli, "execute_campaign", forbidden)
+    monkeypatch.setattr(alpha_cli, "execute_campaign_recovery", forbidden)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    result = _campaign(tmp_path, _gates(tmp_path), scope=scope)
+    assert result.exit_code != 0 and message in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_campaign_refuses_uncommitted_or_untracked_files_before_opening_the_ledger(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    _clean_tree(monkeypatch, "?? agentic_trader/research/pooled/new_module.py")
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    result = _campaign(tmp_path, _gates(tmp_path))
+    assert result.exit_code != 0
+    assert "uncommitted or untracked" in result.output and "new_module.py" in result.output
+
+
+def test_the_tree_check_asks_git_for_changes_and_untracked_files_under_code_config_and_tests(monkeypatch):
+    seen = {}
+
+    def run(args, **kwargs):
+        seen["args"] = args
+        return SimpleNamespace(stdout=" M config/research/pooled/campaign-v2.json\n")
+
+    monkeypatch.setattr(alpha_cli.subprocess, "run", run)
+    assert alpha_cli._uncommitted_research_files() == "M config/research/pooled/campaign-v2.json"
+    assert seen["args"] == [
+        "git",
+        "-C",
+        str(REPO_ROOT),
+        "status",
+        "--porcelain",
+        "--",
+        "agentic_trader",
+        "config",
+        "tests",
+    ]
+
+
+def test_campaign_recover_runs_the_recovery_after_the_same_checks(tmp_path, monkeypatch):
+    seen = {}
+    journal = _journal(monkeypatch)
+    _campaign_clients(monkeypatch)
+    _clean_tree(monkeypatch)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("--recover never runs the campaign")
+
+    async def fake_recover(loaded, output, **kwargs):
+        seen.update(kwargs)
+        return {"status": "confirmed", "recovered": True, "confirmed": ["f1"]}
+
+    monkeypatch.setattr(alpha_cli, "execute_campaign", forbidden)
+    monkeypatch.setattr(alpha_cli, "execute_campaign_recovery", fake_recover)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    result = _campaign(tmp_path, _gates(tmp_path), "--recover")
+    assert result.exit_code == 0, result.output
+    assert seen["repository"] is journal and '"recovered": true' in result.output
+    (tmp_path / "again").mkdir()
+    refused = _campaign(tmp_path, _gates(tmp_path / "again", null="def5678"), "--recover")
+    assert refused.exit_code != 0 and "null_check ran at code revision 'def5678'" in refused.output
+
+
+@pytest.mark.parametrize("command", ["search-power", "null-check", "campaign"])
+def test_later_checks_and_the_campaign_require_the_cached_cube(tmp_path, monkeypatch, command):
+    seen = {}
+
+    async def fake_build_cube_inputs(cohort, spec, **kwargs):
+        seen["require_cached"] = kwargs.get("require_cached")
+        return "built"
+
+    async def executor(loaded, directory, **kwargs):
+        seen["built"] = await kwargs["build"]()
+        return {"status": "passed"}
+
+    monkeypatch.setattr(alpha_cli, "build_cube_inputs", fake_build_cube_inputs)
+    monkeypatch.setattr(alpha_cli, "execute_search_power", executor)
+    monkeypatch.setattr(alpha_cli, "execute_null_check", executor)
+    monkeypatch.setattr(alpha_cli, "execute_campaign", executor)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    _campaign_clients(monkeypatch)
+    _journal(monkeypatch)
+    _clean_tree(monkeypatch)
+    dirs = _gates(tmp_path)
+    if command == "campaign":
+        result = _campaign(tmp_path, dirs)
+    else:
+        result = _invoke(
+            command, PROTOCOL_V2, "--power", str(dirs[0]), "--output", str(tmp_path / "out"), "--cache", str(tmp_path)
+        )
+    assert result.exit_code == 0, result.output
+    assert seen == {"require_cached": True, "built": "built"}

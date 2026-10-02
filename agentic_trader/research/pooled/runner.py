@@ -17,6 +17,10 @@ an **empty** frame is not an error: the symbol is recorded in ``bar_failures`` a
 ineligible or unlabelled. The cube's coverage report (outside the cube hash) stores those
 failures, the static reference set actually used and one digest over every bar cache file
 the build read; a cache hit reports those stored values and recomputes nothing.
+
+Checks B and C and the campaign pass ``require_cached=True``: they must run on the cube
+power check A built, so a missing cube fails before any provider access instead of
+building a new one.
 """
 
 from __future__ import annotations
@@ -151,10 +155,18 @@ async def build_cube_inputs(
     static_symbols: Sequence[str],
     pace: Callable[[], Awaitable[None]],
     progress: Callable[[str], None] | None = None,
+    require_cached: bool = False,
 ) -> CubeBuild:
     def say(message: str) -> None:
         if progress is not None:
             progress(message)
+
+    cube_path = cache_dir / f"cube-{cohort.sha256[:16]}-{spec.identity[:16]}.npz"
+    if require_cached and not cube_path.exists():
+        raise ValueError(
+            f"no cached cube {cube_path} for this cohort and spec; run alpha pooled power first "
+            "with the same --cache (it builds the cube every later check must share)"
+        )
 
     def counted(phase: str, count: int, total: int) -> None:
         if count % _PROGRESS_SYMBOLS == 0 or count == total:
@@ -172,7 +184,6 @@ async def build_cube_inputs(
     symbols = tuple(cohort.cohort.symbols)
     acquisition = _Acquisition(bars, pace, say)
     adjusted: dict[str, pd.DataFrame] = {}
-    cube_path = cache_dir / f"cube-{cohort.sha256[:16]}-{spec.identity[:16]}.npz"
     if cube_path.exists():
         cube = await asyncio.to_thread(load_cube, cube_path)
         if cube.spec_identity != spec.identity or cube.cohort_sha256 != cohort.sha256:

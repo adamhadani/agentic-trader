@@ -42,6 +42,7 @@ def test_a_planted_seed_is_recovered_and_a_vanishing_plant_is_not(monkeypatch):
     monkeypatch.setattr(search_power, "hidden_expression", exact_seed)
     found = run_search_power(with_delta(mini_protocol(), 2.0), label_cube(), book())
     assert found["status"] == "passed" and found["recovered"] == 3
+    assert found["errors_total"] == 0 == sum(s["errors"] for s in found["seeds"])
     assert [s["family"] for s in found["seeds"]] == ["reversal", "range_location", "abnormal_volume"]
     assert all(s["best_passing_jaccard"] == 1.0 for s in found["seeds"])
     missed = run_search_power(with_delta(mini_protocol(), 1e-9), label_cube(), book())

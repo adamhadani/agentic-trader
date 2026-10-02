@@ -74,7 +74,7 @@ def test_a_null_replicate_runs_the_whole_campaign_and_reports_every_seed_t():
     base = demeaned(cube.window(*protocol.windows.discovery))
     rep = null_replicate(protocol, base, cube.sessions, COHORT, book(), 0)
     seeds = {canonical_expression(seed) for family in protocol.families for seed in family.seeds}
-    assert rep["replicate"] == 0 and rep["evaluated"] == 9
+    assert rep["replicate"] == 0 and rep["evaluated"] == 9 and rep["errors"] == 0
     assert set(rep["seed_t"]) == seeds
     assert rep["status"] in {"no_finalists", "no_confirmation_candidates", "none_confirmed", "confirmed"}
     assert _finite_json(null_replicate(protocol, base, cube.sessions, COHORT, book(), 0)) == _finite_json(rep)
@@ -83,23 +83,25 @@ def test_a_null_replicate_runs_the_whole_campaign_and_reports_every_seed_t():
 def test_the_summary_gates_on_the_false_acceptance_count_and_reports_seed_t():
     spec = NullCheckSpec(replicates=4, max_false_acceptances=1, seed=1)
 
-    def rep(confirmed=(), survivors=0, carried=0, frozen=0, seed_t=None):
+    def rep(confirmed=(), survivors=0, carried=0, frozen=0, seed_t=None, errors=0):
         return {
             "confirmed": list(confirmed),
             "survivors": survivors,
             "carried": carried,
             "frozen": frozen,
             "seed_t": seed_t or {},
+            "errors": errors,
         }
 
     reps = [
         rep(seed_t={"a": 1.0, "b": -1.0}),
-        rep(confirmed=["x"], survivors=2, carried=1, frozen=1, seed_t={"a": float("nan")}),
-        rep(seed_t={"a": 3.0}),
+        rep(confirmed=["x"], survivors=2, carried=1, frozen=1, seed_t={"a": float("nan")}, errors=2),
+        rep(seed_t={"a": 3.0}, errors=1),
         rep(),
     ]
     summary = summarize_null(reps, spec)
     assert summary["status"] == "passed" and summary["false_acceptances"] == 1
+    assert summary["errors_total"] == 3
     assert summary["false_acceptance_rate"] == 0.25
     assert summary["false_acceptance_upper95"] == pytest.approx(beta.ppf(0.95, 2, 3))
     assert summary["stage_counts"] == {"with_survivors": 1, "with_carried": 1, "reached_confirmation": 1}
@@ -117,6 +119,7 @@ def test_the_null_check_is_identical_for_any_worker_count():
     pooled = run_null_check(protocol, discovery, cube.sessions, COHORT, workers=2, **kwargs)
     assert _finite_json(serial) == _finite_json(pooled)
     assert serial["replicates"] == 3 and len(serial["replicates_detail"]) == 3
+    assert serial["errors_total"] == 0  # the mini world evaluates every formula cleanly
     assert serial["status"] == ("passed" if serial["false_acceptances"] == 0 else "gate_failed")
 
 
