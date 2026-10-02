@@ -60,7 +60,8 @@ SHA-256 is recorded in the cohort file. Fields:
     miscellaneous). Class letters such as `CMCSA` and `GOOGL` are kept.
   - **Security name patterns** from the exchange directory, case-insensitive. They cover:
     - warrants (`\bwarrants?\b`);
-    - rights (`\brights?\b`);
+    - rights listed as such (`-\s*rights?\.?\s*$`; a bare `\brights?\b` would drop
+      ADRs "representing the right to receive" shares, such as AMX);
     - preferreds (`\bpreferred\b`);
     - fixed income (`%`, `\bnotes?\b`, `\bdebentures?\b`);
     - closed-end funds (`\bfund\b`);
