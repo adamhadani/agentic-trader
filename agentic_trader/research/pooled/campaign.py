@@ -22,7 +22,8 @@ from typing import Any, Literal, Protocol
 import numpy as np
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from agentic_trader.research.alpha.search import MUTATION_OPERATORS
+from agentic_trader.research.alpha.operators import OPERATOR_SPECS
+from agentic_trader.research.alpha.search import MUTATION_OPERATORS, WINDOWS
 from agentic_trader.research.pooled.cohort import UniverseSpec
 from agentic_trader.research.pooled.cube import BracketSpec, CoverageSpec, CubeSpec, CubeView, LabelCube
 from agentic_trader.research.pooled.formula import Picks, require_dimensionless, select_picks
@@ -39,9 +40,11 @@ from agentic_trader.research.setups.study import holm
 __all__ = [
     "CampaignProtocol",
     "CampaignWindows",
+    "Family",
     "InMemoryLedger",
     "Ledger",
     "LoadedProtocol",
+    "NullCheckSpec",
     "ScoredFormula",
     "load_campaign_protocol",
     "run_stages",
@@ -76,6 +79,9 @@ class Family(BaseModel, frozen=True, extra="forbid"):
     rationale: str
     seeds: tuple[str, ...] = Field(min_length=1)
     mutation_operators: tuple[str, ...]
+    # Campaign v2+: the windows that integer constants inside this family's expressions may
+    # mutate to (wrapper operators keep the miner's global set). None (v1) is the global set.
+    windows: tuple[int, ...] | None = None
 
     @field_validator("seeds")
     @classmethod
@@ -92,6 +98,17 @@ class Family(BaseModel, frozen=True, extra="forbid"):
             raise ValueError(f"unknown mutation operators: {sorted(unknown)}")
         return value
 
+    @field_validator("windows")
+    @classmethod
+    def _windows(cls, value: tuple[int, ...] | None) -> tuple[int, ...] | None:
+        if value is not None and (not value or list(value) != sorted(set(value)) or value[0] < 2):
+            raise ValueError("windows must be non-empty, sorted, unique integers >= 2")
+        return value
+
+    @property
+    def constant_windows(self) -> tuple[int, ...]:
+        return WINDOWS if self.windows is None else self.windows
+
 
 class ExcludedFamily(BaseModel, frozen=True, extra="forbid"):
     id: str
@@ -102,6 +119,15 @@ class SearchSpec(BaseModel, frozen=True, extra="forbid"):
     seed: int
     archive_size: int = Field(ge=1)
     forbidden_operators: tuple[str, ...]
+
+    @field_validator("forbidden_operators")
+    @classmethod
+    def _known_operators(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        # A misspelt name would silently ban nothing.
+        unknown = {op.lower() for op in value} - {name.lower() for name in OPERATOR_SPECS}
+        if unknown:
+            raise ValueError(f"unknown forbidden operators: {sorted(unknown)}")
+        return value
 
 
 class CampaignBootstrap(BaseModel, frozen=True, extra="forbid"):
@@ -148,6 +174,21 @@ class PowerSearchSpec(BaseModel, frozen=True, extra="forbid"):
     seeds: int = Field(ge=1)
     delta: float = Field(gt=0)
     min_recovered: int = Field(ge=1)
+    seed: int | None = None  # check B's hidden-expression RNG (campaign v2+)
+
+
+class NullCheckSpec(BaseModel, frozen=True, extra="forbid"):
+    """Check C: the full campaign on per-name-demeaned discovery panels with real formulas."""
+
+    replicates: int = Field(ge=1)
+    max_false_acceptances: int = Field(ge=0)
+    seed: int
+
+    @model_validator(mode="after")
+    def _bounded(self) -> NullCheckSpec:
+        if self.max_false_acceptances > self.replicates:
+            raise ValueError("max_false_acceptances cannot exceed replicates")
+        return self
 
 
 class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
@@ -177,15 +218,16 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
     confirmation_gate: ConfirmationGate
     power: PowerSpec
     power_search: PowerSearchSpec
+    null_check: NullCheckSpec | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> CampaignProtocol:
-        forbidden = set(self.search.forbidden_operators)
+        forbidden = {op.lower() for op in self.search.forbidden_operators}
         ids = [family.id for family in self.families]
         if len(ids) != len(set(ids)):
             raise ValueError("family ids must be unique")
         for family in self.families:
-            if forbidden & set(family.mutation_operators):
+            if forbidden & {op.lower() for op in family.mutation_operators}:
                 raise ValueError(f"family {family.id} mutates with a forbidden operator")
             for seed in family.seeds:
                 if forbidden & _calls(seed):
@@ -214,6 +256,17 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
             universe=self.universe,
             decision_cost_bps=self.decision_cost_bps,
         )
+
+    def family_budgets(self) -> dict[str, int]:
+        """The formula budget split evenly across families, the remainder to the first in file order."""
+        base, remainder = divmod(self.formula_budget, len(self.families))
+        return {family.id: base + (1 if index < remainder else 0) for index, family in enumerate(self.families)}
+
+    def require_campaign_ready(self) -> None:
+        if self.null_check is None or self.power_search.seed is None:
+            raise ValueError(
+                "this protocol predates checks B and C (campaign v1); a campaign needs protocol v2 or later"
+            )
 
 
 @dataclass(frozen=True)
