@@ -33,6 +33,7 @@ __all__ = [
     "CohortSource",
     "Eligibility",
     "LoadedCohort",
+    "ScreenProvenance",
     "UniverseSpec",
     "load_cohort",
     "point_in_time_eligibility",
@@ -42,12 +43,34 @@ SUPPORTED_SYMBOL = re.compile(r"^[A-Z]{1,5}$")
 _PROGRESS_SESSIONS = 100
 
 
+class ScreenProvenance(BaseModel, frozen=True, extra="forbid"):
+    """Where a ``liquidity_screen`` source's symbols came from: the frozen rule and the snapshot."""
+
+    rule: str
+    rule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_id: str = Field(min_length=1)
+    snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    window_end: date
+    top: int = Field(ge=1)
+    candidates: int = Field(ge=0)
+    excluded: int = Field(ge=0)
+    ranked: int = Field(ge=0)
+
+
 class CohortSource(BaseModel, frozen=True, extra="forbid"):
-    kind: Literal["config_groups", "equity_snapshot"]
+    kind: Literal["config_groups", "equity_snapshot", "liquidity_screen"]
     description: str
-    # config groups: SHA-256 of the newline-joined sorted symbols; snapshot: its snapshot_id.
+    # config groups: SHA-256 of the newline-joined sorted symbols; snapshot: its snapshot_id;
+    # liquidity screen: SHA-256 of the screen table (screen.csv) its symbols were selected from.
     identity: str = Field(min_length=1)
     symbols: tuple[str, ...]
+    screen: ScreenProvenance | None = None
+
+    @model_validator(mode="after")
+    def _screen_only_for_a_liquidity_screen(self) -> CohortSource:
+        if (self.kind == "liquidity_screen") != (self.screen is not None):
+            raise ValueError("a liquidity_screen source needs screen provenance, and no other kind may carry it")
+        return self
 
 
 class Cohort(BaseModel, frozen=True, extra="forbid"):

@@ -1,0 +1,35 @@
+{
+  "id": "pooled-screen",
+  "version": 2,
+  "title": "Pooled cohort v2 liquidity screen: top 400 listed US equities by SIP median dollar volume over the 60 sessions ending 2023-12-29",
+  "cohort_version": 2,
+  "survivorship": "listed and active on 2026-09-17; ranked on SIP raw dollar volume of the 60 sessions ending 2023-12-29; not point-in-time",
+  "snapshot": {
+    "snapshot_id": "bf162c80350e390248813ad461c437787731f76efc15c5f6c5bf49693da9735f",
+    "sha256": "41a7d11eb264cecf57f5e97b447cc17dc2f931bf4f624dcd733e3137a40f303c",
+    "observed": "2026-09-17",
+    "classification": "listed_non_etf_equity_candidate"
+  },
+  "config_groups": ["mega_caps", "research_cohort"],
+  "feed": "alpaca:sip",
+  "adjustment": "raw",
+  "window_end": "2023-12-29",
+  "window_sessions": 60,
+  "min_sessions_with_bars": 55,
+  "min_price": 10.0,
+  "top": 400,
+  "excluded_fifth_letters": ["P", "Q", "R", "U", "V", "W", "Z"],
+  "excluded_name_patterns": [
+    "\\bwarrants?\\b",
+    "-\\s*rights?\\.?\\s*$",
+    "\\bpreferred\\b",
+    "%",
+    "\\bnotes?\\b",
+    "\\bdebentures?\\b",
+    "\\bfund\\b",
+    "\\bunits?,? each consist",
+    "\\btangible equity units?\\b",
+    "\\bcorporate units?\\b",
+    "-\\s*units?\\.?\\s*$"
+  ]
+}
