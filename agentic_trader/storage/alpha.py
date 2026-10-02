@@ -10,8 +10,9 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,10 @@ from agentic_trader.storage.workflow import WorkflowStore, encode
 logger = logging.getLogger(__name__)
 
 ALPHA_EVENT_KINDS = (EventKind.ALPHA_RESEARCH, EventKind.ALPHA_REGISTRY, EventKind.ALPHA_FORECAST)
+# The pooled lane (research/pooled) keeps its own ledger and never touches family/all.
+POOLED_IMMUTABLE = ("protocol_sha256", "cohort_sha256", "cube_sha256", "code_revision", "budget")
+POOLED_LEDGER_KEY = "pooled/ledger"
+POOLED_CONFIRMATION_KEY = "pooled/confirmation"
 REGISTRY_KEY = "registry"
 SESSION_DECISION_KEY_LENGTH = len("session-decision/") + len(hashlib.sha256().hexdigest())
 
@@ -779,6 +784,7 @@ class AlphaRepository:
             "latest_session_decision": await self.get("session-decision/latest"),
             "pending_session_decisions": await self.get("session-decision/pending") or {},
             "research_family": await self.get("family/all"),
+            "pooled_ledger": await self.get(POOLED_LEDGER_KEY),
         }
 
     async def _session_decision(self, session, payload):
@@ -1018,3 +1024,143 @@ class AlphaRepository:
             family = await self._get(session, "family/all") or {"trial_count": 0}
             family["trial_count"] += trials
             await self._append(session, "family/all", family, EventKind.ALPHA_RESEARCH, "research_worker")
+
+    # --- pooled lane: campaigns, family budgets, formula charges, lane-wide confirmation ---
+
+    async def _pooled_counts(self, session) -> dict:
+        return await self._get(session, POOLED_LEDGER_KEY) or {
+            "formulas_charged": 0,
+            "campaigns": 0,
+            "confirmations": 0,
+        }
+
+    async def _pooled_count(self, session, field: str) -> None:
+        counts = await self._pooled_counts(session)
+        counts[field] += 1
+        await self._append(session, POOLED_LEDGER_KEY, counts, EventKind.ALPHA_RESEARCH, "research_worker")
+
+    async def reserve_pooled_campaign(self, campaign_id: str, record: Mapping) -> dict:
+        """Reserve a pooled campaign before it reads anything; its immutable fields never change.
+
+        A rerun with the same immutable fields resumes (the search is deterministic, so it
+        re-proposes the same formulas, whose charges are no-ops). A campaign that consumed its
+        confirmation interval or completed can never run again.
+        """
+        immutable = {key: record[key] for key in POOLED_IMMUTABLE}
+        key = f"pooled/campaign/{campaign_id}"
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            existing = await self._get(session, key)
+            if existing is not None:
+                if {k: existing[k] for k in POOLED_IMMUTABLE} != immutable:
+                    raise ValueError(
+                        "Pooled campaign reservation is immutable; a changed protocol, cohort, cube or code "
+                        "revision needs a new protocol version"
+                    )
+                if "confirmation_consumed" in existing["stages"] or existing["status"] == "completed":
+                    raise ValueError(f"Pooled campaign {campaign_id} cannot run again (status {existing['status']})")
+                return existing
+            payload = {
+                **immutable,
+                "campaign_id": campaign_id,
+                "status": "reserved",
+                "stages": {"reserved": datetime.now(UTC).isoformat()},
+                "details": {},
+            }
+            await self._append(session, key, payload, EventKind.ALPHA_RESEARCH, "research_worker")
+            await self._pooled_count(session, "campaigns")
+            return payload
+
+    async def reserve_pooled_family(self, campaign_id: str, family_id: str, budget: int) -> None:
+        if type(budget) is not int or budget < 1:
+            raise ValueError("Positive integer family budget required")
+        key = f"pooled/campaign/{campaign_id}/family/{family_id}"
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            if await self._get(session, f"pooled/campaign/{campaign_id}") is None:
+                raise ValueError(f"Unknown pooled campaign {campaign_id}")
+            existing = await self._get(session, key)
+            if existing is not None:
+                if existing["budget"] != budget:
+                    raise ValueError("Pooled family budget is immutable")
+                return
+            await self._append(
+                session, key, {"budget": budget, "charged": 0}, EventKind.ALPHA_RESEARCH, "research_worker"
+            )
+
+    async def charge_pooled_formula(
+        self, campaign_id: str, family_id: str, *, formula_id: str, expression: str, nodes: int
+    ) -> bool:
+        """Charge one formula before it is evaluated. False: it was already charged (a resume)."""
+        key = f"pooled/formula/{campaign_id}/{formula_id}"
+        family_key = f"pooled/campaign/{campaign_id}/family/{family_id}"
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            existing = await self._get(session, key)
+            if existing is not None:
+                if existing["expression"] != expression or existing["family"] != family_id:
+                    raise ValueError(f"Pooled formula id {formula_id} is already charged for another expression")
+                return False
+            family = await self._get(session, family_key)
+            if family is None:
+                raise ValueError(f"Pooled family {family_id} budget not reserved")
+            if family["charged"] >= family["budget"]:
+                raise ValueError(f"Pooled family {family_id} budget of {family['budget']} exhausted")
+            charge = {
+                "family": family_id,
+                "expression": expression,
+                "nodes": nodes,
+                "charged_at": datetime.now(UTC).isoformat(),
+            }
+            await self._append(session, key, charge, EventKind.ALPHA_RESEARCH, "research_worker")
+            family["charged"] += 1
+            await self._append(session, family_key, family, EventKind.ALPHA_RESEARCH, "research_worker")
+            await self._pooled_count(session, "formulas_charged")
+            return True
+
+    async def advance_pooled_campaign(self, campaign_id: str, status: str, detail: Mapping | None = None) -> None:
+        key = f"pooled/campaign/{campaign_id}"
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            existing = await self._get(session, key)
+            if existing is None:
+                raise ValueError(f"Unknown pooled campaign {campaign_id}")
+            if existing["status"] == "completed":
+                raise ValueError(f"Pooled campaign {campaign_id} is completed")
+            existing["status"] = status
+            existing["stages"][status] = datetime.now(UTC).isoformat()
+            if detail is not None:
+                existing["details"][status] = dict(detail)
+            await self._append(session, key, existing, EventKind.ALPHA_RESEARCH, "research_worker")
+
+    async def consume_pooled_confirmation(
+        self, *, campaign_id: str, cohort_sha256: str, interval: tuple[date, date], candidates: Sequence[str]
+    ) -> None:
+        """Journal a confirmation interval's single use before it is read; overlaps are refused lane-wide."""
+        start, end = interval
+        campaign_key = f"pooled/campaign/{campaign_id}"
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            campaign = await self._get(session, campaign_key)
+            if campaign is None:
+                raise ValueError(f"Unknown pooled campaign {campaign_id}")
+            consumed = await self._get(session, POOLED_CONFIRMATION_KEY) or {"intervals": []}
+            for item in consumed["intervals"]:
+                if not (end < date.fromisoformat(item["start"]) or date.fromisoformat(item["end"]) < start):
+                    raise ValueError(f"confirmation interval already consumed by campaign {item['campaign_id']}")
+            now = datetime.now(UTC).isoformat()
+            consumed["intervals"].append(
+                {
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "campaign_id": campaign_id,
+                    "cohort_sha256": cohort_sha256,
+                    "candidates": list(candidates),
+                    "consumed_at": now,
+                }
+            )
+            await self._append(session, POOLED_CONFIRMATION_KEY, consumed, EventKind.ALPHA_RESEARCH, "research_worker")
+            campaign["status"] = "confirmation_consumed"
+            campaign["stages"]["confirmation_consumed"] = now
+            await self._append(session, campaign_key, campaign, EventKind.ALPHA_RESEARCH, "research_worker")
+            await self._pooled_count(session, "confirmations")
