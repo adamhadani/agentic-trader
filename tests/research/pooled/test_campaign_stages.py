@@ -1,4 +1,6 @@
 # tests/research/pooled/test_campaign_stages.py
+import hashlib
+import json
 from bisect import bisect_left, bisect_right
 from datetime import date, timedelta
 from pathlib import Path
@@ -8,15 +10,19 @@ import pytest
 
 from agentic_trader.research.pooled.campaign import (
     CampaignWindows,
+    DiscoveryEvaluator,
     InMemoryLedger,
     ScoredFormula,
     _confirmation,
     _discovery,
     _months_before,
+    finish_discovery,
+    later_stages,
     load_campaign_protocol,
     run_stages,
 )
 from agentic_trader.research.pooled.cube import LabelCube
+from agentic_trader.research.setups.study import _finite_json
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -466,3 +472,149 @@ def test_dedupe_keeps_the_higher_fitness_duplicate():
 )
 def test_months_before_clamps_only_to_the_target_month_length(day, months, expected):
     assert _months_before(day, months) == expected
+
+
+def pin_cube() -> LabelCube:
+    days = tuple(sessions_between(PROTOCOL.windows.discovery[0], PROTOCOL.windows.confirmation[1]))
+    rng = np.random.default_rng(42)
+    s, n = len(days), 24
+    eligible = rng.random((s, n)) > 0.1
+    labelled = eligible & (rng.random((s, n)) > 0.05)
+    r = rng.normal(0.02, 1.1, (s, n))
+    r[:, 3] += 2.0
+    r[:, 7] += 1.0
+    r = np.where(labelled, r, np.nan)
+    arrays = {
+        "eligible": eligible,
+        "labelled": labelled,
+        "r_gross": r + 0.01,
+        "r_cost": r,
+        "holding": rng.integers(1, 3, (s, n)).astype(np.int16),
+        "hit": np.ones((s, n), np.int8),
+        "tiebreak": rng.integers(0, 2**62, (s, n)).astype(np.uint64),
+        "dollar_volume": np.ones((s, n)),
+    }
+    return LabelCube(
+        spec_identity="spec",
+        cohort_sha256="c" * 64,
+        sessions=days,
+        symbols=tuple(f"S{j}" for j in range(n)),
+        arrays=arrays,
+        coverage={},
+    )
+
+
+def pin_formulas(n_names: int = 24) -> list[ScoredFormula]:
+    formulas = []
+    for column in (3, 7, 11):
+
+        def panel(view, column=column):
+            scores = np.zeros(view.eligible.shape)
+            scores[:, column] = 1.0
+            return scores, np.ones_like(view.eligible)
+
+        formulas.append(ScoredFormula(formula_id=f"fav-{column}", nodes=3 + column % 4, panel=panel))
+    for seed in range(5):
+
+        def panel(view, seed=seed):
+            field = np.random.default_rng(seed).normal(size=(view.offset + len(view.sessions), n_names))
+            return field[view.offset :], np.ones_like(view.eligible)
+
+        formulas.append(ScoredFormula(formula_id=f"noise-{seed}", nodes=4, panel=panel))
+    return formulas
+
+
+def test_run_stages_output_is_unchanged_by_the_discovery_split():
+    # Digest recorded on the unsplit stages (378ab95): power check A's machinery must not change.
+    cube = pin_cube()
+    outcome = run_stages(
+        pin_formulas(), CampaignWindows(cube, PROTOCOL.windows, "c" * 64), InMemoryLedger(), PROTOCOL, campaign_id="pin"
+    )
+    encoded = json.dumps(_finite_json(outcome), sort_keys=True, default=str)
+    assert outcome["status"] == "confirmed" and outcome["confirmed"] == ["fav-3"]
+    assert hashlib.sha256(encoded.encode()).hexdigest() == (
+        "13a006d5bfa98383b98496d3f1660acb630442f54be0f5427894f78bea84386e"
+    )
+
+
+def test_scoring_one_formula_at_a_time_matches_the_batch_discovery():
+    view = CampaignWindows(pin_cube(), PROTOCOL.windows, "c" * 64).discovery()
+    formulas = pin_formulas()
+    evaluator = DiscoveryEvaluator(view, PROTOCOL)
+    rows, carried = finish_discovery([evaluator.score(f) for f in reversed(formulas)], PROTOCOL)
+    batch_rows, batch_carried = _discovery(formulas, view, PROTOCOL)
+    assert carried == batch_carried
+
+    def encoded(items):
+        return sorted(json.dumps(_finite_json(row), sort_keys=True) for row in items)
+
+    assert encoded(rows) == encoded(batch_rows)
+
+
+def test_dedupe_runs_before_the_carry_cap():
+    favourites = tuple(range(7))
+    r = returns(favourites=favourites)
+    for column in favourites:
+        r[DISC, column] += 0.3 + 0.1 * column
+    # twin6 repeats f6's picks with one more node (lower fitness): it is a duplicate. Capping
+    # before deduplicating would carry only four distinct formulas.
+    rows, carried = discover(cube_of(r), *[favourite(f"f{c}", c) for c in favourites], favourite("twin6", 6, nodes=4))
+    assert rows["twin6"]["passes"]
+    assert carried == ["f6", "f5", "f4", "f3", "f2"]
+
+
+def test_the_recent_window_starts_strictly_after_the_twelve_month_boundary():
+    boundary = bisect_left(DAYS, date(2025, 7, 31))
+    assert DAYS[boundary] == date(2025, 7, 31)
+    r = returns()
+    r[CONF, 0] += 0.5
+    r[boundary, 0] -= 1000.0  # the boundary session itself is outside the recent window
+    assert confirm(cube_of(r), [favourite("f", 0)], ["f"])[0]["f"]["recent_edge"] > 0
+    r[boundary, 0] += 1000.0
+    r[boundary + 1, 0] -= 1000.0  # the next session is inside it
+    assert confirm(cube_of(r), [favourite("f", 0)], ["f"])[0]["f"]["recent_edge"] < 0
+
+
+def test_campaign_windows_refuse_a_cube_built_for_another_cohort():
+    with pytest.raises(ValueError, match="built for cohort"):
+        CampaignWindows(synthetic_cube(), PROTOCOL.windows, cohort_sha256="d" * 64)
+
+
+def test_the_in_memory_ledger_refuses_an_overlap_whatever_the_cohort():
+    ledger = InMemoryLedger()
+    ledger.consume_confirmation(
+        cohort_sha256="a" * 64, interval=(date(2024, 1, 2), date(2026, 7, 31)), campaign_id="one", candidates=("x",)
+    )
+    with pytest.raises(ValueError, match="already consumed by campaign one"):
+        ledger.consume_confirmation(
+            cohort_sha256="b" * 64, interval=(date(2026, 7, 1), date(2027, 7, 1)), campaign_id="two", candidates=()
+        )
+    ledger.consume_confirmation(
+        cohort_sha256="b" * 64, interval=(date(2026, 8, 3), date(2027, 7, 30)), campaign_id="three", candidates=()
+    )
+
+
+def test_later_stages_call_on_frozen_before_the_confirmation_is_consumed():
+    cube = edge_in({DISC: 0.5, SEL: 0.5, CONF: 0.5})
+    windows = windows_of(cube)
+    events = []
+
+    class Spy(InMemoryLedger):
+        def consume_confirmation(self, **kwargs):
+            events.append(("consume", kwargs["candidates"]))
+            super().consume_confirmation(**kwargs)
+
+    formulas = [favourite("f", 0)]
+    discovery, carried = _discovery(formulas, windows.discovery(), P1)
+    outcome = later_stages(
+        formulas,
+        discovery,
+        carried,
+        windows,
+        Spy(),
+        P1,
+        campaign_id="hook",
+        on_frozen=lambda frozen: events.append(("frozen", tuple(frozen))),
+    )
+    assert outcome["status"] == "confirmed"
+    assert events == [("frozen", ("f",)), ("consume", ("f",))]

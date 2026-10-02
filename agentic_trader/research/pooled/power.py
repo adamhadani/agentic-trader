@@ -50,7 +50,14 @@ Tally = dict[float, tuple[bool, bool]]  # per delta: (planted confirmed, any nul
 Detail = dict[str, dict]  # per delta key: ``planted_detail`` of that campaign run
 
 
-def synthetic_cube(base: CubeView, calendar: Sequence[date], rng: np.random.Generator, block_mean: float) -> LabelCube:
+def synthetic_cube(
+    base: CubeView,
+    calendar: Sequence[date],
+    rng: np.random.Generator,
+    block_mean: float,
+    *,
+    cohort_sha256: str = "synthetic",
+) -> LabelCube:
     """Whole base sessions, stationary-block resampled, laid over the full calendar.
 
     The calendar is longer than the base window, so it is filled by independent
@@ -63,7 +70,7 @@ def synthetic_cube(base: CubeView, calendar: Sequence[date], rng: np.random.Gene
     arrays = {name: getattr(base, name)[index] for name in _ARRAYS}
     return LabelCube(
         spec_identity="synthetic",
-        cohort_sha256="synthetic",
+        cohort_sha256=cohort_sha256,
         sessions=tuple(calendar),
         symbols=base.symbols,
         arrays=arrays,
@@ -195,7 +202,7 @@ def _replicate(
     spec = protocol.power
     names = len(base.symbols)
     rng = np.random.default_rng([spec.seed, rep])
-    cube = synthetic_cube(base, calendar, rng, protocol.bootstrap.block_mean)
+    cube = synthetic_cube(base, calendar, rng, protocol.bootstrap.block_mean, cohort_sha256=cohort_sha256)
     seeds = rng.integers(0, 2**31, spec.null_formulas + 1)
     planted = _formula(PLANTED, int(seeds[0]), spec.ar_phi, names)
     nulls = [_formula(f"null-{i:03d}", int(s), spec.ar_phi, names) for i, s in enumerate(seeds[1:])]

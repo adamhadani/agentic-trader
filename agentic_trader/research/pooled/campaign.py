@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 import calendar
 import hashlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import date
 from itertools import pairwise
@@ -40,12 +40,16 @@ from agentic_trader.research.setups.study import holm
 __all__ = [
     "CampaignProtocol",
     "CampaignWindows",
+    "DiscoveryEvaluator",
+    "DiscoveryScore",
     "Family",
     "InMemoryLedger",
     "Ledger",
     "LoadedProtocol",
     "NullCheckSpec",
     "ScoredFormula",
+    "finish_discovery",
+    "later_stages",
     "load_campaign_protocol",
     "run_stages",
 ]
@@ -298,7 +302,7 @@ class Ledger(Protocol):
 
 
 class InMemoryLedger:
-    """Power checks and tests: the same single-use rule as the journal ledger, in memory."""
+    """Power checks and tests: the journal ledger's lane-wide single-use rule, in memory."""
 
     def __init__(self) -> None:
         self.consumed: list[dict] = []
@@ -308,9 +312,7 @@ class InMemoryLedger:
     ) -> None:
         start, end = interval
         for item in self.consumed:
-            if item["cohort_sha256"] == cohort_sha256 and not (
-                end < item["interval"][0] or item["interval"][1] < start
-            ):
+            if not (end < item["interval"][0] or item["interval"][1] < start):
                 raise ValueError(f"confirmation interval already consumed by campaign {item['campaign_id']}")
         self.consumed.append(
             {"cohort_sha256": cohort_sha256, "interval": interval, "campaign_id": campaign_id, "candidates": candidates}
@@ -321,6 +323,8 @@ class CampaignWindows:
     """Opens the stage windows in order; confirmation only after its consumption is recorded."""
 
     def __init__(self, cube: LabelCube, windows: StageWindows, cohort_sha256: str):
+        if cube.cohort_sha256 != cohort_sha256:
+            raise ValueError(f"the cube was built for cohort {cube.cohort_sha256[:16]}, not {cohort_sha256[:16]}")
         self._cube = cube
         self._windows = windows
         self._cohort_sha256 = cohort_sha256
@@ -363,26 +367,37 @@ def _draws(view: CubeView, count: int, protocol: CampaignProtocol) -> np.ndarray
     return bootstrap_draws(len(view.sessions), protocol.bootstrap.block_mean, count, protocol.bootstrap.seed)
 
 
-def _jaccard(a: set, b: set) -> float:
+def _jaccard(a: AbstractSet, b: AbstractSet) -> float:
     union = len(a | b)
     return len(a & b) / union if union else 0.0
 
 
-def _discovery(
-    formulas: Sequence[ScoredFormula], view: CubeView, protocol: CampaignProtocol
-) -> tuple[list[dict], list[str]]:
-    gate = protocol.discovery_gate
-    draws = _draws(view, protocol.bootstrap.discovery_draws, protocol)
-    bounds = np.linspace(0, len(view.sessions), gate.blocks + 1).astype(int)
-    results: list[dict[str, Any]] = []
-    cells: dict[str, set[tuple[int, int]]] = {}
-    for formula in formulas:
-        picks = _picks(formula, view, protocol.k)
+@dataclass(frozen=True)
+class DiscoveryScore:
+    """One formula's discovery result row and its pick cells (for dedupe and overlap)."""
+
+    row: dict[str, Any]
+    cells: frozenset[tuple[int, int]]
+
+
+class DiscoveryEvaluator:
+    """Scores formulas on the discovery view one at a time, so a search can use each fitness."""
+
+    def __init__(self, view: CubeView, protocol: CampaignProtocol):
+        self._view = view
+        self._protocol = protocol
+        self._draws = _draws(view, protocol.bootstrap.discovery_draws, protocol)
+        self._bounds = np.linspace(0, len(view.sessions), protocol.discovery_gate.blocks + 1).astype(int)
+
+    def score(self, formula: ScoredFormula) -> DiscoveryScore:
+        gate = self._protocol.discovery_gate
+        view = self._view
+        picks = _picks(formula, view, self._protocol.k)
         table = session_table(picks, view, purge=True)
-        edge = paired_edge_test(table, draws)
-        leg = leg_mean_test(table, draws)
+        edge = paired_edge_test(table, self._draws)
+        leg = leg_mean_test(table, self._draws)
         block_means = []
-        for lo, hi in pairwise(bounds.tolist()):
+        for lo, hi in pairwise(self._bounds.tolist()):
             sub = session_table(_restrict(picks, lo, hi), view.sub(lo, hi), purge=True)
             weight = np.isfinite(sub.edge)
             block_means.append(float(sub.edge[weight].mean()) if weight.any() else float("nan"))
@@ -396,18 +411,22 @@ def _discovery(
             and leg["mean"] > 0
             and edge["n_sessions"] >= gate.min_sessions
         )
-        fitness = (t if np.isfinite(t) else float("-inf")) - protocol.complexity_penalty_per_node * formula.nodes
-        results.append(
-            {
-                "formula_id": formula.formula_id,
-                "edge": edge,
-                "leg": leg,
-                "block_means": block_means,
-                "passes": passes,
-                "fitness": fitness,
-            }
-        )
-        cells[formula.formula_id] = picks.cells()
+        fitness = (t if np.isfinite(t) else float("-inf")) - self._protocol.complexity_penalty_per_node * formula.nodes
+        row = {
+            "formula_id": formula.formula_id,
+            "edge": edge,
+            "leg": leg,
+            "block_means": block_means,
+            "passes": passes,
+            "fitness": fitness,
+        }
+        return DiscoveryScore(row=row, cells=frozenset(picks.cells()))
+
+
+def finish_discovery(scores: Sequence[DiscoveryScore], protocol: CampaignProtocol) -> tuple[list[dict], list[str]]:
+    """Every discovery row, and the gate's survivors deduplicated by pick overlap, then capped."""
+    results = [score.row for score in scores]
+    cells = {score.row["formula_id"]: score.cells for score in scores}
     passing = sorted((r for r in results if r["passes"]), key=lambda r: (-r["fitness"], r["formula_id"]))
     kept: list[dict[str, Any]] = []
     for candidate in passing:
@@ -415,7 +434,14 @@ def _discovery(
             _jaccard(cells[candidate["formula_id"]], cells[k["formula_id"]]) < protocol.dedupe_jaccard for k in kept
         ):
             kept.append(candidate)
-    return results, [r["formula_id"] for r in kept[: gate.carry]]
+    return results, [r["formula_id"] for r in kept[: protocol.discovery_gate.carry]]
+
+
+def _discovery(
+    formulas: Sequence[ScoredFormula], view: CubeView, protocol: CampaignProtocol
+) -> tuple[list[dict], list[str]]:
+    evaluator = DiscoveryEvaluator(view, protocol)
+    return finish_discovery([evaluator.score(formula) for formula in formulas], protocol)
 
 
 def _selection(
@@ -488,19 +514,22 @@ def _confirmation(
     return rows, confirmed
 
 
-def run_stages(
+def later_stages(
     formulas: Sequence[ScoredFormula],
+    discovery: list[dict],
+    carried: list[str],
     windows: CampaignWindows,
     ledger: Ledger,
     protocol: CampaignProtocol,
     *,
     campaign_id: str,
+    on_frozen: Callable[[list[str]], None] | None = None,
 ) -> dict:
-    ids = [formula.formula_id for formula in formulas]
-    if len(set(ids)) != len(ids):
-        duplicated = sorted({i for i in ids if ids.count(i) > 1})
-        raise ValueError(f"duplicate formula_id in campaign: {duplicated}")
-    discovery, carried = _discovery(formulas, windows.discovery(), protocol)
+    """Selection and confirmation after discovery.
+
+    ``on_frozen`` runs once the candidates are frozen, before the confirmation interval is
+    consumed (the campaign writes the frozen documents there).
+    """
     outcome: dict = {
         "discovery": discovery,
         "carried": carried,
@@ -515,7 +544,25 @@ def run_stages(
     outcome.update(selection=selection, frozen=frozen)
     if not frozen:
         return {**outcome, "status": "no_confirmation_candidates"}
+    if on_frozen is not None:
+        on_frozen(list(frozen))
     view = windows.confirmation(ledger, campaign_id=campaign_id, candidates=tuple(frozen))
     confirmation, confirmed = _confirmation(formulas, frozen, view, protocol)
     outcome.update(confirmation=confirmation, confirmed=confirmed)
     return {**outcome, "status": "confirmed" if confirmed else "none_confirmed"}
+
+
+def run_stages(
+    formulas: Sequence[ScoredFormula],
+    windows: CampaignWindows,
+    ledger: Ledger,
+    protocol: CampaignProtocol,
+    *,
+    campaign_id: str,
+) -> dict:
+    ids = [formula.formula_id for formula in formulas]
+    if len(set(ids)) != len(ids):
+        duplicated = sorted({i for i in ids if ids.count(i) > 1})
+        raise ValueError(f"duplicate formula_id in campaign: {duplicated}")
+    discovery, carried = _discovery(formulas, windows.discovery(), protocol)
+    return later_stages(formulas, discovery, carried, windows, ledger, protocol, campaign_id=campaign_id)
