@@ -4,6 +4,7 @@ import hashlib
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -45,7 +46,7 @@ class FakeBars:
     def fetch_bars(self, symbol, timeframe, start, end, *, adjustment="all", **kwargs):
         key = (symbol, timeframe, adjustment)
         self.calls.append(key)
-        self.spans[key] = (start, end)
+        self.spans.setdefault(key, []).append((start, end))
         if key in self.fail:
             raise RuntimeError("provider down")
         columns = ["Open", "High", "Low", "Close", "Volume"]
@@ -104,11 +105,11 @@ def _no_retry_sleep(monkeypatch):
     monkeypatch.setattr(setups_runner, "_RETRY_DELAYS", ())
 
 
-def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None):
+def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SPEC):
     return asyncio.run(
         build_cube_inputs(
             loaded or cohort(),
-            SPEC,
+            spec,
             bars=bars,
             calendar=FakeCalendar(),
             cache_dir=cache_dir,
@@ -216,7 +217,7 @@ def test_hourly_bars_cover_a_span_that_does_not_depend_on_the_symbols_eligibilit
         datetime.combine(SPEC.decisions[0], time.min, tzinfo=UTC) - timedelta(days=7),
         datetime.combine(SPEC.bars_through, time.max, tzinfo=UTC),
     )
-    assert bars.spans[("AAA", "1h", "all")] == bars.spans[("BBB", "1h", "all")] == expected
+    assert bars.spans[("AAA", "1h", "all")] == bars.spans[("BBB", "1h", "all")] == [expected]
 
 
 def test_a_cached_cube_for_another_cohort_is_refused(tmp_path):
@@ -283,3 +284,85 @@ def test_progress_reports_each_phase_of_a_build(tmp_path):
     assert order == sorted(order)
     assert "10 eligible cells" in messages[order[3]]  # 5 sessions x 2 symbols
     assert "10 labelled of 10 eligible cells" in messages[order[6]]
+
+
+def test_hourly_requests_cover_the_whole_spec_span_in_contiguous_chunks(tmp_path):
+    spec = SPEC.model_copy(update={"bars_through": date(2022, 6, 1)})
+    bars = FakeBars()
+    build(bars, tmp_path, spec=spec)
+    start = datetime.combine(spec.decisions[0], time.min, tzinfo=UTC) - timedelta(days=7)
+    end = datetime.combine(spec.bars_through, time.max, tzinfo=UTC)
+    for symbol in ("AAA", "BBB"):
+        chunks = bars.spans[(symbol, "1h", "all")]
+        assert len(chunks) >= 2
+        assert chunks[0][0] == start and chunks[-1][1] == end
+        assert all(left[1] == right[0] for left, right in pairwise(chunks))
+
+
+def test_a_cache_hit_rechecks_every_bar_file_the_cube_was_built_from(tmp_path):
+    first = build(FakeBars(), tmp_path)
+    assert len(first.cube.coverage["bar_file_list"]) == first.cube.coverage["bar_files"] == 46
+    messages: list[str] = []
+    build(FakeBars(), tmp_path, progress=messages.append)
+    assert any("bar files re-checked: 46 unchanged" in message for message in messages)
+    # A new cache file that sorts first would be loaded instead: the cached cube is refused.
+    original = cached(tmp_path, "bars", "AAA", "1d")[0]
+    shutil.copy(original, original.parent / ("0" * 8 + original.name))
+    with pytest.raises(ValueError, match="bar files that changed"):
+        build(FakeBars(), tmp_path)
+
+
+def test_a_cube_built_before_the_file_list_is_loaded_with_a_note(tmp_path):
+    built = build(FakeBars(), tmp_path)
+    (cube_file,) = tmp_path.glob("cube-*.npz")
+    view = built.cube.window(*WINDOW)
+    older = LabelCube(
+        spec_identity=built.cube.spec_identity,
+        cohort_sha256=built.cube.cohort_sha256,
+        sessions=view.sessions,
+        symbols=view.symbols,
+        arrays={name: getattr(view, name) for name in _ARRAYS},
+        coverage={k: v for k, v in built.cube.coverage.items() if k != "bar_file_list"},
+    )
+    cube_file.unlink()
+    save_cube(older, cube_file)
+    messages: list[str] = []
+    build(FakeBars(), tmp_path, progress=messages.append)
+    assert any("not re-checked" in message for message in messages)
+
+
+def test_five_consecutive_raised_fetches_stop_acquisition_early(tmp_path):
+    fail = {(symbol, "1d", adjustment) for symbol in ("AAA", "BBB", *STATIC) for adjustment in ("all", "raw")}
+    bars = FakeBars(fail=fail)
+    messages: list[str] = []
+    with pytest.raises(ValueError, match="provider unavailable: 5 consecutive fetches failed"):
+        build(bars, tmp_path, progress=messages.append)
+    assert len({call[0] for call in bars.calls}) < len(STATIC) + 2  # stopped before every symbol
+    assert any("fetch failed: AAA 1d/all: RuntimeError: provider down" in message for message in messages)
+
+
+def test_a_required_cache_hit_refuses_a_missing_cube_before_any_provider_access(tmp_path):
+    class Untouchable:
+        async def get_calendar_range(self, start, end):
+            raise AssertionError("the calendar must not be read")
+
+    def required(bars, calendar):
+        return asyncio.run(
+            build_cube_inputs(
+                cohort(),
+                SPEC,
+                bars=bars,
+                calendar=calendar,
+                cache_dir=tmp_path,
+                static_symbols=STATIC,
+                pace=_no_pace,
+                require_cached=True,
+            )
+        )
+
+    bars = FakeBars()
+    with pytest.raises(ValueError, match="no cached cube .* run alpha pooled power first"):
+        required(bars, Untouchable())
+    assert bars.calls == []
+    built = build(FakeBars(), tmp_path)  # check A's build caches the cube
+    assert required(FakeBars(), FakeCalendar()).cube.sha256 == built.cube.sha256

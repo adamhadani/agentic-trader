@@ -178,11 +178,18 @@ as a catalog paper probe (`alpha apriori-probe`): registry `probe` list,
 the native budget, fail-closed on Nasdaq/SIP gaps.
 
 The [pooled mining lane](docs/alpha-pooled-mining.md) evaluates one dimensionless DSL
-formula across a frozen cohort (`config/research/pooled/cohort-v1.json`) on a
-hash-identified long-bracket label cube, testing a session-paired edge with a
-session-block bootstrap. `alpha pooled power` (power check A) must pass before
-`alpha pooled study`; campaigns confirm once on their own ledger's window. Research only:
-no DB, registry, broker, Telegram or promotion credit.
+formula across a frozen cohort on a hash-identified long-bracket label cube, testing a
+session-paired edge with a session-block bootstrap. Cohort v2 (`config/research/pooled/cohort-v2.json`)
+comes from a frozen liquidity screen (`screen-v2.json`, ranked before the confirmation
+window); `campaign-v2.json` pins it. The campaign runs once per protocol and only after
+power check A, search check B and the real-formula false-acceptance check C passed on the
+same cohort, cube, protocol and clean code revision. It charges every formula to the
+pooled ledger (journal events, never `family/all`) before scoring it and consumes the
+lane-wide confirmation window before reading it. Research only: no registry, broker,
+Telegram or promotion credit. On 2026-10-02 checks A and C passed but check B failed
+(1/10; top-3-of-~367 picks give near-neighbour formulas no shared picks), so the v2
+campaign did not run and the confirmation window is unused
+([checks](docs/alpha-pooled-checks-2026-10-02.md)); protocol v3 needs a redesign first.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)

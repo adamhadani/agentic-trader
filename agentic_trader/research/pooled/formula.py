@@ -30,7 +30,9 @@ __all__ = [
     "Picks",
     "allowed_mask",
     "evaluate_panel",
+    "evaluate_prepared",
     "expression_nodes",
+    "prepare_daily",
     "require_dimensionless",
     "select_picks",
 ]
@@ -87,6 +89,41 @@ class Formula(BaseModel, frozen=True, extra="forbid"):
         return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def prepare_daily(adjusted: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Adjusted daily bars keyed by New York session (a DatetimeIndex), ready for repeated scoring."""
+    prepared: dict[str, pd.DataFrame] = {}
+    for symbol, frame in adjusted.items():
+        if frame is None or frame.empty:
+            continue
+        keyed = _by_session(frame)
+        prepared[symbol] = keyed.set_axis(pd.DatetimeIndex(keyed.index))
+    return prepared
+
+
+def evaluate_prepared(
+    expression: str,
+    prepared: Mapping[str, pd.DataFrame],
+    trading_days: Sequence[date],
+    sessions: Sequence[date],
+    symbols: Sequence[str],
+) -> np.ndarray:
+    """``evaluate_panel`` on bars already keyed by ``prepare_daily``."""
+    position = {day: i for i, day in enumerate(trading_days)}
+    # A session with no earlier trading day has no completed bar to read: NaT reindexes to NaN
+    # (a bare ``- 1`` would wrap to the last day and leak the future).
+    previous = pd.DatetimeIndex([trading_days[position[day] - 1] if position[day] > 0 else pd.NaT for day in sessions])
+    out = np.full((len(sessions), len(symbols)), np.nan)
+    evaluator = AlphaExpressionEvaluator()
+    for col, symbol in enumerate(symbols):
+        keyed = prepared.get(symbol)
+        if keyed is None:
+            continue
+        series = evaluator.evaluate(expression, keyed)
+        out[:, col] = series.reindex(previous).to_numpy(float)
+    out[~np.isfinite(out)] = np.nan
+    return out
+
+
 def evaluate_panel(
     expression: str,
     adjusted: Mapping[str, pd.DataFrame],
@@ -95,22 +132,7 @@ def evaluate_panel(
     symbols: Sequence[str],
 ) -> np.ndarray:
     """[S, N] values known at each decision: the expression on adjusted daily bars, read at D-1."""
-    position = {day: i for i, day in enumerate(trading_days)}
-    # A session with no earlier trading day has no completed bar to read: NaT reindexes to NaN
-    # (a bare ``- 1`` would wrap to the last day and leak the future).
-    previous = pd.DatetimeIndex([trading_days[position[day] - 1] if position[day] > 0 else pd.NaT for day in sessions])
-    out = np.full((len(sessions), len(symbols)), np.nan)
-    evaluator = AlphaExpressionEvaluator()
-    for col, symbol in enumerate(symbols):
-        frame = adjusted.get(symbol)
-        if frame is None or frame.empty:
-            continue
-        keyed = _by_session(frame)
-        keyed = keyed.set_axis(pd.DatetimeIndex(keyed.index))
-        series = evaluator.evaluate(expression, keyed)
-        out[:, col] = series.reindex(previous).to_numpy(float)
-    out[~np.isfinite(out)] = np.nan
-    return out
+    return evaluate_prepared(expression, prepare_daily(adjusted), trading_days, sessions, symbols)
 
 
 def allowed_mask(formula: Formula, filter_values: Sequence[np.ndarray], eligible: np.ndarray) -> np.ndarray:

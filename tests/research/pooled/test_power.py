@@ -332,7 +332,8 @@ def _built() -> CubeBuild:
 def _executor_inputs(cohort_sha=COHORT):
     protocol = tiny_protocol().model_copy(update={"cohort_sha256": COHORT})
     loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("campaign.json"))
-    return loaded, SimpleNamespace(sha256=cohort_sha)
+    cohort = SimpleNamespace(sha256=cohort_sha, cohort=SimpleNamespace(source_of=lambda symbol: ("config_groups",)))
+    return loaded, cohort
 
 
 def test_execute_power_check_writes_manifest_first_and_a_strict_result(tmp_path):
@@ -359,6 +360,9 @@ def test_execute_power_check_writes_manifest_first_and_a_strict_result(tmp_path)
     assert result["cube"]["coverage"]["bars_sha256"] == "b" * 64
     assert result["bar_failures"] == {"ZZZ": "1d/raw: empty"}
     assert result["static_used"] == ["R00", "R01"]
+    total = int(built.cube.window(built.cube.sessions[0], built.cube.sessions[-1]).eligible.sum())
+    assert result["breadth"]["cohort_symbols"] == 40
+    assert result["breadth"]["eligible_cells_by_source"] == {"config_groups": total}
     on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
     assert on_disk["status"] == "passed"
     assert on_disk["authorizes_promotion"] is False
@@ -408,3 +412,37 @@ def test_execute_power_check_refuses_an_existing_directory(tmp_path):
 def test_ar1_prefix_matches_the_full_field():
     full = ar1_scores((200, 4), 0.95, seed=3)
     assert np.array_equal(full[:80], ar1_scores((80, 4), 0.95, seed=3))
+
+
+def test_breadth_counts_eligible_names_per_session_and_cells_by_source():
+    days = calendar()[:4]
+    eligible = np.array([[1, 1, 0], [1, 0, 0], [1, 1, 1], [0, 0, 0]], dtype=bool)
+    shape = eligible.shape
+    cube = LabelCube(
+        spec_identity="s",
+        cohort_sha256=COHORT,
+        sessions=days,
+        symbols=("A", "B", "C"),
+        arrays={
+            "eligible": eligible,
+            "labelled": eligible,
+            "r_gross": np.zeros(shape),
+            "r_cost": np.zeros(shape),
+            "holding": np.ones(shape, np.int16),
+            "hit": np.ones(shape, np.int8),
+            "tiebreak": np.zeros(shape, np.uint64),
+            "dollar_volume": np.ones(shape),
+        },
+        coverage={},
+    )
+    sources = {"A": ("config_groups", "liquidity_screen"), "B": ("liquidity_screen",), "C": ("config_groups",)}
+    cohort = SimpleNamespace(cohort=SimpleNamespace(source_of=sources.__getitem__))
+    report = power.breadth(cube, cohort)
+    assert report["eligible_per_session"] == {"mean": 1.5, "min": 0, "max": 3}
+    assert report["by_year_mean"] == {str(days[0].year): 1.5}
+    assert report["eligible_cells_by_source"] == {
+        "config_groups": 1,
+        "config_groups+liquidity_screen": 3,
+        "liquidity_screen": 2,
+    }
+    assert (report["symbols_ever_eligible"], report["cohort_symbols"]) == (3, 3)

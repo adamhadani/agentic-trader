@@ -120,3 +120,34 @@ def test_ineligible_or_nan_scores_are_never_picked():
     v.eligible[0, 2] = False
     picks = select_picks(scores, np.ones_like(scores, bool), v, k=3)
     assert picks.cells() == {(0, 1)}
+
+
+def test_a_missing_previous_session_bar_gives_no_score_not_an_older_one():
+    days = weekdays(date(2021, 1, 4), 30)
+    closes = list(np.linspace(50, 60, 30))
+    frame = daily(days[:24] + days[25:], closes[:24] + closes[25:])  # no bar on days[24]
+    out = evaluate_panel("roc(close, 5)", {"AAA": frame}, days, [days[25], days[26]], ["AAA"])
+    assert np.isnan(out[0, 0])  # D-1 = days[24] has no bar
+    assert np.isfinite(out[1, 0])
+
+
+def test_quantile_filter_bounds_are_inclusive_and_min_quantile_keeps_the_top():
+    values = np.array([[1.0, 2.0, 3.0, 4.0, 5.0]])
+    eligible = np.ones((1, 5), bool)
+    low = Formula(
+        score="roc(close, 5)", filters=(FormulaFilter(expression="ts_max(returns, 21)", max_quantile=0.5),), k=1
+    )
+    high = Formula(
+        score="roc(close, 5)", filters=(FormulaFilter(expression="ts_max(returns, 21)", min_quantile=0.5),), k=1
+    )
+    assert allowed_mask(low, [values], eligible).tolist() == [[True, True, True, False, False]]
+    assert allowed_mask(high, [values], eligible).tolist() == [[False, False, True, True, True]]
+
+
+def test_a_filter_quantile_is_taken_over_eligible_names_only():
+    values = np.array([[1.0, 2.0, 3.0, 100.0]])
+    eligible = np.array([[True, True, True, False]])
+    high = Formula(
+        score="roc(close, 5)", filters=(FormulaFilter(expression="ts_max(returns, 21)", min_quantile=0.5),), k=1
+    )
+    assert allowed_mask(high, [values], eligible).tolist() == [[False, True, True, False]]

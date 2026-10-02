@@ -17,6 +17,10 @@ an **empty** frame is not an error: the symbol is recorded in ``bar_failures`` a
 ineligible or unlabelled. The cube's coverage report (outside the cube hash) stores those
 failures, the static reference set actually used and one digest over every bar cache file
 the build read; a cache hit reports those stored values and recomputes nothing.
+
+Checks B and C and the campaign pass ``require_cached=True``: they must run on the cube
+power check A built, so a missing cube fails before any provider access instead of
+building a new one.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ __all__ = ["CubeBuild", "build_cube_inputs"]
 
 _HOURLY_PAD = timedelta(days=7)
 _PROGRESS_SYMBOLS = 25
+CIRCUIT_BREAKER = 5  # consecutive raised fetches: the provider is down, stop now
 _PROVENANCE = ("bar_failures", "static_used", "static_used_sha256", "bars_sha256", "bar_files")
 
 
@@ -59,12 +64,41 @@ def _lines_sha256(lines: Sequence[str]) -> str:
     return hashlib.sha256("\n".join(sorted(lines)).encode()).hexdigest()
 
 
+def _verify_bar_files(coverage: Mapping, bar_dir: Path, raw_dir: Path) -> str:
+    """Re-check, by name, every bar cache file a cached cube was built from; returns a progress note.
+
+    Cache files are named by their content digest and the shared cache loads the first by
+    name, so the same first name for every listed (symbol, timeframe, adjustment) means the
+    same bars. A cube built before the list was recorded is loaded with a note.
+    """
+    listed = coverage.get("bar_file_list")
+    if listed is None:
+        return "no bar file list recorded (a cube built before Part 1b); bar files not re-checked"
+    if _lines_sha256(listed) != coverage["bars_sha256"]:
+        raise ValueError("the cached cube's bar file list does not match its bars_sha256; delete it and rebuild")
+    changed = []
+    for entry in listed:
+        symbol, timeframe, adjustment, name = entry.split("|")
+        folder = (raw_dir if adjustment == "raw" else bar_dir) / f"{symbol}_{timeframe}"
+        current = min((path.name for path in folder.glob("*.npz")), default=None)
+        if current != name:
+            changed.append(f"{symbol} {timeframe}/{adjustment}")
+    if changed:
+        raise ValueError(
+            f"the cached cube was built from bar files that changed since ({len(changed)}: "
+            f"{', '.join(changed[:5])}); delete it and rebuild"
+        )
+    return f"bar files re-checked: {len(listed)} unchanged"
+
+
 class _Acquisition:
     """Fetches through the shared bar cache, keeping a raised fetch apart from an empty frame."""
 
-    def __init__(self, bars: BarSource, pace: Callable[[], Awaitable[None]]):
+    def __init__(self, bars: BarSource, pace: Callable[[], Awaitable[None]], say: Callable[[str], None]):
         self._bars = bars
         self._pace = pace
+        self._say = say
+        self._consecutive = 0
         self.errors: dict[str, str] = {}  # a fetch raised: fatal once every symbol was attempted
         self.empty: dict[str, str] = {}  # the provider has no bars: recorded, never fatal
         self.files: list[str] = []  # symbol|timeframe|adjustment|<content-digest cache file name>
@@ -82,8 +116,19 @@ class _Acquisition:
             # The file the shared cache loads for this symbol; its name is its content digest.
             name = min(path.name for path in (cache_dir / f"{symbol}_{timeframe}").glob("*.npz"))
         except Exception as exc:
-            _record(self.errors, symbol, f"{label}: {type(exc).__name__}: {exc}")
+            reason = f"{label}: {type(exc).__name__}: {exc}"
+            _record(self.errors, symbol, reason)
+            self._say(f"fetch failed: {symbol} {reason}")
+            self._consecutive += 1
+            # Each failing fetch already spent its retries (~25 s); a run of them means the
+            # provider is down, so stop instead of trying every remaining symbol.
+            if self._consecutive >= CIRCUIT_BREAKER:
+                raise ValueError(
+                    f"provider unavailable: {self._consecutive} consecutive fetches failed "
+                    f"(last: {symbol} {reason}); rerun to resume from the cache"
+                ) from exc
             return None
+        self._consecutive = 0
         self.files.append(f"{symbol}|{timeframe}|{adjustment}|{name}")
         if frame.empty:
             _record(self.empty, symbol, f"{label}: empty")
@@ -110,10 +155,18 @@ async def build_cube_inputs(
     static_symbols: Sequence[str],
     pace: Callable[[], Awaitable[None]],
     progress: Callable[[str], None] | None = None,
+    require_cached: bool = False,
 ) -> CubeBuild:
     def say(message: str) -> None:
         if progress is not None:
             progress(message)
+
+    cube_path = cache_dir / f"cube-{cohort.sha256[:16]}-{spec.identity[:16]}.npz"
+    if require_cached and not cube_path.exists():
+        raise ValueError(
+            f"no cached cube {cube_path} for this cohort and spec; run alpha pooled power first "
+            "with the same --cache (it builds the cube every later check must share)"
+        )
 
     def counted(phase: str, count: int, total: int) -> None:
         if count % _PROGRESS_SYMBOLS == 0 or count == total:
@@ -129,9 +182,8 @@ async def build_cube_inputs(
     _claim_cache_range(raw_dir, start, end)
 
     symbols = tuple(cohort.cohort.symbols)
-    acquisition = _Acquisition(bars, pace)
+    acquisition = _Acquisition(bars, pace, say)
     adjusted: dict[str, pd.DataFrame] = {}
-    cube_path = cache_dir / f"cube-{cohort.sha256[:16]}-{spec.identity[:16]}.npz"
     if cube_path.exists():
         cube = await asyncio.to_thread(load_cube, cube_path)
         if cube.spec_identity != spec.identity or cube.cohort_sha256 != cohort.sha256:
@@ -139,6 +191,7 @@ async def build_cube_inputs(
         missing = [key for key in _PROVENANCE if key not in cube.coverage]
         if missing:
             raise ValueError(f"cached cube {cube_path} records no build provenance ({missing}); delete it and rebuild")
+        say(_verify_bar_files(cube.coverage, bar_dir, raw_dir))
         say(f"cube cache hit: {cube_path.name} (sha256 {cube.sha256[:16]}); loading the cohort's adjusted daily bars")
         # Eligibility, raw and hourly bars belong to the build; a study still scores on adjusted bars.
         for count, symbol in enumerate(symbols, start=1):
@@ -194,6 +247,7 @@ async def build_cube_inputs(
             "static_used_sha256": _lines_sha256(static_used),
             "bars_sha256": _lines_sha256(acquisition.files),
             "bar_files": len(acquisition.files),
+            "bar_file_list": sorted(acquisition.files),
         }
         say(f"cube build: start ({eligible_cells} eligible cells, {len(hourly)} symbols with hourly bars)")
         cube = await asyncio.to_thread(

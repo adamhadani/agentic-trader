@@ -7,6 +7,7 @@ import hashlib
 import json
 import platform
 import re
+import subprocess
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -85,10 +86,22 @@ from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
 from agentic_trader.research.pooled.campaign import load_campaign_protocol
+from agentic_trader.research.pooled.campaign_run import (
+    GATES,
+    LITERATURE_ENTRIES,
+    check_gate,
+    execute_campaign,
+    execute_campaign_recovery,
+    journal_identity,
+    require_clean_revision,
+)
 from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
+from agentic_trader.research.pooled.null_check import execute_null_check
 from agentic_trader.research.pooled.power import execute_power_check
 from agentic_trader.research.pooled.runner import build_cube_inputs
+from agentic_trader.research.pooled.screen import config_group_symbols, execute_screen, load_screen_rule
+from agentic_trader.research.pooled.search_power import execute_search_power
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
@@ -1326,7 +1339,9 @@ def alpha_pooled_group():
     """Pooled alpha mining: one formula across the frozen cohort (research only)."""
 
 
-def _pooled_build(clients, cohort, spec, cache_dir):
+def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False):
+    """``require_cached``: checks B and C and the campaign run only on the cube check A built."""
+
     async def build():
         return await build_cube_inputs(
             cohort,
@@ -1337,6 +1352,7 @@ def _pooled_build(clients, cohort, spec, cache_dir):
             static_symbols=clients.static_symbols,
             pace=clients.pace,
             progress=lambda message: click.echo(message, err=True),
+            require_cached=require_cached,
         )
 
     return build
@@ -1422,3 +1438,263 @@ async def alpha_pooled_study_cmd(entry_path, power_dir, output, cache):
     click.echo(json.dumps({k: result.get(k) for k in ("status", "decision", "error")}, indent=2, default=str))
     if result.get("status") == "failed":
         raise click.ClickException("Pooled study failed; see result.json for the reason")
+
+
+def _repo_relative(path: Path) -> str:
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+@alpha_pooled_group.command("screen")
+@click.argument("rule_path", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--snapshot",
+    "snapshot_path",
+    type=click.Path(exists=True, path_type=Path),
+    required=True,
+    help="The prospective equity snapshot.json the rule pins by SHA-256",
+)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option(
+    "--cache", type=click.Path(path_type=Path), required=True, help="Cache directory for the screen's batched bars"
+)
+@coro
+async def alpha_pooled_screen_cmd(rule_path, snapshot_path, output, cache):
+    """Cohort v2's liquidity screen: rank listed equities by SIP median dollar volume (research only)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded = await asyncio.to_thread(load_screen_rule, rule_path)
+    config_symbols = await asyncio.to_thread(
+        config_group_symbols, REPO_ROOT / "config/config.yaml", loaded.rule.config_groups
+    )
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_screen(
+            loaded,
+            snapshot_path,
+            output,
+            rule_path=_repo_relative(rule_path),
+            config_symbols=config_symbols,
+            calendar=clients.calendar,
+            fetch=lambda symbols, start, end: clients.bars.fetch_daily_many(symbols, start, end, adjustment="raw"),
+            cache_dir=cache,
+            pace=clients.pace,
+            environment=environment,
+            progress=lambda message: click.echo(message, err=True),
+        )
+    summary = ("status", "selected", "cohort_symbols", "cohort_sha256", "error")
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
+    if result.get("status") != "completed":
+        raise click.ClickException("Screen failed; see result.json for the reason")
+
+
+async def _pooled_protocol(protocol_path: Path):
+    loaded = await asyncio.to_thread(load_campaign_protocol, protocol_path)
+    cohort = await asyncio.to_thread(load_cohort, REPO_ROOT / loaded.protocol.cohort)
+    if cohort.sha256 != loaded.protocol.cohort_sha256:
+        raise click.ClickException("Cohort file does not match the protocol's cohort_sha256")
+    return loaded, cohort
+
+
+def _passed_power(power_dir: Path, loaded, cohort) -> dict:
+    path = power_dir / "result.json"
+    if not path.exists():
+        raise click.ClickException(f"No power result at {path}")
+    power_result = json.loads(path.read_text())
+    try:
+        check_power_gate(power_result, cohort_sha256=cohort.sha256, campaign_protocol_sha256=loaded.sha256)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return power_result
+
+
+@alpha_pooled_group.command("search-power")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@coro
+async def alpha_pooled_search_power_cmd(protocol_path, power_dir, output, cache):
+    """Check B: can each family's search recover a planted near-seed edge (discovery cells only)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded, cohort = await _pooled_protocol(protocol_path)
+    power_result = _passed_power(power_dir, loaded, cohort)
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_search_power(
+            loaded,
+            output,
+            cohort=cohort,
+            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True),
+            power_result=power_result,
+            environment=environment,
+            progress=lambda message: click.echo(message, err=True),
+        )
+    summary = ("status", "recovered", "errors_total", "error")
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
+    if result.get("status") != "passed":
+        raise click.ClickException(f"Check B {result.get('status')}; see result.json")
+
+
+@alpha_pooled_group.command("null-check")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Replicates run in this many processes; the result is identical for any worker count.",
+)
+@coro
+async def alpha_pooled_null_check_cmd(protocol_path, power_dir, output, cache, workers):
+    """Check C: real formulas on per-name-demeaned discovery panels must rarely be confirmed."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded, cohort = await _pooled_protocol(protocol_path)
+    power_result = _passed_power(power_dir, loaded, cohort)
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_null_check(
+            loaded,
+            output,
+            cohort=cohort,
+            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True),
+            power_result=power_result,
+            environment=environment,
+            progress=lambda message: click.echo(message, err=True),
+            workers=workers,
+        )
+    summary = ("status", "false_acceptances", "replicates", "seed_t", "errors_total", "error")
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
+    if result.get("status") != "passed":
+        raise click.ClickException(f"Check C {result.get('status')}; see result.json")
+
+
+def _uncommitted_research_files() -> str:
+    """``git status --porcelain`` under the code, config and tests a campaign binds to.
+
+    Untracked files are listed too, which ``git describe --dirty`` (the recorded revision) misses.
+    """
+    completed = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--", "agentic_trader", "config", "tests"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    return completed.stdout.strip()
+
+
+def _require_journal(repository, scope: str) -> None:
+    """Refuse, before any reservation, a journal that is not the declared scope on PostgreSQL."""
+    journal = journal_identity(repository)
+    if journal["scope"] != scope:
+        raise click.ClickException(
+            f"--journal-scope {scope!r} does not match this journal's scope {journal['scope']!r}; "
+            "refusing before any reservation"
+        )
+    if journal["dialect"] != "postgresql":
+        raise click.ClickException(
+            f"the campaign runs only on the PostgreSQL journal; this one is {journal['dialect']} "
+            f"({journal['database']}); refusing before any reservation"
+        )
+
+
+@alpha_pooled_group.command("campaign")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--search-power", "search_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--null-check", "null_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@click.option(
+    "--journal-scope",
+    required=True,
+    help="The journal scope (environment/execution mode) the campaign must write to; refused unless it is "
+    "the opened journal's scope, on PostgreSQL.",
+)
+@click.option(
+    "--recover",
+    is_flag=True,
+    help="Recompute the outcome of this protocol's campaign after it consumed its confirmation window but "
+    "did not complete; charges and consumes nothing.",
+)
+@coro
+async def alpha_pooled_campaign_cmd(
+    protocol_path, power_dir, search_dir, null_dir, output, cache, journal_scope, recover
+):
+    """Run the budgeted pooled campaign once; writes the pooled ledger (research only; grants no credit)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded, cohort = await _pooled_protocol(protocol_path)
+    environment = await asyncio.to_thread(research_environment)
+    try:
+        revision = require_clean_revision(environment)
+        changes = await asyncio.to_thread(_uncommitted_research_files)
+        if changes:
+            raise ValueError(
+                "refusing to run with uncommitted or untracked files under agentic_trader, config or tests; "
+                f"commit or remove them first:\n{changes}"
+            )
+        gates = {
+            name: check_gate(
+                directory, check=check, cohort_sha256=cohort.sha256, protocol_sha256=loaded.sha256, revision=revision
+            )
+            for (name, check), directory in zip(GATES, (power_dir, search_dir, null_dir), strict=True)
+        }
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    entries = (
+        [] if recover else [await asyncio.to_thread(load_pooled_entry, REPO_ROOT / path) for path in LITERATURE_ENTRIES]
+    )
+
+    def progress(message: str) -> None:
+        click.echo(message, err=True)
+
+    async with alpha_repository() as repository:
+        _require_journal(repository, journal_scope)
+        with _apriori_clients() as clients:
+            build = _pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True)
+            if recover:
+                result = await execute_campaign_recovery(
+                    loaded,
+                    output,
+                    cohort=cohort,
+                    build=build,
+                    repository=repository,
+                    environment=environment,
+                    progress=progress,
+                )
+            else:
+                result = await execute_campaign(
+                    loaded,
+                    output,
+                    cohort=cohort,
+                    build=build,
+                    gates=gates,
+                    repository=repository,
+                    entries=entries,
+                    environment=environment,
+                    progress=progress,
+                )
+    summary = (
+        "status",
+        "campaign_id",
+        "recovered",
+        "confirmation_consumed",
+        "confirmed",
+        "probe_eligible",
+        "already_tested",
+        "error",
+    )
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
+    if result.get("status") == "failed":
+        what = "recovery" if recover else "campaign"
+        raise click.ClickException(f"Pooled {what} failed; see result.json for the reason")

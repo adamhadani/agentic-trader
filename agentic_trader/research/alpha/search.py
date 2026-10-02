@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import copy
 import random
+from collections.abc import Sequence
 
 from agentic_trader.research.alpha.dsl import AlphaDSLSyntaxError, compile_expression
 
@@ -57,16 +58,31 @@ def canonical_expression(expression):
 
 
 class TypedGeneticSearch:
-    def __init__(self, seed: int, archive_size: int = 32):
+    def __init__(
+        self,
+        seed: int,
+        archive_size: int = 32,
+        *,
+        seeds: Sequence[str] = SEED_EXPRESSIONS,
+        operators: Sequence[str] = MUTATION_OPERATORS,
+        constant_windows: Sequence[int] = WINDOWS,
+        wrapper_windows: Sequence[int] = WINDOWS,
+    ):
         self.rng = random.Random(seed)
         self.archive_size = archive_size
         self.archive: dict[str, float] = {}
         self.seen: set[str] = set()
+        # A family-restricted search (the pooled campaign) passes its own seeds, operators and
+        # the windows constants may mutate to; the defaults are the per-symbol miner's, unchanged.
+        self.seeds = tuple(seeds)
+        self.operators = tuple(operators)
+        self.constant_windows = tuple(constant_windows)
+        self.wrapper_windows = tuple(wrapper_windows)
         # Evaluate every declared family once before spending the remaining
         # budget on mutations/crossovers.  Previously ``ask`` immediately
         # wrapped a seed in a mutation, so newly added DSL families could be
         # absent from an otherwise successful genetic campaign.
-        self.seed_queue = [canonical_expression(expression) for expression in SEED_EXPRESSIONS]
+        self.seed_queue = [canonical_expression(expression) for expression in self.seeds]
         self.crossover_count = 0
         self.mutation_count = 0
 
@@ -130,18 +146,18 @@ class TypedGeneticSearch:
                 if isinstance(node, ast.Constant) and type(node.value) is int and node.value > 1
             ]
             if windows and self.rng.random() < 0.6:
-                self.rng.choice(windows).value = self.rng.choice(WINDOWS)
+                self.rng.choice(windows).value = self.rng.choice(self.constant_windows)
                 proposed = ast.unparse(tree)
             else:
-                op = self.rng.choice(MUTATION_OPERATORS)
-                proposed = f"{op}({expression},{self.rng.choice(WINDOWS)})"
+                op = self.rng.choice(self.operators)
+                proposed = f"{op}({expression},{self.rng.choice(self.wrapper_windows)})"
             try:
                 canonical = canonical_expression(proposed)
             except AlphaDSLSyntaxError:
                 continue
             self.mutation_count += 1
             return canonical
-        return self.rng.choice(SEED_EXPRESSIONS)
+        return self.rng.choice(self.seeds)
 
     def ask(self):
         while self.seed_queue:
@@ -150,7 +166,7 @@ class TypedGeneticSearch:
                 self.seen.add(proposed)
                 return proposed
         for _ in range(100):
-            parents = sorted(self.archive) or list(SEED_EXPRESSIONS)
+            parents = sorted(self.archive) or list(self.seeds)
             if len(parents) > 1 and self.rng.random() < 0.5:
                 left, right = self.rng.sample(parents, 2)
                 proposed = self.crossover(left, right)
