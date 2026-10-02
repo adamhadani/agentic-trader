@@ -93,7 +93,8 @@ SHA-256 is recorded in the cohort file. The rule:
 Exclusions, each recorded per symbol with its reason in `screen.csv`:
 
 - **Symbol form:** anything outside `^[A-Z]{1,5}$` (the NYSE `.U`, `.WS` and `.A` forms).
-- **NASDAQ fifth letter:** a five-letter symbol ending in `P`, `Q`, `R`, `U`, `V`, `W` or
+- **NASDAQ fifth letter:** a five-letter symbol listed in the exchange directory's
+  `nasdaqlisted` file (not NYSE or AMEX names) ending in `P`, `Q`, `R`, `U`, `V`, `W` or
   `Z` (preferred, bankruptcy, rights, units, when-issued, warrants, miscellaneous).
 - **Security name** (case-insensitive): warrants; rights listed as such
   (`-\s*rights?\.?\s*$`; a bare `\brights?\b` would drop ADRs "representing the right to
@@ -553,7 +554,7 @@ For seed i in 0..9:
 
 1. Take family `power_search.families[i mod 3]` (reversal, range_location,
    abnormal_volume).
-2. Draw a hidden expression with an RNG seeded `[power_search.seed, i]`: one or two
+2. Draw a hidden expression with `random.Random(power_search.seed * 1000 + i)`: one or two
    mutations (equal odds), using that family's operators and windows, of one of its seeds
    chosen uniformly. Redraw until it compiles, is dimensionless, is not one of the family's
    seeds and has at least 400 discovery sessions with a pick.
@@ -611,10 +612,12 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null
 
 - `PROTOCOL` is `config/research/pooled/campaign-v1.json` for `study` and the literature
   runs, and `campaign-v2.json` for `search-power`, `null-check` and `campaign`; `ENTRY` is
-  a literature entry file. `--workers` runs the power replicates in N processes.
-- `--cache` is **required** on both commands and must be the same directory for the
-  power check and every study: it holds the bars and the one cube, and a study passes the
-  power gate only on the cube the power check built.
+  a literature entry file. `--workers` exists on `power` and `null-check` and runs the
+  replicates in N processes.
+- `--cache` is **required** on every command. For `power`, `study`, `search-power`,
+  `null-check` and `campaign` it must be the same directory: it holds the bars and the one
+  cube, and each later command passes its gate only on the cube the power check built.
+  For `screen` it holds the screen's batched raw bars.
 - Progress goes to stderr. A build reports the trading calendar, daily bars every 25
   symbols, eligibility start and end (and every 100 sessions), hourly bars every 25
   symbols, and the cube build start and end with its cell counts (and every 100
@@ -623,9 +626,10 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null
 - A provider fetch that raises fails the run after every symbol was attempted; rerun
   with a new `--output` and the same `--cache` to resume (see
   [acquisition](#acquisition-failures-and-provenance)).
-- Both commands refuse an existing output directory, check the pinned cohort SHA-256
-  before any provider access, and write `protocol.json` and `manifest.json` before the
-  first provider call. `result.json` is written even on failure.
+- Every command refuses an existing output directory, checks the pinned cohort SHA-256
+  (or the screen's snapshot hash) before any provider access, and writes its manifest
+  (`protocol.json` and `manifest.json`) before the first provider call. `result.json` is
+  written even on failure.
 - `study` refuses unless `POWER_DIR/result.json` has `status: passed` for the same
   cohort and campaign protocol, and, once the cube is built, the same cube. The gate
   cannot be skipped by ordering mistakes.
@@ -651,9 +655,6 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null
   their reasons, with discovery statistics for evaluated formulas), `frozen/<id>.json`
   (each with `authorizes_promotion: false` and `already_tested_by`) and `result.json`. A
   confirmed, probe-eligible formula earns eligibility for a Part 2 spec and nothing more.
-- `screen`, `search-power`, `null-check` and `campaign` follow the same output rules as
-  `power`: they refuse an existing output directory and write the manifest before any
-  provider access.
 - `power` exits non-zero unless the gate passed. `study` exits non-zero only when the
   run failed; a completed study whose entry failed its pass rule exits zero.
 

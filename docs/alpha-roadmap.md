@@ -377,8 +377,9 @@ one or two reasonable cards per session:
      cohort v2 by liquidity screen, campaign protocol v2, the per-family genetic search, the
      journal ledger, checks B and C and the campaign runner
      ([spec](superpowers/specs/2026-10-02-pooled-alpha-mining-part1b-design.md)).
-   - Part 1b requirements fixed by the final review of Part 1a (2026-09-30):
-     - **Literature overlap rule** (decided before any literature study was run): a
+   - Part 1b requirements fixed by the final review of Part 1a (2026-09-30), all delivered
+     in this workstream:
+     - **Literature overlap rule** (implemented; decided before any literature study was run): a
        campaign finalist whose discovery-window pick set overlaps a literature entry's at
        Jaccard >= `dedupe_jaccard` (0.5) is reported as "already tested by literature
        entry `<id>`", keeps its Holm slot in the confirmation family and gains no probe
@@ -389,7 +390,7 @@ one or two reasonable cards per session:
      - DSL panels are label-blind: a panel builder reads only a view's `offset`,
        `sessions` and `eligible`.
      - Mutation honours `forbidden_operators`.
-     - It should add a false-acceptance check with real DSL expressions: power check A
+     - Check C adds a false-acceptance check with real DSL expressions: power check A
        uses label-independent AR(1) nulls and cannot certify factor-loaded formulas
        ([limits](alpha-pooled-mining.md#what-power-check-a-does-and-does-not-show)).
    - **Results (2026-09-30).** Power check A passed on the real cube
