@@ -14,6 +14,7 @@ worker count. Besides the curve, every replicate records where the planted formu
 from __future__ import annotations
 
 import asyncio
+from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, date, datetime
@@ -39,7 +40,7 @@ from agentic_trader.research.setups.study import _finite_json, _stationary_index
 from agentic_trader.storage.artifacts import save_json_report
 
 
-__all__ = ["ar1_scores", "execute_power_check", "run_power", "synthetic_cube"]
+__all__ = ["ar1_scores", "breadth", "execute_power_check", "run_power", "synthetic_cube"]
 
 PLANTED = "planted"
 # Where the planted formula ended in one campaign run, in stage order.
@@ -270,6 +271,34 @@ def run_power(
     }
 
 
+def breadth(cube: LabelCube, cohort) -> dict:
+    """How wide the cube is: eligible names per session (overall, by year) and eligible cells by source.
+
+    Reads eligibility only, never a label. ``cohort`` is a ``LoadedCohort`` (its
+    ``cohort.source_of`` names each symbol's sources).
+    """
+    view = cube.window(cube.sessions[0], cube.sessions[-1])
+    per_session = view.eligible.sum(axis=1)
+    by_year: dict[str, list[int]] = defaultdict(list)
+    for day, count in zip(view.sessions, per_session.tolist(), strict=True):
+        by_year[str(day.year)].append(int(count))
+    cells = view.eligible.sum(axis=0)
+    by_source: Counter[str] = Counter()
+    for symbol, count in zip(view.symbols, cells.tolist(), strict=True):
+        by_source["+".join(cohort.cohort.source_of(symbol)) or "none"] += int(count)
+    return {
+        "eligible_per_session": {
+            "mean": float(per_session.mean()),
+            "min": int(per_session.min()),
+            "max": int(per_session.max()),
+        },
+        "by_year_mean": {year: float(np.mean(counts)) for year, counts in sorted(by_year.items())},
+        "eligible_cells_by_source": dict(sorted(by_source.items())),
+        "symbols_ever_eligible": int((cells > 0).sum()),
+        "cohort_symbols": len(view.symbols),
+    }
+
+
 async def execute_power_check(
     loaded: LoadedProtocol,
     directory: Path,
@@ -319,6 +348,7 @@ async def execute_power_check(
             "cube": {"sha256": built.cube.sha256, "coverage": built.cube.coverage},
             "bar_failures": dict(built.bar_failures),
             "static_used": list(built.static_used),
+            "breadth": breadth(built.cube, cohort),
         }
     except Exception as exc:
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", **base}
