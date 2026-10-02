@@ -1,5 +1,5 @@
 import json
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from agentic_trader.cli.commands import alpha as alpha_cli
+from agentic_trader.research.pooled.campaign import load_campaign_protocol
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
 
 
@@ -285,3 +286,141 @@ def test_screen_reads_raw_daily_bars_through_the_batched_provider(tmp_path, monk
     assert seen["adjustment"] == "raw"
     assert seen["rule_path"] == "config/research/pooled/screen-v2.json"
     assert seen["configured"] > 0
+
+
+PROTOCOL_V2 = str(REPO_ROOT / "config/research/pooled/campaign-v2.json")
+
+
+def _gates(tmp_path, revision="abc1234", **revisions) -> list[Path]:
+    loaded = load_campaign_protocol(Path(PROTOCOL_V2))
+    dirs = []
+    for name, check in (("power", "power_a"), ("search", "search_power"), ("null", "null_check")):
+        directory = tmp_path / name
+        directory.mkdir()
+        manifest = {"check": check, "environment": {"runtime": {"revision": revisions.get(name, revision)}}}
+        result = {
+            "status": "passed",
+            "cohort_sha256": loaded.protocol.cohort_sha256,
+            "campaign_protocol_sha256": loaded.sha256,
+            "cube_sha256": "k" * 64,
+        }
+        (directory / "manifest.json").write_text(json.dumps(manifest))
+        (directory / "result.json").write_text(json.dumps(result))
+        dirs.append(directory)
+    return dirs
+
+
+def _campaign(tmp_path, dirs):
+    power, search, null = dirs
+    return _invoke(
+        "campaign",
+        PROTOCOL_V2,
+        "--power",
+        str(power),
+        "--search-power",
+        str(search),
+        "--null-check",
+        str(null),
+        "--output",
+        str(tmp_path / "out"),
+        "--cache",
+        str(tmp_path / "cache"),
+    )
+
+
+def _forbid_repository(monkeypatch):
+    def boom():
+        raise AssertionError("the ledger must not be opened")
+
+    monkeypatch.setattr(alpha_cli, "alpha_repository", boom)
+
+
+def test_search_power_refuses_a_failed_power_check_without_creating_clients(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    power = tmp_path / "power"
+    power.mkdir()
+    (power / "result.json").write_text(json.dumps({"status": "gate_failed"}))
+    result = _invoke(
+        "search-power",
+        PROTOCOL_V2,
+        "--power",
+        str(power),
+        "--output",
+        str(tmp_path / "out"),
+        "--cache",
+        str(tmp_path / "c"),
+    )
+    assert result.exit_code != 0 and "has not passed" in result.output
+
+
+def test_null_check_passes_the_worker_count_through(tmp_path, monkeypatch):
+    seen = {}
+    power, _, _ = _gates(tmp_path)
+
+    @contextmanager
+    def clients():
+        yield SimpleNamespace(bars=None, calendar=None, static_symbols=[], pace=None)
+
+    async def fake_execute(loaded, output, **kwargs):
+        seen.update(kwargs)
+        return {"status": "passed"}
+
+    monkeypatch.setattr(alpha_cli, "_apriori_clients", clients)
+    monkeypatch.setattr(alpha_cli, "execute_null_check", fake_execute)
+    monkeypatch.setattr(alpha_cli, "research_environment", dict)
+    result = _invoke(
+        "null-check",
+        PROTOCOL_V2,
+        "--power",
+        str(power),
+        "--output",
+        str(tmp_path / "out"),
+        "--cache",
+        str(tmp_path / "c"),
+        "--workers",
+        "4",
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["workers"] == 4 and seen["power_result"]["status"] == "passed"
+
+
+def test_campaign_refuses_a_dirty_revision_before_opening_the_ledger(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234-dirty"}})
+    result = _campaign(tmp_path, _gates(tmp_path))
+    assert result.exit_code != 0 and "dirty" in result.output
+
+
+def test_campaign_refuses_a_gate_from_another_revision(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    result = _campaign(tmp_path, _gates(tmp_path, null="def5678"))
+    assert result.exit_code != 0 and "null_check ran at code revision 'def5678'" in result.output
+
+
+def test_campaign_hands_the_checked_gates_and_the_literature_entries_to_the_executor(tmp_path, monkeypatch):
+    seen = {}
+
+    @asynccontextmanager
+    async def repository():
+        yield "repository"
+
+    @contextmanager
+    def clients():
+        yield SimpleNamespace(bars=None, calendar=None, static_symbols=[], pace=None)
+
+    async def fake_execute(loaded, output, **kwargs):
+        seen.update(kwargs)
+        return {"status": "none_confirmed"}
+
+    monkeypatch.setattr(alpha_cli, "alpha_repository", repository)
+    monkeypatch.setattr(alpha_cli, "_apriori_clients", clients)
+    monkeypatch.setattr(alpha_cli, "execute_campaign", fake_execute)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    result = _campaign(tmp_path, _gates(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert set(seen["gates"]) == {"power", "search_power", "null_check"}
+    assert seen["repository"] == "repository"
+    assert [entry.entry.id for entry in seen["entries"]] == ["high52", "reversal-lowmax"]

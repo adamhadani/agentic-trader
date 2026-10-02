@@ -85,11 +85,20 @@ from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
 from agentic_trader.research.pooled.campaign import load_campaign_protocol
+from agentic_trader.research.pooled.campaign_run import (
+    GATES,
+    LITERATURE_ENTRIES,
+    check_gate,
+    execute_campaign,
+    require_clean_revision,
+)
 from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
+from agentic_trader.research.pooled.null_check import execute_null_check
 from agentic_trader.research.pooled.power import execute_power_check
 from agentic_trader.research.pooled.runner import build_cube_inputs
 from agentic_trader.research.pooled.screen import config_group_symbols, execute_screen, load_screen_rule
+from agentic_trader.research.pooled.search_power import execute_search_power
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
@@ -1474,3 +1483,132 @@ async def alpha_pooled_screen_cmd(rule_path, snapshot_path, output, cache):
     click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
     if result.get("status") != "completed":
         raise click.ClickException("Screen failed; see result.json for the reason")
+
+
+async def _pooled_protocol(protocol_path: Path):
+    loaded = await asyncio.to_thread(load_campaign_protocol, protocol_path)
+    cohort = await asyncio.to_thread(load_cohort, REPO_ROOT / loaded.protocol.cohort)
+    if cohort.sha256 != loaded.protocol.cohort_sha256:
+        raise click.ClickException("Cohort file does not match the protocol's cohort_sha256")
+    return loaded, cohort
+
+
+def _passed_power(power_dir: Path, loaded, cohort) -> dict:
+    path = power_dir / "result.json"
+    if not path.exists():
+        raise click.ClickException(f"No power result at {path}")
+    power_result = json.loads(path.read_text())
+    try:
+        check_power_gate(power_result, cohort_sha256=cohort.sha256, campaign_protocol_sha256=loaded.sha256)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return power_result
+
+
+@alpha_pooled_group.command("search-power")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@coro
+async def alpha_pooled_search_power_cmd(protocol_path, power_dir, output, cache):
+    """Check B: can each family's search recover a planted near-seed edge (discovery cells only)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded, cohort = await _pooled_protocol(protocol_path)
+    power_result = _passed_power(power_dir, loaded, cohort)
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_search_power(
+            loaded,
+            output,
+            cohort=cohort,
+            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
+            power_result=power_result,
+            environment=environment,
+            progress=lambda message: click.echo(message, err=True),
+        )
+    click.echo(json.dumps({k: result.get(k) for k in ("status", "recovered", "error")}, indent=2, default=str))
+    if result.get("status") != "passed":
+        raise click.ClickException(f"Check B {result.get('status')}; see result.json")
+
+
+@alpha_pooled_group.command("null-check")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Replicates run in this many processes; the result is identical for any worker count.",
+)
+@coro
+async def alpha_pooled_null_check_cmd(protocol_path, power_dir, output, cache, workers):
+    """Check C: real formulas on per-name-demeaned discovery panels must rarely be confirmed."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded, cohort = await _pooled_protocol(protocol_path)
+    power_result = _passed_power(power_dir, loaded, cohort)
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_null_check(
+            loaded,
+            output,
+            cohort=cohort,
+            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
+            power_result=power_result,
+            environment=environment,
+            progress=lambda message: click.echo(message, err=True),
+            workers=workers,
+        )
+    summary = ("status", "false_acceptances", "replicates", "seed_t", "error")
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
+    if result.get("status") != "passed":
+        raise click.ClickException(f"Check C {result.get('status')}; see result.json")
+
+
+@alpha_pooled_group.command("campaign")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--search-power", "search_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--null-check", "null_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
+@coro
+async def alpha_pooled_campaign_cmd(protocol_path, power_dir, search_dir, null_dir, output, cache):
+    """Run the budgeted pooled campaign once; writes the pooled ledger (research only; grants no credit)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded, cohort = await _pooled_protocol(protocol_path)
+    environment = await asyncio.to_thread(research_environment)
+    try:
+        revision = require_clean_revision(environment)
+        gates = {
+            name: check_gate(
+                directory, check=check, cohort_sha256=cohort.sha256, protocol_sha256=loaded.sha256, revision=revision
+            )
+            for (name, check), directory in zip(GATES, (power_dir, search_dir, null_dir), strict=True)
+        }
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    entries = [await asyncio.to_thread(load_pooled_entry, REPO_ROOT / path) for path in LITERATURE_ENTRIES]
+    async with alpha_repository() as repository:
+        with _apriori_clients() as clients:
+            result = await execute_campaign(
+                loaded,
+                output,
+                cohort=cohort,
+                build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
+                gates=gates,
+                repository=repository,
+                entries=entries,
+                environment=environment,
+                progress=lambda message: click.echo(message, err=True),
+            )
+    summary = ("status", "campaign_id", "confirmed", "probe_eligible", "already_tested", "error")
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
+    if result.get("status") == "failed":
+        raise click.ClickException("Pooled campaign failed; see result.json for the reason")
