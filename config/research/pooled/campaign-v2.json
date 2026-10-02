@@ -1,0 +1,383 @@
+{
+  "id": "pooled-campaign",
+  "version": 2,
+  "title": "Pooled campaign v2: liquidity-screened cohort v2, budgeted per-family genetic search over 12 OHLCV families, checks A/B/C, one-shot lane-wide confirmation",
+  "cohort": "config/research/pooled/cohort-v2.json",
+  "cohort_sha256": "c2c7941014932075110b33a7b853db7899f7b8fa43d5433d38b2e92bab1407df",
+  "feed": "alpaca:sip",
+  "bars_from": "2016-01-01",
+  "bars_through": "2026-09-01",
+  "windows": {
+    "discovery": [
+      "2016-08-01",
+      "2021-12-31"
+    ],
+    "selection": [
+      "2022-01-03",
+      "2023-12-29"
+    ],
+    "confirmation": [
+      "2024-01-02",
+      "2026-07-31"
+    ]
+  },
+  "k": 3,
+  "bracket": {
+    "decision_time_et": "10:35",
+    "stop_atr_multiple": 2.0,
+    "atr_window": 14,
+    "target_r": 3.0,
+    "max_hold_sessions": 20
+  },
+  "universe": {
+    "min_price": 10.0,
+    "static_percentile": 0.25,
+    "min_eligible_names": 30
+  },
+  "decision_cost_bps": 5.0,
+  "coverage": {
+    "max_no_reference_fraction": 0.02,
+    "max_unlabelled_fraction_per_year": 0.05
+  },
+  "formula_budget": 200,
+  "families": [
+    {
+      "id": "high52",
+      "rationale": "Proximity to the 52-week high (George & Hwang, 2004).",
+      "seeds": [
+        "close / ts_max(high, 252)",
+        "close / ts_max(high, 126)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay",
+        "ema"
+      ],
+      "windows": [
+        126,
+        189,
+        252
+      ]
+    },
+    {
+      "id": "reversal",
+      "rationale": "Short-term reversal at one week and one month (Jegadeesh, 1990; Lehmann, 1990).",
+      "seeds": [
+        "-1.0 * roc(close, 5)",
+        "-1.0 * roc(close, 21)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay",
+        "decay_linear"
+      ],
+      "windows": [
+        3,
+        5,
+        10,
+        21
+      ]
+    },
+    {
+      "id": "max_lottery",
+      "rationale": "Low maximum daily return beats lottery-like names (Bali, Cakici & Whitelaw, 2011).",
+      "seeds": [
+        "-1.0 * ts_max(returns, 21)",
+        "-1.0 * ts_max(returns, 10)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay"
+      ],
+      "windows": [
+        5,
+        10,
+        21,
+        42
+      ]
+    },
+    {
+      "id": "momentum_12_1",
+      "rationale": "Twelve-month momentum skipping the last month (Jegadeesh & Titman, 1993).",
+      "seeds": [
+        "delay(close, 21) / delay(close, 252) - 1.0",
+        "roc(delay(close, 21), 105)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay",
+        "ema"
+      ],
+      "windows": [
+        21,
+        63,
+        105,
+        126,
+        189,
+        252
+      ]
+    },
+    {
+      "id": "momentum_12_7",
+      "rationale": "Intermediate-horizon momentum (Novy-Marx, 2012).",
+      "seeds": [
+        "roc(delay(close, 147), 105)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay"
+      ],
+      "windows": [
+        84,
+        105,
+        126,
+        147,
+        168
+      ]
+    },
+    {
+      "id": "range_location",
+      "rationale": "Location within the recent high-low range.",
+      "seeds": [
+        "(close - ts_min(low, 20)) / (ts_max(high, 20) - ts_min(low, 20) + 1e-6)",
+        "(close - ts_min(low, 60)) / (ts_max(high, 60) - ts_min(low, 60) + 1e-6)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay",
+        "decay_linear"
+      ],
+      "windows": [
+        10,
+        20,
+        40,
+        60,
+        120
+      ]
+    },
+    {
+      "id": "trend_slope",
+      "rationale": "Standardized trend slope.",
+      "seeds": [
+        "zscore(ts_slope(close, 20), 10)",
+        "ts_slope(close, 60) / ts_mean(close, 60)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay",
+        "ts_slope"
+      ],
+      "windows": [
+        10,
+        20,
+        40,
+        60,
+        120
+      ]
+    },
+    {
+      "id": "abnormal_volume",
+      "rationale": "High-volume return premium (Gervais, Kaniel & Mingelgrin, 2001).",
+      "seeds": [
+        "volume / ts_mean(volume, 50)",
+        "zscore(volume, 20)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay",
+        "ts_sum"
+      ],
+      "windows": [
+        5,
+        10,
+        20,
+        50,
+        100
+      ]
+    },
+    {
+      "id": "overnight_intraday",
+      "rationale": "Overnight versus intraday return components (Lou, Polk & Skouras, 2019).",
+      "seeds": [
+        "ts_sum(open_gap, 21)",
+        "-1.0 * ts_sum(oc_spread, 5)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay",
+        "ts_sum"
+      ],
+      "windows": [
+        5,
+        10,
+        21,
+        42
+      ]
+    },
+    {
+      "id": "price_volume_corr",
+      "rationale": "Price-volume co-movement.",
+      "seeds": [
+        "ts_corr(close, volume, 10)",
+        "-1.0 * ts_corr(returns, volume, 21)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay"
+      ],
+      "windows": [
+        5,
+        10,
+        21,
+        42
+      ]
+    },
+    {
+      "id": "signed_volume",
+      "rationale": "Signed volume pressure.",
+      "seeds": [
+        "sign(returns) * zscore(volume, 20)",
+        "ts_sum(sign(returns) * volume, 10) / ts_sum(volume, 10)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay",
+        "ts_sum"
+      ],
+      "windows": [
+        5,
+        10,
+        20,
+        40
+      ]
+    },
+    {
+      "id": "hl_spread",
+      "rationale": "High-low spread as an illiquidity proxy (Corwin & Schultz, 2012).",
+      "seeds": [
+        "ts_mean(hl_spread, 21)",
+        "-1.0 * zscore(hl_spread, 20)"
+      ],
+      "mutation_operators": [
+        "ts_mean",
+        "ts_rank",
+        "zscore",
+        "delay"
+      ],
+      "windows": [
+        5,
+        10,
+        21,
+        42
+      ]
+    }
+  ],
+  "excluded_families": [
+    {
+      "id": "vol_20",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "sector_relative_momentum",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "residual_momentum",
+      "reason": "Factor-controls study read 2021-2026 and reported partly positive results."
+    },
+    {
+      "id": "volatility_scaled_momentum",
+      "reason": "Sector-panel study read 2021-2026 and reported a positive low-cost result."
+    }
+  ],
+  "search": {
+    "seed": 20260930,
+    "archive_size": 16,
+    "forbidden_operators": [
+      "realized_vol",
+      "ts_std",
+      "ts_mad"
+    ]
+  },
+  "complexity_penalty_per_node": 0.02,
+  "dedupe_jaccard": 0.5,
+  "bootstrap": {
+    "block_mean": 20,
+    "discovery_draws": 1000,
+    "selection_draws": 1000,
+    "confirmation_draws": 10000,
+    "seed": 20260931
+  },
+  "discovery_gate": {
+    "min_t": 3.0,
+    "blocks": 4,
+    "min_positive_blocks": 3,
+    "min_sessions": 400,
+    "carry": 5
+  },
+  "selection_gate": {
+    "min_fraction_of_discovery": 0.5,
+    "min_sessions": 150
+  },
+  "confirmation_gate": {
+    "alpha": 0.05,
+    "trim_fraction": 0.01,
+    "recent_months": 12,
+    "min_sessions": 300
+  },
+  "power": {
+    "replicates": 100,
+    "null_formulas": 200,
+    "ar_phi": 0.95,
+    "deltas": [
+      0.0,
+      0.05,
+      0.08,
+      0.1,
+      0.12,
+      0.15
+    ],
+    "detection_delta": 0.15,
+    "min_detection": 0.8,
+    "max_false_acceptance": 0.05,
+    "seed": 20260932
+  },
+  "power_search": {
+    "families": [
+      "reversal",
+      "range_location",
+      "abnormal_volume"
+    ],
+    "seeds": 10,
+    "delta": 0.15,
+    "min_recovered": 8,
+    "seed": 20261002
+  },
+  "null_check": {
+    "replicates": 40,
+    "max_false_acceptances": 2,
+    "seed": 20261003
+  }
+}
