@@ -186,7 +186,10 @@ power check A, search check B and the real-formula false-acceptance check C pass
 same cohort, cube, protocol and clean code revision. It charges every formula to the
 pooled ledger (journal events, never `family/all`) before scoring it and consumes the
 lane-wide confirmation window before reading it. Research only: no registry, broker,
-Telegram or promotion credit.
+Telegram or promotion credit. On 2026-10-02 checks A and C passed but check B failed
+(1/10; top-3-of-~367 picks give near-neighbour formulas no shared picks), so the v2
+campaign did not run and the confirmation window is unused
+([checks](docs/alpha-pooled-checks-2026-10-02.md)); protocol v3 needs a redesign first.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)

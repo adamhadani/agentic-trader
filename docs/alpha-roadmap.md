@@ -409,6 +409,18 @@ one or two reasonable cards per session:
      The lane is effectively mining the scan universe. For Part 1b, consider replacing
      the random 300-name snapshot with a liquidity-screened cohort to widen breadth.
      The operator chose a liquidity-screened cohort v2 (2026-10-01).
+   - **Part 1b results (2026-10-02)** ([checks](alpha-pooled-checks-2026-10-02.md)):
+     - **Cohort v2:** 452 names (top 400 by Q4-2023 SIP dollar volume plus the scan
+       equities), about 367 eligible names per session.
+     - **Check A passed:** detection 0.96 at 0.15R, 0.82 at 0.10R; false acceptance 0.
+     - **Check C passed:** 0 of 40 real-formula null campaigns confirmed anything; the
+       seed-t standard deviation is 1.12.
+     - **Check B failed:** only 1 of 10 planted edges was recovered. With the top 3 of
+       ~367 names, near-neighbour formulas share almost no picks, so the search cannot
+       climb to an edge.
+     - **Outcome:** the campaign did not run. Nothing was charged and the confirmation
+       window is unused. The next step is a protocol v3 redesign, such as decile
+       selection, re-checked by B before any campaign.
    - **Weekly ETF32 miner paused (2026-09-28).** The operator disabled and unloaded
      `com.agentictrader.alphaminer` (`launchctl disable` and `bootout`; the plist is
      kept) so it stops charging 512 trials a week to the family that deflates every future
