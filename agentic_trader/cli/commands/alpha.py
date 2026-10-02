@@ -89,6 +89,7 @@ from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
 from agentic_trader.research.pooled.power import execute_power_check
 from agentic_trader.research.pooled.runner import build_cube_inputs
+from agentic_trader.research.pooled.screen import config_group_symbols, execute_screen, load_screen_rule
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
@@ -1422,3 +1423,54 @@ async def alpha_pooled_study_cmd(entry_path, power_dir, output, cache):
     click.echo(json.dumps({k: result.get(k) for k in ("status", "decision", "error")}, indent=2, default=str))
     if result.get("status") == "failed":
         raise click.ClickException("Pooled study failed; see result.json for the reason")
+
+
+def _repo_relative(path: Path) -> str:
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+@alpha_pooled_group.command("screen")
+@click.argument("rule_path", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--snapshot",
+    "snapshot_path",
+    type=click.Path(exists=True, path_type=Path),
+    required=True,
+    help="The prospective equity snapshot.json the rule pins by SHA-256",
+)
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option(
+    "--cache", type=click.Path(path_type=Path), required=True, help="Cache directory for the screen's batched bars"
+)
+@coro
+async def alpha_pooled_screen_cmd(rule_path, snapshot_path, output, cache):
+    """Cohort v2's liquidity screen: rank listed equities by SIP median dollar volume (research only)."""
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    loaded = await asyncio.to_thread(load_screen_rule, rule_path)
+    config_symbols = await asyncio.to_thread(
+        config_group_symbols, REPO_ROOT / "config/config.yaml", loaded.rule.config_groups
+    )
+    environment = await asyncio.to_thread(research_environment)
+    with _apriori_clients() as clients:
+        result = await execute_screen(
+            loaded,
+            snapshot_path,
+            output,
+            rule_path=_repo_relative(rule_path),
+            config_symbols=config_symbols,
+            calendar=clients.calendar,
+            fetch=lambda symbols, start, end: clients.bars.fetch_daily_many(symbols, start, end, adjustment="raw"),
+            cache_dir=cache,
+            pace=clients.pace,
+            environment=environment,
+            progress=lambda message: click.echo(message, err=True),
+        )
+    summary = ("status", "selected", "cohort_symbols", "cohort_sha256", "error")
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
+    if result.get("status") != "completed":
+        raise click.ClickException("Screen failed; see result.json for the reason")

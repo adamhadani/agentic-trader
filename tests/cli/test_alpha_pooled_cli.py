@@ -231,3 +231,57 @@ def test_both_commands_build_in_the_given_cache_and_report_progress_on_stderr(tm
     )
     assert "daily bars 25/480 symbols" in result.stderr
     assert "daily bars 25/480 symbols" not in result.stdout
+
+
+SCREEN_RULE = str(REPO_ROOT / "config/research/pooled/screen-v2.json")
+
+
+def test_screen_refuses_an_existing_output_without_creating_clients(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    out = tmp_path / "out"
+    out.mkdir()
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text("{}")
+    result = _invoke(
+        "screen", SCREEN_RULE, "--snapshot", str(snapshot), "--output", str(out), "--cache", str(tmp_path / "cache")
+    )
+    assert result.exit_code != 0
+    assert "refusing to overwrite" in result.output
+
+
+def test_screen_reads_raw_daily_bars_through_the_batched_provider(tmp_path, monkeypatch):
+    seen = {}
+
+    class Bars:
+        def fetch_daily_many(self, symbols, start, end, *, adjustment):
+            seen["adjustment"] = adjustment
+            return {}
+
+    @contextmanager
+    def clients():
+        yield SimpleNamespace(bars=Bars(), calendar=object(), pace=None)
+
+    async def fake_execute(loaded, snapshot_path, output, **kwargs):
+        kwargs["fetch"](["AAA"], None, None)
+        seen.update(rule_path=kwargs["rule_path"], configured=len(kwargs["config_symbols"]))
+        return {"status": "completed"}
+
+    monkeypatch.setattr(alpha_cli, "_apriori_clients", clients)
+    monkeypatch.setattr(alpha_cli, "execute_screen", fake_execute)
+    monkeypatch.setattr(alpha_cli, "research_environment", dict)
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text("{}")
+    result = _invoke(
+        "screen",
+        SCREEN_RULE,
+        "--snapshot",
+        str(snapshot),
+        "--output",
+        str(tmp_path / "out"),
+        "--cache",
+        str(tmp_path / "cache"),
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["adjustment"] == "raw"
+    assert seen["rule_path"] == "config/research/pooled/screen-v2.json"
+    assert seen["configured"] > 0

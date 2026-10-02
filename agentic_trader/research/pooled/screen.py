@@ -12,11 +12,14 @@ is still decided point-in-time by the cube.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
+import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -26,10 +29,16 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.research.apriori.pead_events import _by_session
-from agentic_trader.research.pooled.cohort import SUPPORTED_SYMBOL
+from agentic_trader.research.pooled.cohort import SUPPORTED_SYMBOL, Cohort
+from agentic_trader.research.pooled.study import _save_frame
+from agentic_trader.research.setups.runner import CalendarSource
+from agentic_trader.research.setups.study import _finite_json
+from agentic_trader.storage.artifacts import save_json_report
 
 
 __all__ = [
+    "CIRCUIT_BREAKER",
+    "FETCH_BATCH",
     "SCREEN_COLUMNS",
     "LoadedScreenRule",
     "ScreenRule",
@@ -37,7 +46,10 @@ __all__ = [
     "cohort_document",
     "config_group_symbols",
     "exclusion_reason",
+    "execute_screen",
+    "fetch_window",
     "load_screen_rule",
+    "screen_sessions",
     "screen_table",
     "snapshot_candidates",
     "table_csv",
@@ -281,3 +293,199 @@ def cohort_document(
         },
         "symbols": [symbol for symbol in everything if SUPPORTED_SYMBOL.fullmatch(symbol)],
     }
+
+
+FETCH_BATCH = 100  # symbols per batched daily request
+CIRCUIT_BREAKER = 5  # consecutive failed requests stop acquisition: the provider is down
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as target:
+        target.write(data)
+
+
+async def screen_sessions(calendar: CalendarSource, rule: ScreenRule) -> tuple[date, ...]:
+    """The ``window_sessions`` trading sessions ending on ``window_end``."""
+    days = await calendar.get_calendar_range(
+        rule.window_end - timedelta(days=2 * rule.window_sessions + 30), rule.window_end
+    )
+    trading = sorted(day.date for day in days if day.is_trading_day and day.date <= rule.window_end)
+    if len(trading) < rule.window_sessions or trading[-1] != rule.window_end:
+        raise ValueError(f"the calendar has no {rule.window_sessions} sessions ending {rule.window_end.isoformat()}")
+    return tuple(trading[-rule.window_sessions :])
+
+
+def _rows(fetched: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    parts = []
+    for symbol, frame in sorted(fetched.items()):
+        index = pd.DatetimeIndex(frame.index)
+        index = index if index.tz is not None else index.tz_localize("UTC")
+        parts.append(
+            pd.DataFrame(
+                {
+                    "symbol": symbol,
+                    "timestamp": index.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "close": frame["Close"].to_numpy(float),
+                    "volume": frame["Volume"].to_numpy(float),
+                }
+            )
+        )
+    if not parts:
+        return pd.DataFrame(columns=["symbol", "timestamp", "close", "volume"])
+    return pd.concat(parts, ignore_index=True)
+
+
+def _frames(rows: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    out: dict[str, pd.DataFrame] = {}
+    for symbol, group in rows.groupby("symbol", sort=True):
+        index = pd.DatetimeIndex(pd.to_datetime(group["timestamp"], utc=True))
+        out[str(symbol)] = pd.DataFrame(
+            {"Close": group["close"].to_numpy(float), "Volume": group["volume"].to_numpy(float)}, index=index
+        )
+    return out
+
+
+def _read_chunk(path: Path) -> pd.DataFrame:
+    # Symbols such as "NA" must stay strings, so pandas' default NA spellings are off.
+    return pd.read_csv(path, dtype={"symbol": str, "timestamp": str}, keep_default_na=False)
+
+
+async def fetch_window(
+    symbols: Sequence[str],
+    sessions: Sequence[date],
+    *,
+    fetch: Callable[[Sequence[str], datetime, datetime], Mapping[str, pd.DataFrame]],
+    cache_dir: Path,
+    pace: Callable[[], Awaitable[None]],
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Raw daily bars for ``symbols`` over ``sessions`` in batched requests, cached per chunk.
+
+    A failed request is recorded and the next chunk is tried; all chunks are attempted
+    before the screen fails, and a rerun fetches only the chunks without a cache file.
+    ``CIRCUIT_BREAKER`` consecutive failures stop at once: the provider is down.
+    """
+
+    def say(message: str) -> None:
+        if progress is not None:
+            progress(message)
+
+    cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    start = datetime.combine(sessions[0], time.min, tzinfo=UTC)
+    end = datetime.combine(sessions[-1], time.max, tzinfo=UTC)
+    chunks = [list(symbols[i : i + FETCH_BATCH]) for i in range(0, len(symbols), FETCH_BATCH)]
+    frames: dict[str, pd.DataFrame] = {}
+    errors: dict[str, str] = {}
+    consecutive = 0
+    for number, chunk in enumerate(chunks, start=1):
+        digest = hashlib.sha256("\n".join(chunk).encode()).hexdigest()[:12]
+        path = cache_dir / f"chunk-{number:03d}-{digest}.csv.gz"
+        if path.exists():
+            rows = await asyncio.to_thread(_read_chunk, path)
+        else:
+            await pace()
+            try:
+                fetched = await asyncio.to_thread(fetch, chunk, start, end)
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+                errors[f"chunk {number}"] = reason
+                consecutive += 1
+                say(f"screen bars: chunk {number}/{len(chunks)} failed: {reason}")
+                if consecutive >= CIRCUIT_BREAKER:
+                    raise ValueError(
+                        f"provider unavailable: {consecutive} consecutive requests failed (last: {reason}); "
+                        "rerun to resume from the cache"
+                    ) from exc
+                continue
+            consecutive = 0
+            rows = _rows(fetched)
+            await asyncio.to_thread(_save_frame, rows, path)
+        frames.update(_frames(rows))
+        say(f"screen bars {number}/{len(chunks)} chunks")
+    if errors:
+        listed = "; ".join(f"{chunk} ({reason})" for chunk, reason in errors.items())
+        raise ValueError(f"screen bar acquisition failed for {listed}; rerun to resume from the cache")
+    return frames
+
+
+async def execute_screen(
+    loaded: LoadedScreenRule,
+    snapshot_path: Path,
+    directory: Path,
+    *,
+    rule_path: str,
+    config_symbols: Sequence[str],
+    calendar: CalendarSource,
+    fetch: Callable[[Sequence[str], datetime, datetime], Mapping[str, pd.DataFrame]],
+    cache_dir: Path,
+    pace: Callable[[], Awaitable[None]],
+    environment: dict,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
+    """Run the frozen screen; writes ``screen.csv`` and the proposed ``cohort.json``.
+
+    ``protocol.json`` and ``manifest.json`` are written before any provider access; a
+    failure is recorded as ``status: failed`` instead of raising.
+    """
+    rule = loaded.rule
+    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    save_json_report({**rule.model_dump(mode="json"), "sha256": loaded.sha256}, directory / "protocol.json")
+    save_json_report(
+        {
+            "check": "screen",
+            "rule_sha256": loaded.sha256,
+            "snapshot_sha256": rule.snapshot.sha256,
+            "reads": "raw SIP daily close and volume over the screen window; no returns or labels",
+            "environment": environment,
+            "started_at": datetime.now(UTC).isoformat(),
+            "authorizes_promotion": False,
+        },
+        directory / "manifest.json",
+    )
+    try:
+        raw = await asyncio.to_thread(snapshot_path.read_bytes)
+        snapshot_sha256 = hashlib.sha256(raw).hexdigest()
+        if snapshot_sha256 != rule.snapshot.sha256:
+            raise ValueError(f"snapshot file sha256 {snapshot_sha256} is not the rule's {rule.snapshot.sha256}")
+        kept, excluded = snapshot_candidates(json.loads(raw), rule)
+        sessions = await screen_sessions(calendar, rule)
+        frames = await fetch_window(
+            kept,
+            sessions,
+            fetch=fetch,
+            cache_dir=cache_dir / f"screen-{loaded.sha256[:16]}",
+            pace=pace,
+            progress=progress,
+        )
+        table = screen_table(kept, excluded, frames, sessions, rule)
+        csv = table_csv(table)
+        await asyncio.to_thread(_write_private, directory / "screen.csv", csv)
+        screen_sha256 = hashlib.sha256(csv).hexdigest()
+        document = cohort_document(
+            table,
+            loaded,
+            rule_path=rule_path,
+            config_symbols=config_symbols,
+            screen_sha256=screen_sha256,
+            snapshot_sha256=snapshot_sha256,
+        )
+        text = (json.dumps(document, indent=2) + "\n").encode()
+        Cohort.model_validate_json(text)  # the file the operator commits must load
+        await asyncio.to_thread(_write_private, directory / "cohort.json", text)
+        result = {
+            "status": "completed",
+            "kept": len(kept),
+            "excluded": len(excluded),
+            "ranked": int((table["rank"] > 0).sum()),
+            "selected": int(table["selected"].sum()),
+            "cohort_symbols": len(document["symbols"]),
+            "cohort_sha256": hashlib.sha256(text).hexdigest(),
+            "screen_sha256": screen_sha256,
+            "window": [sessions[0].isoformat(), sessions[-1].isoformat()],
+            "authorizes_promotion": False,
+        }
+    except Exception as exc:
+        result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "authorizes_promotion": False}
+    save_json_report(_finite_json(result), directory / "result.json")
+    return result
