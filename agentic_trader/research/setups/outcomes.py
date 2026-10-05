@@ -70,6 +70,7 @@ _COLUMNS = (
     "exit_time",
     "llm_ran",
     "llm_vetoed",
+    "llm_bracket_edited",
     "llm_r_cost",
     "llm_stop_loss",
     "market_r",
@@ -126,12 +127,16 @@ def market_r(
 
     Entry at the proxy's open on the first regular bar at or after ``entry_time`` (the
     labeler's own entry convention) and exit at its close on the last regular bar at or
-    before ``exit_time``. Uncosted: a beta-one exposure control, not a tradable return.
-    None when either bar is missing or the geometry has no risk unit.
+    before ``exit_time`` -- the nearest regular bars, at the raw prices the report fetches.
+    An exit on the entry bar itself (a gap-at-entry exit) held no market time: 0.0, not a
+    full bar of proxy return. Uncosted: a beta-one exposure control, not a tradable return.
+    None when the proxy has no bars, either bar is missing or the geometry has no risk unit.
     """
     risk_unit = abs(float(entry) - float(stop))
     if not risk_unit or market is None or market.empty:
         return None
+    if pd.Timestamp(exit_time) == pd.Timestamp(entry_time):
+        return 0.0
     regular = regular_session_bars(market)
     at_entry = regular.loc[regular.index >= pd.Timestamp(entry_time)]
     at_exit = regular.loc[regular.index <= pd.Timestamp(exit_time)]
@@ -171,6 +176,18 @@ def _fetch_failed_row(
         reason=reason,
         market_reason=market_reason,
     )
+
+
+def _llm_bracket_edited(entry: dict[str, Any], llm: dict[str, Any] | None) -> bool:
+    """The LLM's recorded bracket (applied or not) differs from the deterministic one, mature or not."""
+    if llm is None:
+        return False
+    try:
+        edited = (float(llm["stop_loss"]), float(llm["take_profit"]))
+        deterministic = (float(entry["stop"]), float(entry["target"]))
+    except KeyError, TypeError, ValueError:
+        return False
+    return edited != deterministic
 
 
 def _applied_llm_stop(llm: dict[str, Any] | None) -> float | None:
@@ -225,6 +242,7 @@ def _row(
         "exit_time": exit_time,
         "llm_ran": llm is not None,
         "llm_vetoed": outcome == RankedOutcome.LLM_VETOED,
+        "llm_bracket_edited": _llm_bracket_edited(entry, llm),
         "llm_r_cost": llm_r_cost,
         "llm_stop_loss": _applied_llm_stop(llm),
         "market_r": market_value,
@@ -317,7 +335,8 @@ def label_journaled(
     ``SignalDatabase.workflows.events()`` returns it (each item is
     ``{"payload": {...}, ...}``, and ``payload["candidates"]`` is the list
     ``_journal_scan_ranking`` records, one event per scan). Bars are fetched once per
-    symbol -- from that symbol's earliest journaled decision through ``now`` -- and
+    symbol -- from that symbol's earliest journaled decision through ``now`` (the market
+    proxy from the earliest decision of all, once, even when it is also a candidate) -- and
     reused for every one of that symbol's candidates, since ``label_bracket`` walks
     forward from its own ``decision_at`` regardless of any earlier bars already in the
     frame. Fetches are paced with the same sliding-window ``RequestPacer`` the setup
@@ -341,13 +360,20 @@ def label_journaled(
         except Exception as exc:
             return f"{type(exc).__name__}: {exc}"
 
-    # Every candidate symbol first (once each), then the market proxy once, then label.
-    fetched = {symbol: fetch(symbol, min(e["decided_at"] for e in entries)) for symbol, entries in by_symbol.items()}
+    # Every candidate symbol first (once each), then the market proxy once, then label. The
+    # proxy's window starts at the earliest decision of all; when the proxy is itself a
+    # candidate its one fetch covers that window (labelling ignores bars before a decision).
+    starts: dict[str, datetime] = {
+        symbol: min(e["decided_at"] for e in entries) for symbol, entries in by_symbol.items()
+    }
+    market_start = min(starts.values(), default=None)
+    if market_start is not None and market_symbol in starts:
+        starts[market_symbol] = market_start
+    fetched = {symbol: fetch(symbol, start) for symbol, start in starts.items()}
     market: pd.DataFrame | None = None
     market_reason: str | None = None
-    if market_symbol is not None and by_symbol:
-        start = min(e["decided_at"] for entries in by_symbol.values() for e in entries)
-        result = fetch(market_symbol, start)
+    if market_symbol is not None and market_start is not None:
+        result = fetched[market_symbol] if market_symbol in fetched else fetch(market_symbol, market_start)
         if isinstance(result, str):
             market_reason = result
         else:
@@ -364,9 +390,10 @@ def label_journaled(
         )
 
     frame = pd.DataFrame(rows, columns=list(_COLUMNS))
-    # Keep "absent" a real None (and signal ids integers), not NaN, when a column mixes values and Nones.
-    for column in ("signal_id", "llm_r_cost"):
-        frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
+    # Signal ids stay integers beside missing ones (nullable Int64, never 5.0), and an absent
+    # LLM relabel stays a real None rather than NaN.
+    frame["signal_id"] = pd.array([row["signal_id"] for row in rows], dtype="Int64")
+    frame["llm_r_cost"] = frame["llm_r_cost"].astype(object).where(frame["llm_r_cost"].notna(), None)
     return frame
 
 
@@ -426,6 +453,11 @@ def _exposure(frame: pd.DataFrame) -> dict[str, Any] | None:
     }
 
 
+def _mean_delta(edits: pd.DataFrame) -> float | None:
+    """Mean ``llm_r_cost - r_cost`` over edited, resolved rows; None when there are none."""
+    return float((edits["llm_r_cost"] - edits["r_cost"]).mean()) if len(edits) else None
+
+
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     """Counts by outcome/maturity, base rates, and per-scan selection quality by scorer."""
     if frame.empty:
@@ -447,9 +479,11 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
                 "vetoed_mean_r_cost": None,
                 "approved_mean_r_cost": None,
                 "bracket_edited": 0,
+                "bracket_edit_mature": 0,
                 "bracket_edit_mean_delta_r": None,
+                "vetoed_bracket_edit_mean_delta_r": None,
             },
-            "market_exposure": {"sent": None, "runner_up": None},
+            "market_exposure": {"sent": None, "runner_up": None, "reason": None},
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -483,20 +517,31 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     ran = mature.loc[mature["llm_ran"].astype(bool)]
     vetoed = ran.loc[ran["llm_vetoed"].astype(bool)]
     approved = ran.loc[~ran["llm_vetoed"].astype(bool)]
-    edited = ran.dropna(subset=["llm_r_cost"]).astype({"llm_r_cost": float})
+    # An edited bracket counts whatever its maturity; its delta needs both brackets resolved,
+    # and an approved edit (the bracket that traded) is averaged apart from a vetoed one.
+    edited_mature = (
+        ran.loc[ran["llm_bracket_edited"].astype(bool)].dropna(subset=["llm_r_cost"]).astype({"llm_r_cost": float})
+    )
+    approved_edits = edited_mature.loc[~edited_mature["llm_vetoed"].astype(bool)]
+    vetoed_edits = edited_mature.loc[edited_mature["llm_vetoed"].astype(bool)]
     llm_gate = {
         "ran": len(ran),
         "vetoed": len(vetoed),
         "approved": len(approved),
         "vetoed_mean_r_cost": float(vetoed["r_cost"].mean()) if len(vetoed) else None,
         "approved_mean_r_cost": float(approved["r_cost"].mean()) if len(approved) else None,
-        "bracket_edited": len(edited),
-        "bracket_edit_mean_delta_r": float((edited["llm_r_cost"] - edited["r_cost"]).mean()) if len(edited) else None,
+        "bracket_edited": int(frame["llm_bracket_edited"].astype(bool).sum()),
+        "bracket_edit_mature": len(edited_mature),
+        "bracket_edit_mean_delta_r": _mean_delta(approved_edits),
+        "vetoed_bracket_edit_mean_delta_r": _mean_delta(vetoed_edits),
     }
     controlled = mature.dropna(subset=["market_r"])
+    market_reasons = frame["market_reason"].dropna()
     market_exposure = {
         "sent": _exposure(controlled.loc[controlled["sent"].astype(bool)]),
         "runner_up": _exposure(controlled.loc[~controlled["sent"].astype(bool)]),
+        # Why the control is missing when the proxy fetch failed (one fetch, so one reason).
+        "reason": str(market_reasons.iloc[0]) if len(market_reasons) else None,
     }
     fetch_failed_reasons: dict[str, int] = {}
     if is_fetch_failed.any():

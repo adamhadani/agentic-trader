@@ -567,11 +567,20 @@ class TradingCopilot:
         verdict = getattr(evaluation, "llm_verdict", None)
         if not isinstance(verdict, dict):
             return None
+
+        def price(value: Any) -> float | None:
+            # Evidence only: a malformed price is recorded as absent, never allowed to fail the scan.
+            try:
+                return finite_or_none(value)
+            except TypeError, ValueError:
+                return None
+
+        reason = verdict.get("rejection_reason")
         return {
             "approved": bool(verdict.get("approved")),
-            "rejection_reason": verdict.get("rejection_reason"),
-            "stop_loss": finite_or_none(verdict.get("stop_loss")),
-            "take_profit": finite_or_none(verdict.get("take_profit")),
+            "rejection_reason": None if reason is None else str(reason),
+            "stop_loss": price(verdict.get("stop_loss")),
+            "take_profit": price(verdict.get("take_profit")),
             "applied": bool(verdict.get("applied")),
         }
 

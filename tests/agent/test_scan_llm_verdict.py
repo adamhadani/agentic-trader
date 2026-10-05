@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import ScanBudget
 from agentic_trader.execution.durable import EventKind, RankedOutcome
 from tests.agent.test_scan_budget import budget_desk, evaluation  # noqa: F401  (fixture + helper)
@@ -57,6 +58,8 @@ async def test_llm_veto_is_a_fixed_outcome_with_its_verdict(shadow_desk, temp_db
     assert by_contract["BBB"]["llm"] is None and by_contract["BBB"]["signal_id"] is None
     reasons = {r["contract"]: r["reason"] for r in shadow_desk.last_scan_summary["runners_up"]}
     assert reasons["DDD"] == "LLM vetoed: thesis weak"
+    # The operator's single-name reply names the veto, through the method the bot uses.
+    assert "LLM vetoed: thesis weak" in TradingCopilot._scan_result_text("DDD", shadow_desk.last_scan_summary)
 
 
 async def test_deterministic_rejection_and_old_shape_evaluations_are_unchanged(shadow_desk, temp_db):  # noqa: F811
@@ -115,3 +118,23 @@ async def test_non_finite_verdict_prices_are_journaled_as_null(shadow_desk, temp
     [event] = await _ranked(temp_db)
     sent = next(c for c in event["payload"]["candidates"] if c["outcome"] == "sent")
     assert sent["llm"]["stop_loss"] is None and sent["llm"]["take_profit"] is None
+
+
+async def test_malformed_verdict_fields_are_coerced_not_raised(shadow_desk, temp_db):  # noqa: F811
+    async def evaluate(cand, use_llm=False, **kwargs):
+        return with_verdict(cand, use_llm, llm_verdict=verdict(True, stop="abc", reason=["odd"]) if use_llm else None)
+
+    shadow_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=evaluate)
+    await shadow_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
+
+    [event] = await _ranked(temp_db)
+    sent = next(c for c in event["payload"]["candidates"] if c["outcome"] == "sent")
+    assert sent["llm"] == {
+        "approved": True,
+        "rejection_reason": "['odd']",
+        "stop_loss": None,
+        "take_profit": 104.0,
+        "applied": True,
+    }
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    assert signal["decision_provenance"]["llm_verdict"] == sent["llm"]
