@@ -147,6 +147,26 @@ Deployment evidence is separate: after merge, the controlled restart, `/readyz`,
 `scripts/verify_runtime.py`, and the first scheduled scan's `scan_candidates_ranked`
 event showing `llm` and `signal_id` keys.
 
+## Amendments after the whole-branch review (2026-10-05)
+
+The execution-evidence section (§4) changed during the final review, superseding the
+text above where they differ:
+
+- "Executed" became **entered**: a signal in `EXECUTED` or any `CLOSED_*` status, so
+  closed trades stay in the count. Summary keys: `cards, entered, filled,
+  missing_fill_evidence, repriced, missing_signal_rows, fill_source, mean_fill_slip_r,
+  mean_tap_age_seconds`.
+- The fill is read from the latest `order_observed` event on the signal's broker order
+  (largest cumulative `filled_quantity`), because an Alpaca limit-bracket acknowledgement
+  carries no fill; `entry_resolved` is used only when it actually carries one.
+- Re-priced cards are followed (bounded) to their replacement signal; the row shows
+  `final_signal_id` and `repriced`.
+- Planned entry and stop come from the final signal's `raw_response` (the card as sent,
+  LLM-applied bracket, before fills and ratchets); the journal's levels are the fallback.
+- `market_r` is `0.0` for a same-bar (gap-at-entry) exit; `market_exposure` carries the
+  SPY fetch failure reason; `llm_gate` separates approved from vetoed bracket edits and
+  mature from immature edits; `signal_id` is a nullable integer column.
+
 ## Acceptance
 
 - Every sent, runner-up and vetoed candidate has a labelled row; vetoed rows are
