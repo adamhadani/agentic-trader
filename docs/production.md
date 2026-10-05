@@ -541,20 +541,41 @@ realized, so an operator can see whether either scorer would have out-selected c
 It sends no orders or Telegram messages and writes nothing back to the database.
 
 Since L1 of the [stage-attribution plan](alpha-roadmap.md#stage-layering-and-attribution-october-5)
-the report also decomposes each outcome. Every candidate the LLM evaluated carries its
-recorded `llm` verdict (`approved`, `rejection_reason`, the bracket as applied, `applied`
-— `True` for a native card, `False` for a catalog probe's commentary), and a native card
-the LLM rejected is journaled with the fixed outcome `llm_vetoed` (its runner-up reason
-reads "LLM vetoed: …"). A sent card carries its `signal_id` and its `decision_provenance`
-carries the same `llm_verdict`. The report adds per row `market_r` (SPY's open-to-close
-return over the candidate's own entry-to-exit window, scaled into the candidate's R units:
-a beta-one, uncosted exposure control), `excess_r = r_cost − market_r`, and `llm_r_cost`
-(the cost-adjusted R under the LLM's bracket when it differs from the deterministic one);
-and in the summary `llm_gate` (vetoed versus approved mean R, bracket-edit delta),
-`market_exposure` (sent and runner-up means with and without the control) and
-`execution` (for executed cards: fill minus planned entry in R from the entry work item's
-`entry_resolved` event, and the applied tap's age; missing fill evidence is counted, never
-zeroed). All of it is descriptive. None of it ranks, gates or sizes a card.
+the report also decomposes each outcome. Every **native** candidate the LLM evaluated
+carries its recorded `llm` verdict in the journal (`approved`, `rejection_reason`, the
+bracket as applied, `applied: true`), and a native card the LLM rejected is journaled with
+the fixed outcome `llm_vetoed` (its runner-up reason reads "LLM vetoed: …"). A sent card
+carries its `signal_id`, and its `decision_provenance` carries the same `llm_verdict`. A
+catalog probe's LLM pass is commentary only (`applied: false`) and its drift cards are not
+in `scan_candidates_ranked`, so a probe's verdict lives only in its signal's
+`decision_provenance`.
+
+Per row the report adds `market_r`, `excess_r = r_cost − market_r`, `llm_r_cost` (the
+cost-adjusted R under the LLM's bracket when it differs from the deterministic one) and
+`llm_bracket_edited`. `market_r` is SPY's open-to-close return over the candidate's own
+entry-to-exit window, scaled into the candidate's R units: a beta-one, uncosted exposure
+control with stated approximations. It uses the nearest regular SPY bars (the first at or
+after the entry, the last at or before the exit), raw (unadjusted) prices like the rest of
+the report, and zero for a candidate that exits on its entry bar (a gap-at-entry exit holds
+no market time). SPY is fetched once per report; when that fetch fails, `market_r` is
+empty and `market_exposure.reason` says why.
+
+In the summary, `llm_gate` compares vetoed and approved mean R and counts bracket edits:
+`bracket_edited` (at any maturity), `bracket_edit_mature`, and the mean `llm_r_cost −
+r_cost` over approved edits (`bracket_edit_mean_delta_r`, the brackets that were sent),
+reported apart from vetoed ones (`vetoed_bracket_edit_mean_delta_r`). `market_exposure`
+gives sent and runner-up means with and without the control. `execution` covers every sent
+card. A re-priced card is followed to its replacement (`final_signal_id`, `repriced`),
+whose status, entry order, fill and tap are the ones that count. A card is **entered** when
+its signal is `EXECUTED` or any `CLOSED_*`, and **filled** when the broker's
+`order_observed` events on its entry order report a fill (the Alpaca limit-bracket path)
+or, failing that, its `entry_resolved` acknowledgement itself carried one (the paper
+simulator); `fill_source` counts which. Slippage is fill minus planned entry in R, with
+the planned entry and stop taken from the card as sent (the signal's `raw_response`, so an
+LLM-moved stop or a re-priced entry is the one that traded; `planned_source` says when the
+journal had to stand in). The applied tap's age is reported too. Missing fill evidence and
+missing signal rows are counted, never zeroed. All of it is descriptive, never a gate.
+None of it ranks, gates or sizes a card.
 
 Switching live ranking away from `setup_quality` to a shadow score is an operator
 decision, not something this report or the shadow block can do by itself. It needs a
