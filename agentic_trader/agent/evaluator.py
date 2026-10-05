@@ -57,6 +57,11 @@ class DeterministicLevels:
     gating_reasons: list[str] = field(default_factory=list)
 
 
+def _explicit_true(value: Any) -> bool:
+    """Only an explicit true approves: ``bool("false")`` would record a veto as approval."""
+    return value is True or (isinstance(value, str) and value.lower() == "true")
+
+
 class LLMTradeEvaluation(BaseModel):
     approved: bool
     rejection_reason: str | None = None
@@ -80,7 +85,8 @@ class LLMTradeEvaluation(BaseModel):
     gating_reasons: list[str] | None = None
     session_type: str = "RTH"
     earnings_note: str | None = None
-    # A catalog probe's LLM verdict, recorded but never applied (commentary only).
+    # Every parsed LLM answer: approved/rejection_reason, the bracket as it would be
+    # applied, and whether the verdict decided the card (native) or is commentary (catalog).
     llm_verdict: dict[str, Any] | None = None
 
 
@@ -726,21 +732,27 @@ class RiskEvaluator:
             data["session_type"] = current_session_type
 
             data.pop("llm_verdict", None)  # only ever set below, never taken from the LLM
-            if candidate.catalog_event is not None:
-                # A catalog probe tests the unfiltered study rule: record the LLM's verdict,
-                # show its text as commentary, never let it veto (deterministic gates already ran).
-                verdict = data.get("approved")
-                data["llm_verdict"] = {
-                    # Only an explicit true approves: bool("false") would record a veto as approval.
-                    "approved": verdict is True or (isinstance(verdict, str) and verdict.lower() == "true"),
-                    "rejection_reason": data.get("rejection_reason"),
-                }
+            applied = candidate.catalog_event is None
+            data["llm_verdict"] = {
+                "approved": _explicit_true(data.get("approved")),
+                "rejection_reason": data.get("rejection_reason"),
+                "stop_loss": llm_stop,
+                "take_profit": llm_target,
+                "applied": applied,
+            }
+            if not applied:
+                # A catalog probe tests the unfiltered study rule: the verdict is recorded,
+                # its text shown as commentary, and it never vetoes (deterministic gates already ran).
                 data["approved"], data["rejection_reason"] = True, None
                 data["thesis_summary"] = f"LLM commentary (not a gate): {data.get('thesis_summary') or ''}".strip()
 
             # Never ask the LLM for the earnings note (prompt/schema stay untouched);
             # attach it deterministically after the LLM result is parsed.
-            return LLMTradeEvaluation(**data).model_copy(update={"earnings_note": earnings_note_value})
+            evaluation = LLMTradeEvaluation(**data).model_copy(update={"earnings_note": earnings_note_value})
+            if applied and evaluation.llm_verdict is not None:
+                # Record exactly the decision taken, after pydantic's own bool parsing.
+                evaluation.llm_verdict["approved"] = evaluation.approved
+            return evaluation
 
         except Exception as e:
             logger.warning(
