@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -32,9 +33,11 @@ __all__ = [
     "evaluate_panel",
     "evaluate_prepared",
     "expression_nodes",
+    "jaccard_codes",
     "prepare_daily",
     "require_dimensionless",
     "select_picks",
+    "select_top_fraction",
 ]
 
 
@@ -161,6 +164,10 @@ class Picks:
     def cells(self) -> set[tuple[int, int]]:
         return set(zip(self.session_idx.tolist(), self.symbol_idx.tolist(), strict=True))
 
+    def codes(self, names: int) -> np.ndarray:
+        """Each pick as one sorted int64 code (session * names + symbol), for compact overlap tests."""
+        return np.sort(self.session_idx.astype(np.int64) * names + self.symbol_idx.astype(np.int64))
+
 
 def select_picks(scores: np.ndarray, allowed: np.ndarray, view: CubeView, k: int) -> Picks:
     """Top-k eligible names per session by score; a picked name stays held through its exit session."""
@@ -178,3 +185,34 @@ def select_picks(scores: np.ndarray, allowed: np.ndarray, view: CubeView, k: int
             rows.append(row)
             cols.append(int(col))
     return Picks(np.asarray(rows, dtype=np.int64), np.asarray(cols, dtype=np.int64))
+
+
+def select_top_fraction(scores: np.ndarray, allowed: np.ndarray, view: CubeView, fraction: float) -> Picks:
+    """The top ceil(fraction * n) of each session's eligible, allowed, finite names; no hold-skipping.
+
+    A daily basket, as in decile anomaly studies: a name may be picked on consecutive sessions,
+    and its labels overlap exactly as the control's do. Ties break by the hash key.
+    """
+    rows: list[np.ndarray] = []
+    cols: list[np.ndarray] = []
+    for row in range(scores.shape[0]):
+        candidates = np.flatnonzero(allowed[row] & view.eligible[row] & np.isfinite(scores[row]))
+        if candidates.size == 0:
+            continue
+        # round() keeps float noise from rounding up: 0.1 * 30 is 3.0000000000000004.
+        count = math.ceil(round(fraction * candidates.size, 9))
+        order = np.lexsort((view.tiebreak[row, candidates], -scores[row, candidates]))
+        chosen = candidates[order[:count]]
+        rows.append(np.full(chosen.size, row, dtype=np.int64))
+        cols.append(chosen.astype(np.int64))
+    if not rows:
+        return Picks(np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64))
+    return Picks(np.concatenate(rows), np.concatenate(cols))
+
+
+def jaccard_codes(a: np.ndarray, b: np.ndarray) -> float:
+    """Jaccard overlap of two sorted, unique pick-code arrays (0 when both are empty)."""
+    if a.size == 0 and b.size == 0:
+        return 0.0
+    common = np.intersect1d(a, b, assume_unique=True).size
+    return common / (a.size + b.size - common)
