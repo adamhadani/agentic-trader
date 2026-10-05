@@ -421,6 +421,9 @@ one or two reasonable cards per session:
      - **Outcome:** the campaign did not run. Nothing was charged and the confirmation
        window is unused. The next step is a protocol v3 redesign, such as decile
        selection, re-checked by B before any campaign.
+   - Protocol v3 (top-decile selection,
+     [spec](superpowers/specs/2026-10-03-pooled-alpha-mining-v3-design.md)) reruns checks A, B
+     and C on the v2 cube; if B fails again the pooled genetic campaign is parked.
    - **Weekly ETF32 miner paused (2026-09-28).** The operator disabled and unloaded
      `com.agentictrader.alphaminer` (`launchctl disable` and `bootout`; the plist is
      kept) so it stops charging 512 trials a week to the family that deflates every future
