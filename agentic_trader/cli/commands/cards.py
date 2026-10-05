@@ -20,6 +20,7 @@ from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.pead_events import EVENT_COLUMNS
 from agentic_trader.research.apriori.pead_study import label_events
 from agentic_trader.research.apriori.probe_outcomes import decision_frame, probe_signals, summarize_probe
+from agentic_trader.research.setups.execution_evidence import collect_execution, summarize_execution
 from agentic_trader.research.setups.outcomes import (
     DEFAULT_COST_BPS_PER_SIDE,
     DEFAULT_MAX_HOLD_SESSIONS,
@@ -103,11 +104,17 @@ async def outcomes_cmd(days: int) -> None:
             now=now,
             max_requests_per_minute=config.market_data.max_requests_per_minute,
         )
-        click.echo(json.dumps(summarize(frame), indent=2, default=str))
+        summary = summarize(frame)
+        execution = await collect_execution(db, frame)
+        summary["execution"] = summarize_execution(execution)
+        click.echo(json.dumps(summary, indent=2, default=str))
         if frame.empty:
             click.echo(f"No scan_candidates_ranked events in the last {days} day(s).")
         else:
-            click.echo(frame.drop(columns=["decided_at"]).to_string(index=False))
+            click.echo(frame.drop(columns=["decided_at", "entry_time", "exit_time"]).to_string(index=False))
+        if not execution.empty:
+            click.echo("Execution evidence:")
+            click.echo(execution.to_string(index=False))
 
         payloads = await _pead_decision_events(db, days, now=now)
         if payloads:

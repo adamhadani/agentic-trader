@@ -343,6 +343,14 @@ def test_cli_outputs_table_with_fake_sources(runner: CliRunner):
                         "rank": 1,
                         "outcome": "sent",
                         "shadow": {"score": 0.7},
+                        "llm": {
+                            "approved": True,
+                            "rejection_reason": None,
+                            "stop_loss": 99.0,
+                            "take_profit": 102.0,
+                            "applied": True,
+                        },
+                        "signal_id": None,
                     }
                 ],
             }
@@ -370,6 +378,9 @@ def test_cli_outputs_table_with_fake_sources(runner: CliRunner):
     assert fake_bars.calls, "expected the fake bar source to be queried for AAPL"
     assert fake_bars.calls[0][0] == "AAPL"
     assert fake_bars.calls[0][4] == "raw"
+    assert {call[0] for call in fake_bars.calls} == {"AAPL", "SPY"}
+    assert '"llm_gate"' in result.output and '"market_exposure"' in result.output and '"execution"' in result.output
+    assert '"ran": 1' in result.output
     assert '"total": 1' in result.output
     assert "AAPL" in result.output
     assert "target" in result.output

@@ -540,6 +540,22 @@ cost-adjusted R; and, per scan, the top-1/top-2 mean cost-adjusted R a picker fo
 realized, so an operator can see whether either scorer would have out-selected chance.
 It sends no orders or Telegram messages and writes nothing back to the database.
 
+Since L1 of the [stage-attribution plan](alpha-roadmap.md#stage-layering-and-attribution-october-5)
+the report also decomposes each outcome. Every candidate the LLM evaluated carries its
+recorded `llm` verdict (`approved`, `rejection_reason`, the bracket as applied, `applied`
+— `True` for a native card, `False` for a catalog probe's commentary), and a native card
+the LLM rejected is journaled with the fixed outcome `llm_vetoed` (its runner-up reason
+reads "LLM vetoed: …"). A sent card carries its `signal_id` and its `decision_provenance`
+carries the same `llm_verdict`. The report adds per row `market_r` (SPY's open-to-close
+return over the candidate's own entry-to-exit window, scaled into the candidate's R units:
+a beta-one, uncosted exposure control), `excess_r = r_cost − market_r`, and `llm_r_cost`
+(the cost-adjusted R under the LLM's bracket when it differs from the deterministic one);
+and in the summary `llm_gate` (vetoed versus approved mean R, bracket-edit delta),
+`market_exposure` (sent and runner-up means with and without the control) and
+`execution` (for executed cards: fill minus planned entry in R from the entry work item's
+`entry_resolved` event, and the applied tap's age; missing fill evidence is counted, never
+zeroed). All of it is descriptive. None of it ranks, gates or sizes a card.
+
 Switching live ranking away from `setup_quality` to a shadow score is an operator
 decision, not something this report or the shadow block can do by itself. It needs a
 frozen study holdout result plus enough measured evidence from this report and `alpha
