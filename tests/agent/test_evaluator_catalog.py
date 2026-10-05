@@ -74,7 +74,11 @@ async def test_llm_verdict_on_a_catalog_probe_is_commentary_not_a_gate(evaluator
     completion.assert_awaited_once()
     assert result.approved is True
     assert result.rejection_reason is None
-    assert result.llm_verdict == {"approved": False, "rejection_reason": "earnings momentum fading"}
+    assert (
+        result.llm_verdict["approved"] is False
+        and result.llm_verdict["rejection_reason"] == "earnings momentum fading"
+        and result.llm_verdict["applied"] is False
+    )
     assert result.thesis_summary.startswith("LLM commentary (not a gate): Weak follow-through")
     entry = entry_limit(candidate.current_price, POLICY)
     stop, target = bracket_prices(
@@ -112,7 +116,7 @@ async def test_the_same_llm_veto_still_rejects_a_native_candidate(evaluator_fact
 
     assert result.approved is False
     assert result.rejection_reason == "earnings momentum fading"
-    assert result.llm_verdict is None
+    assert result.llm_verdict["applied"] is True and result.llm_verdict["approved"] is False
     assert result.thesis_summary == "Weak follow-through"
 
 

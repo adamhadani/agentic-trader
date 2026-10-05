@@ -288,6 +288,21 @@ class WorkflowStore:
                 )
             )
 
+    async def entry_item_ids(self, signal_ids: Collection[int]) -> dict[int, str]:
+        """Entry work-item ids (the broker client order ids) by signal id, for journal readers."""
+        if not signal_ids:
+            return {}
+        keys = {str(int(signal_id)): int(signal_id) for signal_id in signal_ids}
+        async with self.db.session_factory() as session:
+            rows = await session.execute(
+                select(WorkItemRecord.dedup_key, WorkItemRecord.id).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.ENTRY,
+                    WorkItemRecord.dedup_key.in_(list(keys)),
+                )
+            )
+            return {keys[dedup_key]: item_id for dedup_key, item_id in rows}
+
     async def unresolved_cancellation(self, session: AsyncSession, *, symbol: str | None = None) -> bool:
         query = select(WorkItemRecord.id).where(
             WorkItemRecord.scope == self.scope,

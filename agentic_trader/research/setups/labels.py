@@ -25,6 +25,7 @@ __all__ = [
     "BracketOutcome",
     "SetupLevels",
     "label_bracket",
+    "regular_session_bars",
 ]
 
 
@@ -71,7 +72,7 @@ class BracketOutcome:
     holding_sessions: int  # distinct NY session dates touched from entry bar through exit bar
 
 
-def _regular_session_bars(hourly: pd.DataFrame) -> pd.DataFrame:
+def regular_session_bars(hourly: pd.DataFrame) -> pd.DataFrame:
     index = pd.DatetimeIndex(hourly.index)
     local_hour = index.tz_convert(ET_TZ).hour
     return hourly.loc[local_hour.isin(REGULAR_SESSION_HOURS_NY)]
@@ -135,7 +136,7 @@ def label_bracket(
     stop, and a gap through either level fills at that bar's open rather than
     the level itself.
     """
-    regular = _regular_session_bars(hourly)
+    regular = regular_session_bars(hourly)
     if regular.empty:
         return _immature()
 

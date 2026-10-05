@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -13,7 +13,9 @@ from agentic_trader.research.setups.outcomes import (
     DEFAULT_COST_BPS_PER_SIDE,
     DEFAULT_MAX_HOLD_SESSIONS,
     FETCH_FAILED_HIT,
+    MARKET_PROXY_SYMBOL,
     label_journaled,
+    market_r,
     summarize,
 )
 
@@ -167,7 +169,7 @@ def test_label_journaled_fetches_once_per_symbol():
     ]
     bars = FakeBarSource({"AAPL": frame})
 
-    result = label_journaled(events, bars, now=NOW)
+    result = label_journaled(events, bars, now=NOW, market_symbol=None)
 
     assert len(result) == 2
     assert len(bars.calls) == 1
@@ -257,6 +259,7 @@ def test_summary_empty_frame():
     assert summary["fetch_failed_reasons"] == {}
     assert summary["counts"]["sent"]["fetch_failed"] == 0
     assert summary["counts"]["runner_up"]["fetch_failed"] == 0
+    assert "llm_gate" in summary and "market_exposure" in summary
 
 
 def test_summary_counts_fetch_failures_separately_with_reasons():
@@ -306,7 +309,7 @@ def test_label_journaled_paces_fetches(monkeypatch):
         }
     )
 
-    label_journaled(events, bars, now=NOW, max_requests_per_minute=42)
+    label_journaled(events, bars, now=NOW, max_requests_per_minute=42, market_symbol=None)
 
     assert calls[0] == 42
     assert calls.count("acquire") == 2  # once per symbol
@@ -318,3 +321,250 @@ def test_defaults_match_the_setup_outcomes_protocol():
     )
     assert protocol["max_hold_sessions"] == DEFAULT_MAX_HOLD_SESSIONS
     assert max(protocol["cost_bps_per_side"]) == DEFAULT_COST_BPS_PER_SIDE
+
+
+# AAPL: decision 14:00 UTC (09:00 ET, pre-market) -> entry at the 14:30 bar open 100.5; target 102 hits on the 16:00 bar.
+AAPL_BARS = _bars(
+    [
+        ("2026-03-02T14:30:00+00:00", 100.5, 100.8, 100.2, 100.6),
+        ("2026-03-02T15:30:00+00:00", 100.6, 101.0, 100.3, 100.9),
+        ("2026-03-02T16:30:00+00:00", 100.9, 102.5, 100.8, 102.0),
+    ]
+)
+# SPY over the same bars: open 500 at the entry bar, close 505 at the exit bar -> +1.0%.
+SPY_BARS = _bars(
+    [
+        ("2026-03-02T14:30:00+00:00", 500.0, 501.0, 499.0, 500.5),
+        ("2026-03-02T15:30:00+00:00", 500.5, 503.0, 500.0, 502.0),
+        ("2026-03-02T16:30:00+00:00", 502.0, 506.0, 501.5, 505.0),
+    ]
+)
+
+
+def test_market_r_scales_spy_return_into_the_candidates_r_units():
+    entry_time = pd.Timestamp("2026-03-02T14:30:00+00:00")
+    exit_time = pd.Timestamp("2026-03-02T16:30:00+00:00")
+    # Long, entry 100, stop 99 (risk 1.0 = 1% of entry): SPY +1% -> +1.0R.
+    assert market_r("LONG", 100.0, 99.0, entry_time, exit_time, SPY_BARS) == pytest.approx(1.0)
+    # Short: the same market move is -1.0R.
+    assert market_r("SHORT", 100.0, 101.0, entry_time, exit_time, SPY_BARS) == pytest.approx(-1.0)
+    # Risk 2% of entry halves the scaled exposure.
+    assert market_r("LONG", 100.0, 98.0, entry_time, exit_time, SPY_BARS) == pytest.approx(0.5)
+
+
+def test_market_r_is_none_when_spy_bars_do_not_cover_the_window():
+    entry_time = pd.Timestamp("2026-03-02T14:30:00+00:00")
+    assert market_r("LONG", 100.0, 99.0, entry_time, pd.Timestamp("2026-03-02T13:00:00+00:00"), SPY_BARS) is None
+    assert market_r("LONG", 100.0, 99.0, pd.Timestamp("2026-03-03T14:30:00+00:00"), entry_time, SPY_BARS) is None
+    assert market_r("LONG", 100.0, 99.0, entry_time, entry_time, SPY_BARS.iloc[0:0]) is None
+
+
+def test_label_journaled_adds_market_control_and_excess():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW)
+    [row] = frame.to_dict("records")
+    assert row["hit"] == BracketHit.TARGET.value
+    assert row["entry_time"] == pd.Timestamp("2026-03-02T14:30:00+00:00")
+    assert row["exit_time"] == pd.Timestamp("2026-03-02T16:30:00+00:00")
+    assert row["entry"] == 100.0 and row["stop"] == 99.0
+    assert row["market_r"] == pytest.approx(1.0)
+    assert row["excess_r"] == pytest.approx(row["r_cost"] - 1.0)
+    assert row["market_reason"] is None
+    # SPY is fetched once, with the same adjustment as the candidates, after them.
+    assert [call[0] for call in bars.calls] == ["AAPL", MARKET_PROXY_SYMBOL]
+    assert bars.calls[1][4] == "raw"
+
+
+def test_spy_fetch_failure_leaves_market_r_null_with_a_reason():
+    bars = FakeBarSource({"AAPL": AAPL_BARS}, raise_for={MARKET_PROXY_SYMBOL})
+    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW)
+    [row] = frame.to_dict("records")
+    assert row["hit"] == BracketHit.TARGET.value and row["r_cost"] is not None
+    assert row["market_r"] is None and row["excess_r"] is None
+    assert row["market_reason"] == "RuntimeError: no data for SPY"
+    exposure = summarize(frame)["market_exposure"]
+    assert exposure == {"sent": None, "runner_up": None, "reason": "RuntimeError: no data for SPY"}
+
+
+def test_market_symbol_none_skips_the_control_entirely():
+    bars = FakeBarSource({"AAPL": AAPL_BARS})
+    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW, market_symbol=None)
+    assert [call[0] for call in bars.calls] == ["AAPL"]
+    assert frame["market_r"].isna().all()
+
+
+def test_llm_bracket_is_relabelled_only_when_it_differs():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    same = {"approved": True, "rejection_reason": None, "stop_loss": 99.0, "take_profit": 102.0, "applied": True}
+    # A tighter LLM target (101) is hit on the 15:30 bar: fewer R than the deterministic 102 target.
+    edited = {**same, "take_profit": 101.0}
+    invalid = {**same, "stop_loss": 101.0}  # stop above a long entry: no geometry to judge
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(contract="AAPL", rank=1), "llm": same, "signal_id": 7},
+                {**_candidate(contract="AAPL", rank=2, outcome="llm_vetoed"), "llm": edited},
+                {**_candidate(contract="AAPL", rank=3, outcome="per-scan budget spent"), "llm": invalid},
+                _candidate(contract="AAPL", rank=4, outcome="per-scan budget spent"),  # old event shape
+            ],
+        )
+    ]
+    frame = label_journaled(events, bars, now=NOW).sort_values("rank")
+    rows = frame.to_dict("records")
+    assert rows[0]["llm_ran"] is True and rows[0]["llm_vetoed"] is False and rows[0]["llm_r_cost"] is None
+    assert [row["llm_bracket_edited"] for row in rows] == [False, True, True, False]
+    assert rows[0]["signal_id"] == 7
+    # LLM target 101 fills at the level on the 15:30 bar: r = (101 - 100.5)/1.0 = 0.5, minus the
+    # round-trip cost 2 × 5 bp × 100.5 / 1.0; the deterministic 102 target gives 1.5 before costs.
+    assert rows[1]["llm_vetoed"] is True and rows[1]["llm_r_cost"] == pytest.approx(0.5 - 2 * 5.0 / 1e4 * 100.5)
+    assert rows[1]["r_cost"] == pytest.approx(1.5 - 2 * 5.0 / 1e4 * 100.5)
+    assert rows[1]["llm_r_cost"] < rows[1]["r_cost"]
+    assert rows[2]["llm_ran"] is True and rows[2]["llm_r_cost"] is None
+    assert rows[3]["llm_ran"] is False and rows[3]["llm_vetoed"] is False and rows[3]["signal_id"] is None
+
+
+def test_summary_llm_gate_and_market_exposure_blocks():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    ok = {"approved": True, "rejection_reason": None, "stop_loss": 99.0, "take_profit": 102.0, "applied": True}
+    veto = {**ok, "approved": False, "rejection_reason": "weak"}
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "llm": ok, "signal_id": 1},
+                {**_candidate(rank=2, outcome="llm_vetoed"), "llm": {**veto, "take_profit": 101.0}},
+                _candidate(rank=3, outcome="per-scan budget spent"),
+            ],
+        )
+    ]
+    frame = label_journaled(events, bars, now=NOW)
+    summary = summarize(frame)
+    gate = summary["llm_gate"]
+    assert gate["ran"] == 2 and gate["vetoed"] == 1 and gate["approved"] == 1
+    assert gate["approved_mean_r_cost"] == pytest.approx(frame.loc[frame["rank"] == 1, "r_cost"].iloc[0])
+    assert gate["vetoed_mean_r_cost"] == pytest.approx(frame.loc[frame["rank"] == 2, "r_cost"].iloc[0])
+    assert gate["bracket_edited"] == 1 and gate["bracket_edit_mature"] == 1
+    # The only edited bracket was vetoed: no approved edit to average, the vetoed delta reported apart.
+    assert gate["bracket_edit_mean_delta_r"] is None
+    assert gate["vetoed_bracket_edit_mean_delta_r"] == pytest.approx(
+        float(frame.loc[frame["rank"] == 2, "llm_r_cost"].iloc[0] - frame.loc[frame["rank"] == 2, "r_cost"].iloc[0])
+    )
+    exposure = summary["market_exposure"]
+    assert exposure["sent"]["n"] == 1 and exposure["sent"]["mean_market_r"] == pytest.approx(1.0)
+    assert exposure["sent"]["mean_excess_r"] == pytest.approx(exposure["sent"]["mean_r_cost"] - 1.0)
+    assert exposure["runner_up"]["n"] == 2
+
+
+def test_summary_blocks_on_an_empty_frame():
+    summary = summarize(pd.DataFrame(columns=list(outcomes_module._COLUMNS)))
+    assert summary["llm_gate"] == {
+        "ran": 0,
+        "vetoed": 0,
+        "approved": 0,
+        "vetoed_mean_r_cost": None,
+        "approved_mean_r_cost": None,
+        "bracket_edited": 0,
+        "bracket_edit_mature": 0,
+        "bracket_edit_mean_delta_r": None,
+        "vetoed_bracket_edit_mean_delta_r": None,
+    }
+    assert summary["market_exposure"] == {"sent": None, "runner_up": None, "reason": None}
+
+
+def test_rows_carry_the_applied_llm_stop_for_execution_evidence():
+    """``collect_execution`` falls back to the applied LLM stop when a card's raw_response is unusable."""
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    applied = {"approved": True, "rejection_reason": None, "stop_loss": 98.5, "take_profit": 102.0, "applied": True}
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "llm": applied, "signal_id": 7},
+                {**_candidate(rank=2, outcome="per-scan budget spent"), "llm": {**applied, "applied": False}},
+                _candidate(rank=3, outcome="per-scan budget spent"),
+            ],
+        )
+    ]
+    rows = label_journaled(events, bars, now=NOW).sort_values("rank").to_dict("records")
+    assert rows[0]["llm_stop_loss"] == 98.5
+    assert pd.isna(rows[1]["llm_stop_loss"]) and pd.isna(rows[2]["llm_stop_loss"])
+
+
+def test_signal_ids_stay_integers_beside_missing_ones():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [{**_candidate(rank=1), "signal_id": 5}, _candidate(rank=2, outcome="per-scan budget spent")],
+        )
+    ]
+    frame = label_journaled(events, bars, now=NOW).sort_values("rank")
+    assert str(frame["signal_id"].dtype) == "Int64"
+    assert frame["signal_id"].iloc[0] == 5 and pd.isna(frame["signal_id"].iloc[1])
+    assert "5.0" not in frame[["signal_id"]].to_string()
+
+
+def test_market_r_is_zero_when_the_exit_bar_is_the_entry_bar():
+    """A gap-at-entry exit holds for no time: no market exposure, not a full bar of SPY."""
+    entry_time = pd.Timestamp("2026-03-02T14:30:00+00:00")
+    assert market_r("LONG", 100.0, 99.0, entry_time, entry_time, SPY_BARS) == 0.0
+    # Between SPY bars, too: the candidate's own exit bar is its entry bar.
+    between = pd.Timestamp("2026-03-02T15:00:00+00:00")
+    assert market_r("LONG", 100.0, 99.0, between, between, SPY_BARS) == 0.0
+
+
+def test_a_gap_at_entry_exit_has_zero_market_r():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    # The 14:30 entry bar opens at 100.5, already through a 100.4 target: exit at the entry bar.
+    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate(target=100.4)])], bars, now=NOW)
+    [row] = frame.to_dict("records")
+    assert row["hit"] == BracketHit.TARGET.value and row["entry_time"] == row["exit_time"]
+    assert row["market_r"] == 0.0 and row["excess_r"] == pytest.approx(row["r_cost"])
+
+
+def test_llm_gate_splits_bracket_edits_by_maturity_and_veto():
+    thin = _bars([("2026-03-01T14:00:00+00:00", 100.0, 100.0, 100.0, 100.0)])  # nothing after the decision
+    bars = FakeBarSource({"AAPL": AAPL_BARS, "MSFT": thin, MARKET_PROXY_SYMBOL: SPY_BARS})
+    ok = {"approved": True, "rejection_reason": None, "stop_loss": 99.0, "take_profit": 102.0, "applied": True}
+    tighter = {**ok, "take_profit": 101.0}
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "llm": tighter, "signal_id": 1},  # approved, edited, mature
+                {
+                    **_candidate(rank=2, outcome="llm_vetoed"),
+                    "llm": {**tighter, "approved": False, "take_profit": 101.5},
+                },  # vetoed, edited, mature
+                {**_candidate(rank=3, outcome="per-scan budget spent"), "llm": ok},  # not edited
+                {**_candidate(contract="MSFT", rank=4, outcome="per-scan budget spent"), "llm": tighter},  # immature
+            ],
+        )
+    ]
+    frame = label_journaled(events, bars, now=NOW)
+    by_rank = frame.set_index("rank")
+    assert by_rank["llm_bracket_edited"].to_dict() == {1: True, 2: True, 3: False, 4: True}
+    gate = summarize(frame)["llm_gate"]
+    assert gate["bracket_edited"] == 3 and gate["bracket_edit_mature"] == 2
+    assert gate["bracket_edit_mean_delta_r"] == pytest.approx(by_rank.loc[1, "llm_r_cost"] - by_rank.loc[1, "r_cost"])
+    assert gate["vetoed_bracket_edit_mean_delta_r"] == pytest.approx(
+        by_rank.loc[2, "llm_r_cost"] - by_rank.loc[2, "r_cost"]
+    )
+
+
+def test_a_market_proxy_candidate_is_fetched_once():
+    later = DECIDED_AT + timedelta(hours=1)
+    spy = _candidate(contract=MARKET_PROXY_SYMBOL, entry=500.0, stop=495.0, target=505.0)
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()]), _event("s2", later, [spy])], bars, now=NOW)
+    assert [call[0] for call in bars.calls] == ["AAPL", MARKET_PROXY_SYMBOL]
+    # One fetch covers every candidate's window: it starts at the earliest decision of all.
+    assert bars.calls[1][2] == DECIDED_AT
+    aapl = frame.loc[frame["contract"] == "AAPL"].iloc[0]
+    assert aapl["market_r"] == pytest.approx(1.0)
