@@ -37,6 +37,22 @@ def test_hidden_expressions_are_reproducible_near_seed_mutations_with_enough_ses
     assert again == expression
 
 
+def test_hidden_expressions_pick_the_v3_decile_without_hold_skipping():
+    protocol = mini_v3_protocol()
+    view = label_cube().window(*protocol.windows.discovery)
+    expression, picks = hidden_expression(
+        protocol.families[0], protocol=protocol, rng=random.Random(5), book=book(), view=view
+    )
+    expected = protocol.select(*book().formula(expression).panel(view), view)
+    assert np.array_equal(picks.codes(len(view.symbols)), expected.codes(len(view.symbols)))
+    per_session = np.bincount(picks.session_idx)[np.unique(picks.session_idx)]
+    assert set(per_session.tolist()) == {2}  # ceil(0.10 * 12), never top-3
+    assert any(  # a name held across consecutive sessions is still picked again: no hold-skipping
+        set(picks.symbol_idx[picks.session_idx == i]) & set(picks.symbol_idx[picks.session_idx == i + 1])
+        for i in np.unique(picks.session_idx)[:-1]
+    )
+
+
 def test_a_planted_seed_is_recovered_and_a_vanishing_plant_is_not(monkeypatch):
     monkeypatch.setattr(search_power, "hidden_expression", exact_seed)
     found = run_search_power(with_delta(mini_protocol(), 2.0), label_cube(), book())

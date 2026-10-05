@@ -318,7 +318,7 @@ async def test_a_failure_after_consumption_keeps_the_outcome(tmp_path, repositor
     assert result["confirmation_consumed"] is True
 
 
-def test_a_literature_entry_with_a_filter_yields_cells():
+def test_a_literature_entry_with_a_filter_yields_codes():
     build = cube_build(planted_cube(PLANTED, 1.0))
     book = ScoreBook(build.adjusted, build.trading_days, build.cube.sessions, build.cube.symbols)
     formula = Formula(score=PLANTED, filters=(FormulaFilter(expression="ts_max(returns, 21)", max_quantile=0.5),), k=3)

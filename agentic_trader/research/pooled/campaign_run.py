@@ -18,7 +18,8 @@ protocol, on one cube, at the clean code revision that is running.
 8. Consume the lane-wide confirmation interval, then read it.
 
 **Overlap rule.** A finalist whose discovery picks overlap a literature entry's at Jaccard
->= ``dedupe_jaccard`` is ``already_tested_by`` that entry. It keeps its Holm slot and is
+>= ``dedupe_jaccard`` is ``already_tested_by`` that entry. Literature formulas are evaluated
+under the campaign's own selection rule, as pick codes. It keeps its Holm slot and is
 never probe-eligible: both literature entries failed.
 
 **Every exit writes ``result.json``** with ``confirmation_consumed``, read back from the

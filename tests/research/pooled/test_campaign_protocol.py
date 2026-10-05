@@ -103,6 +103,11 @@ def test_campaign_v1_still_loads_with_its_frozen_hash_and_cannot_run_a_campaign(
         loaded.protocol.require_campaign_ready()
 
 
+def test_campaign_v3_loads_with_its_frozen_hash():
+    loaded = load_campaign_protocol(PROTOCOL.with_name("campaign-v3.json"))
+    assert loaded.sha256 == "d713b575792b62d233e0ad652e5a0a840e4dec80392beeb9cce98dcd531051f2"
+
+
 def test_the_v2_fields_validate_and_make_the_protocol_campaign_ready(tmp_path):
     protocol = load_campaign_protocol(_mutated(tmp_path, _v2)).protocol
     protocol.require_campaign_ready()
