@@ -33,7 +33,8 @@ __all__ = [
     "summarize_execution",
 ]
 
-# A card that reached the broker and filled: open (EXECUTED) or since closed (any CLOSED_*).
+# A card whose entry the broker accepted: still open or resting (EXECUTED is set at acceptance,
+# not at the fill) or since closed (any CLOSED_*). Whether it filled is a separate question.
 ENTERED_STATUSES = frozenset(
     {SignalStatus.EXECUTED, SignalStatus.CLOSED_WIN, SignalStatus.CLOSED_LOSS, SignalStatus.CLOSED_MANUAL}
 )
