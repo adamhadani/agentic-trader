@@ -51,7 +51,14 @@ from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
 from agentic_trader.execution.closing import PositionCloseService
-from agentic_trader.execution.durable import EventKind, NotificationKind, OrderObservation, WorkKind, WorkStatus
+from agentic_trader.execution.durable import (
+    EventKind,
+    NotificationKind,
+    OrderObservation,
+    RankedOutcome,
+    WorkKind,
+    WorkStatus,
+)
 from agentic_trader.execution.engine import SlicedExecutionEngine
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.execution.freshness import (
@@ -548,6 +555,24 @@ class TradingCopilot:
             "direction": candidate.direction,
             "setup_quality": cls._setup_quality(candidate),
             "reason": reason,
+        }
+
+    @staticmethod
+    def _llm_block(evaluation: Any) -> dict[str, Any] | None:
+        """The evaluation's recorded LLM verdict with finite prices, or None when the LLM did not decide.
+
+        ``record_signal`` encodes provenance with ``allow_nan=False``; an evaluation object
+        without the attribute (older shapes, test doubles) has no verdict.
+        """
+        verdict = getattr(evaluation, "llm_verdict", None)
+        if not isinstance(verdict, dict):
+            return None
+        return {
+            "approved": bool(verdict.get("approved")),
+            "rejection_reason": verdict.get("rejection_reason"),
+            "stop_loss": finite_or_none(verdict.get("stop_loss")),
+            "take_profit": finite_or_none(verdict.get("take_profit")),
+            "applied": bool(verdict.get("applied")),
         }
 
     async def run_scan(
@@ -1059,6 +1084,8 @@ class TradingCopilot:
             ranked = [*ranked, *drift_ranked]
             shadow_by_rank = [*shadow_by_rank, *([None] * len(drift_ranked))]
             outcomes: list[str | None] = [None] * len(ranked)
+            llm_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
+            signal_ids_by_rank: list[int | None] = [None] * len(ranked)
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
             if budget == ScanBudget.NONE:
@@ -1144,10 +1171,16 @@ class TradingCopilot:
                         current_equity=float(account_risk.equity) if account_risk else None,
                     )
 
+                    llm_by_rank[rank - 1] = self._llm_block(eval_res)
                     if not eval_res.approved:
-                        outcomes[rank - 1] = f"rejected: {eval_res.rejection_reason}"
+                        verdict = llm_by_rank[rank - 1]
+                        vetoed = bool(verdict and verdict["applied"] and not verdict["approved"])
+                        outcomes[rank - 1] = (
+                            RankedOutcome.LLM_VETOED if vetoed else f"rejected: {eval_res.rejection_reason}"
+                        )
+                        label = "LLM vetoed" if vetoed else "rejected"
                         summary["runners_up"].append(
-                            self._runner_up(candidate, f"rejected: {eval_res.rejection_reason}")
+                            self._runner_up(candidate, f"{label}: {eval_res.rejection_reason}")
                         )
                         logger.info(
                             "Candidate rejected by risk engine: %s",
@@ -1195,6 +1228,7 @@ class TradingCopilot:
                             "candidates_considered": len(drift_ranked) if is_drift else native_count,
                             "budget": str(budget),
                             "shadow_ranker": shadow_by_rank[rank - 1],
+                            "llm_verdict": llm_by_rank[rank - 1],
                             # A drift card is never tagged dynamic; catalog admission requires
                             # its same-session event naming the contract.
                             **(
@@ -1241,7 +1275,8 @@ class TradingCopilot:
                     # further bookkeeping: an exception later in this iteration must
                     # never leave a recorded card uncharged.
                     total_alerts += 1
-                    outcomes[rank - 1] = "sent"
+                    outcomes[rank - 1] = RankedOutcome.SENT
+                    signal_ids_by_rank[rank - 1] = sig_id
                     if is_drift:
                         remaining_drift -= 1
                     else:
@@ -1300,6 +1335,8 @@ class TradingCopilot:
                     ranked=ranked[:native_count],
                     outcomes=outcomes[:native_count],
                     shadow_by_rank=shadow_by_rank[:native_count],
+                    llm_by_rank=llm_by_rank[:native_count],
+                    signal_ids_by_rank=signal_ids_by_rank[:native_count],
                     dynamic_sources=dynamic_sources,
                     summary=summary,
                 )
@@ -1533,6 +1570,8 @@ class TradingCopilot:
         ranked: list[tuple[Any, Any, Any]],
         outcomes: list[str | None],
         shadow_by_rank: list[dict[str, Any] | None],
+        llm_by_rank: list[dict[str, Any] | None],
+        signal_ids_by_rank: list[int | None],
         dynamic_sources: Mapping[str, str],
         summary: dict[str, Any],
     ) -> None:
@@ -1552,6 +1591,8 @@ class TradingCopilot:
                     "rank": rank,
                     "outcome": outcomes[rank - 1],
                     "shadow": shadow_by_rank[rank - 1],
+                    "llm": llm_by_rank[rank - 1],
+                    "signal_id": signal_ids_by_rank[rank - 1],
                     **self._dynamic_tag(candidate.contract, dynamic_sources),
                 }
                 for rank, (candidate, det_res, _) in enumerate(ranked, 1)
