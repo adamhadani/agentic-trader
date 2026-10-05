@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from agentic_trader.research.pooled import power
-from agentic_trader.research.pooled.campaign import LoadedProtocol, load_campaign_protocol
+from agentic_trader.research.pooled.campaign import LoadedProtocol, Selection, load_campaign_protocol
 from agentic_trader.research.pooled.cube import _ARRAYS, CubeView, LabelCube
 from agentic_trader.research.pooled.power import (
     STAGES,
@@ -116,6 +116,39 @@ def test_power_detects_a_huge_edge_and_rejects_the_null_on_a_small_run():
         null = detail["0.0"]
         assert null["stage"] != "confirmed" and null["discovery"]["edge_mean"] < planted["discovery"]["edge_mean"]
     json.dumps(result, allow_nan=False)  # strict JSON: no NaN anywhere in the diagnostics
+
+
+def test_replicate_plants_the_protocol_selection_on_every_window(monkeypatch):
+    protocol = tiny_protocol().model_copy(
+        update={"k": None, "selection": Selection(rule="top_fraction", fraction=0.10)}
+    )
+    base = base_view()
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def spy(self, session_idx, symbol_idx, delta):
+        seen["cells"] = (session_idx, symbol_idx)
+        raise Stop
+
+    monkeypatch.setattr(LabelCube, "with_shift", spy)
+    with pytest.raises(Stop):
+        power._replicate(protocol, base, calendar(), "c" * 64, 0)
+    # The same synthetic cube and planted formula, selected window by window under the protocol rule.
+    spec, names = protocol.power, len(base.symbols)
+    rng = np.random.default_rng([spec.seed, 0])
+    cube = power.synthetic_cube(base, calendar(), rng, protocol.bootstrap.block_mean, cohort_sha256="c" * 64)
+    seeds = rng.integers(0, 2**31, spec.null_formulas + 1)
+    planted = power._formula(power.PLANTED, int(seeds[0]), spec.ar_phi, names)
+    expected = []
+    for start, end in (protocol.windows.discovery, protocol.windows.selection, protocol.windows.confirmation):
+        view = cube.window(start, end)
+        picks = protocol.select(*planted.panel(view), view)
+        assert set(np.bincount(picks.session_idx).tolist()) == {4}  # ceil(0.10 * 40) per session, never top-3
+        expected.append((picks.session_idx + view.offset) * names + picks.symbol_idx)
+    rows, cols = seen["cells"]
+    assert np.array_equal(np.sort(rows * names + cols), np.sort(np.concatenate(expected)))
 
 
 def test_curve_is_identical_for_any_worker_count_and_progress_reports_each_replicate():

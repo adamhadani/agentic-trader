@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_trader.research.alpha.search import WINDOWS
-from agentic_trader.research.pooled.campaign import load_campaign_protocol
+from agentic_trader.research.pooled.campaign import Selection, load_campaign_protocol
 from agentic_trader.research.pooled.cohort import load_cohort
 
 
@@ -103,6 +103,11 @@ def test_campaign_v1_still_loads_with_its_frozen_hash_and_cannot_run_a_campaign(
         loaded.protocol.require_campaign_ready()
 
 
+def test_campaign_v3_loads_with_its_frozen_hash():
+    loaded = load_campaign_protocol(PROTOCOL.with_name("campaign-v3.json"))
+    assert loaded.sha256 == "d713b575792b62d233e0ad652e5a0a840e4dec80392beeb9cce98dcd531051f2"
+
+
 def test_the_v2_fields_validate_and_make_the_protocol_campaign_ready(tmp_path):
     protocol = load_campaign_protocol(_mutated(tmp_path, _v2)).protocol
     protocol.require_campaign_ready()
@@ -153,3 +158,35 @@ def test_a_forbidden_operator_must_name_a_dsl_operator(tmp_path):
 
     with pytest.raises(ValidationError, match="unknown forbidden operators"):
         load_campaign_protocol(_mutated(tmp_path, mutate))
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {"rule": "top_k"},
+        {"rule": "top_k", "k": 3, "fraction": 0.1},
+        {"rule": "top_fraction"},
+        {"rule": "top_fraction", "fraction": 1.5},
+        {"rule": "top_fraction", "fraction": 0.1, "k": 3},
+    ],
+)
+def test_a_selection_carries_exactly_its_own_parameter(selection):
+    with pytest.raises(ValidationError):
+        Selection(**selection)
+
+
+def test_a_protocol_has_exactly_one_of_k_or_selection(tmp_path):
+    def both(doc):
+        doc["selection"] = {"rule": "top_fraction", "fraction": 0.1}
+
+    def neither(doc):
+        del doc["k"]
+
+    for mutate in (both, neither):
+        with pytest.raises(ValidationError, match="exactly one of k"):
+            load_campaign_protocol(_mutated(tmp_path, mutate))
+
+
+def test_v1_protocols_select_top_k_with_hold_skipping():
+    protocol = load_campaign_protocol(PROTOCOL).protocol
+    assert protocol.selection_rule == Selection(rule="top_k", k=3)

@@ -189,7 +189,11 @@ lane-wide confirmation window before reading it. Research only: no registry, bro
 Telegram or promotion credit. On 2026-10-02 checks A and C passed but check B failed
 (1/10; top-3-of-~367 picks give near-neighbour formulas no shared picks), so the v2
 campaign did not run and the confirmation window is unused
-([checks](docs/alpha-pooled-checks-2026-10-02.md)); protocol v3 needs a redesign first.
+([checks](docs/alpha-pooled-checks-2026-10-02.md)). Protocol v3 selects the top decile of
+eligible names per session (no hold-skipping). On 2026-10-05 its checks A and C passed and
+B failed again (3/10), so the pooled genetic campaign is **parked**: no campaign, nothing
+charged, confirmation window unused ([v3 checks](docs/alpha-pooled-checks-v3-2026-10-05.md)).
+Reopening it needs a new spec and operator approval.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)

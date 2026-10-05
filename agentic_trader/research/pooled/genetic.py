@@ -26,6 +26,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+import numpy as np
+
 from agentic_trader.research.alpha.search import TypedGeneticSearch
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
@@ -124,8 +126,8 @@ class SearchOutcome:
         return tuple(record for run in self.runs for record in run.records)
 
     @property
-    def cells(self) -> dict[str, frozenset]:
-        return {score.row["formula_id"]: score.cells for score in self.scores}
+    def codes(self) -> dict[str, np.ndarray]:
+        return {score.row["formula_id"]: score.codes for score in self.scores}
 
 
 def family_search(

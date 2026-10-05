@@ -11,10 +11,13 @@ from agentic_trader.research.pooled.cube import CubeView
 from agentic_trader.research.pooled.formula import (
     Formula,
     FormulaFilter,
+    Picks,
     allowed_mask,
     evaluate_panel,
     expression_nodes,
+    jaccard_codes,
     select_picks,
+    select_top_fraction,
 )
 
 
@@ -151,3 +154,57 @@ def test_a_filter_quantile_is_taken_over_eligible_names_only():
         score="roc(close, 5)", filters=(FormulaFilter(expression="ts_max(returns, 21)", min_quantile=0.5),), k=1
     )
     assert allowed_mask(high, [values], eligible).tolist() == [[False, True, True, False]]
+
+
+def test_top_fraction_picks_the_ceiling_share_of_each_session_without_hold_skipping():
+    row = [0.1, 0.9, 0.5, 0.7, 0.3, 0.2, 0.8, 0.4, 0.6, 0.0, 1.0]  # 11 names: ceil(1.1) = 2 picks
+    scores = np.array([row, row])
+    picks = select_top_fraction(scores, np.ones_like(scores, bool), view(scores.shape, holding=5), 0.10)
+    # The same two names again on the next session: a daily basket, no hold-skipping.
+    assert list(zip(picks.session_idx.tolist(), picks.symbol_idx.tolist(), strict=True)) == [
+        (0, 10),
+        (0, 1),
+        (1, 10),
+        (1, 1),
+    ]
+
+
+def test_top_fraction_count_is_exact_where_float_noise_would_round_up():
+    scores = np.arange(30, dtype=float)[None, :]  # 0.1 * 30 == 3.0000000000000004
+    picks = select_top_fraction(scores, np.ones_like(scores, bool), view(scores.shape), 0.10)
+    assert sorted(picks.symbol_idx.tolist()) == [27, 28, 29]
+
+
+def test_top_fraction_counts_only_eligible_allowed_finite_names():
+    scores = np.array([[5.0, 4.0, np.nan, 3.0, 2.0, 1.0, 0.5, 0.4, 0.3, 0.2, 0.1, 9.0]])
+    v = view(scores.shape)
+    v.eligible[0, 11] = False  # the top score is ineligible
+    allowed = np.ones_like(scores, bool)
+    allowed[0, 0] = False  # the next is filtered out
+    picks = select_top_fraction(scores, allowed, v, 0.10)
+    # Candidates are names 1, 3-10 (9 names): ceil(0.9) = 1 pick, the best of them.
+    assert picks.symbol_idx.tolist() == [1]
+
+
+def test_top_fraction_breaks_score_ties_by_the_hash_key():
+    scores = np.ones((1, 10))
+    tiebreak = np.array([[9, 3, 7, 1, 8, 2, 6, 0, 5, 4]], dtype=np.uint64)
+    picks = select_top_fraction(scores, np.ones_like(scores, bool), view(scores.shape, tiebreak=tiebreak), 0.10)
+    assert picks.symbol_idx.tolist() == [7]
+
+
+def test_top_fraction_with_no_candidates_picks_nothing():
+    scores = np.full((2, 5), np.nan)
+    picks = select_top_fraction(scores, np.ones((2, 5), bool), view(scores.shape), 0.10)
+    assert picks.session_idx.size == 0 and picks.symbol_idx.size == 0
+
+
+def test_pick_codes_and_their_jaccard_match_the_set_versions():
+    a = Picks(np.array([0, 0, 2, 5]), np.array([3, 1, 4, 0]))
+    b = Picks(np.array([0, 2, 7]), np.array([1, 4, 2]))
+    codes_a, codes_b = a.codes(10), b.codes(10)
+    assert codes_a.tolist() == [1, 3, 24, 50] and codes_a.dtype == np.int64
+    expected = len(a.cells() & b.cells()) / len(a.cells() | b.cells())
+    assert jaccard_codes(codes_a, codes_b) == pytest.approx(expected) == pytest.approx(0.4)
+    empty = np.zeros(0, dtype=np.int64)
+    assert jaccard_codes(empty, empty) == 0.0

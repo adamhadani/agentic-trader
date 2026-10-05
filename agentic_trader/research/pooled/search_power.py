@@ -12,6 +12,9 @@ Reads discovery-window cells only and charges nothing. For seed i, the family is
    campaign seed and budget.
 4. **Recovery.** Seed i recovers when a formula passing the discovery gate overlaps the
    hidden picks at Jaccard >= ``dedupe_jaccard``.
+5. **Descriptive.** Re-score the hidden expression and the recovering formula (the passing
+   formula with the highest Jaccard) on the unplanted discovery window. A seed basket may
+   already pass the gate without any plant. This never changes the verdict.
 
 This certifies recovery near the seeds only. With 16-17 formulas per family, the search
 cannot reach edges far from them.
@@ -33,11 +36,10 @@ from agentic_trader.research.pooled.campaign import (
     DiscoveryEvaluator,
     Family,
     LoadedProtocol,
-    _jaccard,
 )
 from agentic_trader.research.pooled.cohort import LoadedCohort
 from agentic_trader.research.pooled.cube import CubeView, LabelCube, check_coverage
-from agentic_trader.research.pooled.formula import Picks, select_picks
+from agentic_trader.research.pooled.formula import Picks, jaccard_codes
 from agentic_trader.research.pooled.genetic import NullCharger, family_search
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook, vet_expression
@@ -71,7 +73,7 @@ def hidden_expression(
         vetted = vet_expression(expression, protocol.search.forbidden_operators, seeds)
         if vetted.reason is not None:
             continue
-        picks = select_picks(*book.formula(vetted.expression).panel(view), view, protocol.k)
+        picks = protocol.select(*book.formula(vetted.expression).panel(view), view)
         if np.unique(picks.session_idx).size >= protocol.discovery_gate.min_sessions:
             return vetted.expression, picks
     raise ValueError(f"no usable hidden expression for family {family.id} after {HIDDEN_ATTEMPTS} draws")
@@ -86,6 +88,7 @@ def run_search_power(
     view = cube.window(*protocol.windows.discovery)
     indexed = {family.id: (index, family) for index, family in enumerate(protocol.families)}
     budgets = protocol.family_budgets()
+    unplanted = DiscoveryEvaluator(view, protocol)
     seeds = []
     for i in range(spec.seeds):
         index, family = indexed[spec.families[i % len(spec.families)]]
@@ -103,11 +106,25 @@ def run_search_power(
             charger=NullCharger(),
             seen=set(),
         )
-        planted = picks.cells()
-        overlaps = [(_jaccard(set(score.cells), planted), bool(score.row["passes"])) for score in run.scores]
+        planted = picks.codes(len(view.symbols))
+        overlaps = [(jaccard_codes(score.codes, planted), bool(score.row["passes"])) for score in run.scores]
         best = max((jaccard for jaccard, _ in overlaps), default=0.0)
         best_passing = max((jaccard for jaccard, passes in overlaps if passes), default=0.0)
         recovered = best_passing >= protocol.dedupe_jaccard
+        hidden_passes_unplanted = bool(unplanted.score(book.formula(hidden)).row["passes"])
+        recovering_formula: str | None = None
+        recovering_passes_unplanted: bool | None = None
+        recovering_unplanted_t: float | None = None
+        if recovered:
+            winner = max(
+                ((jaccard, score) for (jaccard, passes), score in zip(overlaps, run.scores, strict=True) if passes),
+                key=lambda pair: pair[0],
+            )[1]
+            formula_id = winner.row["formula_id"]
+            recovering_formula = run.expressions[formula_id]
+            rescored = unplanted.score(run.formulas[formula_id]).row
+            recovering_passes_unplanted = bool(rescored["passes"])
+            recovering_unplanted_t = float(rescored["edge"]["t"])
         seeds.append(
             {
                 **run.summary(),
@@ -117,13 +134,18 @@ def run_search_power(
                 "best_jaccard": best,
                 "best_passing_jaccard": best_passing,
                 "recovered": recovered,
+                "hidden_passes_unplanted": hidden_passes_unplanted,
+                "recovering_formula": recovering_formula,
+                "recovering_passes_unplanted": recovering_passes_unplanted,
+                "recovering_unplanted_t": recovering_unplanted_t,
             }
         )
         if progress is not None:
-            verdict = "recovered" if recovered else "missed"
-            progress(
-                f"search power {i + 1}/{spec.seeds}: {family.id} {verdict} (best passing Jaccard {best_passing:.2f})"
-            )
+            verdict = "missed"
+            if recovered:
+                answer = "yes" if recovering_passes_unplanted else "no"
+                verdict = f"recovered (best passing Jaccard {best_passing:.2f}; passes unplanted: {answer})"
+            progress(f"search power {i + 1}/{spec.seeds}: {family.id} {verdict}")
     total = sum(1 for seed in seeds if seed["recovered"])
     return {
         "status": "passed" if total >= spec.min_recovered else "gate_failed",
@@ -131,6 +153,8 @@ def run_search_power(
         "seeds_run": spec.seeds,
         "min_recovered": spec.min_recovered,
         "delta": spec.delta,
+        # Descriptive only, never part of status: recovered seeds whose recovering formula also passes unplanted.
+        "recovered_without_plant": sum(1 for seed in seeds if seed["recovering_passes_unplanted"]),
         # Formulas whose evaluation raised, over all seeds: must be 0 before a campaign.
         "errors_total": sum(seed["errors"] for seed in seeds),
         "seeds": seeds,

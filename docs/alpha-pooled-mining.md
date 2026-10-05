@@ -14,6 +14,12 @@ cohort, label cube, formula selection, statistics, two literature entries, the c
 protocol and its stage logic, power check A and the `alpha pooled power|study`
 commands. Part 1b adds cohort v2 by liquidity screen, campaign protocol v2, the
 per-family genetic search, the journal ledger, checks B and C and the campaign runner.
+Protocol v3 changes selection to a top-decile basket.
+
+**Status (2026-10-05): the pooled genetic campaign is parked.** Check B failed on v2 (1 of
+10) and again on v3 (3 of 10), so no campaign ran and the confirmation window is unused
+([v3 checks](alpha-pooled-checks-v3-2026-10-05.md)). The machinery below stays merged;
+reopening the lane needs a new spec and operator approval.
 
 ## Purpose
 
@@ -202,7 +208,9 @@ and leaves a record.
 ## Formulas and picks
 
 A formula is a frozen document: a `score` expression in the alpha DSL, optional
-`filters`, and `k` = 3 (long only).
+`filters`, and a selection rule (long only). A literature entry's formula document carries `k` = 3,
+which is the `top_k` rule below; a campaign's frozen documents carry `selection`; a campaign protocol chooses its own rule
+([Selection rules](#selection-rules)).
 
 - The score and every filter expression must be **dimensionless** (price and volume
   exponent 0), so values rank across names; anything else is rejected at load.
@@ -212,7 +220,13 @@ A formula is a frozen document: a `score` expression in the alpha DSL, optional
 - Expressions are evaluated per symbol on adjusted daily bars and read at D-1; the
   in-progress session is never used. A name without enough history has no score.
 
-On each session the picks are chosen as follows.
+### Selection rules
+
+Two rules choose each session's picks. Both start from the same candidates: eligible names
+with a finite score that pass every filter.
+
+**`top_k`** (Part 1; k = 3, hold-skipping). It is used by campaign protocols v1 and v2 and
+by the literature entries, so their pinned outputs are unchanged.
 
 1. Keep eligible names with a finite score that pass every filter.
 2. Skip names the formula still holds. A pick stays held through its exit session
@@ -220,6 +234,28 @@ On each session the picks are chosen as follows.
 3. Rank by score, descending; break ties by the SHA-256 of `symbol|D`, ascending. The
    tie-break is deterministic and not alphabetical.
 4. Take up to k. A session with no pick contributes nothing.
+
+**`top_fraction`** (protocol v3; fraction 0.10).
+
+1. Keep eligible names with a finite score that pass every filter (n names).
+2. Rank by score, descending; break ties by the same SHA-256 hash key.
+3. Take the first `ceil(0.10 x n)` names. A session with no candidates has no picks.
+
+There is no hold-skipping. The picks are a daily decile basket (about 27 to 41 names per
+session at cohort v2), and a name may be picked on consecutive sessions. Its labels
+overlap, as the control's already do. The paired edge, leg mean, session-block bootstrap
+(block mean 20), purging, stage gates and thresholds are unchanged.
+
+**One entry point.** `CampaignProtocol.select(scores, allowed, view)` chooses `top_k`
+(`select_picks`) or `top_fraction` (`select_top_fraction`) from the protocol's
+`selection_rule`. Discovery, selection, confirmation, check A's planted formula, check B's
+hidden expression and plant, check C (through the stages) and the literature-overlap rule
+all pick through it. A protocol has either `k` (meaning `top_k` with hold-skipping) or a
+`selection` such as `{"rule": "top_fraction", "fraction": 0.10}`, never both.
+
+**Pick codes.** A decile basket has about 50,000 discovery cells per formula, so picks are
+compared as sorted `int64` codes (`Picks.codes`: session x names + symbol) and
+`jaccard_codes` intersects the sorted arrays instead of Python sets of tuples.
 
 ## Statistics
 
@@ -372,6 +408,32 @@ a later campaign that overlaps a consumed interval is refused whatever its cohor
 new cohort identity cannot re-test 2024-2026. It needs prospective data after 2026-07-31
 (a 12-month window around August 2027) or a spec that defines a disjoint cohort rule.
 
+### Campaign protocol v3
+
+`config/research/pooled/campaign-v3.json` equals v2 except for `version: 3`, a new title
+and `selection: {"rule": "top_fraction", "fraction": 0.10}` in place of `k`. It changes
+selection only. It still pins `cohort-v2.json`, and the cube identity does not depend on
+selection, so the v2 cube is reused from cache and no bars are downloaded. The
+confirmation window stays unused. Checks A, B and C are rerun on v3 before any campaign;
+if B fails again, the pooled genetic campaign is parked.
+
+Check B failed on v2 because near-neighbour formulas that pick the top 3 of about 367
+names share almost no picks. A decile basket shares most of them (a read-only probe of the
+discovery window measured Jaccard 0.35 to 0.76 for genuine neighbours against 0.15 to 0.63
+for top 3), so a planted edge can reach a formula's neighbours. A pass is not guaranteed.
+
+**Result (2026-10-05):** checks A and C passed (detection 0.99 at 0.15R; 0 of 40 false
+acceptances, seed-t standard deviation 1.24) and check B failed with 3 of 10 recovered.
+Every seed's overlap rose, but hidden expressions that change what is measured (mismatched
+range windows, short-window z-scores and ranks) stayed out of the 17-formula search's
+reach. As pre-registered, the pooled genetic campaign is parked
+([v3 checks](alpha-pooled-checks-v3-2026-10-05.md)).
+
+Frozen documents record the selection rule with the score (`frozen_document`), so the
+identity covers it. Confirmation rows also report, descriptively and never as a gate, each
+candidate's `top3_edge`: the top-3 hold-skipping paired edge on the confirmation window,
+closer to what a live card would trade. It is computed only for a `top_fraction` protocol.
+
 ### The genetic search
 
 `TypedGeneticSearch` (`research/alpha/search.py`) takes optional `seeds`, `operators` and
@@ -468,10 +530,20 @@ The rule is deliberately conservative. It may be tightened later; it cannot hone
 relaxed once a literature result exists.
 
 **Implementation.** The campaign computes the overlap before the search, from the
-discovery view, and journals `already_tested` at freeze, before the confirmation is
-consumed. The stage logic (`run_stages`: discovery, dedupe, selection, one-shot
-confirmation, with the ledger injected) is what power check A and check C run against an
-in-memory ledger; the campaign runs the same pieces with the journal ledger.
+discovery view, with each literature entry's formula evaluated **under the campaign's
+selection rule** (`literature_codes`) so the comparison is like with like, and journals
+`already_tested` at freeze, before the confirmation is consumed. The stage logic
+(`run_stages`: discovery, dedupe, selection, one-shot confirmation, with the ledger
+injected) is what power check A and check C run against an in-memory ledger; the campaign
+runs the same pieces with the journal ledger.
+
+Under v3 the basket is sized from the names that pass the entry's own filter (n is the
+filtered pool). A filtered entry therefore picks fewer names than an unfiltered finalist,
+and its Jaccard with that finalist is capped at |entry| / |finalist|. The reversal-lowmax
+entry's `ts_max(returns, 21) <= median` filter halves the pool: about 19 entry picks per
+session against about 37, so Jaccard is at most about 0.51. The campaign grammar cannot
+express that filter, and the realistic case also missed 0.5 under v2. The rule is kept as
+specified.
 
 ## First runs
 
@@ -576,6 +648,23 @@ For seed i in 0..9:
 **Acceptance:** at least 8 of 10 recovered (`power_search.min_recovered`). The result
 reports each hidden expression, the best Jaccard and where the search stopped.
 
+**Descriptive companion (delta = 0).** Under v3 a seed basket, or a near neighbour, may
+already pass the discovery gate on the real, unplanted discovery window (a decile basket
+with a steady style tilt). Check B would then recover without any search power. The rule
+above is unchanged; the result adds, per seed, `hidden_passes_unplanted` (the hidden
+expression's verdict on the unshifted window), and, when the seed recovered,
+`recovering_formula` (the passing formula with the highest Jaccard),
+`recovering_passes_unplanted` and `recovering_unplanted_t` (its verdict and t on the
+unshifted window). These are `null` for a missed seed. The top level adds
+`recovered_without_plant`, the number of recovered seeds whose recovering formula passes
+unplanted. It is descriptive and never part of `status`; read it beside `recovered`.
+
+**Effective plant.** The planted cells also enter the control mean, so the paired edge is
+delta x (1 - m/n), not delta: about 0.149R for a planted 0.15R under top-3 (m = 3 of about
+367 names) and about 0.135R under the decile (m/n about 0.1). Under v3, "0.15R" detection
+is therefore a paired edge of about 0.135R, and v2's power curve is not directly
+comparable. The same applies to power check A.
+
 Check B certifies recovery of edges **near the family seeds**, which is the only place a
 16-17 formula budget can search. It does not show that the search finds edges far from them.
 
@@ -602,6 +691,10 @@ replicate before any selection, so their t values are an unselected null sample.
 deviation well above 1 means the bootstrap understates the variance of persistent-exposure
 formulas, the issue the final review of Part 1a simulated. Results are identical for any
 `--workers` count.
+
+Under v3 discovery scoring is about 4 times slower (about 0.2 s per formula, because of the
+per-pick table over about 50,000 picks), so checks A, B and C take about 2 hours on 6
+workers rather than 1 to 1.5 hours.
 
 Check C covers the size problem only. A formula that tilts toward names that outperformed
 because they survived would still be flattered on real data; the demeaned nulls carry real
@@ -737,6 +830,17 @@ eligible for a capped paper probe, which needs its own spec (Part 2).
   (about 0.055R) belong to the a priori catalog. Power check A's detection figure is an
   upper bound and its false-acceptance figure does not cover factor-loaded formulas
   ([limits](#what-power-check-a-does-and-does-not-show)).
+- **Protocol v3 tests a different claim.** A confirmation means the top-decile basket beat
+  the eligible cohort. Live cards would trade the top names of that decile, which
+  extrapolates beyond the tested claim; `top3_edge` shows how far, and the paper probe is
+  the forward test.
+- **Factor exposure.** A decile basket can load steadily on style factors (momentum, size,
+  volatility). The paired control removes the market, not style factors; check C measures
+  the consequence.
+- **Serial dependence.** Persistent baskets carry dependence beyond the 20-session block.
+  Check C's null is built from stationary block resamples with mean block 20, so
+  dependence beyond about 20 sessions is absent from the null by construction. Check C's
+  seed-t standard deviation measures dependence within that block scale, not beyond it.
 - **Literature entries and the campaign share 2024-2026.** The
   [overlap rule](#literature-overlap-rule) removes the second look.
 - **Sector concentration** is not capped in research; live cards keep their existing

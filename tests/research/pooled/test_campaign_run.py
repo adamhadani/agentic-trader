@@ -20,7 +20,7 @@ from agentic_trader.research.pooled.campaign_run import (
     preflight,
     require_clean_revision,
 )
-from agentic_trader.research.pooled.formula import Formula, FormulaFilter
+from agentic_trader.research.pooled.formula import Formula, FormulaFilter, allowed_mask, jaccard_codes
 from agentic_trader.research.pooled.ledger import JournalLedger
 from agentic_trader.research.pooled.scoring import ScoreBook, formula_id
 from agentic_trader.storage.alpha import AlphaRepository
@@ -31,6 +31,7 @@ from tests.research.pooled.mini_world import (
     cube_build,
     label_cube,
     mini_protocol,
+    mini_v3_protocol,
     planted_cube,
 )
 
@@ -105,7 +106,11 @@ async def test_the_campaign_reserves_charges_freezes_consumes_and_completes(tmp_
     assert json.loads((tmp_path / "out" / "manifest.json").read_text())["journal"] == journal
     assert result["journal"] == journal and result["confirmation_consumed"] is True
     frozen = json.loads((tmp_path / "out" / "frozen" / f"{target}.json").read_text())
-    assert frozen["expression"] == PLANTED and frozen["formula"]["k"] == 3
+    assert frozen["expression"] == PLANTED and frozen["formula"]["selection"] == {
+        "rule": "top_k",
+        "k": 3,
+        "fraction": None,
+    }
     lines = [json.loads(line) for line in (tmp_path / "out" / "formulas.jsonl").read_text().splitlines()]
     assert sum(line["status"] in ("evaluated", "error") for line in lines) == 9
     on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
@@ -313,14 +318,14 @@ async def test_a_failure_after_consumption_keeps_the_outcome(tmp_path, repositor
     assert result["confirmation_consumed"] is True
 
 
-def test_a_literature_entry_with_a_filter_yields_cells():
+def test_a_literature_entry_with_a_filter_yields_codes():
     build = cube_build(planted_cube(PLANTED, 1.0))
     book = ScoreBook(build.adjusted, build.trading_days, build.cube.sessions, build.cube.symbols)
     formula = Formula(score=PLANTED, filters=(FormulaFilter(expression="ts_max(returns, 21)", max_quantile=0.5),), k=3)
     entry = SimpleNamespace(entry=SimpleNamespace(id="filtered", formula=formula))
     view = build.cube.window(*mini_protocol().windows.discovery)
-    cells = campaign_run.literature_cells([entry], view, book)
-    assert isinstance(cells["filtered"], frozenset)
+    codes = campaign_run.literature_codes([entry], view, book, mini_protocol())
+    assert codes["filtered"].dtype == np.int64 and np.all(np.diff(codes["filtered"]) > 0)
 
 
 # --- cancellation (Ctrl-C, SIGTERM) ---
@@ -566,3 +571,57 @@ async def test_a_cube_without_an_edge_ends_with_no_finalists_and_consumes_nothin
     assert result["status"] == "no_finalists" and result["confirmation_consumed"] is False
     assert (await repository.get(f"pooled/campaign/{CAMPAIGN}"))["status"] == "completed"
     assert await repository.get("pooled/confirmation") is None
+
+
+async def test_a_planted_decile_edge_is_confirmed_under_v3(tmp_path, repository):
+    protocol = mini_v3_protocol()
+    result = await run(
+        tmp_path, repository, planted_cube(PLANTED, 1.0, protocol=protocol), protocol=protocol, entries=[]
+    )
+    target = formula_id(PLANTED)
+    assert result["status"] == "confirmed" and target in result["confirmed"]
+    frozen = json.loads((tmp_path / "out" / "frozen" / f"{target}.json").read_text())
+    assert frozen["formula"]["selection"] == {"rule": "top_fraction", "k": None, "fraction": 0.1}
+
+
+def test_literature_overlap_is_evaluated_under_the_campaign_rule():
+    protocol = mini_v3_protocol()
+    cube = label_cube()
+    view = cube.window(*protocol.windows.discovery)
+    entry = SimpleNamespace(entry=SimpleNamespace(id="lit", formula=Formula(score=PLANTED, k=3)))
+    literature = campaign_run.literature_codes([entry], view, mini_book(), protocol)
+    own = protocol.select(*mini_book().formula(PLANTED).panel(view), view).codes(len(view.symbols))
+    assert np.array_equal(literature["lit"], own)  # decile picks, not the entry's own top 3
+    assert campaign_run.already_tested(["f"], {"f": own}, literature, protocol.dedupe_jaccard) == {"f": "lit"}
+
+
+def test_a_filtered_literature_entry_sizes_its_basket_from_its_filtered_pool():
+    protocol = mini_v3_protocol()
+    cube = label_cube()
+    view = cube.window(*protocol.windows.discovery)
+    book = mini_book()
+    stop = view.offset + len(view.sessions)
+    flt = FormulaFilter(expression="ts_max(returns, 21)", max_quantile=0.5)
+    filtered = SimpleNamespace(entry=SimpleNamespace(id="f", formula=Formula(score=PLANTED, filters=(flt,), k=3)))
+    plain = SimpleNamespace(entry=SimpleNamespace(id="p", formula=Formula(score=PLANTED, k=3)))
+    codes = campaign_run.literature_codes([filtered, plain], view, book, protocol)
+
+    n_names = len(view.symbols)
+    scores = book.panel(PLANTED)[view.offset : stop]
+    filter_values = [book.panel(flt.expression)[view.offset : stop]]
+    allowed = allowed_mask(filtered.entry.formula, filter_values, view.eligible)
+    n_filtered = (allowed & np.isfinite(scores)).sum(axis=1)
+    n_plain = (view.eligible & np.isfinite(scores)).sum(axis=1)
+    assert (n_filtered < n_plain).any()
+
+    def per_session(c):
+        return np.bincount(c // n_names, minlength=len(view.sessions))
+
+    picked_filtered, picked_plain = per_session(codes["f"]), per_session(codes["p"])
+    live = n_filtered > 0
+    assert np.array_equal(picked_filtered[live], np.ceil(np.round(0.10 * n_filtered[live], 9)).astype(int))
+    assert np.array_equal(picked_plain[n_plain > 0], np.ceil(np.round(0.10 * n_plain[n_plain > 0], 9)).astype(int))
+    assert picked_filtered.sum() < picked_plain.sum()
+    assert (picked_filtered <= picked_plain).all()
+    # Jaccard with the unfiltered basket is capped at |entry| / |finalist|.
+    assert jaccard_codes(codes["f"], codes["p"]) <= codes["f"].size / codes["p"].size

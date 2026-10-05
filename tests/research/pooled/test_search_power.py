@@ -11,15 +11,14 @@ import pytest
 from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled import search_power
 from agentic_trader.research.pooled.campaign import LoadedProtocol, _calls
-from agentic_trader.research.pooled.formula import select_picks
 from agentic_trader.research.pooled.search_power import execute_search_power, hidden_expression, run_search_power
-from tests.research.pooled.mini_world import COHORT, book, cube_build, label_cube, mini_protocol
+from tests.research.pooled.mini_world import COHORT, book, cube_build, label_cube, mini_protocol, mini_v3_protocol
 
 
 def exact_seed(family, *, protocol, rng, book, view):
     """A hidden expression equal to the family's first seed: the search must recover it."""
     expression = canonical_expression(family.seeds[0])
-    return expression, select_picks(*book.formula(expression).panel(view), view, protocol.k)
+    return expression, protocol.select(*book.formula(expression).panel(view), view)
 
 
 def with_delta(protocol, delta):
@@ -36,6 +35,22 @@ def test_hidden_expressions_are_reproducible_near_seed_mutations_with_enough_ses
     assert np.unique(picks.session_idx).size >= protocol.discovery_gate.min_sessions
     again, _ = hidden_expression(family, protocol=protocol, rng=random.Random(5), book=book(), view=view)
     assert again == expression
+
+
+def test_hidden_expressions_pick_the_v3_decile_without_hold_skipping():
+    protocol = mini_v3_protocol()
+    view = label_cube().window(*protocol.windows.discovery)
+    expression, picks = hidden_expression(
+        protocol.families[0], protocol=protocol, rng=random.Random(5), book=book(), view=view
+    )
+    expected = protocol.select(*book().formula(expression).panel(view), view)
+    assert np.array_equal(picks.codes(len(view.symbols)), expected.codes(len(view.symbols)))
+    per_session = np.bincount(picks.session_idx)[np.unique(picks.session_idx)]
+    assert set(per_session.tolist()) == {2}  # ceil(0.10 * 12), never top-3
+    assert any(  # a name held across consecutive sessions is still picked again: no hold-skipping
+        set(picks.symbol_idx[picks.session_idx == i]) & set(picks.symbol_idx[picks.session_idx == i + 1])
+        for i in np.unique(picks.session_idx)[:-1]
+    )
 
 
 def test_a_planted_seed_is_recovered_and_a_vanishing_plant_is_not(monkeypatch):
@@ -126,3 +141,40 @@ def test_execute_search_power_refuses_a_failed_power_check_or_another_cube(tmp_p
     assert failed["status"] == "failed" and "has not passed" in failed["error"] and built == []
     other = run("two", _power("x" * 64))
     assert other["status"] == "failed" and "different cube" in other["error"]
+
+
+def test_a_planted_decile_seed_is_recovered_under_v3(monkeypatch):
+    monkeypatch.setattr(search_power, "hidden_expression", exact_seed)
+    found = run_search_power(with_delta(mini_v3_protocol(), 2.0), label_cube(), book())
+    assert found["status"] == "passed" and found["recovered"] == 3
+    assert all(s["best_passing_jaccard"] == 1.0 for s in found["seeds"])
+
+
+NEW_FIELDS = ("hidden_passes_unplanted", "recovering_formula", "recovering_passes_unplanted", "recovering_unplanted_t")
+
+
+def test_recovered_seeds_report_the_unplanted_verdict_without_changing_the_status(monkeypatch):
+    monkeypatch.setattr(search_power, "hidden_expression", exact_seed)
+    for protocol in (mini_protocol(), mini_v3_protocol()):
+        found = run_search_power(with_delta(protocol, 2.0), label_cube(), book())
+        assert found["status"] == "passed" and found["recovered"] == 3
+        assert isinstance(found["recovered_without_plant"], int)
+        assert found["recovered_without_plant"] == sum(s["recovering_passes_unplanted"] for s in found["seeds"])
+        for seed in found["seeds"]:
+            assert isinstance(seed["hidden_passes_unplanted"], bool)
+            assert isinstance(seed["recovering_formula"], str)
+            assert isinstance(seed["recovering_passes_unplanted"], bool)
+            assert isinstance(seed["recovering_unplanted_t"], float)
+        # The mini world's base cube carries no edge, so nothing passes without the plant.
+        assert found["recovered_without_plant"] == 0
+        assert not any(s["hidden_passes_unplanted"] or s["recovering_passes_unplanted"] for s in found["seeds"])
+
+
+def test_missed_seeds_have_no_recovering_formula(monkeypatch):
+    monkeypatch.setattr(search_power, "hidden_expression", exact_seed)
+    missed = run_search_power(with_delta(mini_protocol(), 1e-9), label_cube(), book())
+    assert missed["recovered_without_plant"] == 0
+    for seed in missed["seeds"]:
+        assert not seed["recovered"]
+        assert all(seed[name] is None for name in NEW_FIELDS[1:])
+        assert isinstance(seed["hidden_passes_unplanted"], bool)
