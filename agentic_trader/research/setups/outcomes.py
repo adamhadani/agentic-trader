@@ -11,6 +11,7 @@ writes to the database; it only reads journaled events and fetches bars.
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -70,6 +71,7 @@ _COLUMNS = (
     "llm_ran",
     "llm_vetoed",
     "llm_r_cost",
+    "llm_stop_loss",
     "market_r",
     "excess_r",
     "market_reason",
@@ -171,6 +173,17 @@ def _fetch_failed_row(
     )
 
 
+def _applied_llm_stop(llm: dict[str, Any] | None) -> float | None:
+    """The stop the LLM applied to the card it sent (execution evidence's journal fallback)."""
+    if llm is None or not llm.get("applied"):
+        return None
+    try:
+        stop = float(llm["stop_loss"])
+    except KeyError, TypeError, ValueError:
+        return None
+    return stop if math.isfinite(stop) else None
+
+
 def _row(
     entry: dict[str, Any],
     symbol: str,
@@ -213,6 +226,7 @@ def _row(
         "llm_ran": llm is not None,
         "llm_vetoed": outcome == RankedOutcome.LLM_VETOED,
         "llm_r_cost": llm_r_cost,
+        "llm_stop_loss": _applied_llm_stop(llm),
         "market_r": market_value,
         "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
         "market_reason": market_reason,

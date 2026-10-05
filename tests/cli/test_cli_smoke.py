@@ -384,6 +384,8 @@ def test_cli_outputs_table_with_fake_sources(runner: CliRunner):
     assert '"total": 1' in result.output
     assert "AAPL" in result.output
     assert "target" in result.output
-    # No orders, no Telegram: only the journal-evidence report is printed.
-    assert "order" not in result.output.lower()
+    # No orders, no Telegram: only the journal-evidence report is printed. The execution
+    # block's fill-source key names the journal event it reads, not an order action.
+    assert '"order_observed": 0' in result.output
+    assert "order" not in result.output.lower().replace('"order_observed"', "")
     assert "telegram" not in result.output.lower()

@@ -465,3 +465,23 @@ def test_summary_blocks_on_an_empty_frame():
         "bracket_edit_mean_delta_r": None,
     }
     assert summary["market_exposure"] == {"sent": None, "runner_up": None}
+
+
+def test_rows_carry_the_applied_llm_stop_for_execution_evidence():
+    """``collect_execution`` falls back to the applied LLM stop when a card's raw_response is unusable."""
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    applied = {"approved": True, "rejection_reason": None, "stop_loss": 98.5, "take_profit": 102.0, "applied": True}
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "llm": applied, "signal_id": 7},
+                {**_candidate(rank=2, outcome="per-scan budget spent"), "llm": {**applied, "applied": False}},
+                _candidate(rank=3, outcome="per-scan budget spent"),
+            ],
+        )
+    ]
+    rows = label_journaled(events, bars, now=NOW).sort_values("rank").to_dict("records")
+    assert rows[0]["llm_stop_loss"] == 98.5
+    assert pd.isna(rows[1]["llm_stop_loss"]) and pd.isna(rows[2]["llm_stop_loss"])
