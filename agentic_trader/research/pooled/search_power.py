@@ -33,11 +33,10 @@ from agentic_trader.research.pooled.campaign import (
     DiscoveryEvaluator,
     Family,
     LoadedProtocol,
-    _jaccard,
 )
 from agentic_trader.research.pooled.cohort import LoadedCohort
 from agentic_trader.research.pooled.cube import CubeView, LabelCube, check_coverage
-from agentic_trader.research.pooled.formula import Picks, select_picks
+from agentic_trader.research.pooled.formula import Picks, jaccard_codes
 from agentic_trader.research.pooled.genetic import NullCharger, family_search
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook, vet_expression
@@ -71,7 +70,7 @@ def hidden_expression(
         vetted = vet_expression(expression, protocol.search.forbidden_operators, seeds)
         if vetted.reason is not None:
             continue
-        picks = select_picks(*book.formula(vetted.expression).panel(view), view, protocol.k)
+        picks = protocol.select(*book.formula(vetted.expression).panel(view), view)
         if np.unique(picks.session_idx).size >= protocol.discovery_gate.min_sessions:
             return vetted.expression, picks
     raise ValueError(f"no usable hidden expression for family {family.id} after {HIDDEN_ATTEMPTS} draws")
@@ -103,8 +102,8 @@ def run_search_power(
             charger=NullCharger(),
             seen=set(),
         )
-        planted = picks.cells()
-        overlaps = [(_jaccard(set(score.cells), planted), bool(score.row["passes"])) for score in run.scores]
+        planted = picks.codes(len(view.symbols))
+        overlaps = [(jaccard_codes(score.codes, planted), bool(score.row["passes"])) for score in run.scores]
         best = max((jaccard for jaccard, _ in overlaps), default=0.0)
         best_passing = max((jaccard for jaccard, passes in overlaps if passes), default=0.0)
         recovered = best_passing >= protocol.dedupe_jaccard

@@ -3,7 +3,8 @@
 Scores are evaluated per symbol on adjusted daily bars and read at D-1, so a decision at
 10:35 on D uses only completed sessions -- the live scan sees the same bars. Picks are the
 top-k eligible names per session by score, skipping names the formula still holds and
-breaking ties by a hash (never the alphabet).
+breaking ties by a hash (never the alphabet). Protocol v3 instead takes a top-fraction basket
+(``select_top_fraction``): the best ceil(fraction * n) names each session, with no hold-skipping.
 """
 
 from __future__ import annotations

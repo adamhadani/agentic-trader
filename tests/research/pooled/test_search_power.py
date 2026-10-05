@@ -11,15 +11,14 @@ import pytest
 from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled import search_power
 from agentic_trader.research.pooled.campaign import LoadedProtocol, _calls
-from agentic_trader.research.pooled.formula import select_picks
 from agentic_trader.research.pooled.search_power import execute_search_power, hidden_expression, run_search_power
-from tests.research.pooled.mini_world import COHORT, book, cube_build, label_cube, mini_protocol
+from tests.research.pooled.mini_world import COHORT, book, cube_build, label_cube, mini_protocol, mini_v3_protocol
 
 
 def exact_seed(family, *, protocol, rng, book, view):
     """A hidden expression equal to the family's first seed: the search must recover it."""
     expression = canonical_expression(family.seeds[0])
-    return expression, select_picks(*book.formula(expression).panel(view), view, protocol.k)
+    return expression, protocol.select(*book.formula(expression).panel(view), view)
 
 
 def with_delta(protocol, delta):
@@ -126,3 +125,10 @@ def test_execute_search_power_refuses_a_failed_power_check_or_another_cube(tmp_p
     assert failed["status"] == "failed" and "has not passed" in failed["error"] and built == []
     other = run("two", _power("x" * 64))
     assert other["status"] == "failed" and "different cube" in other["error"]
+
+
+def test_a_planted_decile_seed_is_recovered_under_v3(monkeypatch):
+    monkeypatch.setattr(search_power, "hidden_expression", exact_seed)
+    found = run_search_power(with_delta(mini_v3_protocol(), 2.0), label_cube(), book())
+    assert found["status"] == "passed" and found["recovered"] == 3
+    assert all(s["best_passing_jaccard"] == 1.0 for s in found["seeds"])

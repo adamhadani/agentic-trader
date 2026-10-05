@@ -34,7 +34,6 @@ from agentic_trader.research.pooled.campaign import (
 )
 from agentic_trader.research.pooled.cohort import LoadedCohort
 from agentic_trader.research.pooled.cube import _ARRAYS, CubeView, LabelCube, check_coverage
-from agentic_trader.research.pooled.formula import select_picks
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.setups.study import _finite_json, _stationary_index_draws
 from agentic_trader.storage.artifacts import save_json_report
@@ -210,7 +209,7 @@ def _replicate(
     for start, end in (protocol.windows.discovery, protocol.windows.selection, protocol.windows.confirmation):
         view = cube.window(start, end)
         scores, allowed = planted.panel(view)
-        picks = select_picks(scores, allowed, view, protocol.k)
+        picks = protocol.select(scores, allowed, view)
         rows.append(picks.session_idx + view.offset)
         cols.append(picks.symbol_idx)
     cells = (np.concatenate(rows), np.concatenate(cols))

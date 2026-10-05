@@ -43,6 +43,7 @@ probe, nothing more.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import signal
@@ -62,11 +63,10 @@ from agentic_trader.research.pooled.campaign import (
     CampaignWindows,
     LoadedProtocol,
     _confirmation,
-    _jaccard,
 )
 from agentic_trader.research.pooled.cohort import LoadedCohort
 from agentic_trader.research.pooled.cube import CubeView, check_coverage
-from agentic_trader.research.pooled.formula import Formula, allowed_mask, select_picks
+from agentic_trader.research.pooled.formula import Formula, allowed_mask, jaccard_codes
 from agentic_trader.research.pooled.genetic import SearchOutcome, run_search_stages
 from agentic_trader.research.pooled.ledger import CampaignAborted, JournalLedger
 from agentic_trader.research.pooled.runner import CubeBuild
@@ -84,8 +84,9 @@ __all__ = [
     "check_gate",
     "execute_campaign",
     "execute_campaign_recovery",
+    "frozen_document",
     "journal_identity",
-    "literature_cells",
+    "literature_codes",
     "preflight",
     "require_clean_revision",
 ]
@@ -177,30 +178,39 @@ def check_gate(directory: Path, *, check: str, cohort_sha256: str, protocol_sha2
     return result
 
 
-def literature_cells(entries: Iterable, view: CubeView, book: ScoreBook) -> dict[str, frozenset]:
-    """Each literature entry's discovery picks on this cube (scores, filters and hold lengths)."""
+def literature_codes(
+    entries: Iterable, view: CubeView, book: ScoreBook, protocol: CampaignProtocol
+) -> dict[str, np.ndarray]:
+    """Each literature formula's discovery picks under the campaign's own selection rule, as pick codes."""
     stop = view.offset + len(view.sessions)
-    cells: dict[str, frozenset] = {}
+    codes: dict[str, np.ndarray] = {}
     for loaded in entries:
         formula: Formula = loaded.entry.formula
         scores = book.panel(formula.score)[view.offset : stop]
         filters = [book.panel(spec.expression)[view.offset : stop] for spec in formula.filters]
         allowed = allowed_mask(formula, filters, view.eligible)
-        cells[loaded.entry.id] = frozenset(select_picks(scores, allowed, view, formula.k).cells())
-    return cells
+        codes[loaded.entry.id] = protocol.select(scores, allowed, view).codes(len(view.symbols))
+    return codes
 
 
 def already_tested(
-    carried: Sequence[str], cells: Mapping[str, frozenset], literature: Mapping[str, frozenset], threshold: float
+    carried: Sequence[str], codes: Mapping[str, np.ndarray], literature: Mapping[str, np.ndarray], threshold: float
 ) -> dict[str, str]:
     """Finalist id -> the literature entry whose discovery picks it overlaps at Jaccard >= threshold."""
     marked: dict[str, str] = {}
     for fid in carried:
-        for entry_id, entry_cells in literature.items():
-            if _jaccard(set(cells[fid]), set(entry_cells)) >= threshold:
+        for entry_id, entry_codes in literature.items():
+            if jaccard_codes(codes[fid], entry_codes) >= threshold:
                 marked[fid] = entry_id
                 break
     return marked
+
+
+def frozen_document(expression: str, protocol: CampaignProtocol) -> dict:
+    """A frozen candidate: its score and the selection rule it was tested under, with a stable identity."""
+    body = {"score": expression, "filters": [], "selection": protocol.selection_rule.model_dump(mode="json")}
+    identity = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {"formula": body, "identity": identity}
 
 
 def _write_frozen(
@@ -212,20 +222,21 @@ def _write_frozen(
 ) -> list[dict]:
     documents = []
     for fid in frozen:
-        formula = Formula(score=search.expressions[fid], k=protocol.k)
+        frozen_formula = frozen_document(search.expressions[fid], protocol)
         save_json_report(
             {
                 "formula_id": fid,
                 "family": search.families[fid],
                 "expression": search.expressions[fid],
-                "formula": formula.model_dump(mode="json"),
-                "identity": formula.identity,
+                **frozen_formula,
                 "already_tested_by": marked.get(fid),
                 "authorizes_promotion": False,
             },
             directory / f"{fid}.json",
         )
-        documents.append({"formula_id": fid, "identity": formula.identity, "already_tested_by": marked.get(fid)})
+        documents.append(
+            {"formula_id": fid, "identity": frozen_formula["identity"], "already_tested_by": marked.get(fid)}
+        )
     return documents
 
 
@@ -478,11 +489,11 @@ async def _run_campaign(
     windows = CampaignWindows(built.cube, protocol.windows, cohort_sha256=cohort.sha256)
     ledger = JournalLedger(repository, asyncio.get_running_loop(), campaign_id)
     # Overlap is fixed from discovery picks before the search.
-    literature = await asyncio.to_thread(literature_cells, entries, discovery, book)
+    literature = await asyncio.to_thread(literature_codes, entries, discovery, book, protocol)
     frozen_documents: list[dict] = []
 
     def on_frozen(frozen: list[str], search: SearchOutcome) -> None:
-        marked_frozen = already_tested(frozen, search.cells, literature, protocol.dedupe_jaccard)
+        marked_frozen = already_tested(frozen, search.codes, literature, protocol.dedupe_jaccard)
         frozen_documents.extend(_write_frozen(directory / "frozen", frozen, search, protocol, marked_frozen))
         ledger.advance("frozen", {"candidates": frozen_documents, "already_tested": marked_frozen})
 
@@ -518,7 +529,7 @@ async def _run_campaign(
     state.outcome = outcome
     _save_outcome(directory, outcome)
     state.outcome_saved = True
-    marked = already_tested(outcome["carried"], search.cells, literature, protocol.dedupe_jaccard)
+    marked = already_tested(outcome["carried"], search.codes, literature, protocol.dedupe_jaccard)
     confirmed = list(outcome["confirmed"])
     probe_eligible = [fid for fid in confirmed if fid not in marked]
     await asyncio.to_thread(_write_records, directory / "formulas.jsonl", search.records)

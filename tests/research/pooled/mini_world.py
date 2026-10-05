@@ -8,9 +8,8 @@ import numpy as np
 import pandas as pd
 
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.pooled.campaign import Family, NullCheckSpec, load_campaign_protocol
+from agentic_trader.research.pooled.campaign import Family, NullCheckSpec, Selection, load_campaign_protocol
 from agentic_trader.research.pooled.cube import LabelCube
-from agentic_trader.research.pooled.formula import select_picks
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook
 
@@ -106,11 +105,11 @@ def label_cube(seed: int = 1) -> LabelCube:
     )
 
 
-def planted_cube(expression: str, delta: float, seed: int = 1) -> LabelCube:
-    """Labels with ``delta`` R added to every cell ``expression`` picks over the whole calendar."""
+def planted_cube(expression: str, delta: float, seed: int = 1, protocol=V1) -> LabelCube:
+    """Labels with ``delta`` R added to every cell ``expression`` picks (under ``protocol``) over the calendar."""
     cube = label_cube(seed)
     view = cube.window(cube.sessions[0], cube.sessions[-1])
-    picks = select_picks(*book().formula(expression).panel(view), view, V1.k)
+    picks = protocol.select(*book().formula(expression).panel(view), view)
     return cube.with_shift(picks.session_idx, picks.symbol_idx, delta)
 
 
@@ -150,3 +149,8 @@ class RecordingCharger:
 
     def charge(self, family_id: str, expression: str, formula_id: str, nodes: int) -> None:
         self.charged.append((family_id, expression, formula_id))
+
+
+def mini_v3_protocol(**update):
+    """The mini protocol under v3's top-decile selection (12 names: 2 picks per session)."""
+    return mini_protocol(k=None, selection=Selection(rule="top_fraction", fraction=0.10), **update)

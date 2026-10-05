@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 import calendar
 import hashlib
-from collections.abc import Callable, Sequence, Set as AbstractSet
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from itertools import pairwise
@@ -26,7 +26,13 @@ from agentic_trader.research.alpha.operators import OPERATOR_SPECS
 from agentic_trader.research.alpha.search import MUTATION_OPERATORS, WINDOWS
 from agentic_trader.research.pooled.cohort import UniverseSpec
 from agentic_trader.research.pooled.cube import BracketSpec, CoverageSpec, CubeSpec, CubeView, LabelCube
-from agentic_trader.research.pooled.formula import Picks, require_dimensionless, select_picks
+from agentic_trader.research.pooled.formula import (
+    Picks,
+    jaccard_codes,
+    require_dimensionless,
+    select_picks,
+    select_top_fraction,
+)
 from agentic_trader.research.pooled.stats import (
     bootstrap_draws,
     leg_mean_test,
@@ -48,6 +54,7 @@ __all__ = [
     "LoadedProtocol",
     "NullCheckSpec",
     "ScoredFormula",
+    "Selection",
     "finish_discovery",
     "later_stages",
     "load_campaign_protocol",
@@ -195,6 +202,22 @@ class NullCheckSpec(BaseModel, frozen=True, extra="forbid"):
         return self
 
 
+class Selection(BaseModel, frozen=True, extra="forbid"):
+    """How a formula's picks are chosen each session: top k with hold-skipping, or a top-fraction basket."""
+
+    rule: Literal["top_k", "top_fraction"]
+    k: int | None = Field(default=None, ge=1)
+    fraction: float | None = Field(default=None, gt=0, lt=1)
+
+    @model_validator(mode="after")
+    def _one_parameter(self) -> Selection:
+        if self.rule == "top_k" and (self.k is None or self.fraction is not None):
+            raise ValueError("top_k needs k and no fraction")
+        if self.rule == "top_fraction" and (self.fraction is None or self.k is not None):
+            raise ValueError("top_fraction needs fraction and no k")
+        return self
+
+
 class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
     id: Literal["pooled-campaign"]
     version: int = Field(ge=1)
@@ -205,7 +228,8 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
     bars_from: date
     bars_through: date
     windows: StageWindows
-    k: int = Field(ge=1)
+    k: int | None = Field(default=None, ge=1)
+    selection: Selection | None = None
     bracket: BracketSpec
     universe: UniverseSpec
     decision_cost_bps: float = Field(ge=0)
@@ -226,6 +250,8 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
 
     @model_validator(mode="after")
     def _consistent(self) -> CampaignProtocol:
+        if (self.k is None) == (self.selection is None):
+            raise ValueError("a protocol has exactly one of k (top_k with hold-skipping) or selection")
         forbidden = {op.lower() for op in self.search.forbidden_operators}
         ids = [family.id for family in self.families]
         if len(ids) != len(set(ids)):
@@ -260,6 +286,20 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
             universe=self.universe,
             decision_cost_bps=self.decision_cost_bps,
         )
+
+    @property
+    def selection_rule(self) -> Selection:
+        """The effective rule; a v1/v2 ``k`` means top_k with hold-skipping."""
+        return self.selection if self.selection is not None else Selection(rule="top_k", k=self.k)
+
+    def select(self, scores: np.ndarray, allowed: np.ndarray, view: CubeView) -> Picks:
+        """Every stage, check and overlap picks through this one rule."""
+        rule = self.selection_rule
+        if rule.rule == "top_fraction" and rule.fraction is not None:
+            return select_top_fraction(scores, allowed, view, rule.fraction)
+        if rule.rule == "top_k" and rule.k is not None:
+            return select_picks(scores, allowed, view, rule.k)
+        raise ValueError(f"unusable selection rule: {rule}")
 
     def family_budgets(self) -> dict[str, int]:
         """The formula budget split evenly across families, the remainder to the first in file order."""
@@ -353,9 +393,9 @@ class CampaignWindows:
         return self._cube.window(*self._windows.confirmation)
 
 
-def _picks(formula: ScoredFormula, view: CubeView, k: int) -> Picks:
+def _picks(formula: ScoredFormula, view: CubeView, protocol: CampaignProtocol) -> Picks:
     scores, allowed = formula.panel(view)
-    return select_picks(scores, allowed, view, k)
+    return protocol.select(scores, allowed, view)
 
 
 def _restrict(picks: Picks, lo: int, hi: int) -> Picks:
@@ -367,17 +407,12 @@ def _draws(view: CubeView, count: int, protocol: CampaignProtocol) -> np.ndarray
     return bootstrap_draws(len(view.sessions), protocol.bootstrap.block_mean, count, protocol.bootstrap.seed)
 
 
-def _jaccard(a: AbstractSet, b: AbstractSet) -> float:
-    union = len(a | b)
-    return len(a & b) / union if union else 0.0
-
-
 @dataclass(frozen=True)
 class DiscoveryScore:
-    """One formula's discovery result row and its pick cells (for dedupe and overlap)."""
+    """One formula's discovery result row and its pick codes (for dedupe and overlap)."""
 
     row: dict[str, Any]
-    cells: frozenset[tuple[int, int]]
+    codes: np.ndarray  # sorted int64 session * names + symbol
 
 
 class DiscoveryEvaluator:
@@ -392,7 +427,7 @@ class DiscoveryEvaluator:
     def score(self, formula: ScoredFormula) -> DiscoveryScore:
         gate = self._protocol.discovery_gate
         view = self._view
-        picks = _picks(formula, view, self._protocol.k)
+        picks = _picks(formula, view, self._protocol)
         table = session_table(picks, view, purge=True)
         edge = paired_edge_test(table, self._draws)
         leg = leg_mean_test(table, self._draws)
@@ -420,18 +455,19 @@ class DiscoveryEvaluator:
             "passes": passes,
             "fitness": fitness,
         }
-        return DiscoveryScore(row=row, cells=frozenset(picks.cells()))
+        return DiscoveryScore(row=row, codes=picks.codes(len(view.symbols)))
 
 
 def finish_discovery(scores: Sequence[DiscoveryScore], protocol: CampaignProtocol) -> tuple[list[dict], list[str]]:
     """Every discovery row, and the gate's survivors deduplicated by pick overlap, then capped."""
     results = [score.row for score in scores]
-    cells = {score.row["formula_id"]: score.cells for score in scores}
+    codes = {score.row["formula_id"]: score.codes for score in scores}
     passing = sorted((r for r in results if r["passes"]), key=lambda r: (-r["fitness"], r["formula_id"]))
     kept: list[dict[str, Any]] = []
     for candidate in passing:
         if all(
-            _jaccard(cells[candidate["formula_id"]], cells[k["formula_id"]]) < protocol.dedupe_jaccard for k in kept
+            jaccard_codes(codes[candidate["formula_id"]], codes[k["formula_id"]]) < protocol.dedupe_jaccard
+            for k in kept
         ):
             kept.append(candidate)
     return results, [r["formula_id"] for r in kept[: protocol.discovery_gate.carry]]
@@ -457,7 +493,7 @@ def _selection(
     discovered = {r["formula_id"]: r["edge"]["mean"] for r in discovery}
     results: list[dict[str, Any]] = []
     for formula_id in carried:
-        table = session_table(_picks(by_id[formula_id], view, protocol.k), view, purge=True)
+        table = session_table(_picks(by_id[formula_id], view, protocol), view, purge=True)
         edge = paired_edge_test(table, draws)
         keep = bool(
             np.isfinite(edge["mean"])
@@ -485,7 +521,7 @@ def _confirmation(
     recent_lo = next((i for i, d in enumerate(view.sessions) if d > recent_from), len(view.sessions))
     results: dict[str, dict] = {}
     for formula_id in frozen:
-        picks = _picks(by_id[formula_id], view, protocol.k)
+        picks = _picks(by_id[formula_id], view, protocol)
         table = session_table(picks, view, purge=False)
         recent = table.edge[recent_lo:]
         recent = recent[np.isfinite(recent)]

@@ -31,6 +31,7 @@ from tests.research.pooled.mini_world import (
     cube_build,
     label_cube,
     mini_protocol,
+    mini_v3_protocol,
     planted_cube,
 )
 
@@ -105,7 +106,11 @@ async def test_the_campaign_reserves_charges_freezes_consumes_and_completes(tmp_
     assert json.loads((tmp_path / "out" / "manifest.json").read_text())["journal"] == journal
     assert result["journal"] == journal and result["confirmation_consumed"] is True
     frozen = json.loads((tmp_path / "out" / "frozen" / f"{target}.json").read_text())
-    assert frozen["expression"] == PLANTED and frozen["formula"]["k"] == 3
+    assert frozen["expression"] == PLANTED and frozen["formula"]["selection"] == {
+        "rule": "top_k",
+        "k": 3,
+        "fraction": None,
+    }
     lines = [json.loads(line) for line in (tmp_path / "out" / "formulas.jsonl").read_text().splitlines()]
     assert sum(line["status"] in ("evaluated", "error") for line in lines) == 9
     on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
@@ -319,8 +324,8 @@ def test_a_literature_entry_with_a_filter_yields_cells():
     formula = Formula(score=PLANTED, filters=(FormulaFilter(expression="ts_max(returns, 21)", max_quantile=0.5),), k=3)
     entry = SimpleNamespace(entry=SimpleNamespace(id="filtered", formula=formula))
     view = build.cube.window(*mini_protocol().windows.discovery)
-    cells = campaign_run.literature_cells([entry], view, book)
-    assert isinstance(cells["filtered"], frozenset)
+    codes = campaign_run.literature_codes([entry], view, book, mini_protocol())
+    assert codes["filtered"].dtype == np.int64 and np.all(np.diff(codes["filtered"]) > 0)
 
 
 # --- cancellation (Ctrl-C, SIGTERM) ---
@@ -566,3 +571,25 @@ async def test_a_cube_without_an_edge_ends_with_no_finalists_and_consumes_nothin
     assert result["status"] == "no_finalists" and result["confirmation_consumed"] is False
     assert (await repository.get(f"pooled/campaign/{CAMPAIGN}"))["status"] == "completed"
     assert await repository.get("pooled/confirmation") is None
+
+
+async def test_a_planted_decile_edge_is_confirmed_under_v3(tmp_path, repository):
+    protocol = mini_v3_protocol()
+    result = await run(
+        tmp_path, repository, planted_cube(PLANTED, 1.0, protocol=protocol), protocol=protocol, entries=[]
+    )
+    target = formula_id(PLANTED)
+    assert result["status"] == "confirmed" and target in result["confirmed"]
+    frozen = json.loads((tmp_path / "out" / "frozen" / f"{target}.json").read_text())
+    assert frozen["formula"]["selection"] == {"rule": "top_fraction", "k": None, "fraction": 0.1}
+
+
+def test_literature_overlap_is_evaluated_under_the_campaign_rule():
+    protocol = mini_v3_protocol()
+    cube = label_cube()
+    view = cube.window(*protocol.windows.discovery)
+    entry = SimpleNamespace(entry=SimpleNamespace(id="lit", formula=Formula(score=PLANTED, k=3)))
+    literature = campaign_run.literature_codes([entry], view, mini_book(), protocol)
+    own = protocol.select(*mini_book().formula(PLANTED).panel(view), view).codes(len(view.symbols))
+    assert np.array_equal(literature["lit"], own)  # decile picks, not the entry's own top 3
+    assert campaign_run.already_tested(["f"], {"f": own}, literature, protocol.dedupe_jaccard) == {"f": "lit"}
