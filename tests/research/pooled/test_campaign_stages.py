@@ -13,6 +13,7 @@ from agentic_trader.research.pooled.campaign import (
     DiscoveryEvaluator,
     InMemoryLedger,
     ScoredFormula,
+    Selection,
     _confirmation,
     _discovery,
     _months_before,
@@ -631,3 +632,20 @@ def test_later_stages_call_on_frozen_before_the_confirmation_is_consumed():
     )
     assert outcome["status"] == "confirmed"
     assert events == [("frozen", ("f",)), ("consume", ("f",))]
+
+
+def test_top_fraction_confirmation_rows_report_a_descriptive_top3_edge_that_never_gates():
+    v3 = P1.model_copy(update={"k": None, "selection": Selection(rule="top_fraction", fraction=0.10)})
+    cube = confirmation_cube()
+    windows = windows_of(cube)
+    rows, confirmed = _confirmation(
+        [favourite("f", 0)], ["f"], windows.confirmation(InMemoryLedger(), campaign_id="x", candidates=()), v3
+    )
+    row = rows[0]
+    assert set(row["top3_edge"]) >= {"mean", "n_sessions", "p_one_sided"}
+    assert row["passes"] and confirmed == ["f"]
+
+
+def test_top_k_confirmation_rows_have_no_descriptive_top3_edge():
+    rows, _ = confirm(confirmation_cube(), [favourite("f", 0)], ["f"])
+    assert "top3_edge" not in rows["f"]

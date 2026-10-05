@@ -393,6 +393,9 @@ class CampaignWindows:
         return self._cube.window(*self._windows.confirmation)
 
 
+DESCRIPTIVE_TOP_K = 3  # the descriptive top-k reported beside a top-fraction basket (never a gate)
+
+
 def _picks(formula: ScoredFormula, view: CubeView, protocol: CampaignProtocol) -> Picks:
     scores, allowed = formula.panel(view)
     return protocol.select(scores, allowed, view)
@@ -521,7 +524,8 @@ def _confirmation(
     recent_lo = next((i for i, d in enumerate(view.sessions) if d > recent_from), len(view.sessions))
     results: dict[str, dict] = {}
     for formula_id in frozen:
-        picks = _picks(by_id[formula_id], view, protocol)
+        scores, allowed = by_id[formula_id].panel(view)
+        picks = protocol.select(scores, allowed, view)
         table = session_table(picks, view, purge=False)
         recent = table.edge[recent_lo:]
         recent = recent[np.isfinite(recent)]
@@ -531,6 +535,10 @@ def _confirmation(
             "trimmed_mean": trimmed_mean(table.pick_rows["r_cost"].to_numpy(float), gate.trim_fraction),
             "recent_edge": float(recent.mean()) if recent.size else float("nan"),
         }
+        if protocol.selection_rule.rule == "top_fraction":
+            # Descriptive only: live cards trade the top names of a confirmed basket.
+            top = session_table(select_picks(scores, allowed, view, DESCRIPTIVE_TOP_K), view, purge=False)
+            results[formula_id]["top3_edge"] = paired_edge_test(top, draws)
     adjusted = holm({fid: r["edge"]["p_one_sided"] for fid, r in results.items()})
     rows, confirmed = [], []
     for formula_id, r in results.items():
