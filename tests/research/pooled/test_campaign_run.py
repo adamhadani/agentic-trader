@@ -20,7 +20,7 @@ from agentic_trader.research.pooled.campaign_run import (
     preflight,
     require_clean_revision,
 )
-from agentic_trader.research.pooled.formula import Formula, FormulaFilter
+from agentic_trader.research.pooled.formula import Formula, FormulaFilter, allowed_mask, jaccard_codes
 from agentic_trader.research.pooled.ledger import JournalLedger
 from agentic_trader.research.pooled.scoring import ScoreBook, formula_id
 from agentic_trader.storage.alpha import AlphaRepository
@@ -593,3 +593,35 @@ def test_literature_overlap_is_evaluated_under_the_campaign_rule():
     own = protocol.select(*mini_book().formula(PLANTED).panel(view), view).codes(len(view.symbols))
     assert np.array_equal(literature["lit"], own)  # decile picks, not the entry's own top 3
     assert campaign_run.already_tested(["f"], {"f": own}, literature, protocol.dedupe_jaccard) == {"f": "lit"}
+
+
+def test_a_filtered_literature_entry_sizes_its_basket_from_its_filtered_pool():
+    protocol = mini_v3_protocol()
+    cube = label_cube()
+    view = cube.window(*protocol.windows.discovery)
+    book = mini_book()
+    stop = view.offset + len(view.sessions)
+    flt = FormulaFilter(expression="ts_max(returns, 21)", max_quantile=0.5)
+    filtered = SimpleNamespace(entry=SimpleNamespace(id="f", formula=Formula(score=PLANTED, filters=(flt,), k=3)))
+    plain = SimpleNamespace(entry=SimpleNamespace(id="p", formula=Formula(score=PLANTED, k=3)))
+    codes = campaign_run.literature_codes([filtered, plain], view, book, protocol)
+
+    n_names = len(view.symbols)
+    scores = book.panel(PLANTED)[view.offset : stop]
+    filter_values = [book.panel(flt.expression)[view.offset : stop]]
+    allowed = allowed_mask(filtered.entry.formula, filter_values, view.eligible)
+    n_filtered = (allowed & np.isfinite(scores)).sum(axis=1)
+    n_plain = (view.eligible & np.isfinite(scores)).sum(axis=1)
+    assert (n_filtered < n_plain).any()
+
+    def per_session(c):
+        return np.bincount(c // n_names, minlength=len(view.sessions))
+
+    picked_filtered, picked_plain = per_session(codes["f"]), per_session(codes["p"])
+    live = n_filtered > 0
+    assert np.array_equal(picked_filtered[live], np.ceil(np.round(0.10 * n_filtered[live], 9)).astype(int))
+    assert np.array_equal(picked_plain[n_plain > 0], np.ceil(np.round(0.10 * n_plain[n_plain > 0], 9)).astype(int))
+    assert picked_filtered.sum() < picked_plain.sum()
+    assert (picked_filtered <= picked_plain).all()
+    # Jaccard with the unfiltered basket is capped at |entry| / |finalist|.
+    assert jaccard_codes(codes["f"], codes["p"]) <= codes["f"].size / codes["p"].size

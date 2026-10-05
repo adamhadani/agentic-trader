@@ -202,8 +202,8 @@ and leaves a record.
 ## Formulas and picks
 
 A formula is a frozen document: a `score` expression in the alpha DSL, optional
-`filters`, and a selection rule (long only). A formula document carries `k` = 3, which is
-the `top_k` rule below; a campaign protocol chooses its own rule
+`filters`, and a selection rule (long only). A literature entry's formula document carries `k` = 3,
+which is the `top_k` rule below; a campaign's frozen documents carry `selection`; a campaign protocol chooses its own rule
 ([Selection rules](#selection-rules)).
 
 - The score and every filter expression must be **dimensionless** (price and volume
@@ -235,7 +235,7 @@ by the literature entries, so their pinned outputs are unchanged.
 2. Rank by score, descending; break ties by the same SHA-256 hash key.
 3. Take the first `ceil(0.10 x n)` names. A session with no candidates has no picks.
 
-There is no hold-skipping. The picks are a daily decile basket (about 33 to 41 names per
+There is no hold-skipping. The picks are a daily decile basket (about 27 to 41 names per
 session at cohort v2), and a name may be picked on consecutive sessions. Its labels
 overlap, as the control's already do. The paired edge, leg mean, session-block bootstrap
 (block mean 20), purging, stage gates and thresholds are unchanged.
@@ -519,9 +519,18 @@ relaxed once a literature result exists.
 **Implementation.** The campaign computes the overlap before the search, from the
 discovery view, with each literature entry's formula evaluated **under the campaign's
 selection rule** (`literature_codes`) so the comparison is like with like, and journals
-`already_tested` at freeze, before the confirmation is consumed. The stage logic (`run_stages`: discovery, dedupe, selection, one-shot
-confirmation, with the ledger injected) is what power check A and check C run against an
-in-memory ledger; the campaign runs the same pieces with the journal ledger.
+`already_tested` at freeze, before the confirmation is consumed. The stage logic
+(`run_stages`: discovery, dedupe, selection, one-shot confirmation, with the ledger
+injected) is what power check A and check C run against an in-memory ledger; the campaign
+runs the same pieces with the journal ledger.
+
+Under v3 the basket is sized from the names that pass the entry's own filter (n is the
+filtered pool). A filtered entry therefore picks fewer names than an unfiltered finalist,
+and its Jaccard with that finalist is capped at |entry| / |finalist|. The reversal-lowmax
+entry's `ts_max(returns, 21) <= median` filter halves the pool: about 19 entry picks per
+session against about 37, so Jaccard is at most about 0.51. The campaign grammar cannot
+express that filter, and the realistic case also missed 0.5 under v2. The rule is kept as
+specified.
 
 ## First runs
 
@@ -626,6 +635,23 @@ For seed i in 0..9:
 **Acceptance:** at least 8 of 10 recovered (`power_search.min_recovered`). The result
 reports each hidden expression, the best Jaccard and where the search stopped.
 
+**Descriptive companion (delta = 0).** Under v3 a seed basket, or a near neighbour, may
+already pass the discovery gate on the real, unplanted discovery window (a decile basket
+with a steady style tilt). Check B would then recover without any search power. The rule
+above is unchanged; the result adds, per seed, `hidden_passes_unplanted` (the hidden
+expression's verdict on the unshifted window), and, when the seed recovered,
+`recovering_formula` (the passing formula with the highest Jaccard),
+`recovering_passes_unplanted` and `recovering_unplanted_t` (its verdict and t on the
+unshifted window). These are `null` for a missed seed. The top level adds
+`recovered_without_plant`, the number of recovered seeds whose recovering formula passes
+unplanted. It is descriptive and never part of `status`; read it beside `recovered`.
+
+**Effective plant.** The planted cells also enter the control mean, so the paired edge is
+delta x (1 - m/n), not delta: about 0.149R for a planted 0.15R under top-3 (m = 3 of about
+367 names) and about 0.135R under the decile (m/n about 0.1). Under v3, "0.15R" detection
+is therefore a paired edge of about 0.135R, and v2's power curve is not directly
+comparable. The same applies to power check A.
+
 Check B certifies recovery of edges **near the family seeds**, which is the only place a
 16-17 formula budget can search. It does not show that the search finds edges far from them.
 
@@ -652,6 +678,10 @@ replicate before any selection, so their t values are an unselected null sample.
 deviation well above 1 means the bootstrap understates the variance of persistent-exposure
 formulas, the issue the final review of Part 1a simulated. Results are identical for any
 `--workers` count.
+
+Under v3 discovery scoring is about 4 times slower (about 0.2 s per formula, because of the
+per-pick table over about 50,000 picks), so checks A, B and C take about 2 hours on 6
+workers rather than 1 to 1.5 hours.
 
 Check C covers the size problem only. A formula that tilts toward names that outperformed
 because they survived would still be flattered on real data; the demeaned nulls carry real
@@ -794,8 +824,10 @@ eligible for a capped paper probe, which needs its own spec (Part 2).
 - **Factor exposure.** A decile basket can load steadily on style factors (momentum, size,
   volatility). The paired control removes the market, not style factors; check C measures
   the consequence.
-- **Serial dependence.** Persistent baskets carry dependence beyond the 20-session block;
-  check C's seed-t standard deviation is the measure.
+- **Serial dependence.** Persistent baskets carry dependence beyond the 20-session block.
+  Check C's null is built from stationary block resamples with mean block 20, so
+  dependence beyond about 20 sessions is absent from the null by construction. Check C's
+  seed-t standard deviation measures dependence within that block scale, not beyond it.
 - **Literature entries and the campaign share 2024-2026.** The
   [overlap rule](#literature-overlap-rule) removes the second look.
 - **Sector concentration** is not capped in research; live cards keep their existing

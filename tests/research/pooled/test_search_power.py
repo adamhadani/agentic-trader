@@ -148,3 +148,33 @@ def test_a_planted_decile_seed_is_recovered_under_v3(monkeypatch):
     found = run_search_power(with_delta(mini_v3_protocol(), 2.0), label_cube(), book())
     assert found["status"] == "passed" and found["recovered"] == 3
     assert all(s["best_passing_jaccard"] == 1.0 for s in found["seeds"])
+
+
+NEW_FIELDS = ("hidden_passes_unplanted", "recovering_formula", "recovering_passes_unplanted", "recovering_unplanted_t")
+
+
+def test_recovered_seeds_report_the_unplanted_verdict_without_changing_the_status(monkeypatch):
+    monkeypatch.setattr(search_power, "hidden_expression", exact_seed)
+    for protocol in (mini_protocol(), mini_v3_protocol()):
+        found = run_search_power(with_delta(protocol, 2.0), label_cube(), book())
+        assert found["status"] == "passed" and found["recovered"] == 3
+        assert isinstance(found["recovered_without_plant"], int)
+        assert found["recovered_without_plant"] == sum(s["recovering_passes_unplanted"] for s in found["seeds"])
+        for seed in found["seeds"]:
+            assert isinstance(seed["hidden_passes_unplanted"], bool)
+            assert isinstance(seed["recovering_formula"], str)
+            assert isinstance(seed["recovering_passes_unplanted"], bool)
+            assert isinstance(seed["recovering_unplanted_t"], float)
+        # The mini world's base cube carries no edge, so nothing passes without the plant.
+        assert found["recovered_without_plant"] == 0
+        assert not any(s["hidden_passes_unplanted"] or s["recovering_passes_unplanted"] for s in found["seeds"])
+
+
+def test_missed_seeds_have_no_recovering_formula(monkeypatch):
+    monkeypatch.setattr(search_power, "hidden_expression", exact_seed)
+    missed = run_search_power(with_delta(mini_protocol(), 1e-9), label_cube(), book())
+    assert missed["recovered_without_plant"] == 0
+    for seed in missed["seeds"]:
+        assert not seed["recovered"]
+        assert all(seed[name] is None for name in NEW_FIELDS[1:])
+        assert isinstance(seed["hidden_passes_unplanted"], bool)
