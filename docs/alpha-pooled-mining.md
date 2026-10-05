@@ -14,6 +14,12 @@ cohort, label cube, formula selection, statistics, two literature entries, the c
 protocol and its stage logic, power check A and the `alpha pooled power|study`
 commands. Part 1b adds cohort v2 by liquidity screen, campaign protocol v2, the
 per-family genetic search, the journal ledger, checks B and C and the campaign runner.
+Protocol v3 changes selection to a top-decile basket.
+
+**Status (2026-10-05): the pooled genetic campaign is parked.** Check B failed on v2 (1 of
+10) and again on v3 (3 of 10), so no campaign ran and the confirmation window is unused
+([v3 checks](alpha-pooled-checks-v3-2026-10-05.md)). The machinery below stays merged;
+reopening the lane needs a new spec and operator approval.
 
 ## Purpose
 
@@ -415,6 +421,13 @@ Check B failed on v2 because near-neighbour formulas that pick the top 3 of abou
 names share almost no picks. A decile basket shares most of them (a read-only probe of the
 discovery window measured Jaccard 0.35 to 0.76 for genuine neighbours against 0.15 to 0.63
 for top 3), so a planted edge can reach a formula's neighbours. A pass is not guaranteed.
+
+**Result (2026-10-05):** checks A and C passed (detection 0.99 at 0.15R; 0 of 40 false
+acceptances, seed-t standard deviation 1.24) and check B failed with 3 of 10 recovered.
+Every seed's overlap rose, but hidden expressions that change what is measured (mismatched
+range windows, short-window z-scores and ranks) stayed out of the 17-formula search's
+reach. As pre-registered, the pooled genetic campaign is parked
+([v3 checks](alpha-pooled-checks-v3-2026-10-05.md)).
 
 Frozen documents record the selection rule with the score (`frozen_document`), so the
 identity covers it. Confirmation rows also report, descriptively and never as a gate, each

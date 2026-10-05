@@ -424,6 +424,17 @@ one or two reasonable cards per session:
    - Protocol v3 (top-decile selection,
      [spec](superpowers/specs/2026-10-03-pooled-alpha-mining-v3-design.md)) reruns checks A, B
      and C on the v2 cube; if B fails again the pooled genetic campaign is parked.
+   - **Protocol v3 results (2026-10-05)** ([checks](alpha-pooled-checks-v3-2026-10-05.md)):
+     - **Check A passed:** detection 0.99 at 0.15R, 0.95 at 0.10R; false acceptance 0.
+     - **Check C passed:** 0 of 40 null campaigns confirmed anything; seed-t standard
+       deviation 1.24.
+     - **Check B failed:** 3 of 10 recovered (v2: 1). Decile baskets raised every seed's
+       overlap, but hidden expressions that change what is measured stayed out of the
+       17-formula search's reach. The unplanted companion confirms the three recoveries
+       came from the plant.
+     - **Outcome: the pooled genetic campaign is parked.** No campaign ran, nothing was
+       charged, and the confirmation window is unused. No further selection or check-B
+       redesign in this workstream; effort moves to the card funnel and the PEAD probe.
    - **Weekly ETF32 miner paused (2026-09-28).** The operator disabled and unloaded
      `com.agentictrader.alphaminer` (`launchctl disable` and `bootout`; the plist is
      kept) so it stops charging 512 trials a week to the family that deflates every future
