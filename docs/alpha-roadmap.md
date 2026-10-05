@@ -455,6 +455,50 @@ Later and operator-gated:
 Foundation models for return direction and full LLM-agent miners are deliberately
 not planned.
 
+## Stage layering and attribution (October 5)
+
+The survey *Agentic Quantitative Trading: A Survey of Workflows, Systems, and
+Evaluation* ([arXiv 2608.31041](https://arxiv.org/abs/2608.31041)) frames a trading
+system as five stages: factor mining, signal discovery, portfolio construction, order
+execution and risk management. Its live-market evidence says risk control and system
+design explain more realised performance than the model, that reported returns are
+mostly market and style exposure unless attributed, and that evaluation must match the
+capability claimed. The operator adopted the five-stage framing as a design principle
+on 2026-10-05: each stage in its own compartment with a typed interface, so one stage
+can be developed, tested, deployed and experimented with without touching the others.
+
+A read-only review of the codebase on that date found: factor mining
+(`research/alpha`, immutable `AlphaDefinition` through the journaled registry) and
+order execution (`execution/`, `broker/`, FIFO; `OrderRequest` → `WorkItem` →
+`OrderResult`) are cleanly layered. Signal discovery is clean behind
+`ScreenerCandidate`. Portfolio construction has no live module: ranking, budgets and
+group caps are inline in `TradingCopilot.run_scan`, and the convex allocator is
+CLI-only. Risk management is scattered: `RiskEvaluator.evaluate_candidate` builds
+brackets, sizes, applies every cap and gate and calls the LLM in one method; the
+correlation cap, per-trade risk base, macro lockout, earnings blackout and session
+check are each re-implemented in two to four places with differing semantics. The
+LLM may veto a native card, but nothing records which cards it vetoed. Outcomes are
+measured only at the selection stage (`copilot cards outcomes`); sizing, execution
+slippage and market exposure are not decomposed, and fill sync overwrites the planned
+entry on the `signals` row. Research and live diverge at sizing (full equity versus
+stop distance) and there are three bracket-labelling implementations.
+
+Ordered work, each its own spec, plan and PR. Measurement comes first so later
+behaviour changes are judged on data. Multi-agent debate or aggregation is not
+planned; the deterministic-gate-first design stays.
+
+| Step | Status | Deliverable and acceptance boundary |
+| --- | --- | --- |
+| L1 | In design (branch `feature/stage-attribution`) | **Measure first, no behaviour change.** Journal the LLM verdict for native cards as probes already do (`llm_verdict`), and extend `cards outcomes` with a same-bracket SPY market-exposure control, planned-versus-fill slippage read from journal evidence, and the counterfactual R of LLM-vetoed candidates. Acceptance: every sent, runner-up and vetoed candidate has a labelled row; the report separates selection, LLM gate, exposure and slippage; live ranking and gating unchanged. |
+| L2 | Planned | **One risk-policy module.** Pure functions with typed results shared by the evaluator, admission, capacity and the scan. The spec lists the current correlation-cap, equity-base, lockout, blackout and session variants and the operator picks one semantics per rule before implementation. Acceptance: each rule has one implementation and one test table; admission and evaluator cannot disagree. |
+| L3 | Planned | **Card-selector seam.** Ranking, per-session budgets and group caps behind one injected service with a typed selection result; native and PEAD are two selector families. Acceptance: a shadow ranker can be A/B'd by swapping the selector without editing `run_scan`; PEAD special cases leave `run_scan`. |
+| L4 | Planned | **Split the evaluator** into gate, sizer and thesis writer with typed results between them; the LLM step consumes a completed deterministic decision and may only annotate or, for native cards, veto through the recorded verdict path from L1. |
+| L5 | Later | **One bracket-label kernel and a sizing protocol** callable from replay, so portfolio-level research uses live sizing. Retire the legacy backtest's private trail logic. |
+
+Known limits of the review: it is static reading, not a profiling or defect audit;
+line references are as of `aa86718`. Minor: `agent/position_sizing.py` has a stale
+type-only import of a module that no longer exists.
+
 ## Ordered work queue
 
 | ID | Status | Milestone / acceptance boundary |
