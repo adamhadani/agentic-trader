@@ -17,9 +17,9 @@ from typing import Any
 import pandas as pd
 
 from agentic_trader.data.pacing import RequestPacer
-from agentic_trader.execution.durable import EventKind
+from agentic_trader.execution.durable import EventKind, RankedOutcome
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.setups.labels import BracketHit, SetupLevels, label_bracket
+from agentic_trader.research.setups.labels import BracketHit, SetupLevels, label_bracket, regular_session_bars
 from agentic_trader.research.setups.runner import BarSource
 
 
@@ -27,11 +27,15 @@ __all__ = [
     "DEFAULT_COST_BPS_PER_SIDE",
     "DEFAULT_MAX_HOLD_SESSIONS",
     "FETCH_FAILED_HIT",
+    "MARKET_PROXY_SYMBOL",
     "label_journaled",
+    "market_r",
     "summarize",
 ]
 
 _BAR_TIMEFRAME = "1h"
+
+MARKET_PROXY_SYMBOL = "SPY"
 
 # Mirror config/research/setup-outcomes-v1.json's frozen protocol values, so the live
 # `copilot cards outcomes` report and the study it compares against never drift apart
@@ -52,12 +56,23 @@ _COLUMNS = (
     "rank",
     "outcome",
     "sent",
+    "signal_id",
+    "entry",
+    "stop",
     "setup_quality",
     "shadow_score",
     "hit",
     "r",
     "r_cost",
     "holding_sessions",
+    "entry_time",
+    "exit_time",
+    "llm_ran",
+    "llm_vetoed",
+    "llm_r_cost",
+    "market_r",
+    "excess_r",
+    "market_reason",
     "decided_at",
     "reason",
 )
@@ -97,13 +112,63 @@ def _candidate_entries(events: list[dict[str, Any]]) -> dict[str, list[dict[str,
     return by_symbol
 
 
-def _immature_row(entry: dict[str, Any], symbol: str) -> dict[str, Any]:
-    return _row(entry, symbol, hit=BracketHit.IMMATURE.value, r=None, r_cost=None, holding_sessions=0)
+def market_r(
+    direction: str,
+    entry: float,
+    stop: float,
+    entry_time: datetime | pd.Timestamp,
+    exit_time: datetime | pd.Timestamp,
+    market: pd.DataFrame,
+) -> float | None:
+    """The market proxy's open-to-close return over the candidate's own holding window, in the candidate's R units.
+
+    Entry at the proxy's open on the first regular bar at or after ``entry_time`` (the
+    labeler's own entry convention) and exit at its close on the last regular bar at or
+    before ``exit_time``. Uncosted: a beta-one exposure control, not a tradable return.
+    None when either bar is missing or the geometry has no risk unit.
+    """
+    risk_unit = abs(float(entry) - float(stop))
+    if not risk_unit or market is None or market.empty:
+        return None
+    regular = regular_session_bars(market)
+    at_entry = regular.loc[regular.index >= pd.Timestamp(entry_time)]
+    at_exit = regular.loc[regular.index <= pd.Timestamp(exit_time)]
+    if at_entry.empty or at_exit.empty or at_exit.index[-1] < at_entry.index[0]:
+        return None
+    open_price = float(at_entry["Open"].iloc[0])
+    close_price = float(at_exit["Close"].iloc[-1])
+    if not open_price:
+        return None
+    sign = 1.0 if direction == "LONG" else -1.0
+    return sign * (close_price / open_price - 1.0) * float(entry) / risk_unit
 
 
-def _fetch_failed_row(entry: dict[str, Any], symbol: str, reason: str) -> dict[str, Any]:
+def _immature_row(entry: dict[str, Any], symbol: str, market_reason: str | None = None) -> dict[str, Any]:
+    return _row(
+        entry,
+        symbol,
+        hit=BracketHit.IMMATURE.value,
+        r=None,
+        r_cost=None,
+        holding_sessions=0,
+        market_reason=market_reason,
+    )
+
+
+def _fetch_failed_row(
+    entry: dict[str, Any], symbol: str, reason: str, market_reason: str | None = None
+) -> dict[str, Any]:
     """A bar fetch that raised, not a candidate that merely has not matured yet."""
-    return _row(entry, symbol, hit=FETCH_FAILED_HIT, r=None, r_cost=None, holding_sessions=0, reason=reason)
+    return _row(
+        entry,
+        symbol,
+        hit=FETCH_FAILED_HIT,
+        r=None,
+        r_cost=None,
+        holding_sessions=0,
+        reason=reason,
+        market_reason=market_reason,
+    )
 
 
 def _row(
@@ -115,8 +180,14 @@ def _row(
     r_cost: float | None,
     holding_sessions: int,
     reason: str | None = None,
+    entry_time: pd.Timestamp | None = None,
+    exit_time: pd.Timestamp | None = None,
+    llm_r_cost: float | None = None,
+    market_value: float | None = None,
+    market_reason: str | None = None,
 ) -> dict[str, Any]:
     shadow = entry.get("shadow") or {}
+    llm = entry.get("llm") if isinstance(entry.get("llm"), dict) else None
     decided_at = entry["decided_at"]
     outcome = entry.get("outcome")
     return {
@@ -128,34 +199,60 @@ def _row(
         "rank": entry.get("rank"),
         "outcome": outcome,
         "sent": outcome == "sent",
+        "signal_id": entry.get("signal_id"),
+        "entry": entry.get("entry"),
+        "stop": entry.get("stop"),
         "setup_quality": entry.get("setup_quality"),
         "shadow_score": shadow.get("score"),
         "hit": hit,
         "r": r,
         "r_cost": r_cost,
         "holding_sessions": holding_sessions,
+        "entry_time": entry_time,
+        "exit_time": exit_time,
+        "llm_ran": llm is not None,
+        "llm_vetoed": outcome == RankedOutcome.LLM_VETOED,
+        "llm_r_cost": llm_r_cost,
+        "market_r": market_value,
+        "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
+        "market_reason": market_reason,
         "decided_at": decided_at,
         "reason": reason,
     }
 
 
 def _label_one(
-    entry: dict[str, Any], symbol: str, hourly: pd.DataFrame, max_hold_sessions: int, cost_bps: float
+    entry: dict[str, Any],
+    symbol: str,
+    hourly: pd.DataFrame,
+    max_hold_sessions: int,
+    cost_bps: float,
+    market: pd.DataFrame | None,
+    market_reason: str | None,
 ) -> dict[str, Any]:
     direction = entry.get("direction")
     entry_price, stop_price, target_price = entry.get("entry"), entry.get("stop"), entry.get("target")
     if direction not in ("LONG", "SHORT") or entry_price is None or stop_price is None or target_price is None:
-        return _immature_row(entry, symbol)
+        return _immature_row(entry, symbol, market_reason)
     try:
         levels = SetupLevels(
             direction=direction, entry=float(entry_price), stop=float(stop_price), target=float(target_price)
         )
     except ValueError:
         # A malformed geometry (e.g. zero risk) cannot be judged; not the labeler's own IMMATURE.
-        return _immature_row(entry, symbol)
+        return _immature_row(entry, symbol, market_reason)
     outcome = label_bracket(
         levels, entry["decided_at"], hourly, max_hold_sessions=max_hold_sessions, cost_bps_per_side=cost_bps
     )
+    llm_r_cost = _llm_relabel(entry, levels, hourly, max_hold_sessions, cost_bps)
+    market_value = None
+    if (
+        outcome.r_cost is not None
+        and market is not None
+        and outcome.entry_time is not None
+        and outcome.exit_time is not None
+    ):
+        market_value = market_r(direction, levels.entry, levels.stop, outcome.entry_time, outcome.exit_time, market)
     return _row(
         entry,
         symbol,
@@ -163,7 +260,31 @@ def _label_one(
         r=outcome.r,
         r_cost=outcome.r_cost,
         holding_sessions=outcome.holding_sessions,
+        entry_time=outcome.entry_time,
+        exit_time=outcome.exit_time,
+        llm_r_cost=llm_r_cost,
+        market_value=market_value,
+        market_reason=market_reason,
     )
+
+
+def _llm_relabel(
+    entry: dict[str, Any], levels: SetupLevels, hourly: pd.DataFrame, max_hold_sessions: int, cost_bps: float
+) -> float | None:
+    """Cost-adjusted R under the LLM's bracket, only when it differs from the deterministic one."""
+    llm = entry.get("llm")
+    if not isinstance(llm, dict):
+        return None
+    stop, target = llm.get("stop_loss"), llm.get("take_profit")
+    if stop is None or target is None or (float(stop), float(target)) == (levels.stop, levels.target):
+        return None
+    try:
+        llm_levels = SetupLevels(direction=levels.direction, entry=levels.entry, stop=float(stop), target=float(target))
+    except ValueError:
+        return None
+    return label_bracket(
+        llm_levels, entry["decided_at"], hourly, max_hold_sessions=max_hold_sessions, cost_bps_per_side=cost_bps
+    ).r_cost
 
 
 def label_journaled(
@@ -174,6 +295,7 @@ def label_journaled(
     cost_bps: float = DEFAULT_COST_BPS_PER_SIDE,
     now: datetime | None = None,
     max_requests_per_minute: int = 150,
+    market_symbol: str | None = MARKET_PROXY_SYMBOL,
 ) -> pd.DataFrame:
     """One row per journaled ranked candidate, labelled with its realized bracket outcome.
 
@@ -197,20 +319,41 @@ def label_journaled(
     except Exception:
         pacer = None
 
-    rows: list[dict[str, Any]] = []
-    for symbol, entries in by_symbol.items():
+    def fetch(symbol: str, start: datetime) -> pd.DataFrame | str:
         if pacer is not None:
             pacer.acquire()
-        start = min(e["decided_at"] for e in entries)
         try:
-            hourly = bars.fetch_bars(symbol, _BAR_TIMEFRAME, start, now, adjustment="raw")
+            return bars.fetch_bars(symbol, _BAR_TIMEFRAME, start, now, adjustment="raw")
         except Exception as exc:
-            reason = f"{type(exc).__name__}: {exc}"
-            rows.extend(_fetch_failed_row(entry, symbol, reason) for entry in entries)
-            continue
-        rows.extend(_label_one(entry, symbol, hourly, max_hold_sessions, cost_bps) for entry in entries)
+            return f"{type(exc).__name__}: {exc}"
 
-    return pd.DataFrame(rows, columns=list(_COLUMNS))
+    # Every candidate symbol first (once each), then the market proxy once, then label.
+    fetched = {symbol: fetch(symbol, min(e["decided_at"] for e in entries)) for symbol, entries in by_symbol.items()}
+    market: pd.DataFrame | None = None
+    market_reason: str | None = None
+    if market_symbol is not None and by_symbol:
+        start = min(e["decided_at"] for entries in by_symbol.values() for e in entries)
+        result = fetch(market_symbol, start)
+        if isinstance(result, str):
+            market_reason = result
+        else:
+            market = result
+
+    rows: list[dict[str, Any]] = []
+    for symbol, entries in by_symbol.items():
+        hourly = fetched[symbol]
+        if isinstance(hourly, str):
+            rows.extend(_fetch_failed_row(entry, symbol, hourly, market_reason) for entry in entries)
+            continue
+        rows.extend(
+            _label_one(entry, symbol, hourly, max_hold_sessions, cost_bps, market, market_reason) for entry in entries
+        )
+
+    frame = pd.DataFrame(rows, columns=list(_COLUMNS))
+    # Keep "absent" a real None (and signal ids integers), not NaN, when a column mixes values and Nones.
+    for column in ("signal_id", "llm_r_cost"):
+        frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
+    return frame
 
 
 def _selection_by_score(frame: pd.DataFrame, score_column: str) -> dict[str, Any] | None:
@@ -258,6 +401,17 @@ def _base_rate(frame: pd.DataFrame) -> dict[str, Any] | None:
     }
 
 
+def _exposure(frame: pd.DataFrame) -> dict[str, Any] | None:
+    if frame.empty:
+        return None
+    return {
+        "n": len(frame),
+        "mean_r_cost": float(frame["r_cost"].mean()),
+        "mean_market_r": float(frame["market_r"].mean()),
+        "mean_excess_r": float(frame["excess_r"].mean()),
+    }
+
+
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     """Counts by outcome/maturity, base rates, and per-scan selection quality by scorer."""
     if frame.empty:
@@ -272,6 +426,16 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
             },
             "base_rates": {"sent": None, "runner_up": None},
             "selection": {"setup_quality": None, "shadow_score": None, "random": None},
+            "llm_gate": {
+                "ran": 0,
+                "vetoed": 0,
+                "approved": 0,
+                "vetoed_mean_r_cost": None,
+                "approved_mean_r_cost": None,
+                "bracket_edited": 0,
+                "bracket_edit_mean_delta_r": None,
+            },
+            "market_exposure": {"sent": None, "runner_up": None},
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -302,6 +466,24 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "shadow_score": _selection_by_score(mature, "shadow_score") if has_shadow_scores else None,
         "random": _selection_random(mature),
     }
+    ran = mature.loc[mature["llm_ran"].astype(bool)]
+    vetoed = ran.loc[ran["llm_vetoed"].astype(bool)]
+    approved = ran.loc[~ran["llm_vetoed"].astype(bool)]
+    edited = ran.dropna(subset=["llm_r_cost"]).astype({"llm_r_cost": float})
+    llm_gate = {
+        "ran": len(ran),
+        "vetoed": len(vetoed),
+        "approved": len(approved),
+        "vetoed_mean_r_cost": float(vetoed["r_cost"].mean()) if len(vetoed) else None,
+        "approved_mean_r_cost": float(approved["r_cost"].mean()) if len(approved) else None,
+        "bracket_edited": len(edited),
+        "bracket_edit_mean_delta_r": float((edited["llm_r_cost"] - edited["r_cost"]).mean()) if len(edited) else None,
+    }
+    controlled = mature.dropna(subset=["market_r"])
+    market_exposure = {
+        "sent": _exposure(controlled.loc[controlled["sent"].astype(bool)]),
+        "runner_up": _exposure(controlled.loc[~controlled["sent"].astype(bool)]),
+    }
     fetch_failed_reasons: dict[str, int] = {}
     if is_fetch_failed.any():
         fetch_failed_reasons = frame.loc[is_fetch_failed, "reason"].value_counts().to_dict()
@@ -314,4 +496,6 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "counts": counts,
         "base_rates": base_rates,
         "selection": selection,
+        "llm_gate": llm_gate,
+        "market_exposure": market_exposure,
     }
