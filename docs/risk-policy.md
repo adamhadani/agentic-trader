@@ -19,7 +19,10 @@ function in `agentic_trader/risk/rules.py` that takes typed inputs and returns a
 
 Layers differ only in the **book** they pass and in the observed **budget inputs**
 (equity, drawdown, regime). No layer re-derives a rule's arithmetic, so the scan and
-admission cannot disagree about the same card on the same book.
+admission cannot disagree about the same card given the same book and the same budget
+inputs. Those inputs are not always the same: admission on Alpaca values held positions
+at broker marks, the scan at their recorded values (see
+[Known divergences](#known-divergences)).
 
 Rules never read `AppConfig` and never perform I/O. The callers own the economic
 calendar, session provider, regime detector, earnings calendar and database, and pass
@@ -29,9 +32,9 @@ in what they observed.
 
 | Type | Module | What it is |
 | --- | --- | --- |
-| `RiskLimits` | `limits.py` | A frozen snapshot of every limit the rules read, built by `RiskLimits.from_config(config)`. It holds cash, the sizing policy, the per-trade risk/notional/quantity caps, the aggregate stop-risk percentage, the portfolio and asset-class notional caps, the concurrent and correlated position limits, the normalised correlation groups, the minimum reward/risk, the lockout minutes, the earnings blackout days and `enforce_rth`. A class without a configured cap (FX, or a cap set to `None`) has no entry in `asset_class_caps` and is uncapped. |
+| `RiskLimits` | `limits.py` | A frozen snapshot of every limit the rules read, built by `RiskLimits.from_config(config)`. It holds cash, the four drawdown-policy fields (`drawdown_policy` returns them as a frozen `DrawdownPolicy`), the per-trade risk/notional/quantity caps, the aggregate stop-risk percentage, the portfolio and asset-class notional caps, the concurrent and correlated position limits, the normalised correlation groups, the minimum reward/risk, the lockout minutes, the earnings blackout days and `enforce_rth`. A class without a configured cap (FX, or a cap set to `None`) has no entry in `asset_class_caps` and is uncapped. `from_config` raises `ValueError`, naming the config field, when a cap is not finite and non-negative or a ratio (the minimum reward/risk, a drawdown-policy value) is not finite. |
 | `BookPosition`, `Book` | `book.py` | What the desk already holds. `Book.from_signal_rows(rows, reservations=…)` reads `signals` rows (`contract` or `symbol`, `direction`, `asset_class`, `notional_value`, `risk_dollars`, `status`). With `reservations=True`, a `SUBMITTING` row is a reservation. A missing, non-numeric, non-finite or negative `notional_value` or `risk_dollars` makes the position invalid (`Book.invalid`); it is never coerced to zero. |
-| `EntryIntent` | `rules.py` | What is about to be risked: symbol, direction, asset class, quantity, entry, stop, target, multiplier, and an optional current price and strategy. The constructor is the validation boundary. Direction must be LONG or SHORT (any case). Quantity, prices, multiplier and a known current price must be finite and positive, otherwise `ValueError`. An inverted bracket is a valid intent; `reward_risk` refuses it. Derived values: the normalised `key`, `risk_distance`, `reward_distance`, `risk_dollars`, `exposure_price` (`max(entry, current_price)`, or the entry when no current price is known) and `notional`. |
+| `EntryIntent` | `rules.py` | What is about to be risked: symbol, direction, asset class, quantity, entry, stop, target, multiplier, and an optional current price (the strategy is not part of it: `regime_breakout` takes the strategy separately). The constructor is the validation boundary. Direction must be LONG or SHORT (any case). Quantity, prices, multiplier and a known current price must be finite and positive, otherwise `ValueError`. An inverted bracket is a valid intent; `reward_risk` refuses it. Derived values: the normalised `key`, `risk_distance`, `reward_distance`, `risk_dollars`, `exposure_price` (`max(entry, current_price)`, or the entry when no current price is known) and `notional`. |
 | `RiskBudget` | `capital.py` | The per-trade budget: `capital`, `drawdown_pct`, `drawdown_factor`, `macro_factor` and `dollars`. |
 | `Rejection`, `RiskRule` | `rules.py` | A refusal: the stable rule id (`RiskRule`, a `StrEnum`) plus the operator-facing reason. `str(rejection)` is the reason. |
 
@@ -49,7 +52,7 @@ only place this product is computed.
 
 - `cash` is `portfolio.cash`. It is a ceiling: observed equity can only lower the
   capital (`risk_capital`). `equity=None` means the configured cash.
-- `drawdown_factor` (`drawdown_risk_factor`) is 1 up to
+- `drawdown_factor` (`drawdown_risk_factor`, on `RiskLimits.drawdown_policy`) is 1 up to
   `sizing.drawdown_haircut_threshold_pct`. It falls linearly to
   `sizing.drawdown_min_risk_multiplier` and is 0 at `sizing.max_drawdown_stop_pct`. It
   is always 1 when `sizing.drawdown_gating_enabled` is false.
@@ -91,15 +94,15 @@ paths are under `tests/`.
 | `per_trade_risk` | `EntryIntent.risk_dollars`, `RiskBudget.dollars` | sizing caps every tier at the budget; the post-LLM final-bracket check | regime gate; re-pricing caps the replacement quantity at the same budget | yes, and in the preflight regime gate | `Order exceeds the configured per-trade risk cap.` When the drawdown or macro factor is below 1: `Order exceeds the drawdown- and macro-adjusted per-trade risk cap; request a fresh scan for smaller sizing.` | `risk/test_rules.py`, `risk/test_capital.py`, `agent/test_tap_risk_policy.py`, `execution/test_position_sizing.py` |
 | `per_trade_notional` | notional at `max(entry, current_price)`, `max_trade_notional_cap` | sizing caps the quantity | re-pricing caps the replacement quantity | yes; capacity passes `max(limit, ask, last trade)` as the current price | `Order exceeds the configured per-trade notional cap.` | `risk/test_rules.py`, `execution/test_entry_capacity.py`, `workflows/test_entries.py` |
 | `quantity_cap` | quantity, asset class, `max_shares_per_trade` / `max_contracts_per_trade` | sizing caps the quantity | re-pricing caps the replacement quantity | yes | `Order exceeds the configured quantity cap.` | `risk/test_rules.py`, `workflows/test_entries.py` |
-| `reward_risk` | bracket, `required_reward_risk(limits, regime.min_rr_threshold)` | the deterministic target is built at the required ratio, the LLM's target is clamped to it, and the final-bracket check runs | regime gate at the cached regime's ratio; re-pricing judges the current price at the same ratio | `admission_gates` at the configured minimum; the preflight regime gate at the refreshed regime's ratio | `Reward/risk {rr:.2f} is below the required {required:.2f}.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py`, `execution/test_entry_capacity.py` |
+| `reward_risk` | bracket, `required_reward_risk(limits, regime.min_rr_threshold)` | the deterministic target is built at the required ratio; the regime gate checks the bracket at that ratio, which only a versioned alpha-policy bracket can fail; the LLM's target is clamped to it, and the final-bracket check runs | regime gate at the cached regime's ratio; re-pricing judges the current price at the same ratio | `admission_gates` at the configured minimum; the preflight regime gate at the refreshed regime's ratio | `Reward/risk {rr:.2f} is below the required {required:.2f}.` | `risk/test_rules.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py`, `execution/test_entry_capacity.py` |
 | `aggregate_stop_risk` | book planned risk plus the intent's, `RiskBudget`, `max_stop_risk_pct` | `book_gates` | — | yes | `Order would breach the aggregate planned stop-risk budget.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `execution/test_entry_capacity.py` |
 | `concurrent_positions` | book count, `max_concurrent_positions` | `book_gates` | — | yes | `Maximum concurrent positions ({max}) reached.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_risk_policy_integration.py` |
-| `same_symbol` | normalised symbol, book | — | — | yes | `Symbol already has a position or entry reservation; adding/netting requires a separate reviewed plan.` | `risk/test_rules.py` |
+| `same_symbol` | normalised symbol, book | `book_gates`, after `concurrent_positions` | — | yes | `Symbol already has a position or entry reservation; adding/netting requires a separate reviewed plan.` | `risk/test_rules.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py` |
 | `portfolio_notional` | book notional plus the intent's, `max_notional_exposure` | `book_gates` | — | yes | `Portfolio notional would reach ${total:,.0f}, above the ${cap:,.0f} ceiling.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `workflows/test_entries.py` |
 | `asset_class_notional` | the class's book notional plus the intent's, the class cap | `book_gates` | — | yes | `{ASSET_CLASS} notional would reach ${total:,.0f}, above the ${cap:,.0f} ceiling.` | `risk/test_rules.py`, `execution/test_risk_budgeting.py`, `execution/test_entry_capacity.py` |
 | `correlation_group` | normalised groups, same-direction book positions, `max_correlated_positions` | `book_gates` | — | yes | `Correlation group '{group}' already has {n} {DIRECTION} position(s) ({symbols}); max {max}.` | `risk/test_rules.py`, `risk/test_limits.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_risk_policy_integration.py` |
 | `macro_lockout` | the calendar's tier-1 event (title, timezone-aware time), now, `risk.lockout_pre_event_minutes` / `lockout_post_event_minutes` | evaluator gate | tap gate | preflight macro check, on both broker branches | `Macro event lockout: {title} at {HH:MM} UTC.` An untitled event prints `scheduled release`. | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `workflows/test_entries_macro.py`, `agent/test_risk_policy_integration.py` |
-| `earnings_blackout` | next earnings date, the New York date, `risk.earnings_blackout_days` (predicate `earnings_days_out`) | evaluator gate, equities | tap gate, equities | — | `Earnings Blackout: {SYMBOL} reports {YYYY-MM-DD} {before open \| after close \| timing unspecified} (in {n} day(s)) — within {days}-day blackout` | `risk/test_rules.py`, `agent/test_earnings.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
+| `earnings_blackout` | next earnings date, the New York date, `risk.earnings_blackout_days` (predicate `earnings_days_out`) | evaluator gate, equities | tap gate, equities | — | `Earnings Blackout: {SYMBOL} reports {YYYY-MM-DD} {before open \| after close \| timing unspecified} (in {n} day(s)) — within {days}-day blackout` (the prefix `Earnings Blackout: ` is added by the caller) | `risk/test_rules.py`, `agent/test_earnings.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
 | `session_closed` | the session's `is_open`, the provider's detail | evaluator gate | tap, re-evaluate, `/scan`, card validity, expired-card reply | — | `Market session closed: {detail}.` (`Market session closed.` without detail) | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py` |
 | `session_not_rth` | the session's `is_rth`, `session.enforce_rth` | evaluator gate | as `session_closed` | — | `Outside regular trading hours.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py` |
 | `regime_breakout` | strategy, `regime.breakout_allowed` | evaluator gate | tap regime gate | preflight regime gate, on both broker branches | `Volatility/macro policy suppresses breakout entries.` | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `agent/test_evaluator.py` |
@@ -143,14 +146,16 @@ Most layers show the rule's text unchanged. Some layers wrap it:
    non-positive or non-finite configured multiplier, is refused with admission's text
    `Quantity and bracket prices must be finite and positive.`
 3. `book_gates` on the scan's book, in its fixed order: `exposure_unknown`,
-   `drawdown_halt`, `aggregate_stop_risk`, `concurrent_positions`,
+   `drawdown_halt`, `aggregate_stop_risk`, `concurrent_positions`, `same_symbol`,
    `portfolio_notional`, `asset_class_notional`, `correlation_group`. The first
    rejection decides.
 4. The statistical return-correlation check, which is not a shared rule (see below).
 5. `macro_lockout`. The calendar finds the event on the evaluator's own clock, and the
    rule judges the same instant.
 6. The earnings blackout (equities).
-7. `regime_breakout`.
+7. The regime rules: `regime_breakout`, then `reward_risk` on the bracket at the
+   required ratio (the tap-time regime gate's order and text). A native target is built
+   at that ratio and always passes; a versioned alpha-policy bracket can fail it.
 8. `entry_session_open` (`session_closed`, `session_not_rth`).
 9. The LLM, when enabled, then the final-bracket check.
 
@@ -161,9 +166,10 @@ LLM veto carry no rule id, and the evaluator ignores any rule id in the LLM's an
 `run_scan` evaluates in two phases. The **collect** phase is a deterministic pass
 against the book at the start of the scan. The **send** phase re-evaluates the winners,
 with the LLM when enabled, against that book plus the cards already sent in this scan.
-A collect-phase refusal is logged as `candidate_rejected` with `phase: collect` and the
-reason. It does not appear in the runner-up list or the digest. A send-phase refusal is a
-runner-up. Separately, a scan that starts inside a lockout window is skipped as a whole
+A collect-phase refusal is logged as `candidate_rejected` with `phase: collect`, the
+reason and `rejection_rule`. It does not appear in the runner-up list or the digest. A
+send-phase refusal is a runner-up and is logged with the same fields and `phase: send`.
+Separately, a scan that starts inside a lockout window is skipped as a whole
 and logged as `macro_lockout_active`.
 
 ### Tap and re-pricing
@@ -245,6 +251,21 @@ A position whose `notional_value` or `risk_dollars` is missing, non-numeric, non
 or negative makes `exposure_known` refuse at every layer before any numeric rule runs.
 `book_gates` then reports that rejection alone.
 
+The scan has no broker evidence, so its book carries each position's recorded
+`notional_value` and `risk_dollars`. Alpaca capacity values an exact protected holding at
+`max(recorded notional, quantity × max(mark, entry))` and `max(recorded risk, quantity ×
+(mark − stop))` (the mark-to-stop giveback) before calling admission.
+
+### Known divergences
+
+The guarantee is "same book and same budget inputs, same verdict". These cases give the
+scan and admission different inputs on purpose:
+
+| Divergence | Effect |
+| --- | --- |
+| **Broker-marked Alpaca book (2026-10-06).** Admission's Alpaca book takes the larger of the recorded and broker-mark values for each held position (`execution/capacity.py`); the scan's book uses recorded values. | A hold that is up several R counts more planned risk (its mark-to-stop giveback) and more notional at admission than at the scan, so `aggregate_stop_risk`, `portfolio_notional` or `asset_class_notional` can refuse at Execute a card the scan sent. A falling hold never counts less than its recorded values. The simulator's admission uses recorded values, like the scan. |
+| **Budget inputs (by design).** The scan sizes on observed equity and drawdown with the regime multiplier; the tap gate uses configured cash, no drawdown and the cached regime; admission uses observed equity and drawdown (see the table under [The per-trade budget](#the-per-trade-budget)). | The scan's budget is never above the tap gate's or admission's for unchanged equity, drawdown and regime; a change between the scan and Execute can refuse a card. |
+
 ## Behaviour changes on 2026-10-06
 
 The operator approved decisions 1–7 on 2026-10-06. Items 8–10 are the hardening that
@@ -271,6 +292,10 @@ came with them. Everything else that decides an entry is unchanged.
    (`research/setups/replay.py`) and the legacy backtest share this function at the
    configured ratio and may place a target up to one tick farther than before; studies
    completed before 2026-10-06 used the earlier nearest-tick rounding.
+   *Extension (2026-10-06):* a versioned alpha policy keeps its own bracket, and the scan
+   refuses it with `reward_risk`'s text (`rejection_rule` `reward_risk`) when that bracket
+   is below the required ratio, the refusal the tap would give. A 2.0 R policy bracket is
+   therefore refused at scan time under a 2.2 regime and sent under 2.0.
 4. **Notional and class caps (decision 4, 2026-10-06).** Notional is priced at
    `max(entry, current_price)` when a current price is known. FX and any class without a
    configured cap are explicitly uncapped at every layer.
@@ -279,6 +304,11 @@ came with them. Everything else that decides an entry is unchanged.
    card, so a full book or an exhausted stop-risk budget stops the card at scan time. A
    refusal in the collect phase is in the log and in the evaluation's `rejection_rule`,
    not in the Telegram runner-up list (backlog below).
+   *Extension (2026-10-06):* the scan also runs `same_symbol` (after
+   `concurrent_positions`), so a card on a symbol the book already holds is refused at
+   scan time instead of at Execute. The scan's book includes the cards this scan already
+   sent, so a second same-symbol card in one scan (for example another strategy) is
+   refused too.
 6. **Macro check at admission on both broker branches (decision 6, as implemented,
    2026-10-06).** The preflight's injected macro check (the lockout **and** the regime
    gate) runs on the simulated and the Alpaca branch, after the Alpaca price-drift check
@@ -336,18 +366,23 @@ Unchanged by design: the earnings predicate (decision 8: the scan and the tap sh
   - 2,000 generated cases with valid intents and hostile books and limits: NaN, ±inf,
     negative or missing exposure; mixed-case, slashed and empty symbols; unknown classes
     and directions; empty and overlapping groups; drawdown past the stop; macro
-    multipliers 0 and 2. No rule raises, every rejection carries a non-empty reason, and
-    any invalid position makes both `book_gates` and `admission_gates` report
-    `exposure_unknown` first.
+    multipliers 0 and 2. The generator (`random_config`) also draws the stop-risk
+    percentage, the portfolio, per-trade and class notional caps (including uncapped),
+    the minimum reward/risk and the drawdown policy (gating on/off, thresholds, floor).
+    No rule raises, every rejection carries a non-empty reason, and any invalid position
+    makes both `book_gates` and `admission_gates` report `exposure_unknown` first.
   - 500 cases: the book-gate result is independent of position order and monotone, so
     adding a position never turns a rejection into a pass.
 - **`tests/risk/test_consistency.py`:**
-  - On 1,500 seeded books, `book_gates`' first shared-rule rejection equals
-    `admission_gates`' whenever admission's first rejection is a shared rule. A case
-    where an admission-only rule refuses first (reward/risk, per-trade caps, same
-    symbol) is skipped.
-  - `reservation_rejection` on an equivalent `OrderRequest` returns exactly
-    `admission_gates`' reason, and passes once the held position is opposite-direction.
+  - On 1,500 seeded cases (drawn limits from `random_config`, books with positions and
+    reservations, equity, drawdown, current price and target), `reservation_rejection` on
+    the equivalent `OrderRequest` returns exactly `admission_gates`' reason (or `None`),
+    and `book_gates`' first shared-rule rejection (`same_symbol` included) equals
+    `admission_gates`' whenever admission's first rejection is a shared rule. A case where
+    an admission-only rule refuses first (reward/risk, the per-trade caps) is skipped for
+    the second comparison only.
+  - A hand-built correlation case: `reservation_rejection` returns the rule's reason and
+    passes once the held position is opposite-direction.
 - **`tests/risk/test_rules.py`, `test_capital.py`, `test_book.py`, `test_limits.py`:** one
   table per rule covering pass, the boundary (equal to the cap), fail, an uncapped class,
   empty groups, normalised symbols, the reservation flag and unknown exposure, plus the

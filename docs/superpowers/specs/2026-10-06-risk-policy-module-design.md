@@ -198,3 +198,28 @@ Rulings made during the task reviews. They supersede the text above where they d
 - **Card budget membership.** The per-group card cap keeps
   `TradingCopilot.correlation_groups_of`; its root/slash matching is equivalent to
   `normalize_symbol`. Sharing the function is left to the card-selector seam (L3).
+
+Final fix wave after the whole-branch review (2026-10-06):
+
+- **Decision 5 extension: `same_symbol` at the scan.** `book_gates` runs `same_symbol`
+  after `concurrent_positions` (its relative place in `admission_gates`), so a card on a
+  symbol the scan's book already holds (an open position, or a card this scan already
+  sent) is refused at scan time with `rejection_rule` `same_symbol`. Same dead-on-arrival
+  class as decision 5.
+- **Decision 3 extension: alpha-policy brackets at the scan.** A versioned alpha policy
+  keeps its own bracket; the evaluator's regime gate runs `reward_risk` on the bracket at
+  `required_reward_risk` after `regime_breakout`, so a policy bracket below the regime's
+  ratio is refused at scan time with the text the tap would give. Native targets are
+  built at that ratio and always pass.
+- **Known divergence, not a code change: the broker-marked Alpaca book.** Admission on
+  Alpaca values held positions at the larger of recorded and broker-mark exposure
+  (`execution/capacity.py`); the scan has no broker evidence and uses recorded values.
+  The guarantee is narrowed to "the same book and the same budget inputs give the same
+  verdict"; [risk policy](../../risk-policy.md#known-divergences) lists the divergence and
+  its effect.
+- **Types.** `EntryIntent` has no `strategy` field (`regime_breakout` takes the strategy
+  separately). `RiskLimits` snapshots the four drawdown-policy fields instead of holding
+  the sizing config, and `drawdown_policy` returns them as a frozen `DrawdownPolicy`
+  (`drawdown_risk_factor` accepts it or the sizing config). `RiskLimits.from_config`
+  raises `ValueError` when a cap is not finite and non-negative or a ratio is not
+  finite.

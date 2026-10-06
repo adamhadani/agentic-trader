@@ -44,6 +44,7 @@ Read [CLAUDE.md](CLAUDE.md), [development notes](docs/development-notes.md), and
 - Entry authorization uses `EntryExecutionService` and the durable FIFO. Reserve
   risk atomically; only a valid preflight token may commit `submitting`. Never
   expire/replay a broker submission. Recovery looks up the original client ID.
+  Every entry-risk rule lives once in `agentic_trader/risk`: see [risk policy](docs/risk-policy.md).
 
 - **Paper probes:** `probe` is a third registry list, valid only in the `…/alpaca:paper`
   scope. `probe_block_reason` is the single liveness rule for snapshot, sweep and

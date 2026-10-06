@@ -61,7 +61,8 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Every entry-risk rule (per-trade budget, notional and class caps, concurrent positions,
    aggregate stop risk, correlation group, reward/risk, macro lockout, session, earnings,
    regime) has one implementation in `agentic_trader/risk`; the evaluator, tap gate,
-   re-pricing and admission differ only in the book they pass ([risk policy](docs/risk-policy.md)).
+   re-pricing and admission differ only in the book they pass and the observed budget inputs
+   ([risk policy](docs/risk-policy.md); admission's Alpaca book is broker-marked).
 
    **Paper probes:** `probe` is a third registry list, valid only in the `…/alpaca:paper`
    scope. `probe_block_reason` is the single liveness rule for snapshot, sweep and
