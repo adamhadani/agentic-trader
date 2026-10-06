@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from agentic_trader.config import AppConfig, PositionSizingConfig
 from agentic_trader.constants import ExecutionMode
-from agentic_trader.risk.limits import RiskLimits
+from agentic_trader.risk.limits import DrawdownPolicy, RiskLimits
 
 
 __all__ = [
@@ -42,7 +42,9 @@ def risk_capital(mandate: float, current_equity: float | None = None) -> float:
     return min(mandate, current_equity)
 
 
-def drawdown_risk_factor(drawdown_pct: float, policy: PositionSizingConfig) -> float:
+def drawdown_risk_factor(drawdown_pct: float, policy: PositionSizingConfig | DrawdownPolicy) -> float:
+    """1 up to the haircut threshold, falling linearly to the minimum multiplier, 0 at the sizing halt; always 1
+    when gating is disabled. ``policy`` is the sizing config or a ``RiskLimits.drawdown_policy`` snapshot."""
     if not math.isfinite(drawdown_pct) or drawdown_pct < 0:
         raise ValueError("Drawdown must be a finite nonnegative ratio")
     if not policy.drawdown_gating_enabled:
@@ -80,7 +82,7 @@ def per_trade_risk_budget(
 ) -> RiskBudget:
     """``min(cash, equity) x max_risk_pct_cap x drawdown_factor x macro_factor``."""
     capital = risk_capital(limits.cash, equity)
-    drawdown = drawdown_risk_factor(drawdown_pct, limits.sizing)
+    drawdown = drawdown_risk_factor(drawdown_pct, limits.drawdown_policy)
     macro = macro_risk_factor(macro_multiplier)
     return RiskBudget(
         capital=capital,

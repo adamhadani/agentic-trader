@@ -55,6 +55,7 @@ def evaluation(candidate_, approved=True):
     return SimpleNamespace(
         approved=approved,
         rejection_reason=None if approved else "risk",
+        rejection_rule=None,  # as LLMTradeEvaluation: no shared rule behind this stub's refusal
         contract=candidate_.contract,
         direction=candidate_.direction,
         entry_price=100.0,

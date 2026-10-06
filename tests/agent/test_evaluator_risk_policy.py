@@ -11,7 +11,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from agentic_trader.agent.calendar import MacroEvent
-from agentic_trader.constants import AssetClass
+from agentic_trader.agent.copilot import TradingCopilot
+from agentic_trader.broker.base import OrderRequest
+from agentic_trader.constants import AssetClass, OrderSide
 from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, bracket_prices, entry_limit
 from agentic_trader.risk import RiskLimits, RiskRule, meets_min_reward_risk, per_trade_risk_budget
@@ -71,6 +73,18 @@ async def test_full_book_is_rejected_at_scan_time(evaluator_factory):  # noqa: F
     )
     assert result.approved is False and result.rejection_rule == RiskRule.CONCURRENT_POSITIONS
     assert result.rejection_reason == "Maximum concurrent positions (2) reached."
+
+
+async def test_a_symbol_the_book_holds_is_rejected_at_scan_time(evaluator_factory):  # noqa: F811
+    evaluator = evaluator_factory()
+    held = {**book_row("MES", asset_class="FUTURES"), "status": "EXECUTED"}  # root spelling of the card's /MES
+    result = await evaluator.evaluate_candidate(make_candidate(), use_llm=False, active_positions=[held])
+    assert result.approved is False and result.rejection_rule == RiskRule.SAME_SYMBOL
+    assert result.rejection_reason == (
+        "Symbol already has a position or entry reservation; adding/netting requires a separate reviewed plan."
+    )
+    other = {**book_row("/MNQ", asset_class="FUTURES"), "status": "EXECUTED"}
+    assert (await evaluator.evaluate_candidate(make_candidate(), use_llm=False, active_positions=[other])).approved
 
 
 async def test_exhausted_stop_risk_budget_is_rejected_at_scan_time(evaluator_factory):  # noqa: F811
@@ -159,29 +173,62 @@ async def test_a_short_target_is_built_at_the_regime_adjusted_ratio(evaluator_fa
     assert meets_min_reward_risk(reward, risk, 2.2) and result.risk_reward_ratio >= 2.2
 
 
-async def test_an_alpha_policy_card_keeps_its_policy_bracket_under_a_higher_regime_ratio(
+def _alpha_policy_candidate():
+    """A /MES candidate on a versioned 2.0 reward/risk bracket, with its entry and policy bracket."""
+    policy = AlphaExecutionPolicy(tick_size=0.25)
+    candidate = make_candidate().model_copy(
+        update={"alpha_policy": policy.to_dict(), "alpha_version": "frozen-version"}
+    )
+    entry = entry_limit(candidate.current_price, policy)
+    bracket = bracket_prices(
+        entry, 1, candidate.atr_14, candidate.recent_swing_low, candidate.recent_swing_high, policy
+    )
+    return candidate, entry, bracket
+
+
+async def test_an_alpha_policy_card_keeps_its_policy_bracket_at_the_required_ratio(
     evaluator_factory,  # noqa: F811
     monkeypatch,
 ):
     evaluator = evaluator_factory()
     evaluator.config.risk.min_risk_reward_ratio = 2.0
-    set_regime_min_rr(evaluator, 2.2)
-    policy = AlphaExecutionPolicy(tick_size=0.25)  # a versioned 2.0 reward/risk bracket
-    candidate = make_candidate().model_copy(
-        update={"alpha_policy": policy.to_dict(), "alpha_version": "frozen-version"}
-    )
-    entry = entry_limit(candidate.current_price, policy)
-    policy_bracket = bracket_prices(
-        entry, 1, candidate.atr_14, candidate.recent_swing_low, candidate.recent_swing_high, policy
-    )
+    set_regime_min_rr(evaluator, 2.0)
+    candidate, entry, policy_bracket = _alpha_policy_candidate()
     deterministic = await evaluator.evaluate_candidate(candidate, use_llm=False)
     assert deterministic.approved is True
     assert (deterministic.stop_loss, deterministic.take_profit) == policy_bracket
-    # Neither the regime's 2.2 nor an LLM bracket rebuilds a versioned alpha's protection.
+    # An LLM bracket never rebuilds a versioned alpha's protection.
     evaluator.config.openai_api_key = "isolated-test-placeholder"
     llm_completion(monkeypatch, stop_loss=entry - 60.0, take_profit=entry + 150.0)
     result = await evaluator.evaluate_candidate(candidate, use_llm=True)
     assert (result.stop_loss, result.take_profit) == policy_bracket
+
+
+async def test_an_alpha_policy_bracket_below_the_regime_ratio_is_rejected_at_scan_time(
+    evaluator_factory,  # noqa: F811
+):
+    evaluator = evaluator_factory()
+    evaluator.config.risk.min_risk_reward_ratio = 2.0
+    set_regime_min_rr(evaluator, 2.2)
+    candidate, entry, (stop, target) = _alpha_policy_candidate()
+    result = await evaluator.evaluate_candidate(candidate, use_llm=False)
+    assert result.approved is False and result.rejection_rule == RiskRule.REWARD_RISK
+    # The tap-time regime gate would refuse the same card with the same text.
+    order = OrderRequest(
+        symbol=candidate.contract,
+        asset_class=AssetClass.FUTURES,
+        direction="LONG",
+        side=OrderSide.BUY,
+        quantity=1.0,
+        entry_price=entry,
+        stop_loss=stop,
+        take_profit=target,
+    )
+    regime = evaluator.regime_detector.get_regime.return_value
+    tap_reason = TradingCopilot._regime_gate(
+        SimpleNamespace(config=evaluator.config), order, {"strategy": candidate.strategy}, regime
+    )
+    assert result.rejection_reason == tap_reason == "Reward/risk 2.00 is below the required 2.20."
 
 
 async def test_llm_target_below_the_regime_ratio_reverts_to_the_regime_adjusted_target(

@@ -34,7 +34,10 @@ def pick(r, options):
     return options[int(r.integers(len(options)))]
 
 
-def random_limits(r) -> RiskLimits:
+def random_config(r) -> AppConfig:
+    """A config whose every limit a rule reads is drawn: capital, position and group limits, the stop-risk
+    percentage, the notional and class caps (``None`` is uncapped), the minimum reward/risk and the drawdown policy.
+    """
     config = AppConfig()
     config.portfolio.cash = float(r.choice([1_000.0, 100_000.0, 1e9]))
     config.portfolio.max_concurrent_positions = int(r.integers(0, 6))
@@ -43,7 +46,21 @@ def random_limits(r) -> RiskLimits:
         r, [{}, {"g": ["/MES", "SPY", "aapl"]}, {"a": ["AAPL"], "b": ["AAPL", "MSFT"]}]
     )
     config.portfolio.max_crypto_exposure = pick(r, [None, 20_000.0])
-    return RiskLimits.from_config(config)
+    config.portfolio.max_stop_risk_pct = float(r.choice([0.005, 0.02, 0.1]))
+    config.portfolio.max_notional_exposure = float(r.choice([10_000.0, 60_000.0, 1e7]))
+    config.portfolio.max_equity_exposure = pick(r, [None, 10_000.0, 40_000.0])
+    config.portfolio.max_futures_exposure = pick(r, [None, 10_000.0, 40_000.0])
+    config.sizing.max_trade_notional_cap = float(r.choice([5_000.0, 30_000.0, 1e7]))
+    config.risk.min_risk_reward_ratio = float(r.choice([1.5, 2.0, 3.0]))
+    config.sizing.drawdown_gating_enabled = bool(r.integers(0, 2))
+    threshold, halt = pick(r, [(0.03, 0.06), (0.0, 0.02), (0.1, 0.5)])
+    config.sizing.drawdown_haircut_threshold_pct, config.sizing.max_drawdown_stop_pct = threshold, halt
+    config.sizing.drawdown_min_risk_multiplier = float(r.choice([0.1, 0.5, 1.0]))
+    return config
+
+
+def random_limits(r) -> RiskLimits:
+    return RiskLimits.from_config(random_config(r))
 
 
 def random_position(r) -> BookPosition:

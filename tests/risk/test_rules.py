@@ -94,6 +94,9 @@ def test_intent_derived_values_and_validation():
     ):
         with pytest.raises(ValueError):
             intent(**bad)
+    # The strategy is not part of what is risked: regime_breakout takes it separately.
+    with pytest.raises(TypeError):
+        intent(strategy="SQUEEZE_BREAKOUT")
 
 
 def test_exposure_known_rejects_any_invalid_position():
@@ -307,6 +310,20 @@ def test_composites_fix_the_order():
         and book_gates(intent(), Book(), BUDGET, limits()) == ()
     )
     assert str(Rejection(RiskRule.SAME_SYMBOL, "x")) == "x"
+
+
+def test_book_gates_refuse_a_held_symbol_after_concurrent_positions():
+    # An opposite-direction hold of the same (differently spelled) symbol: no correlation-group refusal,
+    # only same_symbol, at the scan and at admission alike.
+    held = Book((position("aapl", direction="SHORT"),))
+    assert [r.rule for r in book_gates(intent(), held, BUDGET, limits())] == [RiskRule.SAME_SYMBOL]
+    assert admission_gates(intent(), held, BUDGET, limits()).rule is RiskRule.SAME_SYMBOL
+    full = Book((position("AAPL", direction="SHORT"), *[position(f"S{i}") for i in range(3)]))
+    assert [r.rule for r in book_gates(intent(), full, BUDGET, limits())] == [
+        RiskRule.CONCURRENT_POSITIONS,
+        RiskRule.SAME_SYMBOL,
+    ]
+    assert admission_gates(intent(), full, BUDGET, limits()).rule is RiskRule.CONCURRENT_POSITIONS
 
 
 def test_book_gates_on_an_invalid_book_report_only_the_unknown_exposure():

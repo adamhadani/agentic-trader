@@ -148,7 +148,7 @@ def test_telegram_html_formatter():
         timestamp=datetime.now(UTC),
         summary_text="Market conditions normal.",
     )
-    regime_html = TelegramHtmlFormatter.format_macro_dashboard_html(regime)
+    regime_html = TelegramHtmlFormatter.format_macro_dashboard_html(regime, required_rr=2.0)
     assert "NORMAL" in regime_html
     assert "Allowed" in regime_html
 
@@ -401,3 +401,12 @@ def test_accepted_order_does_not_invent_a_fill_price():
     assert "Awaiting broker fill" in rendered
     assert "ORDER EXECUTED" not in rendered
     assert "<b>Fill Price:</b> <code>0.00</code>" not in rendered
+
+
+def test_a_failed_execution_escapes_the_rule_text():
+    # Reasons carry symbols, correlation group names and calendar titles verbatim.
+    reason = "Macro event lockout: Fed <Chair> Q&A at 18:00 UTC."
+    view = ExecutionResultView(success=False, signal_id=13, contract="SPY", direction="LONG", error_message=reason)
+    rendered = TelegramHtmlFormatter.format_execution_html(view, "PAPER")
+    assert "Fed &lt;Chair&gt; Q&amp;A at 18:00 UTC." in rendered
+    assert "<Chair>" not in rendered

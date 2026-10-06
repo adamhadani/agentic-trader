@@ -10,6 +10,7 @@ registry, readiness, position monitoring and the order executor.
 """
 
 import dataclasses
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -216,7 +217,17 @@ async def test_a_card_built_under_an_elevated_regime_passes_its_own_tap_gate(des
     desk.entry_service.executor.execute_order.assert_awaited_once()
 
 
-async def test_a_full_book_stops_the_card_at_scan_time(desk, temp_db, app_config):
+def rejected_log(caplog, phase: str) -> list[tuple[str, str]]:
+    """``candidate_rejected`` log records of one scan phase: (contract, rejection_rule)."""
+    return [
+        (record.contract, record.rejection_rule)
+        for record in caplog.records
+        if getattr(record, "event", None) == "candidate_rejected" and record.phase == phase
+    ]
+
+
+async def test_a_full_book_stops_the_card_at_scan_time(desk, temp_db, app_config, caplog):
+    caplog.set_level(logging.INFO, logger="copilot")
     limit = app_config.portfolio.max_concurrent_positions
     for index in range(limit):
         await hold(temp_db, f"HELD{index}")
@@ -230,9 +241,11 @@ async def test_a_full_book_stops_the_card_at_scan_time(desk, temp_db, app_config
     assert refused.rejection_rule == RiskRule.CONCURRENT_POSITIONS
     assert refused.rejection_reason == f"Maximum concurrent positions ({limit}) reached."
     assert desk.last_scan_summary["approved"] == 0 and desk.last_scan_summary["sent"] == 0
+    assert rejected_log(caplog, "collect") == [("SPY", RiskRule.CONCURRENT_POSITIONS)]
 
 
-async def test_a_book_filled_by_this_scan_stops_the_next_card(desk, temp_db, app_config):
+async def test_a_book_filled_by_this_scan_stops_the_next_card(desk, temp_db, app_config, caplog):
+    caplog.set_level(logging.INFO, logger="copilot")
     app_config.scan.max_cards_per_scan = 2
     limit = app_config.portfolio.max_concurrent_positions
     for index in range(limit - 1):
@@ -245,6 +258,7 @@ async def test_a_book_filled_by_this_scan_stops_the_next_card(desk, temp_db, app
     assert [(r["contract"], r["reason"]) for r in desk.last_scan_summary["runners_up"]] == [
         ("QQQ", f"rejected: Maximum concurrent positions ({limit}) reached.")
     ]
+    assert rejected_log(caplog, "send") == [("QQQ", RiskRule.CONCURRENT_POSITIONS)]
 
 
 async def test_empty_correlation_groups_disable_the_rule_at_both_layers(desk, temp_db, app_config):

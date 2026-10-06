@@ -10,7 +10,6 @@ from agentic_trader.agent.macro import CreditStressRegime, MacroStressLevel, Yie
 from agentic_trader.constants import (
     APP_DISPLAY_NAME,
     DEFAULT_BACKTEST_LOOKBACK,
-    DEFAULT_MIN_RISK_REWARD_RATIO,
     DEFAULT_RESEARCH_SYMBOL,
     ExecutionMode,
     VolatilityRegime,
@@ -339,7 +338,7 @@ class TelegramHtmlFormatter:
             return (
                 f"❌ <b>Execution Failed ({mode_upper}):</b>\n"
                 f"• <b>Contract:</b> {view.contract} ({view.direction})\n"
-                f"• <b>Error:</b> {view.error_message or 'Unknown error'}"
+                f"• <b>Error:</b> {html.escape(view.error_message or 'Unknown error')}"
             )
 
     @staticmethod
@@ -356,9 +355,9 @@ class TelegramHtmlFormatter:
         )
 
     @staticmethod
-    def format_macro_dashboard_html(
-        regime: RegimeSnapshot, min_risk_reward_ratio: float = DEFAULT_MIN_RISK_REWARD_RATIO
-    ) -> str:
+    def format_macro_dashboard_html(regime: RegimeSnapshot, *, required_rr: float) -> str:
+        """The ``/macro`` dashboard. ``required_rr`` is the caller's
+        ``agentic_trader.risk.required_reward_risk`` for this regime, printed as the minimum R:R."""
         vix_color = {
             VolatilityRegime.COMPRESSED: "🟢",
             VolatilityRegime.NORMAL: "🟢",
@@ -368,7 +367,6 @@ class TelegramHtmlFormatter:
         tnx_str = f"{regime.tnx:.2f}%" if regime.tnx is not None else "Unavailable"
         dxy_str = f"{regime.dxy:.2f}" if regime.dxy is not None else "Unavailable"
         breakout_str = "Allowed ✅" if regime.breakout_allowed else "Suppressed ⚠️"
-        minimum_rr = max(regime.min_rr_threshold, min_risk_reward_ratio)
         text = (
             "🌐 <b>MACRO &amp; TRADING FILTERS</b>\n"
             f"<i>Snapshot fetched: {regime.timestamp.isoformat()}</i>\n\n"
@@ -377,7 +375,7 @@ class TelegramHtmlFormatter:
             f"• <b>US Dollar Index:</b> <code>{dxy_str}</code>\n\n"
             "🛡️ <b>Combined Volatility / Macro Policy:</b>\n"
             f"• <b>Squeeze Breakouts:</b> {breakout_str}\n"
-            f"• <b>Minimum Required R:R:</b> <code>{minimum_rr:.1f}:1</code>\n"
+            f"• <b>Minimum Required R:R:</b> <code>{required_rr:.1f}:1</code>\n"
             f"• <b>Risk Multiplier:</b> <code>{regime.risk_multiplier:.2f}x</code>\n"
             "<i>Other entry checks (session, calendar, exposure and approval) still apply.</i>\n\n"
         )

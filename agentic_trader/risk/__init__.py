@@ -9,7 +9,7 @@ from agentic_trader.risk.capital import (
     requires_account_risk,
     risk_capital,
 )
-from agentic_trader.risk.limits import RiskLimits, normalize_symbol
+from agentic_trader.risk.limits import DrawdownPolicy, RiskLimits, normalize_symbol
 from agentic_trader.risk.rules import (
     EntryIntent,
     Rejection,
@@ -41,6 +41,7 @@ from agentic_trader.risk.rules import (
 __all__ = [
     "Book",
     "BookPosition",
+    "DrawdownPolicy",
     "EntryIntent",
     "Rejection",
     "RiskBudget",

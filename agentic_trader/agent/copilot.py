@@ -1208,6 +1208,7 @@ class TradingCopilot:
                                 "phase": "send",
                                 "contract": candidate.contract,
                                 "rejection_reason": eval_res.rejection_reason,
+                                "rejection_rule": eval_res.rejection_rule,
                             },
                         )
                         continue
@@ -1512,6 +1513,7 @@ class TradingCopilot:
                     "phase": "collect",
                     "contract": candidate.contract,
                     "rejection_reason": det_res.rejection_reason,
+                    "rejection_rule": det_res.rejection_rule,
                 },
             )
             return None, f"rejected: {det_res.rejection_reason}"
@@ -3991,8 +3993,13 @@ class TradingCopilot:
         return TelegramHtmlFormatter.format_performance_html(report)
 
     async def get_macro_summary_html(self) -> str:
-        """One macro dashboard using the same combined snapshot as trade evaluation."""
+        """One macro dashboard using the same combined snapshot as trade evaluation.
+
+        The minimum reward/risk it records and prints is ``agentic_trader.risk.required_reward_risk``,
+        the ratio every entry gate applies under this regime.
+        """
         regime = await self.regime_detector.get_regime()
+        required_rr = required_reward_risk(RiskLimits.from_config(self.config), regime.min_rr_threshold)
         await self.db.record_audit(
             AuditEventType.MACRO_REPORT,
             payload={
@@ -4000,13 +4007,13 @@ class TradingCopilot:
                 "vix": regime.vix,
                 "volatility_regime": regime.vix_regime.value,
                 "breakout_allowed": regime.breakout_allowed,
-                "minimum_rr": max(regime.min_rr_threshold, self.config.risk.min_risk_reward_ratio),
+                "minimum_rr": required_rr,
                 "risk_multiplier": regime.risk_multiplier,
                 "macro_unavailable_reason": regime.macro_unavailable_reason,
                 "observation_dates": regime.macro_report.observation_dates if regime.macro_report else {},
             },
         )
-        return TelegramHtmlFormatter.format_macro_dashboard_html(regime, self.config.risk.min_risk_reward_ratio)
+        return TelegramHtmlFormatter.format_macro_dashboard_html(regime, required_rr=required_rr)
 
     async def get_explain_macro_html(self) -> str:
         """Format educational macro tutorial and indicator breakdown for Telegram /explain_macro."""

@@ -289,7 +289,8 @@ class RiskEvaluator:
         Gate order, first refusal wins: sizing block; the shared book rules
         (``agentic_trader.risk.book_gates``) on ``active_positions`` -- open positions plus the
         cards this scan already sent; the statistical return-correlation check; macro lockout;
-        earnings blackout; regime breakout suppression; session. A refusal by a shared rule
+        earnings blackout; the regime rules (breakout suppression, then ``reward_risk`` at the
+        required ratio, which only a versioned alpha bracket can fail); session. A refusal by a shared rule
         carries that rule's text and ``rejection_rule``. ``current_open_notional`` bounds the
         sizing notional ceiling; the book's own notional is what the caps judge.
         """
@@ -396,7 +397,6 @@ class RiskEvaluator:
                 stop=stop_loss,
                 target=take_profit,
                 multiplier=multiplier,
-                strategy=str(candidate.strategy),
             )
         except ValueError:
             return _rejected(
@@ -494,6 +494,16 @@ class RiskEvaluator:
                 thesis=(
                     f"Rejected: breakout suppressed due to {regime.vix_regime.value} volatility regime (VIX {regime.vix:.1f}{macro_detail})."
                 ),
+                earnings_note=earnings_note_value,
+            )
+        # 3b. The regime's reward/risk (agentic_trader.risk.reward_risk at required_rr), the tap-time regime
+        #     gate's next rule: a native target is built at required_rr and always passes; a versioned alpha
+        #     policy keeps its own bracket, which a higher regime ratio can refuse.
+        if rejection := reward_risk(intent, required_rr):
+            return _rejected(
+                rejection.reason,
+                rejection.rule,
+                thesis=f"Rejected by risk manager: {rejection.reason}",
                 earnings_note=earnings_note_value,
             )
 

@@ -4,7 +4,9 @@ Inputs are the typed objects from this package (``EntryIntent``, ``Book``, ``Ris
 ``RiskLimits``). A rule returns a ``Rejection`` or ``None`` and never performs I/O: the
 calendar, session provider, regime detector and database stay with the callers, which pass
 in what they observed. Layers differ only in the book they pass (the scan: open positions
-plus this scan's cards; admission: open positions plus reservations).
+plus this scan's cards, at their recorded values; admission: open positions plus
+reservations, which Alpaca capacity values at broker marks) and in the observed budget
+inputs (equity, drawdown, regime).
 """
 
 from __future__ import annotations
@@ -112,7 +114,6 @@ class EntryIntent:
     target: float
     multiplier: float = 1.0
     current_price: float | None = None
-    strategy: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "direction", str(self.direction).upper())
@@ -278,8 +279,8 @@ def concurrent_positions(book: Book, limits: RiskLimits) -> Rejection | None:
 
 
 def same_symbol(intent: EntryIntent, book: Book) -> Rejection | None:
-    """Rule ``same_symbol``: the book must not already hold the intent's normalised symbol as a position or
-    reservation. Called by admission.
+    """Rule ``same_symbol``: the book must not already hold the intent's normalised symbol as a position, a
+    reservation or (at the scan) a card this scan already sent. Called by the scan (``book_gates``) and admission.
     """
     if book.holds(intent.symbol):
         return Rejection(
@@ -399,9 +400,10 @@ def regime_breakout(strategy: str | None, breakout_allowed: bool) -> Rejection |
 
 def book_gates(intent: EntryIntent, book: Book, budget: RiskBudget, limits: RiskLimits) -> tuple[Rejection, ...]:
     """Every shared book-rule rejection, in order: ``exposure_known``, ``drawdown_halt``, ``aggregate_stop_risk``,
-    ``concurrent_positions``, ``portfolio_notional``, ``asset_class_notional``, ``correlation_group``. A book with
-    unknown exposure yields the ``exposure_known`` rejection alone: no numeric rule judges it. The scan
-    (evaluator) passes its book of open positions plus this scan's cards and reports the first rejection.
+    ``concurrent_positions``, ``same_symbol``, ``portfolio_notional``, ``asset_class_notional``,
+    ``correlation_group`` (the relative order of these rules in ``admission_gates``). A book with unknown exposure
+    yields the ``exposure_known`` rejection alone: no numeric rule judges it. The scan (evaluator) passes its book
+    of open positions plus this scan's cards and reports the first rejection.
     """
     if unknown := exposure_known(book):
         return (unknown,)
@@ -409,6 +411,7 @@ def book_gates(intent: EntryIntent, book: Book, budget: RiskBudget, limits: Risk
         drawdown_halt(budget),
         aggregate_stop_risk(intent, book, budget, limits),
         concurrent_positions(book, limits),
+        same_symbol(intent, book),
         portfolio_notional(intent, book, limits),
         asset_class_notional(intent, book, limits),
         correlation_group(intent, book, limits),

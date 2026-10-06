@@ -388,10 +388,10 @@ def test_gate_reason_still_refuses_a_fresh_tap_after_reordering():
         target=CARD19_TARGET,
         now=now,
         price=CARD19_TAPPED_PRICE,
-        gate_reason="Current macro/volatility policy requires a higher reward/risk ratio.",
+        gate_reason="Reward/risk 2.00 is below the required 2.20.",
     )
     assert result.outcome == CardOutcome.MISSED
-    assert result.reason == "Current macro/volatility policy requires a higher reward/risk ratio."
+    assert result.reason == "Reward/risk 2.00 is below the required 2.20."
 
 
 # --- meets_min_reward_risk: the shared two-decimal comparison helper ----------------------
