@@ -7,8 +7,7 @@ from typing import Any
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import BROKER_CLOCK_SKEW_TOLERANCE_SECONDS, AssetClass, Direction, OrderSide
-from agentic_trader.execution.freshness import meets_min_reward_risk
-from agentic_trader.risk import drawdown_risk_factor, risk_capital
+from agentic_trader.risk import drawdown_risk_factor, meets_min_reward_risk, risk_capital
 
 
 def authorization_expiry(

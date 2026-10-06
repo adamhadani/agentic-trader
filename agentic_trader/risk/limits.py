@@ -46,9 +46,9 @@ class RiskLimits:
     def from_config(cls, config: AppConfig) -> RiskLimits:
         portfolio, sizing, risk = config.portfolio, config.sizing, config.risk
         raw_caps = {
-            str(AssetClass.EQUITY): getattr(portfolio, "max_equity_exposure", None),
-            str(AssetClass.FUTURES): getattr(portfolio, "max_futures_exposure", None),
-            str(AssetClass.CRYPTO): getattr(portfolio, "max_crypto_exposure", None),
+            str(AssetClass.EQUITY): portfolio.max_equity_exposure,
+            str(AssetClass.FUTURES): portfolio.max_futures_exposure,
+            str(AssetClass.CRYPTO): portfolio.max_crypto_exposure,
         }
         groups = {
             name: frozenset(normalize_symbol(member) for member in members)
@@ -71,5 +71,5 @@ class RiskLimits:
             lockout_pre_minutes=int(risk.lockout_pre_event_minutes),
             lockout_post_minutes=int(risk.lockout_post_event_minutes),
             earnings_blackout_days=int(risk.earnings_blackout_days),
-            enforce_rth=bool(getattr(config.session, "enforce_rth", True)),
+            enforce_rth=bool(config.session.enforce_rth),
         )

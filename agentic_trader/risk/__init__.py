@@ -1,4 +1,4 @@
-"""Entry-risk policy: limits snapshot, typed book and capital arithmetic."""
+"""Entry-risk policy: limits snapshot, typed book, capital arithmetic and one function per entry rule."""
 
 from agentic_trader.risk.book import Book, BookPosition
 from agentic_trader.risk.capital import (
@@ -10,17 +10,67 @@ from agentic_trader.risk.capital import (
     risk_capital,
 )
 from agentic_trader.risk.limits import RiskLimits, normalize_symbol
+from agentic_trader.risk.rules import (
+    EntryIntent,
+    Rejection,
+    RiskRule,
+    admission_gates,
+    aggregate_stop_risk,
+    asset_class_notional,
+    book_gates,
+    concurrent_positions,
+    correlation_group,
+    drawdown_halt,
+    earnings_days_out,
+    entry_session_open,
+    exposure_known,
+    in_lockout_window,
+    macro_lockout,
+    meets_min_reward_risk,
+    per_trade_notional,
+    per_trade_risk,
+    portfolio_notional,
+    quantity_cap,
+    regime_breakout,
+    required_reward_risk,
+    reward_risk,
+    same_symbol,
+)
 
 
 __all__ = [
     "Book",
     "BookPosition",
+    "EntryIntent",
+    "Rejection",
     "RiskBudget",
     "RiskLimits",
+    "RiskRule",
+    "admission_gates",
+    "aggregate_stop_risk",
+    "asset_class_notional",
+    "book_gates",
+    "concurrent_positions",
+    "correlation_group",
+    "drawdown_halt",
     "drawdown_risk_factor",
+    "earnings_days_out",
+    "entry_session_open",
+    "exposure_known",
+    "in_lockout_window",
+    "macro_lockout",
     "macro_risk_factor",
+    "meets_min_reward_risk",
     "normalize_symbol",
+    "per_trade_notional",
+    "per_trade_risk",
     "per_trade_risk_budget",
+    "portfolio_notional",
+    "quantity_cap",
+    "regime_breakout",
+    "required_reward_risk",
     "requires_account_risk",
+    "reward_risk",
     "risk_capital",
+    "same_symbol",
 ]

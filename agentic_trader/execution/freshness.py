@@ -15,6 +15,7 @@ from typing import Any
 from agentic_trader.config import CardFreshnessConfig
 from agentic_trader.constants import Direction
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.risk import meets_min_reward_risk
 
 
 # One bound for every tap-time read (price, session, regime/macro gates, earnings): a
@@ -109,25 +110,6 @@ class CardAssessment:
     r_consumed: float | None
     age_seconds: float
     price: float | None
-
-
-def meets_min_reward_risk(reward: float, risk: float, minimum: float) -> bool:
-    """Whether a bracket's reward:risk, rounded to two decimals, clears ``minimum``.
-
-    The single comparison shared by every place that re-checks a bracket's reward:risk
-    against the configured/regime minimum after the scan already approved it: the
-    tap-time current-price check (:func:`assess_card`), ``TradingCopilot._regime_gate``
-    and admission's ``reservation_rejection``. Two-decimal rounding matches the
-    evaluator's own approval rounding (``round(target_dist / stop_dist, 2)``), so a
-    card the scan approved at exactly "2.0" is never refused later for float noise
-    (e.g. ``21.12 / 10.56 == 1.9999999999999973``, which rounds to ``2.0``).
-
-    ``risk <= 0`` is always False -- a degenerate or inverted bracket never "meets" a
-    minimum, regardless of ``reward``.
-    """
-    if risk <= 0:
-        return False
-    return round(reward / risk, 2) >= minimum
 
 
 def assess_card(

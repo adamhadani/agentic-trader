@@ -10,11 +10,11 @@ from agentic_trader.execution.freshness import (
     assess_card,
     card_is_stale,
     card_session_over,
-    meets_min_reward_risk,
     parse_valid_until,
     reprice_quantity,
     valid_until_from_provenance,
 )
+from agentic_trader.risk import meets_min_reward_risk
 
 
 POLICY = CardFreshnessConfig()  # enabled=True, fresh_seconds=1800, fresh_max_r=0.25, reprice_min_risk_fraction=0.5

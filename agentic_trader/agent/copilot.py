@@ -68,7 +68,6 @@ from agentic_trader.execution.freshness import (
     CardOutcome,
     ExecutionReply,
     assess_card,
-    meets_min_reward_risk,
     reprice_quantity,
     round_to_tick,
     valid_until_from_provenance,
@@ -103,7 +102,7 @@ from agentic_trader.research.setups.ranker import (
     shadow_blocks,
 )
 from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor
-from agentic_trader.risk import requires_account_risk
+from agentic_trader.risk import meets_min_reward_risk, requires_account_risk
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.coverage import coverage_exclusions
 from agentic_trader.screeners.dynamic_universe import (
