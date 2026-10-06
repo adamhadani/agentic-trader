@@ -11,7 +11,7 @@ from agentic_trader.risk import drawdown_risk_factor, risk_capital
 
 if TYPE_CHECKING:
     from agentic_trader.config import AppConfig
-    from agentic_trader.scanner.models import ScreenerCandidate
+    from agentic_trader.screeners.base import ScreenerCandidate
 
 logger = logging.getLogger(__name__)
 

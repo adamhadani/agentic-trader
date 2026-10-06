@@ -116,7 +116,9 @@ async def events(stream: str | None, limit: int) -> None:
 
 
 @db_group.command("queue", help="Inspect durable entry/cancellation commands and outcomes")
-@click.option("--kind", type=click.Choice([str(WorkKind.ENTRY), str(WorkKind.ENTRY_CANCEL)]), default=WorkKind.ENTRY)
+@click.option(
+    "--kind", type=click.Choice([str(WorkKind.ENTRY), str(WorkKind.ENTRY_CANCEL)]), default=str(WorkKind.ENTRY)
+)
 @coro
 async def queue(kind: str) -> None:
     db = SignalDatabase(config=load_config())

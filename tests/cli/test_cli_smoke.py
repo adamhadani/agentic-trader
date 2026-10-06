@@ -389,3 +389,8 @@ def test_cli_outputs_table_with_fake_sources(runner: CliRunner):
     assert '"order_observed": 0' in result.output
     assert "order" not in result.output.lower().replace('"order_observed"', "")
     assert "telegram" not in result.output.lower()
+
+
+def test_db_queue_default_kind_is_a_valid_choice(runner: CliRunner):
+    result = runner.invoke(cli, ["db", "queue"])
+    assert "is not one of" not in result.output, result.output
