@@ -30,7 +30,7 @@ def rng():
 
 
 def pick(r, options):
-    """``Generator.choice`` cannot pick from dicts or mixed ``None``/float lists; pick by index."""
+    """Pick by index, so the draw is deterministic for the seed and returns each option with its own type."""
     return options[int(r.integers(len(options)))]
 
 

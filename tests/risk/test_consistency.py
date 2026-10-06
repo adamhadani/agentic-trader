@@ -1,7 +1,6 @@
 """The scan's book gates and admission agree on every shared rule, and admission's string API agrees with the typed API."""
 
 import numpy as np
-import pytest
 
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.config import AppConfig
@@ -54,13 +53,13 @@ def test_scan_and_admission_agree_on_shared_rules():
         scan_first = next((x.rule for x in book_gates(intent, book, budget, limits) if x.rule in SHARED), None)
         admission = admission_gates(intent, book, budget, limits)
         admission_shared = admission.rule if admission and admission.rule in SHARED else None
-        # Admission runs per-trade rules first; when its first rejection is per-trade, compare the next shared one.
+        # Admission also runs rules the scan does not (reward/risk, the per-trade caps, same symbol); a case whose
+        # first admission rejection is one of those is skipped.
         if admission is not None and admission.rule not in SHARED:
             continue
         assert scan_first == admission_shared, (rows, intent, scan_first, admission)
 
 
-@pytest.mark.xfail(strict=True, reason="admission rewires in Task 3")
 def test_reservation_rejection_matches_the_typed_api():
     config = AppConfig()
     config.portfolio.correlation_groups = {"g": ["AAPL", "MSFT"]}

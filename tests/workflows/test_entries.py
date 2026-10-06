@@ -238,8 +238,8 @@ async def test_trade_accounting_does_not_wait_for_telegram_delivery(store, app_c
 @pytest.mark.parametrize(
     "policy,setting,value,reason",
     [
-        ("portfolio", "max_notional_exposure", 999, "portfolio notional"),
-        ("portfolio", "max_equity_exposure", 999, "asset-class"),
+        ("portfolio", "max_notional_exposure", 999, "Portfolio notional would reach $1,000, above the $999 ceiling."),
+        ("portfolio", "max_equity_exposure", 999, "EQUITY notional would reach $1,000, above the $999 ceiling."),
         ("sizing", "max_trade_notional_cap", 999, "per-trade notional"),
         ("sizing", "max_risk_pct_cap", 0.0001, "risk cap"),
         ("sizing", "max_shares_per_trade", 9, "quantity cap"),

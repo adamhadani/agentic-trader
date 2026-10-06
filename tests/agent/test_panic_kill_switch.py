@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -39,6 +40,13 @@ def copilot_fixture(test_db):
     config.execution.card_freshness.enabled = False
     metrics = MetricsCollector()
     copilot = TradingCopilot(config=config, db=test_db)
+    # Admission runs the macro check for simulated entries too: no lockout window, a calm regime.
+    copilot.calendar = AsyncMock()
+    copilot.calendar.is_in_lockout_window.return_value = (False, None)
+    copilot.regime_detector = AsyncMock()
+    copilot.regime_detector.get_regime.return_value = SimpleNamespace(
+        summary_text="calm", breakout_allowed=True, min_rr_threshold=2.0, risk_multiplier=1.0
+    )
     copilot.metrics = metrics
     copilot.notifier.is_configured = MagicMock(return_value=True)
     copilot.notifier.send_exit_alert = AsyncMock(return_value=123)

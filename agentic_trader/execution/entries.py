@@ -82,6 +82,10 @@ class EntryExecutionService:
             request,
             entry_order_ids=tuple(sorted({p["broker_order_id"] for p in reservations if p.get("broker_order_id")})),
         )
+        # The injected macro check (macro lockout window, then the regime gate) runs before the
+        # branch split, so simulated and brokered entries are both refused during a lockout.
+        if reason := await self.macro_check(request, signal):
+            return reason, context
         if isinstance(context, BrokerEntryContext):
             assert request.entry_price is not None
             if abs(float(context.price) / request.entry_price - 1) > policy.entry_max_price_drift_pct:
@@ -89,8 +93,6 @@ class EntryExecutionService:
                     f"Market price changed to {context.price:g}; original approved limit {request.entry_price:g} retained.",
                     context,
                 )
-            if reason := await self.macro_check(request, signal):
-                return reason, context
             try:
                 assess_entry_capacity(
                     request, reservations, context, self.config, account_risk=risk, now=datetime.now(UTC)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 
 from agentic_trader.constants import AssetClass, Direction, StrategyType
@@ -82,7 +82,10 @@ class Rejection:
 
 
 def _positive(name: str, value: float) -> float:
-    number = float(value)
+    try:
+        number = float(value)
+    except TypeError, ValueError:
+        raise ValueError(f"{name} must be finite and positive") from None
     if not math.isfinite(number) or number <= 0:
         raise ValueError(f"{name} must be finite and positive")
     return number
@@ -93,10 +96,11 @@ class EntryIntent:
     """What is about to be risked, validated once on construction.
 
     Direction and asset class are upper-cased; direction must be LONG or SHORT. Quantity,
-    bracket prices, multiplier and a known current price must be finite and positive
-    (``ValueError`` otherwise). An inverted bracket is a valid intent: ``reward_risk``
-    rejects it. Notional is priced at ``max(entry, current_price)`` when a current price
-    is known.
+    bracket prices, multiplier and a known current price must be finite and positive numbers
+    (``ValueError`` otherwise, including for ``None`` or a non-numeric value), so the
+    constructor is the single validation boundary. An inverted bracket is a valid intent:
+    ``reward_risk`` rejects it. Notional is priced at ``max(entry, current_price)`` when a
+    current price is known.
     """
 
     symbol: str
@@ -345,13 +349,17 @@ def macro_lockout(
 ) -> Rejection | None:
     """Rule ``macro_lockout``: refuses an entry while ``now`` is inside the lockout window
     (``limits.lockout_pre_minutes`` / ``limits.lockout_post_minutes``) around the tier-1 event the caller found;
-    no event means no lockout. Called by the scan (evaluator) and by entry admission on both broker branches.
+    no event means no lockout. The reason prints the event's UTC clock time, and an untitled event as
+    "scheduled release". Called by the scan (evaluator) and by entry admission on both broker branches.
     """
     if event_at is None or not in_lockout_window(
         now, event_at, limits.lockout_pre_minutes, limits.lockout_post_minutes
     ):
         return None
-    return Rejection(RiskRule.MACRO_LOCKOUT, f"Macro event lockout: {event_title} at {event_at.strftime('%H:%M')} UTC.")
+    title = event_title or "scheduled release"
+    return Rejection(
+        RiskRule.MACRO_LOCKOUT, f"Macro event lockout: {title} at {event_at.astimezone(UTC).strftime('%H:%M')} UTC."
+    )
 
 
 def earnings_days_out(event_date: date | None, today: date, blackout_days: int) -> int | None:

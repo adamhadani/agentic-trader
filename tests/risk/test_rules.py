@@ -1,9 +1,11 @@
 import math
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from agentic_trader.config import AppConfig
+from agentic_trader.constants import StrategyType
 from agentic_trader.risk import (
     Book,
     BookPosition,
@@ -88,6 +90,7 @@ def test_intent_derived_values_and_validation():
         {"stop": -1.0},
         {"multiplier": math.inf},
         {"direction": "FLAT"},
+        {"quantity": None},
     ):
         with pytest.raises(ValueError):
             intent(**bad)
@@ -245,7 +248,11 @@ def test_lockout_window_is_inclusive():
     assert not in_lockout_window(event - timedelta(minutes=61), event, 60, 30)
     assert not in_lockout_window(event + timedelta(minutes=31), event, 60, 30)
     inside = macro_lockout("CPI", event, event, limits())
-    assert inside.rule is RiskRule.MACRO_LOCKOUT and "CPI" in inside.reason and "12:30" in inside.reason
+    assert inside.rule is RiskRule.MACRO_LOCKOUT and inside.reason == "Macro event lockout: CPI at 12:30 UTC."
+    new_york = event.astimezone(ZoneInfo("America/New_York"))  # 08:30 EDT: the reason prints the UTC clock
+    assert macro_lockout("CPI", new_york, event, limits()).reason == "Macro event lockout: CPI at 12:30 UTC."
+    untitled = macro_lockout(None, event, event, limits())
+    assert untitled.reason == "Macro event lockout: scheduled release at 12:30 UTC."
     assert macro_lockout(None, None, event, limits()) is None
 
 
@@ -281,6 +288,7 @@ def test_entry_session_open(is_open, is_rth, enforce, expected):
 
 def test_regime_breakout_only_for_squeeze_breakouts():
     assert regime_breakout("SQUEEZE_BREAKOUT", False).rule is RiskRule.REGIME_BREAKOUT
+    assert regime_breakout(StrategyType.SQUEEZE_BREAKOUT, False).rule is RiskRule.REGIME_BREAKOUT
     assert regime_breakout("SQUEEZE_BREAKOUT", True) is None and regime_breakout("TREND_PULLBACK", False) is None
 
 
