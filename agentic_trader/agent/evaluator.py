@@ -146,6 +146,14 @@ class RiskEvaluator:
                 extra={"callback": CALLBACK_LANGSMITH, "model": self.config.llm_model},
             )
 
+    def _probe_risk_cap(self, candidate: ScreenerCandidate) -> float | None:
+        """A paper probe's risk ceiling (``alpha_pipeline.probe_risk_dollars``), or None for any other card.
+
+        Sizing caps a probe's tiers at it and the post-LLM final-bracket check reverts a probe
+        bracket whose risk exceeds it.
+        """
+        return self.config.alpha_pipeline.probe_risk_dollars if candidate.probe else None
+
     def calculate_levels_deterministic(
         self,
         candidate: ScreenerCandidate,
@@ -233,7 +241,6 @@ class RiskEvaluator:
             stop_distance, target_distance = abs(entry - stop_loss), abs(take_profit - entry)
 
         # Both supported modes use stop-distance sizing and the shared hard caps.
-        risk_dollars_cap = self.config.alpha_pipeline.probe_risk_dollars if candidate.probe else None
         sizing_result = calculate_dynamic_sizing(
             entry=entry,
             stop_distance=stop_distance,
@@ -246,7 +253,7 @@ class RiskEvaluator:
             current_drawdown_pct=current_drawdown_pct,
             macro_risk_multiplier=macro_risk_multiplier,
             current_equity=current_equity,
-            risk_dollars_cap=risk_dollars_cap,
+            risk_dollars_cap=self._probe_risk_cap(candidate),
         )
         quantity = sizing_result.default_tier.quantity
         risk_dollars = sizing_result.default_tier.risk_dollars
@@ -630,6 +637,7 @@ class RiskEvaluator:
             # A paper probe's bracket also reverts when its risk exceeds
             # ``alpha_pipeline.probe_risk_dollars``: the probe cap may only ever reduce risk.
             if (llm_stop, llm_target) != (stop_loss, take_profit):
+                probe_cap = self._probe_risk_cap(candidate)
                 try:
                     final = EntryIntent(
                         symbol=candidate.contract,
@@ -644,7 +652,7 @@ class RiskEvaluator:
                     final_passes = (
                         reward_risk(final, required_rr) is None
                         and per_trade_risk(final, budget) is None
-                        and not (candidate.probe and final.risk_dollars > self.config.alpha_pipeline.probe_risk_dollars)
+                        and (probe_cap is None or final.risk_dollars <= probe_cap)
                     )
                 except ValueError:
                     final_passes = False

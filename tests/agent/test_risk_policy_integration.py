@@ -33,11 +33,8 @@ from agentic_trader.screeners.base import ScreenerCandidate
 from agentic_trader.storage.models import SignalRecord
 
 
-NEXT_OPEN = datetime(2026, 9, 24, 13, 30, tzinfo=UTC)
-
-
 def session(*, is_rth: bool = True) -> MarketSessionInfo:
-    """An open SPY session, regular or extended hours, closing in two hours."""
+    """An open SPY session, regular or extended hours, closing in two hours and opening again in a day."""
     now = datetime.now(UTC)
     return MarketSessionInfo(
         symbol="SPY",
@@ -46,7 +43,7 @@ def session(*, is_rth: bool = True) -> MarketSessionInfo:
         is_rth=is_rth,
         session_type=MarketSessionType.RTH if is_rth else MarketSessionType.ETH,
         current_time=now,
-        next_open=NEXT_OPEN,
+        next_open=now + timedelta(days=1),
         next_close=now + timedelta(hours=2),
     )
 

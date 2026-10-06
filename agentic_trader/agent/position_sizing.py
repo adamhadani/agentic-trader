@@ -142,7 +142,7 @@ def calculate_dynamic_sizing(
         if qty_by_notional < qty_by_risk:
             gating_reasons.append(f"Max size capped by remaining ${trade_notional_ceiling:,.0f} notional limit")
         else:
-            gating_reasons.append(f"Max size capped by {sizing_cfg.max_risk_pct_cap * 100:.1f}% risk ceiling")
+            gating_reasons.append(f"Max size capped by {sizing_cfg.max_risk_pct_cap:.1%} risk ceiling")
 
     # 4. Standard Base Quantity
     contract_info = config.contracts.get(candidate.contract) if candidate else None

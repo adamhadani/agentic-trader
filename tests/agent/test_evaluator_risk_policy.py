@@ -14,7 +14,7 @@ from agentic_trader.agent.calendar import MacroEvent
 from agentic_trader.constants import AssetClass
 from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, bracket_prices, entry_limit
-from agentic_trader.risk import RiskRule, meets_min_reward_risk
+from agentic_trader.risk import RiskLimits, RiskRule, meets_min_reward_risk, per_trade_risk_budget
 from tests.agent.test_evaluator import (
     create_candidate as make_candidate,
     create_equity_candidate,
@@ -532,8 +532,16 @@ async def test_an_llm_stop_widened_beyond_the_probe_cap_restores_the_determinist
 
     answer = {"stop_loss": twice_the_stop, "take_profit": target_at_two_and_a_half_r}
     deterministic, result = await _deterministic_and_llm(evaluator, monkeypatch, probe, **answer)
-    # The doubled stop's risk exceeds the probe cap but not the 100,000 x 1% per-trade budget.
-    assert deterministic.risk_dollars <= cap < 2 * deterministic.risk_dollars < 1000.0
+    # The card's per-trade budget, as the evaluator derives it (no observed equity or drawdown).
+    regime = evaluator.regime_detector.get_regime.return_value
+    budget = per_trade_risk_budget(
+        RiskLimits.from_config(evaluator.config),
+        equity=None,
+        drawdown_pct=0.0,
+        macro_multiplier=regime.risk_multiplier,
+    )
+    # The doubled stop's risk exceeds the probe cap but not the per-trade budget.
+    assert deterministic.risk_dollars <= cap < 2 * deterministic.risk_dollars < budget.dollars
     _assert_deterministic_bracket(result, deterministic)
     # The same answer on a native card (no probe cap) stays within the budget and is kept.
     native, kept = await _deterministic_and_llm(

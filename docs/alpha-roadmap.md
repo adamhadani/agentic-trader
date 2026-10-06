@@ -490,14 +490,14 @@ planned; the deterministic-gate-first design stays.
 | Step | Status | Deliverable and acceptance boundary |
 | --- | --- | --- |
 | L1 | Implemented — [PR #106](https://github.com/adamhadani/agentic-trader/pull/106) | **Measure first, no behaviour change.** Journal the LLM verdict for native cards as probes already do (`llm_verdict`), and extend `cards outcomes` with a same-bracket SPY market-exposure control, planned-versus-fill slippage read from journal evidence, and the counterfactual R of LLM-vetoed candidates. Acceptance: every sent, runner-up and vetoed candidate has a labelled row; the report separates selection, LLM gate, exposure and slippage; live ranking and gating unchanged. |
-| L2 | Planned | **One risk-policy module.** Pure functions with typed results shared by the evaluator, admission, capacity and the scan. The spec lists the current correlation-cap, equity-base, lockout, blackout and session variants and the operator picks one semantics per rule before implementation. Acceptance: each rule has one implementation and one test table; admission and evaluator cannot disagree. |
+| L2 | Implemented — PR (pending) | **One risk-policy module.** `agentic_trader/risk` holds one pure function per entry rule with typed inputs (`RiskLimits`, `Book`, `EntryIntent`, `RiskBudget`) and a typed `Rejection`; the scan, sizing, tap gate, re-pricing, admission and capacity call it and differ only in the book they pass. The operator chose one semantics per rule on 2026-10-06 ([spec](superpowers/specs/2026-10-06-risk-policy-module-design.md)); the contract, rule table and dated behaviour changes are in [risk policy](risk-policy.md). Acceptance met: each rule has one implementation and one test table, and seeded consistency tests pin that the scan's book gates and admission agree on every shared rule. |
 | L3 | Planned | **Card-selector seam.** Ranking, per-session budgets and group caps behind one injected service with a typed selection result; native and PEAD are two selector families. Acceptance: a shadow ranker can be A/B'd by swapping the selector without editing `run_scan`; PEAD special cases leave `run_scan`. |
 | L4 | Planned | **Split the evaluator** into gate, sizer and thesis writer with typed results between them; the LLM step consumes a completed deterministic decision and may only annotate or, for native cards, veto through the recorded verdict path from L1. |
 | L5 | Later | **One bracket-label kernel and a sizing protocol** callable from replay, so portfolio-level research uses live sizing. Retire the legacy backtest's private trail logic. |
 
 Known limits of the review: it is static reading, not a profiling or defect audit;
-line references are as of `aa86718`. Minor: `agent/position_sizing.py` has a stale
-type-only import of a module that no longer exists.
+line references are as of `aa86718`. Minor: `agent/position_sizing.py` had a stale
+type-only import of a module that no longer exists; L2 removed it.
 
 ## Ordered work queue
 

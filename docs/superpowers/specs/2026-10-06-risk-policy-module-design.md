@@ -1,6 +1,6 @@
 # L2: one risk-policy module (design)
 
-**Date:** 2026-10-06. **Status:** decision table approved by the operator in chat (2026-10-06, all rows as recommended, including the two behaviour changes in rows 3 and 5); execution by subagent-driven development. **Roadmap:** [Stage layering and attribution, step L2](../../alpha-roadmap.md#stage-layering-and-attribution-october-5). **Survey evidence:** the per-site extraction recorded in the L2 ledger (`.superpowers/sdd/2026-10-06-risk-policy-module/survey.md`).
+**Date:** 2026-10-06. **Status:** decision table approved by the operator in chat (2026-10-06, all rows as recommended, including the two behaviour changes in rows 3 and 5); execution by subagent-driven development; implemented 2026-10-06, with the amendments at the end of this document. **Contract:** [risk policy](../../risk-policy.md). **Roadmap:** [Stage layering and attribution, step L2](../../alpha-roadmap.md#stage-layering-and-attribution-october-5). **Survey evidence:** the per-site extraction recorded in the L2 ledger (`.superpowers/sdd/2026-10-06-risk-policy-module/survey.md`).
 
 ## Goal
 
@@ -149,3 +149,52 @@ Validation policy: `EntryIntent` and `BookPosition` reject non-finite or negativ
 - Every rule has a table-driven test; the adversarial and consistency suites pass; the five integration scenarios pass.
 - Full suite, pre-commit and the PostgreSQL integration run are green.
 - Docs describe the final behaviour, including the three behaviour changes (rows 3, 5, 7) and the removed default-groups fallback.
+
+## Amendments after implementation (2026-10-06)
+
+Rulings made during the task reviews. They supersede the text above where they differ;
+[risk policy](../../risk-policy.md) describes the resulting behaviour.
+
+- **Target rounding (decision 3, ruling R7 as amended).** The deterministic target price
+  is computed from the unrounded actual stop distance (`entry − stop_loss` on the actual
+  prices) times the required ratio and rounded *away from the entry* to the next tick
+  (ceiling for LONG, floor for SHORT, with a 1e-6-tick tolerance). `reward_risk` on the
+  actual prices therefore always holds, including sub-penny entries. A target already on
+  a tick stays, so on-tick ratio-2.0 targets equal the earlier nearest-tick result.
+  Research replay (`research/setups/replay.py`) and the legacy backtest share
+  `calculate_levels_deterministic` at the configured ratio, so their targets may move up
+  to one tick farther from the entry; studies completed before 2026-10-06 used the
+  earlier rounding.
+- **Decision 6 as implemented.** Admission's injected macro check is the lockout window
+  **and** the regime gate (`regime_breakout`, `reward_risk` at the refreshed regime's
+  ratio, `per_trade_risk` on configured cash with the regime multiplier). It runs on both
+  broker branches, after the Alpaca price-drift check and the unsupported-evidence
+  refusal. Consequences, accepted as the one-gate principle:
+  - simulator entries can be refused by regime rules;
+  - the regime half fails closed when VIX or macro data is unavailable, while the
+    lockout half fails open when the economic calendar is down;
+  - the preflight makes provider calls inside the 60 s preflight lease;
+  - `get_regime(force_refresh=True)` refreshes the shared regime cache on every dispatch.
+- **Final-bracket check after the LLM (rulings R10, R14).** When the LLM's bracket differs
+  from the deterministic one, the evaluator builds the final `EntryIntent`. It restores
+  both deterministic levels in three cases: the construction fails; `reward_risk` at the
+  required ratio or `per_trade_risk` for the card's budget refuses it; or, for a paper
+  probe, the final risk exceeds `alpha_pipeline.probe_risk_dollars`. Approval and the
+  LLM's verdict are untouched, and `risk_reward_ratio` is reported from the final stop
+  distance. A card is never refused later for size because of an LLM edit.
+- **Card validity.** `valid_until` is recorded only when `entry_session_open` allows
+  entries and the provider's `next_close` is timezone-aware **and still in the future**. A
+  CME evening session reports that day's already-passed 17:00 ET halt, which would expire
+  the card at its first tap. Otherwise the card expires at the New York date change.
+- **Probe cap.** Sizing caps a probe's max tier at `alpha_pipeline.probe_risk_dollars`
+  (one evaluator helper, `_probe_risk_cap`). The final-bracket check above applies the
+  same cap, so the probe cap only ever reduces risk.
+- **Book validation.** `BookPosition` does not raise. A missing, non-finite or negative
+  `notional`/`planned_risk` makes the position invalid, and `exposure_known` refuses
+  before any numeric rule at every layer (`book_gates` then reports that rejection
+  alone). `EntryIntent` remains the raising validation boundary, and the scan converts
+  its `ValueError` into admission's "Quantity and bracket prices must be finite and
+  positive." text.
+- **Card budget membership.** The per-group card cap keeps
+  `TradingCopilot.correlation_groups_of`; its root/slash matching is equivalent to
+  `normalize_symbol`. Sharing the function is left to the card-selector seam (L3).

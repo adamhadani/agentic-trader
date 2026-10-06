@@ -2731,10 +2731,10 @@ class TradingCopilot:
         if (live := await self.db.live_signal_id(contract)) is not None:
             # E.g. its REPRICE replacement: point there; a re-evaluation would be refused.
             return ExecutionReply(False, f"{text} Card #{live} for {name} is live.")
+        limits = RiskLimits.from_config(self.config)
         try:
             async with asyncio.timeout(TAP_CHECK_TIMEOUT_SECONDS):
                 info = await self.session_provider.get_session_info(contract)
-            limits = RiskLimits.from_config(self.config)
             if entry_session_open(info.is_open, info.is_rth, limits.enforce_rth) is not None:
                 text += f"\n{self._next_open_text(info)}"
         except Exception:

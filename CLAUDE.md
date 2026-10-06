@@ -32,7 +32,7 @@ starting map; the linked domain guides own detailed contracts.
 | --- | --- |
 | CLI composition and lifecycle | `cli/main.py`, `cli/utils.py`, `cli/commands/` |
 | Application orchestration | `agent/copilot.py:TradingCopilot` |
-| Signal evaluation and risk | `agent/evaluator.py`, `position_sizing.py`, `regime.py`, `macro.py`, `calendar.py` |
+| Signal evaluation and risk | `agent/evaluator.py`, `position_sizing.py`, `regime.py`, `macro.py`, `calendar.py`, `risk/` |
 | Market data and sessions | `data/`, `market/session.py`, `market/bars.py`, `resilience/fallback.py` |
 | Strategies | `screeners/base.py`, `strategies.py`, `registry.py`, `formulaic.py` |
 | Entry/close application services | `execution/entries.py`, `admission.py`, `capacity.py`, `closing.py` |
@@ -58,6 +58,10 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    requires fresh journaled account drawdown; every tier shares its cap. Final
    submission pins the risk fingerprint and rechecks the lease after ledger locking. Rejected/unfilled
    terminal evidence releases capacity; acceptance is not a fill.
+   Every entry-risk rule (per-trade budget, notional and class caps, concurrent positions,
+   aggregate stop risk, correlation group, reward/risk, macro lockout, session, earnings,
+   regime) has one implementation in `agentic_trader/risk`; the evaluator, tap gate,
+   re-pricing and admission differ only in the book they pass ([risk policy](docs/risk-policy.md)).
 
    **Paper probes:** `probe` is a third registry list, valid only in the `…/alpaca:paper`
    scope. `probe_block_reason` is the single liveness rule for snapshot, sweep and
