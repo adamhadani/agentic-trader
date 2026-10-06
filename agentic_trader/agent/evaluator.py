@@ -459,7 +459,7 @@ class RiskEvaluator:
             )
 
         # 1. Shared book rules (agentic_trader.risk.book_gates), in their fixed order: exposure_known,
-        #    drawdown_halt, aggregate_stop_risk, concurrent_positions, portfolio_notional,
+        #    drawdown_halt, aggregate_stop_risk, concurrent_positions, same_symbol, portfolio_notional,
         #    asset_class_notional, correlation_group. The scan's book is ``active_positions``: open
         #    positions plus the cards this scan already sent; the intent is the deterministic bracket.
         positions_list = active_positions or []
@@ -720,7 +720,9 @@ class RiskEvaluator:
             # be valid and meet ``reward_risk`` at required_rr; a wider stop re-sizes every tier at it (sizes
             # only shrink) and the re-sized max tier must pass ``per_trade_risk``, the probe cap and
             # ``aggregate_stop_risk`` on the scan's book. Otherwise the deterministic bracket and tiers are
-            # restored. The LLM's verdict stands either way.
+            # restored. The LLM's verdict stands either way. Re-sized values go only to the card's own
+            # fields (``data``), never to the deterministic locals the fallback below returns.
+            card_quantity, card_tiers, card_gating = quantity, sizing_tiers, gating_reasons
             if (llm_stop, llm_target) != (stop_loss, take_profit):
                 keep, resized = self._final_bracket(
                     candidate,
@@ -745,22 +747,23 @@ class RiskEvaluator:
                     llm_stop_dist, llm_target_dist = stop_distance, target_distance
                     rr = round(target_distance / stop_distance, 2)
                 elif resized is not None:
-                    quantity = resized.default_tier.quantity
-                    notional_value = resized.default_tier.notional_dollars
-                    sizing_tiers = [t.model_dump() for t in resized.tiers]
-                    gating_reasons = resized.gating_reasons
-                    data["quantity"] = quantity
-                    data["notional_value"] = notional_value
-                    data["effective_leverage"] = round(notional_value / self.config.portfolio.cash, 2)
+                    card_quantity = resized.default_tier.quantity
+                    card_tiers = [t.model_dump() for t in resized.tiers]
+                    card_gating = resized.gating_reasons
+                    data["quantity"] = card_quantity
+                    data["notional_value"] = resized.default_tier.notional_dollars
+                    data["effective_leverage"] = round(
+                        resized.default_tier.notional_dollars / self.config.portfolio.cash, 2
+                    )
             data["stop_loss"] = llm_stop
             data["take_profit"] = llm_target
             data["stop_distance_points"] = round(llm_stop_dist, 2)
             data["target_distance_points"] = round(llm_target_dist, 2)
             data["risk_reward_ratio"] = rr
-            data["risk_dollars"] = round(llm_stop_dist * multiplier * quantity, 2)
-            data["reward_dollars"] = round(llm_target_dist * multiplier * quantity, 2)
-            data["sizing_tiers"] = sizing_tiers
-            data["gating_reasons"] = gating_reasons
+            data["risk_dollars"] = round(llm_stop_dist * multiplier * card_quantity, 2)
+            data["reward_dollars"] = round(llm_target_dist * multiplier * card_quantity, 2)
+            data["sizing_tiers"] = card_tiers
+            data["gating_reasons"] = card_gating
             data["session_type"] = current_session_type
 
             data.pop("llm_verdict", None)  # only ever set below, never taken from the LLM

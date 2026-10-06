@@ -767,3 +767,35 @@ async def test_a_tighter_llm_stop_keeps_the_deterministic_tiers(evaluator_factor
     # Sizes never grow because of an LLM edit: the tiers (and their overstated risk) are the deterministic ones.
     assert result.quantity == levels.quantity and result.sizing_tiers == levels.sizing_tiers
     assert all(tier["risk_dollars"] >= tier["quantity"] * 4.0 for tier in result.sizing_tiers)
+
+
+async def test_an_unparseable_answer_after_a_resize_falls_back_to_the_deterministic_card(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+):
+    evaluator = evaluator_factory()
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    candidate = create_equity_candidate()
+    levels = _deterministic_levels(evaluator, candidate)
+    deterministic = await evaluator.evaluate_candidate(candidate, use_llm=False)
+    # A widened stop (which re-sizes the tiers) in an answer without the required thesis_summary.
+    content = json.dumps(
+        {
+            "approved": True,
+            "macro_clearance": True,
+            "stop_loss": _widened(deterministic),
+            "take_profit": _target_at_two_and_a_half_r(deterministic),
+        }
+    )
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", AsyncMock(return_value=response))
+    result = await evaluator.evaluate_candidate(candidate, use_llm=True)
+    assert "LLM fallback used" in result.thesis_summary and result.llm_verdict is None
+    _assert_deterministic_bracket(result, deterministic)
+    assert (result.quantity, result.notional_value, result.effective_leverage) == (
+        deterministic.quantity,
+        deterministic.notional_value,
+        deterministic.effective_leverage,
+    )
+    assert result.quantity == levels.quantity
+    assert result.sizing_tiers == levels.sizing_tiers and result.gating_reasons == levels.gating_reasons
