@@ -217,6 +217,17 @@ Final fix wave after the whole-branch review (2026-10-06):
   The guarantee is narrowed to "the same book and the same budget inputs give the same
   verdict"; [risk policy](../../risk-policy.md#known-divergences) lists the divergence and
   its effect.
+- **Final-bracket check, resize down only (supersedes the R10/R14 amendment above).** When
+  the LLM's bracket differs from the deterministic one, it must be a valid `EntryIntent`
+  meeting `reward_risk` at the required ratio. A stop no wider than the deterministic one
+  keeps the deterministic tiers (sizes never grow because of an LLM edit). A wider stop
+  re-sizes every tier with `calculate_dynamic_sizing` at the final stop and target on the
+  same inputs, probe cap included, so the offered tiers match the card as sent. The
+  re-sized default tier must not be blocked, and the re-sized max tier must pass
+  `per_trade_risk` (by construction), the probe cap and `aggregate_stop_risk` on the
+  scan's book; otherwise the deterministic bracket and tiers are restored. A widened
+  probe bracket whose re-sized tiers fit the probe cap is therefore kept. The other book
+  rules stay judged at the default tier, as before.
 - **Types.** `EntryIntent` has no `strategy` field (`regime_breakout` takes the strategy
   separately). `RiskLimits` snapshots the four drawdown-policy fields instead of holding
   the sizing config, and `drawdown_policy` returns them as a frozen `DrawdownPolicy`

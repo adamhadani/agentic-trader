@@ -74,7 +74,8 @@ Sizing caps the max tier at `budget.dollars`. A paper probe's max tier is also c
 target budget by the same drawdown and macro factors and is clamped to the max tier; the
 half tier is derived from the base tier. The scan's capital and factors are never above
 the tap gate's or admission's, so with unchanged equity, drawdown and regime a tier
-offered on a card is never refused later for size.
+offered on a card is never refused later for size. That includes a card whose LLM-widened
+stop re-sized its tiers (behaviour change 8).
 
 The aggregate stop-risk budget is `capital × portfolio.max_stop_risk_pct ×
 drawdown_factor`, with the same capital and drawdown factor and no macro factor.
@@ -91,11 +92,11 @@ paths are under `tests/`.
 | --- | --- | --- | --- | --- | --- | --- |
 | `exposure_unknown` | `Book` | `book_gates`, first | — | `admission_gates`, first | `Existing exposure is unknown or invalid; reconcile it before new risk.` | `risk/test_rules.py`, `risk/test_adversarial.py`, `agent/test_evaluator_risk_policy.py` |
 | `drawdown_halt` | `RiskBudget.drawdown_factor` | `book_gates` (sizing already blocks a zero factor) | — | yes | `Account drawdown {pct:.1%} reaches the configured sizing halt; new entries blocked.` | `risk/test_rules.py`, `execution/test_drawdown_policy.py` |
-| `per_trade_risk` | `EntryIntent.risk_dollars`, `RiskBudget.dollars` | sizing caps every tier at the budget; the post-LLM final-bracket check | regime gate; re-pricing caps the replacement quantity at the same budget | yes, and in the preflight regime gate | `Order exceeds the configured per-trade risk cap.` When the drawdown or macro factor is below 1: `Order exceeds the drawdown- and macro-adjusted per-trade risk cap; request a fresh scan for smaller sizing.` | `risk/test_rules.py`, `risk/test_capital.py`, `agent/test_tap_risk_policy.py`, `execution/test_position_sizing.py` |
+| `per_trade_risk` | `EntryIntent.risk_dollars`, `RiskBudget.dollars` | sizing caps every tier at the budget, including tiers re-sized at an LLM-widened stop; the post-LLM final-bracket check re-checks the re-sized max tier | regime gate; re-pricing caps the replacement quantity at the same budget | yes, and in the preflight regime gate | `Order exceeds the configured per-trade risk cap.` When the drawdown or macro factor is below 1: `Order exceeds the drawdown- and macro-adjusted per-trade risk cap; request a fresh scan for smaller sizing.` | `risk/test_rules.py`, `risk/test_capital.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `execution/test_position_sizing.py` |
 | `per_trade_notional` | notional at `max(entry, current_price)`, `max_trade_notional_cap` | sizing caps the quantity | re-pricing caps the replacement quantity | yes; capacity passes `max(limit, ask, last trade)` as the current price | `Order exceeds the configured per-trade notional cap.` | `risk/test_rules.py`, `execution/test_entry_capacity.py`, `workflows/test_entries.py` |
 | `quantity_cap` | quantity, asset class, `max_shares_per_trade` / `max_contracts_per_trade` | sizing caps the quantity | re-pricing caps the replacement quantity | yes | `Order exceeds the configured quantity cap.` | `risk/test_rules.py`, `workflows/test_entries.py` |
 | `reward_risk` | bracket, `required_reward_risk(limits, regime.min_rr_threshold)` | the deterministic target is built at the required ratio; the regime gate checks the bracket at that ratio, which only a versioned alpha-policy bracket can fail; the LLM's target is clamped to it, and the final-bracket check runs | regime gate at the cached regime's ratio; re-pricing judges the current price at the same ratio | `admission_gates` at the configured minimum; the preflight regime gate at the refreshed regime's ratio | `Reward/risk {rr:.2f} is below the required {required:.2f}.` | `risk/test_rules.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py`, `execution/test_entry_capacity.py` |
-| `aggregate_stop_risk` | book planned risk plus the intent's, `RiskBudget`, `max_stop_risk_pct` | `book_gates` | — | yes | `Order would breach the aggregate planned stop-risk budget.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `execution/test_entry_capacity.py` |
+| `aggregate_stop_risk` | book planned risk plus the intent's, `RiskBudget`, `max_stop_risk_pct` | `book_gates` (default tier); the post-LLM final-bracket check on a re-sized max tier | — | yes | `Order would breach the aggregate planned stop-risk budget.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `execution/test_entry_capacity.py` |
 | `concurrent_positions` | book count, `max_concurrent_positions` | `book_gates` | — | yes | `Maximum concurrent positions ({max}) reached.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_risk_policy_integration.py` |
 | `same_symbol` | normalised symbol, book | `book_gates`, after `concurrent_positions` | — | yes | `Symbol already has a position or entry reservation; adding/netting requires a separate reviewed plan.` | `risk/test_rules.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py` |
 | `portfolio_notional` | book notional plus the intent's, `max_notional_exposure` | `book_gates` | — | yes | `Portfolio notional would reach ${total:,.0f}, above the ${cap:,.0f} ceiling.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `workflows/test_entries.py` |
@@ -258,13 +259,14 @@ The scan has no broker evidence, so its book carries each position's recorded
 
 ### Known divergences
 
-The guarantee is "same book and same budget inputs, same verdict". These cases give the
-scan and admission different inputs on purpose:
+The guarantee is "same book and same budget inputs, same verdict". In these cases the
+scan and admission judge different inputs on purpose:
 
 | Divergence | Effect |
 | --- | --- |
 | **Broker-marked Alpaca book (2026-10-06).** Admission's Alpaca book takes the larger of the recorded and broker-mark values for each held position (`execution/capacity.py`); the scan's book uses recorded values. | A hold that is up several R counts more planned risk (its mark-to-stop giveback) and more notional at admission than at the scan, so `aggregate_stop_risk`, `portfolio_notional` or `asset_class_notional` can refuse at Execute a card the scan sent. A falling hold never counts less than its recorded values. The simulator's admission uses recorded values, like the scan. |
 | **Budget inputs (by design).** The scan sizes on observed equity and drawdown with the regime multiplier; the tap gate uses configured cash, no drawdown and the cached regime; admission uses observed equity and drawdown (see the table under [The per-trade budget](#the-per-trade-budget)). | The scan's budget is never above the tap gate's or admission's for unchanged equity, drawdown and regime; a change between the scan and Execute can refuse a card. |
+| **The tier judged (pre-existing).** The scan's `book_gates` judge the card's default tier; admission judges the tier the operator taps. Only a card re-sized at an LLM-widened stop also has its max tier checked at the scan, against `aggregate_stop_risk`. | Book rules other than aggregate stop-risk (`concurrent_positions`, `same_symbol`, `portfolio_notional`, `asset_class_notional`, `correlation_group`) are judged at the default tier, so a larger tier can still be refused at Execute. Re-sized tiers only shrink, so the final-bracket check adds no new divergence. |
 
 ## Behaviour changes on 2026-10-06
 
@@ -330,13 +332,24 @@ came with them. Everything else that decides an entry is unchanged.
    otherwise the card expires at the New York date change. A CME evening session reports
    that day's 17:00 ET halt, which has already passed. Scan scheduling
    (`is_session_active`) is unchanged.
-8. **Final-bracket check after the LLM (2026-10-06).** The card as sent must pass
-   `reward_risk` at the required ratio and `per_trade_risk` for the card's budget. A
-   probe card's final risk must also not exceed `alpha_pipeline.probe_risk_dollars`.
-   Otherwise the deterministic stop and target are both restored. An LLM bracket that is
-   not a valid `EntryIntent` (NaN, non-positive) is restored the same way, and the LLM's
-   verdict stands. `risk_reward_ratio` is reported from the final stop distance. A
-   versioned alpha policy's bracket is never changed by the LLM.
+8. **Final-bracket check after the LLM (2026-10-06).** When the LLM's bracket differs
+   from the deterministic one, it must be a valid `EntryIntent` that meets `reward_risk`
+   at the required ratio. Then:
+   - A stop no wider than the deterministic one keeps the deterministic tiers. Sizes
+     never grow because of an LLM edit; the tiers' displayed risk is then an
+     overstatement, the conservative side.
+   - A wider stop re-sizes every tier with `calculate_dynamic_sizing` at the final stop
+     and target distances, on the scan's sizing inputs (open notional, drawdown, macro,
+     equity, the probe cap), so every tier shrinks. The card's quantity, risk, reward and
+     notional are the re-sized default tier's. The re-sized default tier must not be
+     blocked, and the re-sized max tier must pass `per_trade_risk` (true by
+     construction), `alpha_pipeline.probe_risk_dollars` for a probe, and
+     `aggregate_stop_risk` on the scan's book.
+
+   Any failure restores the deterministic stop, target and tiers together. An LLM bracket
+   that is not a valid `EntryIntent` (NaN, non-positive) is restored the same way. The
+   LLM's verdict stands either way. `risk_reward_ratio` is reported from the final stop
+   distance. A versioned alpha policy's bracket is never changed by the LLM.
 9. **Fail-closed inputs (2026-10-06).** A non-positive or non-finite deterministic
    bracket price, quantity or configured multiplier is refused at scan time
    (`EntryIntent` validation) with admission's text "Quantity and bracket prices must be

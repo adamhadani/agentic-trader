@@ -14,9 +14,18 @@ from agentic_trader.agent.calendar import MacroEvent
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import AssetClass, OrderSide
+from agentic_trader.execution.admission import reservation_rejection
 from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, bracket_prices, entry_limit
-from agentic_trader.risk import RiskLimits, RiskRule, meets_min_reward_risk, per_trade_risk_budget
+from agentic_trader.risk import (
+    EntryIntent,
+    RiskLimits,
+    RiskRule,
+    meets_min_reward_risk,
+    per_trade_risk,
+    per_trade_risk_budget,
+    required_reward_risk,
+)
 from tests.agent.test_evaluator import (
     create_candidate as make_candidate,
     create_equity_candidate,
@@ -563,21 +572,22 @@ async def test_a_non_numeric_llm_stop_falls_back_to_the_deterministic_card(evalu
     _assert_deterministic_bracket(result, deterministic)
 
 
-async def test_an_llm_stop_widened_beyond_the_probe_cap_restores_the_deterministic_bracket(
+def _twice_the_stop(card):
+    return card.entry_price - 2 * (card.entry_price - card.stop_loss)
+
+
+def _target_at_two_and_a_half_r_of_twice_the_stop(card):
+    return card.entry_price + 2.5 * (card.entry_price - _twice_the_stop(card))
+
+
+async def test_an_llm_stop_widened_on_a_probe_is_kept_on_tiers_resized_within_the_probe_cap(
     evaluator_factory,  # noqa: F811
     monkeypatch,
 ):
     evaluator = evaluator_factory()
     cap = evaluator.config.alpha_pipeline.probe_risk_dollars
     probe = create_equity_candidate(price=100.0, atr=1.0, swing_low=99.0).model_copy(update={"probe": True})
-
-    def twice_the_stop(card):
-        return card.entry_price - 2 * (card.entry_price - card.stop_loss)
-
-    def target_at_two_and_a_half_r(card):
-        return card.entry_price + 2.5 * (card.entry_price - twice_the_stop(card))
-
-    answer = {"stop_loss": twice_the_stop, "take_profit": target_at_two_and_a_half_r}
+    answer = {"stop_loss": _twice_the_stop, "take_profit": _target_at_two_and_a_half_r_of_twice_the_stop}
     deterministic, result = await _deterministic_and_llm(evaluator, monkeypatch, probe, **answer)
     # The card's per-trade budget, as the evaluator derives it (no observed equity or drawdown).
     regime = evaluator.regime_detector.get_regime.return_value
@@ -587,11 +597,173 @@ async def test_an_llm_stop_widened_beyond_the_probe_cap_restores_the_determinist
         drawdown_pct=0.0,
         macro_multiplier=regime.risk_multiplier,
     )
-    # The doubled stop's risk exceeds the probe cap but not the per-trade budget.
+    # The doubled stop's risk at the deterministic quantity exceeds the probe cap but not the per-trade budget.
     assert deterministic.risk_dollars <= cap < 2 * deterministic.risk_dollars < budget.dollars
-    _assert_deterministic_bracket(result, deterministic)
+    # The LLM's bracket stands on tiers re-sized at its stop: the probe cap still bounds every tier.
+    assert (result.stop_loss, result.take_profit) == (
+        _twice_the_stop(deterministic),
+        _target_at_two_and_a_half_r_of_twice_the_stop(deterministic),
+    )
+    largest = max(result.sizing_tiers, key=lambda tier: tier["quantity"])
+    assert largest["risk_dollars"] <= cap and result.quantity < deterministic.quantity
     # The same answer on a native card (no probe cap) stays within the budget and is kept.
     native, kept = await _deterministic_and_llm(
         evaluator, monkeypatch, probe.model_copy(update={"probe": False}), **answer
     )
-    assert (kept.stop_loss, kept.take_profit) == (twice_the_stop(native), target_at_two_and_a_half_r(native))
+    assert (kept.stop_loss, kept.take_profit) == (
+        _twice_the_stop(native),
+        _target_at_two_and_a_half_r_of_twice_the_stop(native),
+    )
+
+
+async def test_an_llm_widened_probe_stop_with_no_permissible_resized_size_restores_the_deterministic_card(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+):
+    evaluator = evaluator_factory()
+    # One share at the deterministic 1.50 stop fits a $2 cap; at the doubled 3.00 stop none does.
+    evaluator.config.alpha_pipeline.probe_risk_dollars = 2.0
+    probe = create_equity_candidate(price=100.0, atr=1.0, swing_low=99.0).model_copy(update={"probe": True})
+    levels = _deterministic_levels(evaluator, probe)
+    assert levels.quantity == 1 and levels.stop_loss == 98.5
+    deterministic, result = await _deterministic_and_llm(
+        evaluator,
+        monkeypatch,
+        probe,
+        stop_loss=_twice_the_stop,
+        take_profit=_target_at_two_and_a_half_r_of_twice_the_stop,
+    )
+    _assert_deterministic_bracket(result, deterministic)
+    assert result.quantity == levels.quantity and result.sizing_tiers == levels.sizing_tiers
+
+
+# --- A: the offered tiers match the card as sent -----------------------------------------------
+
+
+def _deterministic_levels(evaluator, candidate):
+    """The scan's deterministic levels for ``candidate`` under the fixture regime, on an empty book."""
+    regime = evaluator.regime_detector.get_regime.return_value
+    return evaluator.calculate_levels_deterministic(
+        candidate,
+        macro_risk_multiplier=regime.risk_multiplier,
+        min_reward_risk=required_reward_risk(RiskLimits.from_config(evaluator.config), regime.min_rr_threshold),
+    )
+
+
+def _widened(card):
+    """A LONG stop 1.4 times the card's stop distance from the entry, on a cent."""
+    return round(card.entry_price - 1.4 * (card.entry_price - card.stop_loss), 2)
+
+
+def _target_at_two_and_a_half_r(card):
+    return round(card.entry_price + 2.5 * (card.entry_price - _widened(card)), 2)
+
+
+def _order(card, quantity):
+    return OrderRequest(
+        symbol=card.contract,
+        asset_class=AssetClass.EQUITY,
+        direction="LONG",
+        side=OrderSide.BUY,
+        quantity=quantity,
+        entry_price=card.entry_price,
+        stop_loss=card.stop_loss,
+        take_profit=card.take_profit,
+    )
+
+
+async def test_an_llm_widened_stop_resizes_every_tier_at_the_final_stop(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    candidate = create_equity_candidate()  # AAPL at 150, deterministic stop 145.98 (4.02)
+    levels = _deterministic_levels(evaluator, candidate)
+    deterministic, result = await _deterministic_and_llm(
+        evaluator, monkeypatch, candidate, stop_loss=_widened, take_profit=_target_at_two_and_a_half_r
+    )
+    assert (result.stop_loss, result.take_profit) == (
+        _widened(deterministic),
+        _target_at_two_and_a_half_r(deterministic),
+    )
+    distance = result.entry_price - result.stop_loss
+    tiers = result.sizing_tiers
+    assert tiers and all(
+        tier["risk_dollars"] == pytest.approx(tier["quantity"] * distance, abs=0.005) for tier in tiers
+    )
+    # Every tier shrinks; the card's own quantity, risk and notional are the resized default tier's.
+    assert [t["quantity"] for t in tiers] != [t["quantity"] for t in levels.sizing_tiers]
+    assert max(t["quantity"] for t in tiers) < max(t["quantity"] for t in levels.sizing_tiers)
+    [default] = [tier for tier in tiers if tier["is_default"]]
+    assert (result.quantity, result.risk_dollars, result.notional_value) == (
+        default["quantity"],
+        default["risk_dollars"],
+        default["notional_dollars"],
+    )
+    # The max tier passes its own tap gate and admission on an empty book; per_trade_risk holds by construction.
+    largest = max(tiers, key=lambda tier: tier["quantity"])
+    regime = evaluator.regime_detector.get_regime.return_value
+    order = _order(result, largest["quantity"])
+    gate = TradingCopilot._regime_gate(
+        SimpleNamespace(config=evaluator.config), order, {"strategy": candidate.strategy}, regime
+    )
+    assert gate is None and reservation_rejection(order, [], evaluator.config) is None
+    budget = per_trade_risk_budget(
+        RiskLimits.from_config(evaluator.config), equity=None, drawdown_pct=0.0, macro_multiplier=regime.risk_multiplier
+    )
+    intent = EntryIntent("AAPL", "LONG", "EQUITY", largest["quantity"], result.entry_price, result.stop_loss, 200.0)
+    assert per_trade_risk(intent, budget) is None
+
+
+async def test_a_resized_max_tier_beyond_the_aggregate_budget_restores_the_deterministic_card(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+):
+    evaluator = evaluator_factory()
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    evaluator.config.portfolio.max_stop_risk_pct = 0.02  # 100,000 x 2% = 2,000 of aggregate planned stop risk
+    candidate = create_equity_candidate()
+    levels = _deterministic_levels(evaluator, candidate)
+    # Room for twice the deterministic default tier's risk: the book gates admit the card, but not a
+    # resized max tier near the 1,000 per-trade budget.
+    book = [{**book_row("XOM", risk=2_000.0 - 2 * levels.risk_dollars), "status": "EXECUTED"}]
+    deterministic = await evaluator.evaluate_candidate(candidate, use_llm=False, active_positions=book)
+    assert deterministic.approved is True
+    llm_completion(
+        monkeypatch, stop_loss=_widened(deterministic), take_profit=_target_at_two_and_a_half_r(deterministic)
+    )
+    result = await evaluator.evaluate_candidate(candidate, use_llm=True, active_positions=book)
+    _assert_deterministic_bracket(result, deterministic)
+    assert result.quantity == levels.quantity and result.sizing_tiers == levels.sizing_tiers
+    # On an empty book the same answer is kept on resized tiers.
+    kept = await evaluator.evaluate_candidate(candidate, use_llm=True)
+    assert kept.stop_loss == _widened(deterministic) and kept.sizing_tiers != levels.sizing_tiers
+
+
+async def test_an_unchanged_llm_bracket_keeps_the_deterministic_tiers(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    candidate = create_equity_candidate()
+    levels = _deterministic_levels(evaluator, candidate)
+    _, result = await _deterministic_and_llm(
+        evaluator,
+        monkeypatch,
+        candidate,
+        stop_loss=lambda card: card.stop_loss,
+        take_profit=lambda card: card.take_profit,
+    )
+    assert (result.stop_loss, result.take_profit) == (levels.stop_loss, levels.take_profit)
+    assert result.quantity == levels.quantity and result.sizing_tiers == levels.sizing_tiers
+
+
+async def test_a_tighter_llm_stop_keeps_the_deterministic_tiers(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    candidate = create_equity_candidate(swing_low=140.0)  # structural stop 139.98: 10.02 below the entry
+    levels = _deterministic_levels(evaluator, candidate)
+    _, result = await _deterministic_and_llm(
+        evaluator,
+        monkeypatch,
+        candidate,
+        stop_loss=lambda card: 146.0,  # 4.00: above the 3.00 ATR minimum, tighter than 10.02
+        take_profit=lambda card: 160.0,  # 2.5 R
+    )
+    assert (result.stop_loss, result.take_profit) == (146.0, 160.0)
+    # Sizes never grow because of an LLM edit: the tiers (and their overstated risk) are the deterministic ones.
+    assert result.quantity == levels.quantity and result.sizing_tiers == levels.sizing_tiers
+    assert all(tier["risk_dollars"] >= tier["quantity"] * 4.0 for tier in result.sizing_tiers)

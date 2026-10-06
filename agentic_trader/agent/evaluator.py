@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import math
@@ -20,9 +21,7 @@ from agentic_trader.agent.earnings import (
     earnings_blackout_reason,
     earnings_note,
 )
-from agentic_trader.agent.position_sizing import (
-    calculate_dynamic_sizing,
-)
+from agentic_trader.agent.position_sizing import PositionSizingResult, calculate_dynamic_sizing
 from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import AppConfig
@@ -36,8 +35,10 @@ from agentic_trader.research.alpha.strategy import bracket_prices, entry_limit, 
 from agentic_trader.risk import (
     Book,
     EntryIntent,
+    RiskBudget,
     RiskLimits,
     RiskRule,
+    aggregate_stop_risk,
     book_gates,
     entry_session_open,
     macro_lockout,
@@ -149,8 +150,8 @@ class RiskEvaluator:
     def _probe_risk_cap(self, candidate: ScreenerCandidate) -> float | None:
         """A paper probe's risk ceiling (``alpha_pipeline.probe_risk_dollars``), or None for any other card.
 
-        Sizing caps a probe's tiers at it and the post-LLM final-bracket check reverts a probe
-        bracket whose risk exceeds it.
+        Sizing caps a probe's tiers at it, including tiers re-sized at an LLM-widened stop, and
+        the post-LLM final-bracket check re-checks the re-sized max tier against it.
         """
         return self.config.alpha_pipeline.probe_risk_dollars if candidate.probe else None
 
@@ -274,6 +275,81 @@ class RiskEvaluator:
             sizing_tiers=sizing_tiers,
             gating_reasons=gating_reasons,
         )
+
+    def _final_bracket(
+        self,
+        candidate: ScreenerCandidate,
+        *,
+        entry: float,
+        stop: float,
+        target: float,
+        deterministic_stop: float,
+        quantity: float,
+        multiplier: float,
+        asset_class: AssetClass,
+        required_rr: float,
+        budget: RiskBudget,
+        limits: RiskLimits,
+        book: Book,
+        current_open_notional: float,
+        current_drawdown_pct: float,
+        current_equity: float | None,
+        macro_risk_multiplier: float,
+    ) -> tuple[bool, PositionSizingResult | None]:
+        """Whether an LLM bracket other than the deterministic one stands, and the tiers it stands on.
+
+        The bracket must be a valid ``EntryIntent`` meeting ``reward_risk`` at ``required_rr``. A
+        stop no wider than the deterministic one keeps the deterministic tiers (sizes never grow
+        because of an LLM edit; their displayed risk is then an overstatement): ``(True, None)``.
+        A wider stop re-sizes every tier with ``calculate_dynamic_sizing`` at the final stop and
+        target distances, on the deterministic sizing inputs (probe cap included), so every tier
+        shrinks. The re-sized default tier must not be blocked, and the re-sized max tier must
+        pass ``per_trade_risk`` (true by construction), the probe cap and ``aggregate_stop_risk``
+        on the scan's ``book``: ``(True, sizing)``. Any failure is ``(False, None)``: restore
+        the deterministic bracket and tiers.
+        """
+        try:
+            final = EntryIntent(
+                symbol=candidate.contract,
+                direction=str(candidate.direction),
+                asset_class=str(asset_class),
+                quantity=quantity,
+                entry=entry,
+                stop=stop,
+                target=target,
+                multiplier=multiplier,
+            )
+        except ValueError:
+            return False, None
+        if reward_risk(final, required_rr) is not None:
+            return False, None
+        if abs(entry - stop) <= abs(entry - deterministic_stop):
+            return True, None
+        probe_cap = self._probe_risk_cap(candidate)
+        resized = calculate_dynamic_sizing(
+            entry=entry,
+            stop_distance=final.risk_distance,
+            target_distance=final.reward_distance,
+            multiplier=multiplier,
+            asset_class=asset_class,
+            config=self.config,
+            candidate=candidate,
+            current_open_notional=current_open_notional,
+            current_drawdown_pct=current_drawdown_pct,
+            macro_risk_multiplier=macro_risk_multiplier,
+            current_equity=current_equity,
+            risk_dollars_cap=probe_cap,
+        )
+        if resized.default_tier.quantity <= 0:
+            return False, None
+        largest = dataclasses.replace(final, quantity=resized.max_tier.quantity)
+        if (
+            per_trade_risk(largest, budget) is not None
+            or (probe_cap is not None and largest.risk_dollars > probe_cap)
+            or aggregate_stop_risk(largest, book, budget, limits) is not None
+        ):
+            return False, None
+        return True, resized
 
     async def evaluate_candidate(
         self,
@@ -406,7 +482,8 @@ class RiskEvaluator:
         budget = per_trade_risk_budget(
             limits, equity=current_equity, drawdown_pct=current_drawdown_pct, macro_multiplier=regime.risk_multiplier
         )
-        if gates := book_gates(intent, Book.from_signal_rows(positions_list, reservations=False), budget, limits):
+        scan_book = Book.from_signal_rows(positions_list, reservations=False)
+        if gates := book_gates(intent, scan_book, budget, limits):
             return _rejected(gates[0].reason, gates[0].rule, thesis=f"Rejected by risk manager: {gates[0].reason}")
 
         # 1b. Statistical return correlation (if enabled): evaluator-only, needs the data fetcher;
@@ -638,38 +715,43 @@ class RiskEvaluator:
                 llm_stop_dist, llm_target_dist = stop_distance, target_distance
                 rr = target_distance / stop_distance
 
-            # Final-bracket check, so the card as sent passes its own tap gate under this regime:
-            # a bracket other than the deterministic one that is not a valid ``EntryIntent``,
-            # fails ``reward_risk`` at required_rr or exceeds ``per_trade_risk`` for this card's
-            # budget (observed equity and drawdown, never above the tap gate's configured-cash
-            # budget) -- e.g. a wider stop at the deterministic quantity -- reverts stop and target
-            # together to the deterministic bracket (built at required_rr, sized within the budget).
-            # A paper probe's bracket also reverts when its risk exceeds
-            # ``alpha_pipeline.probe_risk_dollars``: the probe cap may only ever reduce risk.
+            # Final-bracket check (``_final_bracket``), so the card as sent -- every tier offered on it --
+            # passes its own tap gate under this regime: a bracket other than the deterministic one must
+            # be valid and meet ``reward_risk`` at required_rr; a wider stop re-sizes every tier at it (sizes
+            # only shrink) and the re-sized max tier must pass ``per_trade_risk``, the probe cap and
+            # ``aggregate_stop_risk`` on the scan's book. Otherwise the deterministic bracket and tiers are
+            # restored. The LLM's verdict stands either way.
             if (llm_stop, llm_target) != (stop_loss, take_profit):
-                probe_cap = self._probe_risk_cap(candidate)
-                try:
-                    final = EntryIntent(
-                        symbol=candidate.contract,
-                        direction=str(candidate.direction),
-                        asset_class=str(asset_class),
-                        quantity=quantity,
-                        entry=entry,
-                        stop=llm_stop,
-                        target=llm_target,
-                        multiplier=multiplier,
-                    )
-                    final_passes = (
-                        reward_risk(final, required_rr) is None
-                        and per_trade_risk(final, budget) is None
-                        and (probe_cap is None or final.risk_dollars <= probe_cap)
-                    )
-                except ValueError:
-                    final_passes = False
-                if not final_passes:
+                keep, resized = self._final_bracket(
+                    candidate,
+                    entry=entry,
+                    stop=llm_stop,
+                    target=llm_target,
+                    deterministic_stop=stop_loss,
+                    quantity=quantity,
+                    multiplier=multiplier,
+                    asset_class=asset_class,
+                    required_rr=required_rr,
+                    budget=budget,
+                    limits=limits,
+                    book=scan_book,
+                    current_open_notional=current_open_notional,
+                    current_drawdown_pct=current_drawdown_pct,
+                    current_equity=current_equity,
+                    macro_risk_multiplier=regime.risk_multiplier,
+                )
+                if not keep:
                     llm_stop, llm_target = stop_loss, take_profit
                     llm_stop_dist, llm_target_dist = stop_distance, target_distance
                     rr = round(target_distance / stop_distance, 2)
+                elif resized is not None:
+                    quantity = resized.default_tier.quantity
+                    notional_value = resized.default_tier.notional_dollars
+                    sizing_tiers = [t.model_dump() for t in resized.tiers]
+                    gating_reasons = resized.gating_reasons
+                    data["quantity"] = quantity
+                    data["notional_value"] = notional_value
+                    data["effective_leverage"] = round(notional_value / self.config.portfolio.cash, 2)
             data["stop_loss"] = llm_stop
             data["take_profit"] = llm_target
             data["stop_distance_points"] = round(llm_stop_dist, 2)
