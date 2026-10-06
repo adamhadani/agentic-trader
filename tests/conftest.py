@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,8 +18,10 @@ from pytest_socket import SocketBlockedError
 from sqlalchemy import event
 from sqlalchemy.engine import Engine, make_url
 
+from agentic_trader.agent.calendar import BaseEconomicCalendar
+from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.config import AppConfig, load_config
-from agentic_trader.constants import AssetClass, Direction, SignalStatus, StrategyType
+from agentic_trader.constants import AssetClass, Direction, SignalStatus, StrategyType, VolatilityRegime
 from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.runtime import validate_test_database
 from agentic_trader.storage.db import SignalDatabase
@@ -160,6 +162,44 @@ def temp_db(tmp_path: Any) -> SignalDatabase:
     """Provide a temporary SQLite SignalDatabase instance isolated to tmp_path."""
     db_file = tmp_path / "test_signals.db"
     return SignalDatabase(str(db_file))
+
+
+@pytest.fixture
+def calm_regime() -> RegimeSnapshot:
+    """A calm volatility/macro regime: normal VIX, breakouts allowed, a 2.0 reward/risk floor, full risk."""
+    return RegimeSnapshot(
+        vix=15.0,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=None,
+        dxy=None,
+        breakout_allowed=True,
+        min_rr_threshold=2.0,
+        timestamp=datetime.now(UTC),
+        summary_text="calm",
+        risk_multiplier=1.0,
+    )
+
+
+@pytest.fixture
+def calm_macro(calm_regime: RegimeSnapshot) -> Callable[[Any], Any]:
+    """Install a quiet macro context on a ``TradingCopilot``; returns the installer.
+
+    The copilot's macro check (the tap gate and entry admission, on both broker branches)
+    reads the economic calendar and the regime detector, so a test of anything else must
+    not reach the live calendar or VIX feed. The installer replaces both with mocks of their
+    classes: no tier-1 event in the lockout window, and ``calm_regime``. Set another return
+    value on them for another macro context. An evaluator the copilot already built keeps
+    its own references.
+    """
+
+    def install(copilot: Any) -> Any:
+        copilot.calendar = AsyncMock(spec=BaseEconomicCalendar)
+        copilot.calendar.is_in_lockout_window.return_value = (False, None)
+        copilot.regime_detector = AsyncMock(spec=RegimeDetector)
+        copilot.regime_detector.get_regime.return_value = calm_regime
+        return copilot
+
+    return install
 
 
 @pytest.fixture

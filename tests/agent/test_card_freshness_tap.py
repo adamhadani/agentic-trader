@@ -400,7 +400,10 @@ async def test_earnings_calendar_failure_fails_open_like_the_evaluator(tap_desk,
 
 async def test_macro_gate_turns_a_fresh_card_into_missed(tap_desk, temp_db):
     sid = await record_card(temp_db)
-    tap_desk.calendar.is_in_lockout_window.return_value = (True, SimpleNamespace(title="CPI"))
+    tap_desk.calendar.is_in_lockout_window.return_value = (
+        True,
+        SimpleNamespace(title="CPI", timestamp=datetime.now(UTC)),  # the rule re-judges the window: an aware time
+    )
 
     reply = await tap_desk.execute_signal_by_id(sid)
 

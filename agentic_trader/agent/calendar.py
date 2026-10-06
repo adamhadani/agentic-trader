@@ -11,6 +11,7 @@ from agentic_trader.constants import (
     DEFAULT_LOCKOUT_PRE_EVENT_MINUTES,
     FOREX_FACTORY_JSON_FEED_URL,
 )
+from agentic_trader.risk import in_lockout_window
 
 
 logger = logging.getLogger(__name__)
@@ -109,15 +110,17 @@ class BaseEconomicCalendar(ABC):
         post_minutes: int = DEFAULT_LOCKOUT_POST_EVENT_MINUTES,
         now: datetime | None = None,
     ) -> tuple[bool, MacroEvent | None]:
-        """Returns (True, event) if current time is within [event - pre_minutes, event + post_minutes]."""
+        """Returns (True, event) for the first tier-1 event whose lockout window contains the current time.
+
+        The window is ``agentic_trader.risk.in_lockout_window``: ``[event - pre_minutes, event + post_minutes]``,
+        inclusive at both ends.
+        """
         now = now or datetime.now(UTC)
         events = await self.fetch_events()
         for e in events:
             if not self.is_tier_1(e.title, e.country):
                 continue
-            lockout_start = e.timestamp - timedelta(minutes=pre_minutes)
-            lockout_end = e.timestamp + timedelta(minutes=post_minutes)
-            if lockout_start <= now <= lockout_end:
+            if in_lockout_window(now, e.timestamp, pre_minutes, post_minutes):
                 return True, e
         return False, None
 

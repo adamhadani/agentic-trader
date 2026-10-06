@@ -13,6 +13,7 @@ from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.constants import AssetClass, StrategyType, VolatilityRegime
 from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
+from agentic_trader.risk import RiskRule
 from agentic_trader.screeners.base import ScreenerCandidate
 
 
@@ -105,6 +106,7 @@ async def test_notional_limit_rejection(evaluator_factory):
 
     assert eval_res.approved is False
     assert "Sizing blocked" in eval_res.rejection_reason
+    assert eval_res.rejection_rule is None  # a sizing block is not a shared risk rule
     assert eval_res.quantity == 0
 
 
@@ -124,7 +126,8 @@ async def test_macro_lockout_rejection(evaluator_factory):
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
     assert eval_res.approved is False
-    assert "Macro Event Lockout" in eval_res.rejection_reason
+    assert "Macro event lockout: FOMC Rate Decision at " in eval_res.rejection_reason
+    assert eval_res.rejection_rule == RiskRule.MACRO_LOCKOUT
     assert eval_res.macro_clearance is False
 
 
@@ -207,8 +210,9 @@ async def test_squeeze_breakout_suppression_in_extreme_regime(evaluator_factory)
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
     assert eval_res.approved is False
-    assert "Volatility Regime Filter" in (eval_res.rejection_reason or "")
-    assert "EXTREME" in (eval_res.rejection_reason or "")
+    assert eval_res.rejection_reason == "Volatility/macro policy suppresses breakout entries."
+    assert eval_res.rejection_rule == RiskRule.REGIME_BREAKOUT
+    assert "EXTREME" in eval_res.thesis_summary  # the regime detail stays on the evaluation
 
 
 @pytest.mark.asyncio
@@ -256,7 +260,15 @@ async def test_evaluator_correlation_group_limit(evaluator_factory):
     evaluator = evaluator_factory()
     candidate = create_candidate(direction="LONG")
     # Active position already in US Equities group (e.g. SPY LONG)
-    active_positions = [{"contract": "SPY", "direction": "LONG", "notional_value": 25000.0}]
+    active_positions = [
+        {
+            "contract": "SPY",
+            "direction": "LONG",
+            "asset_class": "EQUITY",
+            "notional_value": 25000.0,
+            "risk_dollars": 50.0,
+        }
+    ]
 
     eval_res = await evaluator.evaluate_candidate(
         candidate,
@@ -266,7 +278,10 @@ async def test_evaluator_correlation_group_limit(evaluator_factory):
     )
 
     assert eval_res.approved is False
-    assert "Correlation limit exceeded" in (eval_res.rejection_reason or "")
+    assert "Correlation group 'us_broad_market' already has 1 LONG position(s) (SPY)" in (
+        eval_res.rejection_reason or ""
+    )
+    assert eval_res.rejection_rule == RiskRule.CORRELATION_GROUP
     assert "us_broad_market" in (eval_res.rejection_reason or "")
 
 
@@ -291,7 +306,9 @@ async def test_evaluator_market_session_rejection(evaluator_factory):
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
     assert eval_res.approved is False
-    assert "Market Session Filter" in (eval_res.rejection_reason or "")
+    assert eval_res.rejection_reason == "Market session closed: Christmas Day Holiday Closure."
+    assert eval_res.rejection_rule == RiskRule.SESSION_CLOSED
+    assert eval_res.session_type == "HOLIDAY_HALT"
 
 
 @pytest.mark.asyncio
@@ -459,6 +476,7 @@ async def test_earnings_blackout_rejects_event_inside_window(evaluator_factory):
 
     assert eval_res.approved is False
     assert "Earnings Blackout" in eval_res.rejection_reason
+    assert eval_res.rejection_rule == RiskRule.EARNINGS_BLACKOUT
     assert eval_res.macro_clearance is True
     assert fake_calendar.calls
 

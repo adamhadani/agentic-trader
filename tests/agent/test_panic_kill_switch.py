@@ -29,7 +29,7 @@ def test_db(tmp_path):
 
 
 @pytest.fixture
-def copilot_fixture(test_db):
+def copilot_fixture(test_db, calm_macro):
     config = load_config()
     config.sizing.max_trade_notional_cap = 40000
     config.portfolio.cash = 100_000.0
@@ -39,6 +39,7 @@ def copilot_fixture(test_db):
     config.execution.card_freshness.enabled = False
     metrics = MetricsCollector()
     copilot = TradingCopilot(config=config, db=test_db)
+    calm_macro(copilot)  # admission runs the macro check for simulated entries too
     copilot.metrics = metrics
     copilot.notifier.is_configured = MagicMock(return_value=True)
     copilot.notifier.send_exit_alert = AsyncMock(return_value=123)

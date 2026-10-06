@@ -255,9 +255,9 @@ A tap resolves to exactly one of four outcomes:
 | Outcome | Behaviour |
 | --- | --- |
 | `EXECUTE` | Same session, within `fresh_seconds` and `fresh_max_r`. Unchanged path: `EntryExecutionService.authorize` with the original bracket. A fresh tap keeps the original limit order resting unchanged, so reward:risk at the *current* price is not evaluated here — it only governs a would-be `REPRICE` below. The freshness decision never authorizes by itself — admission still enforces drift, macro, capacity, session and deadlines on its own terms. |
-| `REPRICE` | Same session, open, past the fresh bounds, price strictly between stop and target, remaining risk and reward:risk at the current price still acceptable, and every gate (halt, RTH, macro, regime, earnings) passes. Reward:risk is compared rounded to two decimals, the same rounding the evaluator used to approve the card, so float noise (e.g. `1.9999999999999973`) never refuses a card the scan approved at "2.0". The old signal is atomically expired and a replacement `PENDING` signal is recorded — entry at the current price rounded to the instrument's tick, same stop/target, quantity re-derived from the risk dollars of the tapped tier (else the card's size) and then capped by admission's per-trade caps (`sizing.max_shares_per_trade`/`max_contracts_per_trade`, `max_trade_notional_cap`, `max_risk_pct_cap` on configured cash, scaled down by the regime's risk multiplier); a size that rounds or caps to zero is `MISSED` instead — in the *same* transaction as its outbox notification, so a crash never leaves a replacement without its card or a card without its signal. The tap reply says a re-priced card was sent; the new card needs its own tap. A versioned alpha card (`alpha_version`/`alpha_policy`) is never re-priced: its immutable execution policy owns the entry limit and bracket, so this outcome executes the original bracket instead and admission's age/drift/policy checks decide. |
+| `REPRICE` | Same session, open, past the fresh bounds, price strictly between stop and target, remaining risk and reward:risk at the current price still acceptable, and every gate (halt, session, macro, regime, earnings) passes. Reward:risk is compared rounded to two decimals, the same rounding the evaluator used to approve the card, so float noise (e.g. `1.9999999999999973`) never refuses a card the scan approved at "2.0". The old signal is atomically expired and a replacement `PENDING` signal is recorded — entry at the current price rounded to the instrument's tick, same stop/target, quantity re-derived from the risk dollars of the tapped tier (else the card's size) and then capped by the per-trade caps (`sizing.max_shares_per_trade`/`max_contracts_per_trade`, `max_trade_notional_cap`, and the shared [per-trade risk budget](risk-policy.md#the-per-trade-budget) on configured cash with the regime's risk multiplier clamped to [0.10, 1.0]); a size that rounds or caps to zero is `MISSED` instead — in the *same* transaction as its outbox notification, so a crash never leaves a replacement without its card or a card without its signal. The tap reply says a re-priced card was sent; the new card needs its own tap. A versioned alpha card (`alpha_version`/`alpha_policy`) is never re-priced: its immutable execution policy owns the entry limit and bracket, so this outcome executes the original bracket instead and admission's age/drift/policy checks decide. |
 | `MISSED` | Same session, but the geometry or a gate fails (through the stop/target, too close to the stop, a failing gate, or — only for a would-be re-price — current-price reward:risk below the larger of `risk.min_risk_reward_ratio` and the cached regime's threshold). The old signal is expired and the reply offers **[🔄 Re-evaluate]**. |
-| `EXPIRED` | The issuing session has ended (`now ≥ valid_until`) or the market is not in RTH. The old signal is expired; the reply gives the reason and the broker's next regular open, and offers **[🔄 Re-evaluate]**. `EXPIRED` is a live signal status, not a terminal-only label: every status-gated query (duplicate rule, `/perf`, positions) already treats it as non-executed. |
+| `EXPIRED` | The issuing session has ended (`now ≥ valid_until`) or the session refuses entries (`entry_session_open`: closed, or outside regular hours while `session.enforce_rth` is set). The old signal is expired; the reply gives the reason and the broker's next regular open, and offers **[🔄 Re-evaluate]**. `EXPIRED` is a live signal status, not a terminal-only label: every status-gated query (duplicate rule, `/perf`, positions) already treats it as non-executed. |
 
 A price fetch failure, or a tap-time session/gate read failure (regime, macro,
 earnings), refuses the tap with a retryable message and leaves the card `PENDING`
@@ -288,8 +288,9 @@ eventually dead-letters rather than reporting a strike that never happened. A ta
 still lands on an `EXPIRED` card — swept before its strike was delivered, an earlier
 duplicate message, or a card a previous tap expired or re-priced — never gets the generic
 "not PENDING" refusal. It gets "⌛ Card #N is no longer live (expired).", plus the next
-regular open when the contract's session is closed (omitted if the session read fails,
-15 s bound). It offers **[🔄 Re-evaluate]** only for a configured contract. If another
+regular open while the contract's session refuses entries (closed, or outside regular
+hours while `session.enforce_rth` is set; omitted if the session read fails, 15 s
+bound). It offers **[🔄 Re-evaluate]** only for a configured contract. If another
 card for the contract is live, for example a re-priced replacement, the reply names it
 ("Card #M for SYMBOL is live.") and offers no Re-evaluate. A SIGNAL notification that
 retries after the sweep already expired its card is also covered: `send_signal_alert`
@@ -314,7 +315,8 @@ with a direct reply, not through the outbox:
 - only an `EXPIRED` card can be re-evaluated ("Signal #N is STATUS; nothing to re-evaluate.");
 - a `PENDING` or `SUBMITTING` card for the same contract refuses it ("A live card for
   SYMBOL already exists (#M).");
-- outside the regular session it is refused with the next regular open ("Market closed; …"),
+- while the session refuses entries (`entry_session_open`: closed, or outside regular hours
+  while `session.enforce_rth` is set) it is refused with the next regular open ("Market closed; …"),
   and an unavailable session read with "⚠️ Market session unavailable; try again shortly.";
 - once daemon shutdown has begun it is refused ("Daemon is shutting down; try again after
   restart.") before the claim, so the card can still be re-evaluated after the restart.
@@ -364,7 +366,8 @@ set, 120 s scan lock wait and durable outbox result messages. It logs
 - a `PENDING`/`SUBMITTING` card for the name ("A live card for SYMBOL already exists (#N).");
 - an unconfigured symbol while `universe.dynamic.enabled` is false ("Cannot scan
   SYMBOL: unconfigured symbols need the dynamic universe, which is disabled.");
-- the name's regular session closed ("Market closed; " plus the next regular open), or
+- the name's session refusing entries (the same `entry_session_open` rule; "Market closed; "
+  plus the next regular open), or
   the session read unavailable/timed out (15 s, `TAP_CHECK_TIMEOUT_SECONDS`).
 
 A **configured contract** matches by its `contracts:` key, with or without a futures
@@ -419,7 +422,9 @@ later scheduled suggestion scans see, and, for an unconfigured name, takes the d
 dynamic slot — exactly like a Re-evaluate card.
 
 **Card rendering.** Every card that carries a `valid_until` (recorded in
-`decision_provenance` when the contract is in RTH at scan/tap time) shows
+`decision_provenance` when the session allows entries at scan/tap time and the provider
+reports a timezone-aware close that is still ahead; otherwise the card expires at the New
+York date change) shows
 "• **Valid until:** HH:MM NY" under the Earnings line, in both the Telegram and
 terminal cards. A `REPRICE` replacement additionally prefixes its title with
 "🔄 UPDATED CARD (re-priced from #N, first issued HH:MM NY)"; `first_issued_at` is
@@ -590,18 +595,22 @@ IEX limit.
 Paper desk caps that ship with this universe: `portfolio.max_concurrent_positions: 8`,
 `portfolio.max_correlated_positions: 2` and `sizing.max_trade_notional_cap: 7500.0`.
 The total notional ceiling, asset-class caps and the 2% aggregate stop-risk budget are
-unchanged. A `PENDING` card reserves no capacity; these caps are enforced at Execute.
+unchanged. A `PENDING` card reserves no capacity; these caps are enforced at Execute. The
+scan, the tap gate, re-pricing and admission all judge these caps with the shared rules in
+[risk policy](risk-policy.md), each against its own book.
 
 **Sector correlation groups now bound the book per sector.** Every universe entry
 carries a sector, and those sectors are merged into `portfolio.correlation_groups` at
-load, so each group is a sector rather than a handful of index proxies. Entry
-admission counts *any* open position in the group (direction-agnostic) against
-`max_correlated_positions`, so the paper cap of 2 means at most two open positions per
-sector; with `max_concurrent_positions: 8` that spreads a full book across at least
-four sectors. The evaluator's own correlation check, which gates the suggestion card,
-counts only same-direction positions (an opposite-direction hedge is allowed there by
-design and by test), so a card can still be approved and then refused at Execute with
-`Configured correlated-position limit reached` — the cap of 2 is what keeps that rare.
+load, so each group is a sector rather than a handful of index proxies. The
+`correlation_group` rule counts the book's positions in the group that share the new
+entry's direction against `max_correlated_positions` (an opposite-direction hedge is
+allowed), so the paper cap of 2 means at most two same-direction positions per sector;
+with `max_concurrent_positions: 8` a full single-direction book (native cards are
+long-only) spans at least four sectors. The scan and admission run this one rule, each
+on its own book (the scan: open positions plus this scan's cards; admission: open
+positions plus reservations), and refuse with the same text, e.g. `Correlation group
+'us_broad_market' already has 2 LONG position(s) (SPY, VOO); max 2.` Group members match
+case-insensitively and with or without a futures `/`. See [risk policy](risk-policy.md).
 
 **Rollback** is a config edit: `universe: {}` restores the 13 explicitly configured
 contracts, and `non_universe_contracts` then equals the whole contract set.
@@ -1185,7 +1194,8 @@ The first reconciled checkpoint after enabling [account risk](account-ledger.md#
 
 [Entry capacity](entry-capacity.md) adds no migration or daemon. Configured planned
 stop risk defaults to 2% of the lesser of mandate and observed equity, with the
-drawdown multiplier; evidence defaults to a 30-second age from the first read.
+drawdown multiplier (the shared `aggregate_stop_risk` rule, [risk policy](risk-policy.md));
+evidence defaults to a 30-second age from the first read.
 Missing funding, current borrow status or exact working protection refuses new risk.
 An unrelated order or partially reconciled fill requires review, not a blind retry.
 Use retained entry result/submission evidence and the existing outbox to diagnose it.

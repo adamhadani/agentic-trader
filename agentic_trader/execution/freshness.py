@@ -15,6 +15,7 @@ from typing import Any
 from agentic_trader.config import CardFreshnessConfig
 from agentic_trader.constants import Direction
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.risk import meets_min_reward_risk
 
 
 # One bound for every tap-time read (price, session, regime/macro gates, earnings): a
@@ -111,25 +112,6 @@ class CardAssessment:
     price: float | None
 
 
-def meets_min_reward_risk(reward: float, risk: float, minimum: float) -> bool:
-    """Whether a bracket's reward:risk, rounded to two decimals, clears ``minimum``.
-
-    The single comparison shared by every place that re-checks a bracket's reward:risk
-    against the configured/regime minimum after the scan already approved it: the
-    tap-time current-price check (:func:`assess_card`), ``TradingCopilot._regime_gate``
-    and admission's ``reservation_rejection``. Two-decimal rounding matches the
-    evaluator's own approval rounding (``round(target_dist / stop_dist, 2)``), so a
-    card the scan approved at exactly "2.0" is never refused later for float noise
-    (e.g. ``21.12 / 10.56 == 1.9999999999999973``, which rounds to ``2.0``).
-
-    ``risk <= 0`` is always False -- a degenerate or inverted bracket never "meets" a
-    minimum, regardless of ``reward``.
-    """
-    if risk <= 0:
-        return False
-    return round(reward / risk, 2) >= minimum
-
-
 def assess_card(
     *,
     direction: str,
@@ -140,17 +122,24 @@ def assess_card(
     valid_until: datetime | None,
     now: datetime,
     price: float,
-    session_is_rth: bool,
+    session_open: bool,
     gate_reason: str | None,
     min_reward_risk: float,
     policy: CardFreshnessConfig,
 ) -> CardAssessment:
+    """Decide a tapped card's outcome from what the caller observed.
+
+    ``session_open`` is the caller's ``agentic_trader.risk.entry_session_open(...) is None``
+    verdict (an open session, within regular hours when ``session.enforce_rth`` is set); a
+    False verdict expires the card. ``min_reward_risk`` is the caller's
+    ``agentic_trader.risk.required_reward_risk``, judged at the current price for a re-price.
+    """
     issued_et, now_et = _aware_et(issued_at), _aware_et(now)
     age_seconds = (now_et - issued_et).total_seconds()
 
     # Legacy cards without `valid_until` expire when the New York date changes; the sweep
     # applies this exact rule to untapped cards via the same shared helper.
-    if card_session_over(issued_at, valid_until, now) or not session_is_rth:
+    if card_session_over(issued_at, valid_until, now) or not session_open:
         return CardAssessment(CardOutcome.EXPIRED, "Card expired: its session has ended.", None, age_seconds, None)
 
     sign = 1 if direction == Direction.LONG else -1

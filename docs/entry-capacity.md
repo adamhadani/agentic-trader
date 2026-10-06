@@ -4,6 +4,12 @@ Entry admission shares one pure policy across the preflight worker and final
 transaction. CLI, Telegram and the daemon continue to use `EntryExecutionService`
 and the durable FIFO. No second queue, journal or schema is introduced.
 
+Admission (`execution/admission.py:reservation_rejection`) delegates every shared
+entry-risk rule to `agentic_trader.risk.admission_gates`, the same functions the scan,
+the tap gate and re-pricing call; capacity calls admission with its broker-evidence
+book and prices. This page covers the broker evidence capacity adds on top. The rule
+table, reason texts and books per layer are in [risk policy](risk-policy.md).
+
 ## Evidence and capital
 
 Alpaca acquires typed account, asset, trade, bid/ask, inventory and exact order-group
@@ -58,16 +64,18 @@ and is never automatically retried after an ambiguous response.
 ## Aggregate exposure and protection
 
 `portfolio.max_stop_risk_pct` defaults to **2%** of effective risk capital, reduced
-by the existing drawdown multiplier. The sum includes current positions, queued
-commitments and the proposed order exactly once. For an exact protected holding,
-budgeted risk retains the larger of its original reserved risk and current
-mark-to-stop giveback. Stop prices can gap; this is a planned stop-loss budget,
-not a guaranteed maximum loss, hard volatility constraint or portfolio CVaR limit.
-Existing name/class/gross/count/correlation and per-trade caps still apply.
-Proposed notional uses the larger of the approved limit, observed ask and last trade;
-an older approved price cannot understate observed exposure. Existing holdings retain
-the larger recorded/broker-mark exposure. These observations are snapshots, not a
-bound on subsequent price moves.
+by the existing drawdown multiplier (rule `aggregate_stop_risk`). The sum includes
+current positions, queued commitments and the proposed order exactly once. For an
+exact protected holding, budgeted risk retains the larger of its original reserved
+risk and current mark-to-stop giveback. Stop prices can gap; this is a planned
+stop-loss budget, not a guaranteed maximum loss, hard volatility constraint or
+portfolio CVaR limit. The other shared rules (`same_symbol`, `asset_class_notional`,
+`portfolio_notional`, `concurrent_positions`, `correlation_group` and the per-trade
+rules) judge the same book through `admission_gates`. Capacity passes the larger of
+the approved limit, observed ask and last trade as the current price, so proposed
+notional uses that larger price and an older approved price cannot understate
+observed exposure. Existing holdings retain the larger recorded/broker-mark exposure.
+These observations are snapshots, not a bound on subsequent price moves.
 
 An order is a protective exit only through exact parent/replacement identity.
 Symbol and opposite side are insufficient. Pending entries must retain their

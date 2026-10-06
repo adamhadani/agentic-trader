@@ -125,7 +125,7 @@ def test_tradovate_missing_credentials():
 
 
 @pytest.mark.asyncio
-async def test_copilot_execute_signal(tmp_path):
+async def test_copilot_execute_signal(tmp_path, calm_macro):
     db_file = tmp_path / "test_exec.db"
     db = SignalDatabase(str(db_file))
     await db.init_db()
@@ -134,6 +134,7 @@ async def test_copilot_execute_signal(tmp_path):
     # Admission-path test of a legacy tap: tap-time card freshness is exercised in test_card_freshness_tap.py.
     config.execution.card_freshness.enabled = False
     copilot = TradingCopilot(config, db=db)
+    calm_macro(copilot)  # admission runs the macro check for simulated entries too
     copilot.data_fetcher = MagicMock()
     copilot.data_fetcher.fetch_latest_price.return_value = 5812.50
 
@@ -200,7 +201,7 @@ async def test_copilot_execute_signal_exposure_limit(tmp_path):
     success, message = reply.ok, reply.text
     assert success is False
     assert "Execution Rejected" in message
-    assert "maximum portfolio notional ceiling" in message
+    assert "Portfolio notional would reach $29,062, above the $20,000 ceiling." in message
 
     # Signal status must remain PENDING (not EXECUTED or SUBMITTING)
     stored = await db.get_signal_by_id(sig_id)
@@ -585,7 +586,7 @@ async def test_copilot_monitor_positions_via_reconciliation(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_copilot_execute_equity_signal_with_shares(tmp_path):
+async def test_copilot_execute_equity_signal_with_shares(tmp_path, calm_macro):
     db_path = str(tmp_path / "test_equity_exec.db")
     config = load_config()
     config.execution_mode = "paper"
@@ -594,6 +595,7 @@ async def test_copilot_execute_equity_signal_with_shares(tmp_path):
     config.execution.card_freshness.enabled = False
 
     copilot = TradingCopilot(config)
+    calm_macro(copilot)  # admission runs the macro check for simulated entries too
     await copilot.db.init_db()
 
     # Record equity signal with 35 shares

@@ -79,7 +79,9 @@ checked again after preflight work so a slow admission check cannot use expired
 authorization. Existing risk limitations around daily macro feed
 age remain; the quote-age check does not certify freshness of all macro feeds.
 Unsupported external adapters fail closed until they implement this contract;
-local simulation explicitly skips external market checks. Current broker entry
+local simulation explicitly skips the broker market checks but runs the same
+economic-event lockout and macro/volatility regime check as Alpaca, and the same shared
+entry-risk rules ([risk policy](risk-policy.md)). Current broker entry
 admission supports Alpaca equities; crypto brackets remain unsupported.
 
 ### Card freshness precedes authorize (September 23)
@@ -107,8 +109,9 @@ same transaction as the status change. It never calls `authorize`. A tap that st
 on any `EXPIRED` card gets "Card #N is no longer live (expired)." from `_not_pending_reply`.
 This covers a card swept before its Telegram strike was delivered, a duplicate message, or
 a card an earlier tap expired or re-priced. The reply does not claim a reason. It adds the
-next regular open when the session is closed, and offers Re-evaluate only for a configured
-contract with no other live card. It never reaches `authorize`.
+next regular open while `agentic_trader.risk.entry_session_open` refuses entries (closed, or
+outside regular hours while `session.enforce_rth` is set), and offers Re-evaluate only for a
+configured contract with no other live card. It never reaches `authorize`.
 
 `SignalStatus.EXPIRED` is now a live, reachable status rather than a value that only
 existed for completeness. Every status-gated query was re-audited for it: enqueue and

@@ -1,9 +1,13 @@
+import dataclasses
+import math
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from telegram.error import BadRequest
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.macro import (
     CreditSpreads,
     CreditStressRegime,
@@ -20,6 +24,33 @@ from agentic_trader.agent.regime import RegimeSnapshot
 from agentic_trader.constants import VolatilityRegime
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
+
+
+@pytest.mark.parametrize(("regime_min_rr", "shown"), [(math.nan, 2.5), (2.7, 2.7), (2.0, 2.5)])
+async def test_macro_dashboard_and_audit_show_the_shared_required_ratio(app_config, regime_min_rr, shown):
+    """``/macro`` prints ``agentic_trader.risk.required_reward_risk``: a non-finite regime threshold is the
+    configured minimum, never ``nan``."""
+    app_config.risk.min_risk_reward_ratio = 2.5
+    regime = RegimeSnapshot(
+        vix=17.0,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=4.2,
+        dxy=103.0,
+        breakout_allowed=True,
+        min_rr_threshold=2.0,
+        timestamp=datetime.now(UTC),
+        summary_text="Normal",
+    )
+    desk = SimpleNamespace(
+        config=app_config,
+        regime_detector=SimpleNamespace(
+            get_regime=AsyncMock(return_value=dataclasses.replace(regime, min_rr_threshold=regime_min_rr))
+        ),
+        db=SimpleNamespace(record_audit=AsyncMock()),
+    )
+    html = await TradingCopilot.get_macro_summary_html(desk)
+    assert f"Minimum Required R:R:</b> <code>{shown:.1f}:1</code>" in html
+    assert desk.db.record_audit.await_args.kwargs["payload"]["minimum_rr"] == shown
 
 
 def test_format_macro_dashboard_html():
@@ -73,7 +104,8 @@ def test_format_macro_dashboard_html():
         summary_text="Combined policy",
         macro_report=report,
     )
-    formatted = TelegramHtmlFormatter.format_macro_dashboard_html(regime, min_risk_reward_ratio=3.0)
+    # The caller passes required_reward_risk: max(configured 3.0, regime 2.7).
+    formatted = TelegramHtmlFormatter.format_macro_dashboard_html(regime, required_rr=3.0)
     assert "3.0:1" in formatted
     assert "0.50x" in formatted
 

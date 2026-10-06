@@ -8,15 +8,7 @@ from sqlalchemy import update
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
-from agentic_trader.broker.base import (
-    BrokerEntryContext,
-    BrokerPosition,
-    EntryAccountEvidence,
-    EntryAssetEvidence,
-    EntryQuoteEvidence,
-    OrderResult,
-    ReconciliationEvent,
-)
+from agentic_trader.broker.base import BrokerPosition, OrderResult, ReconciliationEvent
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution import entries
 from agentic_trader.execution.durable import WorkKind, WorkStatus
@@ -26,48 +18,9 @@ from agentic_trader.storage.models import SignalRecord
 
 
 @pytest.fixture
-def service(store, app_config):
-    now = datetime.now(UTC)
-    account = EntryAccountEvidence(
-        account_id="fixture-account",
-        status="ACTIVE",
-        currency="USD",
-        cash="100000",
-        equity="100000",
-        buying_power="200000",
-        regt_buying_power="200000",
-        non_marginable_buying_power="100000",
-        multiplier="2",
-        trading_blocked=False,
-        account_blocked=False,
-        trade_suspended_by_user=False,
-        shorting_enabled=True,
-    )
-    context = BrokerEntryContext(
-        account_before=account,
-        account=account,
-        asset=EntryAssetEvidence(
-            asset_id="00000000-0000-0000-0000-000000000001",
-            symbol="SPY",
-            asset_class="us_equity",
-            status="active",
-            tradable=True,
-            marginable=True,
-            shortable=True,
-            fractionable=True,
-            borrow_status="easy_to_borrow",
-        ),
-        quote=EntryQuoteEvidence(symbol="SPY", bid_price="99.9", ask_price="100.1", timestamp=now, feed="iex"),
-        price="100",
-        trade_timestamp=now,
-        requested_at=now,
-        observed_at=now,
-        session_closes_at=now + timedelta(hours=6),
-        orders=(),
-        positions=(),
-    )
+def service(store, app_config, broker_entry_context):
     broker = AsyncMock()
-    broker.entry_market_context.return_value = context
+    broker.entry_market_context.return_value = broker_entry_context
     broker.find_entry_order.return_value = None
     executor = AsyncMock()
     executor.execute_order.return_value = OrderResult(success=True, order_id="exact-entry-id")
@@ -238,8 +191,8 @@ async def test_trade_accounting_does_not_wait_for_telegram_delivery(store, app_c
 @pytest.mark.parametrize(
     "policy,setting,value,reason",
     [
-        ("portfolio", "max_notional_exposure", 999, "portfolio notional"),
-        ("portfolio", "max_equity_exposure", 999, "asset-class"),
+        ("portfolio", "max_notional_exposure", 999, "Portfolio notional would reach $1,000, above the $999 ceiling."),
+        ("portfolio", "max_equity_exposure", 999, "EQUITY notional would reach $1,000, above the $999 ceiling."),
         ("sizing", "max_trade_notional_cap", 999, "per-trade notional"),
         ("sizing", "max_risk_pct_cap", 0.0001, "risk cap"),
         ("sizing", "max_shares_per_trade", 9, "quantity cap"),
@@ -260,7 +213,7 @@ async def test_unconfigured_notifier_does_not_consume_outbox(store, app_config, 
     assert (await store.get_work(item_id)).attempts == 0
 
 
-def _freshness_copilot(app_config, store, service, mock_notifier, *, price=100.0):
+def _freshness_copilot(app_config, store, service, mock_notifier, calm_macro, *, price=100.0):
     """A copilot with card freshness ENABLED whose taps reach the real entry service."""
     assert app_config.execution.card_freshness.enabled
     app_config.copilot_chat_enabled = False
@@ -279,22 +232,17 @@ def _freshness_copilot(app_config, store, service, mock_notifier, *, price=100.0
     copilot.session_provider.get_session_info.return_value = MagicMock(
         is_open=True, is_rth=True, next_open=None, next_close=now + timedelta(hours=2)
     )
-    copilot.calendar = AsyncMock()
-    copilot.calendar.is_in_lockout_window.return_value = (False, None)
-    copilot.regime_detector = AsyncMock()
-    copilot.regime_detector.get_regime.return_value = MagicMock(
-        summary_text="calm", breakout_allowed=True, min_rr_threshold=2.0, risk_multiplier=1.0
-    )
+    calm_macro(copilot)
     copilot.earnings_calendar = None
     return copilot
 
 
 @pytest.mark.parametrize("tier_quantity", [None, 5.0])
 async def test_fresh_tap_queues_the_original_bracket_through_the_real_entry_service(
-    store, app_config, entry, service, mock_notifier, tier_quantity
+    store, app_config, entry, service, mock_notifier, calm_macro, tier_quantity
 ):
     request = await entry()
-    copilot = _freshness_copilot(app_config, store, service, mock_notifier)
+    copilot = _freshness_copilot(app_config, store, service, mock_notifier, calm_macro)
 
     await copilot.execute_signal_by_id(request.signal_id, quantity=tier_quantity)
 
@@ -313,7 +261,7 @@ async def test_fresh_tap_queues_the_original_bracket_through_the_real_entry_serv
 
 
 async def test_tapping_a_replacement_card_submits_its_new_bracket_and_quantity(
-    store, app_config, service, mock_notifier
+    store, app_config, service, mock_notifier, calm_macro
 ):
     """Seam: stale card -> REPRICE replacement -> fresh tap reaches the real entry service."""
     evaluation = LLMTradeEvaluation(
@@ -355,7 +303,7 @@ async def test_tapping_a_replacement_card_submits_its_new_bracket_and_quantity(
             .where(SignalRecord.id == old_id)
             .values(timestamp=datetime.now(UTC) - timedelta(hours=1))
         )
-    copilot = _freshness_copilot(app_config, store, service, mock_notifier, price=100.0)
+    copilot = _freshness_copilot(app_config, store, service, mock_notifier, calm_macro, price=100.0)
     # The broker's admission quote and the tap price agree on the new level.
     context = service.broker.entry_market_context.return_value
     service.broker.entry_market_context.return_value = context.model_copy(

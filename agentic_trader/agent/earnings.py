@@ -12,6 +12,7 @@ import httpx
 
 from agentic_trader.constants import NASDAQ_EARNINGS_CALENDAR_URL
 from agentic_trader.market.session import ET_TZ, ensure_et
+from agentic_trader.risk import earnings_days_out
 
 
 logger = logging.getLogger(__name__)
@@ -292,16 +293,17 @@ class NasdaqEarningsCalendar:
 def earnings_blackout_reason(lookup: EarningsLookup, symbol: str, now: datetime, blackout_days: int) -> str | None:
     """Return a rejection reason when an ahead earnings event falls inside the blackout window.
 
-    A report that was found always blocks, even if another date in the window
-    could not be fetched. Only an *absence* is untrustworthy when the lookup is
-    unverified, and then the gate fails open. `blackout_days=0` disables it.
+    The window is ``agentic_trader.risk.earnings_days_out``: the report date lies within
+    ``[0, blackout_days]`` days of today in New York. A report that was found always blocks,
+    even if another date in the window could not be fetched. Only an *absence* is
+    untrustworthy when the lookup is unverified, and then the gate fails open.
+    `blackout_days=0` disables it.
     """
-    if blackout_days <= 0 or lookup.event is None:
+    if lookup.event is None:
         return None
-
     today = ensure_et(now, target_tz=ET_TZ).date()
-    days_out = (lookup.event.date - today).days
-    if days_out < 0 or days_out > blackout_days:
+    days_out = earnings_days_out(lookup.event.date, today, blackout_days)
+    if days_out is None:
         return None
 
     day_word = "day" if days_out == 1 else "days"
