@@ -307,3 +307,20 @@ def test_composites_fix_the_order():
         and book_gates(intent(), Book(), BUDGET, limits()) == ()
     )
     assert str(Rejection(RiskRule.SAME_SYMBOL, "x")) == "x"
+
+
+def test_book_gates_on_an_invalid_book_report_only_the_unknown_exposure():
+    # Full (4 positions), over the stop-risk and notional budgets, same group: none of that is judged
+    # while one position's exposure is unknown.
+    bad_book = Book(
+        (
+            position("X", notional=None),
+            position("MSFT", risk=5_000.0, notional=70_000.0),
+            *[position(f"S{i}") for i in range(3)],
+        )
+    )
+    rejections = book_gates(intent(), bad_book, BUDGET, limits())
+    assert [r.rule for r in rejections] == [RiskRule.EXPOSURE_UNKNOWN]
+    valid_book = Book(bad_book.positions[1:])
+    assert RiskRule.EXPOSURE_UNKNOWN not in {r.rule for r in book_gates(intent(), valid_book, BUDGET, limits())}
+    assert len(book_gates(intent(), valid_book, BUDGET, limits())) > 1

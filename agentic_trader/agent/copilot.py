@@ -1316,7 +1316,9 @@ class TradingCopilot:
                         },
                     )
 
-                    # Update exposure in memory for subsequent checks in this run
+                    # This card joins the scan's book: later candidates' sizing sees its notional,
+                    # and the shared book rules (agentic_trader.risk.book_gates) see its notional
+                    # and planned stop risk.
                     current_exposure += eval_res.notional_value
                     active_positions.append(
                         {
@@ -1325,6 +1327,7 @@ class TradingCopilot:
                             "direction": eval_res.direction,
                             "asset_class": str(eval_res.asset_class),
                             "notional_value": eval_res.notional_value,
+                            "risk_dollars": eval_res.risk_dollars,
                         }
                     )
 

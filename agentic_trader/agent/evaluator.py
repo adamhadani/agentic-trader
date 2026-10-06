@@ -24,15 +24,26 @@ from agentic_trader.agent.position_sizing import (
 )
 from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt
 from agentic_trader.agent.regime import RegimeDetector
-from agentic_trader.config import DEFAULT_CORRELATION_GROUPS, AppConfig
+from agentic_trader.config import AppConfig
 from agentic_trader.constants import (
     CALLBACK_LANGSMITH,
     AssetClass,
     Direction,
-    StrategyType,
 )
 from agentic_trader.market.session import MarketSessionProtocol
 from agentic_trader.research.alpha.strategy import bracket_prices, entry_limit, execution_policy_from_dict
+from agentic_trader.risk import (
+    Book,
+    EntryIntent,
+    RiskLimits,
+    RiskRule,
+    book_gates,
+    entry_session_open,
+    macro_lockout,
+    per_trade_risk_budget,
+    regime_breakout,
+    required_reward_risk,
+)
 from agentic_trader.screeners.base import ScreenerCandidate
 
 
@@ -41,6 +52,10 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# The text admission gives the same card, so a bracket the scan cannot express as an
+# ``EntryIntent`` is refused here with the reason the tap would have shown.
+_INVALID_BRACKET = "Quantity and bracket prices must be finite and positive."
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,10 @@ def _explicit_true(value: Any) -> bool:
 class LLMTradeEvaluation(BaseModel):
     approved: bool
     rejection_reason: str | None = None
+    # The ``agentic_trader.risk.RiskRule`` value of the shared rule that refused the card
+    # (``rejection_reason`` is then that rule's text); None for an approval, an LLM veto, a
+    # sizing block and the evaluator-only statistical-correlation check.
+    rejection_rule: str | None = None
     contract: str
     direction: str
     entry_price: float
@@ -128,11 +147,19 @@ class RiskEvaluator:
         current_drawdown_pct: float = 0.0,
         macro_risk_multiplier: float = 1.0,
         current_equity: float | None = None,
+        min_reward_risk: float | None = None,
     ) -> DeterministicLevels:
         """
-        Calculate structural stop loss, 2:1 profit target, and dynamic position sizing deterministically.
+        Calculate structural stop loss, profit target, and dynamic position sizing deterministically.
         Returns explicit prices, distances, exposure, quantity and sizing tiers.
+
+        The target sits ``min_reward_risk`` stop distances from the entry: the scan passes
+        ``agentic_trader.risk.required_reward_risk`` (the configured minimum or the regime's,
+        whichever is higher); research replay and the backtest pass nothing and get the
+        configured ``risk.min_risk_reward_ratio``. A versioned alpha policy's bracket
+        replaces both levels.
         """
+        ratio = min_reward_risk if min_reward_risk is not None else self.config.risk.min_risk_reward_ratio
         contract_info = self.config.contracts.get(candidate.contract)
         asset_class = (
             getattr(candidate, "asset_class", None)
@@ -162,7 +189,7 @@ class RiskEvaluator:
             stop_loss = round(round((entry - stop_distance) / tick_size) * tick_size, 2)
             stop_distance = round(entry - stop_loss, 2)
 
-            target_distance = round(stop_distance * self.config.risk.min_risk_reward_ratio, 2)
+            target_distance = round(stop_distance * ratio, 2)
             take_profit = round(round((entry + target_distance) / tick_size) * tick_size, 2)
             target_distance = round(take_profit - entry, 2)
 
@@ -172,7 +199,7 @@ class RiskEvaluator:
             stop_loss = round(round((entry + stop_distance) / tick_size) * tick_size, 2)
             stop_distance = round(stop_loss - entry, 2)
 
-            target_distance = round(stop_distance * self.config.risk.min_risk_reward_ratio, 2)
+            target_distance = round(stop_distance * ratio, 2)
             take_profit = round(round((entry - target_distance) / tick_size) * tick_size, 2)
             target_distance = round(entry - take_profit, 2)
 
@@ -235,11 +262,24 @@ class RiskEvaluator:
         current_drawdown_pct: float = 0.0,
         current_equity: float | None = None,
     ) -> LLMTradeEvaluation:
+        """Size the candidate, run the deterministic gates, then (optionally) the LLM.
+
+        Gate order, first refusal wins: sizing block; the shared book rules
+        (``agentic_trader.risk.book_gates``) on ``active_positions`` -- open positions plus the
+        cards this scan already sent; the statistical return-correlation check; macro lockout;
+        earnings blackout; regime breakout suppression; session. A refusal by a shared rule
+        carries that rule's text and ``rejection_rule``. ``current_open_notional`` bounds the
+        sizing notional ceiling; the book's own notional is what the caps judge.
+        """
         # One clock for the deterministic lockout gate and the prompt's macro block,
         # so the LLM never sees a verdict that differs from the gate's.
         evaluated_at = datetime.now(UTC)
         # Fetch current volatility and macro regime
         regime = await self.regime_detector.get_regime()
+        limits = RiskLimits.from_config(self.config)
+        # One reward/risk floor (agentic_trader.risk.required_reward_risk) for the deterministic
+        # target and the LLM clamp: the configured minimum or the regime's, whichever is higher.
+        required_rr = required_reward_risk(limits, regime.min_rr_threshold)
 
         # Compute deterministic baseline levels and position sizing incorporating macro stress scaling
         levels = self.calculate_levels_deterministic(
@@ -248,6 +288,7 @@ class RiskEvaluator:
             current_drawdown_pct=current_drawdown_pct,
             macro_risk_multiplier=regime.risk_multiplier,
             current_equity=current_equity,
+            min_reward_risk=required_rr,
         )
         stop_loss = levels.stop_loss
         take_profit = levels.take_profit
@@ -276,142 +317,75 @@ class RiskEvaluator:
         effective_leverage = round(notional_value / self.config.portfolio.cash, 2)
         projected_notional = current_open_notional + notional_value
 
+        def _rejected(reason: str, rule: RiskRule | None = None, *, thesis: str, **fields: Any) -> LLMTradeEvaluation:
+            """The one rejection shape: a flat bracket at the entry (stop = target = entry), zero
+            risk and reward, the sized notional and quantity. ``fields`` override any of these."""
+            shape: dict[str, Any] = {
+                "approved": False,
+                "rejection_reason": reason,
+                "rejection_rule": None if rule is None else rule.value,
+                "contract": candidate.contract,
+                "direction": candidate.direction,
+                "entry_price": entry,
+                "stop_loss": entry,
+                "take_profit": entry,
+                "stop_distance_points": 0.0,
+                "target_distance_points": 0.0,
+                "risk_reward_ratio": 2.0,
+                "risk_dollars": 0.0,
+                "reward_dollars": 0.0,
+                "notional_value": notional_value,
+                "effective_leverage": effective_leverage,
+                "macro_clearance": True,
+                "thesis_summary": thesis,
+                "quantity": quantity,
+                "asset_class": asset_class,
+            }
+            return LLMTradeEvaluation(**{**shape, **fields})
+
         if quantity <= 0:
-            return LLMTradeEvaluation(
-                approved=False,
-                rejection_reason="Sizing blocked: " + "; ".join(gating_reasons),
-                contract=candidate.contract,
-                direction=candidate.direction,
-                entry_price=entry,
+            return _rejected(
+                "Sizing blocked: " + "; ".join(gating_reasons),
+                thesis="Rejected by deterministic sizing gates.",
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 stop_distance_points=stop_distance,
                 target_distance_points=target_distance,
                 risk_reward_ratio=target_distance / stop_distance if stop_distance > 0 else 0,
-                risk_dollars=0,
-                reward_dollars=0,
                 notional_value=0,
                 effective_leverage=0,
-                macro_clearance=True,
-                thesis_summary="Rejected by deterministic sizing gates.",
                 quantity=0,
-                asset_class=asset_class,
                 sizing_tiers=sizing_tiers,
                 gating_reasons=gating_reasons,
             )
 
-        # 1. Check the configured portfolio exposure limit
-        if projected_notional > self.config.portfolio.max_notional_exposure:
-            return LLMTradeEvaluation(
-                approved=False,
-                rejection_reason=f"Exposure limit exceeded: Adding {candidate.contract} (${notional_value:,.2f}) would bring total exposure to ${projected_notional:,.2f} (cap is ${self.config.portfolio.max_notional_exposure:,.2f}).",
-                contract=candidate.contract,
-                direction=candidate.direction,
-                entry_price=entry,
-                stop_loss=entry,
-                take_profit=entry,
-                stop_distance_points=0.0,
-                target_distance_points=0.0,
-                risk_reward_ratio=2.0,
-                risk_dollars=0.0,
-                reward_dollars=0.0,
-                notional_value=notional_value,
-                effective_leverage=effective_leverage,
-                macro_clearance=True,
-                thesis_summary="Rejected by risk manager: portfolio notional ceiling reached.",
-                quantity=quantity,
-                asset_class=asset_class,
-            )
-
-        # 1b. Check Asset Class Allocation Cap
+        # 1. Shared book rules (agentic_trader.risk.book_gates), in their fixed order: exposure_known,
+        #    drawdown_halt, aggregate_stop_risk, concurrent_positions, portfolio_notional,
+        #    asset_class_notional, correlation_group. The scan's book is ``active_positions``: open
+        #    positions plus the cards this scan already sent; the intent is the deterministic bracket.
         positions_list = active_positions or []
-        current_ac_notional = 0.0
-        for p in positions_list:
-            p_ac = str(p.get("asset_class") or "").upper()
-            if p_ac == str(asset_class).upper():
-                current_ac_notional += float(p.get("notional_value") or 0.0)
-
-        projected_ac_notional = current_ac_notional + notional_value
-        ac_limit: float | None = None
-        if asset_class == AssetClass.FUTURES:
-            ac_limit = getattr(self.config.portfolio, "max_futures_exposure", None)
-        elif asset_class == AssetClass.EQUITY:
-            ac_limit = getattr(self.config.portfolio, "max_equity_exposure", None)
-        elif asset_class == AssetClass.CRYPTO:
-            ac_limit = getattr(self.config.portfolio, "max_crypto_exposure", None)
-
-        if ac_limit is not None and projected_ac_notional > ac_limit:
-            return LLMTradeEvaluation(
-                approved=False,
-                rejection_reason=(
-                    f"Asset class limit exceeded: Adding {candidate.contract} (${notional_value:,.2f} {asset_class}) "
-                    f"would bring {asset_class} exposure to ${projected_ac_notional:,.2f} "
-                    f"(cap is ${ac_limit:,.2f})."
-                ),
-                contract=candidate.contract,
-                direction=candidate.direction,
-                entry_price=entry,
-                stop_loss=entry,
-                take_profit=entry,
-                stop_distance_points=0.0,
-                target_distance_points=0.0,
-                risk_reward_ratio=2.0,
-                risk_dollars=0.0,
-                reward_dollars=0.0,
-                notional_value=notional_value,
-                effective_leverage=effective_leverage,
-                macro_clearance=True,
-                thesis_summary=f"Rejected by risk manager: {asset_class} allocation budget reached.",
+        try:
+            intent = EntryIntent(
+                symbol=candidate.contract,
+                direction=str(candidate.direction),
+                asset_class=str(asset_class),
                 quantity=quantity,
-                asset_class=asset_class,
+                entry=entry,
+                stop=stop_loss,
+                target=take_profit,
+                multiplier=multiplier,
+                strategy=str(candidate.strategy),
             )
+        except ValueError:
+            return _rejected(_INVALID_BRACKET, thesis="Rejected: the deterministic bracket has a non-positive price.")
+        budget = per_trade_risk_budget(
+            limits, equity=current_equity, drawdown_pct=current_drawdown_pct, macro_multiplier=regime.risk_multiplier
+        )
+        if gates := book_gates(intent, Book.from_signal_rows(positions_list, reservations=False), budget, limits):
+            return _rejected(gates[0].reason, gates[0].rule, thesis=f"Rejected by risk manager: {gates[0].reason}")
 
-        # 1c. Check Correlation Group Filtering
-        corr_groups = getattr(self.config.portfolio, "correlation_groups", None) or DEFAULT_CORRELATION_GROUPS
-        cand_syms = {candidate.contract.upper(), candidate.contract.strip("/").upper()}
-        max_corr_positions = getattr(self.config.portfolio, "max_correlated_positions", 1)
-
-        for group_name, members in corr_groups.items():
-            norm_members = {m.strip("/").upper() for m in members} | {m.upper() for m in members}
-            if cand_syms & norm_members:
-                matching_active: list[dict[str, Any]] = []
-                for pos in positions_list:
-                    pos_contract = str(pos.get("contract") or pos.get("symbol") or "")
-                    pos_syms = {pos_contract.upper(), pos_contract.strip("/").upper()}
-                    if pos_syms & norm_members:
-                        pos_dir = str(pos.get("direction", "")).upper()
-                        cand_dir = str(candidate.direction).upper()
-                        if pos_dir == cand_dir:
-                            matching_active.append(pos)
-
-                if len(matching_active) >= max_corr_positions:
-                    active_syms = ", ".join(str(p.get("contract") or p.get("symbol")) for p in matching_active)
-                    return LLMTradeEvaluation(
-                        approved=False,
-                        rejection_reason=(
-                            f"Correlation limit exceeded: Group '{group_name}' already has {len(matching_active)} "
-                            f"active {candidate.direction} position(s) ({active_syms}) "
-                            f"(max allowed: {max_corr_positions})."
-                        ),
-                        contract=candidate.contract,
-                        direction=candidate.direction,
-                        entry_price=entry,
-                        stop_loss=entry,
-                        take_profit=entry,
-                        stop_distance_points=0.0,
-                        target_distance_points=0.0,
-                        risk_reward_ratio=2.0,
-                        risk_dollars=0.0,
-                        reward_dollars=0.0,
-                        notional_value=notional_value,
-                        effective_leverage=effective_leverage,
-                        macro_clearance=True,
-                        thesis_summary=f"Rejected by risk manager: Correlation group '{group_name}' cap reached.",
-                        quantity=quantity,
-                        asset_class=asset_class,
-                    )
-
-        # 1d. Check Statistical Return Correlation (if enabled)
+        # 1b. Statistical return correlation (if enabled): evaluator-only, needs the data fetcher;
+        #     not a shared rule, so its refusal carries no ``rejection_rule``.
         enable_dyn_corr = getattr(self.config.portfolio, "enable_dynamic_correlation", False)
         max_corr_thresh = getattr(self.config.portfolio, "max_correlation_threshold", 0.85)
         if enable_dyn_corr and self.data_fetcher and positions_list:
@@ -426,67 +400,42 @@ class RiskEvaluator:
                 pos_ticker = pos_info.ticker if pos_info else pos_contract
                 corr = await asyncio.to_thread(self.data_fetcher.calculate_correlation, cand_ticker, pos_ticker)
                 if corr is not None and corr >= max_corr_thresh:
-                    return LLMTradeEvaluation(
-                        approved=False,
-                        rejection_reason=(
-                            f"Statistical correlation limit exceeded: {candidate.contract} has high return correlation "
-                            f"({corr:.2f} >= {max_corr_thresh}) with active position {pos_contract} in the same direction ({candidate.direction})."
-                        ),
-                        contract=candidate.contract,
-                        direction=candidate.direction,
-                        entry_price=entry,
-                        stop_loss=entry,
-                        take_profit=entry,
-                        stop_distance_points=0.0,
-                        target_distance_points=0.0,
-                        risk_reward_ratio=2.0,
-                        risk_dollars=0.0,
-                        reward_dollars=0.0,
-                        notional_value=notional_value,
-                        effective_leverage=effective_leverage,
-                        macro_clearance=True,
-                        thesis_summary=f"Rejected by risk manager: High return correlation with {pos_contract}.",
-                        quantity=quantity,
-                        asset_class=asset_class,
+                    return _rejected(
+                        f"Statistical correlation limit exceeded: {candidate.contract} has high return correlation "
+                        f"({corr:.2f} >= {max_corr_thresh}) with active position {pos_contract} in the same direction ({candidate.direction}).",
+                        thesis=f"Rejected by risk manager: High return correlation with {pos_contract}.",
                     )
 
-        # 2. Check Macro Lockout Window
+        # 2. Macro lockout (agentic_trader.risk.macro_lockout): the calendar finds the tier-1 event
+        #    whose window contains ``evaluated_at``; its timestamp is aware, and the rule's reason
+        #    prints the event's UTC clock time.
         in_lockout, lock_event = await self.calendar.is_in_lockout_window(
-            pre_minutes=self.config.risk.lockout_pre_event_minutes,
-            post_minutes=self.config.risk.lockout_post_event_minutes,
+            pre_minutes=limits.lockout_pre_minutes,
+            post_minutes=limits.lockout_post_minutes,
             now=evaluated_at,
         )
-        if in_lockout and lock_event:
-            return LLMTradeEvaluation(
-                approved=False,
-                rejection_reason=f"Macro Event Lockout: Tier-1 release '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}.",
-                contract=candidate.contract,
-                direction=candidate.direction,
-                entry_price=entry,
-                stop_loss=entry,
-                take_profit=entry,
-                stop_distance_points=0.0,
-                target_distance_points=0.0,
-                risk_reward_ratio=2.0,
-                risk_dollars=0.0,
-                reward_dollars=0.0,
-                notional_value=notional_value,
-                effective_leverage=effective_leverage,
+        if (
+            in_lockout
+            and lock_event
+            and (rejection := macro_lockout(lock_event.title, lock_event.timestamp, evaluated_at, limits))
+        ):
+            return _rejected(
+                rejection.reason,
+                rejection.rule,
+                thesis=f"Rejected: macro lockout active for '{lock_event.title}'.",
                 macro_clearance=False,
-                thesis_summary=f"Rejected: macro lockout active for '{lock_event.title}'.",
-                quantity=quantity,
-                asset_class=asset_class,
             )
 
-        # 2b. Check Earnings Blackout (equities only; None calendar or a 0-day
-        # config skips the gate and leaves no note).
+        # 2b. Earnings blackout (agentic_trader.agent.earnings.earnings_blackout_reason over
+        # agentic_trader.risk.earnings_days_out; equities only; None calendar or a 0-day config
+        # skips the gate and leaves no note).
         earnings_note_value: str | None = None
         if (
             asset_class == AssetClass.EQUITY
-            and self.config.risk.earnings_blackout_days > 0
+            and limits.earnings_blackout_days > 0
             and self.earnings_calendar is not None
         ):
-            blackout_days = self.config.risk.earnings_blackout_days
+            blackout_days = limits.earnings_blackout_days
             try:
                 earnings_lookup = await self.earnings_calendar.next_earnings(
                     candidate.contract, now=evaluated_at, horizon_days=blackout_days
@@ -501,116 +450,49 @@ class RiskEvaluator:
 
             blackout_reason = earnings_blackout_reason(earnings_lookup, candidate.contract, evaluated_at, blackout_days)
             if blackout_reason:
-                return LLMTradeEvaluation(
-                    approved=False,
-                    rejection_reason=f"Earnings Blackout: {blackout_reason}",
-                    contract=candidate.contract,
-                    direction=candidate.direction,
-                    entry_price=entry,
-                    stop_loss=entry,
-                    take_profit=entry,
-                    stop_distance_points=0.0,
-                    target_distance_points=0.0,
-                    risk_reward_ratio=2.0,
-                    risk_dollars=0.0,
-                    reward_dollars=0.0,
-                    notional_value=notional_value,
-                    effective_leverage=effective_leverage,
-                    macro_clearance=True,
-                    thesis_summary=f"Rejected: earnings blackout for {candidate.contract}.",
-                    quantity=quantity,
-                    asset_class=asset_class,
+                return _rejected(
+                    f"Earnings Blackout: {blackout_reason}",
+                    RiskRule.EARNINGS_BLACKOUT,
+                    thesis=f"Rejected: earnings blackout for {candidate.contract}.",
                 )
             earnings_note_value = earnings_note(earnings_lookup, evaluated_at, blackout_days)
 
-        # 3. Check Volatility Regime & Adaptive Strategy Suppression
-        if candidate.strategy == StrategyType.SQUEEZE_BREAKOUT and not regime.breakout_allowed:
+        # 3. Regime breakout suppression (agentic_trader.risk.regime_breakout); the regime detail
+        #    stays in the thesis.
+        if rejection := regime_breakout(candidate.strategy, regime.breakout_allowed):
             macro_detail = ""
             if regime.macro_report and not regime.macro_report.stress.squeeze_breakout_allowed:
                 macro_detail = f" & Macro Stress ({regime.macro_report.stress.level.value})"
-            return LLMTradeEvaluation(
-                approved=False,
-                rejection_reason=(
-                    f"Volatility Regime Filter: Squeeze breakouts suppressed during {regime.vix_regime.value} "
-                    f"regime (VIX: {regime.vix:.1f}{macro_detail})."
-                ),
-                contract=candidate.contract,
-                direction=candidate.direction,
-                entry_price=entry,
-                stop_loss=entry,
-                take_profit=entry,
-                stop_distance_points=0.0,
-                target_distance_points=0.0,
-                risk_reward_ratio=2.0,
-                risk_dollars=0.0,
-                reward_dollars=0.0,
-                notional_value=notional_value,
-                effective_leverage=effective_leverage,
-                macro_clearance=True,
-                thesis_summary=(
+            return _rejected(
+                rejection.reason,
+                rejection.rule,
+                thesis=(
                     f"Rejected: breakout suppressed due to {regime.vix_regime.value} volatility regime (VIX {regime.vix:.1f}{macro_detail})."
                 ),
-                quantity=quantity,
-                asset_class=asset_class,
                 earnings_note=earnings_note_value,
             )
 
-        # 4. Check Market Session & Regular Trading Hours (RTH)
+        # 4. Session (agentic_trader.risk.entry_session_open): a closed session refuses; an open
+        #    session outside regular hours refuses only when ``session.enforce_rth`` is set.
         current_session_type = "RTH"
         if self.session_provider:
             session_info = await self.session_provider.get_session_info(candidate.contract)
             current_session_type = str(session_info.session_type.value)
-            if not session_info.is_open:
-                return LLMTradeEvaluation(
-                    approved=False,
-                    rejection_reason=f"Market Session Filter: Market is {session_info.session_type.value} ({session_info.details}).",
-                    contract=candidate.contract,
-                    direction=candidate.direction,
-                    entry_price=entry,
-                    stop_loss=entry,
-                    take_profit=entry,
-                    stop_distance_points=0.0,
-                    target_distance_points=0.0,
-                    risk_reward_ratio=2.0,
-                    risk_dollars=0.0,
-                    reward_dollars=0.0,
-                    notional_value=notional_value,
-                    effective_leverage=effective_leverage,
-                    macro_clearance=True,
-                    thesis_summary=f"Rejected: Market is currently {session_info.session_type.value}.",
-                    quantity=quantity,
-                    asset_class=asset_class,
-                    session_type=current_session_type,
-                    earnings_note=earnings_note_value,
-                )
-            if getattr(self.config.session, "enforce_rth", True) and not session_info.is_rth:
-                return LLMTradeEvaluation(
-                    approved=False,
-                    rejection_reason=f"RTH Session Filter: Session is {session_info.session_type.value} (Outside Regular Trading Hours).",
-                    contract=candidate.contract,
-                    direction=candidate.direction,
-                    entry_price=entry,
-                    stop_loss=entry,
-                    take_profit=entry,
-                    stop_distance_points=0.0,
-                    target_distance_points=0.0,
-                    risk_reward_ratio=2.0,
-                    risk_dollars=0.0,
-                    reward_dollars=0.0,
-                    notional_value=notional_value,
-                    effective_leverage=effective_leverage,
-                    macro_clearance=True,
-                    thesis_summary=f"Rejected: Trading restricted to RTH; currently {session_info.session_type.value}.",
-                    quantity=quantity,
-                    asset_class=asset_class,
+            if rejection := entry_session_open(
+                session_info.is_open, session_info.is_rth, limits.enforce_rth, detail=str(session_info.details)
+            ):
+                return _rejected(
+                    rejection.reason,
+                    rejection.rule,
+                    thesis=f"Rejected: market session is {current_session_type}.",
                     session_type=current_session_type,
                     earnings_note=earnings_note_value,
                 )
 
         macro_summary = await self.calendar.get_macro_summary_for_prompt(
             now=evaluated_at,
-            pre_minutes=self.config.risk.lockout_pre_event_minutes,
-            post_minutes=self.config.risk.lockout_post_event_minutes,
+            pre_minutes=limits.lockout_pre_minutes,
+            post_minutes=limits.lockout_post_minutes,
         )
         regime_summary = self.regime_detector.get_prompt_context(regime)
 
@@ -648,7 +530,7 @@ class RiskEvaluator:
             timeframe=candidate.timeframe,
             min_stop_atr_multiple=self.config.risk.min_stop_atr_multiple,
             max_notional_exposure=self.config.portfolio.max_notional_exposure,
-            min_risk_reward_ratio=max(regime.min_rr_threshold, self.config.risk.min_risk_reward_ratio),
+            min_risk_reward_ratio=required_rr,
             contract=candidate.contract,
             multiplier=multiplier,
             tick_size=tick_size,
@@ -706,12 +588,11 @@ class RiskEvaluator:
                 llm_stop = stop_loss
                 llm_stop_dist = stop_distance
 
-            # R:R guarantee >= min_rr
-            min_required_rr = max(regime.min_rr_threshold, self.config.risk.min_risk_reward_ratio)
+            # R:R guarantee >= required_rr; below it, the deterministic target (built at required_rr) stands
             llm_target = float(data.get("take_profit", take_profit))
             llm_target_dist = abs(llm_target - entry)
             rr = round(llm_target_dist / llm_stop_dist, 2) if llm_stop_dist > 0 else 2.0
-            if rr < min_required_rr:
+            if rr < required_rr:
                 llm_target = take_profit
                 llm_target_dist = target_distance
                 rr = round(target_distance / stop_distance, 2)
@@ -732,6 +613,7 @@ class RiskEvaluator:
             data["session_type"] = current_session_type
 
             data.pop("llm_verdict", None)  # only ever set below, never taken from the LLM
+            data.pop("rejection_rule", None)  # a shared rule's id; the LLM never supplies one
             applied = candidate.catalog_event is None
             data["llm_verdict"] = {
                 "approved": _explicit_true(data.get("approved")),

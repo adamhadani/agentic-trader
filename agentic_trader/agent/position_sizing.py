@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from agentic_trader.constants import AssetClass, SizingMode
-from agentic_trader.risk import drawdown_risk_factor, risk_capital
+from agentic_trader.risk import RiskLimits, per_trade_risk_budget
 
 
 if TYPE_CHECKING:
@@ -51,9 +51,22 @@ def calculate_dynamic_sizing(
 ) -> PositionSizingResult:
     """Calculate stop-distance sizing with drawdown, macro and notional limits,
     producing tiered sizing choices (Half, Base, Max).
+
+    The max tier is bounded by ``agentic_trader.risk.per_trade_risk_budget``, the one
+    per-trade budget every layer shares (``min(cash, equity) x max_risk_pct_cap x
+    drawdown_factor x macro_factor``), so every tier offered on a card fits the budget the
+    tap-time regime gate and admission re-check with the same inputs. The base tier scales
+    its own target budget by the same drawdown and macro factors and is clamped to the max
+    tier; a paper-probe ``risk_dollars_cap`` may only lower the max.
     """
     sizing_cfg = config.sizing
-    portfolio_cash = risk_capital(config.portfolio.cash, current_equity)
+    budget = per_trade_risk_budget(
+        RiskLimits.from_config(config),
+        equity=current_equity,
+        drawdown_pct=current_drawdown_pct,
+        macro_multiplier=macro_risk_multiplier,
+    )
+    portfolio_cash, drawdown_factor, macro_factor = budget.capital, budget.drawdown_factor, budget.macro_factor
     max_portfolio_notional = config.portfolio.max_notional_exposure
     gating_reasons: list[str] = []
 
@@ -61,12 +74,10 @@ def calculate_dynamic_sizing(
         raise ValueError("Positive risk cap required")
 
     # 0. Macro Stress Risk Scaling
-    macro_factor = max(0.10, min(1.0, float(macro_risk_multiplier)))
     if macro_factor < 1.0:
         gating_reasons.append(f"Macro stress risk scaling applied: {macro_factor * 100:.0f}% risk budget")
 
     # 1. Drawdown Haircut Gating
-    drawdown_factor = drawdown_risk_factor(current_drawdown_pct, sizing_cfg)
     if drawdown_factor == 0:
         gating_reasons.append(
             f"Drawdown halt active ({current_drawdown_pct * 100:.1f}% >= {sizing_cfg.max_drawdown_stop_pct * 100:.1f}%)"
@@ -87,8 +98,8 @@ def calculate_dynamic_sizing(
     per_unit_risk = max(stop_distance * multiplier, 0.01)
     unit_notional = max(entry * multiplier, 0.01)
 
-    # 3. Maximum Permissible Quantity (Hard Risk & Notional Gates)
-    max_risk_dollars = portfolio_cash * sizing_cfg.max_risk_pct_cap * drawdown_factor
+    # 3. Maximum Permissible Quantity (Hard Risk & Notional Gates): the shared per-trade budget
+    max_risk_dollars = budget.dollars
     if risk_dollars_cap is not None and risk_dollars_cap < max_risk_dollars:
         # A paper probe may only ever reduce risk. Base/half tiers clamp to max_qty below.
         max_risk_dollars = risk_dollars_cap

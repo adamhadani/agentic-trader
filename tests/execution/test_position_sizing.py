@@ -184,3 +184,30 @@ def test_minimum_size_never_overrides_a_hard_gate(mode, asset, multiplier, const
     for tier in result.tiers:
         assert tier.quantity == 0
         assert tier.risk_dollars == tier.notional_dollars == 0
+
+
+def test_macro_factor_scales_the_max_tier_too():
+    # Same inputs with macro 1.0 vs 0.5: the max tier's risk dollars halve (spec decision 2). A $5 stop on a
+    # $100 share makes the per-trade risk budget the binding cap ($1,000 -> 200 shares; notional allows 300).
+    config = AppConfig()
+    full = calculate_dynamic_sizing(
+        entry=100.0,
+        stop_distance=5.0,
+        target_distance=10.0,
+        multiplier=1.0,
+        asset_class=AssetClass.EQUITY,
+        config=config,
+        macro_risk_multiplier=1.0,
+    )
+    stressed = calculate_dynamic_sizing(
+        entry=100.0,
+        stop_distance=5.0,
+        target_distance=10.0,
+        multiplier=1.0,
+        asset_class=AssetClass.EQUITY,
+        config=config,
+        macro_risk_multiplier=0.5,
+    )
+    assert full.max_tier.risk_dollars == pytest.approx(config.portfolio.cash * config.sizing.max_risk_pct_cap, rel=0.02)
+    assert stressed.max_tier.risk_dollars == pytest.approx(full.max_tier.risk_dollars * 0.5, rel=0.02)
+    assert any("Macro stress risk scaling applied: 50%" in reason for reason in stressed.gating_reasons)

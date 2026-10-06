@@ -8,15 +8,7 @@ from sqlalchemy import update
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
-from agentic_trader.broker.base import (
-    BrokerEntryContext,
-    BrokerPosition,
-    EntryAccountEvidence,
-    EntryAssetEvidence,
-    EntryQuoteEvidence,
-    OrderResult,
-    ReconciliationEvent,
-)
+from agentic_trader.broker.base import BrokerPosition, OrderResult, ReconciliationEvent
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution import entries
 from agentic_trader.execution.durable import WorkKind, WorkStatus
@@ -26,48 +18,9 @@ from agentic_trader.storage.models import SignalRecord
 
 
 @pytest.fixture
-def service(store, app_config):
-    now = datetime.now(UTC)
-    account = EntryAccountEvidence(
-        account_id="fixture-account",
-        status="ACTIVE",
-        currency="USD",
-        cash="100000",
-        equity="100000",
-        buying_power="200000",
-        regt_buying_power="200000",
-        non_marginable_buying_power="100000",
-        multiplier="2",
-        trading_blocked=False,
-        account_blocked=False,
-        trade_suspended_by_user=False,
-        shorting_enabled=True,
-    )
-    context = BrokerEntryContext(
-        account_before=account,
-        account=account,
-        asset=EntryAssetEvidence(
-            asset_id="00000000-0000-0000-0000-000000000001",
-            symbol="SPY",
-            asset_class="us_equity",
-            status="active",
-            tradable=True,
-            marginable=True,
-            shortable=True,
-            fractionable=True,
-            borrow_status="easy_to_borrow",
-        ),
-        quote=EntryQuoteEvidence(symbol="SPY", bid_price="99.9", ask_price="100.1", timestamp=now, feed="iex"),
-        price="100",
-        trade_timestamp=now,
-        requested_at=now,
-        observed_at=now,
-        session_closes_at=now + timedelta(hours=6),
-        orders=(),
-        positions=(),
-    )
+def service(store, app_config, broker_entry_context):
     broker = AsyncMock()
-    broker.entry_market_context.return_value = context
+    broker.entry_market_context.return_value = broker_entry_context
     broker.find_entry_order.return_value = None
     executor = AsyncMock()
     executor.execute_order.return_value = OrderResult(success=True, order_id="exact-entry-id")

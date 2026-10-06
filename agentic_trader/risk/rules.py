@@ -399,11 +399,13 @@ def regime_breakout(strategy: str | None, breakout_allowed: bool) -> Rejection |
 
 def book_gates(intent: EntryIntent, book: Book, budget: RiskBudget, limits: RiskLimits) -> tuple[Rejection, ...]:
     """Every shared book-rule rejection, in order: ``exposure_known``, ``drawdown_halt``, ``aggregate_stop_risk``,
-    ``concurrent_positions``, ``portfolio_notional``, ``asset_class_notional``, ``correlation_group``. The scan
+    ``concurrent_positions``, ``portfolio_notional``, ``asset_class_notional``, ``correlation_group``. A book with
+    unknown exposure yields the ``exposure_known`` rejection alone: no numeric rule judges it. The scan
     (evaluator) passes its book of open positions plus this scan's cards and reports the first rejection.
     """
+    if unknown := exposure_known(book):
+        return (unknown,)
     results = (
-        exposure_known(book),
         drawdown_halt(budget),
         aggregate_stop_risk(intent, book, budget, limits),
         concurrent_positions(book, limits),

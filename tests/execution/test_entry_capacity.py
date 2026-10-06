@@ -4,7 +4,7 @@ import pytest
 
 from agentic_trader.agent.position_sizing import calculate_dynamic_sizing
 from agentic_trader.broker.base import OrderRequest
-from agentic_trader.config import PortfolioConfig
+from agentic_trader.config import ContractConfig, PortfolioConfig
 from agentic_trader.constants import AssetClass
 from agentic_trader.execution.admission import reservation_rejection
 
@@ -132,10 +132,30 @@ def test_untrusted_request_numbers_reject_before_any_rule(app_config, capacity_o
     assert reservation_rejection(order, [], app_config, current_price=current_price) == expected
 
 
-@pytest.mark.parametrize(("equity", "drawdown"), [(0.0, 0.0), (float("nan"), 0.0), (None, float("nan")), (None, -0.01)])
-def test_invalid_account_risk_inputs_reject(app_config, capacity_order, equity, drawdown):
+@pytest.mark.parametrize(
+    ("equity", "drawdown", "cause"),
+    [
+        (0.0, 0.0, "Observed equity must be finite and positive"),
+        (float("nan"), 0.0, "Observed equity must be finite and positive"),
+        (None, float("nan"), "Drawdown must be a finite nonnegative ratio"),
+        (None, -0.01, "Drawdown must be a finite nonnegative ratio"),
+    ],
+)
+def test_invalid_account_risk_inputs_reject(app_config, capacity_order, equity, drawdown, cause):
     reason = reservation_rejection(capacity_order, [], app_config, current_equity=equity, current_drawdown_pct=drawdown)
     assert reason is not None and reason.startswith("Account risk inputs invalid: ")
+    assert reason == f"Account risk inputs invalid: {cause}."
+
+
+@pytest.mark.parametrize("multiplier", [0.0, -5.0, float("nan"), float("inf"), None])
+def test_invalid_configured_multiplier_is_blamed_on_the_configuration(app_config, capacity_order, multiplier):
+    contract = ContractConfig(ticker="SPY", name="SPY", asset_class=AssetClass.EQUITY)
+    contract.multiplier = multiplier  # the model does not bound it; assignment also reaches None
+    app_config.contracts["SPY"] = contract
+    assert (
+        reservation_rejection(capacity_order, [], app_config)
+        == "Configured instrument multiplier must be finite and positive."
+    )
 
 
 def test_asset_class_without_a_configured_cap_is_uncapped(app_config):

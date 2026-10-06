@@ -82,28 +82,31 @@ class EntryExecutionService:
             request,
             entry_order_ids=tuple(sorted({p["broker_order_id"] for p in reservations if p.get("broker_order_id")})),
         )
-        # The injected macro check (macro lockout window, then the regime gate) runs before the
-        # branch split, so simulated and brokered entries are both refused during a lockout.
-        if reason := await self.macro_check(request, signal):
-            return reason, context
         if isinstance(context, BrokerEntryContext):
+            # The cheap price-drift check runs first: a drifted entry is refused without the macro
+            # check's provider calls (calendar lookup, regime refresh).
             assert request.entry_price is not None
             if abs(float(context.price) / request.entry_price - 1) > policy.entry_max_price_drift_pct:
                 return (
                     f"Market price changed to {context.price:g}; original approved limit {request.entry_price:g} retained.",
                     context,
                 )
+        elif not (isinstance(context, SimulatedEntryContext) and not requires_account_risk(self.config)):
+            # Only the local simulator admits without broker capacity evidence.
+            return "Broker capacity evidence is unavailable or has an unsupported contract.", None
+        # The injected macro check (macro lockout window, then the regime gate) runs on both
+        # branches, so simulated and brokered entries are both refused during a lockout.
+        if reason := await self.macro_check(request, signal):
+            return reason, context
+        if isinstance(context, BrokerEntryContext):
             try:
                 assess_entry_capacity(
                     request, reservations, context, self.config, account_risk=risk, now=datetime.now(UTC)
                 )
             except (ValueError, TypeError, ArithmeticError) as exc:
                 return str(exc), context
-        elif isinstance(context, SimulatedEntryContext) and not requires_account_risk(self.config):
-            if reason := reservation_rejection(request, reservations, self.config):
-                return reason, context
-        else:
-            return "Broker capacity evidence is unavailable or has an unsupported contract.", None
+        elif reason := reservation_rejection(request, reservations, self.config):
+            return reason, context
         return self._expiry_reason(item, signal), context
 
     async def dispatch_one(self) -> bool:

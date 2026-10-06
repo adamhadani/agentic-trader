@@ -38,16 +38,18 @@ def reservation_rejection(
 ) -> str | None:
     """Admission's verdict on one entry request: the first rejection's reason, or ``None``.
 
-    Before the shared rules, the broker side must match the direction and a futures symbol
-    must have a configured multiplier. ``EntryIntent`` validates the request's quantity,
-    bracket prices and ``current_price`` (finite and positive), and ``per_trade_risk_budget``
-    derives the per-trade budget from ``current_equity`` and ``current_drawdown_pct``; either
-    failure is a rejection. Every remaining rule is ``agentic_trader.risk.admission_gates``
-    over the book of ``positions`` (``signals`` rows; ``SUBMITTING`` rows count as
-    reservations), in its fixed order: ``exposure_known``, ``drawdown_halt``, ``reward_risk``
-    at the configured minimum (the tap gate and the preflight macro check apply the regime
-    threshold), ``per_trade_risk``, ``per_trade_notional``, ``quantity_cap``,
-    ``aggregate_stop_risk``, ``concurrent_positions``, ``same_symbol``, ``portfolio_notional``,
+    Before the shared rules, the broker side must match the direction, a futures symbol
+    must have a configured multiplier, and a configured multiplier must be finite and
+    positive (a configuration fault, reported as such). ``EntryIntent`` validates the
+    request's quantity, bracket prices and ``current_price`` (finite and positive), and
+    ``per_trade_risk_budget`` derives the per-trade budget from ``current_equity`` and
+    ``current_drawdown_pct``; either failure is a rejection. Every remaining rule is
+    ``agentic_trader.risk.admission_gates`` over the book of ``positions`` (``signals`` rows;
+    ``SUBMITTING`` rows count as reservations), in its fixed order: ``exposure_known``,
+    ``drawdown_halt``, ``reward_risk`` at the configured minimum (the tap gate and the
+    preflight macro check apply the regime threshold), ``per_trade_risk``,
+    ``per_trade_notional``, ``quantity_cap``, ``aggregate_stop_risk``,
+    ``concurrent_positions``, ``same_symbol``, ``portfolio_notional``,
     ``asset_class_notional``, ``correlation_group``. Notional is priced at
     ``max(entry, current_price)``, or at the entry when no current price is known.
     """
@@ -58,6 +60,9 @@ def reservation_rejection(
     info = config.contracts.get(request.symbol)
     if info is None and request.asset_class == AssetClass.FUTURES:
         return "Futures instrument multiplier is not configured."
+    multiplier = info.multiplier if info else 1.0
+    if multiplier is None or not math.isfinite(multiplier) or multiplier <= 0:
+        return "Configured instrument multiplier must be finite and positive."
     entry, stop, target = request.entry_price, request.stop_loss, request.take_profit
     if entry is None or stop is None or target is None:
         return _INVALID_REQUEST_NUMBERS
@@ -70,7 +75,7 @@ def reservation_rejection(
             entry=entry,
             stop=stop,
             target=target,
-            multiplier=info.multiplier if info else 1.0,
+            multiplier=multiplier,
             current_price=current_price,
         )
     except ValueError:

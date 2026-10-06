@@ -7,6 +7,7 @@ from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.config import AppConfig, ContractConfig, PortfolioConfig
 from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.data.market_data import MarketDataFetcher
+from agentic_trader.risk import RiskRule
 from agentic_trader.screeners.base import ScreenerCandidate
 
 
@@ -134,13 +135,15 @@ async def test_futures_allocation_cap_rejection(risk_config):
             "direction": "LONG",
             "asset_class": "FUTURES",
             "notional_value": 20000.0,
+            "risk_dollars": 50.0,
         }
     ]
 
     # $20,000 existing + $25,000 new = $45,000 > $30,000 futures cap!
     res = await evaluator.evaluate_candidate(cand, use_llm=False, active_positions=active_positions)
     assert res.approved is False
-    assert "Asset class limit exceeded" in (res.rejection_reason or "")
+    assert res.rejection_reason == "FUTURES notional would reach $45,000, above the $30,000 ceiling."
+    assert res.rejection_rule == RiskRule.ASSET_CLASS_NOTIONAL
     assert "FUTURES" in (res.rejection_reason or "")
 
 
@@ -164,6 +167,7 @@ async def test_different_asset_class_allowed_under_cap(risk_config):
             "direction": "LONG",
             "asset_class": "FUTURES",
             "notional_value": 25000.0,
+            "risk_dollars": 50.0,
         }
     ]
 
@@ -205,6 +209,7 @@ async def test_correlation_group_filtering_same_direction(risk_config):
             "direction": "LONG",
             "asset_class": "FUTURES",
             "notional_value": 10000.0,
+            "risk_dollars": 50.0,
         }
     ]
 
@@ -213,7 +218,8 @@ async def test_correlation_group_filtering_same_direction(risk_config):
 
     res = await evaluator.evaluate_candidate(cand, use_llm=False, active_positions=active_positions)
     assert res.approved is False
-    assert "Correlation limit exceeded" in (res.rejection_reason or "")
+    assert res.rejection_reason == "Correlation group 'us_broad_market' already has 1 LONG position(s) (/MES); max 1."
+    assert res.rejection_rule == RiskRule.CORRELATION_GROUP
     assert "us_broad_market" in (res.rejection_reason or "")
 
 
@@ -237,6 +243,7 @@ async def test_correlation_group_opposite_direction_allowed(risk_config):
             "direction": "LONG",
             "asset_class": "FUTURES",
             "notional_value": 10000.0,
+            "risk_dollars": 50.0,
         }
     ]
 
@@ -278,6 +285,7 @@ async def test_dynamic_statistical_correlation(risk_config):
             "direction": "LONG",
             "asset_class": "FUTURES",
             "notional_value": 10000.0,
+            "risk_dollars": 50.0,
         }
     ]
 
@@ -289,6 +297,7 @@ async def test_dynamic_statistical_correlation(risk_config):
     res = await evaluator.evaluate_candidate(cand, use_llm=False, active_positions=active_positions)
     assert res.approved is False
     assert "Statistical correlation limit exceeded" in (res.rejection_reason or "")
+    assert res.rejection_rule is None  # the evaluator-only statistical check is not a shared rule
     assert "0.94" in (res.rejection_reason or "")
 
 
