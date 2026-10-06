@@ -159,9 +159,10 @@ class RiskEvaluator:
         Calculate structural stop loss, profit target, and dynamic position sizing deterministically.
         Returns explicit prices, distances, exposure, quantity and sizing tiers.
 
-        The target sits at least ``min_reward_risk`` stop distances from the entry, rounded
-        away from the entry to the next tick (a target already on a tick stays), so its
-        two-decimal reward/risk always meets the ratio: the scan passes
+        The target sits at least ``min_reward_risk`` times the actual stop distance from the
+        entry, rounded away from the entry to the next tick (a target already on a tick
+        stays), so the bracket's two-decimal reward/risk on its actual prices always meets
+        the ratio: the scan passes
         ``agentic_trader.risk.required_reward_risk`` (the configured minimum or the regime's,
         whichever is higher); research replay and the backtest pass nothing and get the
         configured ``risk.min_risk_reward_ratio``. A versioned alpha policy's bracket
@@ -197,8 +198,11 @@ class RiskEvaluator:
             stop_loss = round(round((entry - stop_distance) / tick_size) * tick_size, 2)
             stop_distance = round(entry - stop_loss, 2)
 
-            # Round the target up to the next tick: never short of ``ratio`` stop distances.
-            take_profit = round(math.ceil((entry + stop_distance * ratio) / tick_size - _TICK_EPSILON) * tick_size, 2)
+            # Round the target up to the next tick: never short of ``ratio`` times the actual
+            # stop distance (``entry - stop_loss``, not its two-decimal rounding: a sub-penny entry).
+            take_profit = round(
+                math.ceil((entry + (entry - stop_loss) * ratio) / tick_size - _TICK_EPSILON) * tick_size, 2
+            )
             target_distance = round(take_profit - entry, 2)
 
         else:  # SHORT
@@ -207,8 +211,11 @@ class RiskEvaluator:
             stop_loss = round(round((entry + stop_distance) / tick_size) * tick_size, 2)
             stop_distance = round(stop_loss - entry, 2)
 
-            # Round the target down to the next tick: never short of ``ratio`` stop distances.
-            take_profit = round(math.floor((entry - stop_distance * ratio) / tick_size + _TICK_EPSILON) * tick_size, 2)
+            # Round the target down to the next tick: never short of ``ratio`` times the actual
+            # stop distance (``stop_loss - entry``, not its two-decimal rounding: a sub-penny entry).
+            take_profit = round(
+                math.floor((entry - (stop_loss - entry) * ratio) / tick_size + _TICK_EPSILON) * tick_size, 2
+            )
             target_distance = round(entry - take_profit, 2)
 
         if candidate.alpha_policy is not None:
@@ -606,7 +613,8 @@ class RiskEvaluator:
             if rr < required_rr:
                 llm_target = take_profit
                 llm_target_dist = target_distance
-                rr = round(target_distance / stop_distance, 2)
+                # Against the final stop, which may be the LLM's tighter one.
+                rr = round(target_distance / llm_stop_dist, 2) if llm_stop_dist > 0 else 0.0
 
             if candidate.alpha_policy is not None:
                 llm_stop, llm_target = stop_loss, take_profit

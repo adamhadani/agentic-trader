@@ -356,6 +356,19 @@ async def test_card_validity_in_extended_hours_follows_enforce_rth(tap_desk, app
     assert valid_until == (None if enforce_rth else close.isoformat())
 
 
+async def test_card_validity_ignores_a_close_that_already_passed(tap_desk, app_config):  # noqa: F811
+    # The CME evening session (18:00-24:00 ET, extended hours) reports today's 17:00 ET halt
+    # as its next close: recording it would expire the card at its first tap.
+    app_config.session.enforce_rth = False
+    tap_desk.session_provider.get_session_info.return_value = extended_hours(
+        next_close=datetime.now(UTC) - timedelta(hours=2)
+    )
+    assert await tap_desk._card_valid_until("/MES") is None
+    future = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=2)
+    tap_desk.session_provider.get_session_info.return_value = extended_hours(next_close=future)
+    assert await tap_desk._card_valid_until("/MES") == future.isoformat()
+
+
 async def test_card_validity_needs_an_aware_close_and_real_booleans(tap_desk, app_config):  # noqa: F811
     app_config.session.enforce_rth = False
     naive_close = datetime(2026, 9, 24, 20, 0)  # noqa: DTZ001 - intentionally naive, asserting it is ignored

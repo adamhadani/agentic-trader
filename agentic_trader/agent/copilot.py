@@ -2765,9 +2765,10 @@ class TradingCopilot:
         Recorded only while ``agentic_trader.risk.entry_session_open`` allows entries in
         the contract's current session (open, and within regular hours when
         ``session.enforce_rth`` is set; ``is_open``/``is_rth`` must be real booleans) and
-        the provider's ``next_close`` is timezone-aware. Otherwise that close may belong to
-        a later session, and a card without ``valid_until`` conservatively expires when the
-        New York date changes.
+        the provider's ``next_close`` is timezone-aware and still ahead. An extended-hours
+        session can report a close that already passed (the CME evening session reports
+        that day's 17:00 ET halt), which would expire the card at its first tap. Otherwise a
+        card without ``valid_until`` conservatively expires when the New York date changes.
         """
         try:
             info = await self.session_provider.get_session_info(contract)
@@ -2788,7 +2789,7 @@ class TradingCopilot:
             )
             is None
         )
-        if session_open and isinstance(close, datetime) and close.utcoffset() is not None:
+        if session_open and isinstance(close, datetime) and close.utcoffset() is not None and close > datetime.now(UTC):
             return close.astimezone(UTC).isoformat()
         return None
 

@@ -301,6 +301,38 @@ def test_an_on_tick_target_at_ratio_two_is_the_nearest_tick_result(evaluator_fac
                     assert levels.take_profit == previous, (contract, direction, entry, atr_multiple)
 
 
+def test_sub_penny_entries_meet_the_ratio_on_actual_prices(evaluator_factory):  # noqa: F811
+    evaluator = evaluator_factory()
+    # The Task 4 example: entry 20.004, swing low 19.25 -> stop 19.23 (risk 0.774), regime ratio 2.2.
+    example = evaluator.calculate_levels_deterministic(
+        create_equity_candidate(price=20.004, atr=0.5, swing_low=19.25), min_reward_risk=2.2
+    )
+    assert example.stop_loss == 19.23
+    assert meets_min_reward_risk(example.take_profit - 20.004, 20.004 - example.stop_loss, 2.2)
+    failures = []
+    for asset_class, contract, tick in TICKS:
+        for atr_multiple in (1.5, 2.0, 3.1):
+            evaluator.config.risk.min_stop_atr_multiple = atr_multiple
+            for ratio in (2.0, 2.2, 2.5):
+                for entry in (5.0049, 7.3651, 20.004, 33.3333, 99.9951, 101.0049, 250.1234, 499.9999):
+                    for direction, sign in (("LONG", 1), ("SHORT", -1)):
+                        levels = _levels(
+                            evaluator,
+                            asset_class=asset_class,
+                            contract=contract,
+                            direction=direction,
+                            entry=entry,
+                            tick=tick,
+                            atr=round(0.02 * entry, 2),
+                            ratio=ratio,
+                        )
+                        reward = sign * (levels.take_profit - entry)
+                        risk = sign * (entry - levels.stop_loss)
+                        if not meets_min_reward_risk(reward, risk, ratio):
+                            failures.append((contract, direction, entry, atr_multiple, ratio, reward / risk))
+    assert failures == []
+
+
 # --- R10: the card as sent passes its own tap gate ------------------------------------------
 
 
@@ -393,9 +425,17 @@ async def test_a_valid_tighter_llm_bracket_is_kept(evaluator_factory, monkeypatc
     assert result.risk_reward_ratio == 2.14
     assert result.risk_dollars == round(35.0 * 5.0 * result.quantity, 2)
     assert result.approved is True
+    # A tightened stop whose target is too close keeps the stop; the target reverts to the
+    # deterministic one, and reward/risk, risk and reward dollars all describe that bracket.
+    llm_completion(monkeypatch, stop_loss=5765.0, take_profit=5850.0)  # rr 50/35 = 1.43
+    reverted = await evaluator.evaluate_candidate(candidate, use_llm=True)
+    assert (reverted.stop_loss, reverted.take_profit) == (5765.0, deterministic.take_profit)
+    assert reverted.risk_reward_ratio == round(
+        reverted.target_distance_points / reverted.stop_distance_points, 2
+    ) and reverted.risk_dollars == round(35.0 * 5.0 * reverted.quantity, 2)
 
 
-async def test_a_non_numeric_llm_stop_restores_the_deterministic_bracket(evaluator_factory, monkeypatch):  # noqa: F811
+async def test_a_non_finite_llm_stop_restores_the_deterministic_bracket(evaluator_factory, monkeypatch):  # noqa: F811
     evaluator = evaluator_factory()
     deterministic, result = await _deterministic_and_llm(
         evaluator,
@@ -407,4 +447,20 @@ async def test_a_non_numeric_llm_stop_restores_the_deterministic_bracket(evaluat
     )
     # The LLM's verdict stands; only its unusable bracket is replaced.
     assert result.approved is False and result.rejection_reason == "thin thesis"
+    _assert_deterministic_bracket(result, deterministic)
+
+
+async def test_a_non_numeric_llm_stop_falls_back_to_the_deterministic_card(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    deterministic, result = await _deterministic_and_llm(
+        evaluator,
+        monkeypatch,
+        make_candidate(),
+        approved=lambda card: False,
+        rejection_reason=lambda card: "thin thesis",
+        stop_loss=lambda card: "abc",
+    )
+    # An unparseable answer is no LLM verdict: the deterministic fallback approves the card.
+    assert result.approved is True and result.llm_verdict is None
+    assert "LLM fallback used" in result.thesis_summary
     _assert_deterministic_bracket(result, deterministic)
