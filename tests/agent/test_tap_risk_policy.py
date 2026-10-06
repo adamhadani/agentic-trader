@@ -308,6 +308,25 @@ async def test_tap_in_extended_hours_follows_enforce_rth(tap_desk, temp_db, app_
 
 
 @pytest.mark.parametrize("enforce_rth", [True, False])
+async def test_an_expired_card_reply_shows_the_next_open_only_while_entries_are_refused(
+    tap_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    enforce_rth,
+):
+    app_config.session.enforce_rth = enforce_rth
+    tap_desk.session_provider.get_session_info.return_value = extended_hours()
+    sid = await record_card(temp_db)
+    await temp_db.expire_signal(sid)
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    expired = f"⌛ Card #{sid} is no longer live (expired)."
+    hint = "\nNext regular open: 2026-09-24 13:30 UTC (09:30 NY)."
+    assert reply == ExecutionReply(False, expired + hint if enforce_rth else expired, offer_reevaluate=True)
+
+
+@pytest.mark.parametrize("enforce_rth", [True, False])
 async def test_reevaluate_in_extended_hours_follows_enforce_rth(tap_desk, temp_db, app_config, enforce_rth):  # noqa: F811
     app_config.session.enforce_rth = enforce_rth
     tap_desk.session_provider.get_session_info.return_value = extended_hours()

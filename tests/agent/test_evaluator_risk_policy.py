@@ -13,6 +13,7 @@ import pytest
 from agentic_trader.agent.calendar import MacroEvent
 from agentic_trader.constants import AssetClass
 from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
+from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy, bracket_prices, entry_limit
 from agentic_trader.risk import RiskRule, meets_min_reward_risk
 from tests.agent.test_evaluator import (
     create_candidate as make_candidate,
@@ -148,6 +149,41 @@ async def test_target_is_built_at_the_regime_adjusted_ratio(evaluator_factory): 
     assert round(result.target_distance_points / result.stop_distance_points, 2) >= 2.2
 
 
+async def test_a_short_target_is_built_at_the_regime_adjusted_ratio(evaluator_factory):  # noqa: F811
+    evaluator = evaluator_factory()
+    evaluator.config.risk.min_risk_reward_ratio = 2.0
+    set_regime_min_rr(evaluator, 2.2)
+    result = await evaluator.evaluate_candidate(make_candidate(direction="SHORT"), use_llm=False)
+    assert result.approved is True and result.take_profit < result.entry_price < result.stop_loss
+    reward, risk = result.entry_price - result.take_profit, result.stop_loss - result.entry_price
+    assert meets_min_reward_risk(reward, risk, 2.2) and result.risk_reward_ratio >= 2.2
+
+
+async def test_an_alpha_policy_card_keeps_its_policy_bracket_under_a_higher_regime_ratio(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+):
+    evaluator = evaluator_factory()
+    evaluator.config.risk.min_risk_reward_ratio = 2.0
+    set_regime_min_rr(evaluator, 2.2)
+    policy = AlphaExecutionPolicy(tick_size=0.25)  # a versioned 2.0 reward/risk bracket
+    candidate = make_candidate().model_copy(
+        update={"alpha_policy": policy.to_dict(), "alpha_version": "frozen-version"}
+    )
+    entry = entry_limit(candidate.current_price, policy)
+    policy_bracket = bracket_prices(
+        entry, 1, candidate.atr_14, candidate.recent_swing_low, candidate.recent_swing_high, policy
+    )
+    deterministic = await evaluator.evaluate_candidate(candidate, use_llm=False)
+    assert deterministic.approved is True
+    assert (deterministic.stop_loss, deterministic.take_profit) == policy_bracket
+    # Neither the regime's 2.2 nor an LLM bracket rebuilds a versioned alpha's protection.
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    llm_completion(monkeypatch, stop_loss=entry - 60.0, take_profit=entry + 150.0)
+    result = await evaluator.evaluate_candidate(candidate, use_llm=True)
+    assert (result.stop_loss, result.take_profit) == policy_bracket
+
+
 async def test_llm_target_below_the_regime_ratio_reverts_to_the_regime_adjusted_target(
     evaluator_factory,  # noqa: F811
     monkeypatch,
@@ -206,6 +242,20 @@ async def test_llm_veto_and_approval_carry_no_rule(evaluator_factory, monkeypatc
     vetoed = await evaluator.evaluate_candidate(make_candidate(), use_llm=True)
     assert vetoed.approved is False and vetoed.rejection_rule is None
     assert (await evaluator.evaluate_candidate(make_candidate(), use_llm=False)).rejection_rule is None
+
+
+async def test_a_rejection_rule_in_the_llm_answer_is_ignored(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    llm_completion(
+        monkeypatch, approved=False, rejection_reason="thesis too thin", rejection_rule=RiskRule.MACRO_LOCKOUT.value
+    )
+    vetoed = await evaluator.evaluate_candidate(make_candidate(), use_llm=True)
+    assert vetoed.approved is False and vetoed.rejection_reason == "thesis too thin"
+    assert vetoed.rejection_rule is None  # only a shared rule's refusal carries one
+    llm_completion(monkeypatch, rejection_rule=RiskRule.CONCURRENT_POSITIONS.value)
+    approved = await evaluator.evaluate_candidate(make_candidate(), use_llm=True)
+    assert approved.approved is True and approved.rejection_rule is None
 
 
 async def test_a_bracket_with_a_non_positive_price_is_refused_with_the_admission_text(evaluator_factory):  # noqa: F811
@@ -464,3 +514,29 @@ async def test_a_non_numeric_llm_stop_falls_back_to_the_deterministic_card(evalu
     assert result.approved is True and result.llm_verdict is None
     assert "LLM fallback used" in result.thesis_summary
     _assert_deterministic_bracket(result, deterministic)
+
+
+async def test_an_llm_stop_widened_beyond_the_probe_cap_restores_the_deterministic_bracket(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+):
+    evaluator = evaluator_factory()
+    cap = evaluator.config.alpha_pipeline.probe_risk_dollars
+    probe = create_equity_candidate(price=100.0, atr=1.0, swing_low=99.0).model_copy(update={"probe": True})
+
+    def twice_the_stop(card):
+        return card.entry_price - 2 * (card.entry_price - card.stop_loss)
+
+    def target_at_two_and_a_half_r(card):
+        return card.entry_price + 2.5 * (card.entry_price - twice_the_stop(card))
+
+    answer = {"stop_loss": twice_the_stop, "take_profit": target_at_two_and_a_half_r}
+    deterministic, result = await _deterministic_and_llm(evaluator, monkeypatch, probe, **answer)
+    # The doubled stop's risk exceeds the probe cap but not the 100,000 x 1% per-trade budget.
+    assert deterministic.risk_dollars <= cap < 2 * deterministic.risk_dollars < 1000.0
+    _assert_deterministic_bracket(result, deterministic)
+    # The same answer on a native card (no probe cap) stays within the budget and is kept.
+    native, kept = await _deterministic_and_llm(
+        evaluator, monkeypatch, probe.model_copy(update={"probe": False}), **answer
+    )
+    assert (kept.stop_loss, kept.take_profit) == (twice_the_stop(native), target_at_two_and_a_half_r(native))

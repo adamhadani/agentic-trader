@@ -627,6 +627,8 @@ class RiskEvaluator:
             # budget (observed equity and drawdown, never above the tap gate's configured-cash
             # budget) -- e.g. a wider stop at the deterministic quantity -- reverts stop and target
             # together to the deterministic bracket (built at required_rr, sized within the budget).
+            # A paper probe's bracket also reverts when its risk exceeds
+            # ``alpha_pipeline.probe_risk_dollars``: the probe cap may only ever reduce risk.
             if (llm_stop, llm_target) != (stop_loss, take_profit):
                 try:
                     final = EntryIntent(
@@ -639,7 +641,11 @@ class RiskEvaluator:
                         target=llm_target,
                         multiplier=multiplier,
                     )
-                    final_passes = reward_risk(final, required_rr) is None and per_trade_risk(final, budget) is None
+                    final_passes = (
+                        reward_risk(final, required_rr) is None
+                        and per_trade_risk(final, budget) is None
+                        and not (candidate.probe and final.risk_dollars > self.config.alpha_pipeline.probe_risk_dollars)
+                    )
                 except ValueError:
                     final_passes = False
                 if not final_passes:

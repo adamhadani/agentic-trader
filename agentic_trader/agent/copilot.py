@@ -2711,7 +2711,13 @@ class TradingCopilot:
         return ExecutionReply(item.status == WorkStatus.ACCEPTED, TelegramHtmlFormatter.format_execution_html(view))
 
     async def _not_pending_reply(self, sig: dict[str, Any]) -> ExecutionReply:
-        """Refuse a tap on a card that is no longer ``PENDING``, saying what the operator can do next."""
+        """Refuse a tap on a card that is no longer ``PENDING``, saying what the operator can do next.
+
+        An expired card's reply adds the next regular open only while
+        ``agentic_trader.risk.entry_session_open`` refuses entries in the contract's current
+        session (closed, or outside regular hours when ``session.enforce_rth`` is set): until
+        then a Re-evaluate would be refused too.
+        """
         signal_id, status, contract = sig["id"], sig["status"], sig["contract"]
         if status != SignalStatus.EXPIRED:
             return ExecutionReply(
@@ -2728,7 +2734,8 @@ class TradingCopilot:
         try:
             async with asyncio.timeout(TAP_CHECK_TIMEOUT_SECONDS):
                 info = await self.session_provider.get_session_info(contract)
-            if not (info.is_open and info.is_rth):
+            limits = RiskLimits.from_config(self.config)
+            if entry_session_open(info.is_open, info.is_rth, limits.enforce_rth) is not None:
                 text += f"\n{self._next_open_text(info)}"
         except Exception:
             # The reply is informational; an unavailable session only omits the next open.

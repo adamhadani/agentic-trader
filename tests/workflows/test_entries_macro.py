@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agentic_trader.broker.base import BrokerEntryContext, OrderRequest, OrderResult, SimulatedEntryContext
-from agentic_trader.constants import SignalStatus
+from agentic_trader.constants import ExecutionMode, SignalStatus
 from agentic_trader.execution.durable import WorkStatus
 from agentic_trader.execution.entries import EntryExecutionService
 
@@ -98,3 +98,23 @@ async def test_broker_preflight_runs_the_macro_check_when_the_price_holds(broker
     assert rejection == LOCKOUT
     assert isinstance(context, BrokerEntryContext)
     service.macro_check.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "context",
+    [None, SimulatedEntryContext()],
+    ids=["no-evidence", "simulator-evidence-for-a-brokerage-account"],
+)
+async def test_preflight_refuses_unsupported_broker_evidence_without_the_macro_check(
+    simulated_service, app_config, entry, context
+):
+    service = simulated_service(AsyncMock(return_value=LOCKOUT))
+    item, request = await _queued(service, entry)
+    service.broker.entry_market_context.return_value = context
+    if context is not None:
+        # Only the local simulator admits without broker capacity evidence.
+        app_config.execution_mode = ExecutionMode.ALPACA
+    rejection, returned = await service._preflight(item, request, None)
+    assert rejection == "Broker capacity evidence is unavailable or has an unsupported contract."
+    assert returned is None
+    service.macro_check.assert_not_awaited()
