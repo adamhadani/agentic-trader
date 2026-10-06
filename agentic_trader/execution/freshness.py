@@ -122,17 +122,24 @@ def assess_card(
     valid_until: datetime | None,
     now: datetime,
     price: float,
-    session_is_rth: bool,
+    session_open: bool,
     gate_reason: str | None,
     min_reward_risk: float,
     policy: CardFreshnessConfig,
 ) -> CardAssessment:
+    """Decide a tapped card's outcome from what the caller observed.
+
+    ``session_open`` is the caller's ``agentic_trader.risk.entry_session_open(...) is None``
+    verdict (an open session, within regular hours when ``session.enforce_rth`` is set); a
+    False verdict expires the card. ``min_reward_risk`` is the caller's
+    ``agentic_trader.risk.required_reward_risk``, judged at the current price for a re-price.
+    """
     issued_et, now_et = _aware_et(issued_at), _aware_et(now)
     age_seconds = (now_et - issued_et).total_seconds()
 
     # Legacy cards without `valid_until` expire when the New York date changes; the sweep
     # applies this exact rule to untapped cards via the same shared helper.
-    if card_session_over(issued_at, valid_until, now) or not session_is_rth:
+    if card_session_over(issued_at, valid_until, now) or not session_open:
         return CardAssessment(CardOutcome.EXPIRED, "Card expired: its session has ended.", None, age_seconds, None)
 
     sign = 1 if direction == Direction.LONG else -1

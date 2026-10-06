@@ -58,4 +58,4 @@ def test_regime_gate_refuses_a_genuinely_low_reward_risk(app_config):
     app_config.risk.min_risk_reward_ratio = 2.0
     order = _order(100.0, 90.0, 119.0)  # risk 10, reward 19 -> rr == 1.9, genuinely below 2.0
     reason = _gate(order, _regime(min_rr_threshold=2.0), app_config)
-    assert reason == "Current macro/volatility policy requires a higher reward/risk ratio."
+    assert reason == "Reward/risk 1.90 is below the required 2.00."

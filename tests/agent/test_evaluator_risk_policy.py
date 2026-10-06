@@ -2,15 +2,18 @@
 
 import dataclasses
 import json
+import math
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from agentic_trader.agent.calendar import MacroEvent
 from agentic_trader.constants import AssetClass
 from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
-from agentic_trader.risk import RiskRule
+from agentic_trader.risk import RiskRule, meets_min_reward_risk
 from tests.agent.test_evaluator import (
     create_candidate as make_candidate,
     create_equity_candidate,
@@ -213,3 +216,195 @@ async def test_a_bracket_with_a_non_positive_price_is_refused_with_the_admission
     )
     assert result.approved is False and result.rejection_rule is None
     assert result.rejection_reason == "Quantity and bracket prices must be finite and positive."
+    assert result.thesis_summary == (
+        "Rejected: the deterministic bracket, quantity or configured multiplier is not finite and positive."
+    )
+
+
+async def test_a_non_finite_configured_multiplier_is_refused_with_the_admission_text(evaluator_factory):  # noqa: F811
+    evaluator = evaluator_factory()
+    evaluator.config.contracts["/MES"].multiplier = float("nan")
+    result = await evaluator.evaluate_candidate(make_candidate(), use_llm=False)
+    assert result.approved is False and result.rejection_rule is None
+    assert result.rejection_reason == "Quantity and bracket prices must be finite and positive."
+    assert result.thesis_summary == (
+        "Rejected: the deterministic bracket, quantity or configured multiplier is not finite and positive."
+    )
+
+
+# --- R7: the deterministic target rounds up to the next tick ---------------------------------
+
+
+# Unconfigured instruments: an equity trades in 0.01 ticks, a futures contract in 0.25 ticks.
+TICKS = ((AssetClass.EQUITY, "ZZEQ", 0.01), (AssetClass.FUTURES, "/ZZFUT", 0.25))
+
+
+def _levels(evaluator, *, asset_class, contract, direction, entry, tick, atr, ratio):
+    """Deterministic levels whose stop is exactly the configured ATR minimum (the structural stop sits at the entry)."""
+    candidate = make_candidate(
+        contract=contract,
+        direction=direction,
+        price=entry,
+        atr=atr,
+        swing_low=entry + 2 * tick,
+        swing_high=entry - 2 * tick,
+    ).model_copy(update={"asset_class": asset_class})
+    return evaluator.calculate_levels_deterministic(candidate, min_reward_risk=ratio)
+
+
+def test_deterministic_target_meets_the_required_ratio_at_every_tick(evaluator_factory):  # noqa: F811
+    evaluator = evaluator_factory()
+    failures = []
+    for asset_class, contract, tick in TICKS:
+        for atr_multiple in (1.5, 2.0, 3.1):
+            evaluator.config.risk.min_stop_atr_multiple = atr_multiple
+            for ratio in (2.0, 2.2, 2.5):
+                for step in range(math.ceil((500 - 5) / 0.37)):
+                    entry = round(5 + step * 0.37, 2)
+                    for direction in ("LONG", "SHORT"):
+                        levels = _levels(
+                            evaluator,
+                            asset_class=asset_class,
+                            contract=contract,
+                            direction=direction,
+                            entry=entry,
+                            tick=tick,
+                            atr=round(0.02 * entry, 2),
+                            ratio=ratio,
+                        )
+                        rr = round(levels.target_distance / levels.stop_distance, 2)
+                        if not (
+                            rr >= ratio and meets_min_reward_risk(levels.target_distance, levels.stop_distance, ratio)
+                        ):
+                            failures.append((contract, direction, entry, atr_multiple, ratio, rr))
+    assert failures == []
+
+
+def test_an_on_tick_target_at_ratio_two_is_the_nearest_tick_result(evaluator_factory):  # noqa: F811
+    evaluator = evaluator_factory()
+    for asset_class, contract, tick in TICKS:
+        for atr_multiple in (1.5, 2.0, 3.1):
+            evaluator.config.risk.min_stop_atr_multiple = atr_multiple
+            for entry in (5.0, 17.25, 99.75, 250.5, 499.0):
+                for direction, sign in (("LONG", 1), ("SHORT", -1)):
+                    levels = _levels(
+                        evaluator,
+                        asset_class=asset_class,
+                        contract=contract,
+                        direction=direction,
+                        entry=entry,
+                        tick=tick,
+                        atr=1.37,
+                        ratio=2.0,
+                    )
+                    previous = round(round((entry + sign * round(levels.stop_distance * 2.0, 2)) / tick) * tick, 2)
+                    assert levels.take_profit == previous, (contract, direction, entry, atr_multiple)
+
+
+# --- R10: the card as sent passes its own tap gate ------------------------------------------
+
+
+async def _deterministic_and_llm(evaluator, monkeypatch, candidate, **answer):
+    """The deterministic card, then the LLM card for ``answer`` (stop/target as functions of it)."""
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    deterministic = await evaluator.evaluate_candidate(candidate, use_llm=False)
+    assert deterministic.approved is True
+    llm_completion(monkeypatch, **{key: value(deterministic) for key, value in answer.items()})
+    return deterministic, await evaluator.evaluate_candidate(candidate, use_llm=True)
+
+
+def _wider_than_the_budget(card):
+    """A LONG stop whose risk at the card's quantity exceeds the 100,000 x 1% per-trade budget."""
+    return card.entry_price - (1000.0 / (5.0 * card.quantity) + 10.0)
+
+
+def _assert_deterministic_bracket(result, deterministic):
+    assert (result.stop_loss, result.take_profit) == (deterministic.stop_loss, deterministic.take_profit)
+    assert result.stop_distance_points == deterministic.stop_distance_points
+    assert result.target_distance_points == deterministic.target_distance_points
+    assert result.risk_reward_ratio == deterministic.risk_reward_ratio
+    assert result.risk_dollars == deterministic.risk_dollars
+    assert result.reward_dollars == deterministic.reward_dollars
+
+
+@pytest.mark.parametrize("approved", [True, False])
+async def test_llm_stop_widened_beyond_the_budget_restores_the_deterministic_bracket(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+    approved,
+):
+    evaluator = evaluator_factory()
+    deterministic, result = await _deterministic_and_llm(
+        evaluator,
+        monkeypatch,
+        make_candidate(),
+        approved=lambda card: approved,
+        stop_loss=_wider_than_the_budget,
+        take_profit=lambda card: card.take_profit,
+    )
+    assert result.approved is approved
+    _assert_deterministic_bracket(result, deterministic)
+
+
+async def test_llm_stop_widened_and_target_lowered_restores_the_deterministic_bracket(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+):
+    evaluator = evaluator_factory()
+    deterministic, result = await _deterministic_and_llm(
+        evaluator,
+        monkeypatch,
+        make_candidate(),
+        stop_loss=_wider_than_the_budget,
+        take_profit=lambda card: card.take_profit - 10.0,
+    )
+    assert result.approved is True
+    _assert_deterministic_bracket(result, deterministic)
+
+
+async def test_llm_bracket_meeting_the_ratio_but_not_the_budget_restores_the_deterministic_bracket(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+):
+    evaluator = evaluator_factory()
+
+    def target_at_three_r(card):
+        return card.entry_price + 3.0 * (card.entry_price - _wider_than_the_budget(card))
+
+    deterministic, result = await _deterministic_and_llm(
+        evaluator, monkeypatch, make_candidate(), stop_loss=_wider_than_the_budget, take_profit=target_at_three_r
+    )
+    _assert_deterministic_bracket(result, deterministic)
+
+
+async def test_a_valid_tighter_llm_bracket_is_kept(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    # A structural stop 60.5 points away (wider than the 30-point ATR minimum) leaves room to tighten.
+    candidate = make_candidate(price=5800.0, atr=20.0, swing_low=5740.0)
+    deterministic, result = await _deterministic_and_llm(
+        evaluator,
+        monkeypatch,
+        candidate,
+        stop_loss=lambda card: 5765.0,  # 35 points: above the minimum, tighter than 60.5
+        take_profit=lambda card: 5875.0,  # 75 points: rr 2.14, tighter than the deterministic target
+    )
+    assert deterministic.stop_loss == 5739.5 and deterministic.take_profit > 5875.0
+    assert (result.stop_loss, result.take_profit) == (5765.0, 5875.0)
+    assert result.risk_reward_ratio == 2.14
+    assert result.risk_dollars == round(35.0 * 5.0 * result.quantity, 2)
+    assert result.approved is True
+
+
+async def test_a_non_numeric_llm_stop_restores_the_deterministic_bracket(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    deterministic, result = await _deterministic_and_llm(
+        evaluator,
+        monkeypatch,
+        make_candidate(),
+        approved=lambda card: False,
+        rejection_reason=lambda card: "thin thesis",
+        stop_loss=lambda card: "NaN",
+    )
+    # The LLM's verdict stands; only its unusable bracket is replaced.
+    assert result.approved is False and result.rejection_reason == "thin thesis"
+    _assert_deterministic_bracket(result, deterministic)

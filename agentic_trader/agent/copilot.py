@@ -42,7 +42,6 @@ from agentic_trader.constants import (
     ExitReason,
     SignalStatus,
     StopAdjustmentReason,
-    StrategyType,
     SystemStateKey,
     executes_asset_class,
     normalize_asset_class,
@@ -102,7 +101,18 @@ from agentic_trader.research.setups.ranker import (
     shadow_blocks,
 )
 from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor
-from agentic_trader.risk import meets_min_reward_risk, requires_account_risk
+from agentic_trader.risk import (
+    EntryIntent,
+    RiskLimits,
+    entry_session_open,
+    macro_lockout,
+    per_trade_risk,
+    per_trade_risk_budget,
+    regime_breakout,
+    required_reward_risk,
+    requires_account_risk,
+    reward_risk,
+)
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.coverage import coverage_exclusions
 from agentic_trader.screeners.dynamic_universe import (
@@ -2750,11 +2760,14 @@ class TradingCopilot:
         return "Next regular open: unavailable."
 
     async def _card_valid_until(self, contract: str) -> str | None:
-        """ISO end of the regular session a card is issued in, or None when unknown.
+        """ISO close of the session a card is issued in, or None when unknown.
 
-        Recorded only while the contract is in its regular session: outside it a
-        provider's ``next_close`` belongs to a later session, and a card without
-        ``valid_until`` conservatively expires when the New York date changes.
+        Recorded only while ``agentic_trader.risk.entry_session_open`` allows entries in
+        the contract's current session (open, and within regular hours when
+        ``session.enforce_rth`` is set; ``is_open``/``is_rth`` must be real booleans) and
+        the provider's ``next_close`` is timezone-aware. Otherwise that close may belong to
+        a later session, and a card without ``valid_until`` conservatively expires when the
+        New York date changes.
         """
         try:
             info = await self.session_provider.get_session_info(contract)
@@ -2767,12 +2780,15 @@ class TradingCopilot:
             )
             return None
         close = getattr(info, "next_close", None)
-        if (
-            getattr(info, "is_open", False) is True
-            and getattr(info, "is_rth", False) is True
-            and isinstance(close, datetime)
-            and close.utcoffset() is not None
-        ):
+        session_open = (
+            entry_session_open(
+                getattr(info, "is_open", False) is True,
+                getattr(info, "is_rth", False) is True,
+                RiskLimits.from_config(self.config).enforce_rth,
+            )
+            is None
+        )
+        if session_open and isinstance(close, datetime) and close.utcoffset() is not None:
             return close.astimezone(UTC).isoformat()
         return None
 
@@ -2985,22 +3001,27 @@ class TradingCopilot:
     def _capped_replacement_quantity(
         self, quantity: float, *, price: float, stop: float, multiplier: float, asset_class: str, regime: Any
     ) -> float:
-        """Apply admission's per-trade caps, so a replacement never offers a size admission refuses.
+        """Apply the per-trade caps, so a replacement never offers a size the tap-time regime gate refuses.
 
-        Quantity (shares/contracts), per-trade notional and per-trade risk (on configured
-        cash, scaled down but never up by the regime) cap the size; whole units except crypto.
-        Account-state limits (drawdown, aggregate exposure, positions) stay admission's job.
+        The quantity cap (shares/contracts), the per-trade notional cap and the per-trade risk
+        budget cap the size; whole units except crypto. The budget is the regime gate's:
+        ``agentic_trader.risk.per_trade_risk_budget`` on configured cash with the regime
+        multiplier clamped to [0.10, 1.0] (a non-finite multiplier raises ``ValueError``).
+        Account-state limits (observed equity, drawdown, aggregate exposure, positions) stay
+        admission's job.
         """
-        sizing = self.config.sizing
+        limits = RiskLimits.from_config(self.config)
         is_futures = asset_class.upper() == AssetClass.FUTURES
-        caps = [quantity, float(sizing.max_contracts_per_trade if is_futures else sizing.max_shares_per_trade)]
+        caps = [quantity, float(limits.max_contracts_per_trade if is_futures else limits.max_shares_per_trade)]
         unit_notional = price * multiplier
         if unit_notional > 0:
-            caps.append(sizing.max_trade_notional_cap / unit_notional)
+            caps.append(limits.max_trade_notional_cap / unit_notional)
         unit_risk = abs(price - stop) * multiplier
         if unit_risk > 0:
-            risk_scale = min(1.0, float(getattr(regime, "risk_multiplier", 1.0)))
-            caps.append(self.config.portfolio.cash * sizing.max_risk_pct_cap * risk_scale / unit_risk)
+            budget = per_trade_risk_budget(
+                limits, equity=None, drawdown_pct=0.0, macro_multiplier=regime.risk_multiplier
+            )
+            caps.append(budget.dollars / unit_risk)
         capped = max(min(caps), 0.0)
         if asset_class.upper() != AssetClass.CRYPTO:
             capped = float(math.floor(capped + 1e-9))
@@ -3073,6 +3094,7 @@ class TradingCopilot:
         valid_until = valid_until_from_provenance(sig.get("decision_provenance"))
         assert price is not None  # a missing price returned above
         assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
+        limits = RiskLimits.from_config(self.config)
         assessment = assess_card(
             direction=request.direction,
             entry=request.entry_price,
@@ -3082,9 +3104,9 @@ class TradingCopilot:
             valid_until=valid_until,
             now=tapped_at,
             price=price,
-            session_is_rth=bool(info.is_open and info.is_rth),
+            session_open=entry_session_open(info.is_open, info.is_rth, limits.enforce_rth) is None,
             gate_reason=gate_reason,
-            min_reward_risk=max(self.config.risk.min_risk_reward_ratio, float(regime.min_rr_threshold)),
+            min_reward_risk=required_reward_risk(limits, regime.min_rr_threshold),
             policy=self.config.execution.card_freshness,
         )
         replacement: dict[str, Any] | None = None
@@ -3148,7 +3170,8 @@ class TradingCopilot:
 
         Validates synchronously (the card is EXPIRED, its contract is configured -- a
         dynamic suggestion-universe name is not, and a restricted scan never adds it --
-        no live card exists for its contract, the contract is in its regular session), then atomically claims the card's single
+        no live card exists for its contract, and ``agentic_trader.risk.entry_session_open``
+        allows entries in its current session), then atomically claims the card's single
         re-evaluation, so a redelivered callback, double tap or CLI call schedules nothing
         more. The scan runs in the background so the serialized Telegram handler returns at
         once; it uses the NONE budget (an explicit operator request) and exempts only this
@@ -3187,7 +3210,7 @@ class TradingCopilot:
             )
             # Retryable (like closed below): no claim was taken, so Telegram restores the button.
             return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.", retryable=True)
-        if not (info.is_open and info.is_rth):
+        if entry_session_open(info.is_open, info.is_rth, RiskLimits.from_config(self.config).enforce_rth):
             return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}", retryable=True)
         setup = (contract, sig["strategy"], sig.get("timeframe"), sig.get("alpha_version"))
         claimed = await self.db.workflows.claim_card_reevaluation(
@@ -3225,8 +3248,9 @@ class TradingCopilot:
 
         Only cheap checks run in the serialized Telegram handler, as for
         ``reevaluate_signal``: no scan of the name already in flight, no live card for it,
-        the dynamic universe enabled for an unconfigured symbol, and its regular session
-        open (one bounded read). Everything else runs in the background task: for an
+        the dynamic universe enabled for an unconfigured symbol, and entries allowed in its
+        current session by ``agentic_trader.risk.entry_session_open`` (one bounded read).
+        Everything else runs in the background task: for an
         unconfigured symbol, the dynamic universe's asset/instrument filters and the
         latest journaled liquidity reference, whose refusals are outbox messages. A
         configured contract is scanned alone under the NONE budget with the
@@ -3266,7 +3290,7 @@ class TradingCopilot:
                 extra={"event": "operator_symbol_scan_session_failed", "symbol": target},
             )
             return ExecutionReply(False, "⚠️ Market session unavailable; try again shortly.")
-        if not (info.is_open and info.is_rth):
+        if entry_session_open(info.is_open, info.is_rth, RiskLimits.from_config(self.config).enforce_rth):
             return ExecutionReply(False, f"Market closed; {self._next_open_text(info)}")
         logger.info(
             "Operator symbol scan requested for %s",
@@ -3506,28 +3530,53 @@ class TradingCopilot:
         return await self._macro_lockout_reason() or self._regime_gate(request, signal, regime)
 
     async def _macro_lockout_reason(self) -> str | None:
+        """The ``agentic_trader.risk.macro_lockout`` reason, or None.
+
+        One clock: the calendar finds the tier-1 event whose window contains ``now`` (its
+        timestamp is aware) and the rule judges the same instant and formats the text, so
+        the tap, the preflight and the scan show one lockout text.
+        """
+        limits = RiskLimits.from_config(self.config)
+        now = datetime.now(UTC)
         in_lockout, event = await self.calendar.is_in_lockout_window(
-            pre_minutes=self.config.risk.lockout_pre_event_minutes,
-            post_minutes=self.config.risk.lockout_post_event_minutes,
+            pre_minutes=limits.lockout_pre_minutes, post_minutes=limits.lockout_post_minutes, now=now
         )
-        if in_lockout:
-            return f"Macro event lockout active: {event.title if event else 'scheduled release'}."
+        if in_lockout and event is not None and (rejection := macro_lockout(event.title, event.timestamp, now, limits)):
+            return rejection.reason
         return None
 
     def _regime_gate(self, request: OrderRequest, signal: dict[str, Any], regime: Any) -> str | None:
-        if signal["strategy"] == StrategyType.SQUEEZE_BREAKOUT and not regime.breakout_allowed:
-            return "Current macro/volatility policy suppresses breakout entries."
+        """Tap/admission-time regime gate: the shared breakout, reward/risk and per-trade budget rules.
+
+        In order: ``agentic_trader.risk.regime_breakout``; ``reward_risk`` at
+        ``required_reward_risk`` (the configured minimum or the regime's, whichever is
+        higher); ``per_trade_risk`` against ``per_trade_risk_budget`` on configured cash
+        with the regime multiplier. Admission's ``per_trade_risk`` re-checks the same
+        formula with observed equity and drawdown. Returns the first rule's reason, or None.
+        ``EntryIntent`` and the budget raise ``ValueError`` on a non-finite request number,
+        configured multiplier or regime multiplier; the tap reports it as checks
+        unavailable and the preflight as admission evidence unavailable.
+        """
+        if rejection := regime_breakout(signal["strategy"], regime.breakout_allowed):
+            return rejection.reason
         assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
-        risk_distance = abs(request.entry_price - request.stop_loss)
-        reward_distance = abs(request.take_profit - request.entry_price)
-        min_reward_risk = max(self.config.risk.min_risk_reward_ratio, regime.min_rr_threshold)
-        if not meets_min_reward_risk(reward_distance, risk_distance, min_reward_risk):
-            return "Current macro/volatility policy requires a higher reward/risk ratio."
         info = self.config.contracts.get(request.symbol)
-        risk = risk_distance * request.quantity * (info.multiplier if info else 1)
-        if risk > self.config.portfolio.cash * self.config.sizing.max_risk_pct_cap * regime.risk_multiplier:
-            return "Current macro risk scaling no longer permits the approved size."
-        return None
+        intent = EntryIntent(
+            symbol=request.symbol,
+            direction=str(request.direction),
+            asset_class=str(request.asset_class),
+            quantity=request.quantity,
+            entry=request.entry_price,
+            stop=request.stop_loss,
+            target=request.take_profit,
+            multiplier=info.multiplier if info else 1.0,
+        )
+        limits = RiskLimits.from_config(self.config)
+        if rejection := reward_risk(intent, required_reward_risk(limits, regime.min_rr_threshold)):
+            return rejection.reason
+        budget = per_trade_risk_budget(limits, equity=None, drawdown_pct=0.0, macro_multiplier=regime.risk_multiplier)
+        rejection = per_trade_risk(intent, budget)
+        return rejection.reason if rejection else None
 
     async def run_entries(self) -> None:
         await self.entry_service.recover()

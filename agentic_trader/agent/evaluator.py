@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -40,9 +41,11 @@ from agentic_trader.risk import (
     book_gates,
     entry_session_open,
     macro_lockout,
+    per_trade_risk,
     per_trade_risk_budget,
     regime_breakout,
     required_reward_risk,
+    reward_risk,
 )
 from agentic_trader.screeners.base import ScreenerCandidate
 
@@ -53,9 +56,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The text admission gives the same card, so a bracket the scan cannot express as an
-# ``EntryIntent`` is refused here with the reason the tap would have shown.
+# Admission's text for a request it cannot express as an ``EntryIntent``. The scan refuses
+# a card whose deterministic bracket, quantity or configured multiplier (or direction)
+# fails ``EntryIntent`` validation with the same reason.
 _INVALID_BRACKET = "Quantity and bracket prices must be finite and positive."
+# Float noise tolerated, in ticks, when a target is rounded away from the entry to a tick.
+_TICK_EPSILON = 1e-6
 
 
 @dataclass(frozen=True)
@@ -153,7 +159,9 @@ class RiskEvaluator:
         Calculate structural stop loss, profit target, and dynamic position sizing deterministically.
         Returns explicit prices, distances, exposure, quantity and sizing tiers.
 
-        The target sits ``min_reward_risk`` stop distances from the entry: the scan passes
+        The target sits at least ``min_reward_risk`` stop distances from the entry, rounded
+        away from the entry to the next tick (a target already on a tick stays), so its
+        two-decimal reward/risk always meets the ratio: the scan passes
         ``agentic_trader.risk.required_reward_risk`` (the configured minimum or the regime's,
         whichever is higher); research replay and the backtest pass nothing and get the
         configured ``risk.min_risk_reward_ratio``. A versioned alpha policy's bracket
@@ -189,8 +197,8 @@ class RiskEvaluator:
             stop_loss = round(round((entry - stop_distance) / tick_size) * tick_size, 2)
             stop_distance = round(entry - stop_loss, 2)
 
-            target_distance = round(stop_distance * ratio, 2)
-            take_profit = round(round((entry + target_distance) / tick_size) * tick_size, 2)
+            # Round the target up to the next tick: never short of ``ratio`` stop distances.
+            take_profit = round(math.ceil((entry + stop_distance * ratio) / tick_size - _TICK_EPSILON) * tick_size, 2)
             target_distance = round(take_profit - entry, 2)
 
         else:  # SHORT
@@ -199,8 +207,8 @@ class RiskEvaluator:
             stop_loss = round(round((entry + stop_distance) / tick_size) * tick_size, 2)
             stop_distance = round(stop_loss - entry, 2)
 
-            target_distance = round(stop_distance * ratio, 2)
-            take_profit = round(round((entry - target_distance) / tick_size) * tick_size, 2)
+            # Round the target down to the next tick: never short of ``ratio`` stop distances.
+            take_profit = round(math.floor((entry - stop_distance * ratio) / tick_size + _TICK_EPSILON) * tick_size, 2)
             target_distance = round(entry - take_profit, 2)
 
         if candidate.alpha_policy is not None:
@@ -377,7 +385,10 @@ class RiskEvaluator:
                 strategy=str(candidate.strategy),
             )
         except ValueError:
-            return _rejected(_INVALID_BRACKET, thesis="Rejected: the deterministic bracket has a non-positive price.")
+            return _rejected(
+                _INVALID_BRACKET,
+                thesis="Rejected: the deterministic bracket, quantity or configured multiplier is not finite and positive.",
+            )
         budget = per_trade_risk_budget(
             limits, equity=current_equity, drawdown_pct=current_drawdown_pct, macro_multiplier=regime.risk_multiplier
         )
@@ -588,7 +599,7 @@ class RiskEvaluator:
                 llm_stop = stop_loss
                 llm_stop_dist = stop_distance
 
-            # R:R guarantee >= required_rr; below it, the deterministic target (built at required_rr) stands
+            # A target below required_rr reverts to the deterministic target (built at required_rr)
             llm_target = float(data.get("take_profit", take_profit))
             llm_target_dist = abs(llm_target - entry)
             rr = round(llm_target_dist / llm_stop_dist, 2) if llm_stop_dist > 0 else 2.0
@@ -601,6 +612,32 @@ class RiskEvaluator:
                 llm_stop, llm_target = stop_loss, take_profit
                 llm_stop_dist, llm_target_dist = stop_distance, target_distance
                 rr = target_distance / stop_distance
+
+            # Final-bracket check, so the card as sent passes its own tap gate under this regime:
+            # a bracket other than the deterministic one that is not a valid ``EntryIntent``,
+            # fails ``reward_risk`` at required_rr or exceeds ``per_trade_risk`` for this card's
+            # budget (observed equity and drawdown, never above the tap gate's configured-cash
+            # budget) -- e.g. a wider stop at the deterministic quantity -- reverts stop and target
+            # together to the deterministic bracket (built at required_rr, sized within the budget).
+            if (llm_stop, llm_target) != (stop_loss, take_profit):
+                try:
+                    final = EntryIntent(
+                        symbol=candidate.contract,
+                        direction=str(candidate.direction),
+                        asset_class=str(asset_class),
+                        quantity=quantity,
+                        entry=entry,
+                        stop=llm_stop,
+                        target=llm_target,
+                        multiplier=multiplier,
+                    )
+                    final_passes = reward_risk(final, required_rr) is None and per_trade_risk(final, budget) is None
+                except ValueError:
+                    final_passes = False
+                if not final_passes:
+                    llm_stop, llm_target = stop_loss, take_profit
+                    llm_stop_dist, llm_target_dist = stop_distance, target_distance
+                    rr = round(target_distance / stop_distance, 2)
             data["stop_loss"] = llm_stop
             data["take_profit"] = llm_target
             data["stop_distance_points"] = round(llm_stop_dist, 2)

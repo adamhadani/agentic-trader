@@ -14,7 +14,7 @@ from agentic_trader.execution.freshness import (
     reprice_quantity,
     valid_until_from_provenance,
 )
-from agentic_trader.risk import meets_min_reward_risk
+from agentic_trader.risk import entry_session_open, meets_min_reward_risk
 
 
 POLICY = CardFreshnessConfig()  # enabled=True, fresh_seconds=1800, fresh_max_r=0.25, reprice_min_risk_fraction=0.5
@@ -40,7 +40,7 @@ def _assess(
     valid_until=VALID_UNTIL,
     now=None,
     price=LONG_ENTRY,
-    session_is_rth=True,
+    session_open=True,
     gate_reason=None,
     min_reward_risk=MIN_RR,
     policy=POLICY,
@@ -54,7 +54,7 @@ def _assess(
         valid_until=valid_until,
         now=now if now is not None else issued_at,
         price=price,
-        session_is_rth=session_is_rth,
+        session_open=session_open,
         gate_reason=gate_reason,
         min_reward_risk=min_reward_risk,
         policy=policy,
@@ -238,9 +238,19 @@ def test_not_expired_just_before_valid_until():
     assert result.outcome != CardOutcome.EXPIRED
 
 
-def test_expired_when_not_session_is_rth():
-    result = _assess(now=ISSUED_AT, price=LONG_ENTRY, session_is_rth=False)
+def test_expired_when_the_session_refuses_entries():
+    result = _assess(now=ISSUED_AT, price=LONG_ENTRY, session_open=False)
     assert result.outcome == CardOutcome.EXPIRED
+
+
+@pytest.mark.parametrize("enforce_rth", [True, False])
+def test_an_extended_hours_session_expires_the_card_only_when_rth_is_enforced(enforce_rth):
+    # The caller decides with the shared session rule; ``assess_card`` only applies the verdict.
+    session_open = entry_session_open(is_open=True, is_rth=False, enforce_rth=enforce_rth) is None
+    result = _assess(now=ISSUED_AT, price=LONG_ENTRY, session_open=session_open)
+    assert (result.outcome == CardOutcome.EXPIRED) is enforce_rth
+    if not enforce_rth:
+        assert result.outcome == CardOutcome.EXECUTE
 
 
 def test_legacy_valid_until_none_same_ny_date_not_expired():
@@ -255,7 +265,7 @@ def test_legacy_valid_until_none_same_ny_date_not_expired():
         valid_until=None,
         now=now,
         price=LONG_ENTRY,
-        session_is_rth=True,
+        session_open=True,
         gate_reason=None,
         min_reward_risk=MIN_RR,
         policy=POLICY,
@@ -277,7 +287,7 @@ def test_legacy_valid_until_none_next_ny_date_is_expired():
         valid_until=None,
         now=now,
         price=LONG_ENTRY,
-        session_is_rth=True,
+        session_open=True,
         gate_reason=None,
         min_reward_risk=MIN_RR,
         policy=POLICY,
@@ -296,7 +306,7 @@ def test_naive_datetime_raises():
             valid_until=None,
             now=datetime(2026, 9, 23, 15, 0, 0),  # noqa: DTZ001 - intentionally naive, asserting rejection
             price=LONG_ENTRY,
-            session_is_rth=True,
+            session_open=True,
             gate_reason=None,
             min_reward_risk=MIN_RR,
             policy=POLICY,
