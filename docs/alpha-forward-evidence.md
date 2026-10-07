@@ -23,6 +23,15 @@ only. Zero enabled alphas does not disable other configured strategies.
   superseded, interrupted or claimed. Latest/pending aliases and late forensic
   results never enter the denominator. An expired claimed record is also shown as
   overdue pending; reporting does not mutate or recover it.
+- Unavailable decisions are grouped by a fixed category; raw provider text is never shown.
+  `registry_changed_during_capture`, `decision_expired_before_commit`,
+  `decision_expired_before_read`, `invalid_or_expired_receipt`,
+  `decision_candle_mismatch` and `missing_score_or_warmup` are the decision
+  pipeline's own reasons. Otherwise the exception type decides:
+  `missing_session_minutes` (`SessionCoverageError`: regular-session minutes needed
+  for execution prices were absent from the feed), `acquisition_failed`
+  (`SessionAcquisitionError`: the bars could not be read), and `capture_error` for
+  anything else.
 - `recorded_score_fraction` divides scored decisions by **recorded decisions**.
   It is null with no records or truncated history. This is not coverage of every
   theoretically eligible candle. No records means no recorded evidence, not a

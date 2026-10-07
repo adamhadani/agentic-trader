@@ -99,6 +99,39 @@ def test_missing_or_invalid_receipts_are_not_zero_latency(evidence_case, defect)
     assert "private provider" not in str(row)
 
 
+@pytest.mark.parametrize(
+    ("reason", "error_type", "category"),
+    [
+        (
+            "Unknown execution prices: 3 missing regular-session minutes",
+            "SessionCoverageError",
+            "missing_session_minutes",
+        ),
+        ("GET https://data.example/v2?key=SECRET failed", "SessionAcquisitionError", "acquisition_failed"),
+        ("https://x.example/?token=SECRET", "TimeoutError", "capture_error"),
+        ("https://x.example/?token=SECRET", None, "capture_error"),
+        ("decision_candle_mismatch", "SessionCoverageError", "decision_candle_mismatch"),
+        ("missing_score_or_warmup", None, "missing_score_or_warmup"),
+        ("registry_changed_during_capture", "ValueError", "registry_changed_during_capture"),
+        ("decision_expired_before_commit", None, "decision_expired_before_commit"),
+        ("decision_expired_before_read", None, "decision_expired_before_read"),
+        ("invalid_or_expired_receipt", None, "invalid_or_expired_receipt"),
+    ],
+)
+def test_unavailable_reasons_use_fixed_categories_without_raw_text(evidence_case, reason, error_type, category):
+    record, _, report = evidence_case
+    record["status"] = DecisionStatus.UNAVAILABLE
+    record["reason"] = reason
+    if error_type is None:
+        record.pop("error_type", None)
+    else:
+        record["error_type"] = error_type
+    row = report()["candidates"][0]
+    assert row["unavailable_reasons"] == {category: 1}
+    assert "SECRET" not in str(row)
+    assert "regular-session minutes" not in str(row)
+
+
 @pytest.mark.parametrize("condition", ["empty", "truncated", "gap", "not_enrolled", "generation"])
 def test_incomplete_evidence_is_explicit(evidence_case, condition):
     _, inputs, report = evidence_case
