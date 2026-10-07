@@ -2,7 +2,7 @@
   "id": "pooled-campaign",
   "version": 4,
   "title": "Pooled campaign v4: cohort v2, top-decile basket selection, predeclared fixed set of eight literature formulas, no search (checks A and C only), one-shot lane-wide confirmation",
-  "rationale": "A predeclared fixed set of eight literature formulas, each scored once without search, so search-power check B does not apply; checks A and C still bind. Literature-overlap exclusions: a finalist with pick Jaccard >= 0.5 against an earlier literature entry keeps its Holm slot but is not probe-eligible, so the 252-session high (close / ts_max(high, 252), entry high52-v1) is tested only as the 126-session high, and the unfiltered one-month reversal (-1.0 * roc(close, 21), the reversal-lowmax-v1 score) is not included. Realized-volatility scores stay excluded (the forbidden operators and vol_20), and sector-relative momentum has no group operator in the DSL.",
+  "rationale": "A predeclared fixed set of eight literature formulas, each scored once without search, so search-power check B does not apply; checks A and C still bind. Literature-overlap exclusions: a finalist with pick Jaccard >= 0.5 against an earlier literature entry keeps its Holm slot but is not probe-eligible, so the 252-session high (close / ts_max(high, 252), entry high52-v1) is not included (a label-blind probe on 2026-10-07 showed its 126-session variant overlapping it at pick Jaccard 0.76, so no nearness-to-high formula is in the set), and the unfiltered one-month reversal (-1.0 * roc(close, 21), the reversal-lowmax-v1 score) is not included. Realized-volatility scores stay excluded (the forbidden operators and vol_20), and sector-relative momentum has no group operator in the DSL.",
   "search_mode": "fixed_set",
   "cohort": "config/research/pooled/cohort-v2.json",
   "cohort_sha256": "c2c7941014932075110b33a7b853db7899f7b8fa43d5433d38b2e92bab1407df",
@@ -55,10 +55,10 @@
       "mutation_operators": []
     },
     {
-      "id": "high_126",
-      "rationale": "Nearness to the trailing high, the six-month variant of the 52-week-high effect (George & Hwang, 2004).",
+      "id": "signed_volume",
+      "rationale": "Ten-session signed-volume imbalance: buying pressure predicts continuation (Chordia & Subrahmanyam, 2004).",
       "seeds": [
-        "close / ts_max(high, 126)"
+        "ts_sum(sign(returns) * volume, 10) / ts_sum(volume, 10)"
       ],
       "mutation_operators": []
     },

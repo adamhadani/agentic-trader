@@ -13,7 +13,7 @@ V4 = load_campaign_protocol(REPO / "config/research/pooled/campaign-v4.json")
 
 FIXED_SET = {
     "reversal_5": "-1.0 * roc(close, 5)",
-    "high_126": "close / ts_max(high, 126)",
+    "signed_volume": "ts_sum(sign(returns) * volume, 10) / ts_sum(volume, 10)",
     "overnight_intraday": "ts_sum(open_gap, 21) - ts_sum(oc_spread, 21)",
     "abnormal_volume": "volume / ts_mean(volume, 50)",
     "momentum_12_1": "delay(close, 21) / delay(close, 252) - 1.0",

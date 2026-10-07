@@ -756,10 +756,12 @@ one-use confirmation window are unchanged.
 **Literature overlap.** The [overlap rule](#literature-overlap-rule) still marks any finalist
 whose discovery picks overlap `high52-v1` or `reversal-lowmax-v1` at Jaccard >= 0.5; a
 marked formula keeps its Holm slot but is not probe-eligible. The set therefore avoids both
-entries' scores. The 52-week-high hypothesis is tested as the 126-session high, and the
-unfiltered one-month reversal is left out. The entries failed under top-3 picks on cohort
-v1; v4 is the first test of these hypotheses as decile baskets. Its formulas are distinct,
-but a finalist whose picks still overlap an entry's is marked.
+entries' scores and their close variants: a label-blind probe on 2026-10-07 (scores only,
+discovery window) showed the 126-session high overlapping the 52-week-high entry at pick
+Jaccard 0.76, so no nearness-to-high formula is in the set, and the unfiltered one-month
+reversal is left out; every remaining formula overlaps both entries at Jaccard <= 0.18. The
+entries failed under top-3 picks on cohort v1; v4 is the first decile-basket test on this
+lane. A finalist whose picks still overlap an entry's is marked.
 
 **The v4 set** (all dimensionless, long-only like the lane; a formula whose sign is wrong
 simply fails discovery):
@@ -767,7 +769,7 @@ simply fails discovery):
 | Family | Score | Hypothesis |
 | --- | --- | --- |
 | `reversal_5` | `-1.0 * roc(close, 5)` | One-week reversal (Jegadeesh, 1990; Lehmann, 1990) |
-| `high_126` | `close / ts_max(high, 126)` | Nearness to the trailing high, six-month variant (George & Hwang, 2004) |
+| `signed_volume` | `ts_sum(sign(returns) * volume, 10) / ts_sum(volume, 10)` | Signed-volume order imbalance predicts continuation (Chordia & Subrahmanyam, 2004) |
 | `overnight_intraday` | `ts_sum(open_gap, 21) - ts_sum(oc_spread, 21)` | Overnight-minus-intraday return persistence (Lou, Polk & Skouras, 2019) |
 | `abnormal_volume` | `volume / ts_mean(volume, 50)` | High-volume return premium (Gervais, Kaniel & Mingelgrin, 2001) |
 | `momentum_12_1` | `delay(close, 21) / delay(close, 252) - 1.0` | 12-1 momentum (Jegadeesh & Titman, 1993) |

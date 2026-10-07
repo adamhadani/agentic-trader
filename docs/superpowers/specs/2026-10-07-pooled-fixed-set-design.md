@@ -24,7 +24,7 @@ The genetic campaign is parked: check B failed twice because 17 mutations per fa
 3. **Gates by mode.** `GATES` becomes a function of the protocol: `fixed_set` → `(power, null_check)`; `genetic` → the current three. The `campaign` CLI makes `--search-power` optional: required in genetic mode, refused in fixed-set mode. `_run_campaign`'s gate-set equality, the manifest `gates` block and `require_campaign_ready` follow the same rule. Checks A and C refuse to run on a protocol whose mode they do not support (`search-power` refuses fixed-set protocols with a clear message).
 4. **Check A** is unchanged in computation (it reads no family information) and reruns only because the protocol hash and code revision change. **Check C** is unchanged in computation: with no operators it already scores exactly the fixed set on demeaned panels and runs the real stages.
 5. **Discovery carry and Holm.** `carry` stays 5 and Holm runs over the frozen candidates (at most 5), exactly as in v3. Multiplicity over the predeclared set is controlled by the staged out-of-sample windows plus Holm at confirmation; the set is small by design (8).
-6. **Literature overlap stays enforced.** `already_tested` keeps marking any finalist with Jaccard ≥ 0.5 against `high52-v1` (`close / ts_max(high, 252)`) or `reversal-lowmax-v1` (`-1.0 * roc(close, 21)` filtered on low MAX); a marked formula keeps its Holm slot but is not probe-eligible. The fixed set therefore avoids those two scores: the 52-week-high hypothesis is tested as the 126-session high, and the one-month reversal is not included (its unfiltered score would overlap the literature entry).
+6. **Literature overlap stays enforced.** `already_tested` keeps marking any finalist with Jaccard ≥ 0.5 against `high52-v1` (`close / ts_max(high, 252)`) or `reversal-lowmax-v1` (`-1.0 * roc(close, 21)` filtered on low MAX); a marked formula keeps its Holm slot but is not probe-eligible. The fixed set therefore avoids those two scores and their close variants: a label-blind probe on 2026-10-07 (scores only, discovery window) showed the 126-session high overlapping the 52-week-high entry at pick Jaccard 0.76, so no nearness-to-high formula is included, and the one-month reversal is not included (its unfiltered score would overlap the literature entry). Every remaining formula overlaps both entries at Jaccard ≤ 0.18.
 7. **Window consumption is the irreversible step.** The confirmation window (2024-01-02 → 2026-07-31, lane-wide, one-use) is consumed when selection freezes at least one candidate, whether or not confirmation then passes. Running the campaign therefore needs explicit operator approval after A and C have passed, as before.
 
 ## The fixed set (protocol v4, `config/research/pooled/campaign-v4.json`)
@@ -34,7 +34,7 @@ Copy of v3 with: `version: 4`, a new title, `search_mode: "fixed_set"`, `formula
 | Family id | Score | Hypothesis (literature) |
 | --- | --- | --- |
 | `reversal_5` | `-1.0 * roc(close, 5)` | one-week reversal (Jegadeesh 1990; Lehmann 1990) |
-| `high_126` | `close / ts_max(high, 126)` | nearness to the trailing high, 6-month variant (George & Hwang 2004) |
+| `signed_volume` | `ts_sum(sign(returns) * volume, 10) / ts_sum(volume, 10)` | signed-volume order imbalance predicts continuation (Chordia & Subrahmanyam 2004) |
 | `overnight_intraday` | `ts_sum(open_gap, 21) - ts_sum(oc_spread, 21)` | overnight-minus-intraday return persistence (Lou, Polk & Skouras 2019) |
 | `abnormal_volume` | `volume / ts_mean(volume, 50)` | high-volume return premium (Gervais, Kaniel & Mingelgrin 2001) |
 | `momentum_12_1` | `delay(close, 21) / delay(close, 252) - 1.0` | 12-1 momentum (Jegadeesh & Titman 1993) |
@@ -42,7 +42,7 @@ Copy of v3 with: `version: 4`, a new title, `search_mode: "fixed_set"`, `formula
 | `illiquidity` | `ts_mean(hl_spread, 21)` | illiquidity premium, range-based proxy (Amihud 2002; Corwin & Schultz 2012) |
 | `reversal_x_volume` | `-1.0 * roc(close, 5) * (volume / ts_mean(volume, 50))` | reversal is stronger after high volume (Conrad, Hameed & Niden 1994) |
 
-Excluded on purpose: any realized-volatility score (the `vol_20` exclusion class and the forbidden operators), the unfiltered one-month reversal and the 252-session high (literature overlap, decision 6), sector-relative momentum (no group operator in the DSL; the 2026-09-24 prospective-only decision). The 252-lookback momentum score is NaN for roughly the first 107 discovery sessions; the discovery gate's ≥400-session requirement still has ample room.
+Excluded on purpose: any realized-volatility score (the `vol_20` exclusion class and the forbidden operators), the unfiltered one-month reversal and any nearness-to-high formula (literature overlap, decision 6), sector-relative momentum (no group operator in the DSL; the 2026-09-24 prospective-only decision). The 252-lookback momentum score is NaN for roughly the first 107 discovery sessions; the discovery gate's ≥400-session requirement still has ample room.
 
 The eight directions are long-only by construction of the lane (long bracket label cube); a formula whose sign is wrong simply fails discovery.
 
