@@ -88,6 +88,7 @@ class FamilyRun:
     formulas: dict[str, ScoredFormula]
     expressions: dict[str, str]
     records: tuple[dict, ...]
+    mutation_count: int  # the search's successful mutations; always 0 in fixed_set mode
 
     def summary(self) -> dict:
         return {
@@ -157,10 +158,14 @@ def family_search(
     rejected: Counter[str] = Counter()
     charged = errors = streak = 0
     stopped: str | None = None
+    # Fixed-set contract: every family has no mutation operators and its budget equals its seed
+    # count (``CampaignProtocol.family_budgets``), so the loop ends once the seeds are charged and
+    # never reaches ``mutate``. Should a seed be rejected, the next ``ask`` raises "no mutation
+    # operators" and the family stops short instead of mutating.
     while charged < budget:
         try:
             proposal = search.ask()
-        except ValueError as exc:  # no unseen expression is left in this family's grammar
+        except ValueError as exc:  # no unseen expression is left in this family's grammar, or no operators
             stopped = f"search exhausted: {exc}"
             break
         vetted = vet_expression(proposal, protocol.search.forbidden_operators, seen)
@@ -215,6 +220,7 @@ def family_search(
         formulas=formulas,
         expressions=expressions,
         records=tuple(records),
+        mutation_count=search.mutation_count,
     )
 
 
