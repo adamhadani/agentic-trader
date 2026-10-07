@@ -204,8 +204,11 @@ B failed again (3/10), so the pooled genetic campaign is **parked**: no campaign
 charged, confirmation window unused ([v3 checks](docs/alpha-pooled-checks-v3-2026-10-05.md)).
 Reopening it needs a new spec and operator approval. Protocol v4 is a fixed-set protocol
 (eight predeclared literature formulas, decile selection, no search): it runs with checks
-A and C only; its campaign still consumes the one-use confirmation window and needs
-operator approval.
+A and C only. On 2026-10-07 both passed and the approved campaign found **no finalists**
+(seven of eight formulas have a negative discovery edge), so nothing froze, the confirmation
+window is still unused, and the fixed-set lane is closed on this window
+([v4 checks](docs/alpha-pooled-checks-v4-2026-10-07.md)). The next alpha source is an
+operator decision.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)

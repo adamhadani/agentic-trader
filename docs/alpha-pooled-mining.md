@@ -813,7 +813,7 @@ and C pass.
 - In both closed cases no further formulas are tried against this window, and the next
   alpha source is decided with the operator.
 
-The checks and the campaign outcome are written up in `alpha-pooled-checks-v4-<date>.md`.
+The checks and the campaign outcome are written up in [alpha-pooled-checks-v4-2026-10-07.md](alpha-pooled-checks-v4-2026-10-07.md): A and C passed, the approved campaign found no finalists (seven of eight formulas have a negative discovery edge, best t 0.76), nothing froze, the confirmation window is still unused, and the lane is closed on this window as pre-registered.
 
 ## Commands
 

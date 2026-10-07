@@ -525,6 +525,15 @@ is recorded against that entry and no probe follows; zero confirmed formulas, or
 probe-eligible, closes the fixed-set lane on this window, and the next alpha source is
 decided with the operator.
 
+**Outcome (2026-10-07).** Checks A and C passed at revision `46d5767`; the operator approved
+the campaign; it found **no finalists**: seven of eight formulas have a negative
+session-paired edge on the discovery window and the best (`price_volume_corr`) has t 0.76
+against the gate of 3. Nothing froze, so the confirmation window is still unused; the eight
+formulas are charged to the ledger. As pre-registered, the fixed-set lane is closed on this
+window ([v4 checks](alpha-pooled-checks-v4-2026-10-07.md)). The next alpha source is an
+operator decision; the window remains available to a future lane with a different label or
+cohort under a new spec.
+
 **Deferred.** A sparse-layout contract for the IEX forward lane, so sessions with IEX's
 minute gaps can be scored instead of failing the strict coverage rule, needs its own spec.
 Stage-layering steps L3 to L5 (above) stay planned.
