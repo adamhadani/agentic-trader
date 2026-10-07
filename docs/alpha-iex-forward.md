@@ -98,3 +98,5 @@ A separate trade-condition/source investigation and versioned sparse signal-bar 
 execution-price contract would be needed before changing treatment. Do not impute,
 splice feeds, shorten warmup after seeing failures, or reinterpret these frozen results.
 Native-daily broader-equity research can proceed independently of this intraday gate.
+
+Under the strict `rth_open_v1` layout the IEX controls report these failures as `missing_session_minutes` in the forward evidence report; the versioned sparse-layout decision above remains open.
