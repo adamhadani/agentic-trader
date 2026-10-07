@@ -79,3 +79,40 @@ source is decided with the operator.
 Artifacts: `~/agentic-trader-research/pooled-power-a-v4-20261007`,
 `pooled-null-check-v4-20261007`, `pooled-campaign-v4-20261007` (`result.json`, `outcome.json`,
 `formulas.jsonl`); logs under `~/agentic-trader-research/logs/`.
+
+## Label diagnostic (2026-10-07, read-only, discovery window only)
+
+Operator question after the campaign: does the bracket label hide a real signal, or is there none?
+A read-only script re-scored the eight formulas on the cached bars and the cube's eligibility
+mask, discovery window only (1,366 sessions, 452 names; nothing after 2021-12-31 read; the cube's
+labels never read), with plain forward close-to-close returns, the lane's own 20-session block
+bootstrap for t, a Spearman rank IC per session, a top-minus-bottom decile spread, and an AR(1)
+random score as control. Costs: 10 bps round trip on picks changes no conclusion.
+
+| Formula | Edge, 20 sessions (bps, t) | Edge, 5 sessions (bps, t) | Rank IC 20 (mean, bootstrap t, % sessions > 0) | Long–short decile 20 (bps, t) | Edge per ATR, no bracket vs campaign bracket |
+| --- | --- | --- | --- | --- | --- |
+| `reversal_5` | +40 (1.61) | +16 (1.30) | +0.013 (1.47, 53%) | +19 (0.66) | −0.048 vs −0.021 |
+| `signed_volume` | −9 (−0.55) | −4 (−0.81) | −0.014 (−1.56, 46%) | −24 (−0.93) | −0.029 vs −0.026 |
+| `overnight_intraday` | +24 (0.72) | +7 (0.65) | −0.004 (−0.33, 49%) | +1 (0.01) | −0.058 vs −0.050 |
+| `abnormal_volume` | −9 (−0.90) | −4 (−0.93) | −0.008 (−1.49, 46%) | −45 (−2.26) | −0.044 vs −0.029 |
+| `momentum_12_1` | +96 (2.16) | +26 (2.06) | +0.013 (0.63, 56%) | +92 (1.29) | +0.007 vs −0.025 |
+| `price_volume_corr` | +20 (1.43) | +3 (0.60) | +0.021 (2.47, 57%) | +18 (0.61) | +0.019 vs +0.015 |
+| `illiquidity` | +147 (2.40) | +39 (2.24) | +0.034 (1.59, 58%) | +198 (2.35) | −0.006 vs −0.016 |
+| `reversal_x_volume` | +27 (1.32) | +14 (1.29) | +0.013 (1.46, 52%) | +23 (0.84) | −0.046 vs −0.017 |
+| random AR(1) φ 0.95 (control) | −16 (−1.15) | −7 (−1.79) | −0.006 (−1.09, 45%) | −20 (−0.99) | −0.032 |
+
+- No formula reaches |t| ≥ 3 on any return-space statistic under the session-block bootstrap.
+  Naive IC t statistics (which ignore session dependence) exceed 3 for four formulas, but so do
+  about half of 200 persistent random scores (95th percentile 6.8 to 8.3); they are not evidence.
+- Measured per unit of ATR without a stop or target, the edges reproduce the campaign's bracket
+  edges in sign for seven of eight formulas. `illiquidity` and `momentum_12_1` look good in raw
+  returns only because their deciles hold high-volatility names in a rising 2016–2021 market;
+  per unit of risk the edge is gone.
+- The smallest p-value against a matched random control is 0.03 before any correction for
+  eight formulas.
+
+**Answer:** these formulas carry no reliable cross-sectional signal on this cohort and window
+in return space either; the bracket label is not what removes an edge. Caveats: adjusted prices;
+cohort v2 is today's members, which if anything flatters momentum and illiquidity.
+Artifacts: `~/agentic-trader-research/pooled-label-diagnostic-20261007/` (`report.md`, script,
+tables).
