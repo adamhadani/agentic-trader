@@ -116,6 +116,37 @@ def test_the_v2_fields_validate_and_make_the_protocol_campaign_ready(tmp_path):
     assert {f.id: f.constant_windows for f in protocol.families} == {k: tuple(v) for k, v in V2_WINDOWS.items()}
 
 
+def test_search_mode_defaults_to_genetic_with_three_gates_and_rejects_unknown_modes(tmp_path):
+    protocol = load_campaign_protocol(PROTOCOL).protocol
+    assert protocol.search_mode == "genetic" and protocol.requires_search_power is True
+    assert [name for name, _ in protocol.gates] == ["power", "search_power", "null_check"]
+
+    def unknown(doc):
+        doc["search_mode"] = "random"
+
+    with pytest.raises(ValidationError, match="search_mode"):
+        load_campaign_protocol(_mutated(tmp_path, unknown))
+
+
+def test_a_genetic_protocol_needs_a_power_search_block_even_in_v1(tmp_path):
+    def mutate(doc):
+        del doc["power_search"]
+
+    with pytest.raises(ValidationError, match="genetic protocol needs power_search"):
+        load_campaign_protocol(_mutated(tmp_path, mutate))
+
+
+def test_a_genetic_protocol_without_the_check_b_seed_is_not_campaign_ready(tmp_path):
+    def mutate(doc):
+        _v2(doc)
+        del doc["power_search"]["seed"]
+
+    protocol = load_campaign_protocol(_mutated(tmp_path, mutate)).protocol
+    assert protocol.null_check is not None and protocol.power_search is not None
+    with pytest.raises(ValueError, match="checks B and C"):
+        protocol.require_campaign_ready()
+
+
 def test_the_formula_budget_splits_evenly_with_the_remainder_to_the_first_families():
     protocol = load_campaign_protocol(PROTOCOL).protocol
     budgets = protocol.family_budgets()

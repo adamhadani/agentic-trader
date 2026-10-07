@@ -83,7 +83,7 @@ def run_search_power(
     protocol: CampaignProtocol, cube: LabelCube, book: ScoreBook, *, progress: Callable[[str], None] | None = None
 ) -> dict:
     spec = protocol.power_search
-    if spec.seed is None:
+    if spec is None or spec.seed is None:
         raise ValueError("this protocol has no power_search.seed (campaign v1); check B needs protocol v2")
     view = cube.window(*protocol.windows.discovery)
     indexed = {family.id: (index, family) for index, family in enumerate(protocol.families)}

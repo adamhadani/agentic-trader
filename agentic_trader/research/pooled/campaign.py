@@ -23,7 +23,7 @@ import numpy as np
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.research.alpha.operators import OPERATOR_SPECS
-from agentic_trader.research.alpha.search import MUTATION_OPERATORS, WINDOWS
+from agentic_trader.research.alpha.search import MUTATION_OPERATORS, WINDOWS, canonical_expression
 from agentic_trader.research.pooled.cohort import UniverseSpec
 from agentic_trader.research.pooled.cube import BracketSpec, CoverageSpec, CubeSpec, CubeView, LabelCube
 from agentic_trader.research.pooled.formula import (
@@ -218,10 +218,24 @@ class Selection(BaseModel, frozen=True, extra="forbid"):
         return self
 
 
+SearchMode = Literal["genetic", "fixed_set"]
+
+
 class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
+    """A frozen pooled campaign protocol, pinned by the SHA-256 of its file.
+
+    ``search_mode`` (v4+; earlier files omit it and mean ``genetic``) decides how the formula
+    budget is spent. ``genetic`` mutates each family's seeds within its budget and needs
+    ``power_search`` (check B). ``fixed_set`` scores exactly the predeclared seeds, one formula
+    per seed with no mutation, so check B does not apply: it forbids ``power_search`` and
+    requires ``null_check`` (check C).
+    """
+
     id: Literal["pooled-campaign"]
     version: int = Field(ge=1)
     title: str
+    rationale: str | None = None
+    search_mode: SearchMode = "genetic"
     cohort: str
     cohort_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     feed: Literal["alpaca:sip"]
@@ -245,7 +259,7 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
     selection_gate: SelectionGate
     confirmation_gate: ConfirmationGate
     power: PowerSpec
-    power_search: PowerSearchSpec
+    power_search: PowerSearchSpec | None = None
     null_check: NullCheckSpec | None = None
 
     @model_validator(mode="after")
@@ -268,13 +282,34 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
             raise ValueError("min_positive_blocks cannot exceed blocks")
         if self.power.detection_delta not in self.power.deltas or 0.0 not in self.power.deltas:
             raise ValueError("power deltas must include 0 and the detection delta")
-        if set(self.power_search.families) - set(ids):
-            raise ValueError("power_search families must be declared families")
-        if self.power_search.min_recovered > self.power_search.seeds:
-            raise ValueError("min_recovered cannot exceed seeds")
+        if self.search_mode == "fixed_set":
+            self._fixed_set_consistent()
+        else:
+            if self.power_search is None:
+                raise ValueError("a genetic protocol needs power_search (check B)")
+            if set(self.power_search.families) - set(ids):
+                raise ValueError("power_search families must be declared families")
+            if self.power_search.min_recovered > self.power_search.seeds:
+                raise ValueError("min_recovered cannot exceed seeds")
         if not self.bars_from < self.windows.discovery[0] < self.windows.confirmation[1] < self.bars_through:
             raise ValueError("bars must span every window")
         return self
+
+    def _fixed_set_consistent(self) -> None:
+        if self.power_search is not None:
+            raise ValueError("a fixed_set protocol has no power_search: check B does not apply without search")
+        if self.null_check is None:
+            raise ValueError("a fixed_set protocol needs null_check (check C)")
+        for family in self.families:
+            if family.mutation_operators:
+                raise ValueError(f"family {family.id}: mutation_operators must be empty in fixed_set mode")
+            if family.windows is not None:
+                raise ValueError(f"family {family.id}: windows must be null in fixed_set mode")
+        seeds = self.seed_expressions
+        if len(set(seeds)) != len(seeds):
+            raise ValueError("fixed_set seeds must be unique across families (canonical expressions)")
+        if self.formula_budget != len(seeds):
+            raise ValueError("fixed_set formula_budget must equal the number of seeds")
 
     def cube_spec(self) -> CubeSpec:
         return CubeSpec(
@@ -301,13 +336,40 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
             return select_picks(scores, allowed, view, rule.k)
         raise ValueError(f"unusable selection rule: {rule}")
 
+    @property
+    def seed_expressions(self) -> tuple[str, ...]:
+        """Every family's seeds as canonical expressions (the search's ``seen`` form), in file order."""
+        return tuple(canonical_expression(seed) for family in self.families for seed in family.seeds)
+
+    @property
+    def requires_search_power(self) -> bool:
+        """Whether a campaign needs search-power check B: only a genetic search has one."""
+        return self.search_mode == "genetic"
+
+    @property
+    def gates(self) -> tuple[tuple[str, str], ...]:
+        """(gate name, the ``check`` its manifest must record), by search mode."""
+        if self.search_mode == "fixed_set":
+            return (("power", "power_a"), ("null_check", "null_check"))
+        return (("power", "power_a"), ("search_power", "search_power"), ("null_check", "null_check"))
+
     def family_budgets(self) -> dict[str, int]:
-        """The formula budget split evenly across families, the remainder to the first in file order."""
+        """Each family's share of the formula budget.
+
+        Genetic: split evenly across families, the remainder to the first in file order. Fixed
+        set: each family's seed count (the validators make these sum to ``formula_budget``), so
+        every predeclared seed is scored whatever the families' sizes.
+        """
+        if self.search_mode == "fixed_set":
+            return {family.id: len(family.seeds) for family in self.families}
         base, remainder = divmod(self.formula_budget, len(self.families))
         return {family.id: base + (1 if index < remainder else 0) for index, family in enumerate(self.families)}
 
     def require_campaign_ready(self) -> None:
-        if self.null_check is None or self.power_search.seed is None:
+        """Refuse a protocol that lacks a check its mode needs: C always, B's seed in genetic mode."""
+        if self.null_check is None or (
+            self.requires_search_power and (self.power_search is None or self.power_search.seed is None)
+        ):
             raise ValueError(
                 "this protocol predates checks B and C (campaign v1); a campaign needs protocol v2 or later"
             )
