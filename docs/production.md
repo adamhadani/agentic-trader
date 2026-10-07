@@ -1014,7 +1014,8 @@ historical fetch to pass verification. No schema change or alpha activation is n
 ### Sleep and wake
 
 **Market-hours awake agent.** `com.agentictrader.awake` runs `scripts/awake.sh` at load and
-hourly from 15:00 to 23:00 local time on weekdays (no `KeepAlive`). The script computes
+every 15 minutes from 15:00 to 23:45 local time on weekdays (no `KeepAlive`); the quarter-hour
+cadence keeps the minutes right after the 09:30 ET open covered whatever the local offset is. The script computes
 the window in `America/New_York`, never in local offsets, so US/local DST differences are
 absorbed: on a New York weekday between 09:15 and 16:30 it execs
 `/usr/bin/caffeinate -i -s -t <seconds until 16:30 ET>`, otherwise it exits silently.

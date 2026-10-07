@@ -125,10 +125,13 @@ EOF
 
 generate_awake_plist() {
     mkdir -p "$LAUNCH_AGENTS_DIR"
-    # Fire hourly 15:00-23:00 local on weekdays; awake.sh checks the New York window itself,
-    # which absorbs the DST drift between local time and America/New_York.
-    local intervals="" hour
+    # Fire every 15 minutes 15:00-23:45 local on weekdays; awake.sh checks the New York
+    # window itself (which absorbs the DST drift between local time and America/New_York)
+    # and exits at once outside it, so the quarter-hour cadence costs nothing and keeps the
+    # first minutes after the 09:30 ET open covered whatever the local offset is.
+    local intervals="" hour minute
     for hour in 15 16 17 18 19 20 21 22 23; do
+        for minute in 0 15 30 45; do
         intervals="$intervals        <dict>
             <key>Weekday</key>
             <array>
@@ -141,9 +144,10 @@ generate_awake_plist() {
             <key>Hour</key>
             <integer>$hour</integer>
             <key>Minute</key>
-            <integer>0</integer>
+            <integer>$minute</integer>
         </dict>
 "
+        done
     done
     cat <<EOF > "$TARGET_AWAKE_PLIST"
 <?xml version="1.0" encoding="UTF-8"?>
