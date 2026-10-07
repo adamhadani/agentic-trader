@@ -22,6 +22,22 @@ DAILY_PANEL_EVIDENCE_VERSION = "daily_panel_evidence_v1"
 MAX_DAILY_EVIDENCE_LIMIT = 1000
 
 
+_FIXED_REASONS = frozenset(
+    (
+        "registry_changed_during_capture",
+        "decision_expired_before_commit",
+        "decision_expired_before_read",
+        "invalid_or_expired_receipt",
+        "decision_candle_mismatch",
+        "missing_score_or_warmup",
+    )
+)
+_ERROR_TYPE_CATEGORIES = {
+    "SessionCoverageError": "missing_session_minutes",
+    "SessionAcquisitionError": "acquisition_failed",
+}
+
+
 def _distribution(values):
     return {
         "count": len(values),
@@ -47,20 +63,13 @@ def _candidate(definition, symbol, cursor, records, policy, generation, now, sin
             scores.append(score)
             directions[direction] += 1
         elif row["status"] == DecisionStatus.UNAVAILABLE:
-            # Provider exception messages may contain URLs or credentials. Expose stable categories only.
+            # Provider exception messages may contain URLs or credentials. Expose stable categories only:
+            # the six fixed reasons, else a fixed mapping of the exception type, else a generic bucket.
             reason = row.get("reason", "unknown")
             reasons[
                 reason
-                if reason
-                in (
-                    "registry_changed_during_capture",
-                    "decision_expired_before_commit",
-                    "decision_expired_before_read",
-                    "invalid_or_expired_receipt",
-                    "decision_candle_mismatch",
-                    "missing_score_or_warmup",
-                )
-                else "capture_error"
+                if reason in _FIXED_REASONS
+                else _ERROR_TYPE_CATEGORIES.get(row.get("error_type"), "capture_error")
             ] += 1
         if row.get("dataset_hash") and row.get("requested_at") and row.get("received_at"):
             closed, requested, received = (utc_timestamp(row[k]) for k in ("closed_at", "requested_at", "received_at"))
