@@ -4,10 +4,12 @@ set -euo pipefail
 PLIST_NAME="com.agentictrader.copilot"
 WATCHDOG_PLIST_NAME="com.agentictrader.watchdog"
 MINER_PLIST_NAME="com.agentictrader.alphaminer"
+AWAKE_PLIST_NAME="com.agentictrader.awake"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 TARGET_PLIST="$LAUNCH_AGENTS_DIR/$PLIST_NAME.plist"
 TARGET_WATCHDOG_PLIST="$LAUNCH_AGENTS_DIR/$WATCHDOG_PLIST_NAME.plist"
 TARGET_MINER_PLIST="$LAUNCH_AGENTS_DIR/$MINER_PLIST_NAME.plist"
+TARGET_AWAKE_PLIST="$LAUNCH_AGENTS_DIR/$AWAKE_PLIST_NAME.plist"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -121,6 +123,59 @@ EOF
     echo "Generated $TARGET_MINER_PLIST"
 }
 
+generate_awake_plist() {
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+    # Fire hourly 15:00-23:00 local on weekdays; awake.sh checks the New York window itself,
+    # which absorbs the DST drift between local time and America/New_York.
+    local intervals="" hour
+    for hour in 15 16 17 18 19 20 21 22 23; do
+        intervals="$intervals        <dict>
+            <key>Weekday</key>
+            <array>
+                <integer>1</integer>
+                <integer>2</integer>
+                <integer>3</integer>
+                <integer>4</integer>
+                <integer>5</integer>
+            </array>
+            <key>Hour</key>
+            <integer>$hour</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+"
+    done
+    cat <<EOF > "$TARGET_AWAKE_PLIST"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$AWAKE_PLIST_NAME</string>
+    <key>WorkingDirectory</key>
+    <string>$REPO_DIR</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>"$SCRIPT_DIR/awake.sh"</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartCalendarInterval</key>
+    <array>
+$intervals    </array>
+    <key>StandardOutPath</key>
+    <string>$DATA_DIR/awake.log</string>
+    <key>StandardErrorPath</key>
+    <string>$DATA_DIR/awake.err.log</string>
+</dict>
+</plist>
+EOF
+    echo "Generated $TARGET_AWAKE_PLIST"
+}
+
 run_watchdog_probe() {
     local now
     now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -190,6 +245,17 @@ case "${1:-status}" in
         rm -f "$TARGET_MINER_PLIST"
         echo "Scheduled alpha miner $MINER_PLIST_NAME unloaded and removed."
         ;;
+    install-awake)
+        generate_awake_plist
+        launchctl unload "$TARGET_AWAKE_PLIST" 2>/dev/null || true
+        launchctl load "$TARGET_AWAKE_PLIST"
+        echo "Market-hours awake agent $AWAKE_PLIST_NAME installed and loaded."
+        ;;
+    uninstall-awake)
+        launchctl unload "$TARGET_AWAKE_PLIST" 2>/dev/null || true
+        rm -f "$TARGET_AWAKE_PLIST"
+        echo "Market-hours awake agent $AWAKE_PLIST_NAME unloaded and removed."
+        ;;
     run-miner)
         echo "Triggering offline alpha mining run..."
         cd "$REPO_DIR" && if [ -f .envrc ]; then set -a; source .envrc; set +a; fi && "$UV_BIN" run copilot alpha mine --universe etf32 --feed alpaca --interval 1d --lookback 5y --iterations 9 --method genetic --max-seconds 120 --entry-policy gtc
@@ -215,6 +281,8 @@ case "${1:-status}" in
         launchctl list | grep "$WATCHDOG_PLIST_NAME" || echo "  Not currently registered in launchd."
         echo "Alpha Miner ($MINER_PLIST_NAME):"
         launchctl list | grep "$MINER_PLIST_NAME" || echo "  Not currently registered in launchd."
+        echo "Market-hours awake ($AWAKE_PLIST_NAME):"
+        launchctl list | grep "$AWAKE_PLIST_NAME" || echo "  Not currently registered in launchd."
         ;;
     health)
         echo "Running Copilot Healthcheck..."
@@ -233,7 +301,7 @@ case "${1:-status}" in
         tail -n 50 -f "$DATA_DIR/alphaminer.log"
         ;;
     *)
-        echo "Usage: $0 {install|uninstall|install-miner|uninstall-miner|run-miner|start|stop|restart|status|health|watchdog|logs|watchdog-logs|miner-logs}"
+        echo "Usage: $0 {install|uninstall|install-miner|uninstall-miner|install-awake|uninstall-awake|run-miner|start|stop|restart|status|health|watchdog|logs|watchdog-logs|miner-logs}"
         exit 1
         ;;
 esac

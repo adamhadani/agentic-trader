@@ -6,8 +6,8 @@ starting map; the linked domain guides own detailed contracts.
 
 ## Running system and safe workflow
 
-- The installed checkout owns one launchd **Alpaca paper** daemon and Telegram
-  poller. Inspect `git status` and launchd registration first; preserve existing work.
+- The installed checkout owns one launchd **Alpaca paper** daemon, Telegram
+  poller and a market-hours awake agent. Inspect `git status` and launchd registration first; preserve existing work.
 - `EXECUTION_MODE=alpaca`, `ALPACA_PAPER=true` is brokerage paper trading.
   `EXECUTION_MODE=paper` is the simulator. Do not confuse their data or credentials.
 - Use an isolated worktree for development, especially supervisor script changes:
