@@ -22,6 +22,7 @@ from agentic_trader.research.pooled.power import (
     tally_confirmed,
 )
 from agentic_trader.research.pooled.runner import CubeBuild
+from tests.research.pooled.mini_world import cube_build, label_cube, mini_fixed_set_protocol, mini_protocol
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -479,3 +480,33 @@ def test_breadth_counts_eligible_names_per_session_and_cells_by_source():
         "liquidity_screen": 2,
     }
     assert (report["symbols_ever_eligible"], report["cohort_symbols"]) == (3, 3)
+
+
+def test_check_a_runs_unchanged_on_a_fixed_set_protocol_and_records_no_search_power(tmp_path):
+    tiny = tiny_protocol().power
+    path = tmp_path / "campaign-fixed.json"
+    path.write_text(mini_fixed_set_protocol(power=tiny).model_dump_json())
+    loaded = load_campaign_protocol(path)  # a real file hash, as a v4 run's artifacts carry
+    assert loaded.protocol.search_mode == "fixed_set" and loaded.protocol.power_search is None
+    cube = label_cube()
+    cohort = SimpleNamespace(sha256=COHORT, cohort=SimpleNamespace(source_of=lambda symbol: ("config_groups",)))
+
+    async def build():
+        return cube_build(cube)
+
+    result = asyncio.run(execute_power_check(loaded, tmp_path / "out", cohort=cohort, build=build, environment={}))
+    assert result["status"] == "passed"
+    assert result["campaign_protocol_sha256"] == loaded.sha256 and result["cube_sha256"] == cube.sha256
+    out = tmp_path / "out"
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["check"] == "power_a" and manifest["campaign_protocol_sha256"] == loaded.sha256
+    dumped = json.loads((out / "protocol.json").read_text())
+    assert dumped["sha256"] == loaded.sha256 and dumped["search_mode"] == "fixed_set"
+    assert dumped["power_search"] is None
+    for name in ("manifest.json", "result.json"):
+        text = (out / name).read_text()
+        assert "power_search" not in text and "search_power" not in text
+    # Check A reads no family information: the genetic mini protocol gives the same curve on the same cube.
+    genetic = mini_protocol(power=tiny)
+    same = run_power(genetic, cube.window(*genetic.windows.discovery), cube.sessions, cohort_sha256=COHORT)
+    assert result["curve"] == same["curve"] and result["replicates_detail"] == same["replicates_detail"]

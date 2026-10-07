@@ -30,6 +30,7 @@ from tests.research.pooled.mini_world import (
     book as mini_book,
     cube_build,
     label_cube,
+    mini_fixed_set_protocol,
     mini_protocol,
     mini_v3_protocol,
     planted_cube,
@@ -52,11 +53,22 @@ async def repository(temp_db):
 
 
 async def run(
-    tmp_path, repository, cube, *, out="out", gates_cube=None, revision="abc1234", protocol=None, entries=LITERATURE
+    tmp_path,
+    repository,
+    cube,
+    *,
+    out="out",
+    gates_cube=None,
+    revision="abc1234",
+    protocol=None,
+    entries=LITERATURE,
+    gate_names=None,
 ):
+    """``gate_names`` defaults to the gates the protocol's mode requires."""
     loaded = LoadedProtocol(protocol=protocol or mini_protocol(), sha256="p" * 64, path=Path("campaign.json"))
     sha = gates_cube or cube.sha256
-    gates = {name: {"status": "passed", "cube_sha256": sha} for name in ("power", "search_power", "null_check")}
+    names = gate_names if gate_names is not None else [name for name, _ in loaded.protocol.gates]
+    gates = {name: {"status": "passed", "cube_sha256": sha} for name in names}
 
     async def build():
         return cube_build(cube)
@@ -115,6 +127,7 @@ async def test_the_campaign_reserves_charges_freezes_consumes_and_completes(tmp_
     assert sum(line["status"] in ("evaluated", "error") for line in lines) == 9
     on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
     assert on_disk["status"] == "confirmed" and on_disk["authorizes_promotion"] is False
+    assert sum(family["mutations"] for family in on_disk["families"]) > 0  # a genetic search mutates its seeds
 
 
 async def test_a_finalist_no_literature_entry_overlaps_is_probe_eligible(tmp_path, repository):
@@ -184,10 +197,42 @@ async def test_a_crash_mid_family_keeps_its_charges_and_a_rerun_resumes_without_
     assert third["confirmation_consumed"] is True
 
 
-async def test_the_campaign_refuses_a_cube_the_gates_did_not_run_on(tmp_path, repository):
-    result = await run(tmp_path, repository, planted_cube(PLANTED, 1.0), gates_cube="x" * 64)
-    assert result["status"] == "failed" and "not the cube checks A, B and C ran on" in result["error"]
+@pytest.mark.parametrize(
+    ("protocol", "checks"), [(mini_protocol(), "checks A, B and C"), (mini_fixed_set_protocol(), "checks A and C")]
+)
+async def test_the_campaign_refuses_a_cube_the_gates_did_not_run_on(tmp_path, repository, protocol, checks):
+    result = await run(tmp_path, repository, planted_cube(PLANTED, 1.0), gates_cube="x" * 64, protocol=protocol)
+    assert result["status"] == "failed" and f"not the cube {checks} ran on" in result["error"]
     assert (await repository.get("pooled/ledger"))["formulas_charged"] == 0
+
+
+async def test_a_fixed_set_campaign_runs_on_checks_a_and_c_and_scores_only_its_seeds(tmp_path, repository):
+    protocol = mini_fixed_set_protocol()
+    result = await run(tmp_path, repository, planted_cube(PLANTED, 1.0), protocol=protocol)
+    assert result["status"] == "confirmed" and formula_id(PLANTED) in result["confirmed"]
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert set(manifest["gates"]) == {"power", "null_check"}
+    assert await repository.get("pooled/ledger") == {"formulas_charged": 4, "campaigns": 1, "confirmations": 1}
+    lines = [json.loads(line) for line in (tmp_path / "out" / "formulas.jsonl").read_text().splitlines()]
+    assert [line["expression"] for line in lines] == list(protocol.seed_expressions)
+    on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
+    assert [family["mutations"] for family in on_disk["families"]] == [0, 0, 0]
+
+
+@pytest.mark.parametrize(
+    ("protocol", "names", "message"),
+    [
+        (mini_fixed_set_protocol(), ("power", "search_power", "null_check"), "checks A and C must all be given"),
+        (mini_fixed_set_protocol(), ("power",), "checks A and C must all be given"),
+        (mini_protocol(), ("power", "null_check"), "checks A, B and C must all be given"),
+    ],
+)
+async def test_the_gate_set_follows_the_protocol_mode_fixed_set_or_genetic(
+    tmp_path, repository, protocol, names, message
+):
+    result = await run(tmp_path, repository, planted_cube(PLANTED, 1.0), protocol=protocol, gate_names=names)
+    assert result["status"] == "failed" and message in result["error"]
+    assert await repository.get("pooled/ledger") is None
 
 
 async def test_a_dirty_revision_or_a_v1_protocol_is_refused_before_anything_is_reserved(tmp_path, repository):

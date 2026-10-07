@@ -289,10 +289,13 @@ def test_screen_reads_raw_daily_bars_through_the_batched_provider(tmp_path, monk
 
 
 PROTOCOL_V2 = str(REPO_ROOT / "config/research/pooled/campaign-v2.json")
+PROTOCOL_V3 = str(REPO_ROOT / "config/research/pooled/campaign-v3.json")
+PROTOCOL_V4 = str(REPO_ROOT / "config/research/pooled/campaign-v4.json")  # fixed_set: checks A and C only
 
 
-def _gates(tmp_path, revision="abc1234", **revisions) -> list[Path]:
-    loaded = load_campaign_protocol(Path(PROTOCOL_V2))
+def _gates(tmp_path, revision="abc1234", *, protocol=PROTOCOL_V2, **revisions) -> list[Path]:
+    """Passed power, search-power and null-check directories for ``protocol``, in that order."""
+    loaded = load_campaign_protocol(Path(protocol))
     dirs = []
     for name, check in (("power", "power_a"), ("search", "search_power"), ("null", "null_check")):
         directory = tmp_path / name
@@ -313,15 +316,14 @@ def _gates(tmp_path, revision="abc1234", **revisions) -> list[Path]:
 SCOPE = "production/alpaca:paper"
 
 
-def _campaign(tmp_path, dirs, *extra, scope=SCOPE):
+def _campaign(tmp_path, dirs, *extra, scope=SCOPE, protocol=PROTOCOL_V2, search_power=True):
     power, search, null = dirs
     return _invoke(
         "campaign",
-        PROTOCOL_V2,
+        protocol,
         "--power",
         str(power),
-        "--search-power",
-        str(search),
+        *(("--search-power", str(search)) if search_power else ()),
         "--null-check",
         str(null),
         "--output",
@@ -448,6 +450,92 @@ def test_campaign_hands_the_checked_gates_and_the_literature_entries_to_the_exec
     assert set(seen["gates"]) == {"power", "search_power", "null_check"}
     assert seen["repository"] is journal
     assert [entry.entry.id for entry in seen["entries"]] == ["high52", "reversal-lowmax"]
+
+
+def _recording_campaign(monkeypatch) -> dict:
+    seen = {}
+
+    async def fake_execute(loaded, output, **kwargs):
+        seen.update(kwargs, protocol_sha256=loaded.sha256)
+        return {"status": "none_confirmed"}
+
+    monkeypatch.setattr(alpha_cli, "execute_campaign", fake_execute)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    return seen
+
+
+def _forbid_campaign(monkeypatch):
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("the campaign must not run")
+
+    monkeypatch.setattr(alpha_cli, "execute_campaign", forbidden)
+    monkeypatch.setattr(alpha_cli, "execute_campaign_recovery", forbidden)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+
+
+def test_campaign_with_a_fixed_set_protocol_takes_two_gates(tmp_path, monkeypatch):
+    journal = _journal(monkeypatch)
+    _campaign_clients(monkeypatch)
+    _clean_tree(monkeypatch)
+    seen = _recording_campaign(monkeypatch)
+    dirs = _gates(tmp_path, protocol=PROTOCOL_V4)
+    result = _campaign(tmp_path, dirs, protocol=PROTOCOL_V4, search_power=False)
+    assert result.exit_code == 0, result.output
+    assert set(seen["gates"]) == {"power", "null_check"}
+    assert seen["protocol_sha256"] == load_campaign_protocol(Path(PROTOCOL_V4)).sha256
+    assert seen["repository"] is journal
+    # Each gate is checked against its own manifest: a swapped directory is refused.
+    (tmp_path / "again").mkdir()
+    power, search, null = _gates(tmp_path / "again", protocol=PROTOCOL_V4)
+    swapped = _campaign(tmp_path, (null, search, power), protocol=PROTOCOL_V4, search_power=False)
+    assert swapped.exit_code != 0 and "holds a 'null_check' result, not 'power_a'" in swapped.output
+
+
+def test_campaign_refuses_search_power_for_a_fixed_set_protocol(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    _forbid_campaign(monkeypatch)
+    _clean_tree(monkeypatch)
+    result = _campaign(tmp_path, _gates(tmp_path, protocol=PROTOCOL_V4), protocol=PROTOCOL_V4)
+    assert result.exit_code == 1
+    assert "fixed_set protocols take no search-power check (check B does not apply)" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("protocol", [PROTOCOL_V2, PROTOCOL_V3])
+def test_campaign_requires_search_power_for_a_genetic_protocol(tmp_path, monkeypatch, protocol):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    _forbid_campaign(monkeypatch)
+    _clean_tree(monkeypatch)
+    result = _campaign(tmp_path, _gates(tmp_path, protocol=protocol), protocol=protocol, search_power=False)
+    assert result.exit_code == 1
+    assert "genetic protocols require --search-power (check B)" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_search_power_refuses_a_fixed_set_protocol_before_any_cube_read(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("no cube may be read or built")
+
+    monkeypatch.setattr(alpha_cli, "build_cube_inputs", forbidden)
+    monkeypatch.setattr(alpha_cli, "execute_search_power", forbidden)
+    power, _, _ = _gates(tmp_path, protocol=PROTOCOL_V4)
+    result = _invoke(
+        "search-power",
+        PROTOCOL_V4,
+        "--power",
+        str(power),
+        "--output",
+        str(tmp_path / "out"),
+        "--cache",
+        str(tmp_path / "c"),
+    )
+    assert result.exit_code == 1
+    assert "check B does not apply to a fixed_set protocol" in result.output
+    assert not (tmp_path / "out").exists()
 
 
 def test_campaign_requires_the_journal_scope(tmp_path, monkeypatch):

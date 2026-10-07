@@ -35,6 +35,12 @@ false acceptance 0.00), not with `alpha apriori-study`.
 | `high52` | 1 | Names nearest their 52-week high keep outperforming (George & Hwang, 2004) | failed (2026-09-30): +0.162R per trade, paired edge +0.012R (ci90 [-0.011, +0.036]); fails P2 and P3; [result](alpha-pooled-literature-2026-09-30.md) |
 | `reversal-lowmax` | 1 | One-month losers outperform among low-MAX names (Jegadeesh, 1990; Bali, Cakici & Whitelaw, 2011) | failed (2026-09-30): +0.153R per trade, paired edge +0.008R (ci90 [-0.016, +0.032]); fails P2 and P3; [result](alpha-pooled-literature-2026-09-30.md) |
 
+Pooled campaign v4 tests a related variant of the reversal hypothesis as decile baskets
+(the one-week reversal alone and after high volume) and leaves nearness-to-high out after a
+label-blind probe showed the 126-session high overlapping `high52` at pick Jaccard 0.76; a
+v4 finalist whose picks still overlap either entry is not probe-eligible; see
+[fixed-set mode](alpha-pooled-mining.md#fixed-set-mode-campaign-v4).
+
 ## Part 2: live paper probe
 
 A passing leg runs only as a catalog paper probe — never automatically, never active

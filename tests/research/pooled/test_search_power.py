@@ -12,7 +12,15 @@ from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled import search_power
 from agentic_trader.research.pooled.campaign import LoadedProtocol, _calls
 from agentic_trader.research.pooled.search_power import execute_search_power, hidden_expression, run_search_power
-from tests.research.pooled.mini_world import COHORT, book, cube_build, label_cube, mini_protocol, mini_v3_protocol
+from tests.research.pooled.mini_world import (
+    COHORT,
+    book,
+    cube_build,
+    label_cube,
+    mini_fixed_set_protocol,
+    mini_protocol,
+    mini_v3_protocol,
+)
 
 
 def exact_seed(family, *, protocol, rng, book, view):
@@ -88,6 +96,28 @@ def _power(cube_sha256, **override):
         "cube_sha256": cube_sha256,
         **override,
     }
+
+
+def test_check_b_refuses_a_fixed_set_protocol_before_building_or_writing_anything(tmp_path):
+    message = "check B does not apply to a fixed_set protocol"
+    with pytest.raises(ValueError, match=message):
+        run_search_power(mini_fixed_set_protocol(), None, None)  # neither cube nor book is touched
+
+    async def build():
+        raise AssertionError("no cube may be built for a fixed_set protocol")
+
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(
+            execute_search_power(
+                _loaded(mini_fixed_set_protocol()),
+                tmp_path / "out",
+                cohort=SimpleNamespace(sha256=COHORT),
+                build=build,
+                power_result=_power("k" * 64),
+                environment={},
+            )
+        )
+    assert not (tmp_path / "out").exists()
 
 
 def test_execute_search_power_writes_its_manifest_first_and_binds_the_cube(tmp_path, monkeypatch):

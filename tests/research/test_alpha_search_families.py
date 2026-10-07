@@ -1,6 +1,8 @@
 import ast
 import hashlib
 
+import pytest
+
 from agentic_trader.research.alpha import search as search_module
 from agentic_trader.research.alpha.dsl import AlphaDSLSyntaxError
 from agentic_trader.research.alpha.search import WINDOWS, TypedGeneticSearch
@@ -66,3 +68,17 @@ def test_the_mutation_fallback_returns_a_family_seed_never_a_global_one(monkeypa
     monkeypatch.setattr(search_module, "canonical_expression", refuse)
     for _ in range(20):
         assert search.mutate("close / ts_max(high, 252)") in FAMILY_SEEDS
+
+
+def test_a_search_without_operators_proposes_its_seeds_then_stops():
+    search = TypedGeneticSearch(seed=1, seeds=("-1.0 * roc(close, 5)",), operators=())
+    assert search.ask() == "-1.0 * roc(close, 5)"
+    with pytest.raises(ValueError, match="no mutation operators"):
+        search.ask()
+    assert search.mutation_count == 0
+
+
+def test_mutating_without_operators_raises_instead_of_choosing_from_nothing():
+    search = TypedGeneticSearch(seed=1, seeds=("returns",), operators=())
+    with pytest.raises(ValueError, match="no mutation operators"):
+        search.mutate("returns")  # no integer window to vary, so only an operator could mutate it

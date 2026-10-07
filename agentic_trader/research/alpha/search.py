@@ -149,6 +149,8 @@ class TypedGeneticSearch:
                 self.rng.choice(windows).value = self.rng.choice(self.constant_windows)
                 proposed = ast.unparse(tree)
             else:
+                if not self.operators:  # never rng.choice(()): a family without operators cannot wrap
+                    raise ValueError("no mutation operators")
                 op = self.rng.choice(self.operators)
                 proposed = f"{op}({expression},{self.rng.choice(self.wrapper_windows)})"
             try:
@@ -165,6 +167,10 @@ class TypedGeneticSearch:
             if proposed not in self.seen:
                 self.seen.add(proposed)
                 return proposed
+        # Without operators the search has nothing beyond its seeds: window-only edits and
+        # crossover are not a declared grammar to search, so the family is exhausted here.
+        if not self.operators:
+            raise ValueError("no mutation operators")
         for _ in range(100):
             parents = sorted(self.archive) or list(self.seeds)
             if len(parents) > 1 and self.rng.random() < 0.5:

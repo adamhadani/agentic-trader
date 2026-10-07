@@ -1,8 +1,15 @@
 # tests/research/pooled/test_genetic.py
 import pytest
 
+from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled import genetic
-from agentic_trader.research.pooled.campaign import CampaignWindows, DiscoveryEvaluator, Family, InMemoryLedger
+from agentic_trader.research.pooled.campaign import (
+    CampaignProtocol,
+    CampaignWindows,
+    DiscoveryEvaluator,
+    Family,
+    InMemoryLedger,
+)
 from agentic_trader.research.pooled.genetic import family_search, run_search_stages, search_campaign
 from agentic_trader.research.pooled.scoring import formula_id
 from tests.research.pooled.mini_world import (
@@ -12,6 +19,7 @@ from tests.research.pooled.mini_world import (
     RecordingCharger,
     book,
     label_cube,
+    mini_fixed_set_protocol,
     mini_protocol,
     planted_cube,
 )
@@ -166,3 +174,58 @@ def test_each_family_progress_line_reports_its_evaluation_errors(monkeypatch):
     search_campaign(protocol, discovery_view(protocol), book(), RecordingCharger(), progress=lines.append)
     assert [line.split(":")[0] for line in lines] == [f"family {f.id}" for f in protocol.families]
     assert "0 errors" in lines[0] and "1 errors" in lines[2]
+
+
+def test_fixed_set_family_scores_only_its_seeds_and_never_mutates():
+    protocol = mini_protocol(
+        search_mode="fixed_set",
+        power_search=None,
+        families=(
+            Family(id="a", rationale="a", seeds=("-1.0 * roc(close, 5)",), mutation_operators=()),
+            Family(id="b", rationale="b", seeds=("volume / ts_mean(volume, 20)",), mutation_operators=()),
+        ),
+        formula_budget=2,
+    )
+    CampaignProtocol.model_validate(protocol.model_dump())  # model_copy skips validators: a valid fixed set
+    outcome = search_campaign(protocol, discovery_view(protocol), book(), RecordingCharger())
+    charged = [r for r in outcome.records if r["status"] in ("evaluated", "error")]
+    assert [r["expression"] for r in charged] == list(protocol.seed_expressions)
+    assert all(run.stopped_short is None for run in outcome.runs)
+    assert all(run.mutation_count == 0 for run in outcome.runs)
+
+
+def test_genetic_family_without_operators_stops_cleanly():
+    protocol = mini_protocol(
+        families=(Family(id="a", rationale="a", seeds=("-1.0 * roc(close, 5)",), mutation_operators=()),),
+        formula_budget=3,
+    )
+    outcome = search_campaign(protocol, discovery_view(protocol), book(), RecordingCharger())
+    [family] = outcome.runs
+    assert family.charged == 1
+    assert family.stopped_short == "search exhausted: no mutation operators"
+
+
+def test_a_rejected_seed_stops_a_fixed_set_family_short_without_mutating(monkeypatch):
+    def mutate(self, expression):
+        raise AssertionError("a fixed-set family never mutates")
+
+    monkeypatch.setattr(genetic.TypedGeneticSearch, "mutate", mutate)
+    protocol = mini_fixed_set_protocol()
+    family = protocol.families[0]  # reversal: two seeds, so a budget of two
+    first, second = (canonical_expression(seed) for seed in family.seeds)
+    charger = RecordingCharger()
+    run = family_search(
+        family,
+        0,
+        protocol.family_budgets()[family.id],
+        protocol=protocol,
+        evaluator=DiscoveryEvaluator(discovery_view(protocol), protocol),
+        book=book(),
+        charger=charger,
+        seen={first},  # already proposed in this campaign: the first seed is rejected as a duplicate
+    )
+    assert [(r["expression"], r["status"]) for r in run.records] == [(first, "rejected"), (second, "evaluated")]
+    assert run.rejected == {"duplicate": 1} and (run.budget, run.charged) == (2, 1)
+    assert run.stopped_short == "search exhausted: no mutation operators"  # the shortfall is reported, not filled
+    assert run.mutation_count == 0 and run.summary()["mutations"] == 0
+    assert [expression for _, expression, _ in charger.charged] == [second]
