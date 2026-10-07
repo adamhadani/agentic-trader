@@ -307,7 +307,7 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
                 raise ValueError(f"family {family.id}: windows must be null in fixed_set mode")
         seeds = self.seed_expressions
         if len(set(seeds)) != len(seeds):
-            raise ValueError("fixed_set seeds must be unique across families (canonical expressions)")
+            raise ValueError("fixed_set seeds must be unique within and across families (canonical expressions)")
         if self.formula_budget != len(seeds):
             raise ValueError("fixed_set formula_budget must equal the number of seeds")
 

@@ -804,8 +804,12 @@ and C pass.
 - At least one confirmed, probe-eligible formula: write the pooled Part 2 probe spec
   (cross-sectional daily ranking, one card per session under the probe budget and kill
   rule).
-- None confirmed: the fixed-set lane is closed on this window. No further formulas are
-  tried against it, and the next alpha source is decided with the operator.
+- At least one confirmed formula but none probe-eligible (every confirmed formula's picks
+  overlap a literature entry at Jaccard ≥ 0.5): the result is recorded against that
+  literature entry, no probe follows, and the lane is closed on this window.
+- None confirmed: the fixed-set lane is closed on this window.
+- In both closed cases no further formulas are tried against this window, and the next
+  alpha source is decided with the operator.
 
 The checks and the campaign outcome are written up in `alpha-pooled-checks-v4-<date>.md`.
 
@@ -853,7 +857,8 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --nu
   `bar_failures` and `static_used` as stored in that coverage, and `picks.csv.gz`.
 - **Gate binding.** `campaign` refuses to start unless every check its protocol's mode
   requires (A, B and C for a genetic protocol; A and C for a fixed set) passed for this
-  cohort, protocol and one cube, at the same clean code revision as the running command. A dirty or unknown revision is refused, and so is any uncommitted or untracked
+  cohort, protocol and one cube, at the same clean code revision as the running command.
+  A dirty or unknown revision is refused, and so is any uncommitted or untracked
   file under `agentic_trader`, `config` or `tests` (`git status --porcelain`; `git describe
   --dirty` misses untracked files). The executor also refuses, before reserving anything,
   non-passed gates, gates without a cube, gates on different cubes, a cohort mismatch and a

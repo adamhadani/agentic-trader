@@ -190,8 +190,9 @@ formula across a frozen cohort on a hash-identified long-bracket label cube, tes
 session-paired edge with a session-block bootstrap. Cohort v2 (`config/research/pooled/cohort-v2.json`)
 comes from a frozen liquidity screen (`screen-v2.json`, ranked before the confirmation
 window); `campaign-v2.json` pins it. The campaign runs once per protocol and only after
-power check A, search check B and the real-formula false-acceptance check C passed on the
-same cohort, cube, protocol and clean code revision. It charges every formula to the
+every check its protocol's mode requires (power check A, search check B and the
+real-formula false-acceptance check C for a genetic protocol; A and C for a fixed set)
+passed on the same cohort, cube, protocol and clean code revision. It charges every formula to the
 pooled ledger (journal events, never `family/all`) before scoring it and consumes the
 lane-wide confirmation window before reading it. Research only: no registry, broker,
 Telegram or promotion credit. On 2026-10-02 checks A and C passed but check B failed

@@ -51,7 +51,7 @@ The eight directions are long-only by construction of the lane (long bracket lab
 1. Build, test and merge the code; deploy with the usual controlled restart (the research CLI runs from the installed checkout environment).
 2. Run on the cached cohort-v2 cube at the clean merged revision, outside the 10:35/14:35 ET scan windows, with a thermal watch as before: check A (`alpha pooled power campaign-v4.json`, about 2 h 10 min on 6 workers), then check C (`alpha pooled null-check`, about 30 min). Both must pass on the same cube SHA and revision.
 3. Report A and C to the operator. **Only with explicit approval** run `alpha pooled campaign` with `--power` and `--null-check` (no `--search-power`), journal scope `production/alpaca:paper`.
-4. Decision: at least one confirmed, probe-eligible formula → write the pooled Part 2 probe spec (cross-sectional daily ranking, one card per session under the probe budget and kill rule). Zero confirmed → the fixed-set lane is closed on this window; no further formulas are tried against it, and the next alpha source is decided with the operator.
+4. Decision: at least one confirmed, probe-eligible formula → write the pooled Part 2 probe spec (cross-sectional daily ranking, one card per session under the probe budget and kill rule). At least one confirmed formula but none probe-eligible (every confirmed formula's picks overlap a literature entry at Jaccard ≥ 0.5) → the result is recorded against that literature entry, no probe follows, and the lane is closed on this window. Zero confirmed → the fixed-set lane is closed on this window. In both closed cases no further formulas are tried against this window, and the next alpha source is decided with the operator.
 
 ## Interfaces
 
@@ -82,7 +82,7 @@ The eight directions are long-only by construction of the lane (long bracket lab
 
 Recorded during the build; where they differ from the sections above, the built code and these notes govern.
 
-- **Decision 2 and Interfaces, no-operator stop.** `TypedGeneticSearch.ask` (and `mutate`) raise `ValueError("no mutation operators")` when a family has no operators; `family_search` catches it as it catches any exhausted grammar, so the family stops with `stopped_short="search exhausted: no mutation operators"`, not the literal `"no_operators"`, and `mutate` does not return `None`.
+- **Decision 2 and Interfaces, no-operator stop.** `TypedGeneticSearch.ask` raises `ValueError("no mutation operators")` once a no-operator family's seeds are exhausted, and `mutate` raises the same only on its operator-wrapping branch (a window-only edit can still be returned, but `ask` never reaches `mutate` without operators); `family_search` catches it as it catches any exhausted grammar, so the family stops with `stopped_short="search exhausted: no mutation operators"`, not the literal `"no_operators"`, and `mutate` does not return `None`.
 - **Interfaces, gates.** `execute_campaign` and `_run_campaign` keep taking the checked `gates` mapping; there is no `search_power_dir` parameter. The CLI builds the mapping from `protocol.gates`, and `--search-power` is optional: required for a genetic protocol and refused for a fixed-set protocol.
 - **Additive artifact key.** Each family summary in the campaign result carries `mutations` (the search's successful mutations; 0 for a fixed-set run).
 - **Protocol fields.** Protocols have a top-level optional `rationale` field (v4 carries one). In fixed-set mode `family_budgets` returns each family's seed count, so every seed is scored whatever the families' sizes.

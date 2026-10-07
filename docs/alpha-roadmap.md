@@ -502,12 +502,13 @@ type-only import of a module that no longer exists; L2 removed it.
 ## Alpha-discovery sprint (October 7)
 
 **State on 2026-10-07.** Suggestion cards flow at about two per session but have no
-demonstrated edge: the runners-up average −0.40R and the ranker does worse than random.
-There are zero active alphas. The shadow forward lane has never scored, because its strict
+demonstrated edge: over the 30 days to 2026-10-07, `copilot cards outcomes --days 30`
+showed the 22 mature runners-up averaging −0.40R after costs and `setup_quality` picking
+worse than a random pick. There are zero active alphas. The shadow forward lane has never scored, because its strict
 minute-coverage rule meets IEX's gaps, and the host slept during market hours.
 
 **W0 — forward evidence and an awake host
-([PR #108](https://github.com/adamhadani/agentic-trader/pull/108)).** Forward evidence
+([PR #108](https://github.com/adamhadani/agentic-trader/pull/108), open).** Forward evidence
 reports real failure categories, so a lane that does not score says why. A market-hours
 launch agent keeps the host awake while the market is open.
 
@@ -519,8 +520,10 @@ A and C gate it and check B does not apply
 operator approval after A and C pass, because it consumes the lane's one-use confirmation
 window (2024-01-02 to 2026-07-31) once selection freezes a candidate. Pre-registered
 decision: at least one confirmed, probe-eligible formula leads to a pooled Part 2 probe
-spec; zero closes the fixed-set lane on this window, and the next alpha source is decided
-with the operator.
+spec; a confirmed formula that is not probe-eligible (its picks overlap a literature entry)
+is recorded against that entry and no probe follows; zero confirmed formulas, or none
+probe-eligible, closes the fixed-set lane on this window, and the next alpha source is
+decided with the operator.
 
 **Deferred.** A sparse-layout contract for the IEX forward lane, so sessions with IEX's
 minute gaps can be scored instead of failing the strict coverage rule, needs its own spec.
