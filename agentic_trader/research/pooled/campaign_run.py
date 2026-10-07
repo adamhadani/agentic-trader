@@ -1,7 +1,9 @@
 """The budgeted pooled campaign, run once per protocol against the journal ledger.
 
-**Gate.** It refuses to start unless checks A, B and C all passed for this cohort and
-protocol, on one cube, at the clean code revision that is running.
+**Gate.** It refuses to start unless every check its protocol's mode requires
+(``CampaignProtocol.gates``: A, B and C for a genetic search; A and C for a fixed set, which
+has no search for check B to certify) passed for this cohort and protocol, on one cube, at
+the clean code revision that is running.
 
 **Sequence.**
 
@@ -78,7 +80,6 @@ from agentic_trader.storage.artifacts import save_json_report
 
 
 __all__ = [
-    "GATES",
     "LITERATURE_ENTRIES",
     "already_tested",
     "campaign_id_for",
@@ -93,8 +94,6 @@ __all__ = [
 ]
 
 LITERATURE_ENTRIES = ("config/research/pooled/high52-v1.json", "config/research/pooled/reversal-lowmax-v1.json")
-# (gate name, the ``check`` its manifest must record)
-GATES = (("power", "power_a"), ("search_power", "search_power"), ("null_check", "null_check"))
 OUTCOME_KEYS = ("status", "carried", "selection", "frozen", "confirmation", "confirmed")
 
 
@@ -114,6 +113,11 @@ def journal_identity(repository) -> dict:
     """The journal a campaign writes to: its scope, dialect and database name (never credentials)."""
     engine = repository.store.db.engine
     return {"scope": repository.store.scope, "dialect": engine.dialect.name, "database": engine.url.database}
+
+
+def _checks(protocol: CampaignProtocol) -> str:
+    """The checks ``protocol.gates`` holds, as messages name them."""
+    return "checks A, B and C" if protocol.requires_search_power else "checks A and C"
 
 
 def _named(expression: str) -> str:
@@ -454,8 +458,9 @@ async def _run_campaign(
     revision = require_clean_revision(environment)
     if cohort.sha256 != protocol.cohort_sha256:
         raise ValueError("cohort file does not match the protocol's cohort_sha256")
-    if set(gates) != {name for name, _ in GATES}:
-        raise ValueError("checks A, B and C must all be given")
+    checks = _checks(protocol)
+    if set(gates) != {name for name, _ in protocol.gates}:
+        raise ValueError(f"{checks} must all be given")
     for name, gate in gates.items():
         if gate.get("status") != "passed":
             raise ValueError(f"check {name} has not passed (status {gate.get('status')!r})")
@@ -463,7 +468,7 @@ async def _run_campaign(
             raise ValueError(f"check {name} records no cube")
     cubes = {gate.get("cube_sha256") for gate in gates.values()}
     if len(cubes) != 1:
-        raise ValueError("checks A, B and C did not all run on one cube")
+        raise ValueError(f"{checks} did not all run on one cube")
     (cube_sha256,) = cubes
     await repository.reserve_pooled_campaign(
         campaign_id,
@@ -480,7 +485,7 @@ async def _run_campaign(
     built = await build()
     check_coverage(built.cube, protocol.coverage)
     if built.cube.sha256 != cube_sha256:
-        raise ValueError("the cached cube is not the cube checks A, B and C ran on")
+        raise ValueError(f"the cached cube is not the cube {checks} ran on")
     book = ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)
     # The preflight and the overlap read discovery straight from the cube, so the windows'
     # opened trail stays discovery, selection, confirmation.

@@ -87,7 +87,6 @@ from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
 from agentic_trader.research.pooled.campaign import load_campaign_protocol
 from agentic_trader.research.pooled.campaign_run import (
-    GATES,
     LITERATURE_ENTRIES,
     check_gate,
     execute_campaign,
@@ -101,7 +100,7 @@ from agentic_trader.research.pooled.null_check import execute_null_check
 from agentic_trader.research.pooled.power import execute_power_check
 from agentic_trader.research.pooled.runner import build_cube_inputs
 from agentic_trader.research.pooled.screen import config_group_symbols, execute_screen, load_screen_rule
-from agentic_trader.research.pooled.search_power import execute_search_power
+from agentic_trader.research.pooled.search_power import execute_search_power, require_search
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
@@ -1522,6 +1521,10 @@ async def alpha_pooled_search_power_cmd(protocol_path, power_dir, output, cache)
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded, cohort = await _pooled_protocol(protocol_path)
+    try:
+        require_search(loaded.protocol)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     power_result = _passed_power(power_dir, loaded, cohort)
     environment = await asyncio.to_thread(research_environment)
     with _apriori_clients() as clients:
@@ -1610,7 +1613,12 @@ def _require_journal(repository, scope: str) -> None:
 @alpha_pooled_group.command("campaign")
 @click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--power", "power_dir", type=click.Path(exists=True, path_type=Path), required=True)
-@click.option("--search-power", "search_dir", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option(
+    "--search-power",
+    "search_dir",
+    type=click.Path(exists=True, path_type=Path),
+    help="Check B's directory: required for a genetic protocol, refused for a fixed_set protocol.",
+)
 @click.option("--null-check", "null_dir", type=click.Path(exists=True, path_type=Path), required=True)
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
 @click.option("--cache", type=click.Path(path_type=Path), required=True, help=_POOLED_CACHE_HELP)
@@ -1634,6 +1642,11 @@ async def alpha_pooled_campaign_cmd(
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded, cohort = await _pooled_protocol(protocol_path)
+    if loaded.protocol.requires_search_power and search_dir is None:
+        raise click.ClickException("genetic protocols require --search-power (check B)")
+    if not loaded.protocol.requires_search_power and search_dir is not None:
+        raise click.ClickException("fixed_set protocols take no search-power check (check B does not apply)")
+    directories = {"power": power_dir, "search_power": search_dir, "null_check": null_dir}
     environment = await asyncio.to_thread(research_environment)
     try:
         revision = require_clean_revision(environment)
@@ -1645,9 +1658,13 @@ async def alpha_pooled_campaign_cmd(
             )
         gates = {
             name: check_gate(
-                directory, check=check, cohort_sha256=cohort.sha256, protocol_sha256=loaded.sha256, revision=revision
+                directories[name],
+                check=check,
+                cohort_sha256=cohort.sha256,
+                protocol_sha256=loaded.sha256,
+                revision=revision,
             )
-            for (name, check), directory in zip(GATES, (power_dir, search_dir, null_dir), strict=True)
+            for name, check in loaded.protocol.gates
         }
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise click.ClickException(str(exc)) from exc

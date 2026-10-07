@@ -8,7 +8,13 @@ import numpy as np
 import pandas as pd
 
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.pooled.campaign import Family, NullCheckSpec, Selection, load_campaign_protocol
+from agentic_trader.research.pooled.campaign import (
+    CampaignProtocol,
+    Family,
+    NullCheckSpec,
+    Selection,
+    load_campaign_protocol,
+)
 from agentic_trader.research.pooled.cube import LabelCube
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook
@@ -154,3 +160,16 @@ class RecordingCharger:
 def mini_v3_protocol(**update):
     """The mini protocol under v3's top-decile selection (12 names: 2 picks per session)."""
     return mini_protocol(k=None, selection=Selection(rule="top_fraction", fraction=0.10), **update)
+
+
+def mini_fixed_set_protocol(**update):
+    """The mini protocol as a validated fixed set: every mini family's seeds, scored once, no mutation."""
+    families = tuple(family.model_copy(update={"mutation_operators": (), "windows": None}) for family in FAMILIES)
+    protocol = mini_protocol(
+        search_mode="fixed_set",
+        power_search=None,
+        families=families,
+        formula_budget=sum(len(family.seeds) for family in families),
+        **update,
+    )
+    return CampaignProtocol.model_validate(protocol.model_dump())  # model_copy skips the validators

@@ -99,6 +99,7 @@ class FamilyRun:
             "errors": self.errors,
             "rejected": dict(self.rejected),
             "stopped_short": self.stopped_short,
+            "mutations": self.mutation_count,
         }
 
 

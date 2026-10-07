@@ -18,6 +18,9 @@ Reads discovery-window cells only and charges nothing. For seed i, the family is
 
 This certifies recovery near the seeds only. With 16-17 formulas per family, the search
 cannot reach edges far from them.
+
+A ``fixed_set`` protocol has no search to certify, so check B refuses it before building or
+writing anything (``require_search``).
 """
 
 from __future__ import annotations
@@ -48,7 +51,14 @@ from agentic_trader.research.setups.study import _finite_json
 from agentic_trader.storage.artifacts import save_json_report
 
 
-__all__ = ["HIDDEN_ATTEMPTS", "HIDDEN_SEED_STRIDE", "execute_search_power", "hidden_expression", "run_search_power"]
+__all__ = [
+    "HIDDEN_ATTEMPTS",
+    "HIDDEN_SEED_STRIDE",
+    "execute_search_power",
+    "hidden_expression",
+    "require_search",
+    "run_search_power",
+]
 
 HIDDEN_ATTEMPTS = 200
 HIDDEN_SEED_STRIDE = 1000
@@ -79,9 +89,16 @@ def hidden_expression(
     raise ValueError(f"no usable hidden expression for family {family.id} after {HIDDEN_ATTEMPTS} draws")
 
 
+def require_search(protocol: CampaignProtocol) -> None:
+    """Refuse a protocol without a genetic search: check B certifies only a search."""
+    if not protocol.requires_search_power:
+        raise ValueError("check B does not apply to a fixed_set protocol")
+
+
 def run_search_power(
     protocol: CampaignProtocol, cube: LabelCube, book: ScoreBook, *, progress: Callable[[str], None] | None = None
 ) -> dict:
+    require_search(protocol)
     spec = protocol.power_search
     if spec is None or spec.seed is None:
         raise ValueError("this protocol has no power_search.seed (campaign v1); check B needs protocol v2")
@@ -172,6 +189,7 @@ async def execute_search_power(
     progress: Callable[[str], None] | None = None,
 ) -> dict:
     protocol = loaded.protocol
+    require_search(protocol)  # a refusal, not a failed check: no directory, no build
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     save_json_report({**protocol.model_dump(mode="json"), "sha256": loaded.sha256}, directory / "protocol.json")
     save_json_report(
