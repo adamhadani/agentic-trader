@@ -120,6 +120,20 @@ def test_v4_seeds_are_valid_unique_and_distinct_from_the_literature_entries():
                     {
                         "id": "a",
                         "rationale": "r",
+                        "seeds": ["-1.0 * roc(close, 5)", "(-1.0)*roc(close,5)"],
+                        "mutation_operators": [],
+                    }
+                ],
+                "formula_budget": 2,
+            },
+            "unique",
+        ),
+        (
+            {
+                "families": [
+                    {
+                        "id": "a",
+                        "rationale": "r",
                         "seeds": ["-1.0 * roc(close, 5)"],
                         "mutation_operators": [],
                         "windows": [5, 10],

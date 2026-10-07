@@ -14,12 +14,15 @@ cohort, label cube, formula selection, statistics, two literature entries, the c
 protocol and its stage logic, power check A and the `alpha pooled power|study`
 commands. Part 1b adds cohort v2 by liquidity screen, campaign protocol v2, the
 per-family genetic search, the journal ledger, checks B and C and the campaign runner.
-Protocol v3 changes selection to a top-decile basket.
+Protocol v3 changes selection to a top-decile basket. Protocol v4 replaces the search
+with a predeclared fixed set of eight literature formulas.
 
 **Status (2026-10-05): the pooled genetic campaign is parked.** Check B failed on v2 (1 of
 10) and again on v3 (3 of 10), so no campaign ran and the confirmation window is unused
 ([v3 checks](alpha-pooled-checks-v3-2026-10-05.md)). The machinery below stays merged;
-reopening the lane needs a new spec and operator approval.
+reopening the lane needs a new spec and operator approval. Protocol v4 is a separate test
+without search: eight literature formulas scored once each, gated by checks A and C only
+([fixed-set mode](#fixed-set-mode-campaign-v4)). Its campaign needs operator approval.
 
 ## Purpose
 
@@ -625,8 +628,10 @@ figures with these limits.
 
 ## Checks B and C
 
-Both read discovery-window cells only, charge nothing, and gate the campaign. Both take
-`--power A_DIR` and run on the cube check A built.
+Both read discovery-window cells only and charge nothing. Check C gates every campaign;
+check B gates a genetic one only, because a fixed-set protocol has no search for it to
+certify ([fixed-set mode](#fixed-set-mode-campaign-v4)). Both take `--power A_DIR` and run
+on the cube check A built.
 
 ### Check B: search power
 
@@ -711,6 +716,99 @@ Checks B and C also report `errors_total`, the formulas whose evaluation raised 
 C per replicate). It must be 0 before a campaign: a systematic evaluation error would charge
 the campaign's budget for formulas that are never scored.
 
+## Fixed-set mode (campaign v4)
+
+`config/research/pooled/campaign-v4.json` sets `search_mode: "fixed_set"`. It tests eight
+predeclared literature formulas, each scored once, with v3's cohort, cube and decile
+selection and no genetic search. Check B failed twice because a 17-formula family search
+cannot reach a planted near-neighbour; without a search there is nothing for check B to
+certify, while checks A and C still apply. Protocols v1 to v3 omit `search_mode`, which
+means `genetic`; their bytes and hashes are unchanged.
+
+**What fixed-set mode changes.**
+
+- **No search.** Every family has empty `mutation_operators` and no `windows`. Its budget
+  is its seed count, and `formula_budget` equals the total number of seeds (8 in v4). Each
+  seed is vetted, charged and scored once, and the search never mutates. Load-time
+  validation means a valid file's seeds always pass vetting; should one fail, its family
+  stops short with `stopped_short: "search exhausted: no mutation operators"` and the
+  shortfall is reported, never filled with other formulas. The campaign result's family
+  summaries carry `mutations`, which is 0 for a fixed-set run.
+- **Validated at load.** A fixed-set protocol has no `power_search`, has a `null_check`, and
+  its seeds are unique as canonical expressions, both within and across families. Seeds must
+  still be dimensionless and avoid the forbidden operators.
+- **Gates by mode** (`CampaignProtocol.gates`). A fixed-set campaign needs checks A and C; a
+  genetic campaign needs A, B and C. `search-power` refuses a fixed-set protocol before it
+  builds or writes anything, and `campaign` takes `--search-power` only for a genetic
+  protocol (it is required there and refused for a fixed set).
+
+**What does not change.** The cohort, the cube, selection, bracket, costs, windows,
+bootstrap and every gate threshold are v3's. The v4 cube identity equals v3's, so the
+cached cube is reused and no bars are downloaded. The discovery carry stays 5 and Holm runs
+at confirmation over at most 5 frozen candidates. The predeclared set is small on purpose,
+and the staged out-of-sample windows plus Holm control multiplicity over it. Checks A and C
+compute exactly what they compute for v3. A reads no family information. C runs the real
+stages on demeaned null panels, which for v4 means scoring exactly the eight formulas in
+every replicate. Both rerun because their results must match the v4 protocol hash and the
+running code revision. The pooled ledger, the charge-before-scoring rule and the lane-wide
+one-use confirmation window are unchanged.
+
+**Literature overlap.** The [overlap rule](#literature-overlap-rule) still marks any finalist
+whose discovery picks overlap `high52-v1` or `reversal-lowmax-v1` at Jaccard >= 0.5; a
+marked formula keeps its Holm slot but is not probe-eligible. The set therefore avoids both
+entries' scores. The 52-week-high hypothesis is tested as the 126-session high, and the
+unfiltered one-month reversal is left out. The entries failed under top-3 picks on cohort
+v1; v4 is the first test of these hypotheses as decile baskets. Its formulas are distinct,
+but a finalist whose picks still overlap an entry's is marked.
+
+**The v4 set** (all dimensionless, long-only like the lane; a formula whose sign is wrong
+simply fails discovery):
+
+| Family | Score | Hypothesis |
+| --- | --- | --- |
+| `reversal_5` | `-1.0 * roc(close, 5)` | One-week reversal (Jegadeesh, 1990; Lehmann, 1990) |
+| `high_126` | `close / ts_max(high, 126)` | Nearness to the trailing high, six-month variant (George & Hwang, 2004) |
+| `overnight_intraday` | `ts_sum(open_gap, 21) - ts_sum(oc_spread, 21)` | Overnight-minus-intraday return persistence (Lou, Polk & Skouras, 2019) |
+| `abnormal_volume` | `volume / ts_mean(volume, 50)` | High-volume return premium (Gervais, Kaniel & Mingelgrin, 2001) |
+| `momentum_12_1` | `delay(close, 21) / delay(close, 252) - 1.0` | 12-1 momentum (Jegadeesh & Titman, 1993) |
+| `price_volume_corr` | `-1.0 * ts_corr(returns, volume, 21)` | Price-volume divergence |
+| `illiquidity` | `ts_mean(hl_spread, 21)` | Illiquidity premium, range-based proxy (Amihud, 2002; Corwin & Schultz, 2012) |
+| `reversal_x_volume` | `-1.0 * roc(close, 5) * (volume / ts_mean(volume, 50))` | Reversal is stronger after high volume (Conrad, Hameed & Niden, 1994) |
+
+Left out on purpose: realized-volatility scores (the forbidden operators and the `vol_20`
+exclusion), the 252-session high and the unfiltered one-month reversal (literature
+overlap), and sector-relative momentum (the DSL has no group operator, and the 2026-09-24
+decision made it prospective-only). `excluded_families` is v3's. The 252-session lookback
+leaves `momentum_12_1` without a score for roughly the first 107 discovery sessions, which
+still leaves ample room for the discovery gate's 400 sessions.
+
+**Run plan.**
+
+1. Merge and deploy with the usual controlled restart; the research CLI runs from the
+   installed checkout.
+2. On the cached cohort-v2 cube, at the clean merged revision, outside the 10:35 and 14:35
+   ET scan windows and with a thermal watch: check A (`alpha pooled power
+   config/research/pooled/campaign-v4.json`, about 2 h 10 min on 6 workers), then check C
+   (`alpha pooled null-check`, about 30 min). Both must pass on the same cube and revision.
+3. Report A and C to the operator. **Only with explicit operator approval**, run `alpha
+   pooled campaign` with `--power` and `--null-check` (no `--search-power`) and
+   `--journal-scope production/alpaca:paper`.
+
+**Window consumption is the irreversible step.** The lane-wide confirmation window
+(2024-01-02 to 2026-07-31) is consumed when selection freezes at least one candidate,
+whether or not confirmation then passes. This is why the campaign needs approval after A
+and C pass.
+
+**Decision rule (pre-registered 2026-10-07).**
+
+- At least one confirmed, probe-eligible formula: write the pooled Part 2 probe spec
+  (cross-sectional daily ranking, one card per session under the probe budget and kill
+  rule).
+- None confirmed: the fixed-set lane is closed on this window. No further formulas are
+  tried against it, and the next alpha source is decided with the operator.
+
+The checks and the campaign outcome are written up in `alpha-pooled-checks-v4-<date>.md`.
+
 ## Commands
 
 ```bash
@@ -719,12 +817,14 @@ copilot alpha pooled power PROTOCOL --output DIR --cache DIR [--workers N]
 copilot alpha pooled study ENTRY --power POWER_DIR --output DIR --cache DIR
 copilot alpha pooled search-power PROTOCOL --power A_DIR --output DIR --cache DIR
 copilot alpha pooled null-check PROTOCOL --power A_DIR --output DIR --cache DIR [--workers N]
-copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null-check C_DIR --output DIR --cache DIR --journal-scope SCOPE [--recover]
+copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --null-check C_DIR --output DIR --cache DIR --journal-scope SCOPE [--recover]
 ```
 
 - `PROTOCOL` is `config/research/pooled/campaign-v1.json` for `study` and the literature
-  runs, and `campaign-v2.json` for `search-power`, `null-check` and `campaign`; `ENTRY` is
-  a literature entry file. `--workers` exists on `power` and `null-check` and runs the
+  runs, and the campaign protocol under test (v2 onward) for `power`, `search-power`,
+  `null-check` and `campaign`; `search-power` refuses a fixed-set protocol, and
+  `--search-power` is required for a genetic protocol and refused for a fixed set.
+  `ENTRY` is a literature entry file. `--workers` exists on `power` and `null-check` and runs the
   replicates in N processes.
 - `--cache` is **required** on every command. For `power`, `study`, `search-power`,
   `null-check` and `campaign` it must be the same directory: it holds the bars and the one
@@ -751,9 +851,9 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR --search-power B_DIR --null
 - A study result reports the pass rule, the 0 bps figures (`gross`), cross-checks,
   diagnostics, dropped-pick counts, the cube's SHA-256 and coverage, the build's
   `bar_failures` and `static_used` as stored in that coverage, and `picks.csv.gz`.
-- **Gate binding.** `campaign` refuses to start unless checks A, B and C each passed for
-  this cohort, protocol and one cube, at the same clean code revision as the running
-  command. A dirty or unknown revision is refused, and so is any uncommitted or untracked
+- **Gate binding.** `campaign` refuses to start unless every check its protocol's mode
+  requires (A, B and C for a genetic protocol; A and C for a fixed set) passed for this
+  cohort, protocol and one cube, at the same clean code revision as the running command. A dirty or unknown revision is refused, and so is any uncommitted or untracked
   file under `agentic_trader`, `config` or `tests` (`git status --porcelain`; `git describe
   --dirty` misses untracked files). The executor also refuses, before reserving anything,
   non-passed gates, gates without a cube, gates on different cubes, a cohort mismatch and a

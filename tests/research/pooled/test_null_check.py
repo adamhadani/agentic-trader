@@ -8,8 +8,9 @@ import numpy as np
 import pytest
 from scipy.stats import beta
 
-from agentic_trader.research.alpha.search import canonical_expression
-from agentic_trader.research.pooled.campaign import LoadedProtocol, NullCheckSpec
+from agentic_trader.research.alpha.search import TypedGeneticSearch, canonical_expression
+from agentic_trader.research.pooled import null_check
+from agentic_trader.research.pooled.campaign import LoadedProtocol, NullCheckSpec, load_campaign_protocol
 from agentic_trader.research.pooled.cube import CubeView
 from agentic_trader.research.pooled.null_check import (
     demeaned,
@@ -28,6 +29,7 @@ from tests.research.pooled.mini_world import (
     book,
     cube_build,
     label_cube,
+    mini_fixed_set_protocol,
     mini_protocol,
 )
 
@@ -151,3 +153,67 @@ def test_execute_null_check_writes_its_manifest_first_and_binds_the_cube(tmp_pat
     assert result["status"] in {"passed", "gate_failed"} and result["cube_sha256"] == cube.sha256
     assert json.loads((tmp_path / "out" / "manifest.json").read_text())["check"] == "null_check"
     json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
+
+
+def test_a_fixed_set_null_check_scores_exactly_the_seeds_and_pins_the_protocol_file(tmp_path, monkeypatch):
+    path = tmp_path / "campaign-fixed.json"
+    path.write_text(mini_fixed_set_protocol().model_dump_json())
+    loaded = load_campaign_protocol(path)  # a real file hash, as a v4 run's artifacts carry
+    protocol = loaded.protocol
+    seeds = list(protocol.seed_expressions)
+
+    def mutate(self, expression):
+        raise AssertionError("a fixed-set search never mutates")
+
+    monkeypatch.setattr(TypedGeneticSearch, "mutate", mutate)
+    searches = []
+    real = null_check.run_search_stages
+
+    def recording(*args, **kwargs):
+        outcome, search = real(*args, **kwargs)
+        searches.append(search)
+        return outcome, search
+
+    monkeypatch.setattr(null_check, "run_search_stages", recording)
+    cube = label_cube()
+    power_result = {
+        "status": "passed",
+        "cohort_sha256": COHORT,
+        "campaign_protocol_sha256": loaded.sha256,
+        "cube_sha256": cube.sha256,
+    }
+
+    async def build():
+        return cube_build(cube)
+
+    result = asyncio.run(
+        execute_null_check(
+            loaded,
+            tmp_path / "out",
+            cohort=SimpleNamespace(sha256=COHORT),
+            build=build,
+            power_result=power_result,
+            environment={},
+        )
+    )
+    # Every replicate's search scored exactly the predeclared seeds, in file order, and nothing else.
+    assert len(searches) == protocol.null_check.replicates == 3
+    for search in searches:
+        assert [(r["expression"], r["status"]) for r in search.records] == [(seed, "evaluated") for seed in seeds]
+        assert [run.summary()["mutations"] for run in search.runs] == [0, 0, 0]
+        assert all(run.stopped_short is None for run in search.runs)
+    details = result["replicates_detail"]
+    assert all(rep["evaluated"] == len(seeds) and set(rep["seed_t"]) == set(seeds) for rep in details)
+    # The gate counts false acceptances exactly as for a genetic protocol.
+    false = sum(1 for rep in details if rep["confirmed"])
+    assert result["false_acceptances"] == false and result["errors_total"] == 0
+    assert result["status"] == ("passed" if false <= protocol.null_check.max_false_acceptances else "gate_failed")
+    assert result["campaign_protocol_sha256"] == loaded.sha256 and result["cube_sha256"] == cube.sha256
+    out = tmp_path / "out"
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["check"] == "null_check" and manifest["campaign_protocol_sha256"] == loaded.sha256
+    dumped = json.loads((out / "protocol.json").read_text())
+    assert dumped["sha256"] == loaded.sha256 and dumped["search_mode"] == "fixed_set"
+    assert dumped["power_search"] is None
+    for name in ("manifest.json", "result.json"):
+        assert "search_power" not in (out / name).read_text()

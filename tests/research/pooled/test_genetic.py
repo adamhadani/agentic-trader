@@ -1,6 +1,7 @@
 # tests/research/pooled/test_genetic.py
 import pytest
 
+from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled import genetic
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
@@ -18,6 +19,7 @@ from tests.research.pooled.mini_world import (
     RecordingCharger,
     book,
     label_cube,
+    mini_fixed_set_protocol,
     mini_protocol,
     planted_cube,
 )
@@ -201,3 +203,29 @@ def test_genetic_family_without_operators_stops_cleanly():
     [family] = outcome.runs
     assert family.charged == 1
     assert family.stopped_short == "search exhausted: no mutation operators"
+
+
+def test_a_rejected_seed_stops_a_fixed_set_family_short_without_mutating(monkeypatch):
+    def mutate(self, expression):
+        raise AssertionError("a fixed-set family never mutates")
+
+    monkeypatch.setattr(genetic.TypedGeneticSearch, "mutate", mutate)
+    protocol = mini_fixed_set_protocol()
+    family = protocol.families[0]  # reversal: two seeds, so a budget of two
+    first, second = (canonical_expression(seed) for seed in family.seeds)
+    charger = RecordingCharger()
+    run = family_search(
+        family,
+        0,
+        protocol.family_budgets()[family.id],
+        protocol=protocol,
+        evaluator=DiscoveryEvaluator(discovery_view(protocol), protocol),
+        book=book(),
+        charger=charger,
+        seen={first},  # already proposed in this campaign: the first seed is rejected as a duplicate
+    )
+    assert [(r["expression"], r["status"]) for r in run.records] == [(first, "rejected"), (second, "evaluated")]
+    assert run.rejected == {"duplicate": 1} and (run.budget, run.charged) == (2, 1)
+    assert run.stopped_short == "search exhausted: no mutation operators"  # the shortfall is reported, not filled
+    assert run.mutation_count == 0 and run.summary()["mutations"] == 0
+    assert [expression for _, expression, _ in charger.charged] == [second]

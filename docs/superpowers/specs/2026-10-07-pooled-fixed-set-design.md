@@ -77,3 +77,13 @@ The eight directions are long-only by construction of the lane (long bracket lab
 - v4 passes A and C on the cached cube at the merged revision; artifacts pin the v4 hash; v1–v3 hashes unchanged.
 - The campaign command runs the two-gate form only for fixed-set protocols.
 - Nothing is charged or consumed before the operator's campaign approval.
+
+## Amendments (2026-10-07)
+
+Recorded during the build; where they differ from the sections above, the built code and these notes govern.
+
+- **Decision 2 and Interfaces, no-operator stop.** `TypedGeneticSearch.ask` (and `mutate`) raise `ValueError("no mutation operators")` when a family has no operators; `family_search` catches it as it catches any exhausted grammar, so the family stops with `stopped_short="search exhausted: no mutation operators"`, not the literal `"no_operators"`, and `mutate` does not return `None`.
+- **Interfaces, gates.** `execute_campaign` and `_run_campaign` keep taking the checked `gates` mapping; there is no `search_power_dir` parameter. The CLI builds the mapping from `protocol.gates`, and `--search-power` is optional: required for a genetic protocol and refused for a fixed-set protocol.
+- **Additive artifact key.** Each family summary in the campaign result carries `mutations` (the search's successful mutations; 0 for a fixed-set run).
+- **Protocol fields.** Protocols have a top-level optional `rationale` field (v4 carries one). In fixed-set mode `family_budgets` returns each family's seed count, so every seed is scored whatever the families' sizes.
+- **No v1 exemption.** Genetic mode requires `power_search`; the v1 protocol already carried a `power_search` block (without its seed), so it loads unchanged and no exemption was needed.
