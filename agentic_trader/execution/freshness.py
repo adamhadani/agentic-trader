@@ -12,8 +12,8 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from enum import StrEnum
 from typing import Any
 
-from agentic_trader.config import CardFreshnessConfig
-from agentic_trader.constants import Direction
+from agentic_trader.config import CardFreshnessConfig, CardValidity
+from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.risk import meets_min_reward_risk
 
@@ -98,9 +98,25 @@ class CardOutcome(StrEnum):
     REPRICE = "reprice"
     MISSED = "missed"
     EXPIRED = "expired"
+    # A ``next_session_close`` card tapped while the session refuses entries, before ``valid_until``:
+    # retryable, the card stays PENDING.
+    WAITING = "waiting"
     # Journal-only: the tap-time reads (price, session, gates) failed or timed out, so no
     # assessment was possible and the card stayed PENDING. ``assess_card`` never returns it.
     UNAVAILABLE = "unavailable"
+
+
+def effective_validity(
+    validity: CardValidity, *, asset_class: str, policy_locked: bool, probe: bool, drift: bool
+) -> CardValidity:
+    """The validity a card actually gets: ``next_session_close`` only for native, non-policy-locked equity cards.
+
+    A registry alpha or catalog card (``alpha_version``/``alpha_policy``), a paper probe and a
+    PEAD drift card keep ``session_close``: admission refuses their original signal after
+    ``execution.signal_max_age_seconds`` and a drift card needs its same-session event.
+    """
+    eligible = str(asset_class).upper() == AssetClass.EQUITY and not (policy_locked or probe or drift)
+    return validity if eligible else "session_close"
 
 
 @dataclass(frozen=True)
@@ -126,6 +142,7 @@ def assess_card(
     gate_reason: str | None,
     min_reward_risk: float,
     policy: CardFreshnessConfig,
+    validity: CardValidity = "session_close",
 ) -> CardAssessment:
     """Decide a tapped card's outcome from what the caller observed.
 
@@ -133,9 +150,20 @@ def assess_card(
     verdict (an open session, within regular hours when ``session.enforce_rth`` is set); a
     False verdict expires the card. ``min_reward_risk`` is the caller's
     ``agentic_trader.risk.required_reward_risk``, judged at the current price for a re-price.
+    ``validity`` is the card's ``effective_validity``; under ``next_session_close`` a closed
+    session before ``valid_until`` is ``WAITING`` rather than ``EXPIRED``.
     """
     issued_et, now_et = _aware_et(issued_at), _aware_et(now)
     age_seconds = (now_et - issued_et).total_seconds()
+
+    if (
+        validity == "next_session_close"
+        and not session_open
+        and valid_until is not None
+        and now_et < _aware_et(valid_until)
+    ):
+        reason = f"Market closed; card valid until {_aware_et(valid_until):%a %d %H:%M} NY."
+        return CardAssessment(CardOutcome.WAITING, reason, None, age_seconds, None)
 
     # Legacy cards without `valid_until` expire when the New York date changes; the sweep
     # applies this exact rule to untapped cards via the same shared helper.

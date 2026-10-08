@@ -499,6 +499,54 @@ Known limits of the review: it is static reading, not a profiling or defect audi
 line references are as of `aa86718`. Minor: `agent/position_sizing.py` had a stale
 type-only import of a module that no longer exists; L2 removed it.
 
+## Desk direction after the fixed-set lane (October 8)
+
+Agreed with the operator on 2026-10-08 after the pooled v4 campaign found no finalists and the
+label diagnostic found no return-space signal either ([v4 checks](alpha-pooled-checks-v4-2026-10-07.md)).
+
+**Operational definition of a reasonable suggestion.** A card is reasonable when (1) it states
+its own measured base rate honestly, (2) its bracket has non-negative expected value at that
+base rate after cost, and (3) its size is consistent with the existing book. None of these
+requires a validated alpha in the statistical sense; all three are measurable with the L1
+`cards outcomes` attribution. The 30-day evidence on 2026-10-08 fails test (2): runner-up cards
+hit the 2R target 27% of the time and the stop 73% (about −0.19R per card before cost), and
+`setup_quality` ranks no better than random. That is a construction problem, not a discovery
+problem.
+
+**Ordered plan (each step ships through its own PR with measurement; nothing here promotes an alpha):**
+
+1. **Native funnel (now).** Measure first: per-strategy, per-direction, per-slot outcomes, bracket
+   geometry, bracket counterfactuals, and why sent cards are not tapped
+   (`~/agentic-trader-research/card-funnel-diagnostic-20261008/`). Then fix construction so the
+   bracket has non-negative EV at the measured base rate, put the honest base rate on the card,
+   and add book-aware sizing (the deferred L3 seam): the existing shadow CVXPY optimiser used in
+   its risk-budget form (no return forecasts), bounding a card's marginal variance, beta and
+   sector contribution against current positions. Shadow weights still never reach orders.
+
+   *Status (October 8):* PR A, honest cards, is implemented ([card evidence](card-evidence.md)): every
+   native card states its measured `(strategy, direction)` record, implied EV, sample size and the
+   not-validated caveat from a daily `card_stats` snapshot; `card_policy` ships `off` (the operator moves
+   it to `preview`, then `enforce`, after reading the evidence); `card_policy.validity:
+   next_session_close` is available and off. Bracket construction and book-aware sizing (PR B) remain.
+2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
+   (Engle-Granger, half-life, z-score; `/pairs` is display-only today), extended to baskets with
+   Johansen or PCA-residual reversion. Market-neutral by construction; a different label from
+   every lane that failed. Research only until it passes its own gates; a probe would follow the
+   catalog probe contract.
+3. **Second event leg** after the PEAD probe reports (events from about 2026-10-14; probe expires
+   2026-10-28). Ingest corporate actions (splits, dividends) first: it is also the architecture
+   review's P1 reconciliation gap, so the data work pays twice. Index inclusion is skipped (paid
+   constituent history).
+4. **News as measured context.** Wire a news feed (none exists today; only a config heading) and
+   attach LLM news scoring to cards as labelled context, attributed the way the LLM gate is
+   attributed. Never a gate or signal until the attribution says so.
+5. **Deferred.** Daily-bar cross-sectional mining is paused until intraday SIP data exists; three
+   lanes found nothing on this cohort. Deep learning across many symbols waits for intraday data
+   and a predeclared protocol.
+
+Prospective lanes keep running meanwhile: PEAD probe, native-daily panel (first outcomes mid-October),
+and the `vol_20` / `sector_rel_mom_60` evaluation window 2026-10-21 → 2026-11-04.
+
 ## Alpha-discovery sprint (October 7)
 
 **State on 2026-10-07.** Suggestion cards flow at about two per session but have no
@@ -524,6 +572,15 @@ spec; a confirmed formula that is not probe-eligible (its picks overlap a litera
 is recorded against that entry and no probe follows; zero confirmed formulas, or none
 probe-eligible, closes the fixed-set lane on this window, and the next alpha source is
 decided with the operator.
+
+**Outcome (2026-10-07).** Checks A and C passed at revision `46d5767`; the operator approved
+the campaign; it found **no finalists**: seven of eight formulas have a negative
+session-paired edge on the discovery window and the best (`price_volume_corr`) has t 0.76
+against the gate of 3. Nothing froze, so the confirmation window is still unused; the eight
+formulas are charged to the ledger. As pre-registered, the fixed-set lane is closed on this
+window ([v4 checks](alpha-pooled-checks-v4-2026-10-07.md)). The next alpha source is an
+operator decision; the window remains available to a future lane with a different label or
+cohort under a new spec.
 
 **Deferred.** A sparse-layout contract for the IEX forward lane, so sessions with IEX's
 minute gaps can be scored instead of failing the strict coverage rule, needs its own spec.

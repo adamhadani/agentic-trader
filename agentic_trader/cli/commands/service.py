@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 from collections.abc import Mapping
-from datetime import UTC, datetime, time as dt_time, timedelta
+from datetime import UTC, date, datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyP
 from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.observation import SessionObservationService
+from agentic_trader.research.setups.card_stats_worker import CardStatsUnavailable, CardStatsWorker
 from agentic_trader.runtime import runtime_identity
 from agentic_trader.screeners.earnings_drift import PEAD_DECISION_TIME_ET
 from agentic_trader.storage.alpha_daily import DailyCampaignRepository
@@ -284,6 +285,72 @@ async def run_daily_panel_worker(config, repository, readiness, metrics, shutdow
         await readiness.observe(component, False, type(exc).__name__)
         # Invalid configuration stays visibly failed until a controlled restart.
         await shutdown.wait()
+
+
+def _et_today() -> date:
+    """Today's New York date (the card-statistics worker's failure memory is per date)."""
+    return datetime.now(ET_TZ).date()
+
+
+async def run_card_stats_worker(copilot, config, readiness) -> None:
+    """Persist one ``card_stats`` snapshot per New York date; readiness is worker progress.
+
+    Polls every ``card_policy.stats_poll_seconds``. An idle poll (not yet due, inside a
+    suggestion-scan window, today's snapshot present, or a scan holding the scan lock), the
+    start of a labelling run and a recorded snapshot observe ``card_stats`` ready unless a failure
+    from the same New York date is held; a failure (for
+    example every bar fetch failing) writes nothing and observes it failed (``CardStatsUnavailable``
+    with its message, any other error by type only), so the previous snapshot stays authoritative
+    until it ages out. A failure is remembered for the rest of its New York date: until a snapshot
+    is ``present`` or ``recorded``, later idle polls and a retry's start re-observe it failed with
+    the same detail, so readiness does not flap around the scan slots. Only shutdown or
+    cancellation ends the loop: a failed readiness write (the database is down) is logged and the
+    next poll runs. Labelling runs in a worker thread. The daemon's shutdown cancels this
+    coroutine, so nothing is recorded, but it cannot stop that thread: process exit waits for
+    its provider reads.
+    """
+    component = HealthComponent.CARD_STATS
+    shutdown = copilot._shutdown_event
+    revision = str((await asyncio.to_thread(runtime_identity))["revision"])
+    # (New York date, detail) of the last failed run, until a snapshot is present or recorded.
+    failure: tuple[date, str] | None = None
+
+    async def observe_progress(detail: str) -> None:
+        """Ready with ``detail``, unless today's run already failed and no snapshot exists since."""
+        held = failure[1] if failure is not None and failure[0] == _et_today() else None
+        await readiness.observe(component, held is None, held or detail)
+
+    worker = CardStatsWorker(
+        copilot.db,
+        copilot.card_stats,
+        config,
+        revision=revision,
+        on_progress=observe_progress,
+        scan_busy=lambda: copilot.scan_running,
+    )
+    while not shutdown.is_set():
+        try:
+            status = await worker.run_once()
+            if status in ("present", "recorded"):
+                failure = None
+            await observe_progress(status)
+        except Exception as exc:
+            logger.exception("Card statistics worker failed", extra={"event": "card_stats_failed"})
+            # The detail reaches /readyz and Telegram incident notices: only our own outage text
+            # carries a message (exception type names only); any other error's (a host, a DSN)
+            # stays in the log above.
+            detail = (
+                f"{type(exc).__name__}: {exc}"[:200] if isinstance(exc, CardStatsUnavailable) else type(exc).__name__
+            )
+            failure = (_et_today(), detail)
+            try:
+                await readiness.observe(component, False, detail)
+            except Exception:
+                logger.exception(
+                    "Card statistics readiness could not be recorded", extra={"event": "card_stats_readiness_failed"}
+                )
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(shutdown.wait(), timeout=config.card_policy.stats_poll_seconds)
 
 
 def _slot_due_at(slot_et: str) -> datetime:
@@ -540,6 +607,11 @@ async def daemon(no_llm: bool) -> None:
             )
         )
 
+    # One card-statistics snapshot per New York date for the cards' evidence block and the card
+    # policy (docs/card-evidence.md). Shutdown cancels it; an in-flight labelling thread finishes
+    # on its own and records nothing.
+    card_stats_task = asyncio.create_task(run_card_stats_worker(copilot, config, copilot.readiness))
+
     scheduler = AsyncIOScheduler(
         job_defaults={
             "misfire_grace_time": config.scheduler.misfire_grace_seconds,
@@ -606,6 +678,14 @@ async def daemon(no_llm: bool) -> None:
         copilot.readiness.started = False
         for task in session_tasks:
             await task
+        card_stats_task.cancel()
+        try:
+            await card_stats_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # A worker that died must not cut the rest of the shutdown short.
+            logger.exception("Card statistics worker ended with an error", extra={"event": "card_stats_task_failed"})
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await workflow_task

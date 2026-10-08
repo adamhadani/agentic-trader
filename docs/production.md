@@ -250,14 +250,15 @@ becomes a *new* card that needs its own fresh tap. Config lives under
 | `fresh_max_r` | 0.25 | `abs(r_consumed)` bound for `EXECUTE`; `r_consumed = sign × (price − entry) / |entry − stop|`. |
 | `reprice_min_risk_fraction` | 0.5 | Minimum fraction of the original stop distance the current price must still have as remaining risk for `REPRICE`. |
 
-A tap resolves to exactly one of four outcomes:
+A tap resolves to exactly one of five outcomes:
 
 | Outcome | Behaviour |
 | --- | --- |
 | `EXECUTE` | Same session, within `fresh_seconds` and `fresh_max_r`. Unchanged path: `EntryExecutionService.authorize` with the original bracket. A fresh tap keeps the original limit order resting unchanged, so reward:risk at the *current* price is not evaluated here — it only governs a would-be `REPRICE` below. The freshness decision never authorizes by itself — admission still enforces drift, macro, capacity, session and deadlines on its own terms. |
 | `REPRICE` | Same session, open, past the fresh bounds, price strictly between stop and target, remaining risk and reward:risk at the current price still acceptable, and every gate (halt, session, macro, regime, earnings) passes. Reward:risk is compared rounded to two decimals, the same rounding the evaluator used to approve the card, so float noise (e.g. `1.9999999999999973`) never refuses a card the scan approved at "2.0". The old signal is atomically expired and a replacement `PENDING` signal is recorded — entry at the current price rounded to the instrument's tick, same stop/target, quantity re-derived from the risk dollars of the tapped tier (else the card's size) and then capped by the per-trade caps (`sizing.max_shares_per_trade`/`max_contracts_per_trade`, `max_trade_notional_cap`, and the shared [per-trade risk budget](risk-policy.md#the-per-trade-budget) on configured cash with the regime's risk multiplier clamped to [0.10, 1.0]); a size that rounds or caps to zero is `MISSED` instead — in the *same* transaction as its outbox notification, so a crash never leaves a replacement without its card or a card without its signal. The tap reply says a re-priced card was sent; the new card needs its own tap. A versioned alpha card (`alpha_version`/`alpha_policy`) is never re-priced: its immutable execution policy owns the entry limit and bracket, so this outcome executes the original bracket instead and admission's age/drift/policy checks decide. |
 | `MISSED` | Same session, but the geometry or a gate fails (through the stop/target, too close to the stop, a failing gate, or — only for a would-be re-price — current-price reward:risk below the larger of `risk.min_risk_reward_ratio` and the cached regime's threshold). The old signal is expired and the reply offers **[🔄 Re-evaluate]**. |
-| `EXPIRED` | The issuing session has ended (`now ≥ valid_until`) or the session refuses entries (`entry_session_open`: closed, or outside regular hours while `session.enforce_rth` is set). The old signal is expired; the reply gives the reason and the broker's next regular open, and offers **[🔄 Re-evaluate]**. `EXPIRED` is a live signal status, not a terminal-only label: every status-gated query (duplicate rule, `/perf`, positions) already treats it as non-executed. |
+| `EXPIRED` | The issuing session has ended (`now ≥ valid_until`) or the session refuses entries (`entry_session_open`: closed, or outside regular hours while `session.enforce_rth` is set). The old signal is expired; the reply gives the reason and the broker's next regular open, and offers **[🔄 Re-evaluate]**. `EXPIRED` is a live signal status, not a terminal-only label: every status-gated query (duplicate rule, `/perf`, positions) already treats it as non-executed. A `next_session_close` card expires this way only once `valid_until` has passed; before that a closed-session tap is `WAITING`. |
+| `WAITING` | Only for a card whose validity is `next_session_close` ([card evidence](card-evidence.md#card-validity)): the session refuses entries but `now < valid_until`. Nothing changes: the card stays `PENDING`, the tap is journaled `waiting`, the reply is "⏳ Market closed; card valid until Www DD HH:MM NY. Next regular open YYYY-MM-DD HH:MM UTC." and Telegram restores the tapped button. |
 
 A price fetch failure, or a tap-time session/gate read failure (regime, macro,
 earnings), refuses the tap with a retryable message and leaves the card `PENDING`
@@ -266,6 +267,15 @@ exactly as it was — safe to tap again. All tap-time reads share one 15-second 
 (the tapped execute button plus dismiss) on the card so the operator can retry
 without a fresh scan; a multi-tier card only gets back the tier that was actually
 tapped, since the others are not reconstructable from the reply alone.
+
+**Card validity option (October 8).** `card_policy.validity: next_session_close` keeps a native,
+non-policy-locked equity card valid until the next trading day's regular close (holidays skipped,
+early closes kept) instead of today's; the card shows `Valid until: Www DD HH:MM NY` (the dated form is used whenever the close falls after
+the New York issue date, for example a CME evening-session futures card, not only under this option). A tap while the
+market is closed then answers `WAITING` and the card stays live; the next session's tap re-prices or
+misses as usual, and a scan skips a setup that already has a live card (`live card pending`). The
+default `session_close` keeps every existing tap result. See
+[card evidence](card-evidence.md#card-validity).
 
 **Session-close card sweep (September 24).** Correctness never depended on the buttons
 themselves, only on tap-time re-assessment — but an untapped card's Execute/Dismiss kept
@@ -432,6 +442,19 @@ carried across a whole chain of re-prices, so a twice-repriced card still cites 
 original issue time. A legacy card without `valid_until` expires on the New York
 date change instead.
 
+**Card wording and measured record (October 8).** A card's title reads `📋 SETUP: …` (it was
+`🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line a
+native card states the measured record of its own `(strategy, direction)` from the latest
+`card_stats` snapshot in this scope — the number of mature candidates since the key's first journaled
+decision (New York date), target/stop/timeout rates, mean R after cost and the implied EV at the card's
+own ratio — or says `insufficient evidence (N/MIN mature candidates)` (MIN is
+`card_policy.min_mature_cards`), `statistics stale (last computed DATE)` or `no statistics in this
+scope` (every dry scan, and a key over the floor without a finite mean R). The block always ends
+with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
+the scan summary and the cards state no statistics. `Macro Check` is the deterministic lockout gate:
+a card that reached the LLM passed it, so it reads Cleared whatever the LLM wrote. Contract and
+limits: [card evidence](card-evidence.md#evidence-block).
+
 **Evidence.** Every assessed tap appends one `card_tap_assessed` domain event to the
 `card/{signal_id}` stream, written after the outcome's state transition: outcome,
 tap latency in seconds, price, `r_consumed`, reason, `applied` (whether the transition
@@ -580,7 +603,37 @@ the planned entry and stop taken from the card as sent (the signal's `raw_respon
 LLM-moved stop or a re-priced entry is the one that traded; `planned_source` says when the
 journal had to stand in). The applied tap's age is reported too. Missing fill evidence and
 missing signal rows are counted, never zeroed. All of it is descriptive, never a gate.
-None of it ranks, gates or sizes a card.
+The report itself never ranks, gates or sizes a card; the one gate derived from the same labels is
+`card_policy` (below).
+
+**Card policy (October 8).** `card_policy.mode` is the one gate derived from these outcomes, and it
+ships `off`. Operate it in three steps: leave `off` until a `card_stats` snapshot exists; set
+`preview` with `min_measured_ev` (mean R after cost, for example `0.0`) and read `would_withhold` in
+`cards outcomes` (summary block `card_policy`) and the `card_policy_would_withhold` log lines for a few
+sessions; only then set `enforce`. Under `enforce`, a native candidate whose `(strategy, direction)`
+has at least `min_mature_cards` (20) mature labels and a measured mean below the threshold is skipped
+before the LLM with the fixed outcome `card_policy_withheld` (runner-up reason `card policy: measured
+EV …R over N < …R`); it spends no card or LLM budget and the next rank is considered. Insufficient,
+stale, unavailable or partial evidence (a key with any bar-fetch failure, `n_fetch_failed`) never
+withholds, and a policy-locked card (versioned alpha or paper probe) is outside the policy: it shows
+its evidence and its `card_policy` block is null. Withheld candidates stay journaled (scheduled
+suggestion scans) and keep being labelled, so a strategy can recover. A mode change is a config edit plus the controlled restart. See
+[card evidence](card-evidence.md#send-policy).
+
+**Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:
+once per New York date after `card_policy.stats_time_et` (08:30), outside the suggestion-scan
+windows and while no scan is running, it labels the last 90 days of journaled candidates and appends
+one `card_stats_snapshot` event (`copilot db events --stream card_stats`). `/readyz` includes
+`card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day
+without a snapshot the first poll labels before it reports `recorded`; it observes `labelling N scan
+events` first. A failed run (every bar fetch failed) writes nothing, turns `card_stats` not ready with
+`CardStatsUnavailable: every bar fetch failed for N candidates: TYPE` in its detail (exception type
+names only; any other error shows its type only; the log has the messages) and retries on the next
+poll. It stays not ready with that detail for the rest of the New York date, including the idle polls
+around the scan slots, until a poll finds or records today's snapshot; cards keep the previous
+snapshot until it is four days old and then say `statistics stale`. A shutdown during a labelling run records nothing, but
+process exit waits for the labelling thread's provider reads to finish. Details:
+[card evidence](card-evidence.md#card-statistics-snapshot).
 
 Switching live ranking away from `setup_quality` to a shadow score is an operator
 decision, not something this report or the shadow block can do by itself. It needs a
@@ -632,7 +685,9 @@ universe:
 - instruments scanned versus selected — the digest's `N scanned` and the `scan`
   readiness detail; `0 of N instruments scanned` is a data failure, not a quiet market.
 
-`market_data.max_requests_per_minute` paces **the scan fetcher only**. Other workers
+`market_data.max_requests_per_minute` paces **the scan fetcher only**; the daily
+card-statistics labeller applies the same number through its own separate pacer and
+never starts inside a suggestion-scan window or while a scan is running. Other workers
 share the same provider feed — the prospective daily-panel worker, the forward
 observers and the one-minute position monitor — so the real per-feed request rate is
 the sum of all of them, and the 150/minute setting is headroom under the 200/minute

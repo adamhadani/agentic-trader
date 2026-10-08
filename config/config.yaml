@@ -448,6 +448,18 @@ scan:
   coverage_sessions: 10
   coverage_reference_symbol: "SPY"
 
+# Honest cards (docs/card-evidence.md): measured-evidence send policy, statistics worker, card validity.
+# Quote "off": YAML reads a bare off as false (the loader maps false back to "off").
+card_policy:
+  mode: "off"             # off -> preview -> enforce, an operator decision after reading the evidence
+  min_measured_ev: null   # R after cost; required for preview and enforce
+  min_mature_cards: 20
+  stats_window_days: 90
+  stats_time_et: "08:30"
+  stats_poll_seconds: 300
+  stats_max_age_seconds: 345600
+  validity: "session_close"
+
 database:
   name: "signals"
   url: "postgresql+asyncpg://adamhadani@localhost:5432/agentic_trader"

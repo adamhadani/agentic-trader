@@ -194,3 +194,19 @@ async def test_session_readiness_uses_current_run_progress(store, app_config, mo
         assert component not in checks
     else:
         assert checks[component]["ready"] == (mode == "fresh")
+
+
+@pytest.mark.parametrize("mode", ["disabled", "missing", "fresh", "long-weekend", "stale", "failure"])
+async def test_card_stats_readiness_spans_a_long_weekend(store, app_config, mode):
+    readiness = ReadinessService(
+        store, app_config, MetricsCollector(), run_id="current", card_stats_enabled=mode != "disabled"
+    )
+    if mode not in ("disabled", "missing"):
+        await store.record_health(HealthComponent.CARD_STATS, mode != "failure", run_id="current")
+    offset = {"long-weekend": timedelta(days=3, hours=23), "stale": timedelta(days=4, seconds=1)}.get(mode, timedelta())
+    checks = (await readiness.report(now=datetime.now(UTC) + offset))["checks"]
+    if mode == "disabled":
+        assert "card_stats" not in checks
+    else:
+        assert checks["card_stats"]["ready"] == (mode in ("fresh", "long-weekend"))
+        assert checks["card_stats"]["max_age_seconds"] == 345600

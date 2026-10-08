@@ -4,7 +4,7 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any
 
@@ -45,6 +45,7 @@ from agentic_trader.constants import (
     RuntimeEnvironment,
     SignalStatus,
 )
+from agentic_trader.execution.card_evidence import format_evidence_lines, parse_card_evidence
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.transport import (
@@ -85,6 +86,29 @@ def _ny_hhmm(value: str | None) -> str | None:
     return parsed.strftime("%H:%M") if parsed else None
 
 
+def _valid_until_text(valid_until: str | None, issued_at: str | None) -> str | None:
+    """``HH:MM NY`` when the close is on the card's issue date (or the issue date is unknown), else ``Www DD HH:MM NY``."""
+    until = _ny_datetime(valid_until)
+    if until is None:
+        return None
+    issued = _ny_datetime(issued_at)
+    if issued is not None and issued.date() != until.date():
+        return f"{until:%a %d %H:%M} NY"
+    return f"{until:%H:%M} NY"
+
+
+def _issued_at(row: dict[str, Any] | None) -> str | None:
+    """A signal row's issue time (naive UTC ``YYYY-MM-DD HH:MM:SS``) as an aware ISO string, or None."""
+    raw = (row or {}).get("timestamp")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)).isoformat()
+
+
 def _exec_button_label(execution_mode: str) -> str:
     mode_lower = execution_mode.lower()
     if mode_lower == ExecutionMode.PAPER:
@@ -94,6 +118,14 @@ def _exec_button_label(execution_mode: str) -> str:
     if mode_lower == ExecutionMode.ALPACA:
         return "🚀 Execute (Alpaca)"
     return "✅ Acknowledge & Tracking"
+
+
+def _evidence_block(card_evidence: Any, strategy: str, eval_res: LLMTradeEvaluation, *, markup: bool) -> str:
+    """The card's measured-record lines, newline-terminated; empty for a card recorded without evidence."""
+    evidence = parse_card_evidence(card_evidence, strategy=strategy, direction=eval_res.direction)
+    if evidence is None:
+        return ""
+    return "".join(f"{line}\n" for line in format_evidence_lines(evidence, eval_res.risk_reward_ratio, html=markup))
 
 
 def format_alert_card(
@@ -107,18 +139,22 @@ def format_alert_card(
     reprices: int | None = None,
     first_issued_at: str | None = None,
     drift: dict[str, Any] | None = None,
+    card_evidence: dict[str, Any] | None = None,
+    issued_at: str | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
     ``drift`` (a PEAD catalog-probe card's ``drift_card_facts``) adds the event and
     holding facts between the probe header and the card; None leaves the card unchanged.
+    ``card_evidence`` (the scan's ``CardEvidence`` dump) renders the measured-record block
+    right after the target line; None renders none.
     """
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     earnings_line = f"• <b>Earnings:</b> {html.escape(eval_res.earnings_note)}\n" if eval_res.earnings_note else ""
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
-    valid_until_hhmm = _ny_hhmm(valid_until)
-    valid_until_line = f"• <b>Valid until:</b> {valid_until_hhmm} NY\n" if valid_until_hhmm else ""
+    valid_until_text = _valid_until_text(valid_until, issued_at)
+    valid_until_line = f"• <b>Valid until:</b> {valid_until_text}\n" if valid_until_text else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -222,16 +258,19 @@ def format_alert_card(
             "unless the stop or target fills first\n\n"
         )
 
+    evidence_block = _evidence_block(card_evidence, strategy, eval_res, markup=True)
+
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
         f"{drift_block}"
         f"{updated_card_prefix}"
-        f"🚨 <b>TRADE SIGNAL: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
+        f"📋 <b>SETUP: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
         f"<b>Strategy:</b> {html.escape(strategy)}\n\n"
         f"📊 <b>Levels</b>\n"
         f"• <b>Entry Price:</b> <code>{eval_res.entry_price:,.2f}</code>\n"
         f"• <b>Stop Loss:</b> <code>{eval_res.stop_loss:,.2f}</code> (-{eval_res.stop_distance_points:.2f} pts | -${eval_res.risk_dollars:,.2f})\n"
-        f"• <b>Target ({eval_res.risk_reward_ratio:.1f}:1):</b> <code>{eval_res.take_profit:,.2f}</code> (+{eval_res.target_distance_points:.2f} pts | +${eval_res.reward_dollars:,.2f})\n\n"
+        f"• <b>Target ({eval_res.risk_reward_ratio:.1f}:1):</b> <code>{eval_res.take_profit:,.2f}</code> (+{eval_res.target_distance_points:.2f} pts | +${eval_res.reward_dollars:,.2f})\n"
+        f"{evidence_block}\n"
         f"🛡️ <b>Risk &amp; Portfolio Context</b>\n"
         f"• <b>Capital Risk:</b> {risk_pct}% of ${portfolio_cash:,.0f}\n"
         f"• <b>Notional Exposure:</b> ~${eval_res.notional_value:,.2f} ({eval_res.effective_leverage:.2f}x leverage)\n"
@@ -262,14 +301,20 @@ def format_terminal_card(
     valid_until: str | None = None,
     reprices: int | None = None,
     first_issued_at: str | None = None,
+    card_evidence: dict[str, Any] | None = None,
+    issued_at: str | None = None,
 ) -> str:
-    """ASCII/plain text formatted card for terminal display."""
+    """ASCII/plain text formatted card for terminal display.
+
+    ``card_evidence`` renders the same measured-record block as the Telegram card, from the
+    same helper, right after the target line; None renders none.
+    """
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     earnings_line = f"• Earnings:         {eval_res.earnings_note}\n" if eval_res.earnings_note else ""
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
-    valid_until_hhmm = _ny_hhmm(valid_until)
-    valid_until_line = f"• Valid until:      {valid_until_hhmm} NY\n" if valid_until_hhmm else ""
+    valid_until_text = _valid_until_text(valid_until, issued_at)
+    valid_until_line = f"• Valid until:      {valid_until_text}\n" if valid_until_text else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -353,17 +398,19 @@ def format_terminal_card(
             sizing_lines.extend(f"  [Risk Gate] {g}" for g in gating)
         sizing_section = "\n".join(sizing_lines) + "\n"
 
+    evidence_block = _evidence_block(card_evidence, strategy, eval_res, markup=False)
+
     border = "=" * 65
     return f"""
 {border}
-{updated_card_prefix}🚨 TRADE SIGNAL: {qty_str} {eval_res.contract} ({eval_res.direction})
+{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})
 Strategy: {strategy}
 
 📊 Levels
 • Entry Price: {eval_res.entry_price:,.2f}
 • Stop Loss:   {eval_res.stop_loss:,.2f} (-{eval_res.stop_distance_points:.2f} pts | -${eval_res.risk_dollars:,.2f})
 • Target:      {eval_res.take_profit:,.2f} (+{eval_res.target_distance_points:.2f} pts | +${eval_res.reward_dollars:,.2f} [{eval_res.risk_reward_ratio:.1f}:1])
-
+{evidence_block}
 🛡️ Risk & Portfolio Context
 • Asset Class:      {asset_class}
 • Capital Risk:     {risk_pct}% of ${portfolio_cash:,.0f}
@@ -1208,10 +1255,17 @@ class TelegramNotifier:
         reprices: int | None = None,
         first_issued_at: str | None = None,
         drift: dict[str, Any] | None = None,
+        card_evidence: dict[str, Any] | None = None,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
         # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
         # (a PEAD catalog-probe scan card only) is rendered on the Telegram card.
+        # ``card_evidence`` (native scan cards and their replacements) renders the
+        # measured-record block on both cards; payloads queued before it existed omit it.
+        # The signal row is read once: its timestamp dates ``Valid until`` (a close after the
+        # issue date names its day) and its status guards the buttons below.
+        row = await self.db.get_signal_by_id(signal_id) if self.db else None
+        issued_at = _issued_at(row)
         # Always output to terminal/logs
         print(
             format_terminal_card(
@@ -1223,6 +1277,8 @@ class TelegramNotifier:
                 valid_until=valid_until,
                 reprices=reprices,
                 first_issued_at=first_issued_at,
+                card_evidence=card_evidence,
+                issued_at=issued_at,
             )
         )
 
@@ -1244,6 +1300,8 @@ class TelegramNotifier:
             reprices=reprices,
             first_issued_at=first_issued_at,
             drift=drift,
+            card_evidence=card_evidence,
+            issued_at=issued_at,
         )
 
         # A retried SIGNAL delivery can land after the card already left PENDING -- for
@@ -1251,7 +1309,7 @@ class TelegramNotifier:
         # delivered. Never re-offer Execute/Dismiss on a card that is no longer live; only
         # an EXPIRED card still gets a Re-evaluate button (the handler itself refuses a
         # non-configured contract with a clear message).
-        current_status = (await self.db.get_signal_by_id(signal_id) or {}).get("status") if self.db else None
+        current_status = (row or {}).get("status") if self.db else None
         if current_status is not None and current_status != SignalStatus.PENDING:
             reply_markup = (
                 InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Re-evaluate", callback_data=f"reval_{signal_id}")]])

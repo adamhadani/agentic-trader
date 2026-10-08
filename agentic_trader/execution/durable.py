@@ -60,17 +60,19 @@ class EventKind(StrEnum):
     CARD_TAP_ASSESSED = "card_tap_assessed"
     CARD_REEVALUATE_REQUESTED = "card_reevaluate_requested"
     PEAD_DECISION = "pead_decision"
+    CARD_STATS_SNAPSHOT = "card_stats_snapshot"
 
 
 class RankedOutcome(StrEnum):
     """Fixed outcomes of a ranked suggestion-scan candidate (``scan_candidates_ranked``).
 
     Free-text reasons (``"per-scan budget spent"``, ``"rejected: …"``) stay plain strings;
-    these two are the outcomes a reader must recognise without parsing text.
+    these are the outcomes a reader must recognise without parsing text.
     """
 
     SENT = "sent"
     LLM_VETOED = "llm_vetoed"
+    CARD_POLICY_WITHHELD = "card_policy_withheld"
 
 
 class NotificationKind(StrEnum):

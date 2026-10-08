@@ -238,6 +238,27 @@ async def test_stale_card_is_repriced_into_one_new_pending_card_without_authoriz
     assert len(await temp_db.workflows.list_work(WorkKind.NOTIFICATION)) == 1
 
 
+async def test_a_repriced_card_carries_the_original_evidence_block(tap_desk, temp_db):
+    evidence = {
+        "status": "insufficient",
+        "strategy": "TREND_PULLBACK",
+        "direction": "LONG",
+        "n_mature": 4,
+        "min_mature": 20,
+    }
+    sid = await record_card(temp_db, age_seconds=3600, provenance_extra={"card_evidence": evidence})
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0  # +0.4R -> REPRICE
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    [notification] = await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+    arguments = notification.payload["arguments"]
+    assert arguments["card_evidence"] == evidence
+    assert (await temp_db.get_signal_by_id(arguments["signal_id"]))["decision_provenance"]["card_evidence"] == evidence
+    rebuilt = LLMTradeEvaluation.model_validate(arguments["eval_res"])
+    inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **{**arguments, "eval_res": rebuilt})
+
+
 async def test_stale_card_at_a_float_noise_minimum_reward_risk_is_still_repriced(tap_desk, temp_db):
     # Live card #20 (2026-09-24): these levels give 1.9999999999999973 in floats, 2.00 as approved.
     sid = await record_card(temp_db, age_seconds=3600, entry=240.46, stop=229.90, target=261.58, quantity=23.0)
@@ -331,7 +352,8 @@ async def test_card_past_its_session_expires_with_the_next_regular_open(tap_desk
     tap_desk.entry_service.authorize.assert_not_awaited()
 
 
-async def test_card_tapped_outside_rth_expires(tap_desk, temp_db):
+async def test_card_tapped_outside_rth_expires(tap_desk, temp_db, app_config):
+    app_config.card_policy.validity = "session_close"
     sid = await record_card(temp_db)
     tap_desk.session_provider.get_session_info.return_value = session_info(is_open=False, is_rth=False)
 

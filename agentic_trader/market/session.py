@@ -576,6 +576,28 @@ class CompositeMarketCalendar:
         return await runner.ainvoke(start_date, end_date)
 
 
+async def next_regular_close_after(calendar: Any, now: datetime, *, horizon_days: int = 10) -> datetime | None:
+    """The next trading day's regular close after ``now``'s New York date, in UTC.
+
+    Walks ``calendar.get_calendar_range`` over the following ``horizon_days`` New York dates,
+    skipping non-trading days, and returns the first trading day's ``close_time`` (an early close
+    included). None when ``now`` is naive, the calendar fails or the horizon holds no trading
+    day with a close: callers keep today's close.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        return None
+    today = now.astimezone(ET_TZ).date()
+    try:
+        days = await calendar.get_calendar_range(today + timedelta(days=1), today + timedelta(days=horizon_days))
+    except Exception:
+        logger.warning("Market calendar unavailable for the next regular close", exc_info=True)
+        return None
+    for day in sorted(days, key=lambda item: item.date):
+        if day.date > today and day.is_trading_day and day.close_time is not None:
+            return datetime.combine(day.date, day.close_time, ET_TZ).astimezone(UTC)
+    return None
+
+
 @dataclass
 class MarketSessionInfo:
     """Detailed snapshot of the trading session state for an instrument."""

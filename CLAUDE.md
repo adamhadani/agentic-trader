@@ -109,6 +109,11 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
    catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure and
    fill slippage; these are descriptive, never gates.
+   The one gate derived from measured outcomes is `card_policy` ([card evidence](docs/card-evidence.md)):
+   operator-configured, default `off`, `preview` before `enforce`, withholding native cards only on
+   complete measured evidence above a sample floor (`card_policy_withheld`; partial, stale or missing
+   evidence never withholds; alpha, probe and catalog cards are exempt), and never touching risk,
+   admission or the broker.
 9. **Language:** `/macro` owns combined volatility/macro context; no `/regime` alias.
    Render configured policy and real feed dates. GEX is a research estimate with
    quality notes, never fabricated spot data or measured dealer inventory.
@@ -204,8 +209,11 @@ B failed again (3/10), so the pooled genetic campaign is **parked**: no campaign
 charged, confirmation window unused ([v3 checks](docs/alpha-pooled-checks-v3-2026-10-05.md)).
 Reopening it needs a new spec and operator approval. Protocol v4 is a fixed-set protocol
 (eight predeclared literature formulas, decile selection, no search): it runs with checks
-A and C only; its campaign still consumes the one-use confirmation window and needs
-operator approval.
+A and C only. On 2026-10-07 both passed and the approved campaign found **no finalists**
+(seven of eight formulas have a negative discovery edge), so nothing froze, the confirmation
+window is still unused, and the fixed-set lane is closed on this window
+([v4 checks](docs/alpha-pooled-checks-v4-2026-10-07.md)). The next alpha source is an
+operator decision.
 
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
