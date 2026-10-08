@@ -225,7 +225,8 @@ class CardPolicyConfig(BaseModel):
 
     Ships off: the evidence block is always rendered, but nothing is withheld until the operator
     sets ``preview`` (journal ``would_withhold``, still send) and then ``enforce``. It withholds
-    only on measured evidence and is not a risk rule.
+    native cards only on complete measured evidence (partial, stale or missing evidence never
+    withholds; alpha, probe and drift cards are exempt) and is not a risk rule.
     """
 
     model_config = {"extra": "forbid"}

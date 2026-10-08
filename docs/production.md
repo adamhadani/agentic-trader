@@ -447,8 +447,8 @@ date change instead.
 native card states the measured record of its own `(strategy, direction)` from the latest
 `card_stats` snapshot in this scope — the number of mature candidates since the key's first journaled
 decision (New York date), target/stop/timeout rates, mean R after cost and the implied EV at the card's
-own ratio — or says `insufficient evidence (N/MIN mature candidates)`, where MIN is
-`card_policy.min_mature_cards`, `statistics stale (last computed DATE)` or `no statistics in this
+own ratio — or says `insufficient evidence (N/MIN mature candidates)` (MIN is
+`card_policy.min_mature_cards`), `statistics stale (last computed DATE)` or `no statistics in this
 scope` (every dry scan, and a key over the floor without a finite mean R). The block always ends
 with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
 the scan summary and the cards state no statistics. `Macro Check` is the deterministic lockout gate:

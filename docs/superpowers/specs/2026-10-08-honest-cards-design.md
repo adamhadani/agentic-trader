@@ -271,7 +271,7 @@ TDD per task; integration-style regression each task; adversarial cases:
 - D2 "Measured line": it reads `• <b>Measured record</b> ({strategy}, {direction}): {n} mature
   candidates since {first_decided_at:%Y-%m-%d}: …` — candidates, not cards (the count includes
   runners-up), dated from the key's first journaled decision (New York date), falling back to
-  `window_start` when the key has none.
+  `window_start` when the key has none. The insufficient line likewise says `mature candidates`.
 - D3 "Policy-locked cards": a native candidate with `alpha_version`, `alpha_policy` or `probe` gets
   no card-policy decision (never withheld or `would_withhold`; its `card_policy` journal and
   provenance block has every field null) and still renders its evidence block. `probe_block_reason`

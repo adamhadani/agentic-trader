@@ -62,7 +62,7 @@ class CardKeyStats(BaseModel, frozen=True, allow_inf_nan=False):
     last_decided_at: AwareDatetime | None
 
 
-class CardStatsSnapshot(BaseModel, frozen=True):
+class CardStatsSnapshot(BaseModel, frozen=True, allow_inf_nan=False):
     """The persisted ``card_stats_snapshot`` payload. Unknown keys are ignored, so a rollback still reads it."""
 
     computed_at: AwareDatetime

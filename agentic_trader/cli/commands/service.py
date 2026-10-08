@@ -297,7 +297,8 @@ async def run_card_stats_worker(copilot, config, readiness) -> None:
 
     Polls every ``card_policy.stats_poll_seconds``. An idle poll (not yet due, inside a
     suggestion-scan window, today's snapshot present, or a scan holding the scan lock), the
-    start of a labelling run and a recorded snapshot observe ``card_stats`` ready; a failure (for
+    start of a labelling run and a recorded snapshot observe ``card_stats`` ready unless a failure
+    from the same New York date is held; a failure (for
     example every bar fetch failing) writes nothing and observes it failed (``CardStatsUnavailable``
     with its message, any other error by type only), so the previous snapshot stays authoritative
     until it ages out. A failure is remembered for the rest of its New York date: until a snapshot

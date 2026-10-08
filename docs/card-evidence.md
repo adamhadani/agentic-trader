@@ -56,7 +56,8 @@ Payload (`CardStatsSnapshot`, `agentic_trader/research/setups/card_stats.py`):
   direction count only in the aggregate. Every number is finite or null.
 
 Readiness: every successful poll (detail `not_due`, `scan_window`, `present`, `scan_busy` or
-`recorded`) and the start of a labelling run (`labelling N scan events`) observe `card_stats` ready;
+`recorded`) and the start of a labelling run (`labelling N scan events`) observe `card_stats` ready unless a
+failure from the same New York date is held;
 a failure observes it failed. The detail of `CardStatsUnavailable` is `CardStatsUnavailable: every
 bar fetch failed for N candidates: TYPE, …` (up to three exception type names, first 200 characters);
 any other error's detail is its type name only, because readiness details reach Telegram incident
