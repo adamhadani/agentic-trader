@@ -51,7 +51,7 @@ def test_drift_card_shows_the_event_and_the_time_exit(eval_res):
     assert EVENT_LINE in text
     assert HOLD_LINE in text
     # Probe header, drift block, then the ordinary card.
-    assert text.index("PAPER PROBE") < text.index(EVENT_LINE) < text.index(HOLD_LINE) < text.index("TRADE SIGNAL")
+    assert text.index("PAPER PROBE") < text.index(EVENT_LINE) < text.index(HOLD_LINE) < text.index("📋 <b>SETUP:")
     assert text.endswith(format_alert_card(eval_res, "pead_long"))
 
 

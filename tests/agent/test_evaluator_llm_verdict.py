@@ -100,3 +100,30 @@ async def test_no_verdict_when_the_llm_did_not_decide(evaluator_factory, monkeyp
     monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", failing)
     fallback = await evaluator.evaluate_candidate(native_candidate(), use_llm=True)
     assert fallback.approved is True and fallback.llm_verdict is None
+
+
+async def test_macro_line_is_the_deterministic_gate_not_the_llm(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    completion(
+        monkeypatch, approved=True, rejection_reason=None, stop_loss=49.9, take_profit=60.0, macro_clearance=False
+    )
+
+    result = await evaluator.evaluate_candidate(native_candidate(), use_llm=True)
+
+    assert result.llm_verdict is not None  # the LLM path, not the deterministic fallback
+    assert result.macro_clearance is True
+
+
+async def test_an_llm_answer_without_macro_clearance_is_not_a_fallback(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = evaluator_factory()
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    document = {**LLM_VETO, "approved": True, "rejection_reason": None, "stop_loss": 49.9, "take_profit": 60.0}
+    del document["macro_clearance"]
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(document)))])
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", AsyncMock(return_value=response))
+
+    result = await evaluator.evaluate_candidate(native_candidate(), use_llm=True)
+
+    assert result.llm_verdict is not None and result.macro_clearance is True
+    assert not result.thesis_summary.startswith("Automated thesis")

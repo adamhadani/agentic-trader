@@ -691,6 +691,9 @@ class RiskEvaluator:
             data["effective_leverage"] = effective_leverage
             data["quantity"] = quantity
             data["asset_class"] = asset_class
+            # A candidate that reached the LLM already passed the deterministic macro lockout gate
+            # (step 2 above); the card's Macro Check states that gate, never the LLM's own value.
+            data["macro_clearance"] = True
 
             # Invalidation guarantee: stop distance >= 1.5 * ATR
             llm_stop = float(data.get("stop_loss", stop_loss))

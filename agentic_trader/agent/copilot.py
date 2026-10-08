@@ -49,6 +49,7 @@ from agentic_trader.constants import (
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
+from agentic_trader.execution.card_evidence import CardEvidence, CardStatsRepository, lookup
 from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import (
     EventKind,
@@ -92,6 +93,7 @@ from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
+from agentic_trader.research.setups.card_stats import CardStatsSnapshot
 from agentic_trader.research.setups.ranker import (
     cached_ranker,
     finite_or_none,
@@ -227,6 +229,7 @@ class TradingCopilot:
         alpha_repository: AlphaRepository | None = None,
         dynamic_universe: DynamicUniverseSource | None = None,
         earnings_drift: EarningsDriftService | None = None,
+        card_stats: CardStatsRepository | None = None,
     ):
         self._dry_run_directory: TemporaryDirectory[str] | None = None
         self._reconciliation_lock = asyncio.Lock()
@@ -256,6 +259,8 @@ class TradingCopilot:
             else AlphaRepository(self.db.workflows, policy=self.config.alpha_pipeline)
         )
         self.alpha_shadow = AlphaShadowService(self.alpha_repository)
+        # Read side of the daemon's daily card statistics; tests inject a fake with a fixed snapshot.
+        self.card_stats = card_stats if card_stats is not None else CardStatsRepository(self.db.workflows)
         self.strategy_engine = StrategyEngine(config)
         # Read-only screener/asset access for the scheduled suggestion scan's dynamic names.
         self.dynamic_universe: DynamicUniverseSource | None = dynamic_universe
@@ -1104,6 +1109,23 @@ class TradingCopilot:
             outcomes: list[str | None] = [None] * len(ranked)
             llm_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             signal_ids_by_rank: list[int | None] = [None] * len(ranked)
+            # EVIDENCE: one snapshot read per scan; every native card states its own (strategy,
+            # direction) record. Drift cards keep their PEAD block and carry none.
+            card_policy = self.config.card_policy
+            snapshot = await self._card_stats_snapshot(summary)
+            evidence_by_rank: list[CardEvidence | None] = [
+                None
+                if getattr(candidate, "catalog_event", None) is not None
+                else lookup(
+                    snapshot,
+                    candidate.strategy,
+                    candidate.direction,
+                    now=decided_at,
+                    max_age=timedelta(seconds=card_policy.stats_max_age_seconds),
+                    min_mature=card_policy.min_mature_cards,
+                )
+                for candidate, _det_res, _account_risk in ranked
+            ]
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
             if budget == ScanBudget.NONE:
@@ -1213,6 +1235,11 @@ class TradingCopilot:
                         )
                         continue
 
+                    evidence = evidence_by_rank[rank - 1]
+                    card_evidence = evidence.model_dump(mode="json") if evidence is not None else None
+                    evidence_keys: dict[str, Any] = (
+                        {"card_evidence": card_evidence} if card_evidence is not None else {}
+                    )
                     if dry_run:
                         logger.info("[DRY RUN] Approved signal would be emitted:")
                         print(
@@ -1221,6 +1248,7 @@ class TradingCopilot:
                                 candidate.strategy,
                                 self.config.portfolio.cash,
                                 regime_summary=regime.summary_text,
+                                card_evidence=card_evidence,
                             )
                         )
                         continue
@@ -1248,6 +1276,7 @@ class TradingCopilot:
                             "budget": str(budget),
                             "shadow_ranker": shadow_by_rank[rank - 1],
                             "llm_verdict": llm_by_rank[rank - 1],
+                            **evidence_keys,
                             # A drift card is never tagged dynamic; catalog admission requires
                             # its same-session event naming the contract.
                             **(
@@ -1286,6 +1315,7 @@ class TradingCopilot:
                                 if is_drift and drift_prep is not None and self.earnings_drift is not None
                                 else {}
                             ),
+                            **({"card_evidence": card_evidence} if card_evidence is not None else {}),
                             **validity,
                         },
                     )
@@ -1519,6 +1549,23 @@ class TradingCopilot:
             return None, f"rejected: {det_res.rejection_reason}"
 
         return (candidate, det_res, account_risk), None
+
+    async def _card_stats_snapshot(self, summary: dict[str, Any]) -> CardStatsSnapshot | None:
+        """The latest ``card_stats`` snapshot in this scope, read once per scan.
+
+        Evidence only: a failed read is recorded as ``card_stats_error`` and every card then
+        states that no statistics are available; it never blocks a card.
+        """
+        try:
+            return await self.card_stats.latest()
+        except Exception as exc:
+            summary["card_stats_error"] = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "Card statistics unavailable for this scan: %s",
+                summary["card_stats_error"],
+                extra={"event": "card_stats_read_failed"},
+            )
+            return None
 
     async def _shadow_blocks(
         self,
@@ -2983,6 +3030,8 @@ class TradingCopilot:
             if old_provenance.get(PAPER_PROBE_TAG)
             else None,
             **({"valid_until": valid_until} if valid_until else {}),
+            # The original card's evidence, unchanged (it is decision-time evidence, not re-looked-up).
+            **({"card_evidence": old_provenance["card_evidence"]} if old_provenance.get("card_evidence") else {}),
             "reprices": signal_id,
             "first_issued_at": first_issued_at,
         }

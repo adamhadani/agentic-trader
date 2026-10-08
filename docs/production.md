@@ -432,6 +432,18 @@ carried across a whole chain of re-prices, so a twice-repriced card still cites 
 original issue time. A legacy card without `valid_until` expires on the New York
 date change instead.
 
+**Card wording and measured record (October 8).** A card's title reads `📋 SETUP: …` (it was
+`🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line a
+native card states the measured record of its own `(strategy, direction)` from the latest
+`card_stats` snapshot in this scope — mature count since the window start, target/stop/timeout
+rates, mean R after cost and the implied EV at the card's own ratio — or says
+`insufficient evidence (n/20 mature cards)`, `statistics stale (last computed DATE)` or
+`no statistics in this scope` (every dry scan). The block always ends with the italic caveat "Not
+validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
+the scan summary and the cards state no statistics. `Macro Check` is the deterministic lockout gate:
+a card that reached the LLM passed it, so it reads Cleared whatever the LLM wrote. Contract and
+limits: [card evidence](card-evidence.md#evidence-block).
+
 **Evidence.** Every assessed tap appends one `card_tap_assessed` domain event to the
 `card/{signal_id}` stream, written after the outcome's state transition: outcome,
 tap latency in seconds, price, `r_consumed`, reason, `applied` (whether the transition

@@ -425,7 +425,7 @@ def test_format_alert_card_renders_updated_card_prefix_when_reprices_set(eval_re
         first_issued_at=FIRST_ISSUED_UTC,
     )
     assert f"UPDATED CARD (re-priced from #16, first issued {FIRST_ISSUED_NY_HHMM} NY)" in card
-    assert card.index("UPDATED CARD") < card.index("TRADE SIGNAL")
+    assert card.index("UPDATED CARD") < card.index("📋 <b>SETUP:")
 
 
 def test_format_alert_card_omits_updated_card_prefix_when_absent(eval_res):
@@ -463,7 +463,7 @@ def test_format_terminal_card_renders_updated_card_prefix_when_reprices_set(eval
         first_issued_at=FIRST_ISSUED_UTC,
     )
     assert f"UPDATED CARD (re-priced from #16, first issued {FIRST_ISSUED_NY_HHMM} NY)" in card
-    assert card.index("UPDATED CARD") < card.index("TRADE SIGNAL")
+    assert card.index("UPDATED CARD") < card.index("📋 SETUP:")
 
 
 def test_format_terminal_card_omits_updated_card_prefix_when_absent(eval_res):
