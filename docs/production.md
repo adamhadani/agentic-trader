@@ -607,13 +607,16 @@ labelled, so a strategy can recover. A mode change is a config edit plus the con
 [card evidence](card-evidence.md#send-policy).
 
 **Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:
-once per New York date after `card_policy.stats_time_et` (08:30) and outside the suggestion-scan
-windows, it labels the last 90 days of journaled candidates and appends one `card_stats_snapshot`
-event (`copilot db events --stream card_stats`). `/readyz` includes `card_stats` with a four-day
-limit, so weekends and holidays stay ready. After a restart on a day without a snapshot the first
-poll labels before it reports `recorded`; it observes `labelling N scan events` first. A failed run
-(every bar fetch failed) writes nothing and turns `card_stats` not ready; cards keep the previous
-snapshot until it is four days old and then say `statistics stale`. Details:
+once per New York date after `card_policy.stats_time_et` (08:30), outside the suggestion-scan
+windows and while no scan is running, it labels the last 90 days of journaled candidates and appends
+one `card_stats_snapshot` event (`copilot db events --stream card_stats`). `/readyz` includes
+`card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day
+without a snapshot the first poll labels before it reports `recorded`; it observes `labelling N scan
+events` first. A failed run (every bar fetch failed) writes nothing, turns `card_stats` not ready with
+`CardStatsUnavailable: every bar fetch failed …` in its detail (any other error shows its type only;
+the log has the message) and retries on the next poll; cards keep the previous snapshot until it is
+four days old and then say `statistics stale`. A shutdown during a labelling run records nothing, but
+process exit waits for the labelling thread's provider reads to finish. Details:
 [card evidence](card-evidence.md#card-statistics-snapshot).
 
 Switching live ranking away from `setup_quality` to a shadow score is an operator
@@ -668,11 +671,11 @@ universe:
 
 `market_data.max_requests_per_minute` paces **the scan fetcher only**; the daily
 card-statistics labeller applies the same number through its own separate pacer and
-never starts inside a suggestion-scan window. Other workers share the same provider
-feed — the prospective daily-panel worker, the forward observers and the one-minute
-position monitor — so the real per-feed request rate is the sum of all of them, and
-the 150/minute setting is headroom under the 200/minute IEX limit rather than a
-process-wide ceiling. A process-wide per-feed pacer is a
+never starts inside a suggestion-scan window or while a scan is running. Other workers
+share the same provider feed — the prospective daily-panel worker, the forward
+observers and the one-minute position monitor — so the real per-feed request rate is
+the sum of all of them, and the 150/minute setting is headroom under the 200/minute
+IEX limit rather than a process-wide ceiling. A process-wide per-feed pacer is a
 [roadmap follow-up](alpha-roadmap.md); until then, treat a burst of provider
 throttling during a scan as evidence about the *combined* rate.
 

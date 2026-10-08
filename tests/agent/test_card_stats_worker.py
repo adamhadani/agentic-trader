@@ -121,21 +121,83 @@ async def test_labelling_runs_off_the_event_loop(temp_db, app_config):
     try:
         assert await asyncio.to_thread(entered.wait, 2)
         await asyncio.sleep(0)  # the loop still runs while the labeller waits
+        assert not task.done()
     finally:
         release.set()
     assert await asyncio.wait_for(task, 5) == "recorded"
 
 
-async def test_progress_is_observed_before_a_long_labelling_run(temp_db, app_config):
-    progress = AsyncMock()
+async def test_cancelling_a_labelling_run_writes_nothing(temp_db, app_config):
+    """Shutdown cancels the coroutine; the labelling thread runs to completion but records nothing."""
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    class BlockingBars:
+        def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+            entered.set()
+            assert release.wait(2)
+            return AAPL_BARS if symbol == "AAPL" else SPY_BARS
+
     await plant_scan(temp_db)
-    worker, _ = worker_for(temp_db, app_config, on_progress=progress)
+    worker, _ = worker_for(temp_db, app_config, bars=BlockingBars())
+    label = worker._snapshot
+
+    def snapshot(*args):
+        try:
+            return label(*args)
+        finally:
+            finished.set()
+
+    worker._snapshot = snapshot
+    task = asyncio.create_task(worker.run_once(DUE))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+    assert await asyncio.to_thread(finished.wait, 5)  # the thread finished its labelling...
+    await asyncio.sleep(0)
+    assert await worker.repository.latest() is None  # ...and nothing recorded it
+    assert not await worker.repository.exists(DUE.astimezone(ET_TZ).date())
+
+
+async def test_a_running_scan_defers_labelling(temp_db, app_config):
+    busy = [True]
+    await plant_scan(temp_db)
+    worker, bars = worker_for(temp_db, app_config, scan_busy=lambda: busy[0])
+    assert await worker.run_once(DUE) == "scan_busy"
+    assert bars.calls == [] and await worker.repository.latest() is None
+    busy[0] = False
+    assert await worker.run_once(DUE) == "recorded"
+    busy[0] = True
+    assert await worker.run_once(DUE) == "present"  # today's snapshot exists: no scan check needed
+
+
+async def test_progress_is_observed_before_a_long_labelling_run(temp_db, app_config):
+    bars = FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS})
+    reads_at_progress: list[int] = []
+    progress = AsyncMock(side_effect=lambda detail: reads_at_progress.append(len(bars.calls)))
+    await plant_scan(temp_db)
+    worker, _ = worker_for(temp_db, app_config, bars=bars, on_progress=progress)
     await worker.run_once(DUE)
     progress.assert_awaited_once_with("labelling 1 scan events")
+    assert reads_at_progress == [0] and bars.calls  # observed before the first provider read
 
 
 @pytest.mark.parametrize(
-    ("result", "observed"), [("not_due", (True, "not_due")), (RuntimeError("x"), (False, "RuntimeError"))]
+    ("result", "observed"),
+    [
+        ("not_due", (True, "not_due")),
+        # Any other error's message may name a host, DSN or chat: the detail (and so a Telegram
+        # incident notice) carries only its type; the message goes to the log.
+        (ConnectionError("postgresql://trader:secret@db.internal:5432/trader refused"), (False, "ConnectionError")),
+        (
+            CardStatsUnavailable("every bar fetch failed " + "y" * 300),
+            (False, ("CardStatsUnavailable: every bar fetch failed " + "y" * 300)[:200]),  # /readyz explains it
+        ),
+    ],
+    ids=["idle", "other-error-type-only", "card-stats-unavailable-message"],
 )
 async def test_every_poll_observes_readiness(monkeypatch, app_config, temp_db, result, observed):
     stop = asyncio.Event()
@@ -156,6 +218,42 @@ async def test_every_poll_observes_readiness(monkeypatch, app_config, temp_db, r
     copilot = SimpleNamespace(db=temp_db, card_stats=None, _shutdown_event=stop)
     await asyncio.wait_for(service.run_card_stats_worker(copilot, app_config, readiness), 2)
     readiness.observe.assert_awaited_once_with(HealthComponent.CARD_STATS, *observed)
+
+
+async def test_a_database_outage_never_ends_the_worker_loop(monkeypatch, app_config, temp_db):
+    """run_once fails and so does every readiness write (the database is down): the loop polls again."""
+    stop, polls = asyncio.Event(), []
+
+    class Outage:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_once(self, now=None):
+            polls.append(now)
+            if len(polls) == 2:
+                stop.set()
+            raise ConnectionRefusedError("database is down")
+
+    monkeypatch.setattr(service, "CardStatsWorker", Outage)
+    monkeypatch.setattr(service, "runtime_identity", lambda: {"revision": "test-rev"})
+    monkeypatch.setattr(app_config.card_policy, "stats_poll_seconds", 0)
+    readiness = SimpleNamespace(observe=AsyncMock(side_effect=ConnectionRefusedError("database is down")))
+    copilot = SimpleNamespace(db=temp_db, card_stats=None, _shutdown_event=stop)
+    await asyncio.wait_for(service.run_card_stats_worker(copilot, app_config, readiness), 2)
+    assert len(polls) == 2 and readiness.observe.await_count == 2  # one failed observation per poll
+
+
+async def test_the_daemon_worker_waits_while_a_scan_holds_the_lock(monkeypatch, app_config, temp_db):
+    app_config.card_policy.stats_time_et = "00:00"
+    app_config.scheduler.suggestion_scan_times_et = []
+    stop = asyncio.Event()
+    monkeypatch.setattr(service, "runtime_identity", lambda: {"revision": "test-rev"})
+    readiness = SimpleNamespace(observe=AsyncMock(side_effect=lambda *args: stop.set()))
+    copilot = SimpleNamespace(
+        db=temp_db, card_stats=CardStatsRepository(temp_db.workflows), _shutdown_event=stop, scan_running=True
+    )
+    await asyncio.wait_for(service.run_card_stats_worker(copilot, app_config, readiness), 2)
+    readiness.observe.assert_awaited_once_with(HealthComponent.CARD_STATS, True, "scan_busy")
 
 
 async def test_shutdown_cancels_an_in_flight_labelling_run(monkeypatch, app_config, temp_db):
@@ -194,6 +292,20 @@ def test_the_copilots_readiness_tracks_card_stats(app_config, temp_db, mock_noti
         alpha_repository=AsyncMock(),
     )
     assert copilot.readiness.card_stats_enabled is True
+
+
+async def test_scan_running_reflects_the_scan_lock(app_config, temp_db, mock_notifier):
+    copilot = TradingCopilot(
+        app_config,
+        db=temp_db,
+        broker=MagicMock(supports_activity_ledger=False, supports_trade_stream=False),
+        notifier=mock_notifier,
+        alpha_repository=AsyncMock(),
+    )
+    assert copilot.scan_running is False
+    async with copilot._hold_scan_lock(None):
+        assert copilot.scan_running is True
+    assert copilot.scan_running is False
 
 
 async def test_a_recorded_snapshot_reaches_the_next_cards_evidence(budget_desk, temp_db, app_config):  # noqa: F811

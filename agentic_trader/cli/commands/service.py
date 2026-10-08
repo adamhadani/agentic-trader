@@ -33,7 +33,7 @@ from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyP
 from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.observation import SessionObservationService
-from agentic_trader.research.setups.card_stats_worker import CardStatsWorker
+from agentic_trader.research.setups.card_stats_worker import CardStatsUnavailable, CardStatsWorker
 from agentic_trader.runtime import runtime_identity
 from agentic_trader.screeners.earnings_drift import PEAD_DECISION_TIME_ET
 from agentic_trader.storage.alpha_daily import DailyCampaignRepository
@@ -291,11 +291,14 @@ async def run_card_stats_worker(copilot, config, readiness) -> None:
     """Persist one ``card_stats`` snapshot per New York date; readiness is worker progress.
 
     Polls every ``card_policy.stats_poll_seconds``. An idle poll (not yet due, inside a
-    suggestion-scan window, or today's snapshot present), the start of a labelling run and a
-    recorded snapshot observe ``card_stats`` ready; a failure (for example every bar fetch
-    failing) writes nothing and observes it failed, so the previous snapshot stays
-    authoritative until it ages out. Labelling runs in a worker thread; the daemon's shutdown
-    cancels this task rather than waiting for provider reads.
+    suggestion-scan window, today's snapshot present, or a scan holding the scan lock), the
+    start of a labelling run and a recorded snapshot observe ``card_stats`` ready; a failure (for
+    example every bar fetch failing) writes nothing and observes it failed (``CardStatsUnavailable``
+    with its message, any other error by type only), so the previous snapshot stays authoritative
+    until it ages out. Only shutdown or cancellation ends
+    the loop: a failed readiness write (the database is down) is logged and the next poll runs.
+    Labelling runs in a worker thread. The daemon's shutdown cancels this coroutine, so nothing
+    is recorded, but it cannot stop that thread: process exit waits for its provider reads.
     """
     component = HealthComponent.CARD_STATS
     shutdown = copilot._shutdown_event
@@ -306,6 +309,7 @@ async def run_card_stats_worker(copilot, config, readiness) -> None:
         config,
         revision=revision,
         on_progress=lambda detail: readiness.observe(component, True, detail),
+        scan_busy=lambda: copilot.scan_running,
     )
     while not shutdown.is_set():
         try:
@@ -313,7 +317,17 @@ async def run_card_stats_worker(copilot, config, readiness) -> None:
             await readiness.observe(component, True, status)
         except Exception as exc:
             logger.exception("Card statistics worker failed", extra={"event": "card_stats_failed"})
-            await readiness.observe(component, False, type(exc).__name__)
+            # The detail reaches /readyz and Telegram incident notices: only our own outage text
+            # carries a message; any other error's (a host, a DSN) stays in the log above.
+            detail = (
+                f"{type(exc).__name__}: {exc}"[:200] if isinstance(exc, CardStatsUnavailable) else type(exc).__name__
+            )
+            try:
+                await readiness.observe(component, False, detail)
+            except Exception:
+                logger.exception(
+                    "Card statistics readiness could not be recorded", extra={"event": "card_stats_readiness_failed"}
+                )
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown.wait(), timeout=config.card_policy.stats_poll_seconds)
 
@@ -573,7 +587,8 @@ async def daemon(no_llm: bool) -> None:
         )
 
     # One card-statistics snapshot per New York date for the cards' evidence block and the card
-    # policy (docs/card-evidence.md); cancelled at shutdown, never awaited through provider reads.
+    # policy (docs/card-evidence.md). Shutdown cancels it; an in-flight labelling thread finishes
+    # on its own and records nothing.
     card_stats_task = asyncio.create_task(run_card_stats_worker(copilot, config, copilot.readiness))
 
     scheduler = AsyncIOScheduler(
@@ -643,8 +658,13 @@ async def daemon(no_llm: bool) -> None:
         for task in session_tasks:
             await task
         card_stats_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await card_stats_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # A worker that died must not cut the rest of the shutdown short.
+            logger.exception("Card statistics worker ended with an error", extra={"event": "card_stats_task_failed"})
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await workflow_task

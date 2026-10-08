@@ -50,7 +50,10 @@ async def test_blocking_dependencies_leave_event_loop_responsive(operation, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("daily_enabled", [False, True])
-async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch, config, tmp_path, daily_enabled):
+@pytest.mark.parametrize("card_stats_crashed", [False, True], ids=["card-stats-running", "card-stats-crashed"])
+async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(
+    monkeypatch, config, tmp_path, daily_enabled, card_stats_crashed
+):
     config.scheduler.intraday_scan_enabled = False
     config.scheduler.macro_briefing_enabled = False
     scan_ran, monitor_ran, initialized = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -103,10 +106,14 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
         daily_drained.set()
 
     monkeypatch.setattr(service, "run_daily_panel_worker", daily_worker)
-    card_stats_cancelled = asyncio.Event()
+    card_stats_cancelled, card_stats_started = asyncio.Event(), asyncio.Event()
 
     async def card_stats_worker(actual_copilot, actual_config, readiness):
         assert actual_copilot is copilot and actual_config is config and readiness is copilot.readiness
+        card_stats_started.set()
+        if card_stats_crashed:
+            # A task that died with an error must not cut the daemon's shutdown short.
+            raise RuntimeError("card statistics worker died")
         try:
             await asyncio.Event().wait()  # an in-flight labelling run: shutdown cancels it, never drains it
         except asyncio.CancelledError:
@@ -117,15 +124,19 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
     monkeypatch.setattr(service, "run_card_stats_worker", card_stats_worker)
     task = asyncio.create_task(service.daemon.callback.__wrapped__(no_llm=True))
     try:
-        await asyncio.wait_for(asyncio.gather(scan_ran.wait(), monitor_ran.wait()), timeout=5)
+        await asyncio.wait_for(
+            asyncio.gather(scan_ran.wait(), monitor_ran.wait(), card_stats_started.wait()), timeout=5
+        )
+        await asyncio.sleep(0)  # a crashing worker has finished before shutdown begins
     finally:
         task.cancel()
         await task
+    copilot.broker.stop_trade_stream.assert_awaited_once()
     copilot.notifier.stop_polling.assert_awaited_once()
     copilot.cancel_background_scans.assert_awaited_once()
     assert daily_started.is_set() is daily_enabled
     assert daily_drained.is_set() is daily_enabled
-    assert card_stats_cancelled.is_set()  # always registered; cancelled before Telegram stops
+    assert card_stats_cancelled.is_set() is not card_stats_crashed  # always registered; cancelled before Telegram stops
 
 
 @pytest.mark.parametrize(

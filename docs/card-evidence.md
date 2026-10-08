@@ -31,14 +31,16 @@ and rejects `on`/`true`.
 The daemon task `run_card_stats_worker` (readiness component `card_stats`) polls every
 `stats_poll_seconds`. When the New York time is at or after `stats_time_et`, outside every
 suggestion-scan window (each `scheduler.suggestion_scan_times_et` slot from 5 minutes before to 20
-minutes after), and today's key `card_stats/{et_date}` is missing, it reads every
-`scan_candidates_ranked` event of the last `stats_window_days` ET dates
-(`research/setups/sources.scan_ranked_events`), labels them in a worker thread with the outcome
-labeller's protocol defaults (`label_journaled`: 20 sessions, 5 bp per side, SPY proxy) on the
-configured feed, and appends one `card_stats_snapshot` event to stream `card_stats` with key
-`card_stats/{et_date}` (idempotent; retention keeps it). It runs every calendar day; a non-trading
-day's snapshot sees no new scans or bars, so it differs from the previous one only where the window's
-oldest date drops out.
+minutes after), today's key `card_stats/{et_date}` is missing, and no scan holds the scan lock
+(`TradingCopilot.scan_running`: suggestion, swing, intraday or operator scans, including a late
+misfire-grace run), it reads every `scan_candidates_ranked` event of the last `stats_window_days` ET
+dates (`research/setups/sources.scan_ranked_events`), labels them in a worker thread with the
+outcome labeller's protocol defaults (`label_journaled`: 20 sessions, 5 bp per side, SPY proxy) on
+the configured feed, and appends one `card_stats_snapshot` event to stream `card_stats` with key
+`card_stats/{et_date}` (idempotent; retention keeps it). The scan checks apply when a run starts; a
+scan that begins during a labelling run shares the provider with it. The worker runs every calendar
+day without a trading-day check; consecutive non-trading days differ only where the window's oldest
+date drops out.
 
 Payload (`CardStatsSnapshot`, `agentic_trader/research/setups/card_stats.py`):
 
@@ -51,14 +53,22 @@ Payload (`CardStatsSnapshot`, `agentic_trader/research/setups/card_stats.py`):
   mature rows; fetch failures are counted and excluded from every rate; rows without a strategy or
   direction count only in the aggregate. Every number is finite or null.
 
-Readiness: every successful poll (detail `not_due`, `scan_window`, `present` or `recorded`) and the
-start of a labelling run (`labelling N scan events`) observe `card_stats` ready; a failure observes
-it failed with the exception type. If every candidate's bar fetch fails, nothing is written
-(`CardStatsUnavailable`) and the previous snapshot stays authoritative until it is older than
-`stats_max_age_seconds`, when cards say "statistics stale". Shutdown cancels the task instead of
-waiting for a labelling run's provider reads; the next start recomputes. The labeller paces its own
-reads at `market_data.max_requests_per_minute`, apart from the scan's read pool, which is why it
-avoids the scan windows.
+Readiness: every successful poll (detail `not_due`, `scan_window`, `present`, `scan_busy` or
+`recorded`) and the start of a labelling run (`labelling N scan events`) observe `card_stats` ready;
+a failure observes it failed. The detail of `CardStatsUnavailable` is `CardStatsUnavailable: every
+bar fetch failed for N candidates: …` (first 200 characters); any other error's detail is its type
+name only, because readiness details reach Telegram incident notices, and its message goes to the
+log. If every candidate's bar fetch fails, nothing is written (`CardStatsUnavailable`) and
+the previous snapshot stays authoritative until it is older than `stats_max_age_seconds`, when cards
+say "statistics stale". A failure retries on the next poll. Only shutdown ends the loop: if the
+readiness write itself fails (the database is down) the worker logs it and polls again.
+
+Shutdown cancels the worker's coroutine. The snapshot is written only by that coroutine after
+labelling returns, so a cancelled run records nothing and the next start recomputes. The labelling
+thread itself cannot be interrupted: it finishes its provider reads, and process exit waits for it
+(asyncio's default-executor join). The labeller paces its own reads at
+`market_data.max_requests_per_minute`, apart from the scan's read pool, which is why it avoids the
+scan windows and running scans.
 
 ## Evidence block
 

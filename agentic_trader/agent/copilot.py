@@ -507,6 +507,11 @@ class TradingCopilot:
             )
         return self.is_halted
 
+    @property
+    def scan_running(self) -> bool:
+        """True while any ``run_scan`` (suggestion, swing, intraday or operator) holds the scan lock."""
+        return self._scan_lock.locked()
+
     @contextlib.asynccontextmanager
     async def _hold_scan_lock(self, timeout: float | None) -> AsyncIterator[None]:
         """Hold the scan lock; with ``timeout``, give up waiting with ``ScanBusyError``."""
