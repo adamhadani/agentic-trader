@@ -10,8 +10,7 @@ import click
 import pandas as pd
 
 from agentic_trader.cli.utils import coro
-from agentic_trader.config import AppConfig, load_config
-from agentic_trader.data.evidence import BarEvidenceStore
+from agentic_trader.config import load_config
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.execution.durable import EventKind
@@ -27,7 +26,7 @@ from agentic_trader.research.setups.outcomes import (
     label_journaled,
     summarize,
 )
-from agentic_trader.runtime import state_directory
+from agentic_trader.research.setups.sources import build_bar_source, scan_ranked_events
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 
@@ -40,37 +39,10 @@ def cards_group() -> None:
     """Suggestion-card evidence commands."""
 
 
-def build_bar_source(config: AppConfig) -> AlpacaDataProvider:
-    """The suggestion scan's own market-data provider path: raw adjustment, the configured feed."""
-    return AlpacaDataProvider(
-        api_key=config.alpaca_api_key,
-        api_secret=config.alpaca_api_secret,
-        feed=config.market_data.alpaca_feed,
-        request_timeout=config.market_data.timeout_seconds,
-        evidence=BarEvidenceStore(state_directory() / "market-data", config.market_data.evidence),
-    )
-
-
-async def _scan_ranked_events(db: SignalDatabase, days: int, *, now: datetime) -> list[dict[str, Any]]:
-    """Every ``scan_candidates_ranked`` event journaled on each ET calendar date in the window.
-
-    ``_journal_scan_ranking`` stamps one event per scan under stream ``scan/{et_date}``
-    (a date may hold more than one, since a session may run more than one suggestion
-    scan); the reader has no range/prefix query, so this walks each date's exact stream.
-    """
-    et_today = now.astimezone(ET_TZ).date()
-    events: list[dict[str, Any]] = []
-    for offset in range(days):
-        day = et_today - timedelta(days=offset)
-        day_events = await db.workflows.events(stream=f"scan/{day.isoformat()}")
-        events.extend(event for event in day_events if event.get("kind") == EventKind.SCAN_CANDIDATES_RANKED)
-    return events
-
-
 async def _pead_decision_events(db: SignalDatabase, days: int, *, now: datetime) -> list[dict[str, Any]]:
     """Every ``pead_decision`` event's payload journaled on each ET calendar date in the window.
 
-    Mirrors ``_scan_ranked_events``' per-day stream walk, but returns the journaled
+    Mirrors ``scan_ranked_events``' per-day stream walk, but returns the journaled
     payload itself (``decision_frame`` consumes payloads, not the wrapped event).
     """
     et_today = now.astimezone(ET_TZ).date()
@@ -94,7 +66,7 @@ async def outcomes_cmd(days: int) -> None:
     db = SignalDatabase(config=config)
     try:
         now = datetime.now(UTC)
-        events = await _scan_ranked_events(db, days, now=now)
+        events = await scan_ranked_events(db, days, now=now)
         bars = build_bar_source(config)
         frame = label_journaled(
             events,

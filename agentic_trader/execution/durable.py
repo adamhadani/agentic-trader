@@ -60,6 +60,7 @@ class EventKind(StrEnum):
     CARD_TAP_ASSESSED = "card_tap_assessed"
     CARD_REEVALUATE_REQUESTED = "card_reevaluate_requested"
     PEAD_DECISION = "pead_decision"
+    CARD_STATS_SNAPSHOT = "card_stats_snapshot"
 
 
 class RankedOutcome(StrEnum):
