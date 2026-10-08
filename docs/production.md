@@ -270,7 +270,8 @@ tapped, since the others are not reconstructable from the reply alone.
 
 **Card validity option (October 8).** `card_policy.validity: next_session_close` keeps a native,
 non-policy-locked equity card valid until the next trading day's regular close (holidays skipped,
-early closes kept) instead of today's; the card shows `Valid until: Www DD HH:MM NY`. A tap while the
+early closes kept) instead of today's; the card shows `Valid until: Www DD HH:MM NY` (the dated form is used whenever the close falls after
+the New York issue date, for example a CME evening-session futures card, not only under this option). A tap while the
 market is closed then answers `WAITING` and the card stays live; the next session's tap re-prices or
 misses as usual, and a scan skips a setup that already has a live card (`live card pending`). The
 default `session_close` keeps every existing tap result. See
@@ -446,7 +447,7 @@ date change instead.
 native card states the measured record of its own `(strategy, direction)` from the latest
 `card_stats` snapshot in this scope — mature count since the window start, target/stop/timeout
 rates, mean R after cost and the implied EV at the card's own ratio — or says
-`insufficient evidence (n/20 mature cards)`, `statistics stale (last computed DATE)` or
+`insufficient evidence (n/MIN mature cards, MIN = `card_policy.min_mature_cards`)`, `statistics stale (last computed DATE)` or
 `no statistics in this scope` (every dry scan). The block always ends with the italic caveat "Not
 validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
 the scan summary and the cards state no statistics. `Macro Check` is the deterministic lockout gate:
@@ -601,7 +602,8 @@ the planned entry and stop taken from the card as sent (the signal's `raw_respon
 LLM-moved stop or a re-priced entry is the one that traded; `planned_source` says when the
 journal had to stand in). The applied tap's age is reported too. Missing fill evidence and
 missing signal rows are counted, never zeroed. All of it is descriptive, never a gate.
-None of it ranks, gates or sizes a card.
+The report itself never ranks, gates or sizes a card; the one gate derived from the same labels is
+`card_policy` (below).
 
 **Card policy (October 8).** `card_policy.mode` is the one gate derived from these outcomes, and it
 ships `off`. Operate it in three steps: leave `off` until a `card_stats` snapshot exists; set
@@ -611,7 +613,7 @@ sessions; only then set `enforce`. Under `enforce`, a native candidate whose `(s
 has at least `min_mature_cards` (20) mature labels and a measured mean below the threshold is skipped
 before the LLM with the fixed outcome `card_policy_withheld` (runner-up reason `card policy: measured
 EV …R over N < …R`); it spends no card or LLM budget and the next rank is considered. Insufficient,
-stale or unavailable evidence never withholds. Withheld candidates stay journaled and keep being
+stale or unavailable evidence never withholds. Withheld candidates stay journaled (scheduled suggestion scans) and keep being
 labelled, so a strategy can recover. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 

@@ -522,6 +522,12 @@ problem.
    and add book-aware sizing (the deferred L3 seam): the existing shadow CVXPY optimiser used in
    its risk-budget form (no return forecasts), bounding a card's marginal variance, beta and
    sector contribution against current positions. Shadow weights still never reach orders.
+
+   *Status (October 8):* PR A, honest cards, is implemented ([card evidence](card-evidence.md)): every
+   native card states its measured `(strategy, direction)` record, implied EV, sample size and the
+   not-validated caveat from a daily `card_stats` snapshot; `card_policy` ships `off` (the operator moves
+   it to `preview`, then `enforce`, after reading the evidence); `card_policy.validity:
+   next_session_close` is available and off. Bracket construction and book-aware sizing (PR B) remain.
 2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
    (Engle-Granger, half-life, z-score; `/pairs` is display-only today), extended to baskets with
    Johansen or PCA-residual reversion. Market-neutral by construction; a different label from

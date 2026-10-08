@@ -262,3 +262,9 @@ TDD per task; integration-style regression each task; adversarial cases:
 - `validity: session_close` (default) preserves every existing tap result.
 - Full suite and pre-commit clean; docs and CLAUDE.md reflect the final state; the v4 results doc
   and roadmap direction (already on this branch) ship in the same PR.
+
+## Amendments (2026-10-08)
+
+- D3 "Digest": the digest is unchanged. It lists top runners-up by quality without reasons, so the
+  withheld reason is visible in `runners_up`, in `/scan SYMBOL` replies and in the journal, not in
+  the digest.

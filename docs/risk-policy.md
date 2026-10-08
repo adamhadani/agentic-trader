@@ -201,7 +201,7 @@ Re-evaluate and `/scan` refuse while `entry_session_open` refuses. A card record
 `valid_until` only while `entry_session_open` allows entries and the provider's close is
 timezone-aware and still in the future. Under `card_policy.validity: next_session_close`
 a native, non-policy-locked equity card records the next trading day's close instead.
-Otherwise the card expires at the New York date change. A tap on an already-expired card
+A card without `valid_until` expires at the New York date change. A tap on an already-expired card
 adds the next regular open only while `entry_session_open` refuses entries.
 
 ### Admission

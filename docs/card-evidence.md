@@ -23,6 +23,8 @@ Top-level `card_policy:` (`CardPolicyConfig`; unknown keys fail the load):
 | `stats_max_age_seconds` | `345600` | Evidence older than this is `stale` on cards and in `card_stats` readiness (four days covers weekends and holidays) |
 | `validity` | `"session_close"` | Card validity; see [Card validity](#card-validity) |
 
+Validation requires `stats_max_age_seconds` to exceed `stats_poll_seconds`.
+
 Quote `"off"` in YAML. YAML 1.1 reads a bare `off` as `false`; the loader maps `false` back to `"off"`
 and rejects `on`/`true`.
 
@@ -153,7 +155,8 @@ a drift card needs its same-session event.
   stays `PENDING`, the tap is journaled `waiting` (`applied: false`), and the reply is "⏳ Market closed;
   card valid until Www DD HH:MM NY. Next regular open YYYY-MM-DD HH:MM UTC.". After `valid_until` the tap
   is `EXPIRED` as before.
-- A next-session tap is never fresh (`fresh_seconds`), so it re-prices or misses at the current price
+- While `execution.card_freshness.fresh_seconds` is shorter than the overnight gap (about 17.5 h), a
+  next-session tap is never fresh, so it re-prices or misses at the current price
   against the same stop and target and the required ratio; the re-pricing gate is unchanged, and the
   replacement's new timestamp satisfies admission's signal age.
 - `run_scan` skips a native candidate whose `(contract, strategy)` already has a live `PENDING` or
@@ -164,8 +167,14 @@ a drift card needs its same-session event.
   timestamp) and `Www DD HH:MM NY` otherwise.
 - Accepted limit: a carried card is a `PENDING` signal from an earlier session, so it does not count in
   the new session's card budget (`signals_since`); the live-card guard bounds it to one card per
-  `(contract, strategy)`. Measured statistics never include next-day entries: labels enter at the first
+  `(contract, strategy)`. Carried cards are likewise outside the correlation-group caps and the
+  one-dynamic-card cap, which derive from the same `signals_since` rows. Measured statistics never include next-day entries: labels enter at the first
   hourly bar after the scan.
+
+- Switching `validity` back to `session_close` while carried cards exist: the sweep keeps them `PENDING`
+  until their day-2 close, and the live-card guard turns off, so a day-2 scan may issue a second live
+  card for the same setup. An overnight tap now expires instead of `WAITING`. Nothing can be entered
+  without tap re-assessment, so this is safe.
 
 ## Limits
 
