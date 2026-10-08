@@ -499,6 +499,48 @@ Known limits of the review: it is static reading, not a profiling or defect audi
 line references are as of `aa86718`. Minor: `agent/position_sizing.py` had a stale
 type-only import of a module that no longer exists; L2 removed it.
 
+## Desk direction after the fixed-set lane (October 8)
+
+Agreed with the operator on 2026-10-08 after the pooled v4 campaign found no finalists and the
+label diagnostic found no return-space signal either ([v4 checks](alpha-pooled-checks-v4-2026-10-07.md)).
+
+**Operational definition of a reasonable suggestion.** A card is reasonable when (1) it states
+its own measured base rate honestly, (2) its bracket has non-negative expected value at that
+base rate after cost, and (3) its size is consistent with the existing book. None of these
+requires a validated alpha in the statistical sense; all three are measurable with the L1
+`cards outcomes` attribution. The 30-day evidence on 2026-10-08 fails test (2): runner-up cards
+hit the 2R target 27% of the time and the stop 73% (about −0.19R per card before cost), and
+`setup_quality` ranks no better than random. That is a construction problem, not a discovery
+problem.
+
+**Ordered plan (each step ships through its own PR with measurement; nothing here promotes an alpha):**
+
+1. **Native funnel (now).** Measure first: per-strategy, per-direction, per-slot outcomes, bracket
+   geometry, bracket counterfactuals, and why sent cards are not tapped
+   (`~/agentic-trader-research/card-funnel-diagnostic-20261008/`). Then fix construction so the
+   bracket has non-negative EV at the measured base rate, put the honest base rate on the card,
+   and add book-aware sizing (the deferred L3 seam): the existing shadow CVXPY optimiser used in
+   its risk-budget form (no return forecasts), bounding a card's marginal variance, beta and
+   sector contribution against current positions. Shadow weights still never reach orders.
+2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
+   (Engle-Granger, half-life, z-score; `/pairs` is display-only today), extended to baskets with
+   Johansen or PCA-residual reversion. Market-neutral by construction; a different label from
+   every lane that failed. Research only until it passes its own gates; a probe would follow the
+   catalog probe contract.
+3. **Second event leg** after the PEAD probe reports (events from about 2026-10-14; probe expires
+   2026-10-28). Ingest corporate actions (splits, dividends) first: it is also the architecture
+   review's P1 reconciliation gap, so the data work pays twice. Index inclusion is skipped (paid
+   constituent history).
+4. **News as measured context.** Wire a news feed (none exists today; only a config heading) and
+   attach LLM news scoring to cards as labelled context, attributed the way the LLM gate is
+   attributed. Never a gate or signal until the attribution says so.
+5. **Deferred.** Daily-bar cross-sectional mining is paused until intraday SIP data exists; three
+   lanes found nothing on this cohort. Deep learning across many symbols waits for intraday data
+   and a predeclared protocol.
+
+Prospective lanes keep running meanwhile: PEAD probe, native-daily panel (first outcomes mid-October),
+and the `vol_20` / `sector_rel_mom_60` evaluation window 2026-10-21 → 2026-11-04.
+
 ## Alpha-discovery sprint (October 7)
 
 **State on 2026-10-07.** Suggestion cards flow at about two per session but have no
