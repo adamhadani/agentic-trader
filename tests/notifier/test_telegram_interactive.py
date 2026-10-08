@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import update
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from agentic_trader.agent.copilot import TradingCopilot
@@ -18,6 +19,7 @@ from agentic_trader.notifier.telegram_bot import (
     format_exit_card,
     format_terminal_card,
 )
+from agentic_trader.storage.models import SignalRecord
 
 
 @pytest.mark.asyncio
@@ -490,6 +492,45 @@ async def test_send_signal_alert_renders_valid_until_and_updated_card_on_termina
     assert f"UPDATED CARD (re-priced from #16, first issued {FIRST_ISSUED_NY_HHMM} NY)" in captured.out
 
 
+DAY2_UTC = "2026-09-24T20:00:00+00:00"  # Thu 24 16:00 NY
+
+
+def test_valid_until_names_the_day_when_the_close_is_after_the_issue_date(eval_res):
+    card = format_alert_card(eval_res, "TREND_PULLBACK", valid_until=DAY2_UTC, issued_at=FIRST_ISSUED_UTC)
+    assert "• <b>Valid until:</b> Thu 24 16:00 NY" in card
+    term = format_terminal_card(eval_res, "TREND_PULLBACK", valid_until=DAY2_UTC, issued_at=FIRST_ISSUED_UTC)
+    assert "• Valid until:      Thu 24 16:00 NY" in term
+
+
+def test_valid_until_on_the_issue_date_stays_time_only(eval_res):
+    card = format_alert_card(eval_res, "TREND_PULLBACK", valid_until=VALID_UNTIL_UTC, issued_at=FIRST_ISSUED_UTC)
+    assert f"• <b>Valid until:</b> {VALID_UNTIL_NY_HHMM} NY" in card
+
+
+@pytest.mark.asyncio
+async def test_send_signal_alert_dates_valid_until_from_the_signal_row(temp_db, eval_res, capsys):
+    signal_id = await temp_db.record_signal(
+        contract="AAPL",
+        strategy="TREND_PULLBACK",
+        direction="LONG",
+        entry_price=190.0,
+        stop_loss=186.0,
+        take_profit=198.0,
+        risk_dollars=100.0,
+        asset_class=AssetClass.EQUITY,
+        quantity=10.0,
+    )
+    async with temp_db.session_factory() as session, session.begin():
+        await session.execute(
+            update(SignalRecord)
+            .where(SignalRecord.id == signal_id)
+            .values(timestamp=datetime(2026, 9, 23, 18, 35, tzinfo=UTC))
+        )
+    notifier = TelegramNotifier(bot_token=None, chat_id=None, db=temp_db)
+    await notifier.send_signal_alert(eval_res, strategy="TREND_PULLBACK", signal_id=signal_id, valid_until=DAY2_UTC)
+    assert "Valid until:      Thu 24 16:00 NY" in capsys.readouterr().out
+
+
 @pytest.mark.asyncio
 async def test_exec_reply_attaches_reevaluate_button_when_offered(temp_db):
     mock_exec = AsyncMock(
@@ -824,6 +865,14 @@ async def test_replacement_card_outbox_row_renders_through_the_real_dispatcher(t
         asset_class=AssetClass.EQUITY,
         quantity=7.0,
     )
+    # The replacement is issued in the card's own session (re-pricing keeps ``valid_until``), so the
+    # close renders time-only; a row dated after it would name the close's day instead.
+    async with temp_db.session_factory() as session, session.begin():
+        await session.execute(
+            update(SignalRecord)
+            .where(SignalRecord.id == new_id)
+            .values(timestamp=datetime(2026, 9, 23, 15, 38, tzinfo=UTC))
+        )
     notifier = TelegramNotifier(bot_token="test_token", chat_id="123456", db=temp_db)
     send = AsyncMock(return_value=SimpleNamespace(message_id=41))
     notifier.app = SimpleNamespace(bot=SimpleNamespace(send_message=send))

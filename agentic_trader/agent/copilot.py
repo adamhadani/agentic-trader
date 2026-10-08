@@ -69,12 +69,18 @@ from agentic_trader.execution.freshness import (
     CardOutcome,
     ExecutionReply,
     assess_card,
+    effective_validity,
     reprice_quantity,
     round_to_tick,
     valid_until_from_provenance,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
-from agentic_trader.market.session import ET_TZ, AlpacaCalendarProvider, CompositeMarketSessionProvider
+from agentic_trader.market.session import (
+    ET_TZ,
+    AlpacaCalendarProvider,
+    CompositeMarketSessionProvider,
+    next_regular_close_after,
+)
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
@@ -159,6 +165,9 @@ DYNAMIC_UNIVERSE_TIMEOUT_SECONDS = 60.0
 DRIFT_PREPARE_TIMEOUT_SECONDS = 60.0
 # A 10:35 event's outcome when apriori.max_open_drift_positions PEAD positions are already open.
 DRIFT_POSITION_CAP_REACHED = "drift position cap reached"
+# A native candidate skipped because its (contract, strategy) already has a live PENDING card; only
+# under card_policy.validity == "next_session_close", where a card can outlive the duplicate window.
+LIVE_CARD_PENDING = "live card pending"
 # `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
@@ -1181,8 +1190,8 @@ class TradingCopilot:
                 dynamic = contract in dynamic_sources and not drift
                 return {DYNAMIC_CORRELATION_GROUP} if operator_dynamic is not None and dynamic else set()
 
-            # One session-clock read per contract that actually records a card.
-            session_closes: dict[str, str | None] = {}
+            # One session-clock read per (contract, extended validity) that actually records a card.
+            session_closes: dict[tuple[str, bool], str | None] = {}
             for rank, (candidate, _det_res, account_risk) in enumerate(ranked, 1):
                 # One failed send must not abandon the rest of the ranking or the scan's
                 # own bookkeeping, exactly as the per-contract guard protects COLLECT.
@@ -1206,6 +1215,13 @@ class TradingCopilot:
                         # bounded by the card budget alone. A drift candidate's LLM pass is
                         # commentary only and never spends it.
                         reason = "LLM evaluation budget spent"
+                    elif (
+                        not is_drift
+                        and self._extends_validity(candidate, drift=False)
+                        and await self.db.live_signal_id(candidate.contract, strategy=candidate.strategy) is not None
+                    ):
+                        # A carried card outlives the duplicate window: one live card per setup.
+                        reason = LIVE_CARD_PENDING
                     # CARD POLICY (native only, after the budget refusals, before the LLM): a switch on
                     # measured evidence. Enforce withholds and falls through to the next rank like a
                     # veto, spending no card or LLM budget; preview logs and sends.
@@ -1289,9 +1305,12 @@ class TradingCopilot:
                         )
                         continue
 
-                    if candidate.contract not in session_closes:
-                        session_closes[candidate.contract] = await self._card_valid_until(candidate.contract)
-                    valid_until = session_closes[candidate.contract]
+                    extend = self._extends_validity(candidate, drift=is_drift)
+                    if (candidate.contract, extend) not in session_closes:
+                        session_closes[(candidate.contract, extend)] = await self._card_valid_until(
+                            candidate.contract, extend=extend
+                        )
+                    valid_until = session_closes[(candidate.contract, extend)]
                     validity = {"valid_until": valid_until} if valid_until else {}
 
                     # Record to database
@@ -2863,7 +2882,29 @@ class TradingCopilot:
             )
         return "Next regular open: unavailable."
 
-    async def _card_valid_until(self, contract: str) -> str | None:
+    @staticmethod
+    def _next_open_sentence(info: Any) -> str:
+        """The WAITING reply's tail: the next regular open in UTC, or an explicit unavailability."""
+        next_open = getattr(info, "next_open", None)
+        if isinstance(next_open, datetime) and next_open.utcoffset() is not None:
+            return f"Next regular open {next_open.astimezone(UTC):%Y-%m-%d %H:%M} UTC."
+        return "Next regular open unavailable."
+
+    def _extends_validity(self, candidate: Any, *, drift: bool) -> bool:
+        """Whether this candidate's card is valid until the next session's close (docs/card-evidence.md#card-validity).
+
+        Only with tap re-assessment on: without it, admission's signal-age bound refuses a next-day tap.
+        """
+        validity = effective_validity(
+            self.config.card_policy.validity,
+            asset_class=str(getattr(candidate, "asset_class", "")),
+            policy_locked=bool(getattr(candidate, "alpha_version", None) or getattr(candidate, "alpha_policy", None)),
+            probe=bool(getattr(candidate, "probe", False)),
+            drift=drift,
+        )
+        return self.config.execution.card_freshness.enabled and validity == "next_session_close"
+
+    async def _card_valid_until(self, contract: str, *, extend: bool = False) -> str | None:
         """ISO close of the session a card is issued in, or None when unknown.
 
         Recorded only while ``agentic_trader.risk.entry_session_open`` allows entries in
@@ -2873,6 +2914,8 @@ class TradingCopilot:
         session can report a close that already passed (the CME evening session reports
         that day's 17:00 ET halt), which would expire the card at its first tap. Otherwise a
         card without ``valid_until`` conservatively expires when the New York date changes.
+        With ``extend`` the recorded close is the next trading day's regular close
+        (``next_regular_close_after``); an unavailable calendar keeps today's close.
         """
         try:
             info = await self.session_provider.get_session_info(contract)
@@ -2893,9 +2936,19 @@ class TradingCopilot:
             )
             is None
         )
-        if session_open and isinstance(close, datetime) and close.utcoffset() is not None and close > datetime.now(UTC):
-            return close.astimezone(UTC).isoformat()
-        return None
+        now = datetime.now(UTC)
+        if not (session_open and isinstance(close, datetime) and close.utcoffset() is not None and close > now):
+            return None
+        if extend:
+            later = await next_regular_close_after(getattr(self.session_provider, "calendar", None), now)
+            if later is not None and later > close:
+                return later.isoformat()
+            logger.warning(
+                "Next regular close unavailable for %s; the card keeps today's close",
+                contract,
+                extra={"event": "card_next_close_unavailable", "contract": contract},
+            )
+        return close.astimezone(UTC).isoformat()
 
     async def _tap_price(self, ticker: str, tick_size: float) -> float | None:
         """The latest trade, tick-aligned, or None when unavailable (off the event loop)."""
@@ -3202,6 +3255,15 @@ class TradingCopilot:
         assert price is not None  # a missing price returned above
         assert request.entry_price is not None and request.stop_loss is not None and request.take_profit is not None
         limits = RiskLimits.from_config(self.config)
+        raw_provenance = sig.get("decision_provenance")
+        provenance = raw_provenance if isinstance(raw_provenance, dict) else {}
+        validity = effective_validity(
+            self.config.card_policy.validity,
+            asset_class=asset_class,
+            policy_locked=policy_locked,
+            probe=bool(provenance.get(PAPER_PROBE_TAG)),
+            drift=provenance.get("pead_event") is not None,
+        )
         assessment = assess_card(
             direction=request.direction,
             entry=request.entry_price,
@@ -3215,7 +3277,14 @@ class TradingCopilot:
             gate_reason=gate_reason,
             min_reward_risk=required_reward_risk(limits, regime.min_rr_threshold),
             policy=self.config.execution.card_freshness,
+            validity=validity,
         )
+        if assessment.outcome == CardOutcome.WAITING:
+            # Nothing changes: the card stays PENDING and the button is restored for a later tap.
+            await self._journal_card_tap(signal_id, assessment, tapped_at, applied=False, policy_locked=policy_locked)
+            return ExecutionReply(
+                False, f"⏳ {html.escape(assessment.reason)} {self._next_open_sentence(info)}", retryable=True
+            )
         replacement: dict[str, Any] | None = None
         if assessment.outcome == CardOutcome.REPRICE and policy_locked:
             assessment = dataclass_replace(

@@ -175,8 +175,10 @@ and logged as `macro_lockout_active`.
 
 ### Tap and re-pricing
 
-1. Session: `assess_card(session_open=entry_session_open(...) is None)`. A refusal
-   expires the card.
+1. Session: `assess_card(session_open=entry_session_open(...) is None, validity=effective_validity(...))`.
+   A refusal expires the card, except that a `next_session_close` card tapped before its `valid_until`
+   is `WAITING` (retryable; the card stays `PENDING`). Card validity is not a risk rule
+   ([card evidence](card-evidence.md#card-validity)).
 2. Price geometry (through the stop or target, too close to the stop). These are
    freshness checks, not risk rules.
 3. The gate reason, first refusal wins: `macro_lockout`, then the regime gate
@@ -197,9 +199,10 @@ leaves the card `PENDING`.
 
 Re-evaluate and `/scan` refuse while `entry_session_open` refuses. A card records
 `valid_until` only while `entry_session_open` allows entries and the provider's close is
-timezone-aware and still in the future. Otherwise the card expires at the New York date
-change. A tap on an already-expired card adds the next regular open only while
-`entry_session_open` refuses entries.
+timezone-aware and still in the future. Under `card_policy.validity: next_session_close`
+a native, non-policy-locked equity card records the next trading day's close instead.
+Otherwise the card expires at the New York date change. A tap on an already-expired card
+adds the next regular open only while `entry_session_open` refuses entries.
 
 ### Admission
 

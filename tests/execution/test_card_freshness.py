@@ -10,6 +10,7 @@ from agentic_trader.execution.freshness import (
     assess_card,
     card_is_stale,
     card_session_over,
+    effective_validity,
     parse_valid_until,
     reprice_quantity,
     valid_until_from_provenance,
@@ -44,6 +45,7 @@ def _assess(
     gate_reason=None,
     min_reward_risk=MIN_RR,
     policy=POLICY,
+    validity="session_close",
 ):
     return assess_card(
         direction=direction,
@@ -58,6 +60,7 @@ def _assess(
         gate_reason=gate_reason,
         min_reward_risk=min_reward_risk,
         policy=policy,
+        validity=validity,
     )
 
 
@@ -239,7 +242,7 @@ def test_not_expired_just_before_valid_until():
 
 
 def test_expired_when_the_session_refuses_entries():
-    result = _assess(now=ISSUED_AT, price=LONG_ENTRY, session_open=False)
+    result = _assess(now=ISSUED_AT, price=LONG_ENTRY, session_open=False, validity="session_close")
     assert result.outcome == CardOutcome.EXPIRED
 
 
@@ -247,7 +250,7 @@ def test_expired_when_the_session_refuses_entries():
 def test_an_extended_hours_session_expires_the_card_only_when_rth_is_enforced(enforce_rth):
     # The caller decides with the shared session rule; ``assess_card`` only applies the verdict.
     session_open = entry_session_open(is_open=True, is_rth=False, enforce_rth=enforce_rth) is None
-    result = _assess(now=ISSUED_AT, price=LONG_ENTRY, session_open=session_open)
+    result = _assess(now=ISSUED_AT, price=LONG_ENTRY, session_open=session_open, validity="session_close")
     assert (result.outcome == CardOutcome.EXPIRED) is enforce_rth
     if not enforce_rth:
         assert result.outcome == CardOutcome.EXECUTE
@@ -582,4 +585,88 @@ def test_card_is_stale_missing_valid_until_key_falls_back_to_legacy_rule():
     assert (
         card_is_stale(issued_at=issued_at, decision_provenance={}, now=datetime(2026, 9, 23, 20, 0, tzinfo=UTC))
         is False
+    )
+
+
+# --- Card validity: next_session_close ------------------------------------------------
+
+DAY2_CLOSE = datetime(2026, 9, 24, 20, 0, 0, tzinfo=UTC)  # Thu 24 16:00 NY
+OVERNIGHT = datetime(2026, 9, 23, 22, 0, 0, tzinfo=UTC)  # 18:00 NY, after the issuing session
+
+
+def test_a_next_session_card_waits_while_closed_before_valid_until():
+    result = _assess(now=OVERNIGHT, valid_until=DAY2_CLOSE, session_open=False, validity="next_session_close")
+    assert result.outcome == CardOutcome.WAITING == "waiting"
+    assert result.reason == "Market closed; card valid until Thu 24 16:00 NY."
+    assert result.price is None and result.r_consumed is None
+
+
+def test_a_next_session_card_expires_once_valid_until_has_passed():
+    now = DAY2_CLOSE + timedelta(seconds=1)
+    assert (
+        _assess(now=now, valid_until=DAY2_CLOSE, session_open=False, validity="next_session_close").outcome
+        == CardOutcome.EXPIRED
+    )
+
+
+def test_session_close_never_waits():
+    result = _assess(now=OVERNIGHT, valid_until=DAY2_CLOSE, session_open=False, validity="session_close")
+    assert result.outcome == CardOutcome.EXPIRED
+
+
+def test_without_valid_until_the_legacy_rule_applies():
+    result = _assess(now=ISSUED_AT, valid_until=None, session_open=False, validity="next_session_close")
+    assert result.outcome == CardOutcome.EXPIRED
+
+
+@pytest.mark.parametrize("age_hours", [0, 1, 20])
+@pytest.mark.parametrize("price", [96.0, 100.0, 103.0, 150.0, 210.0])
+def test_validity_changes_nothing_while_the_session_is_open(age_hours, price):
+    kwargs = {
+        "now": ISSUED_AT + timedelta(hours=age_hours),
+        "valid_until": DAY2_CLOSE,
+        "price": price,
+        "session_open": True,
+    }
+    assert _assess(**kwargs, validity="next_session_close") == _assess(**kwargs, validity="session_close")
+
+
+def test_a_day_two_tap_reprices_or_misses_against_the_same_bracket():
+    day2 = datetime(2026, 9, 24, 14, 0, 0, tzinfo=UTC)  # 10:00 NY, the next session
+    assert (
+        _assess(now=day2, valid_until=DAY2_CLOSE, price=103.0, validity="next_session_close").outcome
+        == CardOutcome.REPRICE
+    )
+    assert (
+        _assess(now=day2, valid_until=DAY2_CLOSE, price=94.0, validity="next_session_close").outcome
+        == CardOutcome.MISSED
+    )
+
+
+def test_the_sweep_keeps_a_next_session_card_overnight():
+    provenance = {"valid_until": DAY2_CLOSE.isoformat()}
+    assert not card_is_stale(issued_at=ISSUED_AT, decision_provenance=provenance, now=OVERNIGHT)
+    assert card_is_stale(issued_at=ISSUED_AT, decision_provenance=provenance, now=DAY2_CLOSE)
+
+
+@pytest.mark.parametrize(
+    ("asset_class", "locked", "probe", "drift", "expected"),
+    [
+        ("EQUITY", False, False, False, "next_session_close"),
+        ("FUTURES", False, False, False, "session_close"),
+        ("EQUITY", True, False, False, "session_close"),
+        ("EQUITY", False, True, False, "session_close"),
+        ("EQUITY", False, False, True, "session_close"),
+    ],
+)
+def test_only_native_unlocked_equity_cards_extend(asset_class, locked, probe, drift, expected):
+    assert (
+        effective_validity(
+            "next_session_close", asset_class=asset_class, policy_locked=locked, probe=probe, drift=drift
+        )
+        == expected
+    )
+    assert (
+        effective_validity("session_close", asset_class=asset_class, policy_locked=locked, probe=probe, drift=drift)
+        == "session_close"
     )

@@ -714,18 +714,18 @@ class SignalDatabase:
                 )
         return expired_ids
 
-    async def live_signal_id(self, contract: str) -> int | None:
-        """The newest PENDING or SUBMITTING signal for ``contract`` in this scope, if any."""
+    async def live_signal_id(self, contract: str, *, strategy: str | None = None) -> int | None:
+        """The newest PENDING or SUBMITTING signal for ``contract`` (and ``strategy`` when given) in this scope."""
+        conditions = [
+            *self._scope(),
+            SignalRecord.contract == contract,
+            SignalRecord.status.in_((SignalStatus.PENDING, SignalStatus.SUBMITTING)),
+        ]
+        if strategy is not None:
+            conditions.append(SignalRecord.strategy == strategy)
         async with self.session_factory() as session:
             return await session.scalar(
-                select(SignalRecord.id)
-                .where(
-                    *self._scope(),
-                    SignalRecord.contract == contract,
-                    SignalRecord.status.in_((SignalStatus.PENDING, SignalStatus.SUBMITTING)),
-                )
-                .order_by(SignalRecord.id.desc())
-                .limit(1)
+                select(SignalRecord.id).where(*conditions).order_by(SignalRecord.id.desc()).limit(1)
             )
 
     async def update_telegram_message_id(self, signal_id: int, message_id: int):

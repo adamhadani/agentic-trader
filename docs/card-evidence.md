@@ -138,6 +138,35 @@ Evidence recorded:
 Operate it in order: `off` until a snapshot exists; `preview` with a threshold, reading `would_withhold`
 for several sessions; then `enforce`. Each change is a config edit and the controlled restart.
 
+## Card validity
+
+`card_policy.validity` is `session_close` by default: a card is valid until the close of the session it
+was issued in (today's rule). `next_session_close` extends only native, non-policy-locked equity cards
+(no `alpha_version`/`alpha_policy`, no paper probe, no PEAD event), and only while
+`execution.card_freshness.enabled`: such a card records the next trading day's regular close as
+`valid_until` (`market/session.py:next_regular_close_after`, which skips weekends and holidays and keeps
+early closes; an unavailable calendar keeps today's close). Every other card keeps today's rule:
+admission refuses a policy-locked card's original signal after `execution.signal_max_age_seconds`, and
+a drift card needs its same-session event.
+
+- A tap while the session refuses entries and before `valid_until` is `WAITING`: retryable, the card
+  stays `PENDING`, the tap is journaled `waiting` (`applied: false`), and the reply is "⏳ Market closed;
+  card valid until Www DD HH:MM NY. Next regular open YYYY-MM-DD HH:MM UTC.". After `valid_until` the tap
+  is `EXPIRED` as before.
+- A next-session tap is never fresh (`fresh_seconds`), so it re-prices or misses at the current price
+  against the same stop and target and the required ratio; the re-pricing gate is unchanged, and the
+  replacement's new timestamp satisfies admission's signal age.
+- `run_scan` skips a native candidate whose `(contract, strategy)` already has a live `PENDING` or
+  `SUBMITTING` card (outcome and runner-up reason `live card pending`), so the 12-hour duplicate window
+  cannot produce a second live card the next morning. The guard runs only under `next_session_close`,
+  for a candidate whose card it extends, after the card-budget refusals and before the send policy.
+- `Valid until:` shows `HH:MM NY` when the close is on the card's issue date (the signal row's
+  timestamp) and `Www DD HH:MM NY` otherwise.
+- Accepted limit: a carried card is a `PENDING` signal from an earlier session, so it does not count in
+  the new session's card budget (`signals_since`); the live-card guard bounds it to one card per
+  `(contract, strategy)`. Measured statistics never include next-day entries: labels enter at the first
+  hourly bar after the scan.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket

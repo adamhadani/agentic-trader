@@ -4,7 +4,7 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any
 
@@ -86,6 +86,29 @@ def _ny_hhmm(value: str | None) -> str | None:
     return parsed.strftime("%H:%M") if parsed else None
 
 
+def _valid_until_text(valid_until: str | None, issued_at: str | None) -> str | None:
+    """``HH:MM NY`` when the close is on the card's issue date (or the issue date is unknown), else ``Www DD HH:MM NY``."""
+    until = _ny_datetime(valid_until)
+    if until is None:
+        return None
+    issued = _ny_datetime(issued_at)
+    if issued is not None and issued.date() != until.date():
+        return f"{until:%a %d %H:%M} NY"
+    return f"{until:%H:%M} NY"
+
+
+def _issued_at(row: dict[str, Any] | None) -> str | None:
+    """A signal row's issue time (naive UTC ``YYYY-MM-DD HH:MM:SS``) as an aware ISO string, or None."""
+    raw = (row or {}).get("timestamp")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)).isoformat()
+
+
 def _exec_button_label(execution_mode: str) -> str:
     mode_lower = execution_mode.lower()
     if mode_lower == ExecutionMode.PAPER:
@@ -117,6 +140,7 @@ def format_alert_card(
     first_issued_at: str | None = None,
     drift: dict[str, Any] | None = None,
     card_evidence: dict[str, Any] | None = None,
+    issued_at: str | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
@@ -129,8 +153,8 @@ def format_alert_card(
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     earnings_line = f"• <b>Earnings:</b> {html.escape(eval_res.earnings_note)}\n" if eval_res.earnings_note else ""
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
-    valid_until_hhmm = _ny_hhmm(valid_until)
-    valid_until_line = f"• <b>Valid until:</b> {valid_until_hhmm} NY\n" if valid_until_hhmm else ""
+    valid_until_text = _valid_until_text(valid_until, issued_at)
+    valid_until_line = f"• <b>Valid until:</b> {valid_until_text}\n" if valid_until_text else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -278,6 +302,7 @@ def format_terminal_card(
     reprices: int | None = None,
     first_issued_at: str | None = None,
     card_evidence: dict[str, Any] | None = None,
+    issued_at: str | None = None,
 ) -> str:
     """ASCII/plain text formatted card for terminal display.
 
@@ -288,8 +313,8 @@ def format_terminal_card(
     macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
     earnings_line = f"• Earnings:         {eval_res.earnings_note}\n" if eval_res.earnings_note else ""
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
-    valid_until_hhmm = _ny_hhmm(valid_until)
-    valid_until_line = f"• Valid until:      {valid_until_hhmm} NY\n" if valid_until_hhmm else ""
+    valid_until_text = _valid_until_text(valid_until, issued_at)
+    valid_until_line = f"• Valid until:      {valid_until_text}\n" if valid_until_text else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -1237,6 +1262,10 @@ class TelegramNotifier:
         # (a PEAD catalog-probe scan card only) is rendered on the Telegram card.
         # ``card_evidence`` (native scan cards and their replacements) renders the
         # measured-record block on both cards; payloads queued before it existed omit it.
+        # The signal row is read once: its timestamp dates ``Valid until`` (a close after the
+        # issue date names its day) and its status guards the buttons below.
+        row = await self.db.get_signal_by_id(signal_id) if self.db else None
+        issued_at = _issued_at(row)
         # Always output to terminal/logs
         print(
             format_terminal_card(
@@ -1249,6 +1278,7 @@ class TelegramNotifier:
                 reprices=reprices,
                 first_issued_at=first_issued_at,
                 card_evidence=card_evidence,
+                issued_at=issued_at,
             )
         )
 
@@ -1271,6 +1301,7 @@ class TelegramNotifier:
             first_issued_at=first_issued_at,
             drift=drift,
             card_evidence=card_evidence,
+            issued_at=issued_at,
         )
 
         # A retried SIGNAL delivery can land after the card already left PENDING -- for
@@ -1278,7 +1309,7 @@ class TelegramNotifier:
         # delivered. Never re-offer Execute/Dismiss on a card that is no longer live; only
         # an EXPIRED card still gets a Re-evaluate button (the handler itself refuses a
         # non-configured contract with a clear message).
-        current_status = (await self.db.get_signal_by_id(signal_id) or {}).get("status") if self.db else None
+        current_status = (row or {}).get("status") if self.db else None
         if current_status is not None and current_status != SignalStatus.PENDING:
             reply_markup = (
                 InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Re-evaluate", callback_data=f"reval_{signal_id}")]])

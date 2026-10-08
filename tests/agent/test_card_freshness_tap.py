@@ -352,7 +352,8 @@ async def test_card_past_its_session_expires_with_the_next_regular_open(tap_desk
     tap_desk.entry_service.authorize.assert_not_awaited()
 
 
-async def test_card_tapped_outside_rth_expires(tap_desk, temp_db):
+async def test_card_tapped_outside_rth_expires(tap_desk, temp_db, app_config):
+    app_config.card_policy.validity = "session_close"
     sid = await record_card(temp_db)
     tap_desk.session_provider.get_session_info.return_value = session_info(is_open=False, is_rth=False)
 
