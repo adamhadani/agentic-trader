@@ -114,7 +114,17 @@ def test_a_row_without_a_strategy_counts_only_in_the_aggregate():
 def test_output_is_nan_free_and_a_key_without_finite_r_reports_none():
     payload = _compute(_labelled([("X", "LONG", "stop", float("nan"), 1, MID), *SQ]))
     json.dumps(payload, allow_nan=False)  # the journal encoder's own rule
-    assert _by_key(payload)[("X", "LONG")]["mean_r_cost"] is None
+    row = _by_key(payload)[("X", "LONG")]
+    assert row["n_mature"] == 1 and row["mean_r_cost"] is None  # mature, but no finite R to average
+
+
+@pytest.mark.parametrize("field", ["target_rate", "mean_r_cost", "mean_timeout_r", "median_holding_sessions"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), "NaN", "-Infinity"])
+def test_a_snapshot_with_a_non_finite_statistic_does_not_validate(field, value):
+    payload = _compute(_labelled(TP))
+    payload["keys"][0][field] = value
+    with pytest.raises(ValueError, match="finite"):
+        CardStatsSnapshot.model_validate(payload)
 
 
 def test_a_key_with_only_immature_rows_has_no_rates():
@@ -145,6 +155,10 @@ def test_the_snapshot_reads_back_and_finds_a_key():
 def test_vocabulary():
     assert CARD_STATS_STREAM == "card_stats"
     assert EventKind.CARD_STATS_SNAPSHOT == "card_stats_snapshot"
+
+
+# The fixture AAPL candidate's labelled target hit, after 5 bp per side.
+AAPL_R_COST = 1.3995
 
 
 async def test_journaled_candidates_round_trip_into_a_snapshot(temp_db):
@@ -182,4 +196,9 @@ async def test_journaled_candidates_round_trip_into_a_snapshot(temp_db):
     snapshot = CardStatsSnapshot.model_validate(json.loads(json.dumps(payload, allow_nan=False)))
     stats = snapshot.stats("BREAKOUT", "LONG")
     assert stats.n_mature == 1 and stats.n_fetch_failed == 1 and stats.target_rate == 1.0
+    [aapl_r_cost] = frame.loc[frame["contract"] == "AAPL", "r_cost"]
+    assert stats.mean_r_cost == pytest.approx(AAPL_R_COST) == pytest.approx(aapl_r_cost)
+    aggregate = snapshot.stats(AGGREGATE, AGGREGATE)
+    assert (aggregate.n_mature, aggregate.n_immature, aggregate.n_fetch_failed) == (1, 0, 1)
+    assert aggregate.mean_r_cost == pytest.approx(AAPL_R_COST)
     assert snapshot.events_considered == 1 and snapshot.rows_labelled == 2

@@ -2,7 +2,7 @@
 
 import asyncio
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -99,9 +99,11 @@ async def test_a_provider_outage_writes_nothing_and_keeps_the_previous_snapshot(
     await plant_scan(temp_db)
     worker, _ = worker_for(temp_db, app_config, bars=FakeBarSource({}, raise_for={"AAPL", "SPY"}))
 
-    with pytest.raises(CardStatsUnavailable, match="every bar fetch failed"):
+    with pytest.raises(CardStatsUnavailable) as raised:
         await worker.run_once(DUE)
 
+    # Exception type names only: a provider's own text (a URL, an account) never reaches readiness.
+    assert str(raised.value) == "every bar fetch failed for 1 candidates: RuntimeError"
     assert await repository.latest() == previous
     assert not await repository.exists(DUE.astimezone(ET_TZ).date())
 
@@ -218,6 +220,89 @@ async def test_every_poll_observes_readiness(monkeypatch, app_config, temp_db, r
     copilot = SimpleNamespace(db=temp_db, card_stats=None, _shutdown_event=stop)
     await asyncio.wait_for(service.run_card_stats_worker(copilot, app_config, readiness), 2)
     readiness.observe.assert_awaited_once_with(HealthComponent.CARD_STATS, *observed)
+
+
+OUTAGE = "CardStatsUnavailable: every bar fetch failed for 1 candidates: RuntimeError"
+
+
+def scripted_worker(monkeypatch, app_config, script, stop):
+    """Replace the worker with one whose polls follow ``script``: a status, an exception, or a callable."""
+
+    class Scripted:
+        def __init__(self, *args, on_progress=None, **kwargs):
+            self.on_progress = on_progress
+
+        async def run_once(self, now=None):
+            step = script.pop(0)
+            if not script:
+                stop.set()
+            if callable(step) and not isinstance(step, type):
+                step = await step(self)
+            if isinstance(step, Exception):
+                raise step
+            return step
+
+    monkeypatch.setattr(service, "CardStatsWorker", Scripted)
+    monkeypatch.setattr(service, "runtime_identity", lambda: {"revision": "test-rev"})
+    monkeypatch.setattr(app_config.card_policy, "stats_poll_seconds", 0)
+
+
+async def test_a_same_day_failure_stays_visible_until_a_snapshot_exists(monkeypatch, app_config, temp_db):
+    """Idle polls around the scan slots and a retry's start re-observe the failure instead of flapping ready."""
+    stop = asyncio.Event()
+
+    async def retry_then_record(worker):
+        await worker.on_progress("labelling 1 scan events")
+        return "recorded"
+
+    script = [
+        CardStatsUnavailable("every bar fetch failed for 1 candidates: RuntimeError"),
+        "scan_window",
+        "scan_busy",
+        "not_due",
+        retry_then_record,
+        "scan_window",
+        ConnectionError("postgresql://trader:secret@db.internal/trader refused"),
+        "scan_window",
+        "present",
+        "scan_busy",
+    ]
+    scripted_worker(monkeypatch, app_config, script, stop)
+    monkeypatch.setattr(service, "_et_today", lambda: date(2026, 10, 8))
+    readiness = SimpleNamespace(observe=AsyncMock())
+    copilot = SimpleNamespace(db=temp_db, card_stats=None, _shutdown_event=stop)
+
+    await asyncio.wait_for(service.run_card_stats_worker(copilot, app_config, readiness), 2)
+
+    observed = [c.args[1:] for c in readiness.observe.await_args_list]
+    assert all(c.args[0] == HealthComponent.CARD_STATS for c in readiness.observe.await_args_list)
+    assert observed == [
+        (False, OUTAGE),
+        (False, OUTAGE),  # scan_window
+        (False, OUTAGE),  # scan_busy
+        (False, OUTAGE),  # not_due
+        (False, OUTAGE),  # the retry's progress: still the last outcome
+        (True, "recorded"),
+        (True, "scan_window"),
+        (False, "ConnectionError"),
+        (False, "ConnectionError"),  # scan_window
+        (True, "present"),
+        (True, "scan_busy"),
+    ]
+
+
+async def test_a_failure_is_forgotten_on_the_next_new_york_date(monkeypatch, app_config, temp_db):
+    stop = asyncio.Event()
+    script = [CardStatsUnavailable("every bar fetch failed for 1 candidates: RuntimeError"), "not_due"]
+    scripted_worker(monkeypatch, app_config, script, stop)
+    days = iter([date(2026, 10, 8), date(2026, 10, 9), date(2026, 10, 9)])
+    monkeypatch.setattr(service, "_et_today", lambda: next(days))
+    readiness = SimpleNamespace(observe=AsyncMock())
+    copilot = SimpleNamespace(db=temp_db, card_stats=None, _shutdown_event=stop)
+
+    await asyncio.wait_for(service.run_card_stats_worker(copilot, app_config, readiness), 2)
+
+    assert [c.args[1:] for c in readiness.observe.await_args_list] == [(False, OUTAGE), (True, "not_due")]
 
 
 async def test_a_database_outage_never_ends_the_worker_loop(monkeypatch, app_config, temp_db):

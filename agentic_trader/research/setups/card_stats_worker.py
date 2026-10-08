@@ -40,7 +40,10 @@ SCAN_WINDOW_AFTER = timedelta(minutes=20)
 
 
 class CardStatsUnavailable(RuntimeError):
-    """Labelling produced no usable evidence (every bar fetch failed); nothing is written."""
+    """Labelling produced no usable evidence (every bar fetch failed); nothing is written.
+
+    The message names the failures' exception types only, never a provider's own text.
+    """
 
 
 def in_scan_window(now_et: datetime, scan_times_et: Sequence[str]) -> bool:
@@ -100,8 +103,10 @@ class CardStatsWorker:
             max_requests_per_minute=self.config.market_data.max_requests_per_minute,
         )
         if len(frame) and bool((frame["hit"] == FETCH_FAILED_HIT).all()):
-            reasons = sorted({str(reason) for reason in frame["reason"].dropna()})[:3]
-            raise CardStatsUnavailable(f"every bar fetch failed for {len(frame)} candidates: {'; '.join(reasons)}")
+            # The labeller's reason is "Type: message"; only the type reaches readiness (and so a
+            # Telegram incident notice): a provider's message can name a host or an account.
+            types = sorted({str(reason).split(":", 1)[0].strip() for reason in frame["reason"].dropna()})[:3]
+            raise CardStatsUnavailable(f"every bar fetch failed for {len(frame)} candidates: {', '.join(types)}")
         window_end = now.astimezone(ET_TZ).date()
         return compute_card_stats(
             frame,

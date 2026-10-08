@@ -1,12 +1,12 @@
 """next_session_close: recorded close, live-card guard, WAITING taps and dated rendering."""
 
-import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.config import ScanBudget, load_config
 from agentic_trader.constants import SignalStatus
 from agentic_trader.execution.freshness import ExecutionReply
@@ -115,6 +115,17 @@ async def test_live_card_guard(extended, temp_db, app_config, validity, strategy
         assert reasons["DDD"] == "live card pending"
 
 
+async def test_a_symbol_scan_skipped_for_a_live_card_says_so(extended, temp_db):
+    """`/scan DDD` while DDD's setup already has a live card: the reply names the live card, not "no setup"."""
+    await _plant(temp_db, "DDD", "TREND_PULLBACK", datetime.now(UTC) - timedelta(days=1))
+    summary = await extended.run_scan(symbols=["DDD"], use_llm=False, dry_run=False, budget=ScanBudget.NONE)
+    assert summary["sent"] == 0
+    assert (
+        TradingCopilot._scan_result_text("DDD", summary)
+        == "No new card for DDD: a live card for this setup is pending."
+    )
+
+
 async def test_an_extended_card_renders_its_close_date_through_the_real_outbox(extended, temp_db):
     extended.evaluator.evaluate_candidate = AsyncMock(side_effect=lambda cand, **kwargs: real_evaluation(cand))
     await extended.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
@@ -122,7 +133,8 @@ async def test_an_extended_card_renders_its_close_date_through_the_real_outbox(e
     send = AsyncMock(return_value=SimpleNamespace(message_id=5))
     notifier.app = SimpleNamespace(bot=SimpleNamespace(send_message=send))
     assert await NotificationDispatcher(temp_db.workflows, notifier, load_config().execution).dispatch_one()
-    assert re.search(r"• <b>Valid until:</b> [A-Z][a-z]{2} \d{2} \d{2}:\d{2} NY", send.await_args.kwargs["text"])
+    expected = await next_regular_close_after(DeterministicCalendarProvider(), datetime.now(UTC))
+    assert f"• <b>Valid until:</b> {expected.astimezone(ET_TZ):%a %d %H:%M} NY\n" in send.await_args.kwargs["text"]
 
 
 async def test_a_closed_market_tap_waits_and_leaves_the_card_live(tap_desk, temp_db, app_config):  # noqa: F811

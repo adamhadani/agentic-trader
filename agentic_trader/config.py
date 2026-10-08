@@ -212,6 +212,10 @@ class ScanConfig(BaseModel):
         return (WORKSPACE_ROOT / value).resolve()
 
 
+# A New York wall-clock time, "HH:MM" on the 24-hour clock.
+HHMM_PATTERN = r"^(?:[01]\d|2[0-3]):[0-5]\d$"
+
+
 CardValidity = Literal["session_close", "next_session_close"]
 CardPolicyMode = Literal["off", "preview", "enforce"]
 
@@ -336,10 +340,6 @@ class StrategyConfig(BaseModel):
     strategy_allocations: dict[str, float] = Field(default_factory=lambda: dict(DEFAULT_STRATEGY_ALLOCATIONS))
     trend_pullback: TrendPullbackConfig = Field(default_factory=TrendPullbackConfig)
     squeeze_breakout: SqueezeBreakoutConfig = Field(default_factory=SqueezeBreakoutConfig)
-
-
-# A New York wall-clock time, "HH:MM" on the 24-hour clock.
-HHMM_PATTERN = r"^(?:[01]\d|2[0-3]):[0-5]\d$"
 
 
 class SchedulerConfig(BaseModel):

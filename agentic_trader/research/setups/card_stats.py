@@ -40,8 +40,12 @@ def card_stats_key(et_date: date) -> str:
     return f"card_stats/{et_date.isoformat()}"
 
 
-class CardKeyStats(BaseModel, frozen=True):
-    """One ``(strategy, direction)`` row. Rates are over mature labels; fetch failures are excluded."""
+class CardKeyStats(BaseModel, frozen=True, allow_inf_nan=False):
+    """One ``(strategy, direction)`` row. Rates are over mature labels; fetch failures are excluded.
+
+    Every float is finite or None: a non-finite value (a JSON ``"NaN"`` string parses as one) fails
+    validation, so the reader treats the whole snapshot as unreadable rather than rendering it.
+    """
 
     strategy: str
     direction: str

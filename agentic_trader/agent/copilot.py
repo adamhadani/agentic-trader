@@ -1142,8 +1142,13 @@ class TradingCopilot:
                 )
                 for candidate, _det_res, _account_risk in ranked
             ]
+            # A policy-locked card (versioned alpha or paper probe) shows its evidence but is outside
+            # the send policy: no decision, so no withhold and an all-null `card_policy` block.
             policy_by_rank: list[CardPolicyDecision | None] = [
-                decide(card_policy, evidence) if evidence is not None else None for evidence in evidence_by_rank
+                decide(card_policy, evidence)
+                if evidence is not None and not self._policy_locked(candidate, probe=True)
+                else None
+                for (candidate, _det_res, _account_risk), evidence in zip(ranked, evidence_by_rank, strict=True)
             ]
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
@@ -2890,6 +2895,12 @@ class TradingCopilot:
             return f"Next regular open {next_open.astimezone(UTC):%Y-%m-%d %H:%M} UTC."
         return "Next regular open unavailable."
 
+    @staticmethod
+    def _policy_locked(candidate: Any, *, probe: bool = False) -> bool:
+        """A versioned alpha card (``alpha_version``/``alpha_policy``); with ``probe``, a paper probe too."""
+        locked = bool(getattr(candidate, "alpha_version", None) or getattr(candidate, "alpha_policy", None))
+        return locked or (probe and bool(getattr(candidate, "probe", False)))
+
     def _extends_validity(self, candidate: Any, *, drift: bool) -> bool:
         """Whether this candidate's card is valid until the next session's close (docs/card-evidence.md#card-validity).
 
@@ -2898,7 +2909,7 @@ class TradingCopilot:
         validity = effective_validity(
             self.config.card_policy.validity,
             asset_class=str(getattr(candidate, "asset_class", "")),
-            policy_locked=bool(getattr(candidate, "alpha_version", None) or getattr(candidate, "alpha_policy", None)),
+            policy_locked=self._policy_locked(candidate),
             probe=bool(getattr(candidate, "probe", False)),
             drift=drift,
         )
@@ -3678,6 +3689,9 @@ class TradingCopilot:
         if not runners_up and contract in (summary.get("duplicates") or []):
             # The setup still exists; the recent-duplicate rule suppressed a second card.
             return f"No new card for {name}: a matching setup was already carded within the duplicate window."
+        if runners_up and runners_up[0].get("reason") == LIVE_CARD_PENDING:
+            # The setup still exists; its earlier card is still live (next_session_close).
+            return f"No new card for {name}: a live card for this setup is pending."
         text = f"No valid setup for {name} right now"
         detail = None
         if runners_up:

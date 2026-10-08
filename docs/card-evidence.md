@@ -58,11 +58,15 @@ Payload (`CardStatsSnapshot`, `agentic_trader/research/setups/card_stats.py`):
 Readiness: every successful poll (detail `not_due`, `scan_window`, `present`, `scan_busy` or
 `recorded`) and the start of a labelling run (`labelling N scan events`) observe `card_stats` ready;
 a failure observes it failed. The detail of `CardStatsUnavailable` is `CardStatsUnavailable: every
-bar fetch failed for N candidates: …` (first 200 characters); any other error's detail is its type
-name only, because readiness details reach Telegram incident notices, and its message goes to the
-log. If every candidate's bar fetch fails, nothing is written (`CardStatsUnavailable`) and
-the previous snapshot stays authoritative until it is older than `stats_max_age_seconds`, when cards
-say "statistics stale". A failure retries on the next poll. Only shutdown ends the loop: if the
+bar fetch failed for N candidates: TYPE, …` (up to three exception type names, first 200 characters);
+any other error's detail is its type name only, because readiness details reach Telegram incident
+notices; messages go to the log. If every candidate's bar fetch fails, nothing is written
+(`CardStatsUnavailable`) and the previous snapshot stays authoritative until it is older than
+`stats_max_age_seconds`, when cards say "statistics stale". A failure retries on the next poll and is
+remembered for the rest of its New York date: until a poll finds today's snapshot `present` or
+`recorded`, the idle polls (`not_due`, `scan_window`, `scan_busy`) and a retry's `labelling` start
+observe `card_stats` failed with the stored detail, so readiness does not flap between failed and ready
+around the scan slots. The next New York date starts clean. Only shutdown ends the loop: if the
 readiness write itself fails (the database is down) the worker logs it and polls again.
 
 Shutdown cancels the worker's coroutine. The snapshot is written only by that coroutine after
@@ -77,17 +81,23 @@ scan windows and running scans.
 `TradingCopilot.run_scan` reads the newest `card_stats` snapshot in this scope once per scan
 (`CardStatsRepository.latest`) and looks up each native candidate's `(strategy, direction)`
 (`lookup`). The result, `CardEvidence`, is stored in the signal's `decision_provenance["card_evidence"]`
-and in its outbox notification, so the Telegram card, the terminal card, the dry-run print and a
+and in its outbox notification (with the key's `n_fetch_failed`, 0 without a row, and its
+`first_decided_at`), so the Telegram card, the terminal card, the dry-run print and a
 re-priced replacement render the same facts from one helper (`format_evidence_lines`). PEAD drift
 cards keep their own block and carry none. The block sits inside the card, right after the target
 line:
 
 | Status | When | Line |
 | --- | --- | --- |
-| `measured` | snapshot fresh, at least `min_mature_cards` mature labels | `• Measured record (STRATEGY, DIRECTION): N mature cards since WINDOW_START: T% target / S% stop / O% timeout, mean ±X.XXR after cost`, then `• Implied EV at R.R:1: ±Y.YYR` |
-| `insufficient` | fewer mature labels, or no row for the key | `• Measured record: insufficient evidence (N/MIN mature cards)` |
+| `measured` | snapshot fresh, at least `min_mature_cards` mature labels with rates and a finite mean R | `• Measured record (STRATEGY, DIRECTION): N mature candidates since FIRST_DECIDED: T% target / S% stop / O% timeout, mean ±X.XXR after cost`, then `• Implied EV at R.R:1: ±Y.YYR` |
+| `insufficient` | fewer mature labels, or no row for the key (the `("*", "*")` aggregate is never a fallback) | `• Measured record: insufficient evidence (N/MIN mature candidates)` |
 | `stale` | snapshot older than `stats_max_age_seconds` | `• Measured record: statistics stale (last computed DATE)` |
-| `unavailable` | no snapshot in this scope (every dry scan), a failed read or an unreadable payload | `• Measured record: no statistics in this scope` |
+| `unavailable` | no snapshot in this scope (every dry scan), a failed read, an unreadable payload (including a non-finite number), or a key at or over the floor without rates or a finite mean R | `• Measured record: no statistics in this scope` |
+
+`FIRST_DECIDED` is the New York date of the key's first journaled decision (`first_decided_at`), or
+`window_start` when the key has none: the count is of mature labelled candidates, sent or not, not of
+cards. A stored payload is rendered by the same rule: `insufficient` only below the floor, and a
+`measured` payload without rates or a mean renders the `unavailable` line.
 
 The last line is always, in italics: "Not validated alpha. Record measured on journaled candidates'
 deterministic brackets at the next hourly open (FEED, C bp/side)." The parenthesis is omitted when no
@@ -96,7 +106,9 @@ snapshot exists.
 `mean` is the directly measured quantity: the mean cost-adjusted R of the key's mature labels at the
 journaled bracket. The implied EV is `target_rate·rr − stop_rate + timeout_rate·mean_timeout_r` at the
 card's own ratio `rr` (no timeouts' R counts as 0); it is labelled implied because the card's ratio can
-differ from the journaled bracket.
+differ from the journaled bracket. It mixes gross R for target and stop hits (`+rr` and `−1`, before
+cost) with the timeouts' after-cost mean R, so it is not an after-cost figure and is not comparable to
+`mean`.
 
 The card title reads `📋 SETUP:` (it read `🚨 TRADE SIGNAL:`). `Macro Check` states the deterministic
 lockout gate: a candidate that reached the LLM already passed it, so the evaluator sets
@@ -109,24 +121,34 @@ block; a malformed one renders the `unavailable` line and still delivers.
 `decide(policy, evidence)` (`agentic_trader/execution/card_policy.py`) is pure:
 
     would_withhold = mode != "off" and evidence.status == "measured"
-                     and n_mature >= min_mature_cards and mean_r_cost < min_measured_ev
+                     and n_mature >= min_mature_cards and n_fetch_failed == 0
+                     and mean_r_cost < min_measured_ev
     withhold       = would_withhold and mode == "enforce"
 
 It runs in `run_scan`'s send loop for native candidates only, after the card-budget refusals and before
 the LLM. A withheld candidate gets the fixed outcome `card_policy_withheld`
 (`RankedOutcome.CARD_POLICY_WITHHELD`), spends no scan, session or LLM budget, becomes a runner-up with
-reason `card policy: measured EV -0.39R over 30 < +0.00R`, and the next rank is considered, like an LLM
-veto. Insufficient, stale or unavailable evidence never withholds: the policy is a switch on measured
-evidence, not a fail-closed rule. PEAD drift and catalog cards are outside it. Every scan applies it
+reason `card policy: measured EV -0.39R over 30 < +0.00R` (three decimals when two would print the EV
+and the threshold as equal, such as `-0.004R … < +0.000R`), and the next rank is considered, like an
+LLM veto. Insufficient, stale, unavailable or partial (`n_fetch_failed > 0`) evidence never withholds:
+the policy is a switch on complete measured evidence, not a fail-closed rule. Every scan applies it
 (suggestion, swing, intraday, `/scan`, Re-evaluate); only scheduled suggestion scans are labelled.
+
+Outside the policy: PEAD drift and catalog cards (no evidence block), and policy-locked native cards
+(a versioned alpha with `alpha_version` or `alpha_policy`, or a paper probe). A policy-locked card
+still renders its evidence block, but `run_scan` makes no decision for it: it is never withheld or
+counted as `would_withhold`, logs no preview line, and its journal and provenance `card_policy` block
+has every field null. Whether such a card is sent belongs to its versioned policy and, for a probe, to
+`probe_block_reason`, the single probe liveness rule.
 
 Evidence recorded:
 
 - `scan_candidates_ranked` gains top-level `card_policy: {mode, min_measured_ev, min_mature_cards,
-  snapshot_key}` and, per candidate, `card_policy: {measured_ev, n_mature, would_withhold}`
-  (`measured_ev`/`n_mature` null unless the evidence is measured; `would_withhold` null while the mode is
-  `off`). `would_withhold` is the policy's verdict on every native candidate, whether or not it reached
-  the send step.
+  snapshot_key}` and, per candidate, `card_policy: {measured_ev, n_mature, would_withhold,
+  n_fetch_failed}` (`measured_ev`/`n_mature` null unless the evidence is measured; `would_withhold` null
+  while the mode is `off`; `n_fetch_failed` is the key's count, 0 without a row; every field null for a
+  policy-locked candidate). `would_withhold` is the policy's verdict on every other native candidate,
+  whether or not it reached the send step.
 - A sent card's `decision_provenance` carries the same `card_policy` block and its `card_evidence`.
 - `preview` logs one `card_policy_would_withhold` line for each candidate that reaches the check.
 - `copilot cards outcomes` adds the `card_policy_withheld` and `would_withhold` columns and the summary
@@ -160,7 +182,8 @@ a drift card needs its same-session event.
   against the same stop and target and the required ratio; the re-pricing gate is unchanged, and the
   replacement's new timestamp satisfies admission's signal age.
 - `run_scan` skips a native candidate whose `(contract, strategy)` already has a live `PENDING` or
-  `SUBMITTING` card (outcome and runner-up reason `live card pending`), so the 12-hour duplicate window
+  `SUBMITTING` card (outcome and runner-up reason `live card pending`; a `/scan SYMBOL` reply says "No new
+  card for SYMBOL: a live card for this setup is pending."), so the 12-hour duplicate window
   cannot produce a second live card the next morning. The guard runs only under `next_session_close`,
   for a candidate whose card it extends, after the card-budget refusals and before the send policy.
 - `Valid until:` shows `HH:MM NY` when the close is on the card's issue date (the signal row's
@@ -182,6 +205,12 @@ a drift card needs its same-session event.
   that was sent), enter at the open of the first regular hourly bar at or after the scan's `decided_at`
   (not the limit price, not the tap), cost a fixed 5 bp per side, and use the configured feed (IEX in
   production, with its hourly gaps). The record is the setup's, not this card's own win rate.
+- **Partial snapshot.** A key's `n_fetch_failed` counts candidates whose bars could not be read; they
+  are excluded from its rates. Only a run in which every fetch fails writes nothing: a run with some
+  failures is recorded as that New York date's snapshot, and because the key `card_stats/{et_date}` is
+  idempotent it blocks a retry until the next date. Such a partial key is still shown as measured and
+  journaled with its `n_fetch_failed`, but the policy never withholds on it (`preview` never counts it as
+  `would_withhold`).
 - **Censoring bias.** A label stays immature until the stop or target hits or 20 regular sessions pass,
   so early samples over-represent fast resolutions. The sample floor does not remove this.
 - **Coverage.** Only scheduled suggestion scans journal `scan_candidates_ranked`. Swing, intraday,

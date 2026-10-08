@@ -37,21 +37,23 @@ def test_an_active_mode_requires_a_threshold(mode):
 
 
 @pytest.mark.parametrize(
-    "fields",
+    ("fields", "match"),
     [
-        {"unknown_key": 1},
-        {"mode": "on"},
-        {"validity": "forever"},
-        {"stats_time_et": "8:30"},
-        {"stats_time_et": "24:00"},
-        {"min_mature_cards": 0},
-        {"min_measured_ev": float("nan"), "mode": "enforce"},
-        {"stats_poll_seconds": 5},
-        {"stats_max_age_seconds": 300},  # not longer than the poll interval
+        ({"unknown_key": 1}, "Extra inputs are not permitted"),
+        ({"mode": "on"}, "Input should be 'off', 'preview' or 'enforce'"),
+        ({"mode": True}, "Input should be 'off', 'preview' or 'enforce'"),
+        ({"validity": "forever"}, "Input should be 'session_close' or 'next_session_close'"),
+        ({"stats_time_et": "8:30"}, "Invalid HH:MM time: 8:30"),
+        ({"stats_time_et": "24:00"}, "Invalid HH:MM time: 24:00"),
+        ({"min_mature_cards": 0}, "greater than or equal to 1"),
+        ({"min_measured_ev": float("nan"), "mode": "enforce"}, "finite number"),
+        ({"stats_poll_seconds": 5}, "greater than or equal to 10"),
+        # Not longer than the poll interval.
+        ({"stats_max_age_seconds": 300}, "stats_max_age_seconds must exceed stats_poll_seconds"),
     ],
 )
-def test_invalid_blocks_are_rejected(fields):
-    with pytest.raises(ValueError):
+def test_invalid_blocks_are_rejected(fields, match):
+    with pytest.raises(ValueError, match=match):
         CardPolicyConfig(**fields)
 
 
@@ -90,12 +92,13 @@ def test_an_unquoted_yaml_off_means_off(tmp_path):
 
 
 def test_an_unquoted_yaml_on_is_rejected(tmp_path):
-    with pytest.raises(ValueError):
+    # YAML 1.1 reads a bare `on` as true; only false is mapped back (to "off").
+    with pytest.raises(ValueError, match="Input should be 'off', 'preview' or 'enforce'"):
         load_config(write(tmp_path, "card_policy:\n  mode: on\n  min_measured_ev: 0.0\n"), environ=PRODUCTION)
 
 
 def test_unknown_keys_fail_the_load(tmp_path):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="min_measured_r"):
         load_config(write(tmp_path, "card_policy:\n  min_measured_r: 0.0\n"), environ=PRODUCTION)
 
 

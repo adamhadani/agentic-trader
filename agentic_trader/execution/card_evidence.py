@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from html import escape
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AwareDatetime, BaseModel, Field, ValidationError
 from sqlalchemy import select
 
 from agentic_trader.execution.durable import EventKind
@@ -41,13 +41,18 @@ CAVEAT = "Not validated alpha. Record measured on journaled candidates' determin
 
 
 class CardEvidence(BaseModel, frozen=True):
-    """What one card displays; stored in provenance and in its notification as ``card_evidence``."""
+    """What one card displays; stored in provenance and in its notification as ``card_evidence``.
+
+    ``n_fetch_failed`` is the key's count of candidates whose bars could not be read (0 without a
+    row): a partial key is shown as measured but never withheld (``card_policy.decide``).
+    """
 
     status: EvidenceStatus
     strategy: str
     direction: str
     n_mature: int | None = None
     min_mature: int = Field(default=0, ge=0)
+    n_fetch_failed: int = Field(default=0, ge=0)
     target_rate: float | None = None
     stop_rate: float | None = None
     timeout_rate: float | None = None
@@ -58,7 +63,8 @@ class CardEvidence(BaseModel, frozen=True):
     feed: str | None = None
     cost_bps_per_side: float | None = None
     snapshot_key: str | None = None
-    computed_at: datetime | None = None
+    computed_at: AwareDatetime | None = None
+    first_decided_at: AwareDatetime | None = None
 
     def implied_ev(self, rr: float) -> float | None:
         """``target_rate·rr − stop_rate + timeout_rate·mean_timeout_r`` (no timeouts' R counts as 0); None unless measured."""
@@ -76,7 +82,13 @@ def lookup(
     max_age: timedelta,
     min_mature: int,
 ) -> CardEvidence:
-    """The evidence a card for ``(strategy, direction)`` displays, from the latest snapshot in this scope."""
+    """The evidence a card for ``(strategy, direction)`` displays, from the latest snapshot in this scope.
+
+    ``stale`` past ``max_age``; ``insufficient`` below ``min_mature`` (or no row: the aggregate is
+    never a fallback); ``unavailable`` without a snapshot or, over the floor, without rates and a
+    finite mean R; otherwise ``measured``. ``n_fetch_failed`` and ``first_decided_at`` come from the
+    key's row whenever it exists.
+    """
     if snapshot is None:
         return CardEvidence(status="unavailable", strategy=strategy, direction=direction, min_mature=min_mature)
     provenance: dict[str, Any] = {
@@ -90,12 +102,18 @@ def lookup(
         "snapshot_key": snapshot.snapshot_key,
         "computed_at": snapshot.computed_at,
     }
+    stats = snapshot.stats(strategy, direction)
+    if stats is not None:
+        provenance["n_fetch_failed"] = stats.n_fetch_failed
+        provenance["first_decided_at"] = stats.first_decided_at
     if now - snapshot.computed_at > max_age:
         return CardEvidence(status="stale", **provenance)
-    stats = snapshot.stats(strategy, direction)
     n_mature = stats.n_mature if stats is not None else 0
-    if stats is None or n_mature < min_mature or stats.mean_r_cost is None:
+    if stats is None or n_mature < min_mature:
         return CardEvidence(status="insufficient", n_mature=n_mature, **provenance)
+    if None in (stats.mean_r_cost, stats.target_rate, stats.stop_rate, stats.timeout_rate):
+        # Over the floor but nothing measurable (no finite mean R): never "insufficient".
+        return CardEvidence(status="unavailable", n_mature=n_mature, **provenance)
     return CardEvidence(
         status="measured",
         n_mature=n_mature,
@@ -129,6 +147,13 @@ def _pct(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.0%}"
 
 
+def _since(evidence: CardEvidence) -> date | None:
+    """The New York date of the key's first journaled decision; the window start when unknown."""
+    if evidence.first_decided_at is not None:
+        return evidence.first_decided_at.astimezone(ET_TZ).date()
+    return evidence.window_start
+
+
 def format_evidence_lines(evidence: CardEvidence, rr: float, *, html: bool) -> list[str]:
     """The card's evidence block, one line per item; the Telegram (``html``) and terminal cards share it."""
 
@@ -143,17 +168,19 @@ def format_evidence_lines(evidence: CardEvidence, rr: float, *, html: bool) -> l
         lines = [
             (
                 f"• {bold('Measured record')} ({text(evidence.strategy)}, {text(evidence.direction)}): "
-                f"{evidence.n_mature} mature cards since {evidence.window_start}: {_pct(evidence.target_rate)} target / "
+                f"{evidence.n_mature} mature candidates since {_since(evidence)}: {_pct(evidence.target_rate)} target / "
                 f"{_pct(evidence.stop_rate)} stop / {_pct(evidence.timeout_rate)} timeout, "
                 f"mean {evidence.mean_r_cost:+.2f}R after cost"
             ),
             f"• {bold(f'Implied EV at {rr:.1f}:1:')} {ev:+.2f}R",
         ]
-    elif evidence.status in ("measured", "insufficient"):
+    elif evidence.status in ("measured", "insufficient") and (evidence.n_mature or 0) < evidence.min_mature:
+        # Only a sample below the floor is "insufficient"; one over it without rates or a mean
+        # (a stored payload) has nothing measurable to show and falls through to "no statistics".
         lines = [
             (
                 f"• {bold('Measured record:')} insufficient evidence "
-                f"({evidence.n_mature or 0}/{evidence.min_mature} mature cards)"
+                f"({evidence.n_mature or 0}/{evidence.min_mature} mature candidates)"
             )
         ]
     elif evidence.status == "stale":

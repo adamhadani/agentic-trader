@@ -9,6 +9,11 @@ from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from tests.agent.test_scan_budget import budget_desk  # noqa: F401  (fixture)
 from tests.execution.card_stats_fixtures import FakeCardStats, make_snapshot, real_evaluation
+from tests.execution.test_card_evidence import plant_snapshot_payload
+
+
+def payload_key(payload):
+    return f"card_stats/{payload['window_end']}"
 
 
 async def test_a_sent_card_carries_its_evidence_through_the_real_outbox(budget_desk, temp_db, capsys):  # noqa: F811
@@ -31,11 +36,11 @@ async def test_a_sent_card_carries_its_evidence_through_the_real_outbox(budget_d
     notifier.app = SimpleNamespace(bot=SimpleNamespace(send_message=send))
     assert await NotificationDispatcher(temp_db.workflows, notifier, load_config().execution).dispatch_one()
     text = send.await_args.kwargs["text"]
-    since = stats.snapshot.window_start.isoformat()
+    since = "2026-07-15"  # the key's first journaled decision (New York date), not the window start
     assert "📋 <b>SETUP: 1 shares DDD (LONG)</b>" in text
-    assert f"• <b>Measured record</b> (TREND_PULLBACK, LONG): 30 mature cards since {since}:" in text
+    assert f"• <b>Measured record</b> (TREND_PULLBACK, LONG): 30 mature candidates since {since}:" in text
     assert "• <b>Implied EV at 2.0:1:</b> -0.25R" in text
-    assert f"• Measured record (TREND_PULLBACK, LONG): 30 mature cards since {since}:" in capsys.readouterr().out
+    assert f"• Measured record (TREND_PULLBACK, LONG): 30 mature candidates since {since}:" in capsys.readouterr().out
 
 
 async def test_a_failed_statistics_read_never_blocks_a_card(budget_desk, temp_db):  # noqa: F811
@@ -45,6 +50,19 @@ async def test_a_failed_statistics_read_never_blocks_a_card(budget_desk, temp_db
     assert signal["contract"] == "DDD"
     assert signal["decision_provenance"]["card_evidence"]["status"] == "unavailable"
     assert budget_desk.last_scan_summary["card_stats_error"] == "RuntimeError: journal down"
+
+
+async def test_a_non_finite_stored_snapshot_is_no_evidence_and_the_card_still_sends(budget_desk, temp_db):  # noqa: F811
+    """A ``"NaN"`` string in the journal parses as a float NaN: the real repository refuses it and the card sends."""
+    payload = make_snapshot().model_dump(mode="json")
+    payload["keys"][0]["mean_r_cost"] = "NaN"
+    await plant_snapshot_payload(temp_db, payload, key=payload_key(payload))
+
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    assert signal["contract"] == "DDD"
+    assert signal["decision_provenance"]["card_evidence"]["status"] == "unavailable"
 
 
 async def test_dry_run_cards_state_no_statistics_in_this_scope(budget_desk, temp_db, capsys):  # noqa: F811

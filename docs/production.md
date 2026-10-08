@@ -445,11 +445,12 @@ date change instead.
 **Card wording and measured record (October 8).** A card's title reads `📋 SETUP: …` (it was
 `🚨 TRADE SIGNAL: …`) in both the Telegram and terminal cards. Directly under the target line a
 native card states the measured record of its own `(strategy, direction)` from the latest
-`card_stats` snapshot in this scope — mature count since the window start, target/stop/timeout
-rates, mean R after cost and the implied EV at the card's own ratio — or says
-`insufficient evidence (n/MIN mature cards, MIN = `card_policy.min_mature_cards`)`, `statistics stale (last computed DATE)` or
-`no statistics in this scope` (every dry scan). The block always ends with the italic caveat "Not
-validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
+`card_stats` snapshot in this scope — the number of mature candidates since the key's first journaled
+decision (New York date), target/stop/timeout rates, mean R after cost and the implied EV at the card's
+own ratio — or says `insufficient evidence (N/MIN mature candidates)`, where MIN is
+`card_policy.min_mature_cards`, `statistics stale (last computed DATE)` or `no statistics in this
+scope` (every dry scan, and a key over the floor without a finite mean R). The block always ends
+with the italic caveat "Not validated alpha. …". The scan reads the snapshot once; a failed read records `card_stats_error` in
 the scan summary and the cards state no statistics. `Macro Check` is the deterministic lockout gate:
 a card that reached the LLM passed it, so it reads Cleared whatever the LLM wrote. Contract and
 limits: [card evidence](card-evidence.md#evidence-block).
@@ -613,8 +614,10 @@ sessions; only then set `enforce`. Under `enforce`, a native candidate whose `(s
 has at least `min_mature_cards` (20) mature labels and a measured mean below the threshold is skipped
 before the LLM with the fixed outcome `card_policy_withheld` (runner-up reason `card policy: measured
 EV …R over N < …R`); it spends no card or LLM budget and the next rank is considered. Insufficient,
-stale or unavailable evidence never withholds. Withheld candidates stay journaled (scheduled suggestion scans) and keep being
-labelled, so a strategy can recover. A mode change is a config edit plus the controlled restart. See
+stale, unavailable or partial evidence (a key with any bar-fetch failure, `n_fetch_failed`) never
+withholds, and a policy-locked card (versioned alpha or paper probe) is outside the policy: it shows
+its evidence and its `card_policy` block is null. Withheld candidates stay journaled (scheduled
+suggestion scans) and keep being labelled, so a strategy can recover. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 
 **Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:
@@ -624,9 +627,11 @@ one `card_stats_snapshot` event (`copilot db events --stream card_stats`). `/rea
 `card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day
 without a snapshot the first poll labels before it reports `recorded`; it observes `labelling N scan
 events` first. A failed run (every bar fetch failed) writes nothing, turns `card_stats` not ready with
-`CardStatsUnavailable: every bar fetch failed …` in its detail (any other error shows its type only;
-the log has the message) and retries on the next poll; cards keep the previous snapshot until it is
-four days old and then say `statistics stale`. A shutdown during a labelling run records nothing, but
+`CardStatsUnavailable: every bar fetch failed for N candidates: TYPE` in its detail (exception type
+names only; any other error shows its type only; the log has the messages) and retries on the next
+poll. It stays not ready with that detail for the rest of the New York date, including the idle polls
+around the scan slots, until a poll finds or records today's snapshot; cards keep the previous
+snapshot until it is four days old and then say `statistics stale`. A shutdown during a labelling run records nothing, but
 process exit waits for the labelling thread's provider reads to finish. Details:
 [card evidence](card-evidence.md#card-statistics-snapshot).
 

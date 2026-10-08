@@ -57,8 +57,18 @@ async def test_off_sends_and_journals_evidence_without_a_verdict(policy_desk, te
         "min_mature_cards": 20,
         "snapshot_key": policy_desk.card_stats.snapshot.snapshot_key,
     }
-    assert by_contract["DDD"]["card_policy"] == {"measured_ev": -0.39, "n_mature": 30, "would_withhold": None}
-    assert by_contract["CCC"]["card_policy"] == {"measured_ev": None, "n_mature": None, "would_withhold": None}
+    assert by_contract["DDD"]["card_policy"] == {
+        "measured_ev": -0.39,
+        "n_mature": 30,
+        "would_withhold": None,
+        "n_fetch_failed": 0,
+    }
+    assert by_contract["CCC"]["card_policy"] == {
+        "measured_ev": None,
+        "n_mature": None,
+        "would_withhold": None,
+        "n_fetch_failed": 0,
+    }
 
 
 async def test_preview_sends_and_journals_would_withhold(policy_desk, temp_db, app_config, caplog):
@@ -72,6 +82,7 @@ async def test_preview_sends_and_journals_would_withhold(policy_desk, temp_db, a
         "measured_ev": -0.39,
         "n_mature": 30,
         "would_withhold": True,
+        "n_fetch_failed": 0,
     }
     _, by_contract = await _ranked(temp_db)
     assert by_contract["DDD"]["outcome"] == "sent" and by_contract["DDD"]["card_policy"]["would_withhold"] is True
@@ -82,6 +93,10 @@ async def test_preview_sends_and_journals_would_withhold(policy_desk, temp_db, a
 
 async def test_enforce_withholds_before_the_llm_and_falls_through(policy_desk, temp_db, app_config):
     app_config.card_policy = CardPolicyConfig(mode="enforce", min_measured_ev=0.0)
+    # One LLM evaluation and one card for the session: rank 2 can only be sent if the withheld
+    # rank 1 spent neither.
+    app_config.scan.max_llm_evaluations_per_scan = 1
+    app_config.scan.max_cards_per_session = 1
     await policy_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
 
     assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["CCC"]
@@ -94,20 +109,27 @@ async def test_enforce_withholds_before_the_llm_and_falls_through(policy_desk, t
     ddd = by_contract["DDD"]
     assert ddd["outcome"] == RankedOutcome.CARD_POLICY_WITHHELD == "card_policy_withheld"
     assert ddd["signal_id"] is None and ddd["llm"] is None
-    assert ddd["card_policy"] == {"measured_ev": -0.39, "n_mature": 30, "would_withhold": True}
+    assert ddd["card_policy"] == {"measured_ev": -0.39, "n_mature": 30, "would_withhold": True, "n_fetch_failed": 0}
     [signal] = await temp_db.get_recent_signals(limit=10)
     provenance = signal["decision_provenance"]
-    assert provenance["card_policy"] == {"measured_ev": None, "n_mature": None, "would_withhold": False}
+    assert provenance["card_policy"] == {
+        "measured_ev": None,
+        "n_mature": None,
+        "would_withhold": False,
+        "n_fetch_failed": 0,
+    }
     assert provenance["card_evidence"]["status"] == "insufficient"
 
 
-@pytest.mark.parametrize("kind", ["insufficient", "stale", "unavailable"])
-async def test_enforce_never_withholds_without_measured_evidence(policy_desk, temp_db, app_config, kind):
+@pytest.mark.parametrize("kind", ["insufficient", "stale", "unavailable", "partial"])
+async def test_enforce_never_withholds_without_complete_measured_evidence(policy_desk, temp_db, app_config, kind):
     app_config.card_policy = CardPolicyConfig(mode="enforce", min_measured_ev=0.0)
     snapshot = {
         "insufficient": make_snapshot(keys=[{**NEGATIVE, "n_mature": 19}]),
         "stale": make_snapshot(keys=[NEGATIVE], computed_at=datetime.now(UTC) - timedelta(days=5)),
         "unavailable": None,
+        # A partial key (some candidates' bars could not be read) is shown but never withheld.
+        "partial": make_snapshot(keys=[{**NEGATIVE, "n_fetch_failed": 2}]),
     }[kind]
     policy_desk.card_stats = FakeCardStats(snapshot)
 
@@ -116,6 +138,46 @@ async def test_enforce_never_withholds_without_measured_evidence(policy_desk, te
     assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["DDD"]
     _, by_contract = await _ranked(temp_db)
     assert by_contract["DDD"]["outcome"] == "sent" and by_contract["DDD"]["card_policy"]["would_withhold"] is False
+    if kind == "partial":
+        assert by_contract["DDD"]["card_policy"] == {
+            "measured_ev": -0.39,
+            "n_mature": 30,
+            "would_withhold": False,
+            "n_fetch_failed": 2,
+        }
+        [signal] = await temp_db.get_recent_signals(limit=10)
+        assert signal["decision_provenance"]["card_evidence"]["n_fetch_failed"] == 2
+
+
+NULL_POLICY = {"measured_ev": None, "n_mature": None, "would_withhold": None, "n_fetch_failed": None}
+
+
+@pytest.mark.parametrize(
+    "lock",
+    [{"alpha_version": "alpha:x:v3"}, {"alpha_policy": {"id": "alpha_x"}}, {"probe": True}],
+    ids=["alpha-version", "alpha-policy", "probe"],
+)
+async def test_the_policy_skips_policy_locked_cards_but_they_still_show_evidence(
+    policy_desk, temp_db, app_config, lock
+):
+    """A versioned alpha or a paper probe is outside the policy: enforce on a negative key still sends it."""
+    app_config.card_policy = CardPolicyConfig(mode="enforce", min_measured_ev=0.0)
+    native = policy_desk.strategy_engine.scan_contract.side_effect
+    policy_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: [
+        item.model_copy(update=lock) if item.contract == "DDD" else item for item in native(data, **kw)
+    ]
+
+    await policy_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
+
+    assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["DDD"]
+    assert _llm_contracts(policy_desk) == ["DDD"]
+    _, by_contract = await _ranked(temp_db)
+    assert by_contract["DDD"]["outcome"] == "sent" and by_contract["DDD"]["card_policy"] == NULL_POLICY
+    assert by_contract["CCC"]["card_policy"]["would_withhold"] is False  # native candidates are still decided
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    provenance = signal["decision_provenance"]
+    assert provenance["card_policy"] == NULL_POLICY
+    assert provenance["card_evidence"]["status"] == "measured" and provenance["card_evidence"]["mean_r_cost"] == -0.39
 
 
 class _StaleBars:
