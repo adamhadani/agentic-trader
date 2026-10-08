@@ -50,6 +50,7 @@ from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
 from agentic_trader.execution.card_evidence import CardEvidence, CardStatsRepository, lookup
+from agentic_trader.execution.card_policy import CardPolicyDecision, decide, journal_block
 from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import (
     EventKind,
@@ -1126,6 +1127,9 @@ class TradingCopilot:
                 )
                 for candidate, _det_res, _account_risk in ranked
             ]
+            policy_by_rank: list[CardPolicyDecision | None] = [
+                decide(card_policy, evidence) if evidence is not None else None for evidence in evidence_by_rank
+            ]
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
             if budget == ScanBudget.NONE:
@@ -1179,6 +1183,7 @@ class TradingCopilot:
                 is_drift = getattr(candidate, "catalog_event", None) is not None
                 try:
                     reason = None
+                    fixed_outcome: str | None = None
                     if is_drift and remaining_drift <= 0:
                         reason = "drift budget spent"
                     elif not is_drift and remaining_scan <= 0:
@@ -1195,8 +1200,31 @@ class TradingCopilot:
                         # bounded by the card budget alone. A drift candidate's LLM pass is
                         # commentary only and never spends it.
                         reason = "LLM evaluation budget spent"
+                    # CARD POLICY (native only, after the budget refusals, before the LLM): a switch on
+                    # measured evidence. Enforce withholds and falls through to the next rank like a
+                    # veto, spending no card or LLM budget; preview logs and sends.
+                    decision = policy_by_rank[rank - 1]
+                    if reason is None and decision is not None and decision.would_withhold:
+                        if decision.withhold:
+                            reason, fixed_outcome = decision.reason, RankedOutcome.CARD_POLICY_WITHHELD
+                        else:
+                            logger.info(
+                                "Card policy preview: would withhold %s %s (%s)",
+                                candidate.contract,
+                                candidate.strategy,
+                                decision.reason,
+                                extra={
+                                    "event": "card_policy_would_withhold",
+                                    "contract": candidate.contract,
+                                    "strategy": candidate.strategy,
+                                    "direction": candidate.direction,
+                                    "measured_ev": decision.measured_ev,
+                                    "n_mature": decision.n_mature,
+                                    "rank": rank,
+                                },
+                            )
                     if reason:
-                        outcomes[rank - 1] = reason
+                        outcomes[rank - 1] = fixed_outcome or reason
                         summary["runners_up"].append(self._runner_up(candidate, reason))
                         continue
 
@@ -1238,7 +1266,9 @@ class TradingCopilot:
                     evidence = evidence_by_rank[rank - 1]
                     card_evidence = evidence.model_dump(mode="json") if evidence is not None else None
                     evidence_keys: dict[str, Any] = (
-                        {"card_evidence": card_evidence} if card_evidence is not None else {}
+                        {"card_evidence": card_evidence, "card_policy": journal_block(decision, card_policy.mode)}
+                        if card_evidence is not None
+                        else {}
                     )
                     if dry_run:
                         logger.info("[DRY RUN] Approved signal would be emitted:")
@@ -1389,6 +1419,8 @@ class TradingCopilot:
                     shadow_by_rank=shadow_by_rank[:native_count],
                     llm_by_rank=llm_by_rank[:native_count],
                     signal_ids_by_rank=signal_ids_by_rank[:native_count],
+                    card_policy_by_rank=policy_by_rank[:native_count],
+                    snapshot_key=snapshot.snapshot_key if snapshot is not None else None,
                     dynamic_sources=dynamic_sources,
                     summary=summary,
                 )
@@ -1642,11 +1674,14 @@ class TradingCopilot:
         shadow_by_rank: list[dict[str, Any] | None],
         llm_by_rank: list[dict[str, Any] | None],
         signal_ids_by_rank: list[int | None],
+        card_policy_by_rank: list[CardPolicyDecision | None],
+        snapshot_key: str | None,
         dynamic_sources: Mapping[str, str],
         summary: dict[str, Any],
     ) -> None:
         """Append one ``scan_candidates_ranked`` event in its own transaction; never raises."""
         try:
+            policy = self.config.card_policy
             candidates = [
                 {
                     "contract": candidate.contract,
@@ -1663,6 +1698,7 @@ class TradingCopilot:
                     "shadow": shadow_by_rank[rank - 1],
                     "llm": llm_by_rank[rank - 1],
                     "signal_id": signal_ids_by_rank[rank - 1],
+                    "card_policy": journal_block(card_policy_by_rank[rank - 1], policy.mode),
                     **self._dynamic_tag(candidate.contract, dynamic_sources),
                 }
                 for rank, (candidate, det_res, _) in enumerate(ranked, 1)
@@ -1676,6 +1712,12 @@ class TradingCopilot:
                 "trigger": "suggestion_scan",
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
+                "card_policy": {
+                    "mode": policy.mode,
+                    "min_measured_ev": policy.min_measured_ev,
+                    "min_mature_cards": policy.min_mature_cards,
+                    "snapshot_key": snapshot_key,
+                },
                 "candidates": candidates,
             }
             et_date = self.session_start_et(decided_at).date().isoformat()

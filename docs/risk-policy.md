@@ -433,6 +433,11 @@ These decide or bound entries, but they are not entry-risk rules and stay where 
   liveness (`probe_block_reason`).
 - **Scan scheduling:** `is_session_active` decides when scans run, not whether a card may
   enter.
+- **The card policy:** `card_policy` ([card evidence](card-evidence.md#send-policy)). In `enforce`
+  mode it withholds a native card only on measured evidence (status `measured`, at least
+  `min_mature_cards` mature labels, mean R after cost below `min_measured_ev`); insufficient, stale or
+  unavailable evidence never withholds. It is a switch on measured outcomes, not a fail-closed rule,
+  and it never reads or changes the book, admission, the FIFO or the broker.
 
 ## Not done here
 

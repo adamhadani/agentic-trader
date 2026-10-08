@@ -109,6 +109,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
    catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure and
    fill slippage; these are descriptive, never gates.
+   The one gate derived from measured outcomes is `card_policy` ([card evidence](docs/card-evidence.md)):
+   operator-configured, default `off`, `preview` before `enforce`, withholding only on measured evidence
+   above a sample floor (`card_policy_withheld`), and never touching risk, admission or the broker.
 9. **Language:** `/macro` owns combined volatility/macro context; no `/regime` alias.
    Render configured policy and real feed dates. GEX is a research estimate with
    quality notes, never fabricated spot data or measured dealer inventory.

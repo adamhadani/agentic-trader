@@ -594,6 +594,18 @@ journal had to stand in). The applied tap's age is reported too. Missing fill ev
 missing signal rows are counted, never zeroed. All of it is descriptive, never a gate.
 None of it ranks, gates or sizes a card.
 
+**Card policy (October 8).** `card_policy.mode` is the one gate derived from these outcomes, and it
+ships `off`. Operate it in three steps: leave `off` until a `card_stats` snapshot exists; set
+`preview` with `min_measured_ev` (mean R after cost, for example `0.0`) and read `would_withhold` in
+`cards outcomes` (summary block `card_policy`) and the `card_policy_would_withhold` log lines for a few
+sessions; only then set `enforce`. Under `enforce`, a native candidate whose `(strategy, direction)`
+has at least `min_mature_cards` (20) mature labels and a measured mean below the threshold is skipped
+before the LLM with the fixed outcome `card_policy_withheld` (runner-up reason `card policy: measured
+EV …R over N < …R`); it spends no card or LLM budget and the next rank is considered. Insufficient,
+stale or unavailable evidence never withholds. Withheld candidates stay journaled and keep being
+labelled, so a strategy can recover. A mode change is a config edit plus the controlled restart. See
+[card evidence](card-evidence.md#send-policy).
+
 Switching live ranking away from `setup_quality` to a shadow score is an operator
 decision, not something this report or the shadow block can do by itself. It needs a
 frozen study holdout result plus enough measured evidence from this report and `alpha

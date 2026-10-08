@@ -26,6 +26,7 @@ def native_candidate(**updates):
 def test_ranked_outcome_vocabulary():
     assert RankedOutcome.SENT == "sent"
     assert RankedOutcome.LLM_VETOED == "llm_vetoed"
+    assert RankedOutcome.CARD_POLICY_WITHHELD == "card_policy_withheld"
     assert json.dumps({"outcome": RankedOutcome.LLM_VETOED}) == '{"outcome": "llm_vetoed"}'
 
 

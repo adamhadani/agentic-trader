@@ -58,6 +58,42 @@ lockout gate: a candidate that reached the LLM already passed it, so the evaluat
 unchanged. A notification queued before this change has no `card_evidence` and renders without a
 block; a malformed one renders the `unavailable` line and still delivers.
 
+## Send policy
+
+`decide(policy, evidence)` (`agentic_trader/execution/card_policy.py`) is pure:
+
+    would_withhold = mode != "off" and evidence.status == "measured"
+                     and n_mature >= min_mature_cards and mean_r_cost < min_measured_ev
+    withhold       = would_withhold and mode == "enforce"
+
+It runs in `run_scan`'s send loop for native candidates only, after the card-budget refusals and before
+the LLM. A withheld candidate gets the fixed outcome `card_policy_withheld`
+(`RankedOutcome.CARD_POLICY_WITHHELD`), spends no scan, session or LLM budget, becomes a runner-up with
+reason `card policy: measured EV -0.39R over 30 < +0.00R`, and the next rank is considered, like an LLM
+veto. Insufficient, stale or unavailable evidence never withholds: the policy is a switch on measured
+evidence, not a fail-closed rule. PEAD drift and catalog cards are outside it. Every scan applies it
+(suggestion, swing, intraday, `/scan`, Re-evaluate); only scheduled suggestion scans are labelled.
+
+Evidence recorded:
+
+- `scan_candidates_ranked` gains top-level `card_policy: {mode, min_measured_ev, min_mature_cards,
+  snapshot_key}` and, per candidate, `card_policy: {measured_ev, n_mature, would_withhold}`
+  (`measured_ev`/`n_mature` null unless the evidence is measured; `would_withhold` null while the mode is
+  `off`). `would_withhold` is the policy's verdict on every native candidate, whether or not it reached
+  the send step.
+- A sent card's `decision_provenance` carries the same `card_policy` block and its `card_evidence`.
+- `preview` logs one `card_policy_would_withhold` line for each candidate that reaches the check.
+- `copilot cards outcomes` adds the `card_policy_withheld` and `would_withhold` columns and the summary
+  block `card_policy: {withheld, would_withhold, withheld_mean_r_cost, would_withhold_mean_r_cost}`
+  (counts over every row, means over mature rows). Withheld candidates stay in the journal and keep
+  being labelled, so a strategy below the threshold keeps accruing evidence and can recover. The
+  existing summary blocks are unchanged; a withheld candidate is still a runner-up there. The
+  end-of-session digest counts it among the runners-up; the reason shows in the scan summary and in a
+  `/scan SYMBOL` reply.
+
+Operate it in order: `off` until a snapshot exists; `preview` with a threshold, reading `would_withhold`
+for several sessions; then `enforce`. Each change is a config edit and the controlled restart.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket

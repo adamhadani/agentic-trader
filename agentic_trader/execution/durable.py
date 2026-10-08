@@ -67,11 +67,12 @@ class RankedOutcome(StrEnum):
     """Fixed outcomes of a ranked suggestion-scan candidate (``scan_candidates_ranked``).
 
     Free-text reasons (``"per-scan budget spent"``, ``"rejected: …"``) stay plain strings;
-    these two are the outcomes a reader must recognise without parsing text.
+    these are the outcomes a reader must recognise without parsing text.
     """
 
     SENT = "sent"
     LLM_VETOED = "llm_vetoed"
+    CARD_POLICY_WITHHELD = "card_policy_withheld"
 
 
 class NotificationKind(StrEnum):

@@ -5,8 +5,11 @@ same pure ``label_bracket`` the setup-outcome study uses, so ``copilot cards
 outcomes`` can show how ``setup_quality`` and the shadow ranker's ``score`` would have
 selected versus a random pick and versus each other -- entirely from durable evidence
 already recorded by the live scan (``agentic_trader/agent/copilot.py``:
-``_journal_scan_ranking``). This module never sends orders or notifications and never
-writes to the database; it only reads journaled events and fetches bars.
+``_journal_scan_ranking``). The summary also counts the candidates the configured card
+policy withheld (``card_policy_withheld``) or would have withheld (``would_withhold``), with
+their mean cost-adjusted R: a withheld candidate stays journaled and keeps being labelled.
+This module never sends orders or notifications and never writes to the database; it only
+reads journaled events and fetches bars.
 """
 
 from __future__ import annotations
@@ -73,6 +76,8 @@ _COLUMNS = (
     "llm_bracket_edited",
     "llm_r_cost",
     "llm_stop_loss",
+    "card_policy_withheld",
+    "would_withhold",
     "market_r",
     "excess_r",
     "market_reason",
@@ -201,6 +206,20 @@ def _applied_llm_stop(llm: dict[str, Any] | None) -> float | None:
     return stop if math.isfinite(stop) else None
 
 
+def _would_withhold(entry: dict[str, Any]) -> bool | None:
+    """The journaled card-policy verdict, or None when the scan predates the policy or it was off."""
+    block = entry.get("card_policy")
+    value = block.get("would_withhold") if isinstance(block, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def _mean_r_cost(rows: pd.DataFrame) -> float | None:
+    if rows.empty:
+        return None
+    value = float(pd.to_numeric(rows["r_cost"], errors="coerce").mean())
+    return value if math.isfinite(value) else None
+
+
 def _row(
     entry: dict[str, Any],
     symbol: str,
@@ -245,6 +264,8 @@ def _row(
         "llm_bracket_edited": _llm_bracket_edited(entry, llm),
         "llm_r_cost": llm_r_cost,
         "llm_stop_loss": _applied_llm_stop(llm),
+        "card_policy_withheld": outcome == RankedOutcome.CARD_POLICY_WITHHELD,
+        "would_withhold": _would_withhold(entry),
         "market_r": market_value,
         "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
         "market_reason": market_reason,
@@ -394,6 +415,7 @@ def label_journaled(
     # LLM relabel stays a real None rather than NaN.
     frame["signal_id"] = pd.array([row["signal_id"] for row in rows], dtype="Int64")
     frame["llm_r_cost"] = frame["llm_r_cost"].astype(object).where(frame["llm_r_cost"].notna(), None)
+    frame["would_withhold"] = frame["would_withhold"].astype(object).where(frame["would_withhold"].notna(), None)
     return frame
 
 
@@ -459,7 +481,7 @@ def _mean_delta(edits: pd.DataFrame) -> float | None:
 
 
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
-    """Counts by outcome/maturity, base rates, and per-scan selection quality by scorer."""
+    """Counts by outcome/maturity, base rates, per-scan selection quality by scorer and card-policy counts."""
     if frame.empty:
         return {
             "total": 0,
@@ -484,6 +506,12 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
                 "vetoed_bracket_edit_mean_delta_r": None,
             },
             "market_exposure": {"sent": None, "runner_up": None, "reason": None},
+            "card_policy": {
+                "withheld": 0,
+                "would_withhold": 0,
+                "withheld_mean_r_cost": None,
+                "would_withhold_mean_r_cost": None,
+            },
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -546,6 +574,14 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     fetch_failed_reasons: dict[str, int] = {}
     if is_fetch_failed.any():
         fetch_failed_reasons = frame.loc[is_fetch_failed, "reason"].value_counts().to_dict()
+    withheld = frame["card_policy_withheld"].astype(bool)
+    would = frame["would_withhold"].map(lambda value: value is True).astype(bool)
+    card_policy = {
+        "withheld": int(withheld.sum()),
+        "would_withhold": int(would.sum()),
+        "withheld_mean_r_cost": _mean_r_cost(mature.loc[withheld.loc[mature.index]]),
+        "would_withhold_mean_r_cost": _mean_r_cost(mature.loc[would.loc[mature.index]]),
+    }
 
     return {
         "total": len(frame),
@@ -557,4 +593,5 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "selection": selection,
         "llm_gate": llm_gate,
         "market_exposure": market_exposure,
+        "card_policy": card_policy,
     }

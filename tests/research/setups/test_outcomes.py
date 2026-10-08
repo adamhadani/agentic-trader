@@ -260,6 +260,12 @@ def test_summary_empty_frame():
     assert summary["counts"]["sent"]["fetch_failed"] == 0
     assert summary["counts"]["runner_up"]["fetch_failed"] == 0
     assert "llm_gate" in summary and "market_exposure" in summary
+    assert summary["card_policy"] == {
+        "withheld": 0,
+        "would_withhold": 0,
+        "withheld_mean_r_cost": None,
+        "would_withhold_mean_r_cost": None,
+    }
 
 
 def test_summary_counts_fetch_failures_separately_with_reasons():
@@ -568,3 +574,37 @@ def test_a_market_proxy_candidate_is_fetched_once():
     assert bars.calls[1][2] == DECIDED_AT
     aapl = frame.loc[frame["contract"] == "AAPL"].iloc[0]
     assert aapl["market_r"] == pytest.approx(1.0)
+
+
+def test_card_policy_columns_and_summary_block():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {
+                    **_candidate(rank=1, outcome="card_policy_withheld"),
+                    "card_policy": {"measured_ev": -0.4, "n_mature": 30, "would_withhold": True},
+                },
+                {
+                    **_candidate(rank=2, outcome="sent"),
+                    "card_policy": {"measured_ev": None, "n_mature": None, "would_withhold": False},
+                },
+                _candidate(rank=3, outcome="per-scan budget spent"),  # journaled before the policy existed
+            ],
+        )
+    ]
+    frame = label_journaled(events, bars, now=NOW).sort_values("rank")
+    assert frame["card_policy_withheld"].tolist() == [True, False, False]
+    assert frame["would_withhold"].tolist() == [True, False, None]
+    summary = summarize(frame)
+    withheld_r = frame.loc[frame["rank"] == 1, "r_cost"].iloc[0]
+    assert summary["card_policy"] == {
+        "withheld": 1,
+        "would_withhold": 1,
+        "withheld_mean_r_cost": pytest.approx(withheld_r),
+        "would_withhold_mean_r_cost": pytest.approx(withheld_r),
+    }
+    # The existing blocks are unchanged: a withheld candidate is still a runner-up there.
+    assert summary["counts"]["runner_up"]["mature"] == 2
