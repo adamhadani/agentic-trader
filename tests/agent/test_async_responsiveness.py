@@ -103,6 +103,18 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
         daily_drained.set()
 
     monkeypatch.setattr(service, "run_daily_panel_worker", daily_worker)
+    card_stats_cancelled = asyncio.Event()
+
+    async def card_stats_worker(actual_copilot, actual_config, readiness):
+        assert actual_copilot is copilot and actual_config is config and readiness is copilot.readiness
+        try:
+            await asyncio.Event().wait()  # an in-flight labelling run: shutdown cancels it, never drains it
+        except asyncio.CancelledError:
+            copilot.notifier.stop_polling.assert_not_awaited()
+            card_stats_cancelled.set()
+            raise
+
+    monkeypatch.setattr(service, "run_card_stats_worker", card_stats_worker)
     task = asyncio.create_task(service.daemon.callback.__wrapped__(no_llm=True))
     try:
         await asyncio.wait_for(asyncio.gather(scan_ran.wait(), monitor_ran.wait()), timeout=5)
@@ -113,6 +125,7 @@ async def test_daemon_runs_initial_jobs_after_slow_telegram_startup(monkeypatch,
     copilot.cancel_background_scans.assert_awaited_once()
     assert daily_started.is_set() is daily_enabled
     assert daily_drained.is_set() is daily_enabled
+    assert card_stats_cancelled.is_set()  # always registered; cancelled before Telegram stops
 
 
 @pytest.mark.parametrize(

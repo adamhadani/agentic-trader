@@ -33,6 +33,7 @@ from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyP
 from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.observation import SessionObservationService
+from agentic_trader.research.setups.card_stats_worker import CardStatsWorker
 from agentic_trader.runtime import runtime_identity
 from agentic_trader.screeners.earnings_drift import PEAD_DECISION_TIME_ET
 from agentic_trader.storage.alpha_daily import DailyCampaignRepository
@@ -284,6 +285,37 @@ async def run_daily_panel_worker(config, repository, readiness, metrics, shutdow
         await readiness.observe(component, False, type(exc).__name__)
         # Invalid configuration stays visibly failed until a controlled restart.
         await shutdown.wait()
+
+
+async def run_card_stats_worker(copilot, config, readiness) -> None:
+    """Persist one ``card_stats`` snapshot per New York date; readiness is worker progress.
+
+    Polls every ``card_policy.stats_poll_seconds``. An idle poll (not yet due, inside a
+    suggestion-scan window, or today's snapshot present), the start of a labelling run and a
+    recorded snapshot observe ``card_stats`` ready; a failure (for example every bar fetch
+    failing) writes nothing and observes it failed, so the previous snapshot stays
+    authoritative until it ages out. Labelling runs in a worker thread; the daemon's shutdown
+    cancels this task rather than waiting for provider reads.
+    """
+    component = HealthComponent.CARD_STATS
+    shutdown = copilot._shutdown_event
+    revision = str((await asyncio.to_thread(runtime_identity))["revision"])
+    worker = CardStatsWorker(
+        copilot.db,
+        copilot.card_stats,
+        config,
+        revision=revision,
+        on_progress=lambda detail: readiness.observe(component, True, detail),
+    )
+    while not shutdown.is_set():
+        try:
+            status = await worker.run_once()
+            await readiness.observe(component, True, status)
+        except Exception as exc:
+            logger.exception("Card statistics worker failed", extra={"event": "card_stats_failed"})
+            await readiness.observe(component, False, type(exc).__name__)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(shutdown.wait(), timeout=config.card_policy.stats_poll_seconds)
 
 
 def _slot_due_at(slot_et: str) -> datetime:
@@ -540,6 +572,10 @@ async def daemon(no_llm: bool) -> None:
             )
         )
 
+    # One card-statistics snapshot per New York date for the cards' evidence block and the card
+    # policy (docs/card-evidence.md); cancelled at shutdown, never awaited through provider reads.
+    card_stats_task = asyncio.create_task(run_card_stats_worker(copilot, config, copilot.readiness))
+
     scheduler = AsyncIOScheduler(
         job_defaults={
             "misfire_grace_time": config.scheduler.misfire_grace_seconds,
@@ -606,6 +642,9 @@ async def daemon(no_llm: bool) -> None:
         copilot.readiness.started = False
         for task in session_tasks:
             await task
+        card_stats_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await card_stats_task
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await workflow_task

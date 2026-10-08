@@ -448,6 +448,7 @@ class TradingCopilot:
             self.metrics,
             accounting_enabled=self.ledger is not None,
             alpha_registry_report=lambda: self.alpha_repository.status(run_id=RUN_ID),
+            card_stats_enabled=True,  # the daemon always runs the card-statistics worker
             stream_connected=(lambda: self.broker.trade_stream_connected)
             if self.broker.supports_trade_stream
             else None,

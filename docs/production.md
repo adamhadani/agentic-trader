@@ -606,6 +606,16 @@ stale or unavailable evidence never withholds. Withheld candidates stay journale
 labelled, so a strategy can recover. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 
+**Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:
+once per New York date after `card_policy.stats_time_et` (08:30) and outside the suggestion-scan
+windows, it labels the last 90 days of journaled candidates and appends one `card_stats_snapshot`
+event (`copilot db events --stream card_stats`). `/readyz` includes `card_stats` with a four-day
+limit, so weekends and holidays stay ready. After a restart on a day without a snapshot the first
+poll labels before it reports `recorded`; it observes `labelling N scan events` first. A failed run
+(every bar fetch failed) writes nothing and turns `card_stats` not ready; cards keep the previous
+snapshot until it is four days old and then say `statistics stale`. Details:
+[card evidence](card-evidence.md#card-statistics-snapshot).
+
 Switching live ranking away from `setup_quality` to a shadow score is an operator
 decision, not something this report or the shadow block can do by itself. It needs a
 frozen study holdout result plus enough measured evidence from this report and `alpha
@@ -656,11 +666,13 @@ universe:
 - instruments scanned versus selected — the digest's `N scanned` and the `scan`
   readiness detail; `0 of N instruments scanned` is a data failure, not a quiet market.
 
-`market_data.max_requests_per_minute` paces **the scan fetcher only**. Other workers
-share the same provider feed — the prospective daily-panel worker, the forward
-observers and the one-minute position monitor — so the real per-feed request rate is
-the sum of all of them, and the 150/minute setting is headroom under the 200/minute
-IEX limit rather than a process-wide ceiling. A process-wide per-feed pacer is a
+`market_data.max_requests_per_minute` paces **the scan fetcher only**; the daily
+card-statistics labeller applies the same number through its own separate pacer and
+never starts inside a suggestion-scan window. Other workers share the same provider
+feed — the prospective daily-panel worker, the forward observers and the one-minute
+position monitor — so the real per-feed request rate is the sum of all of them, and
+the 150/minute setting is headroom under the 200/minute IEX limit rather than a
+process-wide ceiling. A process-wide per-feed pacer is a
 [roadmap follow-up](alpha-roadmap.md); until then, treat a burst of provider
 throttling during a scan as evidence about the *combined* rate.
 

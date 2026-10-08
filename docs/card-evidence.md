@@ -26,6 +26,40 @@ Top-level `card_policy:` (`CardPolicyConfig`; unknown keys fail the load):
 Quote `"off"` in YAML. YAML 1.1 reads a bare `off` as `false`; the loader maps `false` back to `"off"`
 and rejects `on`/`true`.
 
+## Card statistics snapshot
+
+The daemon task `run_card_stats_worker` (readiness component `card_stats`) polls every
+`stats_poll_seconds`. When the New York time is at or after `stats_time_et`, outside every
+suggestion-scan window (each `scheduler.suggestion_scan_times_et` slot from 5 minutes before to 20
+minutes after), and today's key `card_stats/{et_date}` is missing, it reads every
+`scan_candidates_ranked` event of the last `stats_window_days` ET dates
+(`research/setups/sources.scan_ranked_events`), labels them in a worker thread with the outcome
+labeller's protocol defaults (`label_journaled`: 20 sessions, 5 bp per side, SPY proxy) on the
+configured feed, and appends one `card_stats_snapshot` event to stream `card_stats` with key
+`card_stats/{et_date}` (idempotent; retention keeps it). It runs every calendar day; a non-trading
+day's snapshot sees no new scans or bars, so it differs from the previous one only where the window's
+oldest date drops out.
+
+Payload (`CardStatsSnapshot`, `agentic_trader/research/setups/card_stats.py`):
+
+- provenance: `computed_at`, `window_start`, `window_end` (ET dates), `feed`, `cost_bps_per_side`,
+  `max_hold_sessions`, `labeller_protocol` (`setup-outcomes-v1`), `code_revision`,
+  `events_considered`, `rows_labelled`;
+- `keys`: one row per `(strategy, direction)` plus the aggregate `("*", "*")`, each with `n_mature`,
+  `n_immature`, `n_fetch_failed`, `target_rate`, `stop_rate`, `timeout_rate`, `mean_r_cost`,
+  `mean_timeout_r`, `median_holding_sessions`, `first_decided_at`, `last_decided_at`. Rates are over
+  mature rows; fetch failures are counted and excluded from every rate; rows without a strategy or
+  direction count only in the aggregate. Every number is finite or null.
+
+Readiness: every successful poll (detail `not_due`, `scan_window`, `present` or `recorded`) and the
+start of a labelling run (`labelling N scan events`) observe `card_stats` ready; a failure observes
+it failed with the exception type. If every candidate's bar fetch fails, nothing is written
+(`CardStatsUnavailable`) and the previous snapshot stays authoritative until it is older than
+`stats_max_age_seconds`, when cards say "statistics stale". Shutdown cancels the task instead of
+waiting for a labelling run's provider reads; the next start recomputes. The labeller paces its own
+reads at `market_data.max_requests_per_minute`, apart from the scan's read pool, which is why it
+avoids the scan windows.
+
 ## Evidence block
 
 `TradingCopilot.run_scan` reads the newest `card_stats` snapshot in this scope once per scan
