@@ -212,6 +212,51 @@ class ScanConfig(BaseModel):
         return (WORKSPACE_ROOT / value).resolve()
 
 
+CardValidity = Literal["session_close", "next_session_close"]
+CardPolicyMode = Literal["off", "preview", "enforce"]
+
+
+class CardPolicyConfig(BaseModel):
+    """Measured-evidence card policy, statistics worker and card validity (docs/card-evidence.md).
+
+    Ships off: the evidence block is always rendered, but nothing is withheld until the operator
+    sets ``preview`` (journal ``would_withhold``, still send) and then ``enforce``. It withholds
+    only on measured evidence and is not a risk rule.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    mode: CardPolicyMode = "off"
+    min_measured_ev: float | None = Field(default=None, allow_inf_nan=False)
+    min_mature_cards: int = Field(default=20, ge=1)
+    stats_window_days: int = Field(default=90, ge=1, le=365)
+    stats_time_et: str = "08:30"
+    stats_poll_seconds: int = Field(default=300, ge=10, le=3600)
+    stats_max_age_seconds: int = Field(default=345600, gt=0)
+    validity: CardValidity = "session_close"
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def yaml_off(cls, value: Any) -> Any:
+        # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
+        return "off" if value is False else value
+
+    @field_validator("stats_time_et")
+    @classmethod
+    def valid_time(cls, value: str) -> str:
+        if not re.fullmatch(HHMM_PATTERN, value):
+            raise ValueError(f"Invalid HH:MM time: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def threshold_when_active(self):
+        if self.mode != "off" and self.min_measured_ev is None:
+            raise ValueError("card_policy.min_measured_ev is required when mode is preview or enforce")
+        if self.stats_max_age_seconds <= self.stats_poll_seconds:
+            raise ValueError("card_policy.stats_max_age_seconds must exceed stats_poll_seconds")
+        return self
+
+
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
     "us_broad_market": ["/MES", "/ES", "SPY", "VOO", "IVV"],
     "us_tech": ["/MNQ", "/NQ", "QQQ", "XLK"],
@@ -293,6 +338,10 @@ class StrategyConfig(BaseModel):
     squeeze_breakout: SqueezeBreakoutConfig = Field(default_factory=SqueezeBreakoutConfig)
 
 
+# A New York wall-clock time, "HH:MM" on the 24-hour clock.
+HHMM_PATTERN = r"^(?:[01]\d|2[0-3]):[0-5]\d$"
+
+
 class SchedulerConfig(BaseModel):
     misfire_grace_seconds: int = Field(default=60, gt=0)
     # The suggestion-scan cron jobs only: a sleeping host's late wake still runs the scan;
@@ -313,7 +362,7 @@ class SchedulerConfig(BaseModel):
         if len(set(value)) != len(value):
             raise ValueError("suggestion_scan_times_et requires distinct HH:MM times")
         for item in value:
-            if not re.fullmatch(r"^(?:[01]\d|2[0-3]):[0-5]\d$", item):
+            if not re.fullmatch(HHMM_PATTERN, item):
                 raise ValueError(f"Invalid HH:MM time: {item}")
         return value
 
@@ -683,6 +732,7 @@ class AppConfig(BaseModel):
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
     apriori: AprioriConfig = Field(default_factory=AprioriConfig)
     scan: ScanConfig = Field(default_factory=ScanConfig)
+    card_policy: CardPolicyConfig = Field(default_factory=CardPolicyConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -943,6 +993,7 @@ def load_config(
         contracts={k: ContractConfig(**v) for k, v in contract_documents.items()},
         universe=universe,
         scan=ScanConfig(**(cfg_dict.get("scan") or {})),
+        card_policy=CardPolicyConfig(**(cfg_dict.get("card_policy") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,
