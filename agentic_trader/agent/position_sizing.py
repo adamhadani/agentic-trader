@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import math
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +11,7 @@ from agentic_trader.risk import RiskLimits, per_trade_risk_budget
 
 
 if TYPE_CHECKING:
+    from agentic_trader.agent.evaluator import LLMTradeEvaluation
     from agentic_trader.config import AppConfig
     from agentic_trader.screeners.base import ScreenerCandidate
 
@@ -272,4 +274,57 @@ def calculate_dynamic_sizing(
         tiers=built_tiers,
         drawdown_factor=drawdown_factor,
         gating_reasons=gating_reasons,
+    )
+
+
+def scale_sizing(
+    eval_res: LLMTradeEvaluation, factor: float, *, min_units: float, portfolio_cash: float
+) -> LLMTradeEvaluation | None:
+    """Every tier and the headline size scaled by ``factor`` in [0, 1] with whole units.
+
+    Equities only. Per-unit risk/reward/notional come from the evaluation's own bracket
+    (``stop_distance_points``, ``target_distance_points``, ``entry_price``), matching
+    ``calculate_dynamic_sizing``. Tiers that round below ``min_units`` are dropped; when the
+    default tier is dropped the card cannot be sized and None is returned. ``factor == 1``
+    returns the evaluation unchanged.
+    """
+    if eval_res.asset_class != AssetClass.EQUITY:
+        raise ValueError("scale_sizing supports equities only")
+    if not 0.0 <= factor <= 1.0:
+        raise ValueError("factor must be in [0, 1]")
+    if factor == 1.0:
+        return eval_res
+    per_unit_risk = eval_res.stop_distance_points
+    per_unit_reward = eval_res.target_distance_points
+    unit_notional = eval_res.entry_price
+
+    def scaled_tier(tier: dict[str, Any]) -> dict[str, Any] | None:
+        qty = float(math.floor(float(tier["quantity"]) * factor))
+        if qty < min_units:
+            return None
+        return {
+            **tier,
+            "quantity": qty,
+            "risk_dollars": round(per_unit_risk * qty, 2),
+            "reward_dollars": round(per_unit_reward * qty, 2),
+            "notional_dollars": round(unit_notional * qty, 2),
+            "effective_leverage": round(unit_notional * qty / portfolio_cash, 2),
+        }
+
+    tiers = [t for t in (scaled_tier(t) for t in eval_res.sizing_tiers or []) if t is not None]
+    default = next((t for t in tiers if t.get("is_default")), None)
+    if eval_res.sizing_tiers and default is None:
+        return None
+    qty = float(default["quantity"]) if default else float(math.floor(eval_res.quantity * factor))
+    if qty < min_units:
+        return None
+    return eval_res.model_copy(
+        update={
+            "quantity": qty,
+            "risk_dollars": round(per_unit_risk * qty, 2),
+            "reward_dollars": round(per_unit_reward * qty, 2),
+            "notional_value": round(unit_notional * qty, 2),
+            "effective_leverage": round(unit_notional * qty / portfolio_cash, 2),
+            "sizing_tiers": tiers or None,
+        }
     )

@@ -460,6 +460,15 @@ card_policy:
   stats_max_age_seconds: 345600
   validity: "session_close"
 
+# Book-aware sizing (docs/card-evidence.md "Book-aware sizing").
+# Quote "off": YAML reads a bare off as false (the loader maps false back to "off").
+book_sizing:
+  mode: preview            # off | preview | enforce
+  max_portfolio_daily_vol_pct: 0.008
+  lookback_sessions: 120
+  min_observations: 60
+  shadow_optimizer: true
+
 database:
   name: "signals"
   url: "postgresql+asyncpg://adamhadani@localhost:5432/agentic_trader"

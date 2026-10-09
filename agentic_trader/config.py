@@ -262,6 +262,38 @@ class CardPolicyConfig(BaseModel):
         return self
 
 
+BookSizingMode = Literal["off", "preview", "enforce"]
+
+
+class BookSizingConfig(BaseModel):
+    """Book-aware sizing: a card's size against the book's daily dollar-vol budget (docs/card-evidence.md).
+
+    ``preview`` (default) journals the factor and shows it on the card without changing size;
+    ``enforce`` scales every tier by it. The factor never raises size; missing covariance never
+    blocks. Equities only; the shadow optimiser cross-check never reaches size or orders.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    mode: BookSizingMode = "preview"
+    max_portfolio_daily_vol_pct: float = Field(default=0.008, gt=0.0, le=0.1, allow_inf_nan=False)
+    lookback_sessions: int = Field(default=120, ge=20, le=750)
+    min_observations: int = Field(default=60, ge=20, le=750)
+    shadow_optimizer: bool = True
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def yaml_off(cls, value: Any) -> Any:
+        # YAML 1.1 reads a bare `off` as False; that spelling means "off".
+        return "off" if value is False else value
+
+    @model_validator(mode="after")
+    def window_covers_floor(self) -> BookSizingConfig:
+        if self.lookback_sessions < self.min_observations:
+            raise ValueError("book_sizing.lookback_sessions must be at least min_observations")
+        return self
+
+
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
     "us_broad_market": ["/MES", "/ES", "SPY", "VOO", "IVV"],
     "us_tech": ["/MNQ", "/NQ", "QQQ", "XLK"],
@@ -734,6 +766,7 @@ class AppConfig(BaseModel):
     apriori: AprioriConfig = Field(default_factory=AprioriConfig)
     scan: ScanConfig = Field(default_factory=ScanConfig)
     card_policy: CardPolicyConfig = Field(default_factory=CardPolicyConfig)
+    book_sizing: BookSizingConfig = Field(default_factory=BookSizingConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -995,6 +1028,7 @@ def load_config(
         universe=universe,
         scan=ScanConfig(**(cfg_dict.get("scan") or {})),
         card_policy=CardPolicyConfig(**(cfg_dict.get("card_policy") or {})),
+        book_sizing=BookSizingConfig(**(cfg_dict.get("book_sizing") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,
