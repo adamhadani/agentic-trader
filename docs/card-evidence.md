@@ -222,8 +222,10 @@ over-budget book back under), and a book already over budget gives a factor of 0
 (unadjusted) Alpaca daily bars. The book is the signed dollar notional of the desk's EXECUTED
 positions plus the cards already built earlier in the same scan (so card two sees card one), equities
 only. A recorded card whose symbol the covariance cannot price makes the rest of the scan
-`unavailable` (`unpriced_card`) rather than sized against a stale book. Bars for names in the scan come from the scan's datasets; other book names are fetched once per
-scan, off the event loop, with a 20 second bound.
+`unavailable` (`unpriced_card`) rather than sized against a stale book. Bars for names in the scan
+come from the scan's datasets when those frames are raw Alpaca bars; a candidate whose scan frame came
+from the yfinance fallback (auto-adjusted) is fetched raw like a book name. Other book names are
+fetched once per scan, off the event loop, with a 20 second bound.
 
 **Modes.** `off`: nothing is computed. `preview` (default): the factor is computed, journaled and
 shown on the card; size is unchanged. `enforce`: every size tier is scaled by the factor (quantities
