@@ -20,7 +20,9 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 `listen`, or Compose service while the installed poller owns the bot.
 
 - Swing scans: every four hours from startup, immediate first run, all timeframes,
-  the whole `universe:` when the equity session is open.
+  the whole `universe:` when the equity session is open. The first run at daemon start is
+  deliberate (the `scan` readiness component needs an observation in each run). Each run
+  journals its ranking as `scan_candidates_ranked` with `trigger=swing_scan`.
 - Suggestion scans: cron on the New York clock, weekdays, at
   `scheduler.suggestion_scan_times_et` (see below). They also add the dynamic
   suggestion universe.
@@ -527,9 +529,12 @@ keyword on `TradingCopilot.run_scan`, set to `True` only by the scheduled
 suggestion-scan job (`make_suggestion_scan`) -- never inferred from a scan's shape.
 The daemon's 4-hourly swing scan, the intraday `non_universe_contracts` job, and an
 unrestricted or symbol-restricted `copilot scan`/Telegram `/scan` all leave it `False`
-and so neither compute nor journal shadow evidence, even though the swing scan and an
+and so neither compute nor journal shadow-ranker blocks, even though the swing scan and an
 unrestricted manual scan otherwise share the suggestion scan's shape (no symbols, no
-timeframe). A symbol- or timeframe-restricted scan is additionally guarded even if a
+timeframe). The ranked-candidate journal is independent of that flag: every full-universe
+scan (no symbols, no timeframe, a budget, not a dry run) journals `scan_candidates_ranked`
+and names its `trigger` (`suggestion_scan` | `swing_scan` | `operator_scan`); only the
+shadow block stays suggestion-scan only. A symbol- or timeframe-restricted scan is additionally guarded even if a
 caller mistakenly passes `shadow_evidence=True`, since only the unrestricted universe
 matches the setup study's own population.
 
@@ -538,9 +543,9 @@ What is recorded, and where:
 - every sent card from a suggestion scan carries a `shadow_ranker` provenance block
   (`features_version` `setup_features_v2`, the feature vector, `score` when a verified
   artifact is configured, and the artifact's `ranker_sha`);
-- one `scan_candidates_ranked` domain event per suggestion scan (`EventKind` in
+- one `scan_candidates_ranked` domain event per full-universe scan (`EventKind` in
   `agentic_trader/execution/durable.py`), journaled under stream `scan/{et_date}`
-  with `"scope": "universe"` and `"trigger": "suggestion_scan"`, readable with
+  with `"scope": "universe"` and a `"trigger"` (`suggestion_scan` for the scheduled scan), readable with
   `copilot db events --stream scan/<et-date>`. It carries every ranked candidate that
   scan considered, sent or runner-up, with its entry/stop/target, `setup_quality`,
   `rank`, `outcome` (`"sent"` or the reason it was skipped) and shadow block.

@@ -104,7 +104,8 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
    the intraday job scans only `non_universe_contracts`; `setup_quality` orders cards
-   and is stored in provenance — it is not validated alpha. Never widen the intraday
+   and is stored in provenance — it is not validated alpha. Every unrestricted non-dry scan with a budget journals
+   `scan_candidates_ranked` with its `ScanTrigger`; shadow evidence stays suggestion-scan only. Never widen the intraday
    job to the universe or store the budget in a counter.
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
    catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure and

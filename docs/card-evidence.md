@@ -133,7 +133,11 @@ reason `card policy: measured EV -0.39R over 30 < +0.00R` (three decimals when t
 and the threshold as equal, such as `-0.004R … < +0.000R`), and the next rank is considered, like an
 LLM veto. Insufficient, stale, unavailable or partial (`n_fetch_failed > 0`) evidence never withholds:
 the policy is a switch on complete measured evidence, not a fail-closed rule. Every scan applies it
-(suggestion, swing, intraday, `/scan`, Re-evaluate); only scheduled suggestion scans are labelled.
+(suggestion, swing, intraday, `/scan`, Re-evaluate). Every full-universe scan (suggestion, swing
+including its run at daemon start, unrestricted `/scan`) is journaled and labelled with its `trigger`
+(`suggestion_scan` | `swing_scan` | `operator_scan`); symbol- or timeframe-scoped scans (intraday job,
+`/scan SYMBOL`, Re-evaluate) show evidence and obey the policy but are not journaled. `cards outcomes`
+reports a `trigger` column and a `triggers` summary block; events without a trigger report under `"unknown"`.
 
 Outside the policy: PEAD drift and catalog cards (no evidence block), and policy-locked native cards
 (a versioned alpha with `alpha_version` or `alpha_policy`, or a paper probe). A policy-locked card
@@ -214,7 +218,12 @@ a drift card needs its same-session event.
   `would_withhold`).
 - **Censoring bias.** A label stays immature until the stop or target hits or 20 regular sessions pass,
   so early samples over-represent fast resolutions. The sample floor does not remove this.
-- **Coverage.** Only scheduled suggestion scans journal `scan_candidates_ranked`. Swing, intraday,
-  `/scan` and Re-evaluate cards show evidence and obey the policy but are never labelled.
+- **Coverage.** Every full-universe scan (suggestion, swing, unrestricted `/scan`) journals
+  `scan_candidates_ranked` with its `trigger`. The journal condition is: no symbols, no timeframe, a
+  budget, not a dry run; an operator `/scan` that only filters by asset class therefore still journals
+  with `"scope": "universe"`. Intraday, `/scan SYMBOL` and Re-evaluate cards show evidence and obey the
+  policy but are not journaled. Cards sent by swing or operator scans before 2026-10-09 (PR A.1) were
+  never journaled and stay unlabelled; the record under-covers sent cards before that date (18 of the 22
+  cards sent since 2026-09-24 were in that position on 2026-10-08).
 - **Scope.** Snapshots are per `{environment}/{execution_mode}`: simulator and Alpaca paper statistics
   never mix, and a dry scan (an empty temporary database) always says "no statistics in this scope".
