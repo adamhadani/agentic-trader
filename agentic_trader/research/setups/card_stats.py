@@ -1,4 +1,4 @@
-"""Measured outcomes of journaled suggestion-scan candidates, per ``(strategy, direction)``.
+"""Measured outcomes of journaled full-universe-scan candidates, per ``(strategy, direction)``.
 
 Pure: a frame labelled by ``label_journaled`` in, one JSON-safe snapshot payload out. The
 daemon's ``card_stats`` worker persists it once per New York date; cards read it back through

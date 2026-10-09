@@ -21,8 +21,9 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 
 - Swing scans: every four hours from startup, immediate first run, all timeframes,
   the whole `universe:` when the equity session is open. The first run at daemon start is
-  deliberate (the `scan` readiness component needs an observation in each run). Each run
-  journals its ranking as `scan_candidates_ranked` with `trigger=swing_scan`.
+  deliberate (the `scan` readiness component needs an observation in each run). A run that
+  passes the session gate and ranks at least one native candidate journals its ranking as
+  `scan_candidates_ranked` with `trigger=swing_scan`.
 - Suggestion scans: cron on the New York clock, weekdays, at
   `scheduler.suggestion_scan_times_et` (see below). They also add the dynamic
   suggestion universe.
@@ -534,9 +535,9 @@ unrestricted manual scan otherwise share the suggestion scan's shape (no symbols
 timeframe). The ranked-candidate journal is independent of that flag: every full-universe
 scan (no symbols, no timeframe, a budget, not a dry run) journals `scan_candidates_ranked`
 and names its `trigger` (`suggestion_scan` | `swing_scan` | `operator_scan`); only the
-shadow block stays suggestion-scan only. A symbol- or timeframe-restricted scan is additionally guarded even if a
-caller mistakenly passes `shadow_evidence=True`, since only the unrestricted universe
-matches the setup study's own population.
+shadow block stays suggestion-scan only. A symbol- or timeframe-restricted scan is
+additionally guarded even if a caller mistakenly passes `shadow_evidence=True`, since only
+the unrestricted universe matches the setup study's own population.
 
 What is recorded, and where:
 
@@ -570,7 +571,8 @@ enough elapsed bars yet) and, distinctly, `FETCH_FAILED` (the bar fetch itself r
 with its reason recorded and summarized by count); each group's base rates and mean
 cost-adjusted R; and, per scan, the top-1/top-2 mean cost-adjusted R a picker following
 `setup_quality`, the shadow `score` (when recorded) and a random pick would each have
-realized, so an operator can see whether either scorer would have out-selected chance.
+realized, so an operator can see whether either scorer would have out-selected chance (like-for-like
+over the shadow-scored scans when any exist; `selection.scans_basis` says which).
 It sends no orders or Telegram messages and writes nothing back to the database.
 
 Since L1 of the [stage-attribution plan](alpha-roadmap.md#stage-layering-and-attribution-october-5)
@@ -621,8 +623,10 @@ before the LLM with the fixed outcome `card_policy_withheld` (runner-up reason `
 EV …R over N < …R`); it spends no card or LLM budget and the next rank is considered. Insufficient,
 stale, unavailable or partial evidence (a key with any bar-fetch failure, `n_fetch_failed`) never
 withholds, and a policy-locked card (versioned alpha or paper probe) is outside the policy: it shows
-its evidence and its `card_policy` block is null. Withheld candidates stay journaled (scheduled
-suggestion scans) and keep being labelled, so a strategy can recover. A mode change is a config edit plus the controlled restart. See
+its evidence and its `card_policy` block is null. Withheld candidates stay journaled (every
+full-universe scan) and keep being labelled, so a strategy can recover. Before `enforce`, count distinct
+setups per session: the same setup is journaled by repeated scans in a session and inflates
+`n_mature` and the floor. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 
 **Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:

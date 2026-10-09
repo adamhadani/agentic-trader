@@ -76,7 +76,7 @@ class ScanTrigger(StrEnum):
 
 
 class RankedOutcome(StrEnum):
-    """Fixed outcomes of a ranked suggestion-scan candidate (``scan_candidates_ranked``).
+    """Fixed outcomes of a ranked full-universe-scan candidate (``scan_candidates_ranked``).
 
     Free-text reasons (``"per-scan budget spent"``, ``"rejected: …"``) stay plain strings;
     these are the outcomes a reader must recognise without parsing text.

@@ -638,7 +638,8 @@ class TradingCopilot:
         """Scan, rank and record cards; returns the scan summary, or None when the scan did not run.
 
         ``shadow_evidence`` is set only by the scheduled suggestion-scan job
-        (``make_suggestion_scan``): it gates the shadow ranker block alone. The daemon's
+        (``make_suggestion_scan``): it gates the shadow ranker block, PEAD drift preparation and
+        the dynamic suggestion universe; the ranked-candidate journal is independent of it. The daemon's
         swing scan and an operator/Telegram scan never set it, even though they may
         otherwise share this scan's shape (no symbols, no timeframe).
 
@@ -1746,7 +1747,7 @@ class TradingCopilot:
                 "decided_at": decided_at.isoformat(),
                 "scope": "universe",
                 # Which caller ran this full-universe scan; never read by ranking or sending.
-                "trigger": trigger.value,
+                "trigger": str(trigger),
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
                 "card_policy": {

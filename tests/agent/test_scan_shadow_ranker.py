@@ -274,6 +274,7 @@ async def test_dry_run_does_not_journal(shadow_desk, temp_db):
     # shadow_evidence=True proves a dry run refuses to journal even when the caller
     # requests shadow evidence; a dry scan must never touch the durable journal.
     await shadow_desk.run_scan(use_llm=False, dry_run=True, budget=ScanBudget.FULL, shadow_evidence=True)
+    assert shadow_desk.last_scan_summary["approved"] > 0
     assert await _ranked_events(temp_db) == []
 
 
@@ -437,6 +438,7 @@ async def test_suggestion_scan_journals_as_suggestion_scan_with_shadow(shadow_de
 
 async def test_dry_run_journals_nothing_even_as_swing_scan(shadow_desk, temp_db):
     await shadow_desk.run_scan(True, True, budget=ScanBudget.FULL, trigger=ScanTrigger.SWING_SCAN)
+    assert shadow_desk.last_scan_summary["approved"] > 0
     assert await _ranked_events(temp_db) == []
 
 

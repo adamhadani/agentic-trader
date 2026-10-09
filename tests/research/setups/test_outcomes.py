@@ -651,3 +651,29 @@ def test_summarize_reports_scans_and_sent_cards_per_trigger():
         "unknown": {"scans": 1, "sent": 0},
     }
     assert summarize(label_journaled([], FakeBarSource({}), now=NOW))["triggers"] == {}
+
+
+def test_selection_compares_all_scorers_over_the_shadow_scored_scans():
+    events = [
+        _event("scan-1", DECIDED_AT, [_candidate(contract="AAA", shadow={"score": 0.5})], trigger="suggestion_scan"),
+        _event("scan-2", DECIDED_AT, [_candidate(contract="BBB", shadow={"score": 0.4})], trigger="suggestion_scan"),
+        _event("scan-3", DECIDED_AT, [_candidate(contract="CCC", shadow=None)], trigger="swing_scan"),
+    ]
+    frame = label_journaled(events, _bars_for("AAA", "BBB", "CCC"), now=NOW, market_symbol=None)
+    selection = summarize(frame)["selection"]
+    assert selection["scans_basis"] == "shadow_scored"
+    assert selection["setup_quality"]["scans"] == 2
+    assert selection["shadow_score"]["scans"] == 2
+    assert selection["random"]["scans"] == 2
+
+
+def test_selection_basis_is_all_scans_without_shadow_scores():
+    events = [
+        _event("scan-1", DECIDED_AT, [_candidate(contract="AAA", shadow=None)]),
+        _event("scan-2", DECIDED_AT, [_candidate(contract="BBB", shadow=None)]),
+    ]
+    frame = label_journaled(events, _bars_for("AAA", "BBB"), now=NOW, market_symbol=None)
+    selection = summarize(frame)["selection"]
+    assert selection["scans_basis"] == "all"
+    assert selection["shadow_score"] is None
+    assert selection["setup_quality"]["scans"] == selection["random"]["scans"] == 2
