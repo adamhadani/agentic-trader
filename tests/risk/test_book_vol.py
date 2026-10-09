@@ -120,3 +120,87 @@ def test_invalid_inputs_raise_value_error(bad):
     }
     with pytest.raises(ValueError):
         book_vol_factor(BookVolInputs(**{**base, **bad}))
+
+
+def test_over_budget_book_with_partial_hedge_is_zero_not_oversized():
+    """A short that lowers vol but cannot reach the budget: the rule sizes nothing rather than
+    sending a card whose scaled vol is still above budget."""
+    inputs = BookVolInputs(
+        weights={"BBB": 20_000.0},
+        candidate="AAA",
+        candidate_notional=-1_000.0,
+        covariance=cov(["AAA", "BBB"], [0.02, 0.02], 0.9),
+        budget_dollars=300.0,
+    )
+    result = book_vol_factor(inputs)
+    assert result.vol_before > 300.0
+    assert result.vol_after_full > 300.0
+    assert result.factor == 0.0
+    assert result.vol_after_scaled == result.vol_before
+
+
+def test_over_budget_book_with_overshooting_hedge_is_zero():
+    """A short so large the book would flip past the budget on the other side: not sized to the far root."""
+    inputs = BookVolInputs(
+        weights={"BBB": 20_000.0},
+        candidate="AAA",
+        candidate_notional=-40_000.0,
+        covariance=cov(["AAA", "BBB"], [0.02, 0.02], 0.9),
+        budget_dollars=300.0,
+    )
+    assert book_vol_factor(inputs).factor == 0.0
+
+
+def test_zero_candidate_notional_over_budget_book_is_zero():
+    inputs = BookVolInputs(
+        weights={"BBB": 50_000.0},
+        candidate="AAA",
+        candidate_notional=0.0,
+        covariance=cov(["AAA", "BBB"], [0.02, 0.02], 0.5),
+        budget_dollars=100.0,
+    )
+    assert book_vol_factor(inputs).factor == 0.0
+
+
+def test_scaled_vol_never_exceeds_budget_when_factor_positive():
+    covariance = cov(["AAA", "BBB", "CCC"], [0.01, 0.03, 0.02], 0.2)
+    for notional in (500.0, 5_000.0, 50_000.0, -500.0, -5_000.0):
+        result = book_vol_factor(
+            BookVolInputs(
+                weights={"BBB": 9_000.0, "CCC": 3_000.0},
+                candidate="AAA",
+                candidate_notional=notional,
+                covariance=covariance,
+                budget_dollars=250.0,
+            )
+        )
+        if result.factor > 0:
+            assert result.vol_after_scaled <= 250.0 + 1e-9
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"weights": {"AAA": float("nan")}},
+        {"weights": {"AAA": "ten"}},
+        {"budget_dollars": None},
+        {
+            "covariance": pd.DataFrame([[1e-4, 2e-4], [1e-4, 1e-4]], index=["AAA", "BBB"], columns=["AAA", "BBB"]),
+            "weights": {},
+        },
+        {
+            "covariance": pd.DataFrame([[1e-4, 1e-4], [1e-4, 1e-4]], index=["AAA", "AAA"], columns=["AAA", "AAA"]),
+            "weights": {},
+        },
+    ],
+)
+def test_more_invalid_inputs_raise_value_error_only(bad):
+    base = {
+        "weights": {},
+        "candidate": "AAA",
+        "candidate_notional": 1_000.0,
+        "covariance": cov(["AAA"], [0.02], 0.0),
+        "budget_dollars": 100.0,
+    }
+    with pytest.raises(ValueError):
+        book_vol_factor(BookVolInputs(**{**base, **bad}))

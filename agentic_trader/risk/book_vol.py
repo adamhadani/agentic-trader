@@ -40,23 +40,41 @@ def _validate(inputs: BookVolInputs) -> np.ndarray:
     cov = inputs.covariance
     if list(cov.index) != list(cov.columns):
         raise ValueError("covariance index and columns differ")
+    if cov.index.has_duplicates:
+        raise ValueError("covariance index has duplicate symbols")
     missing = [s for s in (*inputs.weights, inputs.candidate) if s not in cov.index]
     if missing:
         raise ValueError(f"symbols missing from covariance: {sorted(set(missing))}")
-    matrix = cov.to_numpy(dtype=float)
+    try:
+        matrix = cov.to_numpy(dtype=float)
+        weights = [float(v) for v in inputs.weights.values()]
+        budget = float(inputs.budget_dollars)
+        notional = float(inputs.candidate_notional)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"non-numeric input: {type(exc).__name__}") from None
     if not np.all(np.isfinite(matrix)):
         raise ValueError("covariance has non-finite entries")
+    if not np.allclose(matrix, matrix.T, rtol=1e-9, atol=1e-12):
+        raise ValueError("covariance is not symmetric")
     if np.any(np.diag(matrix) < 0):
         raise ValueError("covariance has negative variances")
-    if not (math.isfinite(inputs.budget_dollars) and inputs.budget_dollars > 0):
+    if matrix.size and np.linalg.eigvalsh(matrix).min() < -1e-10 * max(1.0, float(np.abs(matrix).max())):
+        raise ValueError("covariance is not positive semi-definite")
+    if not all(math.isfinite(v) for v in weights):
+        raise ValueError("weights must be finite")
+    if not (math.isfinite(budget) and budget > 0):
         raise ValueError("budget_dollars must be positive and finite")
-    if not math.isfinite(inputs.candidate_notional):
+    if not math.isfinite(notional):
         raise ValueError("candidate_notional must be finite")
     return matrix
 
 
 def book_vol_factor(inputs: BookVolInputs) -> BookVolResult:
-    """``vol(f)^2 = a + 2 b f + c f^2`` with the book fixed; the largest ``f`` in [0, 1] with ``vol(f) <= budget``."""
+    """``vol(f)^2 = a + 2 b f + c f^2`` with the book fixed; the largest ``f`` in [0, 1] with ``vol(f) <= budget``.
+
+    A book already over budget gives 0 unless the full-size card brings it under (a hedge). Only
+    ``ValueError`` is raised, for invalid inputs.
+    """
     matrix = _validate(inputs)
     symbols = list(inputs.covariance.index)
     w = np.array([inputs.weights.get(s, 0.0) for s in symbols], dtype=float)
@@ -67,15 +85,21 @@ def book_vol_factor(inputs: BookVolInputs) -> BookVolResult:
     c = float(x * x * (unit @ matrix @ unit))
     vol_before = math.sqrt(max(a, 0.0))
     vol_after_full = math.sqrt(max(a + 2 * b + c, 0.0))
-    budget_sq = inputs.budget_dollars**2
-    if vol_after_full <= inputs.budget_dollars or x == 0.0:
+    budget = float(inputs.budget_dollars)
+    if vol_after_full <= budget:
+        # The full-size card fits (including a hedge that brings an over-budget book back under).
         factor = 1.0
-    elif c <= 0.0:
+    elif vol_before > budget or c <= 0.0:
+        # The book is already over budget and the card cannot fix it at full size: the feasible
+        # fractions, if any, lie between two roots and would size the card to flip the book past
+        # the budget boundary. The rule never does that; the card is not sized.
         factor = 0.0
     else:
-        # Largest root of c f^2 + 2 b f + (a - budget^2) = 0, clipped to [0, 1].
-        disc = b * b - c * (a - budget_sq)
-        factor = 0.0 if disc < 0 else min(1.0, max(0.0, (-b + math.sqrt(disc)) / c))
+        # vol(f)^2 = c f^2 + 2 b f + a; the book is under budget (a < budget^2) and the full card is
+        # over, so exactly one root lies in (0, 1). Numerically stable form of the larger root.
+        disc = b * b - c * (a - budget * budget)
+        root = (budget * budget - a) / (b + math.sqrt(disc)) if b + math.sqrt(disc) > 0 else (-b + math.sqrt(disc)) / c
+        factor = min(1.0, max(0.0, root))
     vol_after_scaled = math.sqrt(max(a + 2 * b * factor + c * factor * factor, 0.0))
     return BookVolResult(
         factor=factor,
