@@ -63,8 +63,20 @@ class EventKind(StrEnum):
     CARD_STATS_SNAPSHOT = "card_stats_snapshot"
 
 
+class ScanTrigger(StrEnum):
+    """Which caller ran a full-universe scan; journaled in ``scan_candidates_ranked``.
+
+    It names the path a card came from and nothing else: ranking, budgets, sending, the
+    shadow ranker (``shadow_evidence``) and the card policy never read it.
+    """
+
+    SUGGESTION_SCAN = "suggestion_scan"  # the scheduled New York-time job (``make_suggestion_scan``)
+    SWING_SCAN = "swing_scan"  # the daemon's interval job, including its run at daemon start
+    OPERATOR_SCAN = "operator_scan"  # ``copilot scan`` / Telegram ``/scan`` with no symbols or timeframe
+
+
 class RankedOutcome(StrEnum):
-    """Fixed outcomes of a ranked suggestion-scan candidate (``scan_candidates_ranked``).
+    """Fixed outcomes of a ranked full-universe-scan candidate (``scan_candidates_ranked``).
 
     Free-text reasons (``"per-scan budget spent"``, ``"rejected: …"``) stay plain strings;
     these are the outcomes a reader must recognise without parsing text.

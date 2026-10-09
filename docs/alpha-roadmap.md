@@ -528,6 +528,9 @@ problem.
    not-validated caveat from a daily `card_stats` snapshot; `card_policy` ships `off` (the operator moves
    it to `preview`, then `enforce`, after reading the evidence); `card_policy.validity:
    next_session_close` is available and off. Bracket construction and book-aware sizing (PR B) remain.
+   PR A merged 2026-10-08 (#110) and is deployed. PR A.1 closes the journal coverage gap: every
+   full-universe scan (suggestion, swing, unrestricted `/scan`) now journals its ranking with a
+   `trigger` (18 of 22 sent cards were unjournaled before it).
 2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
    (Engle-Granger, half-life, z-score; `/pairs` is display-only today), extended to baskets with
    Johansen or PCA-residual reversion. Market-neutral by construction; a different label from

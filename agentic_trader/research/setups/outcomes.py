@@ -1,6 +1,6 @@
 """Read-only bracket-outcome report over journaled ``scan_candidates_ranked`` events.
 
-Labels each candidate a suggestion scan already ranked (sent or runner-up) with the
+Labels each candidate a full-universe scan already ranked (sent or runner-up) with the
 same pure ``label_bracket`` the setup-outcome study uses, so ``copilot cards
 outcomes`` can show how ``setup_quality`` and the shadow ranker's ``score`` would have
 selected versus a random pick and versus each other -- entirely from durable evidence
@@ -54,6 +54,7 @@ FETCH_FAILED_HIT = "fetch_failed"
 _COLUMNS = (
     "scan_id",
     "session",
+    "trigger",
     "contract",
     "strategy",
     "direction",
@@ -98,7 +99,7 @@ def _candidate_entries(events: list[dict[str, Any]]) -> dict[str, list[dict[str,
         if event.get("kind") != EventKind.SCAN_CANDIDATES_RANKED:
             continue
         payload = event.get("payload", event)
-        # Only a full-universe scheduled scan matches the setup study's population;
+        # Only a full-universe scan (any trigger) matches the setup study's population;
         # a symbol-restricted /scan or the intraday non-universe job never journals
         # this event at all, but an explicit check keeps this reader correct even if
         # that write-side guard ever changes.
@@ -116,7 +117,9 @@ def _candidate_entries(events: list[dict[str, Any]]) -> dict[str, list[dict[str,
             contract = candidate.get("contract")
             if not contract:
                 continue
-            by_symbol.setdefault(contract, []).append({**candidate, "scan_id": scan_id, "decided_at": decided_at})
+            by_symbol.setdefault(contract, []).append(
+                {**candidate, "scan_id": scan_id, "decided_at": decided_at, "trigger": payload.get("trigger")}
+            )
     return by_symbol
 
 
@@ -242,6 +245,7 @@ def _row(
     return {
         "scan_id": entry.get("scan_id"),
         "session": decided_at.astimezone(ET_TZ).date().isoformat(),
+        "trigger": entry.get("trigger"),
         "contract": symbol,
         "strategy": entry.get("strategy"),
         "direction": entry.get("direction"),
@@ -485,6 +489,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     if frame.empty:
         return {
             "total": 0,
+            "triggers": {},
             "immature_total": 0,
             "fetch_failed_total": 0,
             "fetch_failed_reasons": {},
@@ -493,7 +498,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
                 "runner_up": {"mature": 0, "immature": 0, "fetch_failed": 0},
             },
             "base_rates": {"sent": None, "runner_up": None},
-            "selection": {"setup_quality": None, "shadow_score": None, "random": None},
+            "selection": {"setup_quality": None, "shadow_score": None, "random": None, "scans_basis": "all"},
             "llm_gate": {
                 "ran": 0,
                 "vetoed": 0,
@@ -517,7 +522,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
     is_fetch_failed = frame["hit"] == FETCH_FAILED_HIT
     is_unresolved = is_immature | is_fetch_failed
-    is_sent = frame["sent"].astype(bool)
+    is_sent = frame["sent"]
     mature = frame.loc[~is_unresolved]
 
     counts = {
@@ -533,14 +538,21 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         },
     }
     base_rates = {
-        "sent": _base_rate(mature.loc[mature["sent"].astype(bool)]),
-        "runner_up": _base_rate(mature.loc[~mature["sent"].astype(bool)]),
+        "sent": _base_rate(mature.loc[mature["sent"]]),
+        "runner_up": _base_rate(mature.loc[~mature["sent"]]),
     }
     has_shadow_scores = mature["shadow_score"].notna().any()
+    # Only scans that carry a shadow score can compare all three pickers on one population.
+    if has_shadow_scores:
+        scored_scans = mature.loc[mature["shadow_score"].notna(), "scan_id"].dropna().unique()
+        comparable = mature.loc[mature["scan_id"].isin(scored_scans)]
+    else:
+        comparable = mature
     selection = {
-        "setup_quality": _selection_by_score(mature, "setup_quality"),
-        "shadow_score": _selection_by_score(mature, "shadow_score") if has_shadow_scores else None,
-        "random": _selection_random(mature),
+        "scans_basis": "shadow_scored" if has_shadow_scores else "all",
+        "setup_quality": _selection_by_score(comparable, "setup_quality"),
+        "shadow_score": _selection_by_score(comparable, "shadow_score") if has_shadow_scores else None,
+        "random": _selection_random(comparable),
     }
     ran = mature.loc[mature["llm_ran"].astype(bool)]
     vetoed = ran.loc[ran["llm_vetoed"].astype(bool)]
@@ -566,8 +578,8 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     controlled = mature.dropna(subset=["market_r"])
     market_reasons = frame["market_reason"].dropna()
     market_exposure = {
-        "sent": _exposure(controlled.loc[controlled["sent"].astype(bool)]),
-        "runner_up": _exposure(controlled.loc[~controlled["sent"].astype(bool)]),
+        "sent": _exposure(controlled.loc[controlled["sent"]]),
+        "runner_up": _exposure(controlled.loc[~controlled["sent"]]),
         # Why the control is missing when the proxy fetch failed (one fetch, so one reason).
         "reason": str(market_reasons.iloc[0]) if len(market_reasons) else None,
     }
@@ -583,8 +595,16 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "would_withhold_mean_r_cost": _mean_r_cost(mature.loc[would.loc[mature.index]]),
     }
 
+    # Scans and sent cards per calling path; pre-trigger events have none and report "unknown".
+    by_trigger = frame.assign(trigger=frame["trigger"].fillna("unknown")).groupby("trigger")
+    triggers = {
+        str(name): {"scans": int(group["scan_id"].nunique()), "sent": int(group["sent"].sum())}
+        for name, group in by_trigger
+    }
+
     return {
         "total": len(frame),
+        "triggers": triggers,
         "immature_total": int(is_immature.sum()),
         "fetch_failed_total": int(is_fetch_failed.sum()),
         "fetch_failed_reasons": fetch_failed_reasons,

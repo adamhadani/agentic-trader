@@ -22,7 +22,7 @@ import agentic_trader.research.setups.ranker as ranker_module
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import ScanBudget, UniverseConfig, UniverseEntry
 from agentic_trader.constants import AssetClass
-from agentic_trader.execution.durable import EventKind
+from agentic_trader.execution.durable import EventKind, ScanTrigger
 from agentic_trader.research.setups.features import CROSS_SECTIONAL, FEATURES_VERSION
 from agentic_trader.research.setups.outcomes import label_journaled
 from agentic_trader.storage.models import SignalRecord
@@ -140,7 +140,9 @@ async def test_sent_card_provenance_has_shadow_block(shadow_desk, temp_db, app_c
 
 async def test_runners_up_and_sent_are_journaled_once(shadow_desk, temp_db, app_config, artifact):
     app_config.scan.shadow_ranker_artifact = artifact[0]
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
+    await shadow_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
 
     [event] = await _ranked_events(temp_db)
     et_date = shadow_desk.session_start_et().date().isoformat()
@@ -272,6 +274,7 @@ async def test_dry_run_does_not_journal(shadow_desk, temp_db):
     # shadow_evidence=True proves a dry run refuses to journal even when the caller
     # requests shadow evidence; a dry scan must never touch the durable journal.
     await shadow_desk.run_scan(use_llm=False, dry_run=True, budget=ScanBudget.FULL, shadow_evidence=True)
+    assert shadow_desk.last_scan_summary["approved"] > 0
     assert await _ranked_events(temp_db) == []
 
 
@@ -381,31 +384,35 @@ async def test_live_cross_section_is_universe_groups_only(shadow_desk, temp_db, 
     assert all(shadow["DDD"]["features"][name] is not None for name in ("mom_60", "vol_20"))
 
 
-async def test_swing_scan_shaped_call_neither_computes_nor_journals_shadow(
-    shadow_desk, temp_db, app_config, artifact, monkeypatch
-):
-    """The daemon's 4-hourly swing scan calls ``run_scan(use_llm, dry_run, budget=FULL)``
-    with no symbols/timeframe and no ``shadow_evidence`` -- the same shape a full-universe
-    scan has, but not the suggestion-scan job, so it must neither compute nor journal."""
+async def test_swing_scan_journals_its_ranking_without_shadow(shadow_desk, temp_db, app_config, artifact, monkeypatch):
+    """The daemon's swing scan (``run_scan(use_llm, dry_run, budget=FULL, trigger=SWING_SCAN)``)
+    computes no shadow evidence but journals the same ranked-candidate event the suggestion
+    scan does, so card statistics cover the cards it sends."""
     app_config.scan.shadow_ranker_artifact = artifact[0]
 
     def unexpected(*_args, **_kwargs):
         raise AssertionError("shadow evidence is scoped to the suggestion-scan job alone")
 
     monkeypatch.setattr(copilot_module, "live_cross_section", unexpected)
-    await shadow_desk.run_scan(True, False, budget=ScanBudget.FULL)  # positional use_llm, dry_run like the cron job
+    await shadow_desk.run_scan(True, False, budget=ScanBudget.FULL, trigger=ScanTrigger.SWING_SCAN)
 
     [signal] = await temp_db.get_recent_signals(limit=10)
     assert signal["decision_provenance"]["shadow_ranker"] is None
-    assert await _ranked_events(temp_db) == []
+    [event] = await _ranked_events(temp_db)
+    payload = event["payload"]
+    assert payload["trigger"] == "swing_scan"
+    assert payload["scope"] == "universe"
+    assert [c["shadow"] for c in payload["candidates"]] == [None] * len(payload["candidates"])
+    sent = [c for c in payload["candidates"] if c["outcome"] == "sent"]
+    assert [c["signal_id"] for c in sent] == [signal["id"]]
     assert "shadow_ranker_error" not in shadow_desk.last_scan_summary
 
 
-async def test_unrestricted_manual_scan_neither_computes_nor_journals_shadow(
+async def test_unrestricted_operator_scan_journals_as_operator_scan(
     shadow_desk, temp_db, app_config, artifact, monkeypatch
 ):
-    """An operator ``copilot scan``/Telegram ``/scan`` with no symbols and no timeframe
-    is shaped exactly like the suggestion scan, but never sets ``shadow_evidence``."""
+    """``copilot scan``/Telegram ``/scan`` with no symbols and no timeframe never sets
+    ``shadow_evidence`` and passes no trigger: it journals as ``operator_scan``."""
     app_config.scan.shadow_ranker_artifact = artifact[0]
 
     def unexpected(*_args, **_kwargs):
@@ -414,10 +421,36 @@ async def test_unrestricted_manual_scan_neither_computes_nor_journals_shadow(
     monkeypatch.setattr(copilot_module, "live_cross_section", unexpected)
     await shadow_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL)
 
-    [signal] = await temp_db.get_recent_signals(limit=10)
-    assert signal["decision_provenance"]["shadow_ranker"] is None
+    [event] = await _ranked_events(temp_db)
+    assert event["payload"]["trigger"] == "operator_scan"
+    assert all(c["shadow"] is None for c in event["payload"]["candidates"])
+
+
+async def test_suggestion_scan_journals_as_suggestion_scan_with_shadow(shadow_desk, temp_db, app_config, artifact):
+    app_config.scan.shadow_ranker_artifact = artifact[0]
+    await shadow_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
+    [event] = await _ranked_events(temp_db)
+    assert event["payload"]["trigger"] == "suggestion_scan"
+    assert all(c["shadow"] is not None for c in event["payload"]["candidates"])
+
+
+async def test_dry_run_journals_nothing_even_as_swing_scan(shadow_desk, temp_db):
+    await shadow_desk.run_scan(True, True, budget=ScanBudget.FULL, trigger=ScanTrigger.SWING_SCAN)
+    assert shadow_desk.last_scan_summary["approved"] > 0
     assert await _ranked_events(temp_db) == []
-    assert "shadow_ranker_error" not in shadow_desk.last_scan_summary
+
+
+async def test_swing_scan_with_budget_spent_still_journals_runners_up(shadow_desk, temp_db, app_config):
+    """Journaling keys on ranked candidates, not on cards sent."""
+    app_config.scan.max_cards_per_scan = 0
+    await shadow_desk.run_scan(True, False, budget=ScanBudget.FULL, trigger=ScanTrigger.SWING_SCAN)
+    assert await temp_db.get_recent_signals(limit=10) == []
+    [event] = await _ranked_events(temp_db)
+    assert event["payload"]["trigger"] == "swing_scan"
+    assert event["payload"]["candidates"]  # the runners-up are journaled
+    assert all(c["outcome"] != "sent" for c in event["payload"]["candidates"])
 
 
 async def test_ranking_and_cards_unaffected_by_the_shadow_evidence_flag(shadow_desk, temp_db, app_config, artifact):
@@ -441,7 +474,9 @@ async def test_ranking_and_cards_unaffected_by_the_shadow_evidence_flag(shadow_d
 async def test_scan_candidates_ranked_round_trips_through_label_journaled(shadow_desk, temp_db, app_config, artifact):
     """Write-side journal payload and read-side ``label_journaled`` agree end to end."""
     app_config.scan.shadow_ranker_artifact = artifact[0]
-    await shadow_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
+    await shadow_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
 
     [event] = await _ranked_events(temp_db)
     assert event["payload"]["trigger"] == "suggestion_scan"

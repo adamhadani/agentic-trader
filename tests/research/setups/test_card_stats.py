@@ -202,3 +202,14 @@ async def test_journaled_candidates_round_trip_into_a_snapshot(temp_db):
     assert (aggregate.n_mature, aggregate.n_immature, aggregate.n_fetch_failed) == (1, 0, 1)
     assert aggregate.mean_r_cost == pytest.approx(AAPL_R_COST)
     assert snapshot.events_considered == 1 and snapshot.rows_labelled == 2
+
+
+def test_card_stats_count_candidates_from_every_trigger():
+    events = [
+        _event("scan-1", DECIDED_AT, [_candidate(contract="AAPL")], trigger="suggestion_scan"),
+        _event("scan-2", DECIDED_AT, [_candidate(contract="MSFT")], trigger="swing_scan"),
+    ]
+    bars = FakeBarSource({"AAPL": AAPL_BARS, "MSFT": AAPL_BARS, "SPY": SPY_BARS})
+    frame = label_journaled(events, bars, now=NOW)
+    snapshot = CardStatsSnapshot.model_validate(json.loads(json.dumps(_compute(frame), allow_nan=False)))
+    assert snapshot.stats("BREAKOUT", "LONG").n_mature == 2

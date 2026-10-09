@@ -1,4 +1,4 @@
-"""Read paths for journaled suggestion-scan evidence, shared by the CLI and the daemon.
+"""Read paths for journaled full-universe-scan evidence, shared by the CLI and the daemon.
 
 ``copilot cards outcomes`` and the daemon's ``card_stats`` worker both read the
 ``scan_candidates_ranked`` journal and label it on the configured feed; neither imports the other.
@@ -38,7 +38,7 @@ async def scan_ranked_events(db: SignalDatabase, days: int, *, now: datetime) ->
     """Every ``scan_candidates_ranked`` event journaled on each ET calendar date in the window.
 
     ``_journal_scan_ranking`` stamps one event per scan under stream ``scan/{et_date}`` (a date
-    may hold more than one, since a session may run more than one suggestion scan); the reader
+    may hold more than one, since a session may run more than one full-universe scan); the reader
     has no range/prefix query, so this walks each date's exact stream.
     """
     et_today = now.astimezone(ET_TZ).date()
