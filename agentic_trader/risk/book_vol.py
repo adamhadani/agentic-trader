@@ -36,7 +36,7 @@ class BookVolResult:
     marginal_vol_full: float
 
 
-def _validate(inputs: BookVolInputs) -> np.ndarray:
+def _validate(inputs: BookVolInputs) -> tuple[np.ndarray, float, float]:
     cov = inputs.covariance
     if list(cov.index) != list(cov.columns):
         raise ValueError("covariance index and columns differ")
@@ -66,7 +66,7 @@ def _validate(inputs: BookVolInputs) -> np.ndarray:
         raise ValueError("budget_dollars must be positive and finite")
     if not math.isfinite(notional):
         raise ValueError("candidate_notional must be finite")
-    return matrix
+    return matrix, notional, budget
 
 
 def book_vol_factor(inputs: BookVolInputs) -> BookVolResult:
@@ -75,30 +75,31 @@ def book_vol_factor(inputs: BookVolInputs) -> BookVolResult:
     A book already over budget gives 0 unless the full-size card brings it under (a hedge). Only
     ``ValueError`` is raised, for invalid inputs.
     """
-    matrix = _validate(inputs)
+    matrix, x, budget = _validate(inputs)
     symbols = list(inputs.covariance.index)
-    w = np.array([inputs.weights.get(s, 0.0) for s in symbols], dtype=float)
+    w = np.array([float(inputs.weights.get(s, 0.0)) for s in symbols], dtype=float)
     unit = np.array([1.0 if s == inputs.candidate else 0.0 for s in symbols])
-    x = inputs.candidate_notional
     a = float(w @ matrix @ w)
     b = float(x * (unit @ matrix @ w))
     c = float(x * x * (unit @ matrix @ unit))
     vol_before = math.sqrt(max(a, 0.0))
     vol_after_full = math.sqrt(max(a + 2 * b + c, 0.0))
-    budget = float(inputs.budget_dollars)
-    if vol_after_full <= budget:
+    budget_sq = budget * budget
+    if a + 2 * b + c <= budget_sq:
         # The full-size card fits (including a hedge that brings an over-budget book back under).
         factor = 1.0
-    elif vol_before > budget or c <= 0.0:
+    elif a > budget_sq or c <= 0.0:
         # The book is already over budget and the card cannot fix it at full size: the feasible
         # fractions, if any, lie between two roots and would size the card to flip the book past
         # the budget boundary. The rule never does that; the card is not sized.
         factor = 0.0
     else:
-        # vol(f)^2 = c f^2 + 2 b f + a; the book is under budget (a < budget^2) and the full card is
-        # over, so exactly one root lies in (0, 1). Numerically stable form of the larger root.
-        disc = b * b - c * (a - budget * budget)
-        root = (budget * budget - a) / (b + math.sqrt(disc)) if b + math.sqrt(disc) > 0 else (-b + math.sqrt(disc)) / c
+        # vol(f)^2 = c f^2 + 2 b f + a; the book is within budget (a <= budget^2) and the full card
+        # is over, so exactly one root lies in (0, 1). Numerically stable form of the larger root;
+        # the discriminant is clamped against rounding at the boundary.
+        disc = max(b * b - c * (a - budget_sq), 0.0)
+        denominator = b + math.sqrt(disc)
+        root = (budget_sq - a) / denominator if denominator > 0 else (-b + math.sqrt(disc)) / c
         factor = min(1.0, max(0.0, root))
     vol_after_scaled = math.sqrt(max(a + 2 * b * factor + c * factor * factor, 0.0))
     return BookVolResult(

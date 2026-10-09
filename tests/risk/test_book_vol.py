@@ -1,5 +1,6 @@
 # tests/risk/test_book_vol.py
 import math
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
@@ -204,3 +205,25 @@ def test_more_invalid_inputs_raise_value_error_only(bad):
     }
     with pytest.raises(ValueError):
         book_vol_factor(BookVolInputs(**{**base, **bad}))
+
+
+def test_boundary_rounding_does_not_raise():
+    """An uncorrelated candidate against a book sitting exactly at the budget: rounding in
+    ``sqrt(a) > budget`` versus ``a > budget^2`` must never reach a negative discriminant."""
+    covariance = cov(["AAA", "BBB"], [0.02, 0.02], 0.0)
+    inputs = BookVolInputs(
+        weights={"BBB": 215.0}, candidate="AAA", candidate_notional=1e5, covariance=covariance, budget_dollars=4.3
+    )
+    result = book_vol_factor(inputs)
+    assert 0.0 <= result.factor <= 1.0
+
+
+def test_decimal_inputs_are_coerced_to_float():
+    inputs = BookVolInputs(
+        weights={"BBB": Decimal(5000)},
+        candidate="AAA",
+        candidate_notional=Decimal(1000),
+        covariance=cov(["AAA", "BBB"], [0.01, 0.01], 0.0),
+        budget_dollars=Decimal(1000),
+    )
+    assert book_vol_factor(inputs).factor == 1.0
