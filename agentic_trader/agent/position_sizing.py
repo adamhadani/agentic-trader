@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import math
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +11,7 @@ from agentic_trader.risk import RiskLimits, per_trade_risk_budget
 
 
 if TYPE_CHECKING:
+    from agentic_trader.agent.evaluator import LLMTradeEvaluation
     from agentic_trader.config import AppConfig
     from agentic_trader.screeners.base import ScreenerCandidate
 
@@ -272,4 +274,80 @@ def calculate_dynamic_sizing(
         tiers=built_tiers,
         drawdown_factor=drawdown_factor,
         gating_reasons=gating_reasons,
+    )
+
+
+def scale_sizing(
+    eval_res: LLMTradeEvaluation, factor: float, *, min_units: float, portfolio_cash: float
+) -> LLMTradeEvaluation | None:
+    """Every tier and the headline size scaled by ``factor`` in [0, 1] with whole units.
+
+    Equities only. Each tier keeps its own arithmetic: its dollars scale by the ratio of the new
+    whole-unit quantity to the old one, so a scaled tier equals what the tier builder would have
+    produced for that quantity. Tiers that floor below ``min_units`` are dropped and tiers that
+    floor to the same quantity collapse into one (the default survives a collision); when the
+    default tier is dropped the card cannot be sized and None is returned. ``factor == 1``
+    returns the evaluation unchanged. ``portfolio_cash`` is the card's leverage denominator
+    (``RiskBudget.capital`` for a live scan).
+    """
+    if eval_res.asset_class != AssetClass.EQUITY:
+        raise ValueError("scale_sizing supports equities only")
+    if not 0.0 <= factor <= 1.0:
+        raise ValueError("factor must be in [0, 1]")
+    if factor == 1.0:
+        return eval_res
+
+    def scaled_tier(tier: dict[str, Any]) -> dict[str, Any] | None:
+        old_qty = float(tier["quantity"])
+        qty = float(math.floor(old_qty * factor))
+        if qty < min_units or old_qty <= 0:
+            return None
+        ratio = qty / old_qty
+        notional = round(float(tier["notional_dollars"]) * ratio, 2)
+        return {
+            **tier,
+            "quantity": qty,
+            "risk_dollars": round(float(tier["risk_dollars"]) * ratio, 2),
+            "reward_dollars": round(float(tier["reward_dollars"]) * ratio, 2),
+            "notional_dollars": notional,
+            "effective_leverage": round(notional / portfolio_cash, 2),
+        }
+
+    by_quantity: dict[float, dict[str, Any]] = {}
+    for tier in eval_res.sizing_tiers or []:
+        scaled = scaled_tier(tier)
+        if scaled is None:
+            continue
+        existing = by_quantity.get(scaled["quantity"])
+        if existing is None or (scaled.get("is_default") and not existing.get("is_default")):
+            by_quantity[scaled["quantity"]] = scaled
+    tiers = [by_quantity[q] for q in sorted(by_quantity)]
+    default = next((t for t in tiers if t.get("is_default")), None)
+    if eval_res.sizing_tiers and default is None:
+        return None
+    if default is not None:
+        qty, risk, reward, notional = (
+            float(default["quantity"]),
+            float(default["risk_dollars"]),
+            float(default["reward_dollars"]),
+            float(default["notional_dollars"]),
+        )
+    else:
+        old_qty = float(eval_res.quantity)
+        qty = float(math.floor(old_qty * factor))
+        if qty < min_units or old_qty <= 0:
+            return None
+        ratio = qty / old_qty
+        risk = round(eval_res.risk_dollars * ratio, 2)
+        reward = round(eval_res.reward_dollars * ratio, 2)
+        notional = round(eval_res.notional_value * ratio, 2)
+    return eval_res.model_copy(
+        update={
+            "quantity": qty,
+            "risk_dollars": risk,
+            "reward_dollars": reward,
+            "notional_value": notional,
+            "effective_leverage": round(notional / portfolio_cash, 2),
+            "sizing_tiers": tiers or None,
+        }
     )

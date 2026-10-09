@@ -63,6 +63,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    regime) has one implementation in `agentic_trader/risk`; the evaluator, tap gate,
    re-pricing and admission differ only in the book they pass and the observed budget inputs
    ([risk policy](docs/risk-policy.md); admission's Alpaca book is broker-marked).
+   Book-aware sizing (`book_sizing`, default `preview`) scales native equity cards by a
+   closed-form factor ≤ 1 against a daily dollar-vol budget at card construction only; the
+   shadow optimiser cross-check never reaches size or orders.
 
    **Paper probes:** `probe` is a third registry list, valid only in the `…/alpaca:paper`
    scope. `probe_block_reason` is the single liveness rule for snapshot, sweep and

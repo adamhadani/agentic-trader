@@ -128,6 +128,34 @@ def _evidence_block(card_evidence: Any, strategy: str, eval_res: LLMTradeEvaluat
     return "".join(f"{line}\n" for line in format_evidence_lines(evidence, eval_res.risk_reward_ratio, html=markup))
 
 
+def _book_line(book_sizing: dict[str, Any] | None, *, markup: bool) -> str:
+    """The book-sizing line, newline-terminated; empty without a decision or when it does not apply.
+
+    A stored decision is rendered defensively: a status that should carry numbers but lacks one
+    renders nothing rather than failing the send. The reason is one of our own type names, escaped
+    for the HTML renderer all the same.
+    """
+    if not book_sizing:
+        return ""
+    status = book_sizing.get("status")
+    if status == "unavailable":
+        reason = str(book_sizing.get("reason") or "unknown")
+        return f"📐 Book: portfolio vol unavailable (covariance: {html.escape(reason) if markup else reason})\n"
+    if status not in {"applied", "unchanged"}:
+        return ""
+    numbers: list[float] = []
+    for key in ("vol_before_pct", "vol_after_full_pct", "budget_pct", "factor"):
+        value = book_sizing.get(key)
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            return ""
+        numbers.append(float(value))
+    before, after, budget, factor = numbers
+    line = f"📐 Book: portfolio vol {before:.2%} → {after:.2%}/day with this card (budget {budget:.2%}; size ×{factor:.2f})"
+    if book_sizing.get("mode") == "preview" and book_sizing.get("would_scale"):
+        line += " — preview, size unchanged"
+    return line + "\n"
+
+
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
@@ -141,6 +169,7 @@ def format_alert_card(
     drift: dict[str, Any] | None = None,
     card_evidence: dict[str, Any] | None = None,
     issued_at: str | None = None,
+    book_sizing: dict[str, Any] | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
@@ -258,7 +287,9 @@ def format_alert_card(
             "unless the stop or target fills first\n\n"
         )
 
-    evidence_block = _evidence_block(card_evidence, strategy, eval_res, markup=True)
+    evidence_block = _evidence_block(card_evidence, strategy, eval_res, markup=True) + _book_line(
+        book_sizing, markup=True
+    )
 
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
@@ -303,6 +334,7 @@ def format_terminal_card(
     first_issued_at: str | None = None,
     card_evidence: dict[str, Any] | None = None,
     issued_at: str | None = None,
+    book_sizing: dict[str, Any] | None = None,
 ) -> str:
     """ASCII/plain text formatted card for terminal display.
 
@@ -398,7 +430,9 @@ def format_terminal_card(
             sizing_lines.extend(f"  [Risk Gate] {g}" for g in gating)
         sizing_section = "\n".join(sizing_lines) + "\n"
 
-    evidence_block = _evidence_block(card_evidence, strategy, eval_res, markup=False)
+    evidence_block = _evidence_block(card_evidence, strategy, eval_res, markup=False) + _book_line(
+        book_sizing, markup=False
+    )
 
     border = "=" * 65
     return f"""
@@ -1256,6 +1290,7 @@ class TelegramNotifier:
         first_issued_at: str | None = None,
         drift: dict[str, Any] | None = None,
         card_evidence: dict[str, Any] | None = None,
+        book_sizing: dict[str, Any] | None = None,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
         # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
@@ -1278,6 +1313,7 @@ class TelegramNotifier:
                 reprices=reprices,
                 first_issued_at=first_issued_at,
                 card_evidence=card_evidence,
+                book_sizing=book_sizing,
                 issued_at=issued_at,
             )
         )
@@ -1301,6 +1337,7 @@ class TelegramNotifier:
             first_issued_at=first_issued_at,
             drift=drift,
             card_evidence=card_evidence,
+            book_sizing=book_sizing,
             issued_at=issued_at,
         )
 

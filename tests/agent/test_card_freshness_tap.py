@@ -238,6 +238,31 @@ async def test_stale_card_is_repriced_into_one_new_pending_card_without_authoriz
     assert len(await temp_db.workflows.list_work(WorkKind.NOTIFICATION)) == 1
 
 
+async def test_a_repriced_card_carries_the_original_book_sizing_block(tap_desk, temp_db):
+    """Re-pricing re-derives the quantity but never re-sizes against the book: the original
+    decision rides along unchanged in the payload and provenance."""
+    block = {
+        "status": "unchanged",
+        "mode": "preview",
+        "factor": 0.7,
+        "would_scale": True,
+        "quantity_before": 10.0,
+        "quantity_after": 10.0,
+        "budget_pct": 0.008,
+        "vol_before_pct": 0.0062,
+        "vol_after_full_pct": 0.0081,
+    }
+    sid = await record_card(temp_db, age_seconds=3600, provenance_extra={"book_sizing": block})
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0  # +0.4R -> REPRICE
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    [notification] = await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+    arguments = notification.payload["arguments"]
+    assert arguments["book_sizing"] == block
+    assert (await temp_db.get_signal_by_id(arguments["signal_id"]))["decision_provenance"]["book_sizing"] == block
+
+
 async def test_a_repriced_card_carries_the_original_evidence_block(tap_desk, temp_db):
     evidence = {
         "status": "insufficient",

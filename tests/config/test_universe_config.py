@@ -1,4 +1,5 @@
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -173,3 +174,12 @@ def test_invalid_suggestion_scan_times_are_rejected(times):
 def test_an_empty_suggestion_scan_time_list_disables_the_cron_scans():
     """F7: the operator off switch -- no times means no suggestion-scan cron jobs."""
     assert SchedulerConfig(suggestion_scan_times_et=[]).suggestion_scan_times_et == []
+
+
+def test_book_sizing_loads_from_yaml_and_shipped_config_previews(tmp_path):
+    path = write(tmp_path, "book_sizing:\n  mode: enforce\n")
+    config = load_config(path, environ={"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""})
+    assert config.book_sizing.mode == "enforce"
+    shipped = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+    config = load_config(str(shipped), environ={"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""})
+    assert config.book_sizing.mode == "preview"

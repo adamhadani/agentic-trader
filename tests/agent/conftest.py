@@ -8,6 +8,15 @@ from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.research.alpha.models import RegistrySnapshot
 
 
+@pytest.fixture(autouse=True)
+def _no_lazy_bar_source(monkeypatch):
+    """A scan test never reaches the real Alpaca provider through the desk's lazy bar source."""
+    monkeypatch.setattr(
+        "agentic_trader.agent.copilot.build_bar_source",
+        lambda config: MagicMock(fetch_daily_many=MagicMock(return_value={})),
+    )
+
+
 @pytest.fixture
 def scan_desk(app_config, temp_db, mock_notifier):
     """A TradingCopilot wired for run_scan with a real temp db and a controllable

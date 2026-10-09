@@ -677,3 +677,60 @@ def test_selection_basis_is_all_scans_without_shadow_scores():
     assert selection["scans_basis"] == "all"
     assert selection["shadow_score"] is None
     assert selection["setup_quality"]["scans"] == selection["random"]["scans"] == 2
+
+
+def _book(status, factor, would_scale):
+    return {
+        "mode": "preview",
+        "status": status,
+        "factor": factor,
+        "would_scale": would_scale,
+        "vol_before_pct": 0.5,
+        "vol_after_full_pct": 0.9,
+        "quantity_before": 10,
+        "quantity_after": 10,
+    }
+
+
+def test_book_sizing_columns_and_summary_block():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "book_sizing": _book("applied", 0.5, True)},
+                {**_candidate(rank=2), "book_sizing": _book("unchanged", 0.8, True)},
+                {**_candidate(rank=3), "book_sizing": _book("unchanged", 1.0, False)},
+                {**_candidate(rank=4), "book_sizing": _book("unavailable", None, None)},
+                _candidate(rank=5),  # journaled before book sizing existed
+            ],
+        )
+    ]
+    frame = label_journaled(events, bars, now=NOW).sort_values("rank")
+    assert frame["book_sizing_status"].tolist() == ["applied", "unchanged", "unchanged", "unavailable", None]
+    assert frame["book_factor"].tolist() == [0.5, 0.8, 1.0, None, None]
+    assert frame["book_would_scale"].tolist() == [True, True, False, None, None]
+    cols = list(frame.columns)
+    assert cols.index("book_sizing_status") == cols.index("would_withhold") + 1
+    r_cost = float(frame["r_cost"].iloc[0])
+    assert not pd.isna(r_cost)
+    assert summarize(frame)["book_sizing"] == {
+        "by_status": {"applied": 1, "unchanged": 2, "unavailable": 1},
+        "would_scale": 2,
+        "mean_factor_scaled": pytest.approx(0.65),
+        "mean_r_cost": {"would_scale": pytest.approx(r_cost), "not_scaled": pytest.approx(r_cost)},
+    }
+
+
+def test_book_sizing_summary_without_any_status_and_on_an_empty_frame():
+    empty = {
+        "by_status": {},
+        "would_scale": 0,
+        "mean_factor_scaled": None,
+        "mean_r_cost": {"would_scale": None, "not_scaled": None},
+    }
+    assert summarize(label_journaled([], FakeBarSource({}), now=NOW))["book_sizing"] == empty
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    older = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW)
+    assert summarize(older)["book_sizing"] == empty

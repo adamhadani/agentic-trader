@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace as dataclass_replace
 from datetime import UTC, datetime, time as dt_time, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pandas as pd
@@ -49,6 +49,7 @@ from agentic_trader.constants import (
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
+from agentic_trader.execution.book_sizing import BookSizer, BookSizingDecision
 from agentic_trader.execution.card_evidence import CardEvidence, CardStatsRepository, lookup
 from agentic_trader.execution.card_policy import CardPolicyDecision, decide, journal_block
 from agentic_trader.execution.closing import PositionCloseService
@@ -110,6 +111,7 @@ from agentic_trader.research.setups.ranker import (
     setup_features,
     shadow_blocks,
 )
+from agentic_trader.research.setups.sources import build_bar_source
 from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExecutor
 from agentic_trader.risk import (
     EntryIntent,
@@ -122,6 +124,7 @@ from agentic_trader.risk import (
     required_reward_risk,
     requires_account_risk,
     reward_risk,
+    risk_capital,
 )
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.coverage import coverage_exclusions
@@ -218,6 +221,22 @@ class OperatorDynamicName:
     reference: StaticReference
 
 
+class _LazyBarSource:
+    """The scan's raw-bar provider, built on the first book-sizing fetch and never otherwise.
+
+    Tests and dry runs that never fetch outside the scan's datasets never construct a client.
+    """
+
+    def __init__(self, config: AppConfig) -> None:
+        self._config = config
+        self._provider: AlpacaDataProvider | None = None
+
+    def fetch_daily_many(self, *args: Any, **kwargs: Any) -> Any:
+        if self._provider is None:
+            self._provider = build_bar_source(self._config)
+        return self._provider.fetch_daily_many(*args, **kwargs)
+
+
 class TradingCopilot:
     """Core autonomous trading copilot orchestrating universe scanning, risk evaluation,
 
@@ -241,6 +260,8 @@ class TradingCopilot:
         dynamic_universe: DynamicUniverseSource | None = None,
         earnings_drift: EarningsDriftService | None = None,
         card_stats: CardStatsRepository | None = None,
+        book_sizer: BookSizer | None = None,
+        bar_source: AlpacaDataProvider | None = None,
     ):
         self._dry_run_directory: TemporaryDirectory[str] | None = None
         self._reconciliation_lock = asyncio.Lock()
@@ -272,6 +293,19 @@ class TradingCopilot:
         self.alpha_shadow = AlphaShadowService(self.alpha_repository)
         # Read side of the daemon's daily card statistics; tests inject a fake with a fixed snapshot.
         self.card_stats = card_stats if card_stats is not None else CardStatsRepository(self.db.workflows)
+        # Book-aware sizing: the sizer asks for its raw-bar provider only when a scan needs bars
+        # outside its own datasets, so construction (and every dry run) never builds a client.
+        self.book_sizer = (
+            book_sizer
+            if book_sizer is not None
+            else BookSizer(
+                config.book_sizing,
+                # The sizer only calls `fetch_daily_many`, which the lazy source provides.
+                bar_source if bar_source is not None else cast("AlpacaDataProvider", _LazyBarSource(config)),
+                portfolio_cash=config.portfolio.cash,
+                min_units=config.sizing.min_shares,
+            )
+        )
         self.strategy_engine = StrategyEngine(config)
         # Read-only screener/asset access for the scheduled suggestion scan's dynamic names.
         self.dynamic_universe: DynamicUniverseSource | None = dynamic_universe
@@ -1132,6 +1166,27 @@ class TradingCopilot:
             outcomes: list[str | None] = [None] * len(ranked)
             llm_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             signal_ids_by_rank: list[int | None] = [None] * len(ranked)
+            # BOOK SIZING (L3): one covariance/book build per scan, from the scan's own daily bars plus
+            # at most one bounded fetch for book names outside it. A dry run's simulated book is empty,
+            # so it never prepares (and never fetches); `prepare` itself never raises.
+            # Only equity candidates are sized; a scan with none (the intraday futures scan) skips it.
+            equity_class = normalize_asset_class(AssetClass.EQUITY)
+            book_candidates = [
+                c.contract
+                for c, _, _ in ranked[:native_count]
+                if normalize_asset_class(str(getattr(c, "asset_class", ""))) == equity_class
+            ]
+            book_context = (
+                None
+                if dry_run or not book_candidates
+                else await self.book_sizer.prepare(
+                    active_positions,
+                    datasets,
+                    as_of=self.session_start_et(decided_at).date(),
+                    candidates=book_candidates,
+                )
+            )
+            book_by_rank: list[BookSizingDecision | None] = [None] * len(ranked)
             # EVIDENCE: one snapshot read per scan; every native card states its own (strategy,
             # direction) record. Drift cards keep their PEAD block and carry none.
             card_policy = self.config.card_policy
@@ -1297,6 +1352,37 @@ class TradingCopilot:
                         )
                         continue
 
+                    # BOOK SIZING (native cards; drift and policy-locked cards are exempt inside `decide`).
+                    # It runs after the LLM, so a blocked card has spent LLM budget but, like a veto, no
+                    # scan or session card budget: those are charged only once a card is recorded.
+                    book_decision: BookSizingDecision | None = None
+                    if not is_drift:
+                        # The smaller of configured cash and observed equity, as the per-trade budget uses.
+                        try:
+                            risk_capital_now = risk_capital(
+                                RiskLimits.from_config(self.config).cash,
+                                float(account_risk.equity) if account_risk else None,
+                            )
+                        except ValueError:
+                            risk_capital_now = math.nan  # `decide` reports it as unavailable
+                        book_decision, sized = self.book_sizer.decide(
+                            book_context,
+                            candidate=candidate,
+                            eval_res=eval_res,
+                            risk_capital=risk_capital_now,
+                            dry_run=dry_run,
+                        )
+                        book_decision = await self.book_sizer.attach_shadow(book_context, book_decision)
+                        book_by_rank[rank - 1] = book_decision
+                        if sized is None:
+                            outcomes[rank - 1] = RankedOutcome.BOOK_SIZING_BLOCKED
+                            summary["runners_up"].append(
+                                self._runner_up(candidate, book_decision.reason or "book sizing")
+                            )
+                            continue
+                        eval_res = sized
+                    book_block = book_decision.model_dump(mode="json") if book_decision is not None else None
+
                     evidence = evidence_by_rank[rank - 1]
                     card_evidence = evidence.model_dump(mode="json") if evidence is not None else None
                     evidence_keys: dict[str, Any] = (
@@ -1343,6 +1429,7 @@ class TradingCopilot:
                             "budget": str(budget),
                             "shadow_ranker": shadow_by_rank[rank - 1],
                             "llm_verdict": llm_by_rank[rank - 1],
+                            "book_sizing": book_block,
                             **evidence_keys,
                             # A drift card is never tagged dynamic; catalog admission requires
                             # its same-session event naming the contract.
@@ -1383,6 +1470,7 @@ class TradingCopilot:
                                 else {}
                             ),
                             **({"card_evidence": card_evidence} if card_evidence is not None else {}),
+                            "book_sizing": book_block,
                             **validity,
                         },
                     )
@@ -1438,6 +1526,13 @@ class TradingCopilot:
                             "risk_dollars": eval_res.risk_dollars,
                         }
                     )
+                    if book_context is not None and not is_drift:
+                        book_context = book_context.with_card(
+                            symbol=eval_res.contract,
+                            direction=eval_res.direction,
+                            notional=eval_res.notional_value,
+                            asset_class=eval_res.asset_class,
+                        )
 
                 except Exception as exc:
                     scan_errors += 1
@@ -1458,6 +1553,7 @@ class TradingCopilot:
                     llm_by_rank=llm_by_rank[:native_count],
                     signal_ids_by_rank=signal_ids_by_rank[:native_count],
                     card_policy_by_rank=policy_by_rank[:native_count],
+                    book_by_rank=book_by_rank[:native_count],
                     snapshot_key=snapshot.snapshot_key if snapshot is not None else None,
                     dynamic_sources=dynamic_sources,
                     summary=summary,
@@ -1714,6 +1810,7 @@ class TradingCopilot:
         llm_by_rank: list[dict[str, Any] | None],
         signal_ids_by_rank: list[int | None],
         card_policy_by_rank: list[CardPolicyDecision | None],
+        book_by_rank: list[BookSizingDecision | None],
         snapshot_key: str | None,
         dynamic_sources: Mapping[str, str],
         summary: dict[str, Any],
@@ -1738,6 +1835,7 @@ class TradingCopilot:
                     "llm": llm_by_rank[rank - 1],
                     "signal_id": signal_ids_by_rank[rank - 1],
                     "card_policy": journal_block(card_policy_by_rank[rank - 1], policy.mode),
+                    "book_sizing": self.book_sizer.journal_block(book_by_rank[rank - 1]),
                     **self._dynamic_tag(candidate.contract, dynamic_sources),
                 }
                 for rank, (candidate, det_res, _) in enumerate(ranked, 1)
@@ -3152,6 +3250,8 @@ class TradingCopilot:
             **({"valid_until": valid_until} if valid_until else {}),
             # The original card's evidence, unchanged (it is decision-time evidence, not re-looked-up).
             **({"card_evidence": old_provenance["card_evidence"]} if old_provenance.get("card_evidence") else {}),
+            # The original card's book-sizing decision, unchanged (decision-time evidence, like the above).
+            "book_sizing": old_provenance.get("book_sizing"),
             "reprices": signal_id,
             "first_issued_at": first_issued_at,
         }

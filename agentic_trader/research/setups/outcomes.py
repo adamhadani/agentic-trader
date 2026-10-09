@@ -79,6 +79,9 @@ _COLUMNS = (
     "llm_stop_loss",
     "card_policy_withheld",
     "would_withhold",
+    "book_sizing_status",
+    "book_factor",
+    "book_would_scale",
     "market_r",
     "excess_r",
     "market_reason",
@@ -239,6 +242,8 @@ def _row(
     market_reason: str | None = None,
 ) -> dict[str, Any]:
     shadow = entry.get("shadow") or {}
+    raw_book = entry.get("book_sizing")
+    book: dict[str, Any] = raw_book if isinstance(raw_book, dict) else {}
     llm = entry.get("llm") if isinstance(entry.get("llm"), dict) else None
     decided_at = entry["decided_at"]
     outcome = entry.get("outcome")
@@ -270,6 +275,9 @@ def _row(
         "llm_stop_loss": _applied_llm_stop(llm),
         "card_policy_withheld": outcome == RankedOutcome.CARD_POLICY_WITHHELD,
         "would_withhold": _would_withhold(entry),
+        "book_sizing_status": book.get("status"),
+        "book_factor": book.get("factor"),
+        "book_would_scale": book.get("would_scale"),
         "market_r": market_value,
         "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
         "market_reason": market_reason,
@@ -420,6 +428,8 @@ def label_journaled(
     frame["signal_id"] = pd.array([row["signal_id"] for row in rows], dtype="Int64")
     frame["llm_r_cost"] = frame["llm_r_cost"].astype(object).where(frame["llm_r_cost"].notna(), None)
     frame["would_withhold"] = frame["would_withhold"].astype(object).where(frame["would_withhold"].notna(), None)
+    for column in ("book_sizing_status", "book_factor", "book_would_scale"):
+        frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
     return frame
 
 
@@ -484,6 +494,31 @@ def _mean_delta(edits: pd.DataFrame) -> float | None:
     return float((edits["llm_r_cost"] - edits["r_cost"]).mean()) if len(edits) else None
 
 
+def _book_sizing_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
+    """Counts by journaled book-sizing status and the descriptive R of rows that would be scaled."""
+    has_status = frame["book_sizing_status"].notna()
+    by_status = {str(k): int(v) for k, v in frame.loc[has_status, "book_sizing_status"].value_counts().items()}
+
+    def scaled_mask(rows: pd.DataFrame) -> pd.Series:
+        flagged = rows["book_would_scale"].map(lambda value: value is True)
+        return (flagged | (rows["book_sizing_status"] == "applied")).astype(bool)
+
+    scaled = frame.loc[scaled_mask(frame)]
+    factors = pd.to_numeric(scaled["book_factor"], errors="coerce")
+    mean_factor = float(factors.mean()) if factors.notna().any() else None
+    rated = mature.loc[mature["book_sizing_status"].notna()]
+    would_scale = scaled_mask(rated)
+    return {
+        "by_status": by_status,
+        "would_scale": len(scaled),
+        "mean_factor_scaled": mean_factor,
+        "mean_r_cost": {
+            "would_scale": _mean_r_cost(rated.loc[would_scale]),
+            "not_scaled": _mean_r_cost(rated.loc[~would_scale]),
+        },
+    }
+
+
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     """Counts by outcome/maturity, base rates, per-scan selection quality by scorer and card-policy counts."""
     if frame.empty:
@@ -517,6 +552,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
                 "withheld_mean_r_cost": None,
                 "would_withhold_mean_r_cost": None,
             },
+            "book_sizing": _book_sizing_summary(frame, frame),
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -614,4 +650,5 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "llm_gate": llm_gate,
         "market_exposure": market_exposure,
         "card_policy": card_policy,
+        "book_sizing": _book_sizing_summary(frame, mature),
     }

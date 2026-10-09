@@ -2,8 +2,10 @@ from datetime import UTC, datetime
 
 import pytest
 
+from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.agent.position_sizing import (
     calculate_dynamic_sizing,
+    scale_sizing,
 )
 from agentic_trader.config import AppConfig, ContractConfig, PositionSizingConfig
 from agentic_trader.constants import AssetClass, Direction, StrategyType
@@ -211,3 +213,150 @@ def test_macro_factor_scales_the_max_tier_too():
     assert full.max_tier.risk_dollars == pytest.approx(config.portfolio.cash * config.sizing.max_risk_pct_cap, rel=0.02)
     assert stressed.max_tier.risk_dollars == pytest.approx(full.max_tier.risk_dollars * 0.5, rel=0.02)
     assert any("Macro stress risk scaling applied: 50%" in reason for reason in stressed.gating_reasons)
+
+
+def _eval_with_tiers():
+    def tier(tier_id, label, qty, default=False):
+        return {
+            "tier_id": tier_id,
+            "label": label,
+            "quantity": qty,
+            "risk_dollars": 1.8 * qty,
+            "reward_dollars": 3.6 * qty,
+            "notional_dollars": 100.0 * qty,
+            "effective_leverage": 100.0 * qty / 100_000.0,
+            "is_default": default,
+        }
+
+    tiers = [
+        tier("half", "Conservative (0.5x)", 20.0),
+        tier("base", "Standard (1.0x)", 40.0, True),
+        tier("max", "Max Permissible", 75.0),
+    ]
+    return LLMTradeEvaluation(
+        approved=True,
+        contract="AAA",
+        direction="LONG",
+        entry_price=100.0,
+        stop_loss=98.2,
+        take_profit=103.6,
+        stop_distance_points=1.8,
+        target_distance_points=3.6,
+        risk_reward_ratio=2.0,
+        risk_dollars=72.0,
+        reward_dollars=144.0,
+        notional_value=4_000.0,
+        effective_leverage=0.04,
+        macro_clearance=True,
+        thesis_summary="t",
+        quantity=40.0,
+        asset_class=AssetClass.EQUITY,
+        sizing_tiers=tiers,
+    )
+
+
+def test_scale_sizing_scales_every_tier_with_whole_units_and_never_raises():
+    original = _eval_with_tiers()
+    before = original.model_dump()
+    scaled = scale_sizing(original, 0.6, min_units=1.0, portfolio_cash=100_000.0)
+    assert original.model_dump() == before  # the input is never mutated
+    assert [t["quantity"] for t in scaled.sizing_tiers] == [12.0, 24.0, 45.0]
+    # Each tier keeps its own arithmetic: dollars scale with the whole-unit ratio.
+    assert [t["risk_dollars"] for t in scaled.sizing_tiers] == [
+        pytest.approx(21.6),
+        pytest.approx(43.2),
+        pytest.approx(81.0),
+    ]
+    assert [t["reward_dollars"] for t in scaled.sizing_tiers] == [
+        pytest.approx(43.2),
+        pytest.approx(86.4),
+        pytest.approx(162.0),
+    ]
+    assert [t["notional_dollars"] for t in scaled.sizing_tiers] == [
+        pytest.approx(1_200.0),
+        pytest.approx(2_400.0),
+        pytest.approx(4_500.0),
+    ]
+    assert [t["effective_leverage"] for t in scaled.sizing_tiers] == [
+        round(1_200 / 100_000, 2),
+        round(2_400 / 100_000, 2),
+        round(4_500 / 100_000, 2),
+    ]
+    assert [t["is_default"] for t in scaled.sizing_tiers] == [False, True, False]
+    assert scaled.quantity == 24.0
+    assert scaled.risk_dollars == pytest.approx(43.2)
+    assert scaled.reward_dollars == pytest.approx(86.4)
+    assert scaled.notional_value == pytest.approx(2_400.0)
+    assert scaled.effective_leverage == pytest.approx(0.02)
+    assert all(t["quantity"] <= o["quantity"] for t, o in zip(scaled.sizing_tiers, original.sizing_tiers, strict=True))
+
+
+def test_scale_sizing_factor_one_is_identity():
+    original = _eval_with_tiers()
+    assert scale_sizing(original, 1.0, min_units=1.0, portfolio_cash=100_000.0).model_dump() == original.model_dump()
+
+
+def test_scale_sizing_drops_sub_minimum_tiers_and_blocks_when_default_vanishes():
+    scaled = scale_sizing(_eval_with_tiers(), 0.04, min_units=1.0, portfolio_cash=100_000.0)
+    assert [t["tier_id"] for t in scaled.sizing_tiers] == ["base", "max"]
+    assert scaled.quantity == 1.0
+    assert scale_sizing(_eval_with_tiers(), 0.01, min_units=1.0, portfolio_cash=100_000.0) is None
+    # factor 0.02: half -> 0, base -> 0 (the default vanishes), max -> 1 survives: still None.
+    assert scale_sizing(_eval_with_tiers(), 0.02, min_units=1.0, portfolio_cash=100_000.0) is None
+
+
+def test_scale_sizing_collapses_tiers_that_floor_to_the_same_quantity():
+    tiers = [
+        {
+            "tier_id": "half",
+            "label": "Conservative (0.5x)",
+            "quantity": 1.0,
+            "risk_dollars": 1.8,
+            "reward_dollars": 3.6,
+            "notional_dollars": 100.0,
+            "effective_leverage": 0.0,
+            "is_default": False,
+        },
+        {
+            "tier_id": "base",
+            "label": "Standard (1.0x)",
+            "quantity": 2.0,
+            "risk_dollars": 3.6,
+            "reward_dollars": 7.2,
+            "notional_dollars": 200.0,
+            "effective_leverage": 0.0,
+            "is_default": True,
+        },
+        {
+            "tier_id": "max",
+            "label": "Max Permissible",
+            "quantity": 3.0,
+            "risk_dollars": 5.4,
+            "reward_dollars": 10.8,
+            "notional_dollars": 300.0,
+            "effective_leverage": 0.0,
+            "is_default": False,
+        },
+    ]
+    original = _eval_with_tiers().model_copy(
+        update={
+            "sizing_tiers": tiers,
+            "quantity": 2.0,
+            "risk_dollars": 3.6,
+            "reward_dollars": 7.2,
+            "notional_value": 200.0,
+        }
+    )
+    scaled = scale_sizing(original, 0.5, min_units=1.0, portfolio_cash=100_000.0)
+    # half -> 0 (dropped), base -> 1, max -> 1: one tier at quantity 1, and it is the default.
+    assert [(t["tier_id"], t["quantity"], t["is_default"]) for t in scaled.sizing_tiers] == [("base", 1.0, True)]
+    assert scaled.quantity == 1.0
+    assert scaled.risk_dollars == pytest.approx(1.8)
+
+
+def test_scale_sizing_rejects_non_equities_and_bad_factors():
+    futures = _eval_with_tiers().model_copy(update={"asset_class": AssetClass.FUTURES})
+    with pytest.raises(ValueError, match="equit"):
+        scale_sizing(futures, 0.5, min_units=1.0, portfolio_cash=100_000.0)
+    with pytest.raises(ValueError, match="factor"):
+        scale_sizing(_eval_with_tiers(), 1.5, min_units=1.0, portfolio_cash=100_000.0)
