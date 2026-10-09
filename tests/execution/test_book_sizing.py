@@ -413,3 +413,21 @@ async def test_non_positive_risk_capital_is_unavailable():
     assert decision.status == BookSizingStatus.UNAVAILABLE
     assert decision.reason == "invalid_risk_capital"
     assert out is ev
+
+
+async def test_with_card_adds_signed_notional_and_never_mutates():
+    _, ctx = await ready()
+    before = dict(ctx.weights)
+    longer = ctx.with_card(symbol="aaa", direction="LONG", notional=2_000.0, asset_class=AssetClass.EQUITY)
+    assert longer.weights["AAA"] == before.get("AAA", 0.0) + 2_000.0
+    assert ctx.weights == before  # frozen context untouched
+    shorter = longer.with_card(symbol="AAA", direction="SHORT", notional=500.0, asset_class=AssetClass.EQUITY)
+    assert shorter.weights["AAA"] == pytest.approx(before.get("AAA", 0.0) + 1_500.0)
+
+
+async def test_with_card_leaves_unavailable_contexts_and_non_equity_cards_alone():
+    _, ctx = await ready()
+    broken = ctx.model_copy(update={"status": "unavailable", "reason": "missing_bars", "covariance": None})
+    assert broken.with_card(symbol="AAA", direction="LONG", notional=1.0, asset_class=AssetClass.EQUITY) is broken
+    assert ctx.with_card(symbol="AAA", direction="LONG", notional=1.0, asset_class=AssetClass.FUTURES) is ctx
+    assert ctx.with_card(symbol="ZZZ", direction="LONG", notional=1.0, asset_class=AssetClass.EQUITY) is ctx

@@ -90,6 +90,24 @@ class BookContext(BaseModel, frozen=True, arbitrary_types_allowed=True):
     book_symbols: tuple[str, ...]
     missing_symbols: tuple[str, ...]
 
+    def with_card(self, *, symbol: str, direction: str, notional: float, asset_class: Any) -> BookContext:
+        """The book after a recorded card: its final signed equity notional joins the weights.
+
+        Only a ready context whose covariance holds the card's symbol can use the weight; any
+        other context is returned unchanged (an unavailable book stays unavailable, a drift name
+        has no row, a non-equity card is never part of this book). Never mutates ``self``.
+        """
+        key = normalize_symbol(str(symbol))
+        if (
+            self.status != "ready"
+            or self.covariance is None
+            or key not in self.covariance.index
+            or asset_class != AssetClass.EQUITY
+        ):
+            return self
+        signed = float(notional) * (1.0 if direction == Direction.LONG else -1.0)
+        return self.model_copy(update={"weights": {**self.weights, key: self.weights.get(key, 0.0) + signed}})
+
 
 def _unavailable(reason: str, **kw: Any) -> BookContext:
     fields: dict[str, Any] = {

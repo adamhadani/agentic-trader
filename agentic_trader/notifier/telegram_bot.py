@@ -131,21 +131,26 @@ def _evidence_block(card_evidence: Any, strategy: str, eval_res: LLMTradeEvaluat
 def _book_line(book_sizing: dict[str, Any] | None, *, markup: bool) -> str:
     """The book-sizing line, newline-terminated; empty without a decision or when it does not apply.
 
-    ``markup`` is accepted for parity with the other card blocks: the line carries only our own
-    numbers and type names, so it needs no escaping in either renderer.
+    A stored decision is rendered defensively: a status that should carry numbers but lacks one
+    renders nothing rather than failing the send. The reason is one of our own type names, escaped
+    for the HTML renderer all the same.
     """
-    del markup
     if not book_sizing:
         return ""
     status = book_sizing.get("status")
     if status == "unavailable":
-        return f"📐 Book: portfolio vol unavailable (covariance: {book_sizing.get('reason')})\n"
+        reason = str(book_sizing.get("reason") or "unknown")
+        return f"📐 Book: portfolio vol unavailable (covariance: {html.escape(reason) if markup else reason})\n"
     if status not in {"applied", "unchanged"}:
         return ""
-    line = (
-        f"📐 Book: portfolio vol {book_sizing['vol_before_pct']:.2%} → {book_sizing['vol_after_full_pct']:.2%}/day "
-        f"with this card (budget {book_sizing['budget_pct']:.2%}; size ×{book_sizing['factor']:.2f})"
-    )
+    numbers: list[float] = []
+    for key in ("vol_before_pct", "vol_after_full_pct", "budget_pct", "factor"):
+        value = book_sizing.get(key)
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            return ""
+        numbers.append(float(value))
+    before, after, budget, factor = numbers
+    line = f"📐 Book: portfolio vol {before:.2%} → {after:.2%}/day with this card (budget {budget:.2%}; size ×{factor:.2f})"
     if book_sizing.get("mode") == "preview" and book_sizing.get("would_scale"):
         line += " — preview, size unchanged"
     return line + "\n"

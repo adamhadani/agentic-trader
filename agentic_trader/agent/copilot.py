@@ -49,7 +49,7 @@ from agentic_trader.constants import (
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
-from agentic_trader.execution.book_sizing import BookContext, BookSizer, BookSizingDecision
+from agentic_trader.execution.book_sizing import BookSizer, BookSizingDecision
 from agentic_trader.execution.card_evidence import CardEvidence, CardStatsRepository, lookup
 from agentic_trader.execution.card_policy import CardPolicyDecision, decide, journal_block
 from agentic_trader.execution.closing import PositionCloseService
@@ -118,7 +118,6 @@ from agentic_trader.risk import (
     RiskLimits,
     entry_session_open,
     macro_lockout,
-    normalize_symbol,
     per_trade_risk,
     per_trade_risk_budget,
     regime_breakout,
@@ -219,26 +218,6 @@ class OperatorDynamicName:
     selection: DynamicSelection
     asset: AssetInfo
     reference: StaticReference
-
-
-def _book_with_card(context: BookContext, eval_res: Any) -> BookContext:
-    """The scan's book after a recorded card: its final signed equity notional joins the weights.
-
-    Only a ready context holding the card's symbol in its covariance can use the weight; any other
-    context is returned unchanged (an unavailable book stays unavailable, a drift name has no row).
-    """
-    covariance = context.covariance
-    symbol = normalize_symbol(str(eval_res.contract))
-    if (
-        context.status != "ready"
-        or covariance is None
-        or symbol not in covariance.index
-        or eval_res.asset_class != AssetClass.EQUITY
-    ):
-        return context
-    signed = float(eval_res.notional_value) * (1.0 if eval_res.direction == Direction.LONG else -1.0)
-    weights = {**context.weights, symbol: context.weights.get(symbol, 0.0) + signed}
-    return context.model_copy(update={"weights": weights})
 
 
 class _LazyBarSource:
@@ -1535,7 +1514,12 @@ class TradingCopilot:
                         }
                     )
                     if book_context is not None and not is_drift:
-                        book_context = _book_with_card(book_context, eval_res)
+                        book_context = book_context.with_card(
+                            symbol=eval_res.contract,
+                            direction=eval_res.direction,
+                            notional=eval_res.notional_value,
+                            asset_class=eval_res.asset_class,
+                        )
 
                 except Exception as exc:
                     scan_errors += 1

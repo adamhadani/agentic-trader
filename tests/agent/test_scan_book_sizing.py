@@ -217,8 +217,10 @@ async def test_later_card_sees_scaled_book(book_desk, temp_db, app_config):
     assert first["status"] == "applied"
     signals = await _signals(temp_db)
     first_after = signals["DDD"]["decision_provenance"]["book_sizing"]["vol_after_scaled_pct"]
-    # The recorded card adds its whole-unit notional (not exactly factor x notional), so allow rounding.
-    assert second["vol_before_pct"] == pytest.approx(first_after, abs=2e-4)
+    # The recorded card adds its whole-unit notional (not exactly factor x notional): one share of
+    # rounding moves the book vol by ~1e-6 of capital, far below this bound and far above the ~2e-4
+    # gap a no-op book update would leave.
+    assert second["vol_before_pct"] == pytest.approx(first_after, abs=2e-5)
     assert second["vol_before_pct"] > first["vol_before_pct"]
 
 
