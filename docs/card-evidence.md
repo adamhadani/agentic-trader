@@ -210,7 +210,8 @@ Code: `agentic_trader/risk/book_vol.py` (`book_vol_factor`), `research/setups/co
 `execution/book_sizing.py` (`BookSizer`), consumed in `run_scan`. Config: `book_sizing` (below).
 
 **Rule.** A card's size is limited so the book's daily dollar volatility after the card stays within
-a budget: `budget = max_portfolio_daily_vol_pct x risk_capital` (default 0.8%/day). The factor is
+a budget: `budget = max_portfolio_daily_vol_pct x risk_capital` (default 0.8%/day). Risk capital is the
+smaller of configured cash and observed account equity, as for the per-trade budget. The factor is
 closed form: the largest `f` in `[0, 1]` such that the volatility of `book + f x card` is at most the
 budget, under a Ledoit-Wolf shrunk covariance of daily close-to-close returns. It never raises size:
 if the book plus the full card is within budget the factor is 1 (this includes a hedge that brings an
@@ -220,7 +221,8 @@ over-budget book back under), and a book already over budget gives a factor of 0
 `lookback_sessions` (120, at least `min_observations` = 60 aligned returns per symbol), from raw
 (unadjusted) Alpaca daily bars. The book is the signed dollar notional of the desk's EXECUTED
 positions plus the cards already built earlier in the same scan (so card two sees card one), equities
-only. Bars for names in the scan come from the scan's datasets; other book names are fetched once per
+only. A recorded card whose symbol the covariance cannot price makes the rest of the scan
+`unavailable` (`unpriced_card`) rather than sized against a stale book. Bars for names in the scan come from the scan's datasets; other book names are fetched once per
 scan, off the event loop, with a 20 second bound.
 
 **Modes.** `off`: nothing is computed. `preview` (default): the factor is computed, journaled and
@@ -241,7 +243,7 @@ dry run).
 **Records.** `decision_provenance["book_sizing"]` holds the full decision (status, mode, factor,
 `would_scale`, `quantity_before`, `quantity_after`, `budget_pct`, `budget_dollars`, `vol_before_pct`,
 `vol_after_full_pct`, `vol_after_scaled_pct`, `n_observations`, `shrinkage`, `book_symbols`,
-`missing_symbols`, `reason`, `shadow`). The notification arguments carry the same block. Each
+`missing_symbols`, `reason`, `symbol`, `risk_capital`, `scaled_weight`, `shadow`). The notification arguments carry the same block. Each
 `scan_candidates_ranked` candidate carries `book_sizing` = `{mode, status, factor, would_scale,
 vol_before_pct, vol_after_full_pct, quantity_before, quantity_after}`; candidates not sized (unsent,
 drift, blocked before the decision) are all null except `mode`, and events journaled before this
@@ -258,7 +260,10 @@ only, never a gate, and uses the same proxy bracket labels as the rest of the re
   covariance is a risk estimate, not a forecast.
 - Equities only; futures and crypto are `not_applicable` and absent from the book vector.
 - A book position without usable bars (fewer than `min_observations`, a fetch failure, a non-raw
-  frame) makes the decision `unavailable` for that card. It is never silently dropped from the book.
+  frame) makes the decision `unavailable` for every card in the scan. It is never silently dropped from the book.
+  A candidate-only name without bars is `unavailable` for that candidate alone (`candidate_missing`).
+- A book already over budget blocks every non-hedging card under `enforce` (factor 0); only a card that
+  brings the book back within budget passes.
 - The LLM thesis is written against the pre-scale size under `enforce`; `quantity_before` records it.
 - The shadow optimiser (`shadow_optimizer: true`) is a journaled cross-check of the closed form. It
   never reaches size or orders; a mismatch is logged as `book_sizing_shadow_mismatch`.

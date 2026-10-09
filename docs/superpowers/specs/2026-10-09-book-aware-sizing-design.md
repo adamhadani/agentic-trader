@@ -92,8 +92,7 @@ class BookSizingStatus(StrEnum):
     NOT_APPLICABLE = "not_applicable"  # off mode, non-equity, drift/catalog card, policy-locked card
 
 
-@dataclass(frozen=True)
-class BookSizingDecision:
+class BookSizingDecision(BaseModel, frozen=True):  # pydantic; finite floats only
     status: BookSizingStatus
     mode: str  # off | preview | enforce
     factor: float | None  # None when unavailable/not_applicable
@@ -110,13 +109,21 @@ class BookSizingDecision:
     book_symbols: tuple[str, ...]
     missing_symbols: tuple[str, ...]
     reason: str | None  # type name only on failures (never exception text)
+    symbol: str | None  # inputs the D4 cross-check re-derives from
+    risk_capital: float | None
+    scaled_weight: float | None  # signed dollars after scaling
     shadow: dict[str, Any] | None  # D4 optimiser block, or None
 ```
 
-`BookSizer(config.book_sizing, bar_source, limits)` with
-`async prepare(active_positions, datasets, as_of) -> BookContext` (the once-per-scan covariance and
-book vector; never raises; records `status unavailable` with a reason) and
-`decide(context, candidate, eval_res, risk_capital) -> BookSizingDecision` (pure, per candidate).
+`BookSizer(config.book_sizing, bar_source, *, portfolio_cash, min_units)` with
+`async prepare(active_positions, datasets, *, as_of, candidates) -> BookContext` (the once-per-scan
+covariance and book vector over equity candidates only; never raises; records `status unavailable`
+with a reason; skipped by `run_scan` when no native candidate is an equity),
+`decide(context, *, candidate, eval_res, risk_capital, dry_run) -> (decision, eval | None)` (pure and
+synchronous; `None` means blocked), `async attach_shadow(context, decision) -> decision` (the D4
+cross-check) and `journal_block(decision) -> dict`. `BookContext.with_card(...)` adds a recorded
+card to the book; an equity card the covariance cannot price makes the context `unavailable`
+(`unpriced_card`).
 
 Seam in `run_scan`'s send loop, after `evaluate_candidate` returns an approved `eval_res` and before
 `record_signal` (L3: ranking, budgets and the LLM are done; the card is about to be recorded):
@@ -130,8 +137,8 @@ Seam in `run_scan`'s send loop, after `evaluate_candidate` returns an approved `
    direction, at its recorded `notional_value`. The candidate's proposed notional is
    `eval_res.notional_value` signed by direction.
 3. Budget: `book_sizing.max_portfolio_daily_vol_pct × risk_capital`, where risk capital is the
-   same `risk_capital(limits, current_equity)` the per-trade budget uses (observed equity when the
-   ledger has it, else configured cash).
+   same `risk_capital(limits.cash, current_equity)` the per-trade budget uses (the smaller of
+   configured cash and observed equity).
 4. `preview`: journal/provenance only; `eval_res` unchanged; `would_scale = factor < 1`.
    `enforce`: scale **every tier** of `eval_res.sizing_tiers` and `eval_res.quantity`,
    `risk_dollars`, `reward_dollars`, `notional_value`, `effective_leverage` by the factor with the
@@ -161,7 +168,8 @@ When `book_sizing.shadow_optimizer` is true (default true) and the covariance is
 closed-form result is re-derived through an independent code path: `ConvexAlphaPortfolioOptimizer`
 is run with every weight pinned (equal lower/upper bounds: the book at its current weights and the
 candidate at `factor × proposed weight`, all as fractions of risk capital), alpha a unit vector on the
-candidate, long-only off, gross limit 10 (never binding), `solver_seconds` 2. The only free output is
+candidate, long-only off, gross limit 10 (never binding), `solver_seconds` 2. The solve runs in `BookSizer.attach_shadow`, off the event loop (`asyncio.to_thread`), after `decide`.
+The only free output is
 the optimiser's own `portfolio_variance`; the shadow block records `vol_after_scaled_pct` from it next
 to the closed-form value, the absolute difference, solver status and seconds. A difference above
 `1e-6` of risk capital is logged at WARNING (`book_sizing_shadow_mismatch`) and journaled; the

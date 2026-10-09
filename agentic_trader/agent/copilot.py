@@ -124,6 +124,7 @@ from agentic_trader.risk import (
     required_reward_risk,
     requires_account_risk,
     reward_risk,
+    risk_capital,
 )
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.screeners.coverage import coverage_exclusions
@@ -1168,14 +1169,21 @@ class TradingCopilot:
             # BOOK SIZING (L3): one covariance/book build per scan, from the scan's own daily bars plus
             # at most one bounded fetch for book names outside it. A dry run's simulated book is empty,
             # so it never prepares (and never fetches); `prepare` itself never raises.
+            # Only equity candidates are sized; a scan with none (the intraday futures scan) skips it.
+            equity_class = normalize_asset_class(AssetClass.EQUITY)
+            book_candidates = [
+                c.contract
+                for c, _, _ in ranked[:native_count]
+                if normalize_asset_class(str(getattr(c, "asset_class", ""))) == equity_class
+            ]
             book_context = (
                 None
-                if dry_run
+                if dry_run or not book_candidates
                 else await self.book_sizer.prepare(
                     active_positions,
                     datasets,
                     as_of=self.session_start_et(decided_at).date(),
-                    candidates=[c.contract for c, _, _ in ranked[:native_count]],
+                    candidates=book_candidates,
                 )
             )
             book_by_rank: list[BookSizingDecision | None] = [None] * len(ranked)
@@ -1349,9 +1357,14 @@ class TradingCopilot:
                     # scan or session card budget: those are charged only once a card is recorded.
                     book_decision: BookSizingDecision | None = None
                     if not is_drift:
-                        risk_capital_now = (
-                            float(account_risk.equity) if account_risk else float(self.config.portfolio.cash)
-                        )
+                        # The smaller of configured cash and observed equity, as the per-trade budget uses.
+                        try:
+                            risk_capital_now = risk_capital(
+                                RiskLimits.from_config(self.config).cash,
+                                float(account_risk.equity) if account_risk else None,
+                            )
+                        except ValueError:
+                            risk_capital_now = math.nan  # `decide` reports it as unavailable
                         book_decision, sized = self.book_sizer.decide(
                             book_context,
                             candidate=candidate,

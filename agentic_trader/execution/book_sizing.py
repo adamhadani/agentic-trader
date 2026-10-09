@@ -93,18 +93,16 @@ class BookContext(BaseModel, frozen=True, arbitrary_types_allowed=True):
     def with_card(self, *, symbol: str, direction: str, notional: float, asset_class: Any) -> BookContext:
         """The book after a recorded card: its final signed equity notional joins the weights.
 
-        Only a ready context whose covariance holds the card's symbol can use the weight; any
-        other context is returned unchanged (an unavailable book stays unavailable, a drift name
-        has no row, a non-equity card is never part of this book). Never mutates ``self``.
+        A non-equity card, or a context that is not ready, is returned unchanged. A ready context
+        that cannot price the recorded equity card (its symbol is not in the covariance) becomes
+        ``unavailable`` (``unpriced_card``): the book now holds exposure it cannot measure, so later
+        candidates must not be sized against the stale book. Never mutates ``self``.
         """
-        key = normalize_symbol(str(symbol))
-        if (
-            self.status != "ready"
-            or self.covariance is None
-            or key not in self.covariance.index
-            or asset_class != AssetClass.EQUITY
-        ):
+        if self.status != "ready" or self.covariance is None or asset_class != AssetClass.EQUITY:
             return self
+        key = normalize_symbol(str(symbol))
+        if key not in self.covariance.index:
+            return self.model_copy(update={"status": "unavailable", "reason": "unpriced_card", "covariance": None})
         signed = float(notional) * (1.0 if direction == Direction.LONG else -1.0)
         return self.model_copy(update={"weights": {**self.weights, key: self.weights.get(key, 0.0) + signed}})
 
@@ -210,28 +208,57 @@ class BookSizer:
                 frames[symbol] = daily
             else:
                 missing.append(symbol)
-        if missing:
-            if self._bar_source is None:
-                return _unavailable("no_bar_source", weights=weights, book_symbols=book_symbols)
+        # Names missing only as candidates degrade individually; a missing book name degrades the context.
+        book_missing = any(s in weights for s in missing)
+        if missing and self._bar_source is None and book_missing:
+            return _unavailable("no_bar_source", weights=weights, book_symbols=book_symbols)
+        if missing and self._bar_source is not None:
             start = datetime(as_of.year, as_of.month, as_of.day, tzinfo=UTC) - timedelta(
                 days=int(config.lookback_sessions * 1.6) + 10
             )
             end = datetime(as_of.year, as_of.month, as_of.day, tzinfo=UTC)
-            fetched = await asyncio.wait_for(
-                asyncio.to_thread(self._bar_source.fetch_daily_many, missing, start, end, adjustment="raw"),
-                BOOK_SIZING_FETCH_TIMEOUT_SECONDS,
-            )
+            try:
+                fetched = await asyncio.wait_for(
+                    asyncio.to_thread(self._bar_source.fetch_daily_many, missing, start, end, adjustment="raw"),
+                    BOOK_SIZING_FETCH_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                if book_missing:
+                    raise
+                logger.warning(
+                    "Book sizing candidate bars unavailable",
+                    exc_info=True,
+                    extra={"event": "book_sizing_candidate_fetch_failed"},
+                )
+                fetched = {}
             for symbol in missing:
                 frame = fetched.get(symbol)
                 if isinstance(frame, pd.DataFrame) and not frame.empty and is_raw_frame(frame):
                     frames[symbol] = frame
+        return await self._build(frames, weights, book_symbols, as_of)
+
+    async def _build(
+        self,
+        frames: dict[str, pd.DataFrame],
+        weights: dict[str, float],
+        book_symbols: tuple[str, ...],
+        as_of: date,
+    ) -> BookContext:
+        """Covariance from the gathered frames; a candidate-only name without bars is simply absent
+        (``candidate_missing`` in ``decide``), a book name without bars makes the context unavailable."""
+        config = self._config
         lacking_book = tuple(s for s in book_symbols if s not in frames)
         if lacking_book:
             return _unavailable(
                 "missing_bars", weights=weights, book_symbols=book_symbols, missing_symbols=lacking_book
             )
-        returns, dropped = daily_returns(
-            frames, as_of=as_of, lookback_sessions=config.lookback_sessions, min_observations=config.min_observations
+        # The covariance arithmetic is CPU work: keep it off the event loop.
+        returns, dropped = await asyncio.to_thread(
+            daily_returns,
+            frames,
+            as_of=as_of,
+            lookback_sessions=config.lookback_sessions,
+            min_observations=config.min_observations,
         )
         dropped_book = tuple(s for s in book_symbols if s in dropped)
         if dropped_book or returns.empty:
@@ -241,7 +268,7 @@ class BookSizer:
                 book_symbols=book_symbols,
                 missing_symbols=dropped_book,
             )
-        covariance, shrinkage = shrunk_covariance(returns)
+        covariance, shrinkage = await asyncio.to_thread(shrunk_covariance, returns)
         return BookContext(
             status="ready",
             reason=None,

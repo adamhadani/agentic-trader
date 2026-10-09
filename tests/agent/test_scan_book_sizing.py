@@ -1,6 +1,8 @@
 """Book-aware sizing at the L3 seam of ``run_scan``: decision, provenance, notification, journal."""
 
 import math
+from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
@@ -10,7 +12,7 @@ from sqlalchemy import delete
 
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.agent.position_sizing import SizingTier
-from agentic_trader.config import ScanBudget
+from agentic_trader.config import BookSizingConfig, ScanBudget
 from agentic_trader.constants import AssetClass
 from agentic_trader.execution.book_sizing import BookSizer
 from agentic_trader.execution.durable import EventKind, RankedOutcome, WorkKind
@@ -140,22 +142,95 @@ async def _setup(desk, db):
     desk.install_sizer()
 
 
-async def test_preview_leaves_eval_res_identical(book_desk, temp_db, app_config):
+async def _sent_snapshot(db):
+    """Everything a sent card persists that sizing could touch, per contract."""
+    return {
+        contract: (row["quantity"], row["raw_response"], row["notional_value"], row["risk_dollars"])
+        for contract, row in (await _signals(db)).items()
+    }
+
+
+async def test_preview_leaves_every_sent_card_identical_to_off(book_desk, temp_db, app_config):
     await _setup(book_desk, temp_db)
     app_config.book_sizing.mode = "off"
     book_desk.install_sizer()
     await _scan(book_desk)
-    off = (await _signals(temp_db))["DDD"]
+    off = await _sent_snapshot(temp_db)
+    off_outcomes = {c: v["outcome"] for c, v in (await _ranked_candidates(temp_db)).items()}
     await _clear_cards(temp_db)
     app_config.book_sizing.mode = "preview"
     book_desk.install_sizer()
     await _scan(book_desk)
-    preview = (await _signals(temp_db))["DDD"]
+    preview = await _sent_snapshot(temp_db)
+    preview_outcomes = {c: v["outcome"] for c, v in (await _ranked_candidates(temp_db)).items()}
 
-    assert preview["quantity"] == off["quantity"] == 100.0
-    assert preview["raw_response"] == off["raw_response"]
-    block = preview["decision_provenance"]["book_sizing"]
+    assert {"DDD", "CCC"} <= set(off)
+    assert preview == off
+    assert preview_outcomes == off_outcomes
+    block = (await _signals(temp_db))["DDD"]["decision_provenance"]["book_sizing"]
     assert block["status"] == "unchanged" and block["would_scale"] is True and block["factor"] < 1.0
+
+
+async def test_shipped_defaults_run_the_shadow_optimiser_end_to_end(book_desk, temp_db, app_config):
+    app_config.book_sizing = BookSizingConfig(max_portfolio_daily_vol_pct=0.0022)
+    assert app_config.book_sizing.mode == "preview" and app_config.book_sizing.shadow_optimizer is True
+    await _setup(book_desk, temp_db)
+    await _scan(book_desk)
+
+    block = (await _signals(temp_db))["DDD"]["decision_provenance"]["book_sizing"]
+    assert block["shadow"]["status"] == "ok"
+    assert block["shadow"]["abs_diff_pct"] < 1e-6
+
+
+async def test_risk_capital_is_the_smaller_of_configured_cash_and_observed_equity(
+    book_desk, temp_db, app_config, monkeypatch
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: True)
+    book_desk.ledger = AsyncMock()
+    book_desk.ledger.current_risk.return_value = SimpleNamespace(
+        drawdown_pct=Decimal(0), equity=Decimal(str(app_config.portfolio.cash * 3)), fingerprint="observed"
+    )
+    await _setup(book_desk, temp_db)
+    await _scan(book_desk)
+
+    block = (await _signals(temp_db))["DDD"]["decision_provenance"]["book_sizing"]
+    assert block["risk_capital"] == app_config.portfolio.cash
+
+
+async def test_futures_only_scan_never_prepares_or_fetches(book_desk, temp_db):
+    original = book_desk.strategy_engine.scan_contract.side_effect
+    book_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: [
+        c.model_copy(update={"asset_class": AssetClass.FUTURES}) for c in original(data, **kw)
+    ]
+    await _setup(book_desk, temp_db)
+    book_desk.book_sizer.prepare = AsyncMock()
+    await _scan(book_desk)
+
+    book_desk.book_sizer.prepare.assert_not_awaited()
+    book_desk.bar_source.fetch_daily_many.assert_not_called()
+    assert (await _signals(temp_db)).get("DDD") is not None  # the scan itself still sent cards
+
+
+async def test_card_the_covariance_cannot_price_makes_the_rest_of_the_scan_unavailable(book_desk, temp_db, app_config):
+    app_config.book_sizing.mode = "enforce"
+    fetch = book_desk.data_fetcher.fetch_data.side_effect
+
+    def short_ddd(contract, ticker, include_fifteen_min=True):
+        data = fetch(contract, ticker, include_fifteen_min)
+        if contract == "DDD":
+            data.daily = data.daily.iloc[:30]  # too few observations: DDD has no covariance row
+        return data
+
+    book_desk.data_fetcher.fetch_data.side_effect = short_ddd
+    await _setup(book_desk, temp_db)
+    await _scan(book_desk)
+
+    candidates = await _ranked_candidates(temp_db)
+    assert candidates["DDD"]["book_sizing"]["status"] == "unavailable"
+    assert candidates["CCC"]["outcome"] == "sent"
+    signal = (await _signals(temp_db))["CCC"]["decision_provenance"]["book_sizing"]
+    assert (signal["status"], signal["reason"]) == ("unavailable", "unpriced_card")
+    assert (await _signals(temp_db))["CCC"]["quantity"] == 100.0
 
 
 async def test_enforce_scales_the_card_and_journals_applied(book_desk, temp_db, app_config):
@@ -202,6 +277,8 @@ async def test_enforce_blocks_and_falls_through(book_desk, temp_db, app_config):
     assert candidates["DDD"]["outcome"] == RankedOutcome.BOOK_SIZING_BLOCKED
     assert candidates["DDD"]["book_sizing"]["status"] == "blocked"
     assert candidates["CCC"]["outcome"] == "sent"
+    # the blocked card left no partial book state: CCC sees the book exactly as DDD did
+    assert candidates["CCC"]["book_sizing"]["vol_before_pct"] == candidates["DDD"]["book_sizing"]["vol_before_pct"]
     # the per-scan and per-session card budgets were charged once, by CCC only
     assert sum(1 for o in candidates.values() if o["outcome"] == "sent") == 1
     assert any(r["contract"] == "DDD" for r in book_desk.last_scan_summary["runners_up"])
@@ -250,7 +327,7 @@ async def test_dry_run_is_not_applicable(book_desk, temp_db, app_config, capsys)
     assert "Book:" not in out and "📋 SETUP:" in out
 
 
-async def test_off_mode_adds_no_keys_but_null_block(book_desk, temp_db, app_config):
+async def test_off_mode_is_not_applicable_and_never_fetches(book_desk, temp_db, app_config):
     app_config.book_sizing.mode = "off"
     await _setup(book_desk, temp_db)
     await _scan(book_desk)

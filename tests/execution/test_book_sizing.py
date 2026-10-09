@@ -122,6 +122,24 @@ async def test_missing_book_symbol_is_unavailable_not_dropped():
     assert out is ev
 
 
+async def test_candidate_only_fetch_failure_does_not_make_the_context_unavailable():
+    a, b = correlated_pair()
+    bar_source = MagicMock(fetch_daily_many=MagicMock(side_effect=RuntimeError("provider down")))
+    s = sizer(config(), bar_source=bar_source)
+    ctx = await s.prepare([row()], datasets(BBB=b), as_of=AS_OF, candidates=["AAA"])
+    assert ctx.status == "ready"
+    decision, _ = s.decide(
+        ctx, candidate=candidate(), eval_res=_eval_with_tiers(), risk_capital=100_000.0, dry_run=False
+    )
+    assert (decision.status, decision.reason) == (BookSizingStatus.UNAVAILABLE, "candidate_missing")
+    # A candidate-only gap with no bar source at all behaves the same.
+    ctx = await sizer(config(), bar_source=None).prepare([row()], datasets(BBB=b), as_of=AS_OF, candidates=["AAA"])
+    assert ctx.status == "ready"
+    # ...while a book name without bars still makes the context unavailable.
+    ctx = await s.prepare([row()], datasets(AAA=a), as_of=AS_OF, candidates=["AAA"])
+    assert (ctx.status, ctx.reason) == ("unavailable", "RuntimeError")
+
+
 async def test_no_bar_source_is_unavailable():
     a, _ = correlated_pair()
     s = sizer(config(), bar_source=None)
@@ -430,4 +448,10 @@ async def test_with_card_leaves_unavailable_contexts_and_non_equity_cards_alone(
     broken = ctx.model_copy(update={"status": "unavailable", "reason": "missing_bars", "covariance": None})
     assert broken.with_card(symbol="AAA", direction="LONG", notional=1.0, asset_class=AssetClass.EQUITY) is broken
     assert ctx.with_card(symbol="AAA", direction="LONG", notional=1.0, asset_class=AssetClass.FUTURES) is ctx
-    assert ctx.with_card(symbol="ZZZ", direction="LONG", notional=1.0, asset_class=AssetClass.EQUITY) is ctx
+    off = ctx.model_copy(update={"status": "off"})
+    assert off.with_card(symbol="ZZZ", direction="LONG", notional=1.0, asset_class=AssetClass.EQUITY) is off
+    # An equity card the covariance cannot price makes the book unavailable, never silently stale.
+    unpriced = ctx.with_card(symbol="ZZZ", direction="LONG", notional=1.0, asset_class=AssetClass.EQUITY)
+    assert (unpriced.status, unpriced.reason, unpriced.covariance) == ("unavailable", "unpriced_card", None)
+    assert unpriced.weights == ctx.weights
+    assert ctx.status == "ready"
