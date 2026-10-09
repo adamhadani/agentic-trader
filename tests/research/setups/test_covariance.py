@@ -83,3 +83,43 @@ def test_single_symbol_covariance_is_its_variance():
 def test_empty_returns_raise():
     with pytest.raises(ValueError):
         shrunk_covariance(pd.DataFrame())
+
+
+def test_missing_session_never_yields_a_two_session_return():
+    a = frame(11)
+    b = frame(12).drop(index=frame(12).index[100])  # one session missing in B
+    returns, dropped = daily_returns(
+        {"AAA": a, "BBB": b}, as_of=date(2027, 1, 1), lookback_sessions=500, min_observations=60
+    )
+    assert dropped == ()
+    # Returns are one-session for both: the day after the gap is absent for both symbols.
+    gap = pd.Timestamp(frame(12).index[100].date())
+    assert gap not in returns.index
+    expected_a = a["Close"].pct_change().dropna()
+    expected_a.index = pd.DatetimeIndex([pd.Timestamp(d) for d in expected_a.index.date])
+    common = returns.index.intersection(expected_a.index).difference([gap + pd.offsets.BDay(1)])
+    assert np.allclose(returns.loc[common, "AAA"].to_numpy(), expected_a.loc[common].to_numpy())
+
+
+def test_sparse_symbol_is_dropped_instead_of_emptying_the_book():
+    """Three names with enough history each but a tiny overlap for one of them."""
+    a, b = frame(13), frame(14)
+    c = frame(15, start="2026-09-20", sessions=80)  # long enough alone, barely overlaps
+    returns, dropped = daily_returns(
+        {"AAA": a, "BBB": b, "CCC": c}, as_of=date(2027, 1, 1), lookback_sessions=500, min_observations=100
+    )
+    assert dropped == ("CCC",)
+    assert list(returns.columns) == ["AAA", "BBB"]
+    assert len(returns) >= 100
+
+
+def test_tz_aware_and_naive_indexes_align_on_session_dates():
+    aware = frame(16)
+    aware.index = aware.index.tz_localize("UTC") + pd.Timedelta(hours=4)  # Alpaca-style 04:00 UTC
+    naive = frame(17)
+    returns, dropped = daily_returns(
+        {"AAA": aware, "BBB": naive}, as_of=date(2027, 1, 1), lookback_sessions=500, min_observations=60
+    )
+    assert dropped == ()
+    assert len(returns) == 199
+    assert returns.index.tz is None

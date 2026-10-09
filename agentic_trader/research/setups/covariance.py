@@ -26,10 +26,23 @@ def is_raw_frame(frame: pd.DataFrame) -> bool:
 
 
 def _closes_before(frame: pd.DataFrame, as_of: date) -> pd.Series:
+    """Closes of completed sessions (strictly before ``as_of``) on a naive session-date index.
+
+    Alpaca frames carry tz-aware timestamps and scan/yfinance frames naive ones; both reduce to
+    the bar's calendar date, so mixed sources align. Duplicate dates keep the last bar.
+    """
     session_dates = pd.DatetimeIndex(frame.index).date
     closes = frame.loc[session_dates < as_of, "Close"].astype(float)
-    closes.index = pd.DatetimeIndex(closes.index).normalize()
-    return closes[~closes.index.duplicated(keep="last")]
+    closes.index = pd.DatetimeIndex([pd.Timestamp(d) for d in pd.DatetimeIndex(closes.index).date])
+    return closes[~closes.index.duplicated(keep="last")].sort_index()
+
+
+def _aligned_returns(closes: Mapping[str, pd.Series], lookback_sessions: int) -> pd.DataFrame:
+    """Inner-join the closes on session dates first, then one-session returns (no forward fill)."""
+    joined = pd.concat(dict(closes), axis=1, join="inner").sort_index()
+    joined.columns = list(closes)
+    returns = joined.pct_change(fill_method=None).dropna()
+    return returns.iloc[-lookback_sessions:] if lookback_sessions > 0 else returns
 
 
 def daily_returns(
@@ -41,21 +54,23 @@ def daily_returns(
 ) -> tuple[pd.DataFrame, tuple[str, ...]]:
     """Aligned simple close-to-close returns over the last ``lookback_sessions`` completed sessions.
 
-    Symbols with fewer than ``min_observations`` aligned returns are dropped and returned second.
+    Closes are aligned on the intersection of session dates before differencing, so a symbol that
+    misses a session never carries a two-session return beside its peers' one-session returns.
+    While the aligned sample is shorter than ``min_observations`` the symbol with the shortest
+    history is dropped and the rest re-aligned (one sparse name must not make the whole book
+    unavailable); the dropped symbols are returned second, sorted.
     """
-    series = {symbol: _closes_before(frame, as_of).pct_change().dropna() for symbol, frame in frames.items()}
-    kept = {s: r for s, r in series.items() if len(r) >= min_observations}
-    dropped = tuple(sorted(s for s in series if s not in kept))
-    if not kept:
-        return pd.DataFrame(), dropped
-    aligned = pd.concat(kept, axis=1, join="inner").sort_index()
-    aligned = aligned.iloc[-lookback_sessions:]
-    aligned.columns = list(kept)
-    short = tuple(sorted(c for c in aligned.columns if aligned[c].notna().sum() < min_observations))
-    if short:
-        aligned = aligned.drop(columns=list(short))
-        dropped = tuple(sorted({*dropped, *short}))
-    return aligned.dropna(), dropped
+    closes = {symbol: _closes_before(frame, as_of) for symbol, frame in frames.items()}
+    dropped: set[str] = {s for s, c in closes.items() if len(c) <= min_observations}
+    kept = {s: c for s, c in closes.items() if s not in dropped}
+    while kept:
+        aligned = _aligned_returns(kept, lookback_sessions)
+        if len(aligned) >= min_observations:
+            return aligned, tuple(sorted(dropped))
+        shortest = min(kept, key=lambda s: (len(kept[s]), s))
+        dropped.add(shortest)
+        del kept[shortest]
+    return pd.DataFrame(), tuple(sorted(dropped))
 
 
 def shrunk_covariance(returns: pd.DataFrame) -> tuple[pd.DataFrame, float]:
