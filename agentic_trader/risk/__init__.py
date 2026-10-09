@@ -1,6 +1,7 @@
 """Entry-risk policy: limits snapshot, typed book, capital arithmetic and one function per entry rule."""
 
 from agentic_trader.risk.book import Book, BookPosition
+from agentic_trader.risk.book_vol import BookVolInputs, BookVolResult, book_vol_factor
 from agentic_trader.risk.capital import (
     RiskBudget,
     drawdown_risk_factor,
@@ -41,6 +42,8 @@ from agentic_trader.risk.rules import (
 __all__ = [
     "Book",
     "BookPosition",
+    "BookVolInputs",
+    "BookVolResult",
     "DrawdownPolicy",
     "EntryIntent",
     "Rejection",
@@ -51,6 +54,7 @@ __all__ = [
     "aggregate_stop_risk",
     "asset_class_notional",
     "book_gates",
+    "book_vol_factor",
     "concurrent_positions",
     "correlation_group",
     "drawdown_halt",
