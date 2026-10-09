@@ -498,7 +498,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
                 "runner_up": {"mature": 0, "immature": 0, "fetch_failed": 0},
             },
             "base_rates": {"sent": None, "runner_up": None},
-            "selection": {"setup_quality": None, "shadow_score": None, "random": None},
+            "selection": {"setup_quality": None, "shadow_score": None, "random": None, "scans_basis": "all"},
             "llm_gate": {
                 "ran": 0,
                 "vetoed": 0,
