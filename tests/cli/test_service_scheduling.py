@@ -383,11 +383,20 @@ async def test_suggestion_job_requests_shadow_evidence_and_names_its_trigger(con
 
 
 def test_swing_scan_job_names_its_trigger_and_still_runs_at_startup(config):
-    scheduler = AsyncIOScheduler()
+    """The interval job passes FULL budget + SWING_SCAN and keeps its immediate first run
+    (the ``scan`` readiness component needs an observation in every daemon run)."""
+    scheduler = MagicMock()
     copilot = MagicMock()
+    before = datetime.now(UTC)
     service.register_swing_scan(scheduler, copilot, config, use_llm=True)
-    job = scheduler.get_job("swing_scan")
-    assert job.kwargs == {"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN}
-    assert list(job.args) == [True, False]
-    assert job.func == copilot.run_scan
-    assert job.next_run_time is not None or job.pending
+    after = datetime.now(UTC)
+
+    scheduler.add_job.assert_called_once()
+    call = scheduler.add_job.call_args
+    assert call.args[0] == copilot.run_scan
+    assert call.args[1] == "interval"
+    assert call.kwargs["id"] == "swing_scan"
+    assert call.kwargs["hours"] == config.scheduler.cron_hour_interval
+    assert call.kwargs["args"] == [True, False]
+    assert call.kwargs["kwargs"] == {"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN}
+    assert before <= call.kwargs["next_run_time"] <= after

@@ -446,6 +446,8 @@ async def test_swing_scan_with_budget_spent_still_journals_runners_up(shadow_des
     await shadow_desk.run_scan(True, False, budget=ScanBudget.FULL, trigger=ScanTrigger.SWING_SCAN)
     assert await temp_db.get_recent_signals(limit=10) == []
     [event] = await _ranked_events(temp_db)
+    assert event["payload"]["trigger"] == "swing_scan"
+    assert event["payload"]["candidates"]  # the runners-up are journaled
     assert all(c["outcome"] != "sent" for c in event["payload"]["candidates"])
 
 
