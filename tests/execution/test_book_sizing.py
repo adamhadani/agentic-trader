@@ -274,6 +274,8 @@ async def test_shadow_optimizer_block_matches_closed_form():
     decision, _ = s.decide(
         ctx, candidate=candidate(), eval_res=_eval_with_tiers(), risk_capital=100_000.0, dry_run=False
     )
+    assert decision.shadow is None  # decide never runs the solver (event loop)
+    decision = await s.attach_shadow(ctx, decision)
     assert decision.shadow["status"] == "ok", decision.shadow
     assert abs(decision.shadow["vol_after_scaled_pct"] - decision.vol_after_scaled_pct) < 1e-6
     assert decision.shadow["abs_diff_pct"] < 1e-6
@@ -292,6 +294,7 @@ async def test_shadow_mismatch_logs_warning(monkeypatch, caplog):
         decision, _ = s.decide(
             ctx, candidate=candidate(), eval_res=_eval_with_tiers(), risk_capital=100_000.0, dry_run=False
         )
+        decision = await s.attach_shadow(ctx, decision)
     assert decision.shadow["abs_diff_pct"] > 1e-6
     assert any(r.__dict__.get("event") == "book_sizing_shadow_mismatch" for r in caplog.records)
 
@@ -311,6 +314,7 @@ async def test_shadow_optimizer_failure_never_changes_the_decision(monkeypatch):
     decision, _ = s.decide(
         ctx, candidate=candidate(), eval_res=_eval_with_tiers(), risk_capital=100_000.0, dry_run=False
     )
+    decision = await s.attach_shadow(ctx, decision)
     assert decision.shadow == {"status": "failed", "reason": "RuntimeError"}
     assert decision.model_copy(update={"shadow": None}) == base
 
@@ -353,3 +357,59 @@ def test_context_is_frozen():
     )
     with pytest.raises(ValueError, match="frozen"):
         ctx.status = "ready"
+
+
+async def test_shadow_check_includes_an_existing_holding_in_the_candidate_name():
+    """The closed form adds the scaled card to the book's own weight in that symbol; the shadow
+    must pin the same total, not replace the holding with the card."""
+    s, ctx = await ready(shadow_optimizer=True)
+    held = ctx.model_copy(update={"weights": {**ctx.weights, "AAA": 5_000.0}})
+    decision, _ = s.decide(
+        held, candidate=candidate(), eval_res=_eval_with_tiers(), risk_capital=100_000.0, dry_run=False
+    )
+    decision = await s.attach_shadow(held, decision)
+    assert decision.shadow["status"] == "ok", decision.shadow
+    assert decision.shadow["abs_diff_pct"] < 1e-6
+
+
+async def test_attach_shadow_is_a_no_op_when_off_or_not_decided():
+    s, ctx = await ready(shadow_optimizer=False)
+    decision, _ = s.decide(
+        ctx, candidate=candidate(), eval_res=_eval_with_tiers(), risk_capital=100_000.0, dry_run=False
+    )
+    assert await s.attach_shadow(ctx, decision) is decision
+    s2, _ = await ready(shadow_optimizer=True)
+    exempt, _ = s2.decide(
+        None, candidate=candidate(), eval_res=_eval_with_tiers(), risk_capital=100_000.0, dry_run=False
+    )
+    assert await s2.attach_shadow(None, exempt) is exempt
+
+
+async def test_unavailable_never_blocks_under_enforce():
+    s, ctx = await ready(mode="enforce")
+    broken = ctx.model_copy(update={"status": "unavailable", "reason": "missing_bars", "covariance": None})
+    ev = _eval_with_tiers()
+    decision, out = s.decide(broken, candidate=candidate(), eval_res=ev, risk_capital=100_000.0, dry_run=False)
+    assert decision.status == BookSizingStatus.UNAVAILABLE
+    assert out is ev
+
+
+async def test_short_candidate_against_a_long_book_is_scaled_less_than_a_long_one():
+    """Sign handling end to end: a short against a correlated long book lowers portfolio vol."""
+    s, ctx = await ready()
+    long_eval = _eval_with_tiers()
+    short_eval = long_eval.model_copy(update={"direction": "SHORT"})
+    long_decision, _ = s.decide(ctx, candidate=candidate(), eval_res=long_eval, risk_capital=100_000.0, dry_run=False)
+    short_decision, _ = s.decide(ctx, candidate=candidate(), eval_res=short_eval, risk_capital=100_000.0, dry_run=False)
+    assert short_decision.vol_after_full_pct < long_decision.vol_after_full_pct
+    assert short_decision.factor >= long_decision.factor
+    assert short_decision.scaled_weight <= 0.0 <= long_decision.scaled_weight
+
+
+async def test_non_positive_risk_capital_is_unavailable():
+    s, ctx = await ready()
+    ev = _eval_with_tiers()
+    decision, out = s.decide(ctx, candidate=candidate(), eval_res=ev, risk_capital=0.0, dry_run=False)
+    assert decision.status == BookSizingStatus.UNAVAILABLE
+    assert decision.reason == "invalid_risk_capital"
+    assert out is ev

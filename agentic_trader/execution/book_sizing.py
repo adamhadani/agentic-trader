@@ -73,6 +73,10 @@ class BookSizingDecision(BaseModel, frozen=True):
     book_symbols: tuple[str, ...] = ()
     missing_symbols: tuple[str, ...] = ()
     reason: str | None = None  # a type name on failures, never exception text
+    # Inputs the shadow cross-check (``attach_shadow``) re-derives the scaled vol from.
+    symbol: str | None = None
+    risk_capital: float | None = Field(default=None, allow_inf_nan=False)
+    scaled_weight: float | None = Field(default=None, allow_inf_nan=False)  # signed dollars after scaling
     shadow: dict[str, Any] | None = None
 
 
@@ -157,6 +161,12 @@ class BookSizer:
         try:
             return await self._prepare(active_positions, datasets, as_of, candidates)
         except Exception as exc:
+            # I/O or data trouble is expected here; a programming error must still be visible.
+            logger.warning(
+                "Book sizing context unavailable",
+                exc_info=True,
+                extra={"event": "book_sizing_prepare_failed", "reason": type(exc).__name__},
+            )
             return _unavailable(type(exc).__name__)
 
     async def _prepare(
@@ -278,6 +288,8 @@ class BookSizer:
         if covariance is None or symbol not in covariance.index:
             return plain(BookSizingStatus.UNAVAILABLE, "candidate_missing"), eval_res
 
+        if not (math.isfinite(risk_capital) and risk_capital > 0):
+            return plain(BookSizingStatus.UNAVAILABLE, "invalid_risk_capital"), eval_res
         budget = budget_pct * risk_capital
         signed = float(eval_res.notional_value) * (1.0 if eval_res.direction == Direction.LONG else -1.0)
         try:
@@ -291,6 +303,11 @@ class BookSizer:
                 )
             )
         except ValueError as exc:
+            logger.warning(
+                "Book sizing rule refused its inputs",
+                exc_info=True,
+                extra={"event": "book_sizing_rule_invalid", "symbol": symbol, "reason": type(exc).__name__},
+            )
             return plain(BookSizingStatus.UNAVAILABLE, type(exc).__name__), eval_res
 
         factor = result.factor
@@ -314,11 +331,6 @@ class BookSizer:
                 status = BookSizingStatus.APPLIED
                 quantity_after = float(outcome_eval.quantity)
         scaled_weight = 0.0 if status == BookSizingStatus.BLOCKED else factor * signed
-        shadow = (
-            self._shadow_check(context, symbol, scaled_weight, risk_capital, vol_scaled)
-            if config.shadow_optimizer
-            else None
-        )
         decision = plain(
             status,
             reason,
@@ -329,9 +341,38 @@ class BookSizer:
             vol_before_pct=vol_before,
             vol_after_full_pct=vol_full,
             vol_after_scaled_pct=vol_scaled,
-            shadow=shadow,
+            symbol=symbol,
+            risk_capital=risk_capital,
+            scaled_weight=scaled_weight,
         )
         return decision, outcome_eval
+
+    async def attach_shadow(self, context: BookContext | None, decision: BookSizingDecision) -> BookSizingDecision:
+        """The D4 cross-check, off the event loop: the decision with its ``shadow`` block, or unchanged.
+
+        Runs only when the optimiser is enabled and the decision came from the rule (not
+        unavailable/not_applicable). The block is evidence; nothing reads it.
+        """
+        if (
+            not self._config.shadow_optimizer
+            or context is None
+            or context.covariance is None
+            or decision.status in (BookSizingStatus.UNAVAILABLE, BookSizingStatus.NOT_APPLICABLE)
+            or decision.symbol is None
+            or decision.risk_capital is None
+            or decision.scaled_weight is None
+            or decision.vol_after_scaled_pct is None
+        ):
+            return decision
+        block = await asyncio.to_thread(
+            self._shadow_check,
+            context,
+            decision.symbol,
+            decision.scaled_weight,
+            decision.risk_capital,
+            decision.vol_after_scaled_pct,
+        )
+        return decision.model_copy(update={"shadow": block})
 
     @staticmethod
     def _shadow_check(
@@ -341,10 +382,12 @@ class BookSizer:
         started = time.perf_counter()
         try:
             covariance = context.covariance
-            assert covariance is not None
+            if covariance is None:
+                return {"status": "failed", "reason": "no_covariance"}
             index = covariance.index
+            # The closed form adds the scaled card to whatever the book already holds in that name.
             pinned = pd.Series(
-                [(scaled_weight if s == symbol else context.weights.get(s, 0.0)) / risk_capital for s in index],
+                [(context.weights.get(s, 0.0) + (scaled_weight if s == symbol else 0.0)) / risk_capital for s in index],
                 index=index,
                 dtype=float,
             )
@@ -378,6 +421,11 @@ class BookSizer:
                 "seconds": time.perf_counter() - started,
             }
         except Exception as exc:
+            logger.warning(
+                "Book sizing shadow optimiser failed",
+                exc_info=True,
+                extra={"event": "book_sizing_shadow_failed", "symbol": symbol, "reason": type(exc).__name__},
+            )
             return {"status": "failed", "reason": type(exc).__name__}
 
     def journal_block(self, decision: BookSizingDecision | None) -> dict[str, Any]:
