@@ -24,6 +24,7 @@ from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diag
 from agentic_trader.diagnostics.monitor import OperationsMonitor
 from agentic_trader.diagnostics.probe import probe_readiness
 from agentic_trader.diagnostics.readiness import HealthComponent
+from agentic_trader.execution.durable import ScanTrigger
 from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.outbox import NotificationDispatcher
@@ -370,6 +371,7 @@ def make_suggestion_scan(copilot: Any, *, use_llm: bool):
                 asset_class="equity",
                 budget=ScanBudget.FULL,
                 shadow_evidence=True,
+                trigger=ScanTrigger.SUGGESTION_SCAN,
                 # The configured New York time of this job: only the PEAD decision time
                 # (10:35) may produce a drift card.
                 scheduled_time_et=scheduled_time_et,
@@ -501,6 +503,21 @@ class MissedSuggestionScanNotice:
             )
 
 
+def register_swing_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
+    """Register the daemon's interval full-universe scan, journaled as ``ScanTrigger.SWING_SCAN``."""
+    scheduler.add_job(
+        copilot.run_scan,
+        "interval",
+        hours=config.scheduler.cron_hour_interval,
+        args=[use_llm, False],
+        kwargs={"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN},
+        id="swing_scan",
+        # Runs once at start so the `scan` readiness component observes this run; its
+        # cards are journaled like any other.
+        next_run_time=datetime.now(UTC),
+    )
+
+
 def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
     """Register the 15-minute intraday scan, scoped to the explicitly configured contracts."""
 
@@ -621,15 +638,7 @@ async def daemon(no_llm: bool) -> None:
     )
     interval = config.scheduler.cron_hour_interval
     # Schedule regular swing scans
-    scheduler.add_job(
-        copilot.run_scan,
-        "interval",
-        hours=interval,
-        args=[not no_llm, False],
-        kwargs={"budget": ScanBudget.FULL},
-        id="swing_scan",
-        next_run_time=datetime.now(UTC),
-    )
+    register_swing_scan(scheduler, copilot, config, use_llm=not no_llm)
     # Schedule intraday 15-minute scans during active market sessions
     if config.scheduler.intraday_scan_enabled:
         register_intraday_scan(scheduler, copilot, config, use_llm=not no_llm)

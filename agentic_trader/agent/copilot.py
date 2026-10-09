@@ -57,6 +57,7 @@ from agentic_trader.execution.durable import (
     NotificationKind,
     OrderObservation,
     RankedOutcome,
+    ScanTrigger,
     WorkKind,
     WorkStatus,
 )
@@ -632,14 +633,19 @@ class TradingCopilot:
         operator_dynamic: OperatorDynamicName | None = None,
         scheduled_time_et: str | None = None,
         scheduled_at: datetime | None = None,
+        trigger: ScanTrigger = ScanTrigger.OPERATOR_SCAN,
     ) -> dict[str, Any] | None:
         """Scan, rank and record cards; returns the scan summary, or None when the scan did not run.
 
         ``shadow_evidence`` is set only by the scheduled suggestion-scan job
-        (``make_suggestion_scan``): it is the sole trigger for computing and journaling
-        this scan's shadow ranker block. The daemon's swing scan and an operator/Telegram
-        scan never set it, even though they may otherwise share this scan's shape (no
-        symbols, no timeframe).
+        (``make_suggestion_scan``): it gates the shadow ranker block alone. The daemon's
+        swing scan and an operator/Telegram scan never set it, even though they may
+        otherwise share this scan's shape (no symbols, no timeframe).
+
+        ``trigger`` names the caller in the ranked-candidate journal. Every unrestricted
+        non-dry scan with a budget journals ``scan_candidates_ranked`` (suggestion, swing
+        and operator scans alike); only the shadow block is suggestion-only. It never
+        changes ranking, budgets, sending or the card policy.
 
         ``dedup_exempt_setups`` skips the recent-duplicate rule for exactly those
         ``(contract, strategy, timeframe, alpha_version)`` setups: an operator's explicit
@@ -1110,9 +1116,9 @@ class TradingCopilot:
             # or Telegram scan share this scan's shape (no symbols, no timeframe) but
             # never request shadow evidence. The full-universe restriction below is a
             # second, defensive check: even a caller that mistakenly asks for shadow
-            # evidence on a symbol- or timeframe-scoped scan gets neither scoring nor
-            # journaling, since only the unrestricted population matches the setup
-            # study's own.
+            # evidence on a symbol- or timeframe-scoped scan gets no scoring, since only
+            # the unrestricted population matches the setup study's own. The ranked
+            # journal further below is independent of this flag.
             decided_at = datetime.now(UTC)
             compute_shadow_evidence = shadow_evidence and not symbols and timeframe is None
             shadow_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
@@ -1439,11 +1445,12 @@ class TradingCopilot:
                     logger.exception(f"Error scanning {candidate.contract}")
                     continue
 
-            if not dry_run and budget != ScanBudget.NONE and native_count and compute_shadow_evidence:
+            if not dry_run and budget != ScanBudget.NONE and native_count and not symbols and timeframe is None:
                 await self._journal_scan_ranking(
                     scan_id=scan_id,
                     decided_at=decided_at,
                     budget=budget,
+                    trigger=trigger,
                     ranked=ranked[:native_count],
                     outcomes=outcomes[:native_count],
                     shadow_by_rank=shadow_by_rank[:native_count],
@@ -1699,6 +1706,7 @@ class TradingCopilot:
         scan_id: str,
         decided_at: datetime,
         budget: ScanBudget,
+        trigger: ScanTrigger,
         ranked: list[tuple[Any, Any, Any]],
         outcomes: list[str | None],
         shadow_by_rank: list[dict[str, Any] | None],
@@ -1737,9 +1745,8 @@ class TradingCopilot:
                 "scan_id": scan_id,
                 "decided_at": decided_at.isoformat(),
                 "scope": "universe",
-                # This method is only ever called when `run_scan` computed shadow
-                # evidence, i.e. the scheduled suggestion-scan job requested it.
-                "trigger": "suggestion_scan",
+                # Which caller ran this full-universe scan; never read by ranking or sending.
+                "trigger": trigger.value,
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
                 "card_policy": {

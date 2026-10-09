@@ -77,8 +77,8 @@ def _candidate(
     }
 
 
-def _event(scan_id, decided_at, candidates, *, kind="scan_candidates_ranked", scope="universe"):
-    return {
+def _event(scan_id, decided_at, candidates, *, kind="scan_candidates_ranked", scope="universe", trigger=None):
+    event = {
         "id": 1,
         "stream": f"scan/{decided_at.date().isoformat()}",
         "kind": kind,
@@ -93,6 +93,9 @@ def _event(scan_id, decided_at, candidates, *, kind="scan_candidates_ranked", sc
             "candidates": candidates,
         },
     }
+    if trigger is not None:
+        event["payload"]["trigger"] = trigger
+    return event
 
 
 DECIDED_AT = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
@@ -608,3 +611,43 @@ def test_card_policy_columns_and_summary_block():
     }
     # The existing blocks are unchanged: a withheld candidate is still a runner-up there.
     assert summary["counts"]["runner_up"]["mature"] == 2
+
+
+def _bars_for(*symbols):
+    rows = [
+        ("2026-03-02T14:00:00+00:00", 100.5, 100.8, 100.2, 100.6),
+        ("2026-03-02T15:00:00+00:00", 100.6, 102.5, 100.3, 102.0),
+    ]
+    return FakeBarSource({symbol: _bars(rows) for symbol in symbols})
+
+
+def test_trigger_column_comes_from_the_payload_and_is_none_for_older_events():
+    events = [
+        _event("scan-1", DECIDED_AT, [_candidate(contract="AAA")], trigger="swing_scan"),
+        _event("scan-2", DECIDED_AT, [_candidate(contract="BBB")]),
+    ]
+    frame = label_journaled(events, _bars_for("AAA", "BBB"), now=NOW, market_symbol=None)
+    by_contract = dict(zip(frame["contract"], frame["trigger"], strict=True))
+    assert by_contract["AAA"] == "swing_scan"
+    assert pd.isna(by_contract["BBB"])
+    assert list(frame.columns).index("trigger") == list(frame.columns).index("session") + 1
+
+
+def test_summarize_reports_scans_and_sent_cards_per_trigger():
+    events = [
+        _event(
+            "scan-1",
+            DECIDED_AT,
+            [_candidate(contract="AAA", rank=1), _candidate(contract="BBB", rank=2, outcome="rejected: budget")],
+            trigger="suggestion_scan",
+        ),
+        _event("scan-2", DECIDED_AT, [_candidate(contract="CCC")], trigger="swing_scan"),
+        _event("scan-3", DECIDED_AT, [_candidate(contract="DDD", outcome="rejected: budget")]),
+    ]
+    frame = label_journaled(events, _bars_for("AAA", "BBB", "CCC", "DDD"), now=NOW, market_symbol=None)
+    assert summarize(frame)["triggers"] == {
+        "suggestion_scan": {"scans": 1, "sent": 1},
+        "swing_scan": {"scans": 1, "sent": 1},
+        "unknown": {"scans": 1, "sent": 0},
+    }
+    assert summarize(label_journaled([], FakeBarSource({}), now=NOW))["triggers"] == {}

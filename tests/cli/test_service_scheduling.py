@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.commands import service
 from agentic_trader.config import ScanBudget, SchedulerConfig, UniverseConfig, UniverseEntry
-from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
+from agentic_trader.execution.durable import EventKind, NotificationKind, ScanTrigger, WorkKind
 from agentic_trader.notifier.outbox import NotificationDispatcher
 
 
@@ -82,6 +82,7 @@ async def test_suggestion_scan_runs_full_budget_only_when_the_equity_session_is_
         asset_class="equity",
         budget=ScanBudget.FULL,
         shadow_evidence=True,
+        trigger=ScanTrigger.SUGGESTION_SCAN,
         scheduled_time_et=None,
         scheduled_at=None,
     )
@@ -367,3 +368,26 @@ async def test_intraday_scan_runs_only_inside_a_session_and_keeps_its_symbols(co
     copilot.session_provider.is_session_active = AsyncMock(return_value=(False, "closed"))
     await job()
     copilot.run_scan.assert_not_awaited()
+
+
+async def test_suggestion_job_requests_shadow_evidence_and_names_its_trigger(config):
+    copilot = MagicMock()
+    copilot.run_scan = AsyncMock()
+    copilot.session_provider.is_session_active = AsyncMock(return_value=(True, "open"))
+    job = service.make_suggestion_scan(copilot, use_llm=True)
+    await job(digest=False, scheduled_time_et="10:35")
+    kwargs = copilot.run_scan.await_args.kwargs
+    assert kwargs["shadow_evidence"] is True
+    assert kwargs["trigger"] is ScanTrigger.SUGGESTION_SCAN
+    assert kwargs["budget"] is ScanBudget.FULL
+
+
+def test_swing_scan_job_names_its_trigger_and_still_runs_at_startup(config):
+    scheduler = AsyncIOScheduler()
+    copilot = MagicMock()
+    service.register_swing_scan(scheduler, copilot, config, use_llm=True)
+    job = scheduler.get_job("swing_scan")
+    assert job.kwargs == {"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN}
+    assert list(job.args) == [True, False]
+    assert job.func == copilot.run_scan
+    assert job.next_run_time is not None or job.pending

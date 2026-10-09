@@ -54,6 +54,7 @@ FETCH_FAILED_HIT = "fetch_failed"
 _COLUMNS = (
     "scan_id",
     "session",
+    "trigger",
     "contract",
     "strategy",
     "direction",
@@ -116,7 +117,9 @@ def _candidate_entries(events: list[dict[str, Any]]) -> dict[str, list[dict[str,
             contract = candidate.get("contract")
             if not contract:
                 continue
-            by_symbol.setdefault(contract, []).append({**candidate, "scan_id": scan_id, "decided_at": decided_at})
+            by_symbol.setdefault(contract, []).append(
+                {**candidate, "scan_id": scan_id, "decided_at": decided_at, "trigger": payload.get("trigger")}
+            )
     return by_symbol
 
 
@@ -242,6 +245,7 @@ def _row(
     return {
         "scan_id": entry.get("scan_id"),
         "session": decided_at.astimezone(ET_TZ).date().isoformat(),
+        "trigger": entry.get("trigger"),
         "contract": symbol,
         "strategy": entry.get("strategy"),
         "direction": entry.get("direction"),
@@ -485,6 +489,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     if frame.empty:
         return {
             "total": 0,
+            "triggers": {},
             "immature_total": 0,
             "fetch_failed_total": 0,
             "fetch_failed_reasons": {},
@@ -583,8 +588,16 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "would_withhold_mean_r_cost": _mean_r_cost(mature.loc[would.loc[mature.index]]),
     }
 
+    # Scans and sent cards per calling path; pre-trigger events have none and report "unknown".
+    by_trigger = frame.assign(trigger=frame["trigger"].fillna("unknown")).groupby("trigger")
+    triggers = {
+        str(name): {"scans": int(group["scan_id"].nunique()), "sent": int(group["sent"].astype(bool).sum())}
+        for name, group in by_trigger
+    }
+
     return {
         "total": len(frame),
+        "triggers": triggers,
         "immature_total": int(is_immature.sum()),
         "fetch_failed_total": int(is_fetch_failed.sum()),
         "fetch_failed_reasons": fetch_failed_reasons,
