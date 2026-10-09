@@ -62,8 +62,9 @@ variances raise `ValueError`, which the caller maps to `unavailable`.
 ranker's features):
 
 - `daily_returns(frames: Mapping[str, pd.DataFrame], *, as_of: date, min_observations: int) ->
-  pd.DataFrame`: close-to-close simple returns on **completed** sessions only (drop any bar dated
-  `as_of` or later, the same rule as `features._closed_frame`), aligned on the intersection of dates,
+  pd.DataFrame`: close-to-close simple returns on **completed** sessions only (keep only sessions
+  strictly before `as_of`, the scan's session date; this differs from `features._closed_frame`, which
+  keeps `<=`), aligned on the intersection of dates,
   symbols with fewer than `min_observations` aligned returns dropped and reported.
 - `shrunk_covariance(returns: pd.DataFrame) -> tuple[pd.DataFrame, float]`: `sklearn.covariance.
   LedoitWolf` on the aligned returns; returns the covariance (daily, per unit notional) and the fitted

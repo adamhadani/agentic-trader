@@ -531,6 +531,11 @@ problem.
    PR A merged 2026-10-08 (#110) and is deployed. PR A.1 closes the journal coverage gap: every
    full-universe scan (suggestion, swing, unrestricted `/scan`) now journals its ranking with a
    `trigger` (18 of 22 sent cards were unjournaled before it).
+
+   *Status (October 9):* PR B, book-aware sizing, shipped in `preview` ([card
+   evidence](card-evidence.md#book-aware-sizing)): the factor is journaled and shown on native equity
+   cards; size is unchanged. Moving to `enforce` is an operator decision after reading the journaled
+   factors. Bracket construction remains.
 2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
    (Engle-Granger, half-life, z-score; `/pairs` is display-only today), extended to baskets with
    Johansen or PCA-residual reversion. Market-neutral by construction; a different label from

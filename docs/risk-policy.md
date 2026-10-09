@@ -107,6 +107,11 @@ paths are under `tests/`.
 | `session_closed` | the session's `is_open`, the provider's detail | evaluator gate | tap, re-evaluate, `/scan`, card validity, expired-card reply | — | `Market session closed: {detail}.` (`Market session closed.` without detail) | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py` |
 | `session_not_rth` | the session's `is_rth`, `session.enforce_rth` | evaluator gate | as `session_closed` | — | `Outside regular trading hours.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py` |
 | `regime_breakout` | strategy, `regime.breakout_allowed` | evaluator gate | tap regime gate | preflight regime gate, on both broker branches | `Volatility/macro policy suppresses breakout entries.` | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `agent/test_evaluator.py` |
+| `book_vol` | signed dollar notional per book symbol, the candidate's signed notional, a daily-return covariance, the dollar-vol budget | card construction only (`BookSizer` in `run_scan`; factor ≤ 1, `agentic_trader/risk/book_vol.py:book_vol_factor`) | — | — | none: it scales size, it does not refuse | `risk/test_book_vol.py`, `execution/test_book_sizing.py` |
+
+`book_vol` is not a refusal rule. It is applied at card construction only and never by
+admission: a size tier offered to the operator is never refused or shrunk later for volatility.
+It never raises size. See [book-aware sizing](card-evidence.md#book-aware-sizing).
 
 The earnings rule has no `Rejection` function: `earnings_days_out` is the shared
 predicate, and `agent/earnings.py:earnings_blackout_reason` formats the text for both

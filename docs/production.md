@@ -629,6 +629,22 @@ setups per session: the same setup is journaled by repeated scans in a session a
 `n_mature` and the floor. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 
+**Book-aware sizing (October 9).** `book_sizing` in `config/config.yaml` ships `mode: preview`,
+`max_portfolio_daily_vol_pct: 0.008` (0.8%/day of risk capital), `lookback_sessions: 120`,
+`min_observations: 60`, `shadow_optimizer: true`; equities only. Quote `"off"` in YAML. Preview
+journals the factor and shows `📐 Book: portfolio vol X% → Y%/day with this card (budget 0.80%; size
+×F)` (with ` — preview, size unchanged` when F < 1) without changing size; `enforce` scales every
+tier and is an operator decision after reading the journaled factors; a mode change is a config edit
+plus the controlled restart. `copilot cards outcomes` (summary block `book_sizing`) counts decisions by
+status and compares the mean cost-adjusted R of would-scale versus other rows. There is no new
+readiness component or incident: a covariance failure or timeout is a journaled `unavailable` decision
+(exception type name as the reason) with `book_sizing_*` log events (`book_sizing_prepare_failed`,
+`book_sizing_rule_invalid`, `book_sizing_shadow_failed`, `book_sizing_shadow_mismatch`), and never
+blocks a card. After deploying, verify that the first scan's card provenance
+(`decision_provenance.book_sizing`) shows a `status` (not only `not_applicable`) and that the next
+`cards outcomes` run has a `book_sizing` block. See
+[card evidence](card-evidence.md#book-aware-sizing).
+
 **Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:
 once per New York date after `card_policy.stats_time_et` (08:30), outside the suggestion-scan
 windows and while no scan is running, it labels the last 90 days of journaled candidates and appends
