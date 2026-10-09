@@ -282,11 +282,13 @@ def scale_sizing(
 ) -> LLMTradeEvaluation | None:
     """Every tier and the headline size scaled by ``factor`` in [0, 1] with whole units.
 
-    Equities only. Per-unit risk/reward/notional come from the evaluation's own bracket
-    (``stop_distance_points``, ``target_distance_points``, ``entry_price``), matching
-    ``calculate_dynamic_sizing``. Tiers that round below ``min_units`` are dropped; when the
+    Equities only. Each tier keeps its own arithmetic: its dollars scale by the ratio of the new
+    whole-unit quantity to the old one, so a scaled tier equals what the tier builder would have
+    produced for that quantity. Tiers that floor below ``min_units`` are dropped and tiers that
+    floor to the same quantity collapse into one (the default survives a collision); when the
     default tier is dropped the card cannot be sized and None is returned. ``factor == 1``
-    returns the evaluation unchanged.
+    returns the evaluation unchanged. ``portfolio_cash`` is the card's leverage denominator
+    (``RiskBudget.capital`` for a live scan).
     """
     if eval_res.asset_class != AssetClass.EQUITY:
         raise ValueError("scale_sizing supports equities only")
@@ -294,37 +296,58 @@ def scale_sizing(
         raise ValueError("factor must be in [0, 1]")
     if factor == 1.0:
         return eval_res
-    per_unit_risk = eval_res.stop_distance_points
-    per_unit_reward = eval_res.target_distance_points
-    unit_notional = eval_res.entry_price
 
     def scaled_tier(tier: dict[str, Any]) -> dict[str, Any] | None:
-        qty = float(math.floor(float(tier["quantity"]) * factor))
-        if qty < min_units:
+        old_qty = float(tier["quantity"])
+        qty = float(math.floor(old_qty * factor))
+        if qty < min_units or old_qty <= 0:
             return None
+        ratio = qty / old_qty
+        notional = round(float(tier["notional_dollars"]) * ratio, 2)
         return {
             **tier,
             "quantity": qty,
-            "risk_dollars": round(per_unit_risk * qty, 2),
-            "reward_dollars": round(per_unit_reward * qty, 2),
-            "notional_dollars": round(unit_notional * qty, 2),
-            "effective_leverage": round(unit_notional * qty / portfolio_cash, 2),
+            "risk_dollars": round(float(tier["risk_dollars"]) * ratio, 2),
+            "reward_dollars": round(float(tier["reward_dollars"]) * ratio, 2),
+            "notional_dollars": notional,
+            "effective_leverage": round(notional / portfolio_cash, 2),
         }
 
-    tiers = [t for t in (scaled_tier(t) for t in eval_res.sizing_tiers or []) if t is not None]
+    by_quantity: dict[float, dict[str, Any]] = {}
+    for tier in eval_res.sizing_tiers or []:
+        scaled = scaled_tier(tier)
+        if scaled is None:
+            continue
+        existing = by_quantity.get(scaled["quantity"])
+        if existing is None or (scaled.get("is_default") and not existing.get("is_default")):
+            by_quantity[scaled["quantity"]] = scaled
+    tiers = [by_quantity[q] for q in sorted(by_quantity)]
     default = next((t for t in tiers if t.get("is_default")), None)
     if eval_res.sizing_tiers and default is None:
         return None
-    qty = float(default["quantity"]) if default else float(math.floor(eval_res.quantity * factor))
-    if qty < min_units:
-        return None
+    if default is not None:
+        qty, risk, reward, notional = (
+            float(default["quantity"]),
+            float(default["risk_dollars"]),
+            float(default["reward_dollars"]),
+            float(default["notional_dollars"]),
+        )
+    else:
+        old_qty = float(eval_res.quantity)
+        qty = float(math.floor(old_qty * factor))
+        if qty < min_units or old_qty <= 0:
+            return None
+        ratio = qty / old_qty
+        risk = round(eval_res.risk_dollars * ratio, 2)
+        reward = round(eval_res.reward_dollars * ratio, 2)
+        notional = round(eval_res.notional_value * ratio, 2)
     return eval_res.model_copy(
         update={
             "quantity": qty,
-            "risk_dollars": round(per_unit_risk * qty, 2),
-            "reward_dollars": round(per_unit_reward * qty, 2),
-            "notional_value": round(unit_notional * qty, 2),
-            "effective_leverage": round(unit_notional * qty / portfolio_cash, 2),
+            "risk_dollars": risk,
+            "reward_dollars": reward,
+            "notional_value": notional,
+            "effective_leverage": round(notional / portfolio_cash, 2),
             "sizing_tiers": tiers or None,
         }
     )
