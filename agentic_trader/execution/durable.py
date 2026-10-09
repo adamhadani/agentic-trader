@@ -85,6 +85,7 @@ class RankedOutcome(StrEnum):
     SENT = "sent"
     LLM_VETOED = "llm_vetoed"
     CARD_POLICY_WITHHELD = "card_policy_withheld"
+    BOOK_SIZING_BLOCKED = "book_sizing_blocked"  # enforce: the scaled default tier fell below the minimum size
 
 
 class NotificationKind(StrEnum):
