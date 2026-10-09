@@ -33,6 +33,9 @@ def _closes_before(frame: pd.DataFrame, as_of: date) -> pd.Series:
     """
     session_dates = pd.DatetimeIndex(frame.index).date
     closes = frame.loc[session_dates < as_of, "Close"].astype(float)
+    # A zero, negative or non-finite close is a bad print, not a price: it is dropped rather
+    # than turned into an infinite return.
+    closes = closes[np.isfinite(closes) & (closes > 0)]
     closes.index = pd.DatetimeIndex([pd.Timestamp(d) for d in pd.DatetimeIndex(closes.index).date])
     return closes[~closes.index.duplicated(keep="last")].sort_index()
 
@@ -40,9 +43,8 @@ def _closes_before(frame: pd.DataFrame, as_of: date) -> pd.Series:
 def _aligned_returns(closes: Mapping[str, pd.Series], lookback_sessions: int) -> pd.DataFrame:
     """Inner-join the closes on session dates first, then one-session returns (no forward fill)."""
     joined = pd.concat(dict(closes), axis=1, join="inner").sort_index()
-    joined.columns = list(closes)
     returns = joined.pct_change(fill_method=None).dropna()
-    return returns.iloc[-lookback_sessions:] if lookback_sessions > 0 else returns
+    return returns.iloc[-lookback_sessions:]
 
 
 def daily_returns(
@@ -60,6 +62,8 @@ def daily_returns(
     history is dropped and the rest re-aligned (one sparse name must not make the whole book
     unavailable); the dropped symbols are returned second, sorted.
     """
+    if lookback_sessions <= 0 or min_observations <= 0:
+        raise ValueError("lookback_sessions and min_observations must be positive")
     closes = {symbol: _closes_before(frame, as_of) for symbol, frame in frames.items()}
     dropped: set[str] = {s for s, c in closes.items() if len(c) <= min_observations}
     kept = {s: c for s, c in closes.items() if s not in dropped}

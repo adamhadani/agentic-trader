@@ -86,19 +86,51 @@ def test_empty_returns_raise():
 
 
 def test_missing_session_never_yields_a_two_session_return():
+    """When B misses a session, both symbols' next return spans the gap (two sessions of A's closes):
+    the frame never pairs A's one-session return with B's two-session return."""
     a = frame(11)
-    b = frame(12).drop(index=frame(12).index[100])  # one session missing in B
+    full_b = frame(12)
+    gap_ts = full_b.index[100]
+    b = full_b.drop(index=gap_ts)
     returns, dropped = daily_returns(
         {"AAA": a, "BBB": b}, as_of=date(2027, 1, 1), lookback_sessions=500, min_observations=60
     )
     assert dropped == ()
-    # Returns are one-session for both: the day after the gap is absent for both symbols.
-    gap = pd.Timestamp(frame(12).index[100].date())
+    gap = pd.Timestamp(gap_ts.date())
+    nxt = pd.Timestamp(full_b.index[101].date())
+    prev = pd.Timestamp(full_b.index[99].date())
     assert gap not in returns.index
-    expected_a = a["Close"].pct_change().dropna()
-    expected_a.index = pd.DatetimeIndex([pd.Timestamp(d) for d in expected_a.index.date])
-    common = returns.index.intersection(expected_a.index).difference([gap + pd.offsets.BDay(1)])
-    assert np.allclose(returns.loc[common, "AAA"].to_numpy(), expected_a.loc[common].to_numpy())
+    a_closes = a["Close"].copy()
+    a_closes.index = pd.DatetimeIndex([pd.Timestamp(d) for d in a.index.date])
+    assert returns.loc[nxt, "AAA"] == pytest.approx(a_closes[nxt] / a_closes[prev] - 1)
+    b_closes = full_b["Close"].copy()
+    b_closes.index = pd.DatetimeIndex([pd.Timestamp(d) for d in full_b.index.date])
+    assert returns.loc[nxt, "BBB"] == pytest.approx(b_closes[nxt] / b_closes[prev] - 1)
+
+
+def test_non_positive_or_nan_closes_are_dropped_not_turned_into_infinite_returns():
+    a = frame(18)
+    a.loc[a.index[50], "Close"] = 0.0
+    a.loc[a.index[60], "Close"] = float("nan")
+    returns, dropped = daily_returns({"AAA": a}, as_of=date(2027, 1, 1), lookback_sessions=500, min_observations=60)
+    assert dropped == ()
+    assert np.isfinite(returns["AAA"]).all()
+    covariance, _ = shrunk_covariance(returns)
+    assert np.isfinite(covariance.to_numpy()).all()
+
+
+def test_last_return_is_the_last_completed_session_before_as_of():
+    a = frame(19)
+    as_of = a.index[-3].date()
+    returns, _ = daily_returns({"AAA": a}, as_of=as_of, lookback_sessions=500, min_observations=10)
+    assert returns.index[-1] == pd.Timestamp(a.index[-4].date())
+
+
+@pytest.mark.parametrize("bad", [{"lookback_sessions": 0}, {"min_observations": 0}])
+def test_non_positive_window_arguments_raise(bad):
+    kwargs = {"as_of": date(2027, 1, 1), "lookback_sessions": 50, "min_observations": 10, **bad}
+    with pytest.raises(ValueError):
+        daily_returns({"AAA": frame(20)}, **kwargs)
 
 
 def test_sparse_symbol_is_dropped_instead_of_emptying_the_book():
