@@ -154,3 +154,48 @@ def test_cost_arithmetic_and_lane_series_divides_by_slots():
     lane = lane_series([sim, sim], slots=20, cost_bps=5.0, length=6)
     assert lane.shape == (6,) and lane.sum() == pytest.approx(2 * trade_net_return(trade, 5.0) / 20)
     assert lane_series([], slots=20, cost_bps=5.0, length=6).tolist() == [0.0] * 6
+
+
+def test_asymmetric_beta_with_moving_x_telescopes_and_weights_legs():
+    z = np.array([0.0, -2.5, -2.5, -2.5, -0.3, 0.0, 0.0, 0.0])
+    cx = np.array([100.0, 100.0, 104.0, 106.0, 108.0, 110.0, 110.0, 110.0])
+    cy = cx**2 * np.exp(z)  # z = log y - 2 log x with alpha = 0, sigma = 1
+    sim = simulate_pair(fit(beta=2.0), cy, cx, cy.copy(), cx.copy(), RULE, window=0)
+    assert len(sim.trades) == 1
+    trade = sim.trades[0]
+    assert trade.side == 1 and trade.entry_pos == 2 and trade.exit_pos == 5 and trade.exit_reason == "reverted"
+    expected = (1 / 3) * (cy[5] / cy[2] - 1.0) - (2 / 3) * (cx[5] / cx[2] - 1.0)
+    assert trade.gross_return == pytest.approx(expected)
+    assert sim.daily.sum() == pytest.approx(trade.gross_return)
+    assert sim.turnover.sum() == 2.0
+
+
+def test_one_leg_gap_marks_the_other_leg_and_emits_no_signal():
+    z = np.array([0.0, -2.5, -2.5, -0.1, -0.2, 0.0, 0.0, 0.0])
+    cx = np.array([100.0, 100.0, 100.0, 102.0, 102.0, 102.0, 102.0, 102.0])
+    cy = cx * np.exp(z)
+    oy, ox = cy.copy(), cx.copy()
+    cy[3] = np.nan  # would-be z = -0.1 is inside the band; no exit may be taken here
+    sim = simulate_pair(fit(), cy, cx, oy, ox, RULE, window=0)
+    trade = sim.trades[0]
+    assert sim.daily[3] == pytest.approx(-0.5 * (cx[3] - cx[2]) / ox[2])  # X leg only; Y carries its last price
+    assert trade.exit_pos == 5 and trade.exit_reason == "reverted"
+    assert sim.daily.sum() == pytest.approx(trade.gross_return)
+
+
+def test_pending_exit_at_the_last_session():
+    cy, cx, oy, ox = paths([0.0, -2.5, -2.5, -0.2, -0.2])
+    sim = simulate_pair(fit(), cy, cx, oy, ox, RULE, window=0)  # (a) both opens finite on the last session
+    assert len(sim.trades) == 1
+    trade = sim.trades[0]
+    assert trade.exit_reason == "reverted" and trade.exit_pos == 4
+    assert trade.gross_return == pytest.approx(0.5 * (oy[4] / oy[2] - 1.0))
+    assert sim.turnover[4] == 1.0
+
+    oy[4] = np.nan  # (b) the exit cannot fill at the last open: window_end at the last close
+    sim = simulate_pair(fit(), cy, cx, oy, ox, RULE, window=0)
+    assert len(sim.trades) == 1
+    trade = sim.trades[0]
+    assert trade.exit_reason == "window_end" and trade.exit_pos == 4
+    assert trade.gross_return == pytest.approx(0.5 * (cy[4] / oy[2] - 1.0))
+    assert sim.turnover[4] == 1.0
