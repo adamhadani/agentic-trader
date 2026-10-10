@@ -114,6 +114,11 @@ as a trading admission rule.
       - $Z_t \ge +2.0$: `SELL_SPREAD` (Short Y, Long $\beta X$)
       - $|Z_t| \le 0.5$: `EXIT_SPREAD` (Mean-reverted, close position)
 
+The display screener fits and scores in-sample with plain ADF p-values and is not
+research evidence. The research protocol (formation-only estimation, MacKinnon
+cointegration p-values, frozen parameters, null and power checks) lives in
+[`docs/alpha-spread-lane.md`](alpha-spread-lane.md).
+
 ---
 
 ## 5. Formulaic alphas and portfolio research

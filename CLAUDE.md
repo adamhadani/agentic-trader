@@ -220,6 +220,8 @@ window is still unused, and the fixed-set lane is closed on this window
 ([v4 checks](docs/alpha-pooled-checks-v4-2026-10-07.md)). The next alpha source is an
 operator decision.
 
+The [spread-reversion lane](docs/alpha-spread-lane.md) (desk-direction item 2) is a predeclared, research-only pairs protocol on daily SIP bars: same-sector pairs from a frozen 127-name cohort, Engle-Granger formation (`coint`, MacKinnon p-values) over 504 sessions, z-score trading over the next 126 with frozen `α, β, σ_f` and next-open fills, four pass rules (lane bootstrap, trade means, counts, SPY beta) and a one-use confirmation window journaled under `spread/confirmation` before it is read. `alpha spread-study` refuses without passing `spread-power` (A) and `spread-null` (C) results at the same clean revision; nothing promotes, no probe or two-leg execution contract exists, and `/pairs` stays display-only.
+
 The [forecast-to-fill review](docs/forecast-to-fill-review.md) separates production
 candidate arbitration from shadow allocation. [Contract fixes](docs/forecast-contract-hardening.md)
 now bound traded notional, reject pending inventory, require matching forecast/risk
