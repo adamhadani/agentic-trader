@@ -536,11 +536,20 @@ problem.
    evidence](card-evidence.md#book-aware-sizing)): the factor is journaled and shown on native equity
    cards; size is unchanged. Moving to `enforce` is an operator decision after reading the journaled
    factors. Bracket construction remains.
+
+   *Status (October 10):* bracket construction is closed by evidence. The October 8 counterfactual
+   grid and the October 10 refresh (runner-ups 30% target / 70% stop, −0.17R, n 33; sent 20% / 80%,
+   −0.47R, n 5; 17 scans for the selection comparison; `setup_quality` within noise of random) show no bracket geometry or time exit with
+   non-negative EV, so the construction-side control is `card_policy` (operator: `off → preview →
+   enforce`), not bracket tuning.
 2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
    (Engle-Granger, half-life, z-score; `/pairs` is display-only today), extended to baskets with
    Johansen or PCA-residual reversion. Market-neutral by construction; a different label from
    every lane that failed. Research only until it passes its own gates; a probe would follow the
    catalog probe contract.
+
+   *Status (October 10):* the lane is implemented ([spread lane](alpha-spread-lane.md)); checks A
+   and C and the study run after merge; results are bundled with the next workstream PR.
 3. **Second event leg** after the PEAD probe reports (events from about 2026-10-14; probe expires
    2026-10-28). Ingest corporate actions (splits, dividends) first: it is also the architecture
    review's P1 reconciliation gap, so the data work pays twice. Index inclusion is skipped (paid

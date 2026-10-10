@@ -529,6 +529,26 @@ A provider/validation failure withholds the full selection. A completed but unde
 selection exits nonzero with its evidence intact. No orders, notifications, observer,
 activation or qualification are created. See [equity research](alpha-equity-universe.md).
 
+### Spread-reversion lane (research only)
+
+```bash
+uv run copilot alpha spread-power config/research/spread/pairs-v1.json --output NEW_DIR
+uv run copilot alpha spread-null config/research/spread/pairs-v1.json \
+  --cache ~/agentic-trader-research/pooled-cache-v1/bars --output NEW_DIR
+uv run copilot alpha spread-study config/research/spread/pairs-v1.json \
+  --power CHECK_A_DIR --null-check CHECK_C_DIR \
+  --cache ~/agentic-trader-research/pooled-cache-v1/bars \
+  --journal-scope SCOPE --output NEW_DIR
+```
+
+All three refuse an existing `--output` (new private directory). `spread-power` (check A)
+uses synthetic worlds only. `spread-null` (check C) shifts real cached bars per symbol.
+`spread-study` refuses uncommitted files under `agentic_trader`, `config` or `tests`, a
+dirty or unknown revision, and check directories that do not match its protocol, cohort
+and revision; it verifies `--journal-scope` before any bar read and journals the one-use
+confirmation interval before reading it. Each prints `{status, decision?, passes?, error?}`
+and exits nonzero on `failed`. Nothing promotes or sends orders. See
+[spread lane](alpha-spread-lane.md).
 
 ### Synthetic power diagnosis
 

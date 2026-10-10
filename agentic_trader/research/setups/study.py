@@ -517,6 +517,10 @@ def _finite_json(value):
         return [_finite_json(item) for item in value]
     if isinstance(value, float | np.floating):
         return float(value) if np.isfinite(value) else None
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
     return value
 
 
