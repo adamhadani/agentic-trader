@@ -1,0 +1,59 @@
+{
+  "id": "spread-pairs",
+  "version": 1,
+  "title": "Same-sector pairs: Engle-Granger formation, z-score reversion trading (Gatev-style 252/126 tiles)",
+  "references": [
+    "Gatev, Goetzmann and Rouwenhorst (2006), Pairs Trading: Performance of a Relative-Value Arbitrage Rule, RFS 19(3)",
+    "Engle and Granger (1987), Co-integration and Error Correction, Econometrica 55(2)",
+    "Do and Faff (2010), Does Simple Pairs Trading Still Work?, FAJ 66(4)",
+    "Vidyamurthy (2004), Pairs Trading: Quantitative Methods and Analysis"
+  ],
+  "hypotheses": "Among same-sector US large-cap equities, pairs whose log prices are cointegrated over the previous 252 sessions (Engle-Granger, p<0.05, half-life 5-42 sessions) have spreads that revert over the next 126 sessions, so that entering at |z|>=2 and exiting at |z|<=0.5 (stop |z|>=4, window-end close-out), dollar-neutral at the formation hedge ratio, earns a positive mean return after 5 bp per side per leg with market beta near zero.",
+  "decision_rule": "Discovery (trading windows 2017-01-03..2023-12-29) passes when S1 (lane mean daily return > 0, stationary-bootstrap ci90 lower bound > 0), S2 (closed-trade mean and 1%-trimmed mean > 0), S3 (>=100 closed trades, >=8 windows, >=60% of windows positive) and S4 (|beta to SPY| <= 0.2) all hold at 5 bp per side. Only then is the confirmation window (2024-01-02..2026-07-31) journaled as consumed and read; the same rule with S3 relaxed to >=30 trades and >=4 windows decides confirmed vs failed_confirmation. Nothing promotes.",
+  "cohort": "config/research/spread/cohort-v1.json",
+  "cohort_sha256": "6f3a4a322d6333845b75208af71d3a81f46d5cc882ce110d870b6349ae3adbea",
+  "feed": "alpaca:sip",
+  "adjustment": "all",
+  "bars": {"start": "2016-01-04", "through": "2026-08-31"},
+  "windows": {"discovery": ["2017-01-03", "2023-12-29"], "confirmation": ["2024-01-02", "2026-07-31"]},
+  "schedule": {"formation_sessions": 252, "trading_sessions": 126},
+  "formation": {
+    "coint_max_lag": 1,
+    "p_value": 0.05,
+    "half_life_sessions": [5, 42],
+    "hedge_ratio_abs": [0.25, 4.0],
+    "top_pairs": 20,
+    "min_eligible_names": 60
+  },
+  "trading": {"z_entry": 2.0, "z_exit": 0.5, "z_stop": 4.0, "fill": "next_open"},
+  "costs_bps_per_side": [0.0, 5.0, 10.0],
+  "decision_cost_bps": 5.0,
+  "bootstrap": {"block_mean": 10, "draws": 2000, "seed": 20261010},
+  "pass_rules": {
+    "min_closed_trades": 100,
+    "min_windows": 8,
+    "min_positive_window_fraction": 0.6,
+    "max_abs_market_beta": 0.2,
+    "trim_fraction": 0.01
+  },
+  "confirmation_rules": {
+    "min_closed_trades": 30,
+    "min_windows": 4,
+    "min_positive_window_fraction": 0.6,
+    "max_abs_market_beta": 0.2,
+    "trim_fraction": 0.01
+  },
+  "power": {
+    "seeds": 10,
+    "min_pass": 8,
+    "planted_pairs": 30,
+    "half_life_sessions": 20.0,
+    "innovation_std": 0.008,
+    "hedge_ratio": [0.6, 1.6],
+    "market_vol": 0.010,
+    "sector_vol": 0.007,
+    "idiosyncratic_vol": 0.012,
+    "overnight_vol": 0.003
+  },
+  "null_check": {"seeds": 10, "max_pass": 1, "shift_block_sessions": 63}
+}
