@@ -13,6 +13,11 @@ market-neutral by construction. The lane is research only: every result carries
 exists (a probe would need atomic legs, shared protection and borrow checks), and `/pairs` stays
 display-only. A `confirmed` result only makes a capped probe specifiable.
 
+**Result (2026-10-10):** checks A and C passed and the v1 study ended in `failed_discovery`; the
+confirmation window is unused. See [the results](alpha-spread-results-2026-10-10.md), which also
+record the v1 construction defect (entries with no upper z band against an in-sample σ) that a
+successor protocol would fix.
+
 ## 2. Cohort
 
 127 equities in 11 sectors, taken from the configured scan universe intersected with the pooled

@@ -548,8 +548,12 @@ problem.
    every lane that failed. Research only until it passes its own gates; a probe would follow the
    catalog probe contract.
 
-   *Status (October 10):* the lane is implemented ([spread lane](alpha-spread-lane.md)); checks A
-   and C and the study run after merge; results are bundled with the next workstream PR.
+   *Status (October 10):* the lane is implemented ([spread lane](alpha-spread-lane.md)). Checks A
+   (10/10) and C (0/10) passed and the study ran the same day: **failed_discovery** (lane mean
+   −0.30 bp/day at 5 bp, CI90 [−2.2, +1.4]; trade mean −3.6 bp; 2,309 trades); the confirmation
+   window is untouched ([results](alpha-spread-results-2026-10-10.md)). Protocol v1 is closed on
+   its discovery window; 84% of its entries were already beyond the stop (no entry band, in-sample
+   σ), which is the one change a predeclared v2 would make. Baskets (Johansen/PCA) remain unbuilt.
 3. **Second event leg** after the PEAD probe reports (events from about 2026-10-14; probe expires
    2026-10-28). Ingest corporate actions (splits, dividends) first: it is also the architecture
    review's P1 reconciliation gap, so the data work pays twice. Index inclusion is skipped (paid
