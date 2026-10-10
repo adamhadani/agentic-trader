@@ -102,9 +102,9 @@ def test_power_check_records_a_cohort_mismatch_as_failed(world, tmp_path):
     assert result["status"] == "failed" and result["error"].startswith("ValueError")
 
 
-def _build(panel):
+def _build(panel, failures=None):
     async def build():
-        return PanelBuild(panel=panel, bar_failures={"ZZZ": "empty"})
+        return PanelBuild(panel=panel, bar_failures=failures or {"ZZZ": "empty"})
 
     return build
 
@@ -125,6 +125,8 @@ def test_null_check_runs_on_shifted_discovery_bars_only(world, tmp_path):
     )
     assert result["status"] in ("passed", "failed") and result["check"] == "null_c" and len(result["seeds"]) == 2
     assert result["bar_failures"] == {"ZZZ": "empty"} and "error" not in result
+    assert result["offset_collisions"] == [0, 0] and len(result["bars_sha256"]) == 64
+    assert result["bar_files"] == {}
     manifest = json.loads((tmp_path / "null" / "manifest.json").read_text())
     assert manifest["check"] == "null_c" and manifest["reads"].startswith("discovery")
 
@@ -195,6 +197,7 @@ def test_study_confirms_after_journaling_and_records_both_stages(world, tmp_path
         )
     )
     assert result["status"] == "completed", result
+    assert len(result["bars_sha256"]) == 64 and set(result["bars_sha256"]) <= set("0123456789abcdef")
     assert result["decision"] in ("confirmed", "failed_confirmation") and result["discovery"]["evaluation"]["passes"]
     assert confirm.calls == [((date(2019, 1, 2), date(2019, 12, 31)), confirm.calls[0][1])]
     assert confirm.calls[0][1]["protocol_sha256"] == loaded.sha256 and "discovery" in confirm.calls[0][1]
@@ -361,3 +364,53 @@ def test_finite_json_converts_numpy_scalars_and_nan():
     out = _finite_json({"a": np.int64(3), "b": np.bool_(True), "c": (np.float64(1.5), float("nan"))})
     assert out == {"a": 3, "b": True, "c": [1.5, None]}
     assert type(out["a"]) is int and type(out["b"]) is bool
+
+
+def test_study_fails_closed_on_fetch_failures_before_discovery(world, tmp_path):
+    loaded, cohort = world
+    panel, _ = planted_world(loaded, cohort)
+    power, null = _gates(tmp_path, loaded, cohort)
+    confirm = Confirm()
+    result = asyncio.run(
+        execute_spread_study(
+            loaded,
+            tmp_path / "study",
+            cohort=cohort,
+            build=_build(panel, {"XYZ": "RuntimeError", "ZZZ": "empty"}),
+            environment=ENVIRONMENT,
+            power_dir=power,
+            null_dir=null,
+            journal={},
+            confirm=confirm,
+        )
+    )
+    assert result["status"] == "failed" and "reduced cohort" in result["error"] and "RuntimeError" in result["error"]
+    assert confirm.calls == [] and not (tmp_path / "study" / "discovery-trades.csv.gz").exists()
+    assert result["bar_failures"] == {"XYZ": "RuntimeError", "ZZZ": "empty"}
+
+
+def test_study_discovery_is_unchanged_by_poisoned_confirmation_bars(world, tmp_path):
+    loaded, cohort = world
+    panel, _ = planted_world(loaded, cohort)
+    poisoned = panel.closes.copy()
+    poisoned.loc[poisoned.index > pd.Timestamp("2018-12-31")] = -1.0
+    results = []
+    for name, closes in (("real", panel.closes), ("poisoned", poisoned)):
+        power, null = _gates(tmp_path / name, loaded, cohort)
+        results.append(
+            asyncio.run(
+                execute_spread_study(
+                    loaded,
+                    tmp_path / name / "study",
+                    cohort=cohort,
+                    build=_build(SpreadPanel(panel.sessions, closes, panel.opens)),
+                    environment=ENVIRONMENT,
+                    power_dir=power,
+                    null_dir=null,
+                    journal={},
+                    confirm=Confirm(ValueError("stop here")),
+                )
+            )
+        )
+    assert all(r["error"] == "ValueError: stop here" for r in results)
+    assert results[0]["discovery"]["evaluation"] == results[1]["discovery"]["evaluation"]

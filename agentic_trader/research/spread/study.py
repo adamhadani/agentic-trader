@@ -23,7 +23,7 @@ from agentic_trader.research.pooled.campaign_run import require_clean_revision
 from agentic_trader.research.setups.study import _finite_json
 from agentic_trader.research.spread.evaluate import evaluate_stage
 from agentic_trader.research.spread.formation import CoverageError, PairFit, select_pairs
-from agentic_trader.research.spread.panel import PanelBuild, SpreadPanel, shift_panel, synthetic_panel
+from agentic_trader.research.spread.panel import PanelBuild, SpreadPanel, shift_offsets, shift_panel, synthetic_panel
 from agentic_trader.research.spread.protocol import (
     LANE,
     LoadedSpreadCohort,
@@ -314,8 +314,17 @@ async def execute_spread_null(
         _require_cohort(loaded, cohort)
         built = await build()
         panel = truncate_panel(built.panel, through=protocol.windows.discovery[1])
+        result_extra = {"bar_files": dict(built.bar_files), "bars_sha256": built.bars_sha256}
         seeds: list[dict] = []
+        collisions: list[int] = []
         for seed in range(protocol.null_check.seeds):
+            _, forced = shift_offsets(
+                panel,
+                seed=seed,
+                block_sessions=protocol.null_check.shift_block_sessions,
+                groups=cohort.cohort.sectors,
+            )
+            collisions.append(forced)
             shifted = await asyncio.to_thread(
                 shift_panel,
                 panel,
@@ -329,13 +338,17 @@ async def execute_spread_null(
         result = {
             **base,
             "status": "passed"
-            if all(s["status"] == "completed" for s in seeds) and passes <= protocol.null_check.max_pass
+            if all(s["status"] == "completed" for s in seeds)
+            and passes <= protocol.null_check.max_pass
+            and not any(collisions)
             else "failed",
             "incomplete_seeds": [s["seed"] for s in seeds if s["status"] != "completed"],
             "seeds": seeds,
             "passes": passes,
             "allowed": protocol.null_check.max_pass,
+            "offset_collisions": collisions,
             "bar_failures": dict(built.bar_failures),
+            **result_extra,
         }
     except Exception as exc:
         result = {**base, "status": "failed", "error": f"{type(exc).__name__}: {exc}"}
@@ -396,6 +409,8 @@ async def execute_spread_study(
         "confirmation_record": None,
         "gates": None,
         "bar_failures": None,
+        "bar_files": None,
+        "bars_sha256": None,
     }
     try:
         revision = require_clean_revision(environment)
@@ -420,6 +435,14 @@ async def execute_spread_study(
         result["gates"] = {k: {"status": v["status"], "passes": v.get("passes")} for k, v in gates.items()}
         built = await build()
         result["bar_failures"] = dict(built.bar_failures)
+        result["bar_files"] = dict(built.bar_files)
+        result["bars_sha256"] = built.bars_sha256
+        fetch_failed = {name: why for name, why in built.bar_failures.items() if why != "empty"}
+        if fetch_failed:
+            raise ValueError(
+                f"bar acquisition failed for {len(fetch_failed)} names ({sorted(set(fetch_failed.values()))}); "
+                "refusing to run discovery on a reduced cohort"
+            )
         discovery_panel = truncate_panel(built.panel, through=protocol.windows.discovery[1])
         discovery = await asyncio.to_thread(
             run_stage, discovery_panel, protocol, cohort.cohort, "discovery", progress=progress
@@ -435,7 +458,7 @@ async def execute_spread_study(
             "code_revision": revision,
             "discovery": {k: discovery.evaluation[k] for k in ("s1", "s2", "s3", "s4")},
         }
-        record = await confirm(protocol.windows.confirmation, detail)
+        record = await confirm(protocol.windows.confirmation, _finite_json(detail))
         result["confirmation_record"] = dict(record)
         confirmation = await asyncio.to_thread(
             run_stage, built.panel, protocol, cohort.cohort, "confirmation", progress=progress

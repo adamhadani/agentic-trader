@@ -106,7 +106,7 @@ For each same-sector pair (Y, X) with both names eligible, on formation log clos
 2. Engle-Granger test `statsmodels.tsa.stattools.coint(log Y, log X, trend="c", maxlag=1, autolag=None)`
    (MacKinnon cointegration p-values, which account for the estimated β; the display module's plain
    ADF p-value does not).
-3. Half-life from the residual AR(1) (`Δe_t = c + θ e_{t−1}`; half-life = −ln 2 / θ when θ < 0).
+3. Half-life from the residual AR(1) (`Δe_t = c + θ e_{t−1}`; half-life = ln 2 / −ln(1+θ) when −1 < θ < 0).
 4. Keep when `p < 0.05`, `5 ≤ half-life ≤ 42`, `0.25 ≤ |β| ≤ 4`, and the residual std `σ_f > 0`.
 5. Rank kept pairs by the `coint` t-statistic ascending; take the first 20 (`top_pairs`). A name may
    appear in several pairs. Y is the alphabetically-earlier symbol; the regression direction is fixed,
@@ -172,7 +172,7 @@ previous close × a 0.3%-vol overnight factor. Thirty planted same-sector pairs 
 
 **C — null** (`alpha spread-null`, real cached bars). Ten seeds. Each symbol's close-to-close log
 returns and overnight gaps are circularly shifted by its own random multiple of 63 sessions
-(seeded; distinct within a sector, so no same-sector pair keeps its real alignment) and the price paths rebuilt from the first close, so marginal dynamics survive and every
+(seeded; each name draws its own offset from its own history, distinct from the offsets already taken in its sector; a forced collision fails the check and is recorded) and the price paths rebuilt from the first close, so marginal dynamics survive and every
 contemporaneous relation (correlation, cointegration) is destroyed. The full discovery pipeline runs
 on each. Pass when discovery passes in ≤ 1 of 10 seeds (the whole pipeline's false-acceptance rate,
 selection included).
@@ -254,7 +254,7 @@ copilot alpha spread-null  config/research/spread/pairs-v1.json --cache ~/agenti
 copilot alpha spread-study config/research/spread/pairs-v1.json --power DIR --null-check DIR --cache ~/agentic-trader-research/pooled-cache-v1/bars --journal-scope SCOPE --output ~/agentic-trader-research/spread-study-v1-YYYYMMDD
 ```
 
-Estimated runtime: 927 pairs × 18 windows of `coint(maxlag=1)` ≈ seconds per window; a stage in
+Estimated runtime: 927 pairs × (11 discovery + 5 confirmation) windows of `coint(maxlag=1)` ≈ seconds per window; a stage in
 under five minutes, checks under an hour each. The results document is bundled with the next
 workstream PR (no docs-only PRs).
 

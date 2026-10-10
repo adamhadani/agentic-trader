@@ -12,6 +12,7 @@ from agentic_trader.research.spread.panel import (
     PanelBuild,
     SpreadPanel,
     build_spread_panel,
+    shift_offsets,
     shift_panel,
     synthetic_panel,
 )
@@ -51,6 +52,8 @@ class FakeBars:
         frame = pd.DataFrame(
             {"Open": closes - 0.5, "High": closes + 1, "Low": closes - 1, "Close": closes, "Volume": 1e6}, index=index
         )
+        if symbol == "STALE":
+            frame.loc[[i.date() < SESSIONS[20] for i in frame.index], "Volume"] = 0.0
         if symbol == "GAPPY":
             frame = frame.drop(index=[i for i in frame.index if i.date() == SESSIONS[10]])
         return frame
@@ -65,7 +68,7 @@ def test_build_panel_aligns_to_sessions_records_failures_and_uses_the_cache(tmp_
     bars = FakeBars()
     build = asyncio.run(
         build_spread_panel(
-            ["AAA", "GAPPY", "BAD", "EMPTY"],
+            ["AAA", "GAPPY", "BAD", "EMPTY", "STALE"],
             bars=bars,
             calendar=FakeCalendar(),
             cache_dir=tmp_path,
@@ -77,13 +80,17 @@ def test_build_panel_aligns_to_sessions_records_failures_and_uses_the_cache(tmp_
     )
     assert isinstance(build, PanelBuild) and isinstance(build.panel, SpreadPanel)
     panel = build.panel
-    assert panel.sessions == SESSIONS and panel.symbols == ("AAA", "BAD", "EMPTY", "GAPPY")
-    assert panel.closes.shape == (len(SESSIONS), 4) and panel.opens.shape == panel.closes.shape
+    assert panel.sessions == SESSIONS and panel.symbols == ("AAA", "BAD", "EMPTY", "GAPPY", "STALE")
+    assert panel.closes.shape == (len(SESSIONS), 5) and panel.opens.shape == panel.closes.shape
     assert panel.closes.index.tz is None and panel.closes.index[0] == pd.Timestamp(SESSIONS[0])
     assert panel.closes["AAA"].iloc[0] == 100.0 and panel.opens["AAA"].iloc[0] == 99.5
     assert np.isnan(panel.closes["GAPPY"].iloc[10]) and panel.closes["GAPPY"].notna().sum() == len(SESSIONS) - 1
     assert build.bar_failures == {"BAD": "RuntimeError", "EMPTY": "empty"}
     assert panel.closes["BAD"].isna().all() and panel.closes["EMPTY"].isna().all()
+    assert panel.closes["STALE"].iloc[:20].isna().all() and panel.opens["STALE"].iloc[:20].isna().all()
+    assert panel.closes["STALE"].iloc[20:].notna().all() and "STALE" not in build.bar_failures
+    assert build.bar_files["AAA"].endswith(".npz") and build.bar_files["BAD"] is None
+    assert len(build.bars_sha256) == 64
     assert (tmp_path / "cache_range.json").exists() and (tmp_path / "AAA_1d").exists()
     before = len(bars.calls)
     asyncio.run(
@@ -266,3 +273,50 @@ def test_synthetic_panel_fails_loudly_when_it_cannot_plant_enough_pairs():
     spec = SPEC.model_copy(update={"planted_pairs": 2})
     with pytest.raises(ValueError, match="only 1 disjoint"):
         synthetic_panel(cohort, weekdays(date(2016, 1, 4), date(2016, 12, 30)), spec, seed=1)
+
+
+def _late_lister_panel(late_rows=150, n=600):
+    names = [f"N{i}" for i in range(6)]
+    rng = np.random.default_rng(5)
+    common = np.cumsum(rng.normal(0, 0.01, n))
+    logs = {name: common + np.cumsum(rng.normal(0, 0.001, n)) for name in names}
+    panel = _panel_from(logs, sessions=weekdays(date(2020, 1, 6), date(2023, 12, 31)))
+    panel.closes.iloc[: n - late_rows, 5] = np.nan
+    panel.opens.iloc[: n - late_rows, 5] = np.nan
+    return panel, names
+
+
+def test_grouped_shift_gives_each_member_its_own_offset_despite_a_late_lister():
+    panel, names = _late_lister_panel()
+    block = 21
+    for seed in range(10):
+        offsets, collisions = shift_offsets(panel, seed=seed, block_sessions=block, groups={"g": names})
+        assert collisions == 0 and len(set(offsets.values())) == 6
+        assert 1 <= offsets["N5"] <= 149 // block - 1
+        shifted = shift_panel(panel, seed=seed, block_sessions=block, groups={"g": names})
+        moved = {n: np.diff(np.log(shifted.closes[n].to_numpy())) for n in names[:5]}
+        for i, a in enumerate(names[:5]):
+            for b in names[i + 1 : 5]:
+                assert abs(np.corrcoef(moved[a], moved[b])[0, 1]) < 0.3
+
+
+def test_shift_offsets_match_the_offsets_shift_panel_applies_and_count_forced_collisions():
+    names = [f"N{i}" for i in range(6)]
+    n, block = 600, 21
+    rng = np.random.default_rng(5)
+    common = np.cumsum(rng.normal(0, 0.01, n))
+    logs = {name: common + np.cumsum(rng.normal(0, 0.001, n)) for name in names}
+    panel = _panel_from(logs, sessions=weekdays(date(2020, 1, 6), date(2023, 12, 31)))
+    original = {name: np.diff(np.log(panel.closes[name].to_numpy())) for name in names}
+    offsets, collisions = shift_offsets(panel, seed=3, block_sessions=block, groups={"g": names})
+    shifted = shift_panel(panel, seed=3, block_sessions=block, groups={"g": names})
+    for name in names:
+        moved = np.diff(np.log(shifted.closes[name].to_numpy()))
+        assert np.allclose(np.roll(original[name], offsets[name] * block), moved)
+    assert collisions == 0
+    # a group larger than the available distinct multiples is forced to collide, and says so
+    wide = [f"N{i}" for i in range(6)]
+    short = panel.closes.iloc[:100]
+    tiny = SpreadPanel(panel.sessions[:100], short, panel.opens.iloc[:100])
+    _, forced = shift_offsets(tiny, seed=0, block_sessions=21, groups={"g": wide})
+    assert forced > 0

@@ -58,7 +58,8 @@ to each selected pair, flat or unfilled slots earn 0, and windows are concatenat
 
 - S1: lane mean daily return > 0 with the bootstrap 90% CI lower bound > 0.
 - S2: closed-trade mean and 1%-trimmed mean > 0.
-- S3: closed-trade count, window count and positive-window fraction at the stage's thresholds.
+- S3: closed-trade count, window count and positive-window fraction at the stage's thresholds; the
+  fraction is over windows that had at least one closed trade.
 - S4: abs(OLS beta of the lane return on SPY) at most 0.2.
 
 Decisions: `failed_discovery` (any of S1-S4 fails; the confirmation window is neither consumed nor
@@ -98,7 +99,7 @@ copilot alpha spread-null  config/research/spread/pairs-v1.json --cache ~/agenti
 copilot alpha spread-study config/research/spread/pairs-v1.json --power DIR --null-check DIR --cache ~/agentic-trader-research/pooled-cache-v1/bars --journal-scope SCOPE --output ~/agentic-trader-research/spread-study-v1-YYYYMMDD
 ```
 
-Output naming is `spread-{power,null,study}-v1-YYYYMMDD`. Estimated runtime: a stage in minutes, each
+Output naming is `spread-{power,null,study}-v1-YYYYMMDD`. Estimated runtime (spec estimate, not yet measured): a stage in minutes, each
 check under an hour. The pooled cache already holds the 127 names and SPY.
 
 ## 9. Known limits
@@ -108,14 +109,19 @@ availability; next-open fills with a flat 5 bp per side and no impact; daily bar
 for six months; multiple comparisons inside formation are controlled only by the out-of-sample
 trading window and the top-20 cap; dependence across simultaneously open pairs is handled by the
 lane-series block bootstrap, not trade-level tests; the market-neutrality gate uses one factor (SPY).
+A signal on the penultimate session still fills at the last session's open and closes as `window_end`
+the same day. Ticker reuse (a ticker's history may belong to an earlier listing, e.g. constant
+zero-volume padding before a 2023 listing) is handled only by treating zero-volume rows as missing
+bars; there is no listing-date check.
 
 Detection band. A 252-session formation window was tried first and gave the Engle-Granger plus
 half-life filter almost no detection band: planted half-life 20 went undetected, and half-life 6 was
 detected but its AR(1) half-life estimate fell under the floor of 5. At 504 sessions the test reliably
 detects half-lives up to about 12 and slower reversion rarely, so check A plants half-life 10, an edge
 the protocol can detect; slower real spreads are largely invisible to this protocol. The AR(1)
-half-life estimate is noisy near the floor. Check C's shifts are drawn distinct within a sector so no
-same-sector pair keeps its real alignment. Same-sector pairs share names, so formation-stage false
+half-life estimate is noisy near the floor. Check C's shifts: each name draws its own offset from its own
+history, distinct from the offsets already taken in its sector; a forced collision fails the check and
+is recorded (`offset_collisions`). Same-sector pairs share names, so formation-stage false
 positives are dependent and heavy-tailed; the whole-pipeline false-acceptance rate is what check C
 measures.
 

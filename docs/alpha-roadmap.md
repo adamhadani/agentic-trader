@@ -538,8 +538,8 @@ problem.
    factors. Bracket construction remains.
 
    *Status (October 10):* bracket construction is closed by evidence. The October 8 counterfactual
-   grid and the October 10 refresh (runner-ups 30% target / 70% stop, −0.17R; sent 20% / 80%,
-   −0.47R; `setup_quality` within noise of random) show no bracket geometry or time exit with
+   grid and the October 10 refresh (runner-ups 30% target / 70% stop, −0.17R, n 33; sent 20% / 80%,
+   −0.47R, n 5; 17 scans for the selection comparison; `setup_quality` within noise of random) show no bracket geometry or time exit with
    non-negative EV, so the construction-side control is `card_policy` (operator: `off → preview →
    enforce`), not bracket tuning.
 2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
