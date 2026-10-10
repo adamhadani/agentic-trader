@@ -1691,7 +1691,7 @@ git commit -m "Spread lane: stage evaluation (S1 lane bootstrap, S2 trade means,
 
 **Interfaces:**
 - Consumes: `_fetch_cached`, `_claim_cache_range`, `BarSource`, `CalendarSource` (`agentic_trader.research.setups.runner`); `ET_TZ` (`agentic_trader.market.session`); `SpreadCohort`, `PowerSpec` (Task 1); `fit_pair`, `FormationRule` for the test only.
-- Produces: `SpreadPanel(sessions, closes, opens)` (frames indexed by a naive `DatetimeIndex` of session dates, one column per symbol, NaN for missing bars) with `.symbols`; `PanelBuild(panel, bar_failures)`; `async build_spread_panel(symbols, *, bars, calendar, cache_dir, start, through, adjustment, pace) -> PanelBuild`; `shift_panel(panel, *, seed, block_sessions) -> SpreadPanel`; `synthetic_panel(cohort, sessions, spec, *, seed) -> tuple[SpreadPanel, tuple[tuple[str, str], ...]]`.
+- Produces: `SpreadPanel(sessions, closes, opens)` (frames indexed by a naive `DatetimeIndex` of session dates, one column per symbol, NaN for missing bars) with `.symbols`; `PanelBuild(panel, bar_failures)`; `async build_spread_panel(symbols, *, bars, calendar, cache_dir, start, through, adjustment, pace) -> PanelBuild`; `shift_panel(panel, *, seed, block_sessions, groups=None) -> SpreadPanel` (names in one group draw distinct offsets); `synthetic_panel(cohort, sessions, spec, *, seed) -> tuple[SpreadPanel, tuple[tuple[str, str], ...]]`.
 
 Acquisition: sessions are the calendar's trading days in `[start, through]`; each symbol's daily frame comes from `_fetch_cached(symbol, "1d", bars, cache_dir, start_dt, end_dt, adjustment, pace)` with `start_dt = datetime.combine(start, time.min, UTC)` and `end_dt = datetime.combine(through, time.max, UTC)` after `_claim_cache_range(cache_dir, start_dt, end_dt)`; bar timestamps (tz-aware) convert to `ET_TZ` and reduce to the session date (duplicates keep the last); a raised fetch records `type(exc).__name__`, an empty frame records `"empty"`; the symbol's columns are then all-NaN. Nothing else is raised. The market symbol is acquired like any other.
 
@@ -2984,7 +2984,11 @@ async def execute_spread_null(
         seeds: list[dict] = []
         for seed in range(protocol.null_check.seeds):
             shifted = await asyncio.to_thread(
-                shift_panel, panel, seed=seed, block_sessions=protocol.null_check.shift_block_sessions
+                shift_panel,
+                panel,
+                seed=seed,
+                block_sessions=protocol.null_check.shift_block_sessions,
+                groups=cohort.cohort.sectors,
             )
             run = await asyncio.to_thread(run_stage, shifted, protocol, cohort.cohort, "discovery", progress=progress)
             seeds.append(_seed_summary(seed, run))
