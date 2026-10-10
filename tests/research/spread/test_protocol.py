@@ -66,9 +66,9 @@ def test_frozen_files_load_and_pin_each_other():
     assert len(cohort.cohort.pairs()) == 927
     assert cohort.cohort.market == "SPY" and "SPY" not in cohort.cohort.symbols
     p = loaded.protocol
-    assert p.windows.discovery == (date(2017, 1, 3), date(2023, 12, 29))
+    assert p.windows.discovery == (date(2018, 1, 2), date(2023, 12, 29))
     assert p.windows.confirmation == (date(2024, 1, 2), date(2026, 7, 31))
-    assert p.schedule.formation_sessions == 252 and p.schedule.trading_sessions == 126
+    assert p.schedule.formation_sessions == 504 and p.schedule.trading_sessions == 126
     assert p.formation.top_pairs == 20 and p.formation.coint_max_lag == 1
     assert p.trading.z_entry == 2.0 and p.trading.z_exit == 0.5 and p.trading.z_stop == 4.0
     assert p.decision_cost_bps == 5.0 and p.decision_cost_bps in p.costs_bps_per_side

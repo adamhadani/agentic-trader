@@ -69,9 +69,9 @@ Frozen, `extra="forbid"`, hashed. Values below are the protocol; they are not tu
 | --- | --- |
 | `feed` / `adjustment` | `alpaca:sip` / `all` (split and dividend adjusted; spreads span up to 18 months) |
 | `bars` | from 2016-01-04 through 2026-08-31 (the pooled cache range) |
-| `windows.discovery` | 2017-01-03 → 2023-12-29 (trading windows) |
+| `windows.discovery` | 2018-01-02 → 2023-12-29 (trading windows) |
 | `windows.confirmation` | 2024-01-02 → 2026-07-31 (one use, journaled) |
-| `schedule` | formation 252 sessions, trading 126 sessions, non-overlapping tiles |
+| `schedule` | formation 504 sessions, trading 126 sessions, non-overlapping tiles |
 | `formation.coint_max_lag` | 1 (Engle-Granger `coint`, trend `c`, no autolag) |
 | `formation.p_value` | 0.05 |
 | `formation.half_life_sessions` | [5, 42] |
@@ -88,11 +88,11 @@ Frozen, `extra="forbid"`, hashed. Values below are the protocol; they are not tu
 ### 4.1 Schedule
 
 Sessions are the exchange calendar (Alpaca calendar) restricted to the bar range. Starting at the
-stage's first session, trading windows of 126 sessions tile forward; each needs the 252 sessions
+stage's first session, trading windows of 126 sessions tile forward; each needs the 504 sessions
 before it as formation. A trading window that would cross the stage end is dropped (whole windows
 only; the discovery tiling never reads a confirmation session). The confirmation tiling restarts at
 2024-01-02; its formation windows reach back into 2023, which is estimation on the past and allowed.
-Expect about 13 discovery and 5 confirmation windows.
+Expect about 11 discovery and 5 confirmation windows.
 
 ### 4.2 Eligibility and formation (per window, causal)
 
@@ -166,8 +166,8 @@ counts and eligible names per window, S4 with a HAC(5) standard error.
 builds a synthetic panel shaped like the cohort (same sector sizes, 2016–2023 sessions): log prices
 = market factor + sector factor + idiosyncratic random walk (daily vols 1.0%, 0.7%, 1.2%), opens =
 previous close × a 0.3%-vol overnight factor. Thirty planted same-sector pairs replace Y with
-`α + β X + e`, `β ∈ [0.6, 1.6]`, `e` an OU process with half-life 20 sessions and innovation std 0.8%
-(stationary std ≈ 3.1%). The full discovery pipeline runs. Pass when discovery passes S1–S4 in ≥ 8 of
+`α + β X + e`, `β ∈ [0.6, 1.6]`, `e` an OU process with half-life 10 sessions and innovation std 0.8%
+(stationary std ≈ 2.2%; at 504 formation sessions the Engle-Granger test detects half-lives up to about 12 reliably and slower reversion rarely, so the check plants an edge the protocol can detect). The full discovery pipeline runs. Pass when discovery passes S1–S4 in ≥ 8 of
 10 seeds; planted-pair recall per window is reported.
 
 **C — null** (`alpha spread-null`, real cached bars). Ten seeds. Each symbol's close-to-close log
@@ -263,8 +263,10 @@ workstream PR (no docs-only PRs).
 1. Pairs only in v1; baskets deferred (YAGNI, and pairs alone answer "does spread reversion exist here").
 2. Same-sector pairs from the sector-tagged scan universe ∩ pooled cohort (127 names) rather than all
    452 pooled names: an economic prior, 927 instead of ~100k tests, and names a future probe could trade.
-3. Gatev-style non-overlapping 252/126 formation/trading tiles with frozen β, α, σ_f; no rolling z-window
-   inside the trading window (fully causal and simple to audit).
+3. Gatev-style non-overlapping 504/126 formation/trading tiles with frozen β, α, σ_f; no rolling z-window
+   inside the trading window (fully causal and simple to audit). A 252-session formation was tried first and
+   gave the filter almost no detection band (half-life 20 undetected, half-life 6 detected but its estimate
+   falls under the floor of 5); 504 sessions halves the estimator's standard error.
 4. `statsmodels.coint` (MacKinnon cointegration p-values) rather than the display module's plain ADF.
 5. Fixed `maxlag=1`, no autolag: predeclared and ~50× cheaper, making checks A and C affordable.
 6. Lane-series block bootstrap as the primary test (handles overlapping pairs) plus trade-level and

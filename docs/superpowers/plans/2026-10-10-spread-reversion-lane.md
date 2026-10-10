@@ -134,9 +134,9 @@ def test_frozen_files_load_and_pin_each_other():
     assert len(cohort.cohort.pairs()) == 927
     assert cohort.cohort.market == "SPY" and "SPY" not in cohort.cohort.symbols
     p = loaded.protocol
-    assert p.windows.discovery == (date(2017, 1, 3), date(2023, 12, 29))
+    assert p.windows.discovery == (date(2018, 1, 2), date(2023, 12, 29))
     assert p.windows.confirmation == (date(2024, 1, 2), date(2026, 7, 31))
-    assert p.schedule.formation_sessions == 252 and p.schedule.trading_sessions == 126
+    assert p.schedule.formation_sessions == 504 and p.schedule.trading_sessions == 126
     assert p.formation.top_pairs == 20 and p.formation.coint_max_lag == 1
     assert p.trading.z_entry == 2.0 and p.trading.z_exit == 0.5 and p.trading.z_stop == 4.0
     assert p.decision_cost_bps == 5.0 and p.decision_cost_bps in p.costs_bps_per_side
@@ -493,22 +493,22 @@ Expected: 127 symbols over 11 sectors (technology 26, financial_services 19, con
 {
   "id": "spread-pairs",
   "version": 1,
-  "title": "Same-sector pairs: Engle-Granger formation, z-score reversion trading (Gatev-style 252/126 tiles)",
+  "title": "Same-sector pairs: Engle-Granger formation, z-score reversion trading (Gatev-style 504/126 tiles)",
   "references": [
     "Gatev, Goetzmann and Rouwenhorst (2006), Pairs Trading: Performance of a Relative-Value Arbitrage Rule, RFS 19(3)",
     "Engle and Granger (1987), Co-integration and Error Correction, Econometrica 55(2)",
     "Do and Faff (2010), Does Simple Pairs Trading Still Work?, FAJ 66(4)",
     "Vidyamurthy (2004), Pairs Trading: Quantitative Methods and Analysis"
   ],
-  "hypotheses": "Among same-sector US large-cap equities, pairs whose log prices are cointegrated over the previous 252 sessions (Engle-Granger, p<0.05, half-life 5-42 sessions) have spreads that revert over the next 126 sessions, so that entering at |z|>=2 and exiting at |z|<=0.5 (stop |z|>=4, window-end close-out), dollar-neutral at the formation hedge ratio, earns a positive mean return after 5 bp per side per leg with market beta near zero.",
-  "decision_rule": "Discovery (trading windows 2017-01-03..2023-12-29) passes when S1 (lane mean daily return > 0, stationary-bootstrap ci90 lower bound > 0), S2 (closed-trade mean and 1%-trimmed mean > 0), S3 (>=100 closed trades, >=8 windows, >=60% of windows positive) and S4 (|beta to SPY| <= 0.2) all hold at 5 bp per side. Only then is the confirmation window (2024-01-02..2026-07-31) journaled as consumed and read; the same rule with S3 relaxed to >=30 trades and >=4 windows decides confirmed vs failed_confirmation. Nothing promotes.",
+  "hypotheses": "Among same-sector US large-cap equities, pairs whose log prices are cointegrated over the previous 504 sessions (Engle-Granger, p<0.05, half-life 5-42 sessions) have spreads that revert over the next 126 sessions, so that entering at |z|>=2 and exiting at |z|<=0.5 (stop |z|>=4, window-end close-out), dollar-neutral at the formation hedge ratio, earns a positive mean return after 5 bp per side per leg with market beta near zero.",
+  "decision_rule": "Discovery (trading windows 2018-01-02..2023-12-29) passes when S1 (lane mean daily return > 0, stationary-bootstrap ci90 lower bound > 0), S2 (closed-trade mean and 1%-trimmed mean > 0), S3 (>=100 closed trades, >=8 windows, >=60% of windows positive) and S4 (|beta to SPY| <= 0.2) all hold at 5 bp per side. Only then is the confirmation window (2024-01-02..2026-07-31) journaled as consumed and read; the same rule with S3 relaxed to >=30 trades and >=4 windows decides confirmed vs failed_confirmation. Nothing promotes.",
   "cohort": "config/research/spread/cohort-v1.json",
   "cohort_sha256": "COHORT_SHA256",
   "feed": "alpaca:sip",
   "adjustment": "all",
   "bars": {"start": "2016-01-04", "through": "2026-08-31"},
-  "windows": {"discovery": ["2017-01-03", "2023-12-29"], "confirmation": ["2024-01-02", "2026-07-31"]},
-  "schedule": {"formation_sessions": 252, "trading_sessions": 126},
+  "windows": {"discovery": ["2018-01-02", "2023-12-29"], "confirmation": ["2024-01-02", "2026-07-31"]},
+  "schedule": {"formation_sessions": 504, "trading_sessions": 126},
   "formation": {
     "coint_max_lag": 1,
     "p_value": 0.05,
@@ -539,7 +539,7 @@ Expected: 127 symbols over 11 sectors (technology 26, financial_services 19, con
     "seeds": 10,
     "min_pass": 8,
     "planted_pairs": 30,
-    "half_life_sessions": 20.0,
+    "half_life_sessions": 10.0,
     "innovation_std": 0.008,
     "hedge_ratio": [0.6, 1.6],
     "market_vol": 0.010,
@@ -1873,7 +1873,7 @@ SPEC = PowerSpec(
     seeds=1,
     min_pass=1,
     planted_pairs=4,
-    half_life_sessions=20.0,
+    half_life_sessions=10.0,
     innovation_std=0.008,
     hedge_ratio=(0.6, 1.6),
     market_vol=0.01,
@@ -1899,7 +1899,7 @@ def test_synthetic_panel_plants_recoverable_same_sector_pairs():
     sector_of = {s: sec for sec, members in COHORT.sectors.items() for s in members}
     assert all(sector_of[y] == sector_of[x] and y < x for y, x in planted)
     assert (panel.closes > 0).all().all() and (panel.opens > 0).all().all()
-    logs = np.log(panel.closes.iloc[-252:])
+    logs = np.log(panel.closes.iloc[-504:])
     recovered = sum(
         fit_pair(logs[y].to_numpy(), logs[x].to_numpy(), RULE, y=y, x=x, sector="s").eligible for y, x in planted
     )
@@ -3536,7 +3536,7 @@ Sections, each a short paragraph or table (take values from the spec; do not res
 
 - `CLAUDE.md`: after the paragraph ending "The next alpha source is an operator decision.", add:
 
-  > The [spread-reversion lane](docs/alpha-spread-lane.md) (desk-direction item 2) is a predeclared, research-only pairs protocol on daily SIP bars: same-sector pairs from a frozen 127-name cohort, Engle-Granger formation (`coint`, MacKinnon p-values) over 252 sessions, z-score trading over the next 126 with frozen `α, β, σ_f` and next-open fills, four pass rules (lane bootstrap, trade means, counts, SPY beta) and a one-use confirmation window journaled under `spread/confirmation` before it is read. `alpha spread-study` refuses without passing `spread-power` (A) and `spread-null` (C) results at the same clean revision; nothing promotes, no probe or two-leg execution contract exists, and `/pairs` stays display-only.
+  > The [spread-reversion lane](docs/alpha-spread-lane.md) (desk-direction item 2) is a predeclared, research-only pairs protocol on daily SIP bars: same-sector pairs from a frozen 127-name cohort, Engle-Granger formation (`coint`, MacKinnon p-values) over 504 sessions, z-score trading over the next 126 with frozen `α, β, σ_f` and next-open fills, four pass rules (lane bootstrap, trade means, counts, SPY beta) and a one-use confirmation window journaled under `spread/confirmation` before it is read. `alpha spread-study` refuses without passing `spread-power` (A) and `spread-null` (C) results at the same clean revision; nothing promotes, no probe or two-leg execution contract exists, and `/pairs` stays display-only.
 
 - `docs/alpha-roadmap.md` item 1: append a *Status (October 10)* line: bracket construction is closed by evidence — the October 8 counterfactual grid and the October 10 refresh (runner-ups 30% target / 70% stop, −0.17R; sent 20% / 80%, −0.47R; `setup_quality` within noise of random) show no bracket geometry or time exit with non-negative EV, so the construction-side control is `card_policy` (operator: `off → preview → enforce`), not bracket tuning. Item 2: *Status (October 10)*: the lane is implemented ([spread lane](alpha-spread-lane.md)); checks A and C and the study run after merge; results are bundled with the next workstream PR.
 - `docs/strategies.md` §4: add one paragraph after the formulations: the display screener fits and scores in-sample with plain ADF p-values and is not research evidence; the research protocol lives in `docs/alpha-spread-lane.md`.
