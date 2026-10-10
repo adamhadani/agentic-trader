@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -39,6 +40,8 @@ ALPHA_EVENT_KINDS = (EventKind.ALPHA_RESEARCH, EventKind.ALPHA_REGISTRY, EventKi
 POOLED_IMMUTABLE = ("protocol_sha256", "cohort_sha256", "cube_sha256", "code_revision", "budget", "journal_scope")
 POOLED_LEDGER_KEY = "pooled/ledger"
 POOLED_CONFIRMATION_KEY = "pooled/confirmation"
+LANE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REGISTRY_KEY = "registry"
 SESSION_DECISION_KEY_LENGTH = len("session-decision/") + len(hashlib.sha256().hexdigest())
 
@@ -1166,3 +1169,46 @@ class AlphaRepository:
             campaign["stages"]["confirmation_consumed"] = now
             await self._append(session, campaign_key, campaign, EventKind.ALPHA_RESEARCH, "research_worker")
             await self._pooled_count(session, "confirmations")
+
+    async def consume_lane_confirmation(
+        self,
+        lane: str,
+        *,
+        protocol_sha256: str,
+        cohort_sha256: str,
+        interval: tuple[date, date],
+        detail: Mapping,
+    ) -> dict:
+        """Journal a single-protocol lane's one-use confirmation interval before it is read.
+
+        Overlapping intervals are refused lane-wide; lanes never share a ledger and never touch
+        ``family/all``. The pooled lane keeps its campaign-bound ``consume_pooled_confirmation``.
+        """
+        if not LANE_NAME.match(lane) or lane == "pooled":
+            raise ValueError(f"lane name {lane!r} is not a valid single-protocol lane (or is the pooled lane)")
+        if not (_SHA256.match(protocol_sha256) and _SHA256.match(cohort_sha256)):
+            raise ValueError("protocol_sha256 and cohort_sha256 must be hex sha256 digests")
+        start, end = interval
+        if start > end:
+            raise ValueError("confirmation interval must be ordered (start <= end)")
+        key = f"{lane}/confirmation"
+        async with self.store.db.session_factory() as session, session.begin():
+            await self.store.lock(session, resource="alpha")
+            consumed = await self._get(session, key) or {"intervals": []}
+            for item in consumed["intervals"]:
+                if not (end < date.fromisoformat(item["start"]) or date.fromisoformat(item["end"]) < start):
+                    raise ValueError(
+                        f"{lane} confirmation interval already consumed on {item['consumed_at']} "
+                        f"by protocol {item['protocol_sha256'][:16]}"
+                    )
+            record = {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "protocol_sha256": protocol_sha256,
+                "cohort_sha256": cohort_sha256,
+                "detail": dict(detail),
+                "consumed_at": datetime.now(UTC).isoformat(),
+            }
+            consumed["intervals"].append(record)
+            await self._append(session, key, consumed, EventKind.ALPHA_RESEARCH, "research_worker")
+            return record
