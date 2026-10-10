@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from agentic_trader.research.setups.study import _finite_json
+from agentic_trader.research.spread import study
 from agentic_trader.research.spread.panel import PanelBuild, SpreadPanel, synthetic_panel
 from agentic_trader.research.spread.protocol import load_spread_cohort
 from agentic_trader.research.spread.study import (
@@ -154,12 +156,15 @@ def test_spread_gate_checks_kind_status_hashes_and_revision(world, tmp_path):
 
 
 class Confirm:
-    def __init__(self, error: Exception | None = None):
+    def __init__(self, error: Exception | None = None, directory=None):
         self.calls: list[tuple] = []
         self.error = error
+        self.directory = directory
 
     async def __call__(self, interval, detail):
         self.calls.append((interval, detail))
+        if self.directory is not None:
+            assert not (self.directory / "confirmation-lane.csv.gz").exists()
         if self.error:
             raise self.error
         return {"start": interval[0].isoformat(), "end": interval[1].isoformat(), "consumed_at": "t"}
@@ -175,7 +180,7 @@ def test_study_confirms_after_journaling_and_records_both_stages(world, tmp_path
     loaded, cohort = world
     panel, _ = planted_world(loaded, cohort)
     power, null = _gates(tmp_path, loaded, cohort)
-    confirm = Confirm()
+    confirm = Confirm(directory=tmp_path / "study")
     result = asyncio.run(
         execute_spread_study(
             loaded,
@@ -193,6 +198,8 @@ def test_study_confirms_after_journaling_and_records_both_stages(world, tmp_path
     assert result["decision"] in ("confirmed", "failed_confirmation") and result["discovery"]["evaluation"]["passes"]
     assert confirm.calls == [((date(2019, 1, 2), date(2019, 12, 31)), confirm.calls[0][1])]
     assert confirm.calls[0][1]["protocol_sha256"] == loaded.sha256 and "discovery" in confirm.calls[0][1]
+    assert confirm.calls[0][1]["code_revision"] == "abc1234"
+    assert set(confirm.calls[0][1]["discovery"]) == {"s1", "s2", "s3", "s4"}
     assert (
         result["confirmation_record"]["consumed_at"] == "t"
         and result["confirmation"]["evaluation"]["s1"]["n_sessions"] > 0
@@ -230,6 +237,8 @@ def test_study_records_confirmation_refusal_without_reading_confirmation(world, 
         result["status"] == "failed" and result["error"] == "ValueError: spread confirmation interval already consumed"
     )
     assert result.get("confirmation") is None and len(confirm.calls) == 1
+    assert result["discovery"]["evaluation"]["passes"] is True
+    assert result["gates"]["power"]["status"] == "passed"
     assert (tmp_path / "study" / "discovery-trades.csv.gz").exists() and not (
         tmp_path / "study" / "confirmation-lane.csv.gz"
     ).exists()
@@ -302,3 +311,53 @@ def test_study_refuses_dirty_revision_and_mismatched_gates_before_building(world
         )
     )
     assert mismatched["status"] == "failed" and "revision" in mismatched["error"] and built == []
+
+
+def test_null_check_fails_when_a_seed_cannot_complete(world, tmp_path):
+    loaded, cohort = world
+    panel, _ = planted_world(loaded, cohort)
+    closes = panel.closes.copy()
+    closes.loc[closes.index[100], [c for c in closes.columns if c != "SPY"][:11]] = np.nan
+    thin = SpreadPanel(sessions=panel.sessions, closes=closes, opens=panel.opens)
+    result = asyncio.run(
+        execute_spread_null(loaded, tmp_path / "null", cohort=cohort, build=_build(thin), environment=ENVIRONMENT)
+    )
+    assert result["status"] == "failed" and result["incomplete_seeds"] == [0, 1] and result["passes"] == 0
+
+
+def test_study_keeps_confirmation_record_and_discovery_when_confirmation_stage_raises(world, tmp_path, monkeypatch):
+    loaded, cohort = world
+    panel, _ = planted_world(loaded, cohort)
+    power, null = _gates(tmp_path, loaded, cohort)
+    real = study.run_stage
+
+    def flaky(panel_, protocol, cohort_, stage, **kwargs):
+        if stage == "confirmation":
+            raise RuntimeError("boom")
+        return real(panel_, protocol, cohort_, stage, **kwargs)
+
+    monkeypatch.setattr(study, "run_stage", flaky)
+    result = asyncio.run(
+        execute_spread_study(
+            loaded,
+            tmp_path / "study",
+            cohort=cohort,
+            build=_build(panel),
+            environment=ENVIRONMENT,
+            power_dir=power,
+            null_dir=null,
+            journal={},
+            confirm=Confirm(),
+        )
+    )
+    assert result["status"] == "failed" and result["error"] == "RuntimeError: boom"
+    assert result["confirmation_record"]["consumed_at"] == "t" and result["confirmation"] is None
+    assert result["discovery"]["evaluation"]["passes"] is True
+    saved = json.loads((tmp_path / "study" / "result.json").read_text())
+    assert saved["confirmation_record"]["consumed_at"] == "t"
+
+
+def test_finite_json_converts_numpy_scalars_and_nan():
+    out = _finite_json({"a": np.int64(3), "b": np.bool_(True), "c": (np.float64(1.5), float("nan"))})
+    assert out == {"a": 3, "b": True, "c": [1.5, None]}
+    assert type(out["a"]) is int and type(out["b"]) is bool

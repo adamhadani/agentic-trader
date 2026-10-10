@@ -232,6 +232,14 @@ def _finish(directory: Path, result: dict) -> dict:
     return result
 
 
+def _finish_or_record(directory: Path, result: dict, base: dict) -> dict:
+    """Save ``result``; a document that cannot be saved is replaced by a recorded failure."""
+    try:
+        return _finish(directory, result)
+    except Exception as exc:
+        return _finish(directory, {**base, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+
+
 def _base(loaded: LoadedSpreadProtocol, cohort: LoadedSpreadCohort, check: str | None) -> dict:
     base = {
         "lane": LANE,
@@ -269,7 +277,10 @@ async def execute_spread_power(
         passes = sum(1 for s in seeds if s["passes"])
         result = {
             **base,
-            "status": "passed" if passes >= protocol.power.min_pass else "failed",
+            "status": "passed"
+            if all(s["status"] == "completed" for s in seeds) and passes >= protocol.power.min_pass
+            else "failed",
+            "incomplete_seeds": [s["seed"] for s in seeds if s["status"] != "completed"],
             "calendar": "weekdays",
             "seeds": seeds,
             "passes": passes,
@@ -277,7 +288,7 @@ async def execute_spread_power(
         }
     except Exception as exc:
         result = {**base, "status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-    return _finish(directory, result)
+    return _finish_or_record(directory, result, base)
 
 
 async def execute_spread_null(
@@ -317,7 +328,10 @@ async def execute_spread_null(
         passes = sum(1 for s in seeds if s["passes"])
         result = {
             **base,
-            "status": "passed" if passes <= protocol.null_check.max_pass else "failed",
+            "status": "passed"
+            if all(s["status"] == "completed" for s in seeds) and passes <= protocol.null_check.max_pass
+            else "failed",
+            "incomplete_seeds": [s["seed"] for s in seeds if s["status"] != "completed"],
             "seeds": seeds,
             "passes": passes,
             "allowed": protocol.null_check.max_pass,
@@ -325,7 +339,7 @@ async def execute_spread_null(
         }
     except Exception as exc:
         result = {**base, "status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-    return _finish(directory, result)
+    return _finish_or_record(directory, result, base)
 
 
 def _save_frame(frame: pd.DataFrame, path: Path) -> None:
@@ -373,8 +387,19 @@ async def execute_spread_study(
         environment,
     )
     base = _base(loaded, cohort, None)
+    result: dict = {
+        **base,
+        "status": "failed",
+        "decision": None,
+        "discovery": None,
+        "confirmation": None,
+        "confirmation_record": None,
+        "gates": None,
+        "bar_failures": None,
+    }
     try:
         revision = require_clean_revision(environment)
+        result["code_revision"] = revision
         _require_cohort(loaded, cohort)
         gates = {
             "power": spread_gate(
@@ -392,39 +417,35 @@ async def execute_spread_study(
                 revision=revision,
             ),
         }
+        result["gates"] = {k: {"status": v["status"], "passes": v.get("passes")} for k, v in gates.items()}
         built = await build()
+        result["bar_failures"] = dict(built.bar_failures)
         discovery_panel = truncate_panel(built.panel, through=protocol.windows.discovery[1])
         discovery = await asyncio.to_thread(
             run_stage, discovery_panel, protocol, cohort.cohort, "discovery", progress=progress
         )
         await asyncio.to_thread(_persist_stage, directory, "discovery", discovery)
-        result: dict = {
-            **base,
-            "status": "completed",
-            "code_revision": revision,
-            "gates": {k: {"status": v["status"], "passes": v.get("passes")} for k, v in gates.items()},
-            "bar_failures": dict(built.bar_failures),
-            "discovery": _stage_payload(discovery),
-            "confirmation": None,
-            "confirmation_record": None,
-        }
+        result["discovery"] = _stage_payload(discovery)
         if discovery.status != "completed" or not discovery.evaluation["passes"]:
             result["decision"] = "failed_discovery"
-            return _finish(directory, result)
+            result["status"] = "completed"
+            return _finish_or_record(directory, result, base)
         detail = {
             "protocol_sha256": loaded.sha256,
             "code_revision": revision,
             "discovery": {k: discovery.evaluation[k] for k in ("s1", "s2", "s3", "s4")},
         }
         record = await confirm(protocol.windows.confirmation, detail)
+        result["confirmation_record"] = dict(record)
         confirmation = await asyncio.to_thread(
             run_stage, built.panel, protocol, cohort.cohort, "confirmation", progress=progress
         )
         await asyncio.to_thread(_persist_stage, directory, "confirmation", confirmation)
-        result["confirmation_record"] = dict(record)
         result["confirmation"] = _stage_payload(confirmation)
         passed = confirmation.status == "completed" and confirmation.evaluation["passes"]
         result["decision"] = "confirmed" if passed else "failed_confirmation"
+        result["status"] = "completed"
     except Exception as exc:
-        result = {**base, "status": "failed", "error": f"{type(exc).__name__}: {exc}", "confirmation": None}
-    return _finish(directory, result)
+        result["status"] = "failed"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return _finish_or_record(directory, result, base)
