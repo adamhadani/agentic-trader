@@ -38,6 +38,8 @@ class FakeBars:
     def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
         self.calls.append((symbol, start, end))
         assert timeframe == "1d" and adjustment == "all"
+        if symbol == "BROKEN":
+            return pd.DataFrame({"Open": [1.0]}, index=pd.DatetimeIndex([datetime(2020, 1, 6, 5, tzinfo=UTC)]))
         if symbol == "BAD":
             raise RuntimeError("provider down")
         if symbol == "EMPTY":
@@ -128,6 +130,24 @@ def test_build_panel_refuses_a_range_outside_the_cache_claim(tmp_path):
         )
 
 
+def test_malformed_cached_frame_is_recorded_not_raised(tmp_path):
+    build = asyncio.run(
+        build_spread_panel(
+            ["AAA", "BROKEN"],
+            bars=FakeBars(),
+            calendar=FakeCalendar(),
+            cache_dir=tmp_path,
+            start=date(2020, 1, 6),
+            through=date(2020, 12, 31),
+            adjustment="all",
+            pace=pace,
+        )
+    )
+    assert build.bar_failures == {"BROKEN": "malformed"}
+    assert build.panel.closes["BROKEN"].isna().all() and build.panel.opens["BROKEN"].isna().all()
+    assert build.panel.closes["AAA"].notna().all()
+
+
 def _panel_from(log_closes: dict[str, np.ndarray], sessions=SESSIONS) -> SpreadPanel:
     index = pd.DatetimeIndex([pd.Timestamp(d) for d in sessions[: len(next(iter(log_closes.values())))]])
     closes = pd.DataFrame({k: np.exp(v) for k, v in log_closes.items()}, index=index)
@@ -213,3 +233,36 @@ def test_synthetic_panel_plants_recoverable_same_sector_pairs():
     assert false <= 6
     other, _ = synthetic_panel(COHORT, sessions, SPEC, seed=12)
     assert not np.allclose(other.closes.to_numpy(), panel.closes.to_numpy())
+
+
+def test_grouped_shift_gives_distinct_offsets_within_a_group():
+    names = [f"N{i}" for i in range(6)]
+    block, n = 21, 600
+    rng = np.random.default_rng(5)
+    common = np.cumsum(rng.normal(0, 0.01, n))
+    logs = {name: common + np.cumsum(rng.normal(0, 0.001, n)) for name in names}
+    panel = _panel_from(logs, sessions=weekdays(date(2020, 1, 6), date(2023, 12, 31)))
+    original = {name: np.diff(np.log(panel.closes[name].to_numpy())) for name in names}
+    for seed in range(20):
+        shifted = shift_panel(panel, seed=seed, block_sessions=block, groups={"g": names})
+        moved = {name: np.diff(np.log(shifted.closes[name].to_numpy())) for name in names}
+        offsets = []
+        for name in names:
+            matches = [
+                k for k in range(1, (n - 1) // block) if np.allclose(np.roll(original[name], k * block), moved[name])
+            ]
+            assert len(matches) == 1
+            offsets.append(matches[0])
+        assert len(set(offsets)) == 6
+        for i, a in enumerate(names):
+            for b in names[i + 1 :]:
+                assert abs(np.corrcoef(moved[a], moved[b])[0, 1]) < 0.3
+
+
+def test_synthetic_panel_fails_loudly_when_it_cannot_plant_enough_pairs():
+    cohort = SpreadCohort.model_validate(
+        {"id": "spread-cohort", "version": 1, "survivorship": "t", "market": "SPY", "sectors": {"s": ["AAA", "BBB"]}}
+    )
+    spec = SPEC.model_copy(update={"planted_pairs": 2})
+    with pytest.raises(ValueError, match="only 1 disjoint"):
+        synthetic_panel(cohort, weekdays(date(2016, 1, 4), date(2016, 12, 30)), spec, seed=1)

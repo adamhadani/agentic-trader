@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from pathlib import Path
@@ -80,37 +80,73 @@ async def build_spread_panel(
         except Exception as exc:
             failures[symbol] = type(exc).__name__
             frame = pd.DataFrame()
-        if frame.empty:
+        if not frame.empty:
+            try:
+                closes[symbol] = _by_session(frame, "Close", index)
+                opens[symbol] = _by_session(frame, "Open", index)
+            except Exception:
+                failures[symbol] = "malformed"
+                closes.pop(symbol, None)
+        else:
             failures.setdefault(symbol, "empty")
+        if symbol not in closes or symbol not in opens or symbol in failures:
             closes[symbol] = pd.Series(np.nan, index=index)
             opens[symbol] = pd.Series(np.nan, index=index)
-            continue
-        closes[symbol] = _by_session(frame, "Close", index)
-        opens[symbol] = _by_session(frame, "Open", index)
     panel = SpreadPanel(
         sessions=sessions, closes=pd.DataFrame(closes, index=index), opens=pd.DataFrame(opens, index=index)
     )
     return PanelBuild(panel=panel, bar_failures=dict(sorted(failures.items())))
 
 
-def shift_panel(panel: SpreadPanel, *, seed: int, block_sessions: int) -> SpreadPanel:
+def shift_panel(
+    panel: SpreadPanel,
+    *,
+    seed: int,
+    block_sessions: int,
+    groups: Mapping[str, Sequence[str]] | None = None,
+) -> SpreadPanel:
     """Null world: each symbol's close-to-close log returns and overnight gaps are circularly shifted by
     its own random multiple of ``block_sessions`` and the price paths rebuilt from the first close, so
-    marginal dynamics survive while every contemporaneous relation is destroyed. Missing bars stay missing."""
+    marginal dynamics survive while every contemporaneous relation is destroyed. Names in the same group
+    draw distinct offsets so no same-sector pair keeps its real alignment (overflow beyond the distinct
+    multiples available is drawn with replacement). Missing bars stay missing."""
     rng = np.random.default_rng(seed)
     closes = panel.closes.to_numpy(dtype=float).copy()
     opens = panel.opens.to_numpy(dtype=float).copy()
+    columns = [str(c) for c in panel.closes.columns]
+    valid_rows: dict[int, np.ndarray] = {}
     for j in range(closes.shape[1]):
         c, o = closes[:, j], opens[:, j]
         valid = np.flatnonzero(np.isfinite(c) & np.isfinite(o) & (c > 0) & (o > 0))
-        m = valid.size
-        if m < 2 * block_sessions:
+        if valid.size >= 2 * block_sessions:
+            valid_rows[j] = valid
+    multiples: dict[int, int] = {}
+    grouped: set[int] = set()
+    for key in sorted(groups or {}):
+        members = [columns.index(n) for n in sorted(set((groups or {})[key])) if n in columns]
+        members = [j for j in members if j in valid_rows and j not in grouped]
+        if not members:
             continue
+        grouped.update(members)
+        min_blocks = min((valid_rows[j].size - 1) // block_sessions for j in members)
+        if min_blocks <= 1:
+            multiples.update(dict.fromkeys(members, 1))
+            continue
+        distinct = [int(k) for k in rng.permutation(np.arange(1, min_blocks))]
+        for position, j in enumerate(members):
+            multiples[j] = distinct[position] if position < len(distinct) else int(rng.integers(1, min_blocks))
+    for j in sorted(valid_rows):
+        if j in multiples:
+            continue
+        blocks = (valid_rows[j].size - 1) // block_sessions
+        multiples[j] = int(rng.integers(1, blocks)) if blocks > 1 else 1
+    for j, valid in valid_rows.items():
+        c, o = closes[:, j], opens[:, j]
+        m = valid.size
         cv, ov = c[valid], o[valid]
         returns = np.diff(np.log(cv))
         gaps = np.log(ov[1:]) - np.log(cv[:-1])
-        blocks = (m - 1) // block_sessions
-        shift = int(rng.integers(1, blocks)) * block_sessions if blocks > 1 else block_sessions
+        shift = multiples[j] * block_sessions
         returns, gaps = np.roll(returns, shift), np.roll(gaps, shift)
         new_c = np.empty(m)
         new_o = np.empty(m)
@@ -166,6 +202,8 @@ def synthetic_panel(
         )
         planted.append((y, x))
         used.update((y, x))
+    if len(planted) < spec.planted_pairs:
+        raise ValueError(f"only {len(planted)} disjoint same-sector pairs available for {spec.planted_pairs} planted")
     index = _session_index(sessions)
     closes = pd.DataFrame({s: np.exp(v) for s, v in sorted(logs.items())}, index=index)
     overnight = rng.normal(0.0, spec.overnight_vol, closes.shape)

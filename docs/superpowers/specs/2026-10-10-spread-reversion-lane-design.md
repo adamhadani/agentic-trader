@@ -172,7 +172,7 @@ previous close × a 0.3%-vol overnight factor. Thirty planted same-sector pairs 
 
 **C — null** (`alpha spread-null`, real cached bars). Ten seeds. Each symbol's close-to-close log
 returns and overnight gaps are circularly shifted by its own random multiple of 63 sessions
-(seeded) and the price paths rebuilt from the first close, so marginal dynamics survive and every
+(seeded; distinct within a sector, so no same-sector pair keeps its real alignment) and the price paths rebuilt from the first close, so marginal dynamics survive and every
 contemporaneous relation (correlation, cointegration) is destroyed. The full discovery pipeline runs
 on each. Pass when discovery passes in ≤ 1 of 10 seeds (the whole pipeline's false-acceptance rate,
 selection included).
