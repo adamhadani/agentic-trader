@@ -660,6 +660,20 @@ snapshot until it is four days old and then say `statistics stale`. A shutdown d
 process exit waits for the labelling thread's provider reads to finish. Details:
 [card evidence](card-evidence.md#card-statistics-snapshot).
 
+**Corporate-actions worker (October 11).** The daemon runs `corporate_actions` beside the research
+workers: once per New York date, outside the suggestion-scan windows, it fetches Alpaca corporate
+actions for the configured universe, tracked equity positions and `corporate_actions.extra_symbols`
+over a `process_date` window of 45 days back and 120 ahead, and appends one
+`corporate_actions_captured` event only when the content changed, plus one
+`corporate_actions_checked` event per run (`copilot db events --stream corporate-actions/capture
+--limit 1`). `/readyz` includes `corporate_actions` with a four-day limit
+(`corporate_actions.max_age_seconds`), so weekends and holidays stay ready. A failed run (a provider
+chunk, a normalisation error, more than `max_symbols` or `max_actions`) writes nothing and turns the
+component not ready; its `/readyz` detail is the exception type name only (the log has the message).
+The worker retries on the next poll, and the previous capture serves every consumer until it is four
+days old, after which consumers report `stale` and never refuse. The entry rule ships
+`entry_block: preview`. Details: [corporate actions](corporate-actions.md).
+
 Switching live ranking away from `setup_quality` to a shadow score is an operator
 decision, not something this report or the shadow block can do by itself. It needs a
 frozen study holdout result plus enough measured evidence from this report and `alpha

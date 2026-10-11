@@ -7,6 +7,7 @@ import click
 
 from agentic_trader.cli.commands.alpha import alpha_group
 from agentic_trader.cli.commands.alpha_controls import factor_controls_cmd, forecast_controls_cmd
+from agentic_trader.cli.commands.alpha_corporate_actions import corporate_actions_cmd
 from agentic_trader.cli.commands.alpha_forecast import forecast_study_cmd
 from agentic_trader.cli.commands.alpha_liquidity import liquidity_study_cmd
 from agentic_trader.cli.commands.alpha_spread import spread_null_cmd, spread_power_cmd, spread_study_cmd
@@ -98,6 +99,7 @@ cli.add_command(eval_command, name="eval")
 cli.add_command(db_group, name="db")
 cli.add_command(cards_group, name="cards")
 alpha_group.add_command(universe_snapshot_cmd)
+alpha_group.add_command(corporate_actions_cmd)
 alpha_group.add_command(liquidity_study_cmd)
 alpha_group.add_command(spread_power_cmd)
 alpha_group.add_command(spread_null_cmd)

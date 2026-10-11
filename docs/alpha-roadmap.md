@@ -564,6 +564,13 @@ problem.
    2026-10-28). Ingest corporate actions (splits, dividends) first: it is also the architecture
    review's P1 reconciliation gap, so the data work pays twice. Index inclusion is skipped (paid
    constituent history).
+
+   *Status (October 11):* corporate-actions ingestion is implemented ([corporate actions](corporate-actions.md)):
+   a typed Alpaca model and source, a daily daemon capture journaled under `corporate-actions/capture`
+   (readiness component `corporate_actions`), the `corporate_action` entry rule (default `preview`),
+   `/positions` notes, a named reason in the ledger's unsupported-activity issue, and a cached
+   research acquisition (`alpha corporate-actions`). Live bars stay raw and totals stay withheld. The
+   event-leg entry (part 2) follows with the acquisition's counts on the research cohort.
 4. **News as measured context.** Wire a news feed (none exists today; only a config heading) and
    attach LLM news scoring to cards as labelled context, attributed the way the LLM gate is
    attributed. Never a gate or signal until the attribution says so.
