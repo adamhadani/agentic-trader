@@ -46,7 +46,7 @@ from agentic_trader.constants import (
     executes_asset_class,
     normalize_asset_class,
 )
-from agentic_trader.data.corporate_actions import CorporateActionsLookup
+from agentic_trader.data.corporate_actions import CorporateActionsLookup, between, position_note
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
@@ -475,7 +475,12 @@ class TradingCopilot:
             ledger
             if ledger is not None
             else (
-                AccountLedgerService(self.broker, LedgerStore(self.db.workflows), config.accounting)
+                AccountLedgerService(
+                    self.broker,
+                    LedgerStore(self.db.workflows),
+                    config.accounting,
+                    corporate_actions=self.corporate_actions,
+                )
                 if self.broker.supports_activity_ledger
                 else None
             )
@@ -2647,6 +2652,21 @@ class TradingCopilot:
                 for pos in tracked
                 if pos["contract"].strip("/") not in broker_symbols
             )
+            lookup = await self._corporate_actions_lookup(datetime.now(UTC))
+            if lookup is not None:
+                if lookup.status != "ok":
+                    notes.append(f"Corporate-action evidence {lookup.status}.")
+                else:
+                    policy = self.config.corporate_actions
+                    today = datetime.now(ET_TZ).date()
+                    for bp in broker_positions:
+                        window = between(
+                            lookup.actions,
+                            bp.symbol,
+                            today - timedelta(days=policy.post_days),
+                            today + timedelta(days=policy.notes_horizon_days),
+                        )
+                        notes.extend(position_note(action, today) for action in window)
         else:
             for pos in tracked:
                 contract = pos["contract"]

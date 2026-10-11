@@ -1,9 +1,10 @@
-from datetime import UTC, datetime
+from datetime import UTC, date as _date, datetime
 from decimal import Decimal
 
 import pytest
 
-from agentic_trader.accounting.ledger import AccountSnapshot, reconcile
+from agentic_trader.accounting.ledger import AccountSnapshot, reconcile, unsupported_activity_issue
+from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 
 
 def fill(activity_id, side, qty, price):
@@ -94,3 +95,58 @@ def test_dividend_entitlement_quantity_does_not_change_inventory(qty):
         AccountSnapshot(account_id="account", cash="1", positions={}),
     )
     assert report.ready and report.income == 1
+
+
+SPLIT = CorporateAction(
+    id="s",
+    kind=CorporateActionKind.FORWARD_SPLIT,
+    symbol="NVDA",
+    effective_on=_date(2024, 6, 10),
+    old_rate=1.0,
+    new_rate=10.0,
+)
+DIVIDEND = CorporateAction(
+    id="d", kind=CorporateActionKind.CASH_DIVIDEND, symbol="NVDA", effective_on=_date(2024, 6, 12), rate=0.01
+)
+
+
+def test_unsupported_activity_names_a_matching_structural_action():
+    activity = {
+        "id": "a1",
+        "activity_type": "SSP",
+        "symbol": "NVDA",
+        "date": "2024-06-10",
+        "qty": "90",
+        "net_amount": "0",
+    }
+    assert unsupported_activity_issue("SSP", activity, [DIVIDEND, SPLIT]) == (
+        "Unsupported activity type: SSP (forward split 10-for-1 NVDA effective 2024-06-10 in corporate-action evidence)"
+    )
+
+
+@pytest.mark.parametrize(
+    "activity",
+    [
+        {"activity_type": "SSP", "symbol": "NVDA", "date": "2024-07-15"},  # outside ten days
+        {"activity_type": "SSP", "symbol": "AAPL", "date": "2024-06-10"},  # other symbol
+        {"activity_type": "SSP", "symbol": "NVDA", "date": "not-a-date"},
+        {"activity_type": "SSP"},
+    ],
+)
+def test_unsupported_activity_without_a_match_keeps_the_plain_text(activity):
+    assert unsupported_activity_issue("SSP", activity, [SPLIT]) == "Unsupported activity type: SSP"
+    assert unsupported_activity_issue("SSP", activity, []) == "Unsupported activity type: SSP"
+
+
+def test_reconcile_threads_actions_into_the_issue_and_still_withholds_totals():
+    snapshot = AccountSnapshot(account_id="acct", cash=Decimal(1000), positions={})
+    activities = [
+        {"id": "deposit", "activity_type": "JNLC", "net_amount": "1000"},
+        {"id": "a1", "activity_type": "SSP", "symbol": "NVDA", "date": "2024-06-10", "qty": "90", "net_amount": "0"},
+    ]
+    report = reconcile(activities, snapshot, corporate_actions=[SPLIT])
+    assert report.issues == [
+        "Unsupported activity type: SSP (forward split 10-for-1 NVDA effective 2024-06-10 in corporate-action evidence)"
+    ]
+    assert report.gross_realized is None and report.ready is False
+    assert reconcile(activities, snapshot).issues == ["Unsupported activity type: SSP"]

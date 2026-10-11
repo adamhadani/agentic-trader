@@ -6,11 +6,14 @@ Unknown activities fail closed; these totals are not tax-lot accounting.
 """
 
 from collections import defaultdict
-from datetime import UTC, datetime
+from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
+
+from agentic_trader.data.corporate_actions import CorporateAction
 
 
 Money = Annotated[Decimal, Field(allow_inf_nan=False)]
@@ -65,8 +68,33 @@ def decimal(value: Any) -> Decimal:
     return result
 
 
+def unsupported_activity_issue(
+    kind: str, activity: Mapping[str, Any], corporate_actions: Sequence[CorporateAction]
+) -> str:
+    """The ledger's unsupported-activity issue, naming a structural corporate action on the same symbol within
+    ten days when the capture holds one. Totals stay withheld either way; this explains, it does not resolve."""
+    base = f"Unsupported activity type: {kind}"
+    symbol = str(activity.get("symbol") or "").strip().upper()
+    raw_date = str(activity.get("date") or activity.get("transaction_time") or "")[:10]
+    try:
+        when = date.fromisoformat(raw_date)
+    except ValueError:
+        return base
+    for action in corporate_actions:
+        if action.is_structural and action.symbol == symbol and abs((action.effective_on - when).days) <= 10:
+            return (
+                f"{base} ({action.describe()} {symbol} effective {action.effective_on.isoformat()}"
+                " in corporate-action evidence)"
+            )
+    return base
+
+
 def reconcile(
-    activities: list[dict[str, Any]], snapshot: AccountSnapshot, *, cash_tolerance: Decimal = Decimal("0.01")
+    activities: list[dict[str, Any]],
+    snapshot: AccountSnapshot,
+    *,
+    cash_tolerance: Decimal = Decimal("0.01"),
+    corporate_actions: Sequence[CorporateAction] = (),
 ) -> LedgerReport:
     snapshot = AccountSnapshot.model_validate(snapshot.model_dump())
     inventory: defaultdict[str, Decimal] = defaultdict(Decimal)
@@ -107,7 +135,7 @@ def reconcile(
                 elif kind in INCOME:
                     income += amount
             else:
-                issues.append(f"Unsupported activity type: {kind}")
+                issues.append(unsupported_activity_issue(kind, activity, corporate_actions))
         except KeyError, ValueError, InvalidOperation, TypeError:
             issues.append("Invalid activity; inspect persisted evidence")
     deltas = {
