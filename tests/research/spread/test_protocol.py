@@ -154,3 +154,40 @@ def test_protocol_second_look_defaults_false_and_v1_hash_is_frozen():
     doc["second_look"] = True
     doc["second_look_note"] = "declared"
     assert SpreadProtocol.model_validate(doc).second_look is True
+
+
+PROTOCOL_V2_PATH = REPO / "config/research/spread/pairs-v2.json"
+
+
+def test_pairs_v2_is_v1_with_the_entry_rule_and_a_declared_second_look():
+    v1 = load_spread_protocol(PROTOCOL_PATH)
+    v2 = load_spread_protocol(PROTOCOL_V2_PATH)
+    assert v2.sha256 != v1.sha256
+    assert v2.protocol.version == 2 and v2.protocol.second_look is True
+    assert v2.protocol.cohort_sha256 == v1.protocol.cohort_sha256
+    t = v2.protocol.trading
+    assert (t.entry, t.z_entry_max, t.reenter_after_stop) == ("crossing", 4.0, False)
+    assert (t.z_entry, t.z_exit, t.z_stop, t.fill) == (2.0, 0.5, 4.0, "next_open")
+    same = (
+        "cohort",
+        "feed",
+        "adjustment",
+        "bars",
+        "windows",
+        "schedule",
+        "formation",
+        "costs_bps_per_side",
+        "decision_cost_bps",
+        "bootstrap",
+        "pass_rules",
+        "confirmation_rules",
+        "power",
+        "null_check",
+        "references",
+    )
+    for field in same:
+        assert getattr(v2.protocol, field) == getattr(v1.protocol, field), field
+    assert (
+        "crossing" in v2.protocol.hypotheses
+        and "second" in json.loads(PROTOCOL_V2_PATH.read_text())["second_look_note"].lower()
+    )
