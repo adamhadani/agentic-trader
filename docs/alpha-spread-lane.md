@@ -18,6 +18,13 @@ confirmation window is unused. See [the results](alpha-spread-results-2026-10-10
 record the v1 construction defect (entries with no upper z band against an in-sample σ) that a
 successor protocol would fix.
 
+**Result (2026-10-11, v2):** checks A (10/10) and C (0/10) passed and the v2 study also ended in
+`failed_discovery`: 234 trades, lane mean +0.02 bp/day at 5 bp (CI90 [−0.75, +0.67]), 54% hit rate,
+6 of 11 windows positive (S1 and S3 fail; S2 and S4 hold). The construction defect is gone and what
+remains is a coin flip between symmetric stops and reversions. The confirmation window is still
+unused. Two protocols have been evaluated on this discovery window; the lane is closed as an alpha
+source here ([v2 results](alpha-spread-results-2026-10-11.md)).
+
 ## 2. Cohort
 
 127 equities in 11 sectors, taken from the configured scan universe intersected with the pooled
@@ -138,7 +145,8 @@ returns on the 377 trades entered in the band 2 ≤ |z| < 4 (+7.5 bp net per tra
 so for that facet discovery returns were seen before v2 was frozen. Its file declares `second_look: true` and
 says the same. A v2 discovery pass is weaker evidence than v1's would have been; the confirmation window,
 never read, is the clean test.
-No third protocol runs on this discovery window without a new spec and operator approval.
+No third protocol runs on this discovery window without a new spec and operator approval. v2 ran on 2026-10-11 and failed discovery as well, so the discounting question did not arise;
+its results are recorded in [results 2026-10-11](alpha-spread-results-2026-10-11.md).
 
 ## 10. Relation to the display module
 
