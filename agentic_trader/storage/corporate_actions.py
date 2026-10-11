@@ -80,7 +80,7 @@ class CorporateActionsStore:
                     stream=CAPTURE_STREAM,
                     kind=EventKind.CORPORATE_ACTIONS_CAPTURED,
                     payload=capture,
-                    key=f"corporate-actions/capture/{capture['as_of']}/{capture['content_sha256']}",
+                    key=f"corporate-actions/capture/{capture['as_of']}/{capture['content_sha256']}/{capture['captured_at']}",
                 )
             await self.store.append(
                 session, stream=CHECK_STREAM, kind=EventKind.CORPORATE_ACTIONS_CHECKED, payload=check

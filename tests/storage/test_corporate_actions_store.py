@@ -72,6 +72,20 @@ async def test_changed_content_appends_and_a_return_to_old_content_appends_again
     assert (await store.latest_capture())["as_of"] == "2026-10-14"
 
 
+async def test_same_day_return_to_old_content_appends_again(store):
+    a = build_capture(page(RAW), as_of=date(2026, 10, 12), symbols=["AAPL"])
+    b = build_capture(
+        page({"forward_splits": RAW["forward_splits"]}, received=NOW + timedelta(hours=1)),
+        as_of=date(2026, 10, 12),
+        symbols=["AAPL"],
+    )
+    a_again = build_capture(page(RAW, received=NOW + timedelta(hours=2)), as_of=date(2026, 10, 12), symbols=["AAPL"])
+    assert [await store.record(c) for c in (a, b, a_again)] == [True, True, True]
+    latest = await store.latest_capture()
+    assert latest["content_sha256"] == a["content_sha256"] and latest["captured_at"] == a_again["captured_at"]
+    assert (await store.latest_check())["content_sha256"] == latest["content_sha256"]
+
+
 async def test_capture_bound_fails_closed(store):
     many = {"cash_dividends": [{**RAW["cash_dividends"][0], "id": f"d{i}", "symbol": f"S{i}"} for i in range(6)]}
     with pytest.raises(ValueError, match="exceeds 5 actions"):
