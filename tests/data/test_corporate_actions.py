@@ -255,6 +255,16 @@ def test_accepts_date_objects_and_rejects_bad_input():
     assert normalize_actions({}) == ()
 
 
+def test_malformed_dates_name_kind_and_field_and_duplicates_collapse_by_id():
+    with pytest.raises(ValueError, match="forward_split: malformed ex_date") as excinfo:
+        normalize_actions({"forward_splits": [{**RAW["forward_splits"][0], "ex_date": "2024-13-99"}]})
+    assert "2024-13-99" not in str(excinfo.value)
+    with pytest.raises(ValueError, match="cash_dividend: malformed payable_date"):
+        normalize_actions({"cash_dividends": [{**RAW["cash_dividends"][0], "payable_date": "soon"}]})
+    twice = {"stock_mergers": [RAW["stock_mergers"][0], {**RAW["stock_mergers"][0]}]}
+    assert [a.id for a in normalize_actions(twice)] == ["merger-pxd"]
+
+
 def _action(kind, symbol, effective, **extra):
     base = {"id": f"{kind}-{symbol}-{effective}", "kind": kind, "symbol": symbol, "effective_on": effective}
     if kind in (CorporateActionKind.FORWARD_SPLIT, CorporateActionKind.REVERSE_SPLIT):

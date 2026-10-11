@@ -173,17 +173,21 @@ class CorporateAction(BaseModel, frozen=True, extra="forbid"):
 
 
 def _as_date(value: Any, *, kind: CorporateActionKind, field: str) -> date:
+    """A ``date`` or ISO string; a malformed value names the kind and field, never the payload."""
     if isinstance(value, date):
         return value
     if isinstance(value, str) and value:
-        return date.fromisoformat(value[:10])
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            raise ValueError(f"corporate action {kind.value}: malformed {field}") from None
     raise ValueError(f"corporate action {kind.value}: missing or invalid {field}")
 
 
-def _optional_date(value: Any) -> date | None:
+def _optional_date(value: Any, *, kind: CorporateActionKind, field: str) -> date | None:
     if value is None or value == "":
         return None
-    return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+    return _as_date(value, kind=kind, field=field)
 
 
 def _normalize_one(kind: CorporateActionKind, raw: Mapping[str, Any]) -> CorporateAction:
@@ -209,7 +213,7 @@ def _normalize_one(kind: CorporateActionKind, raw: Mapping[str, Any]) -> Corpora
         "effective_on": _as_date(raw.get(effective_field), kind=kind, field=effective_field),
         "special": bool(raw.get("special", False)),
         "foreign": bool(raw.get("foreign", False)),
-        **{name: _optional_date(raw.get(name)) for name in _OPTIONAL_DATES},
+        **{name: _optional_date(raw.get(name), kind=kind, field=name) for name in _OPTIONAL_DATES},
         **rates,
     }
     return CorporateAction.model_validate(fields)
@@ -223,7 +227,10 @@ def normalize_actions(data: Mapping[str, Sequence[Mapping[str, Any]]]) -> tuple[
         if kind is None:
             raise ValueError(f"unknown corporate-action type {key!r}")
         actions.extend(_normalize_one(kind, row) for row in rows)
-    return tuple(sorted(actions, key=lambda a: (a.effective_on, a.symbol, a.id)))
+    # A two-symbol action (merger, spin-off, name change) comes back once per matched symbol when its
+    # symbols land in different request chunks; the id is the provider's identity, so keep the first.
+    unique = {action.id: action for action in reversed(actions)}
+    return tuple(sorted(unique.values(), key=lambda a: (a.effective_on, a.symbol, a.id)))
 
 
 def actions_for(actions: Sequence[CorporateAction], symbol: str) -> tuple[CorporateAction, ...]:
