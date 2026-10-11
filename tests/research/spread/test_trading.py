@@ -297,6 +297,9 @@ def test_exact_thresholds_at_the_band_edges():
     assert simulate_pair(fit(), cy, cx, oy, ox, RULE, window=0).trades[0].entry_pos == 2
     cy, cx, oy, ox = paths([0.0, 4.0, 4.0, 0.0, 0.0, 0.0])
     assert simulate_pair(fit(), cy, cx, oy, ox, V2, window=0).trades == ()
-    cy, cx, oy, ox = paths([0.0, 2.0, 2.5, 2.5, 0.0, 0.0, 0.0])
-    sim = simulate_pair(fit(), cy, cx, oy, ox, V2, window=0)
-    assert [t.entry_pos for t in sim.trades] == [2]  # the crossing happened at session 1 (0.0 -> 2.0), not at 2
+    # flat throughout: 4.5 is band-blocked, 2.0 arrives from above (no crossing), and 2.5 after a previous
+    # close of exactly 2.0 must not enter (strict <); the same path with 1.9 before it does enter.
+    cy, cx, oy, ox = paths([0.0, 4.5, 2.0, 2.5, 2.5, 0.0, 0.0])
+    assert simulate_pair(fit(), cy, cx, oy, ox, V2, window=0).trades == ()
+    cy, cx, oy, ox = paths([0.0, 4.5, 1.9, 2.5, 2.5, 0.0, 0.0])
+    assert [t.entry_pos for t in simulate_pair(fit(), cy, cx, oy, ox, V2, window=0).trades] == [4]
