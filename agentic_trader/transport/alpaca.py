@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import requests
 from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
+from alpaca.data.historical.corporate_actions import CorporateActionsClient
 from alpaca.data.historical.screener import ScreenerClient
 from alpaca.trading.client import TradingClient
 
@@ -107,3 +108,7 @@ class BoundedCryptoDataClient(BoundedTransport, CryptoHistoricalDataClient):
 
 class BoundedScreenerClient(BoundedTransport, ScreenerClient):
     pass
+
+
+class BoundedCorporateActionsClient(BoundedTransport, CorporateActionsClient):
+    """Historical corporate actions (``/v1/corporate-actions``) under the same socket bounds."""
