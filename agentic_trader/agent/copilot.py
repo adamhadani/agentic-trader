@@ -117,6 +117,7 @@ from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExe
 from agentic_trader.risk import (
     EntryIntent,
     RiskLimits,
+    corporate_action_block,
     entry_session_open,
     macro_lockout,
     per_trade_risk,
@@ -846,6 +847,9 @@ class TradingCopilot:
             # sequential per-contract phase so the whole universe competes for the few
             # cards this session may still spend.
             approved_candidates: list[tuple[Any, Any, Any]] = []
+            # One corporate-action read per scan: the deterministic COLLECT pass and the send phase
+            # judge every equity candidate against the same capture (None when the feature is off).
+            corporate_lookup = await self._corporate_actions_lookup(datetime.now(UTC))
 
             target_syms = [s.strip().upper() for s in symbols] if symbols else None
 
@@ -1092,6 +1096,7 @@ class TradingCopilot:
                             current_exposure=current_exposure,
                             active_positions=active_positions,
                             dry_run=dry_run,
+                            corporate_actions=corporate_lookup,
                         )
                         if reason == "duplicate":
                             if candidate.contract not in summary["duplicates"]:
@@ -1127,6 +1132,7 @@ class TradingCopilot:
                             current_exposure=current_exposure,
                             active_positions=active_positions,
                             dry_run=dry_run,
+                            corporate_actions=corporate_lookup,
                         )
                         if admitted is None:
                             drift_outcomes[symbol] = reason or "rejected"
@@ -1336,6 +1342,7 @@ class TradingCopilot:
                         active_positions=active_positions,
                         current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
                         current_equity=float(account_risk.equity) if account_risk else None,
+                        corporate_actions=corporate_lookup,
                     )
 
                     llm_by_rank[rank - 1] = self._llm_block(eval_res)
@@ -1440,6 +1447,7 @@ class TradingCopilot:
                             "shadow_ranker": shadow_by_rank[rank - 1],
                             "llm_verdict": llm_by_rank[rank - 1],
                             "book_sizing": book_block,
+                            "corporate_actions": eval_res.corporate_actions,
                             **evidence_keys,
                             # A drift card is never tagged dynamic; catalog admission requires
                             # its same-session event naming the contract.
@@ -1645,6 +1653,7 @@ class TradingCopilot:
         current_exposure: float,
         active_positions: list[dict[str, Any]],
         dry_run: bool,
+        corporate_actions: CorporateActionsLookup | None,
     ) -> tuple[tuple[Any, Any, Any] | None, str | None]:
         """Dedup, account risk and the deterministic evaluation shared by native and drift candidates.
 
@@ -1708,6 +1717,7 @@ class TradingCopilot:
             active_positions=active_positions,
             current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
             current_equity=float(account_risk.equity) if account_risk else None,
+            corporate_actions=corporate_actions,
         )
 
         if not det_res.approved:
@@ -3123,10 +3133,23 @@ class TradingCopilot:
         reason = earnings_blackout_reason(lookup, contract, now, blackout_days)
         return f"Earnings Blackout: {reason}" if reason else None
 
+    async def _corporate_action_reason(self, contract: str, now: datetime) -> str | None:
+        """The evaluator's corporate-action gate at tap time: enforce refuses, preview and stale evidence never do."""
+        policy = self.config.corporate_actions
+        if policy.entry_block != "enforce":
+            return None
+        lookup = await self._corporate_actions_lookup(now)
+        if lookup is None or lookup.status != "ok":
+            return None
+        rejection = corporate_action_block(
+            lookup.actions, contract, now.astimezone(ET_TZ).date(), pre_days=policy.pre_days, post_days=policy.post_days
+        )
+        return rejection.reason if rejection is not None else None
+
     async def _tap_gate_reason(
         self, request: OrderRequest, sig: dict[str, Any], regime: Any, *, asset_class: str, now: datetime
     ) -> str | None:
-        """First failing tap-time gate: macro/regime/reward:risk, then the equity earnings blackout."""
+        """First failing tap-time gate: macro/regime/reward:risk, then equity earnings and corporate-action gates."""
         assert request.entry_price is not None and request.stop_loss is not None
         # Degenerate levels are MISSED by the assessment itself; the macro gate divides by the risk.
         if abs(request.entry_price - request.stop_loss) > 0:
@@ -3134,7 +3157,8 @@ class TradingCopilot:
             if reason:
                 return reason
         if asset_class.upper() == AssetClass.EQUITY:
-            return await self._earnings_blackout_reason(sig["contract"], now)
+            reason = await self._earnings_blackout_reason(sig["contract"], now)
+            return reason or await self._corporate_action_reason(sig["contract"], now)
         return None
 
     async def _journal_card_tap(

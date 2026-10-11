@@ -8,7 +8,7 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import litellm
@@ -30,7 +30,13 @@ from agentic_trader.constants import (
     AssetClass,
     Direction,
 )
-from agentic_trader.market.session import MarketSessionProtocol
+from agentic_trader.data.corporate_actions import (
+    CorporateActionKind,
+    CorporateActionsLookup,
+    between,
+    blocking_corporate_action,
+)
+from agentic_trader.market.session import ET_TZ, MarketSessionProtocol
 from agentic_trader.research.alpha.strategy import bracket_prices, entry_limit, execution_policy_from_dict
 from agentic_trader.risk import (
     Book,
@@ -40,6 +46,7 @@ from agentic_trader.risk import (
     RiskRule,
     aggregate_stop_risk,
     book_gates,
+    corporate_action_block,
     entry_session_open,
     macro_lockout,
     per_trade_risk,
@@ -111,6 +118,7 @@ class LLMTradeEvaluation(BaseModel):
     gating_reasons: list[str] | None = None
     session_type: str = "RTH"
     earnings_note: str | None = None
+    corporate_actions: dict[str, Any] | None = None  # the scan's corporate-action block (docs/corporate-actions.md)
     # Every parsed LLM answer: approved/rejection_reason, the bracket as it would be
     # applied, and whether the verdict decided the card (native) or is commentary (catalog).
     llm_verdict: dict[str, Any] | None = None
@@ -359,16 +367,19 @@ class RiskEvaluator:
         active_positions: list[dict[str, Any]] | None = None,
         current_drawdown_pct: float = 0.0,
         current_equity: float | None = None,
+        corporate_actions: CorporateActionsLookup | None = None,
     ) -> LLMTradeEvaluation:
         """Size the candidate, run the deterministic gates, then (optionally) the LLM.
 
         Gate order, first refusal wins: sizing block; the shared book rules
         (``agentic_trader.risk.book_gates``) on ``active_positions`` -- open positions plus the
         cards this scan already sent; the statistical return-correlation check; macro lockout;
-        earnings blackout; the regime rules (breakout suppression, then ``reward_risk`` at the
-        required ratio, which only a versioned alpha bracket can fail); session. A refusal by a shared rule
-        carries that rule's text and ``rejection_rule``. ``current_open_notional`` bounds the
-        sizing notional ceiling; the book's own notional is what the caps judge.
+        earnings blackout; corporate action (``enforce`` only, from the scan's ``corporate_actions``
+        lookup; ``preview`` and stale evidence only annotate); the regime rules (breakout suppression,
+        then ``reward_risk`` at the required ratio, which only a versioned alpha bracket can fail);
+        session. A refusal by a shared rule carries that rule's text and ``rejection_rule``.
+        ``current_open_notional`` bounds the sizing notional ceiling; the book's own notional is what
+        the caps judge.
         """
         # One clock for the deterministic lockout gate and the prompt's macro block,
         # so the LLM never sees a verdict that differs from the gate's.
@@ -559,6 +570,60 @@ class RiskEvaluator:
                 )
             earnings_note_value = earnings_note(earnings_lookup, evaluated_at, blackout_days)
 
+        # 2c. Corporate actions (agentic_trader.risk.corporate_action_block; equities only). A missing
+        # or stale capture never refuses; preview annotates; enforce refuses a structural action.
+        corporate_block: dict[str, Any] | None = None
+        corporate_policy = self.config.corporate_actions
+        if asset_class == AssetClass.EQUITY and corporate_actions is not None and corporate_policy.entry_block != "off":
+            if corporate_actions.status != "ok":
+                corporate_block = {"status": corporate_actions.status, "mode": corporate_policy.entry_block}
+            else:
+                today = evaluated_at.astimezone(ET_TZ).date()
+                rejection = corporate_action_block(
+                    corporate_actions.actions,
+                    candidate.contract,
+                    today,
+                    pre_days=corporate_policy.pre_days,
+                    post_days=corporate_policy.post_days,
+                )
+                action = blocking_corporate_action(
+                    corporate_actions.actions,
+                    candidate.contract,
+                    today,
+                    pre_days=corporate_policy.pre_days,
+                    post_days=corporate_policy.post_days,
+                )
+                note = next(
+                    (
+                        a
+                        for a in between(
+                            corporate_actions.actions,
+                            candidate.contract,
+                            today,
+                            today + timedelta(days=corporate_policy.pre_days),
+                        )
+                        if a.kind == CorporateActionKind.CASH_DIVIDEND
+                    ),
+                    None,
+                )
+                corporate_block = {
+                    "status": "ok",
+                    "mode": corporate_policy.entry_block,
+                    "as_of": corporate_actions.as_of.isoformat() if corporate_actions.as_of else None,
+                    "would_block": rejection is not None,
+                    "action": action.summary() if action is not None else None,
+                    "reason": rejection.reason if rejection is not None else None,
+                    "note": note.summary() if note is not None else None,
+                }
+                if rejection is not None and corporate_policy.entry_block == "enforce":
+                    return _rejected(
+                        rejection.reason,
+                        rejection.rule,
+                        thesis=f"Rejected: corporate action for {candidate.contract}.",
+                        earnings_note=earnings_note_value,
+                        corporate_actions=corporate_block,
+                    )
+
         # 3. Regime breakout suppression (agentic_trader.risk.regime_breakout); the regime detail
         #    stays in the thesis.
         if rejection := regime_breakout(candidate.strategy, regime.breakout_allowed):
@@ -572,6 +637,7 @@ class RiskEvaluator:
                     f"Rejected: breakout suppressed due to {regime.vix_regime.value} volatility regime (VIX {regime.vix:.1f}{macro_detail})."
                 ),
                 earnings_note=earnings_note_value,
+                corporate_actions=corporate_block,
             )
         # 3b. The regime's reward/risk (agentic_trader.risk.reward_risk at required_rr), the tap-time regime
         #     gate's next rule: a native target is built at required_rr and always passes; a versioned alpha
@@ -582,6 +648,7 @@ class RiskEvaluator:
                 rejection.rule,
                 thesis=f"Rejected by risk manager: {rejection.reason}",
                 earnings_note=earnings_note_value,
+                corporate_actions=corporate_block,
             )
 
         # 4. Session (agentic_trader.risk.entry_session_open): a closed session refuses; an open
@@ -599,6 +666,7 @@ class RiskEvaluator:
                     thesis=f"Rejected: market session is {current_session_type}.",
                     session_type=current_session_type,
                     earnings_note=earnings_note_value,
+                    corporate_actions=corporate_block,
                 )
 
         macro_summary = await self.calendar.get_macro_summary_for_prompt(
@@ -635,6 +703,7 @@ class RiskEvaluator:
                 quantity=quantity,
                 asset_class=asset_class,
                 earnings_note=earnings_note_value,
+                corporate_actions=corporate_block,
             )
 
         # 3. Call LLM for final reasoning & thesis synthesis
@@ -787,7 +856,9 @@ class RiskEvaluator:
 
             # Never ask the LLM for the earnings note (prompt/schema stay untouched);
             # attach it deterministically after the LLM result is parsed.
-            evaluation = LLMTradeEvaluation(**data).model_copy(update={"earnings_note": earnings_note_value})
+            evaluation = LLMTradeEvaluation(**data).model_copy(
+                update={"earnings_note": earnings_note_value, "corporate_actions": corporate_block}
+            )
             if applied and evaluation.llm_verdict is not None:
                 # Record exactly the decision taken, after pydantic's own bool parsing.
                 evaluation.llm_verdict["approved"] = evaluation.approved
@@ -822,4 +893,5 @@ class RiskEvaluator:
                 gating_reasons=gating_reasons,
                 session_type=current_session_type,
                 earnings_note=earnings_note_value,
+                corporate_actions=corporate_block,
             )

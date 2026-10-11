@@ -6,6 +6,7 @@ import pytest
 
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import StrategyType
+from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 from agentic_trader.risk import (
     Book,
     BookPosition,
@@ -18,6 +19,7 @@ from agentic_trader.risk import (
     asset_class_notional,
     book_gates,
     concurrent_positions,
+    corporate_action_block,
     correlation_group,
     drawdown_halt,
     earnings_days_out,
@@ -341,3 +343,40 @@ def test_book_gates_on_an_invalid_book_report_only_the_unknown_exposure():
     valid_book = Book(bad_book.positions[1:])
     assert RiskRule.EXPOSURE_UNKNOWN not in {r.rule for r in book_gates(intent(), valid_book, BUDGET, limits())}
     assert len(book_gates(intent(), valid_book, BUDGET, limits())) > 1
+
+
+def _corporate(kind, symbol, effective, **extra):
+    base = {"id": f"{kind}-{symbol}-{effective}", "kind": kind, "symbol": symbol, "effective_on": effective}
+    if kind in (CorporateActionKind.FORWARD_SPLIT, CorporateActionKind.REVERSE_SPLIT):
+        base.update(old_rate=1.0, new_rate=10.0)
+    if kind == CorporateActionKind.CASH_DIVIDEND:
+        base.update(rate=0.5)
+    return CorporateAction.model_validate({**base, **extra})
+
+
+CA_TODAY = date(2026, 10, 12)
+
+
+@pytest.mark.parametrize(
+    ("offset", "blocks"),
+    [(-6, False), (-5, True), (0, True), (7, True), (8, False)],
+)
+def test_corporate_action_rule_boundaries(offset, blocks):
+    split = _corporate(CorporateActionKind.FORWARD_SPLIT, "NVDA", CA_TODAY + timedelta(days=offset))
+    rejection = corporate_action_block((split,), "nvda", CA_TODAY, pre_days=7, post_days=5)
+    assert (rejection is not None) is blocks
+    if rejection is not None:
+        assert rejection.rule == RiskRule.CORPORATE_ACTION == "corporate_action"
+        assert str(rejection).startswith("Corporate action: NVDA forward split 10-for-1 effective ")
+        assert str(rejection).endswith("— within the 7/5-day blackout.")
+
+
+def test_corporate_action_rule_text_and_dividends():
+    split = _corporate(CorporateActionKind.FORWARD_SPLIT, "NVDA", CA_TODAY + timedelta(days=3))
+    assert str(corporate_action_block((split,), "NVDA", CA_TODAY, pre_days=7, post_days=5)) == (
+        "Corporate action: NVDA forward split 10-for-1 effective 2026-10-15 (in 3 days) — within the 7/5-day blackout."
+    )
+    dividend = _corporate(CorporateActionKind.CASH_DIVIDEND, "NVDA", CA_TODAY)
+    assert corporate_action_block((dividend,), "NVDA", CA_TODAY, pre_days=7, post_days=5) is None
+    assert corporate_action_block((), "NVDA", CA_TODAY, pre_days=7, post_days=5) is None
+    assert corporate_action_block((split,), "AAPL", CA_TODAY, pre_days=7, post_days=5) is None

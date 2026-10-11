@@ -15,11 +15,19 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from agentic_trader.constants import AssetClass, Direction, StrategyType
+from agentic_trader.data.corporate_actions import blocking_corporate_action, relative_days
 from agentic_trader.risk.book import Book
 from agentic_trader.risk.capital import RiskBudget
 from agentic_trader.risk.limits import RiskLimits, normalize_symbol
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from agentic_trader.data.corporate_actions import CorporateAction
 
 
 __all__ = [
@@ -31,6 +39,7 @@ __all__ = [
     "asset_class_notional",
     "book_gates",
     "concurrent_positions",
+    "corporate_action_block",
     "correlation_group",
     "drawdown_halt",
     "earnings_days_out",
@@ -70,6 +79,7 @@ class RiskRule(StrEnum):
     SESSION_CLOSED = "session_closed"
     SESSION_NOT_RTH = "session_not_rth"
     REGIME_BREAKOUT = "regime_breakout"
+    CORPORATE_ACTION = "corporate_action"
 
 
 @dataclass(frozen=True)
@@ -372,6 +382,24 @@ def earnings_days_out(event_date: date | None, today: date, blackout_days: int) 
         return None
     days = (event_date - today).days
     return days if 0 <= days <= blackout_days else None
+
+
+def corporate_action_block(
+    actions: Sequence[CorporateAction], symbol: str, today: date, *, pre_days: int, post_days: int
+) -> Rejection | None:
+    """Rule ``corporate_action``: the first structural action (anything but a cash dividend) on ``symbol``
+    effective within ``[today - post_days, today + pre_days]`` refuses the entry; raw bars straddle it or the
+    instrument is about to change. The one predicate behind the scan (evaluator) gate, the tap gate and
+    re-evaluate; admission does not apply it (as with ``earnings_blackout``).
+    """
+    action = blocking_corporate_action(actions, symbol, today, pre_days=pre_days, post_days=post_days)
+    if action is None:
+        return None
+    return Rejection(
+        RiskRule.CORPORATE_ACTION,
+        f"Corporate action: {action.symbol} {action.describe()} effective {action.effective_on.isoformat()} "
+        f"({relative_days(action.effective_on, today)}) — within the {pre_days}/{post_days}-day blackout.",
+    )
 
 
 def entry_session_open(is_open: bool, is_rth: bool, enforce_rth: bool, detail: str = "") -> Rejection | None:
