@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from agentic_trader.research.spread.protocol import (
     SpreadCohort,
     SpreadProtocol,
+    TradingRule,
     load_spread_cohort,
     load_spread_protocol,
 )
@@ -107,3 +108,49 @@ def test_loader_rejects_cohort_hash_mismatch(tmp_path):
     loaded = load_spread_protocol(path)
     cohort = load_spread_cohort(COHORT_PATH)
     assert loaded.protocol.cohort_sha256 != cohort.sha256  # the executor refuses this pair (Task 7)
+
+
+def test_trading_rule_defaults_reproduce_v1():
+    rule = TradingRule(z_entry=2.0, z_exit=0.5, z_stop=4.0, fill="next_open")
+    assert rule.entry == "threshold"
+    assert rule.z_entry_max is None
+    assert rule.reenter_after_stop is True
+
+
+def test_trading_rule_v2_fields_load():
+    rule = TradingRule(
+        z_entry=2.0,
+        z_exit=0.5,
+        z_stop=4.0,
+        fill="next_open",
+        entry="crossing",
+        z_entry_max=4.0,
+        reenter_after_stop=False,
+    )
+    assert rule.entry == "crossing" and rule.z_entry_max == 4.0 and rule.reenter_after_stop is False
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"z_entry_max": 2.0}, "z_entry_max"),  # must exceed z_entry
+        ({"z_entry_max": 1.5}, "z_entry_max"),
+        ({"z_entry_max": 4.5}, "z_entry_max"),  # must not exceed z_stop
+        ({"entry": "momentum"}, "entry"),
+        ({"band": 3.0}, "extra"),
+    ],
+)
+def test_trading_rule_entry_band_validation(kwargs, match):
+    with pytest.raises(ValidationError, match=match):
+        TradingRule(z_entry=2.0, z_exit=0.5, z_stop=4.0, fill="next_open", **kwargs)
+
+
+def test_protocol_second_look_defaults_false_and_v1_hash_is_frozen():
+    loaded = load_spread_protocol(PROTOCOL_PATH)
+    assert loaded.protocol.second_look is False
+    assert loaded.sha256 == "88dc4945751bfdbcb45b21dca9ad84f3266239ab0b839c9a01f44986bcaaf352"
+    assert loaded.protocol.second_look_note == ""
+    doc = _protocol_doc()
+    doc["second_look"] = True
+    doc["second_look_note"] = "declared"
+    assert SpreadProtocol.model_validate(doc).second_look is True
