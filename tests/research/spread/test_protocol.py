@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from agentic_trader.research.spread.protocol import (
     SpreadCohort,
     SpreadProtocol,
+    TradingRule,
     load_spread_cohort,
     load_spread_protocol,
 )
@@ -107,3 +108,86 @@ def test_loader_rejects_cohort_hash_mismatch(tmp_path):
     loaded = load_spread_protocol(path)
     cohort = load_spread_cohort(COHORT_PATH)
     assert loaded.protocol.cohort_sha256 != cohort.sha256  # the executor refuses this pair (Task 7)
+
+
+def test_trading_rule_defaults_reproduce_v1():
+    rule = TradingRule(z_entry=2.0, z_exit=0.5, z_stop=4.0, fill="next_open")
+    assert rule.entry == "threshold"
+    assert rule.z_entry_max is None
+    assert rule.reenter_after_stop is True
+
+
+def test_trading_rule_v2_fields_load():
+    rule = TradingRule(
+        z_entry=2.0,
+        z_exit=0.5,
+        z_stop=4.0,
+        fill="next_open",
+        entry="crossing",
+        z_entry_max=4.0,
+        reenter_after_stop=False,
+    )
+    assert rule.entry == "crossing" and rule.z_entry_max == 4.0 and rule.reenter_after_stop is False
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"z_entry_max": 2.0}, "z_entry_max"),  # must exceed z_entry
+        ({"z_entry_max": 1.5}, "z_entry_max"),
+        ({"z_entry_max": 4.5}, "z_entry_max"),  # must not exceed z_stop
+        ({"entry": "momentum"}, "entry"),
+        ({"band": 3.0}, "extra"),
+    ],
+)
+def test_trading_rule_entry_band_validation(kwargs, match):
+    with pytest.raises(ValidationError, match=match):
+        TradingRule(z_entry=2.0, z_exit=0.5, z_stop=4.0, fill="next_open", **kwargs)
+
+
+def test_protocol_second_look_defaults_false_and_v1_hash_is_frozen():
+    loaded = load_spread_protocol(PROTOCOL_PATH)
+    assert loaded.protocol.second_look is False
+    assert loaded.sha256 == "88dc4945751bfdbcb45b21dca9ad84f3266239ab0b839c9a01f44986bcaaf352"
+    assert loaded.protocol.second_look_note == ""
+    doc = _protocol_doc()
+    doc["second_look"] = True
+    doc["second_look_note"] = "declared"
+    assert SpreadProtocol.model_validate(doc).second_look is True
+
+
+PROTOCOL_V2_PATH = REPO / "config/research/spread/pairs-v2.json"
+
+
+def test_pairs_v2_is_v1_with_the_entry_rule_and_a_declared_second_look():
+    v1 = load_spread_protocol(PROTOCOL_PATH)
+    v2 = load_spread_protocol(PROTOCOL_V2_PATH)
+    assert v2.sha256 != v1.sha256
+    assert v2.protocol.version == 2 and v2.protocol.second_look is True
+    assert v2.protocol.cohort_sha256 == v1.protocol.cohort_sha256
+    t = v2.protocol.trading
+    assert (t.entry, t.z_entry_max, t.reenter_after_stop) == ("crossing", 4.0, False)
+    assert (t.z_entry, t.z_exit, t.z_stop, t.fill) == (2.0, 0.5, 4.0, "next_open")
+    same = (
+        "cohort",
+        "feed",
+        "adjustment",
+        "bars",
+        "windows",
+        "schedule",
+        "formation",
+        "costs_bps_per_side",
+        "decision_cost_bps",
+        "bootstrap",
+        "pass_rules",
+        "confirmation_rules",
+        "power",
+        "null_check",
+        "references",
+    )
+    for field in same:
+        assert getattr(v2.protocol, field) == getattr(v1.protocol, field), field
+    assert (
+        "crossing" in v2.protocol.hypotheses
+        and "second" in json.loads(PROTOCOL_V2_PATH.read_text())["second_look_note"].lower()
+    )

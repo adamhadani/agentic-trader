@@ -75,6 +75,18 @@ def _weights(beta: float) -> tuple[float, float]:
     return 1.0 / (1.0 + abs(beta)), abs(beta) / (1.0 + abs(beta))
 
 
+def _entry_allowed(z: np.ndarray, t: int, rule: TradingRule) -> bool:
+    """Flat-only entry test at close ``t`` (``z[t]`` is finite)."""
+    magnitude = abs(z[t])
+    if magnitude < rule.z_entry:
+        return False
+    if rule.z_entry_max is not None and magnitude >= rule.z_entry_max:
+        return False
+    if rule.entry == "crossing":
+        return t >= 1 and math.isfinite(z[t - 1]) and abs(z[t - 1]) < rule.z_entry
+    return True
+
+
 def simulate_pair(
     fit: PairFit,
     closes_y: np.ndarray,
@@ -98,6 +110,7 @@ def simulate_pair(
     position: _Position | None = None
     pending_entry: tuple[int, float] | None = None  # (side, signal z)
     pending_exit: tuple[str, float] | None = None  # (reason, signal z)
+    retired = False  # a stop-out ends trading of this pair for the window when re-entry is disallowed
 
     def mark(pos: _Position, price_y: float, price_x: float) -> float:
         value = pos.side * w_y * (price_y - pos.last_y) / pos.entry_y
@@ -133,6 +146,8 @@ def simulate_pair(
         if position is not None and pending_exit is not None and opens_ok:
             daily[t] += mark(position, oy[t], ox[t])
             close(position, t, pending_exit[0], pending_exit[1])
+            if pending_exit[0] == "stop" and not rule.reenter_after_stop:
+                retired = True
             position, pending_exit = None, None
         if position is None and pending_entry is not None and opens_ok:
             side, signal_z = pending_entry
@@ -152,11 +167,8 @@ def simulate_pair(
                     pending_exit = ("reverted", float(z[t]))
                 elif abs(z[t]) >= rule.z_stop:
                     pending_exit = ("stop", float(z[t]))
-            elif position is None and pending_entry is None and not last:
-                if z[t] <= -rule.z_entry:
-                    pending_entry = (1, float(z[t]))
-                elif z[t] >= rule.z_entry:
-                    pending_entry = (-1, float(z[t]))
+            elif position is None and pending_entry is None and not last and not retired and _entry_allowed(z, t, rule):
+                pending_entry = (1 if z[t] < 0.0 else -1, float(z[t]))
         # 4. the window's last session closes out at its (last available) close
         if last and position is not None:
             close(position, t, "window_end", float(z[t]) if math.isfinite(z[t]) else float("nan"))

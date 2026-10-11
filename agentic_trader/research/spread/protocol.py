@@ -147,11 +147,16 @@ class TradingRule(BaseModel, frozen=True, extra="forbid"):
     z_exit: float = Field(ge=0)
     z_stop: float = Field(gt=0)
     fill: Literal["next_open"]
+    entry: Literal["threshold", "crossing"] = "threshold"
+    z_entry_max: float | None = None
+    reenter_after_stop: bool = True
 
     @model_validator(mode="after")
     def _bands(self) -> TradingRule:
         if not self.z_exit < self.z_entry < self.z_stop:
             raise ValueError("bands must satisfy z_exit < z_entry < z_stop")
+        if self.z_entry_max is not None and not self.z_entry < self.z_entry_max <= self.z_stop:
+            raise ValueError("z_entry_max must satisfy z_entry < z_entry_max <= z_stop")
         return self
 
 
@@ -221,6 +226,8 @@ class SpreadProtocol(BaseModel, frozen=True, extra="forbid"):
     confirmation_rules: PassRules
     power: PowerSpec
     null_check: NullSpec
+    second_look: bool = False
+    second_look_note: str = ""
 
     @model_validator(mode="after")
     def _consistent(self) -> SpreadProtocol:

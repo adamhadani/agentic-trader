@@ -13,6 +13,11 @@ market-neutral by construction. The lane is research only: every result carries
 exists (a probe would need atomic legs, shared protection and borrow checks), and `/pairs` stays
 display-only. A `confirmed` result only makes a capped probe specifiable.
 
+**Result (2026-10-10):** checks A and C passed and the v1 study ended in `failed_discovery`; the
+confirmation window is unused. See [the results](alpha-spread-results-2026-10-10.md), which also
+record the v1 construction defect (entries with no upper z band against an in-sample σ) that a
+successor protocol would fix.
+
 ## 2. Cohort
 
 127 equities in 11 sectors, taken from the configured scan universe intersected with the pooled
@@ -31,7 +36,7 @@ changed file is a new version.
 | confirmation trading windows | 2024-01-02 to 2026-07-31 (one use, journaled) |
 | schedule | formation 504 sessions, trading 126 sessions, non-overlapping tiles, whole windows only |
 | formation | Engle-Granger `coint` (trend `c`, maxlag 1, no autolag), p < 0.05, half-life 5-42 sessions, abs(beta) in [0.25, 4], top 20 by t-statistic, at least 60 eligible names |
-| trading | z entry 2.0, exit 0.5, stop 4.0, fills at the next open |
+| trading | v1: z entry 2.0, exit 0.5, stop 4.0, fills at the next open. v2 (`pairs-v2.json`): the same levels, entry only when abs(z) crosses 2.0 from inside (previous close abs(z) < 2.0) and abs(z) < 4.0 at the signal; a stop retires the pair for the rest of the window (a reversion does not) |
 | costs | 0 / 5 / 10 bp per side; 5 bp decides |
 | bootstrap | stationary, block mean 10, 2000 draws, seed 20261010 |
 | discovery pass rules | 100 closed trades, 8 windows, 60% of windows positive, abs(beta to SPY) at most 0.2, 1% trim |
@@ -124,6 +129,16 @@ history, distinct from the offsets already taken in its sector; a forced collisi
 is recorded (`offset_collisions`). Same-sector pairs share names, so formation-stage false
 positives are dependent and heavy-tailed; the whole-pipeline false-acceptance rate is what check C
 measures.
+
+Second look. Protocol v2 is the second protocol evaluated on the same discovery window; it changes only
+the entry rule. The crossing and stop-retirement facets came from construction statistics of the v1 run
+(84% of v1 entries opened at |z| ≥ 4, i.e. into spreads already beyond the stop; 14.7% of trading sessions
+sit there). The upper-band facet was motivated after the v1 results doc had reported a post hoc read of v1
+returns on the 377 trades entered in the band 2 ≤ |z| < 4 (+7.5 bp net per trade, 7 of 11 windows positive),
+so for that facet discovery returns were seen before v2 was frozen. Its file declares `second_look: true` and
+says the same. A v2 discovery pass is weaker evidence than v1's would have been; the confirmation window,
+never read, is the clean test.
+No third protocol runs on this discovery window without a new spec and operator approval.
 
 ## 10. Relation to the display module
 
