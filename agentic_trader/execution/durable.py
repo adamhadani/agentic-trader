@@ -60,6 +60,8 @@ class EventKind(StrEnum):
     CARD_TAP_ASSESSED = "card_tap_assessed"
     CARD_REEVALUATE_REQUESTED = "card_reevaluate_requested"
     PEAD_DECISION = "pead_decision"
+    CORPORATE_ACTIONS_CAPTURED = "corporate_actions_captured"
+    CORPORATE_ACTIONS_CHECKED = "corporate_actions_checked"
     CARD_STATS_SNAPSHOT = "card_stats_snapshot"
 
 

@@ -294,6 +294,55 @@ class BookSizingConfig(BaseModel):
         return self
 
 
+EntryBlockMode = Literal["off", "preview", "enforce"]
+
+
+class CorporateActionsConfig(BaseModel):
+    """Corporate-action ingestion and its consumers (docs/corporate-actions.md).
+
+    The daemon captures the desk's symbols once per New York date over a rolling
+    ``process_date`` window. ``entry_block`` ships ``preview``: a structural action (anything but a
+    cash dividend) effective within ``post_days`` behind or ``pre_days`` ahead is journaled on the
+    card and shown as a line; ``enforce`` refuses the card. Stale or missing evidence never refuses.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = True
+    entry_block: EntryBlockMode = "preview"
+    pre_days: int = Field(default=7, ge=0, le=60)
+    post_days: int = Field(default=5, ge=0, le=60)
+    notes_horizon_days: int = Field(default=10, ge=0, le=90)
+    lookback_days: int = Field(default=45, ge=1, le=365)
+    lookahead_days: int = Field(default=120, ge=1, le=365)
+    max_symbols: int = Field(default=600, ge=1, le=2000)
+    chunk_size: int = Field(default=100, ge=1, le=500)
+    max_actions: int = Field(default=5000, ge=1)
+    poll_seconds: int = Field(default=300, ge=10, le=3600)
+    max_age_seconds: int = Field(default=345600, gt=0)
+    max_requests_per_minute: int = Field(default=60, ge=1, le=200)
+    extra_symbols: list[str] = Field(default_factory=list, max_length=200)
+
+    @field_validator("entry_block", mode="before")
+    @classmethod
+    def yaml_off(cls, value: Any) -> Any:
+        # YAML 1.1 reads a bare `off` as False; that spelling means "off". `on`/True stays invalid.
+        return "off" if value is False else value
+
+    @field_validator("extra_symbols")
+    @classmethod
+    def equity_symbols(cls, symbols: list[str]) -> list[str]:
+        if len(set(symbols)) != len(symbols) or any(not re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", s) for s in symbols):
+            raise ValueError("corporate_actions.extra_symbols must be distinct upper-case equity symbols")
+        return symbols
+
+    @model_validator(mode="after")
+    def age_exceeds_poll(self) -> CorporateActionsConfig:
+        if self.max_age_seconds <= self.poll_seconds:
+            raise ValueError("corporate_actions.max_age_seconds must exceed poll_seconds")
+        return self
+
+
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
     "us_broad_market": ["/MES", "/ES", "SPY", "VOO", "IVV"],
     "us_tech": ["/MNQ", "/NQ", "QQQ", "XLK"],
@@ -767,6 +816,7 @@ class AppConfig(BaseModel):
     scan: ScanConfig = Field(default_factory=ScanConfig)
     card_policy: CardPolicyConfig = Field(default_factory=CardPolicyConfig)
     book_sizing: BookSizingConfig = Field(default_factory=BookSizingConfig)
+    corporate_actions: CorporateActionsConfig = Field(default_factory=CorporateActionsConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
