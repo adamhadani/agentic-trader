@@ -1,5 +1,6 @@
 """Research acquisition: one hash-named cache file per request, digest-checked on reuse, no provider on a hit."""
 
+import hashlib
 import json
 from datetime import UTC, date, datetime
 
@@ -7,6 +8,7 @@ import pytest
 
 from agentic_trader.data.corporate_actions import CorporateActionsPage, normalize_actions
 from agentic_trader.research.corporate_actions import fetch_corporate_actions_cached
+from agentic_trader.storage.workflow import encode
 from tests.data.test_corporate_actions import RAW
 
 
@@ -36,6 +38,23 @@ async def test_fetch_writes_a_hash_named_file_and_reuses_it(tmp_path):
     again, manifest_again = await fetch_corporate_actions_cached(*args, pace=_pace)
     assert again == actions and source.calls == 1 and manifest_again["content_sha256"] == manifest["content_sha256"]
     assert manifest_again["cached"] is True and manifest["cached"] is False
+    assert json.loads(files[0].read_text())["request"]["format"] == 2
+
+
+async def test_a_file_written_before_the_pagination_fix_is_never_reused(tmp_path):
+    legacy = {"source": "alpaca", "symbols": ["AAPL"], "start": "2024-01-01", "end": "2024-12-31"}
+    legacy_file = tmp_path / "corporate-actions" / f"{hashlib.sha256(encode(legacy).encode()).hexdigest()}.json"
+    legacy_file.parent.mkdir()
+    empty_sha = hashlib.sha256(encode([]).encode()).hexdigest()
+    stamp = "2024-12-31T00:00:00+00:00"
+    legacy_file.write_text(
+        json.dumps({"actions": [], "content_sha256": empty_sha, "requested_at": stamp, "received_at": stamp})
+    )
+    source = CountingSource()
+    _, manifest = await fetch_corporate_actions_cached(
+        source, ["AAPL"], date(2024, 1, 1), date(2024, 12, 31), tmp_path, pace=_pace
+    )
+    assert source.calls == 1 and manifest["cached"] is False and manifest["cache_file"] != str(legacy_file)
 
 
 async def test_a_different_request_is_a_different_file_and_a_corrupt_cache_is_refused(tmp_path):
@@ -60,6 +79,7 @@ async def test_cache_file_is_private_and_malformed_files_are_named(tmp_path):
     )
     cache_file = tmp_path / "corporate-actions" / f"{manifest['request_sha256']}.json"
     assert oct(cache_file.stat().st_mode & 0o777) == "0o600"
+    assert oct(cache_file.parent.stat().st_mode & 0o777) == "0o700"
     cache_file.write_text("{not json")
     with pytest.raises(ValueError, match="is unreadable: JSONDecodeError"):
         await fetch_corporate_actions_cached(

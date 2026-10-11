@@ -29,8 +29,8 @@ def _sha256(value: Any) -> str:
 
 
 def _write_private(path: Path, text: str) -> None:
-    """Create the file owner-only from the start and publish it atomically (no truncated cache file)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Create the directory and file owner-only and publish the file atomically (no truncated cache file)."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_suffix(".json.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w") as handle:
@@ -68,7 +68,15 @@ async def fetch_corporate_actions_cached(
         raise ValueError("At least one symbol is required")
     if end < start:
         raise ValueError("The window end precedes its start")
-    request = {"source": "alpaca", "symbols": ordered, "start": start.isoformat(), "end": end.isoformat()}
+    # ``format`` 2: every chunk is followed to its last page (a format-1 file may be truncated at 1,000
+    # actions per chunk), so a file written before that fix hashes differently and is never reused.
+    request = {
+        "source": "alpaca",
+        "format": 2,
+        "symbols": ordered,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
     request_sha = _sha256(request)
     path = Path(cache_dir) / "corporate-actions" / f"{request_sha}.json"
     if path.exists():

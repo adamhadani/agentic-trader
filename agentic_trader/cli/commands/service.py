@@ -19,7 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import artifact_directory, coro, get_copilot_and_config, session_source
 from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live, load_config
-from agentic_trader.constants import MAX_DAILY_COMPARISONS, AuditEventType
+from agentic_trader.constants import MAX_DAILY_COMPARISONS, AssetClass, AuditEventType
 from agentic_trader.data.corporate_actions import AlpacaCorporateActionsSource
 from agentic_trader.data.corporate_actions_worker import CorporateActionsWorker
 from agentic_trader.data.pacing import RequestPacer
@@ -362,15 +362,23 @@ async def corporate_action_symbols(copilot, config) -> list[str]:
     """The configured universe, held equities and the configured extras, de-duplicated.
 
     Held names come from the tracked signals and, on a brokerage account, from the broker's own
-    positions as well, so an untracked position is covered too. Futures (``/`` prefix) and crypto
-    (``/`` in the symbol) are not corporate-action instruments and are left out.
+    equity positions as well, so an untracked position is covered too. Tracked futures (``/`` prefix)
+    and crypto (``/`` in the symbol) are not corporate-action instruments and are left out; broker
+    positions are filtered by asset class, since Alpaca reports crypto as ``BTCUSD``. A failed broker
+    read is logged (type name only) and the capture continues with the tracked positions.
     """
     positions = await copilot.db.get_active_positions()
     held = {str(p["contract"]).strip().upper() for p in positions if "/" not in str(p["contract"])}
     if copilot.broker.authoritative_positions:
-        held |= {
-            str(bp.symbol).strip().upper() for bp in await copilot.broker.get_positions() if "/" not in str(bp.symbol)
-        }
+        try:
+            broker_positions = await copilot.broker.get_positions()
+        except Exception as exc:
+            logger.warning(
+                "Broker positions unavailable to the corporate-action symbols; using tracked positions",
+                extra={"event": "corporate_actions_broker_positions_unavailable", "reason": type(exc).__name__},
+            )
+        else:
+            held |= {str(bp.symbol).strip().upper() for bp in broker_positions if bp.asset_class == AssetClass.EQUITY}
     return sorted(set(config.universe.symbols) | held | set(config.corporate_actions.extra_symbols))
 
 

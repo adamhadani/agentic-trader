@@ -276,8 +276,10 @@ def _page_digest(response: Any) -> str:
 class AlpacaCorporateActionsSource:
     """Blocking source over a raw-data ``BoundedCorporateActionsClient``; callers offload it to a thread.
 
-    Symbols are de-duplicated, upper-cased and requested in chunks; the SDK paginates each chunk.
-    A failed chunk fails the whole fetch: a capture is complete or it does not exist.
+    Symbols are de-duplicated, upper-cased and requested in chunks. Each request passes ``limit=None``:
+    alpaca-py treats ``limit`` as a cap on the whole aggregated result, so only with no limit does it
+    follow ``next_page_token`` until the chunk is exhausted. A failed chunk fails the whole fetch: a
+    capture is complete or it does not exist.
     """
 
     def __init__(
@@ -305,7 +307,7 @@ class AlpacaCorporateActionsSource:
             chunk = ordered[index : index + self.chunk_size]
             if self.pacer is not None:
                 self.pacer.acquire()
-            request = CorporateActionsRequest(symbols=chunk, start=start, end=end, limit=1000)
+            request = CorporateActionsRequest(symbols=chunk, start=start, end=end, limit=None)
             with self.client.observe_responses(observe):
                 data = self.client.get_corporate_actions(request)
             if not isinstance(data, Mapping):

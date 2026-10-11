@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -19,6 +21,7 @@ from agentic_trader.data.corporate_actions import (
     position_note,
 )
 from agentic_trader.risk import blocking_corporate_action, relative_days
+from agentic_trader.transport.alpaca import BoundedCorporateActionsClient
 
 
 # Public market data observed through the Alpaca data API on 2026-10-11 (ids shortened).
@@ -345,15 +348,48 @@ def test_source_chunks_symbols_digests_pages_and_merges():
     source = AlpacaCorporateActionsSource(client, chunk_size=2)
     page = source.fetch(["nvda", "AAPL", "PXD", "AAPL"], date(2024, 1, 1), date(2024, 12, 31))
     assert [tuple(r.symbols) for r in client.requests] == [("AAPL", "NVDA"), ("PXD",)]
-    assert (client.requests[0].start, client.requests[0].end, client.requests[0].limit) == (
-        date(2024, 1, 1),
-        date(2024, 12, 31),
-        1000,
-    )
+    assert (client.requests[0].start, client.requests[0].end) == (date(2024, 1, 1), date(2024, 12, 31))
+    assert client.requests[0].limit is None  # any limit caps the whole chunk in alpaca-py
     assert [a.id for a in page.actions] == ["div-aapl-1", "merger-pxd", "split-nvda"]
     assert page.pages == 2 and len(page.page_sha256) == 2 and len(set(page.page_sha256)) == 2
     assert page.symbols == 3 and page.window == (date(2024, 1, 1), date(2024, 12, 31))
     assert page.requested_at <= page.received_at
+
+
+def test_source_follows_every_page_of_a_chunk_through_the_real_sdk(monkeypatch):
+    """alpaca-py caps the whole aggregated result at ``limit``; with none it follows ``next_page_token``.
+
+    The real bounded client runs end to end (SDK pagination, the response observer); only the HTTP
+    session is replaced, so nothing reaches a socket.
+    """
+    template = RAW["cash_dividends"][0]
+    rows = [{**template, "id": f"div-{n}", "symbol": f"S{n:04d}"} for n in range(2500)]
+    pages = [(rows[:1000], "t1"), (rows[1000:2000], "t2"), (rows[2000:], None)]
+    client = BoundedCorporateActionsClient(api_key="k", secret_key="s", request_timeout=1, raw_data=True)
+    calls: list[tuple[str, str, dict]] = []
+    seen: list = []
+    sdk_get_corporate_actions = client.get_corporate_actions
+
+    def get_corporate_actions(request):
+        seen.append(request)
+        return sdk_get_corporate_actions(request)
+
+    def session_request(method, url, **opts):
+        calls.append((method, urlsplit(url).path, dict(opts["params"])))
+        chunk, token = pages[len(calls) - 1]
+        body = {"corporate_actions": {"cash_dividends": chunk}, "next_page_token": token}
+        return SimpleNamespace(raise_for_status=lambda: None, status_code=200, text=json.dumps(body), json=lambda: body)
+
+    monkeypatch.setattr(client, "get_corporate_actions", get_corporate_actions)
+    monkeypatch.setattr(client._session, "request", session_request)
+    source = AlpacaCorporateActionsSource(client)
+    page = source.fetch(["aapl"], date(2024, 1, 1), date(2024, 12, 31))
+    assert len(seen) == 1 and seen[0].limit is None and seen[0].symbols == ["AAPL"]
+    assert [(method, path) for method, path, _ in calls] == [("GET", "/v1/corporate-actions")] * 3
+    assert [params["page_token"] for _, _, params in calls] == [None, "t1", "t2"]
+    assert {params["limit"] for _, _, params in calls} == {1000}  # the SDK's page size, not a total cap
+    assert len(page.actions) == 2500 and {a.id for a in page.actions} == {row["id"] for row in rows}
+    assert page.pages == 3 and len(set(page.page_sha256)) == 3
 
 
 def test_source_fails_whole_fetch_on_a_failed_chunk_and_skips_empty_requests():

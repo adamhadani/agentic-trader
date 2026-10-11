@@ -90,7 +90,8 @@ targets; the event-leg study itself (part 2, its own spec and frozen catalog ent
   no query strings).
 - `CorporateActionsSource(Protocol)`: `fetch(symbols, start, end) -> CorporateActionsPage`.
 - `AlpacaCorporateActionsSource(client, *, pacer, chunk_size=100)`: chunks symbols, one SDK call
-  per chunk under `observe_responses` for page digests, `limit=1000`; a failed chunk fails the fetch
+  per chunk under `observe_responses` for page digests, `limit=None` (alpaca-py caps the whole result
+  at `limit`; amended in the final fix round); a failed chunk fails the fetch
   (no partial result). `transport/alpaca.py` gains `BoundedCorporateActionsClient(BoundedTransport,
   CorporateActionsClient)` beside the other bounded clients.
 - Pure queries used by every consumer: `actions_for(actions, symbol)`, `upcoming(actions, symbol,

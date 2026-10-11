@@ -50,6 +50,8 @@ def test_command_writes_actions_and_manifest(tmp_path, monkeypatch):
     assert len(actions) == 4 and manifest["count"] == 4 and manifest["symbols"] == ["AAPL", "NVDA", "PXD", "XOM"]
     assert manifest["request_sha256"] and manifest["content_sha256"] and "environment" in manifest
     assert "4 corporate actions" in result.output
+    assert oct(output.stat().st_mode & 0o777) == "0o700"
+    assert oct((tmp_path / "cache" / "corporate-actions").stat().st_mode & 0o777) == "0o700"
 
 
 def test_command_refuses_an_existing_output_directory(tmp_path, monkeypatch):

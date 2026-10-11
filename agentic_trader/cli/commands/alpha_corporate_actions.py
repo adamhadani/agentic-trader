@@ -71,7 +71,7 @@ async def corporate_actions_cmd(symbols, cohort: Path | None, start, end, cache:
         _build_source(), wanted, start_date, end_date, cache, pace=_noop_pace
     )
     manifest["environment"] = await asyncio.to_thread(research_environment)
-    output.mkdir(parents=True)
+    output.mkdir(mode=0o700, parents=True)
     (output / "actions.json").write_text(
         json.dumps([a.model_dump(mode="json") for a in actions], indent=2, sort_keys=True)
     )

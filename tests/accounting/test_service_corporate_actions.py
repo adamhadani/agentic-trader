@@ -1,5 +1,6 @@
-"""The ledger service passes the latest capture's actions to reconcile; a store failure degrades to none."""
+"""The ledger service passes the latest capture's actions to reconcile; a store or parse failure degrades to none."""
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -65,3 +66,14 @@ async def test_refresh_without_a_store_or_with_a_failing_store_keeps_plain_text(
     ).refresh()
     assert degraded.issues == ["Unsupported activity type: SSP"]
     assert datetime.now(UTC) >= degraded.observed_at
+
+
+async def test_refresh_survives_a_capture_row_that_fails_validation(caplog):
+    actions = MagicMock()
+    actions.latest_capture = AsyncMock(return_value={**CAPTURE, "actions": [*CAPTURE["actions"], {"id": "x"}]})
+    service = AccountLedgerService(_broker([DEPOSIT, SSP]), _store(), AccountingConfig(), corporate_actions=actions)
+    with caplog.at_level(logging.WARNING, logger="agentic_trader.accounting.service"):
+        report = await service.refresh()
+    assert report.issues == ["Unsupported activity type: SSP"]
+    [record] = [r for r in caplog.records if getattr(r, "event", None) == "ledger_corporate_actions_unavailable"]
+    assert record.reason == "ValidationError"

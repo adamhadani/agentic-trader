@@ -65,7 +65,9 @@ Measured on 2026-10-11 from the installed checkout (read-only probe):
   policy layer imports no provider code; `data` only types against it).
 - `AlpacaCorporateActionsSource` chunks symbols (`chunk_size`), takes one SDK call per chunk under
   a request pacer, records a SHA-256 of each raw page, and fails the whole fetch if any chunk
-  fails. `transport/alpaca.py:BoundedCorporateActionsClient` applies the desk's socket bounds.
+  fails. Each call passes `limit=None`: alpaca-py treats `limit` as a cap on the whole aggregated
+  result, so only without one does it follow `next_page_token` until the chunk is exhausted.
+  `transport/alpaca.py:BoundedCorporateActionsClient` applies the desk's socket bounds.
 
 ## Daemon worker
 
@@ -110,7 +112,8 @@ Rule id `corporate_action` (`agentic_trader/risk`, [risk policy](risk-policy.md#
 
 - Stale (older than `max_age_seconds`) or missing evidence never refuses. The provenance records
   `{"status": "stale"}` or `{"status": "unavailable"}` plus the mode. An equity the latest capture
-  did not request (a dynamic-universe name, a `/scan SYMBOL` outside the universe) records
+  did not request (a dynamic-universe name, a PEAD drift name, a `/scan SYMBOL` outside the universe;
+  see [Known limits](#known-limits)) records
   `{"status": "uncovered", "mode": …, "as_of": …}` and never refuses either; only a covered symbol
   can be `ok`.
 - Provenance key `corporate_actions` holds `status`, `mode`, `as_of`, `would_block`, `action`,
@@ -118,7 +121,7 @@ Rule id `corporate_action` (`agentic_trader/risk`, [risk policy](risk-policy.md#
   is recorded as `note`.
 - The card line is `🏷 Corporate action: NVDA forward split 10-for-1 effective 2026-06-10 —
   preview, card unchanged` (without the suffix when enforced), or `🏷 Ex-dividend 2026-11-19
-  ($0.98/share)` for a note. Nothing is printed otherwise.
+  (cash dividend $0.98/share)` for a note. Nothing is printed otherwise.
 - The refusal text is `Corporate action: {SYMBOL} {describe} effective {YYYY-MM-DD} ({in n
   day(s) | n day(s) ago | today}) — within the {pre}/{post}-day blackout.`
 - The scan reads the store once per scan. Admission does not apply the rule, as with
@@ -152,10 +155,11 @@ observed paper activities and replay fixtures.
 
 `research/corporate_actions.py:fetch_corporate_actions_cached(source, symbols, start, end,
 cache_dir, *, pace)` writes `cache_dir/corporate-actions/<sha256 of the request>.json` with mode
-0600. The request is the source, the sorted upper-case symbols and the window. The file holds the
-normalised actions, the receipt (request and receipt times, page count, page digests) and the
-content SHA-256. A reuse recomputes the digest, refuses a mismatch with `does not match its
-recorded SHA-256`, and never calls the provider on a hit.
+0600 inside a 0700 directory. The request is the source, the format version (2: every chunk is read
+to its last page, so no file written before that fix is reused), the sorted upper-case symbols and
+the window. The file holds the normalised actions, the receipt (request and receipt times, page
+count, page digests) and the content SHA-256. A reuse recomputes the digest, refuses a mismatch
+with `does not match its recorded SHA-256`, and never calls the provider on a hit.
 
 ```bash
 copilot alpha corporate-actions --symbol XOM --cohort COHORT.json \
@@ -163,11 +167,12 @@ copilot alpha corporate-actions --symbol XOM --cohort COHORT.json \
 ```
 
 `--cohort` reads a JSON file with a `sectors` mapping (symbols per sector) or a `symbols` list;
-`--symbol` is repeatable and the two combine. `--output` must not exist. The command writes
-`actions.json` and `manifest.json` (request hash, content SHA-256, counts by kind, cache file,
-whether it was a cache hit, the research environment). The window filters on `process_date`, so
-choose it with the filter in [Data](#data) in mind. Research only: no database, registry, broker
-or Telegram, and no promotion credit. The manifest's request and content digests are what a later catalog entry would pin; no such entry exists yet.
+`--symbol` is repeatable and the two combine. `--output` must not exist; it is created 0700. The
+command writes `actions.json` and `manifest.json` (request hash, content SHA-256, counts by kind,
+cache file, whether it was a cache hit, the research environment). The window filters on
+`process_date`, so choose it with the filter in [Data](#data) in mind. Research only: no database,
+registry, broker or Telegram, and no promotion credit. The manifest's request and content digests
+are what a later catalog entry would pin; no such entry exists yet.
 
 ## Configuration
 
@@ -194,7 +199,11 @@ or Telegram, and no promotion credit. The manifest's request and content digests
    window and `/readyz` gains `corporate_actions`.
 2. Confirm a capture: `copilot db events --stream corporate-actions/capture --limit 1`.
 3. Run `entry_block: preview` for about a week. Cards carry the line and the provenance block; read
-   how often `would_block` appears and for which kinds.
+   how often `would_block` appears and for which kinds. Count the `uncovered` blocks per source as
+   well: dynamic-universe cards (`dynamic_source` `most_actives` or `movers`), `/scan SYMBOL` cards
+   (`dynamic_source: "operator"`) and PEAD drift cards (strategy `pead_long`). Those names are never
+   refused, so the `uncovered` share of the card flow is the share the rule cannot see; weigh it
+   before deciding on `enforce`.
 4. Moving to `enforce` is an operator decision, the same `off -> preview -> enforce` path as
    `card_policy` and `book_sizing`.
 
@@ -208,3 +217,10 @@ or Telegram, and no promotion credit. The manifest's request and content digests
 - The data depends on one provider, and the `process_date` filter semantics are a measured fact
   about it. If they change the worker still runs and the horizon shifts.
 - Index inclusion is out of scope (paid constituent history).
+- Coverage stops at the captured symbol set. Three card sources name symbols the worker never
+  requests (unless held or listed in `extra_symbols`): dynamic-universe names (up to
+  `universe.dynamic.max_symbols`, 20 by default, per scheduled scan), PEAD drift names
+  (`research/apriori/pead_live.py`, Nasdaq reporters outside the universe) and `/scan SYMBOL` names
+  outside the universe. They are always `uncovered` and never refused, even under `enforce`. The
+  follow-up is to add recently scanned names (from `scan_candidates_ranked`) to the worker's
+  symbol set.

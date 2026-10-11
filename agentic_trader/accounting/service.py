@@ -34,18 +34,22 @@ class AccountLedgerService:
         self._lock = asyncio.Lock()
 
     async def _corporate_actions(self) -> tuple[CorporateAction, ...]:
-        """The latest capture's actions for the issue text; a read failure degrades to none (type name logged)."""
+        """The latest capture's actions for the issue text.
+
+        A read or parse failure degrades to none (type name logged): the evidence only explains an
+        issue, so it must never fail ``refresh()``, which runs before every Alpaca entry preflight.
+        """
         if self.corporate_actions is None:
             return ()
         try:
             capture = await self.corporate_actions.latest_capture()
+            return tuple(CorporateAction.model_validate(row) for row in (capture or {}).get("actions", []))
         except Exception as exc:
             logger.warning(
                 "Corporate-action capture unavailable to the ledger",
                 extra={"event": "ledger_corporate_actions_unavailable", "reason": type(exc).__name__},
             )
             return ()
-        return tuple(CorporateAction.model_validate(row) for row in (capture or {}).get("actions", []))
 
     async def refresh(self) -> LedgerReport:
         async with self._lock:
