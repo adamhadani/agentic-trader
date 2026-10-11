@@ -250,6 +250,8 @@ def test_reverted_exit_does_not_retire():
 
 
 def test_defaulted_rule_is_bit_identical_to_v1_on_every_fixture():
+    """Golden values captured from the pre-change simulator (revision 6ad3438) on these exact fixtures:
+    a changed threshold, band or re-entry default would move at least one of them."""
     rng = np.random.default_rng(7)
     explicit = TradingRule(
         z_entry=2.0,
@@ -260,6 +262,11 @@ def test_defaulted_rule_is_bit_identical_to_v1_on_every_fixture():
         z_entry_max=None,
         reenter_after_stop=True,
     )
+    trades = 0
+    reasons = {"stop": 0, "reverted": 0, "window_end": 0}
+    daily = 0.0
+    turnover = 0.0
+    entry_positions = 0
     for _ in range(20):
         z = list(np.cumsum(rng.normal(0.0, 1.2, 60)))
         cy, cx, oy, ox = paths(z)
@@ -270,3 +277,14 @@ def test_defaulted_rule_is_bit_identical_to_v1_on_every_fixture():
         assert a.trades == b.trades
         np.testing.assert_array_equal(a.daily, b.daily)
         np.testing.assert_array_equal(a.turnover, b.turnover)
+        trades += len(a.trades)
+        for trade in a.trades:
+            reasons[trade.exit_reason] += 1
+            entry_positions += trade.entry_pos
+        daily += float(np.nansum(a.daily))
+        turnover += float(a.turnover.sum())
+    assert trades == 372
+    assert reasons == {"stop": 334, "reverted": 30, "window_end": 8}
+    assert entry_positions == 12526
+    assert turnover == 744.0
+    assert daily == pytest.approx(187.74269034618726, abs=1e-9)
