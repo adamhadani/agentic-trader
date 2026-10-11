@@ -904,6 +904,11 @@ class AppConfig(BaseModel):
     copilot_chat_enabled: bool = True
 
 
+def corporate_actions_live(config: AppConfig) -> bool:
+    """The capture worker runs only with the feature on and Alpaca data credentials present."""
+    return config.corporate_actions.enabled and bool(config.alpaca_api_key and config.alpaca_api_secret)
+
+
 def normalize_db_url(value: str) -> str:
     if "://" not in value:
         return f"sqlite+aiosqlite:///{Path(value).resolve()}"

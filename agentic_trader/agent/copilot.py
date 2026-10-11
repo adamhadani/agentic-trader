@@ -30,7 +30,7 @@ from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
-from agentic_trader.config import AppConfig, ScanBudget
+from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live
 from agentic_trader.constants import (
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
@@ -46,6 +46,7 @@ from agentic_trader.constants import (
     executes_asset_class,
     normalize_asset_class,
 )
+from agentic_trader.data.corporate_actions import CorporateActionsLookup
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
@@ -150,6 +151,7 @@ from agentic_trader.screeners.earnings_drift import (
 )
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.corporate_actions import CorporateActionsStore
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.lifetimes import LifetimeRepository
@@ -260,6 +262,7 @@ class TradingCopilot:
         dynamic_universe: DynamicUniverseSource | None = None,
         earnings_drift: EarningsDriftService | None = None,
         card_stats: CardStatsRepository | None = None,
+        corporate_actions: CorporateActionsStore | None = None,
         book_sizer: BookSizer | None = None,
         bar_source: AlpacaDataProvider | None = None,
     ):
@@ -293,6 +296,12 @@ class TradingCopilot:
         self.alpha_shadow = AlphaShadowService(self.alpha_repository)
         # Read side of the daemon's daily card statistics; tests inject a fake with a fixed snapshot.
         self.card_stats = card_stats if card_stats is not None else CardStatsRepository(self.db.workflows)
+        # Corporate-action captures (docs/corporate-actions.md); the daemon's worker writes, scans and reports read.
+        self.corporate_actions = (
+            corporate_actions
+            if corporate_actions is not None
+            else CorporateActionsStore(self.db.workflows, max_actions=config.corporate_actions.max_actions)
+        )
         # Book-aware sizing: the sizer asks for its raw-bar provider only when a scan needs bars
         # outside its own datasets, so construction (and every dry run) never builds a client.
         self.book_sizer = (
@@ -493,6 +502,7 @@ class TradingCopilot:
             accounting_enabled=self.ledger is not None,
             alpha_registry_report=lambda: self.alpha_repository.status(run_id=RUN_ID),
             card_stats_enabled=True,  # the daemon always runs the card-statistics worker
+            corporate_actions_enabled=corporate_actions_live(config),
             stream_connected=(lambda: self.broker.trade_stream_connected)
             if self.broker.supports_trade_stream
             else None,
@@ -3084,6 +3094,17 @@ class TradingCopilot:
             return None
         rounded = round_to_tick(price, tick_size)
         return rounded if rounded > 0 else None
+
+    async def _corporate_actions_lookup(self, now: datetime) -> CorporateActionsLookup | None:
+        """The latest capture as one frozen read; None when the feature is off; a read failure is ``unavailable``."""
+        policy = self.config.corporate_actions
+        if not policy.enabled:
+            return None
+        try:
+            return await self.corporate_actions.lookup(now=now, max_age_seconds=policy.max_age_seconds)
+        except Exception:
+            logger.exception("Corporate-action lookup failed", extra={"event": "corporate_actions_lookup_failed"})
+            return CorporateActionsLookup("unavailable", None, ())
 
     async def _earnings_blackout_reason(self, contract: str, now: datetime) -> str | None:
         """The evaluator's equity earnings gate, failing open on a calendar failure exactly as it does."""
