@@ -15,10 +15,9 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from agentic_trader.constants import AssetClass, Direction, StrategyType
-from agentic_trader.data.corporate_actions import blocking_corporate_action, relative_days
 from agentic_trader.risk.book import Book
 from agentic_trader.risk.capital import RiskBudget
 from agentic_trader.risk.limits import RiskLimits, normalize_symbol
@@ -27,16 +26,16 @@ from agentic_trader.risk.limits import RiskLimits, normalize_symbol
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from agentic_trader.data.corporate_actions import CorporateAction
-
 
 __all__ = [
+    "CorporateActionLike",
     "EntryIntent",
     "Rejection",
     "RiskRule",
     "admission_gates",
     "aggregate_stop_risk",
     "asset_class_notional",
+    "blocking_corporate_action",
     "book_gates",
     "concurrent_positions",
     "corporate_action_block",
@@ -53,6 +52,7 @@ __all__ = [
     "portfolio_notional",
     "quantity_cap",
     "regime_breakout",
+    "relative_days",
     "required_reward_risk",
     "reward_risk",
     "same_symbol",
@@ -384,8 +384,49 @@ def earnings_days_out(event_date: date | None, today: date, blackout_days: int) 
     return days if 0 <= days <= blackout_days else None
 
 
+class CorporateActionLike(Protocol):
+    """What the corporate-action rule reads from an action (``agentic_trader.data.corporate_actions.CorporateAction``
+    satisfies it); the rule never imports the provider's data module.
+    """
+
+    @property
+    def symbol(self) -> str: ...
+
+    @property
+    def effective_on(self) -> date: ...
+
+    @property
+    def is_structural(self) -> bool: ...
+
+    def describe(self) -> str: ...
+
+
+def blocking_corporate_action[A: CorporateActionLike](
+    actions: Sequence[A], symbol: str, today: date, *, pre_days: int, post_days: int
+) -> A | None:
+    """The earliest structural action on ``symbol`` effective within ``[today - post_days, today + pre_days]``;
+    cash dividends never block. Symbols match case-insensitively; ``actions`` need not be sorted.
+    """
+    wanted = symbol.strip().upper()
+    start, end = today - timedelta(days=post_days), today + timedelta(days=pre_days)
+    window = sorted(
+        (a for a in actions if a.symbol.upper() == wanted and start <= a.effective_on <= end),
+        key=lambda a: a.effective_on,
+    )
+    return next((a for a in window if a.is_structural), None)
+
+
+def relative_days(effective_on: date, today: date) -> str:
+    """``today``, ``in N day(s)`` or ``N day(s) ago``: the operator text for an action's date."""
+    days = (effective_on - today).days
+    if days == 0:
+        return "today"
+    unit = "day" if abs(days) == 1 else "days"
+    return f"in {days} {unit}" if days > 0 else f"{-days} {unit} ago"
+
+
 def corporate_action_block(
-    actions: Sequence[CorporateAction], symbol: str, today: date, *, pre_days: int, post_days: int
+    actions: Sequence[CorporateActionLike], symbol: str, today: date, *, pre_days: int, post_days: int
 ) -> Rejection | None:
     """Rule ``corporate_action``: the first structural action (anything but a cash dividend) on ``symbol``
     effective within ``[today - post_days, today + pre_days]`` refuses the entry; raw bars straddle it or the

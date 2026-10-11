@@ -38,6 +38,7 @@ def test_build_capture_is_deterministic_and_counts_kinds():
     )
     assert first["content_sha256"] == again["content_sha256"]  # content, not clock or order
     assert first["symbols_sha256"] == again["symbols_sha256"]
+    assert first["symbols"] == again["symbols"] == ["AAPL", "NVDA", "PXD", "VZIO"]
     assert first["counts_by_kind"] == {"cash_dividend": 1, "cash_merger": 1, "forward_split": 1, "stock_merger": 1}
     assert first["window"] == ["2026-08-28", "2027-02-09"] and first["as_of"] == "2026-10-12"
     assert first["captured_at"] == NOW.isoformat() and first["pages"] == 1 and first["page_sha256"] == ["deadbeef"]
@@ -98,4 +99,19 @@ async def test_lookup_reads_capture_and_check(store):
     await store.record(build_capture(page(RAW), as_of=date(2026, 10, 12), symbols=["AAPL"]))
     fresh = await store.lookup(now=NOW + timedelta(minutes=5), max_age_seconds=3600)
     assert fresh.status == "ok" and len(fresh.actions) == 4 and fresh.as_of == date(2026, 10, 12)
+    assert fresh.symbols == frozenset({"AAPL"}) and fresh.covers("aapl") and not fresh.covers("NVDA")
     assert (await store.lookup(now=NOW + timedelta(days=5), max_age_seconds=3600)).status == "stale"
+
+
+async def test_a_changed_symbol_set_appends_a_capture_so_coverage_follows_the_latest_run(store):
+    """Coverage is what the latest run requested: same actions, new symbols still append a capture."""
+    first = build_capture(page(RAW), as_of=date(2026, 10, 12), symbols=["AAPL"])
+    widened = build_capture(
+        page(RAW, received=NOW + timedelta(days=1)), as_of=date(2026, 10, 13), symbols=["aapl", "XOM"]
+    )
+    assert widened["content_sha256"] == first["content_sha256"]
+    assert [await store.record(c) for c in (first, widened)] == [True, True]
+    lookup = await store.lookup(now=NOW + timedelta(days=1, minutes=5), max_age_seconds=3600)
+    assert lookup.status == "ok" and lookup.symbols == frozenset({"AAPL", "XOM"}) and lookup.covers("xom")
+    same = build_capture(page(RAW, received=NOW + timedelta(days=2)), as_of=date(2026, 10, 14), symbols=["XOM", "AAPL"])
+    assert await store.record(same) is False

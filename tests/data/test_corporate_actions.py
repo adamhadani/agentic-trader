@@ -15,11 +15,10 @@ from agentic_trader.data.corporate_actions import (
     CorporateActionsLookup,
     actions_for,
     between,
-    blocking_corporate_action,
     normalize_actions,
     position_note,
-    relative_days,
 )
+from agentic_trader.risk import blocking_corporate_action, relative_days
 
 
 # Public market data observed through the Alpaca data API on 2026-10-11 (ids shortened).
@@ -369,14 +368,21 @@ def test_source_fails_whole_fetch_on_a_failed_chunk_and_skips_empty_requests():
 def test_lookup_freshness():
     now = datetime(2026, 10, 12, 12, tzinfo=UTC)
     actions = [a.model_dump(mode="json") for a in normalize_actions(RAW)]
-    capture = {"content_sha256": "abc", "as_of": "2026-10-12", "actions": actions}
+    capture = {"content_sha256": "abc", "as_of": "2026-10-12", "actions": actions, "symbols": ["AAPL", "nvda"]}
     check = {"checked_at": (now - timedelta(hours=1)).isoformat(), "as_of": "2026-10-12", "content_sha256": "abc"}
     fresh = CorporateActionsLookup.build(capture, check, now=now, max_age_seconds=3600 * 4)
     assert fresh.status == "ok" and fresh.as_of == date(2026, 10, 12) and len(fresh.actions) == 4
+    assert fresh.symbols == frozenset({"AAPL", "NVDA"})
+    assert fresh.covers("aapl") is True and fresh.covers(" NVDA ") is True and fresh.covers("PXD") is False
+    without_symbols = {key: value for key, value in capture.items() if key != "symbols"}
+    legacy = CorporateActionsLookup.build(without_symbols, check, now=now, max_age_seconds=3600 * 4)
+    assert legacy.status == "ok" and legacy.symbols == frozenset() and legacy.covers("AAPL") is False
     stale = CorporateActionsLookup.build(
         capture, {**check, "checked_at": (now - timedelta(days=5)).isoformat()}, now=now, max_age_seconds=3600
     )
     assert stale.status == "stale" and stale.as_of == date(2026, 10, 12) and stale.actions == ()
+    assert stale.symbols == frozenset()
+    assert CorporateActionsLookup("ok", None, ()).symbols == frozenset()  # three positional fields still construct
     assert CorporateActionsLookup.build(None, None, now=now, max_age_seconds=3600).status == "unavailable"
     assert (
         CorporateActionsLookup.build(

@@ -2652,16 +2652,22 @@ class TradingCopilot:
                 for pos in tracked
                 if pos["contract"].strip("/") not in broker_symbols
             )
-            lookup = await self._corporate_actions_lookup(datetime.now(UTC))
-            if lookup is not None:
-                if lookup.status != "ok":
-                    notes.append(f"Corporate-action evidence {lookup.status}.")
+            ca_lookup = await self._corporate_actions_lookup(datetime.now(UTC))
+            if ca_lookup is not None:
+                if ca_lookup.status != "ok":
+                    notes.append(f"Corporate-action evidence {ca_lookup.status}.")
                 else:
                     policy = self.config.corporate_actions
                     today = datetime.now(ET_TZ).date()
                     for bp in broker_positions:
+                        if bp.asset_class != AssetClass.EQUITY:
+                            continue
+                        if not ca_lookup.covers(bp.symbol):
+                            # Never checked: the worker adds tracked equity positions on its next daily run.
+                            notes.append(f"{bp.symbol}: corporate-action evidence does not cover this symbol yet.")
+                            continue
                         window = between(
-                            lookup.actions,
+                            ca_lookup.actions,
                             bp.symbol,
                             today - timedelta(days=policy.post_days),
                             today + timedelta(days=policy.notes_horizon_days),
@@ -3154,15 +3160,20 @@ class TradingCopilot:
         return f"Earnings Blackout: {reason}" if reason else None
 
     async def _corporate_action_reason(self, contract: str, now: datetime) -> str | None:
-        """The evaluator's corporate-action gate at tap time: enforce refuses, preview and stale evidence never do."""
+        """The evaluator's corporate-action gate at tap time: enforce refuses; preview, stale evidence and a symbol
+        the capture never requested (uncovered) never do."""
         policy = self.config.corporate_actions
         if policy.entry_block != "enforce":
             return None
-        lookup = await self._corporate_actions_lookup(now)
-        if lookup is None or lookup.status != "ok":
+        ca_lookup = await self._corporate_actions_lookup(now)
+        if ca_lookup is None or ca_lookup.status != "ok" or not ca_lookup.covers(contract):
             return None
         rejection = corporate_action_block(
-            lookup.actions, contract, now.astimezone(ET_TZ).date(), pre_days=policy.pre_days, post_days=policy.post_days
+            ca_lookup.actions,
+            contract,
+            now.astimezone(ET_TZ).date(),
+            pre_days=policy.pre_days,
+            post_days=policy.post_days,
         )
         return rejection.reason if rejection is not None else None
 

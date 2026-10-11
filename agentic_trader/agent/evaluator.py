@@ -30,12 +30,7 @@ from agentic_trader.constants import (
     AssetClass,
     Direction,
 )
-from agentic_trader.data.corporate_actions import (
-    CorporateActionKind,
-    CorporateActionsLookup,
-    between,
-    blocking_corporate_action,
-)
+from agentic_trader.data.corporate_actions import CorporateActionKind, CorporateActionsLookup, between
 from agentic_trader.market.session import ET_TZ, MarketSessionProtocol
 from agentic_trader.research.alpha.strategy import bracket_prices, entry_limit, execution_policy_from_dict
 from agentic_trader.risk import (
@@ -45,6 +40,7 @@ from agentic_trader.risk import (
     RiskLimits,
     RiskRule,
     aggregate_stop_risk,
+    blocking_corporate_action,
     book_gates,
     corporate_action_block,
     entry_session_open,
@@ -571,12 +567,20 @@ class RiskEvaluator:
             earnings_note_value = earnings_note(earnings_lookup, evaluated_at, blackout_days)
 
         # 2c. Corporate actions (agentic_trader.risk.corporate_action_block; equities only). A missing
-        # or stale capture never refuses; preview annotates; enforce refuses a structural action.
+        # or stale capture, or one that never requested this symbol ("uncovered"), never refuses;
+        # preview annotates; enforce refuses a structural action.
         corporate_block: dict[str, Any] | None = None
         corporate_policy = self.config.corporate_actions
         if asset_class == AssetClass.EQUITY and corporate_actions is not None and corporate_policy.entry_block != "off":
+            corporate_as_of = corporate_actions.as_of.isoformat() if corporate_actions.as_of else None
             if corporate_actions.status != "ok":
                 corporate_block = {"status": corporate_actions.status, "mode": corporate_policy.entry_block}
+            elif not corporate_actions.covers(candidate.contract):
+                corporate_block = {
+                    "status": "uncovered",
+                    "mode": corporate_policy.entry_block,
+                    "as_of": corporate_as_of,
+                }
             else:
                 today = evaluated_at.astimezone(ET_TZ).date()
                 rejection = corporate_action_block(
@@ -609,7 +613,7 @@ class RiskEvaluator:
                 corporate_block = {
                     "status": "ok",
                     "mode": corporate_policy.entry_block,
-                    "as_of": corporate_actions.as_of.isoformat() if corporate_actions.as_of else None,
+                    "as_of": corporate_as_of,
                     "would_block": rejection is not None,
                     "action": action.summary() if action is not None else None,
                     "reason": rejection.reason if rejection is not None else None,
@@ -840,6 +844,9 @@ class RiskEvaluator:
 
             data.pop("llm_verdict", None)  # only ever set below, never taken from the LLM
             data.pop("rejection_rule", None)  # a shared rule's id; the LLM never supplies one
+            # The corporate-action block is attached below; a malformed key in the reply must not
+            # fail validation and turn an LLM veto into the fallback approval.
+            data.pop("corporate_actions", None)
             applied = candidate.catalog_event is None
             data["llm_verdict"] = {
                 "approved": _explicit_true(data.get("approved")),

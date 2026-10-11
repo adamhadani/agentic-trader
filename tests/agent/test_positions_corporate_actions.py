@@ -1,16 +1,19 @@
 """`/positions` notes for held symbols' corporate actions; stale/missing evidence is one note; disabled adds none."""
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agentic_trader.constants import AssetClass
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind, CorporateActionsLookup
+from agentic_trader.market.session import ET_TZ
 
 
-def _position(symbol):
+def _position(symbol, asset_class=AssetClass.EQUITY):
     position = MagicMock()
     position.symbol, position.direction, position.quantity = symbol, "LONG", 10.0
+    position.asset_class = asset_class
     position.entry_price, position.current_price, position.unrealized_pnl = 100.0, 101.0, 10.0
     position.model_dump = MagicMock(return_value={"symbol": symbol})
     return position
@@ -23,10 +26,12 @@ def copilot(scan_desk):
     return scan_desk
 
 
-def _lookup(copilot, status, *actions):
+def _lookup(copilot, status, *actions, symbols=("XOM", "NVDA")):
     copilot.corporate_actions = MagicMock()
-    today = datetime.now(UTC).date()
-    copilot.corporate_actions.lookup = AsyncMock(return_value=CorporateActionsLookup(status, today, tuple(actions)))
+    today = today_plus(0)
+    copilot.corporate_actions.lookup = AsyncMock(
+        return_value=CorporateActionsLookup(status, today, tuple(actions), frozenset(symbols))
+    )
     return today
 
 
@@ -94,5 +99,31 @@ async def test_notes_absent_when_disabled(copilot):
     assert "Corporate-action" not in report.notes and "NVDA: forward split" not in report.notes
 
 
+async def test_a_held_symbol_the_capture_did_not_request_gets_one_coverage_note(copilot):
+    _lookup(
+        copilot,
+        "ok",
+        CorporateAction(
+            id="s",
+            kind=CorporateActionKind.FORWARD_SPLIT,
+            symbol="NVDA",
+            effective_on=today_plus(-3),
+            old_rate=1.0,
+            new_rate=10.0,
+        ),
+        CorporateAction(
+            id="d", kind=CorporateActionKind.CASH_DIVIDEND, symbol="XOM", effective_on=today_plus(2), rate=0.99
+        ),
+        symbols=("XOM",),
+    )
+    copilot.broker.get_positions.return_value.append(_position("BTCUSD", AssetClass.CRYPTO))
+    report = await copilot.get_positions_report()
+    assert report.notes.count("NVDA: corporate-action evidence does not cover this symbol yet.") == 1
+    assert "forward split" not in report.notes and "XOM: cash dividend $0.99/share" in report.notes
+    assert "XOM: corporate-action evidence does not cover" not in report.notes
+    assert "BTCUSD: corporate-action" not in report.notes  # corporate actions concern equities only
+
+
 def today_plus(days: int) -> date:
-    return datetime.now(UTC).date() + timedelta(days=days)
+    """New York dates, as the report computes them: a UTC date would flake between 20:00 and 24:00 ET."""
+    return datetime.now(ET_TZ).date() + timedelta(days=days)

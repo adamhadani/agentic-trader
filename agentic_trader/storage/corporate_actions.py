@@ -1,4 +1,4 @@
-"""Corporate-action captures on the event store: one capture per content change, one check per run."""
+"""Corporate-action captures on the event store: one capture per content or coverage change, one check per run."""
 
 from __future__ import annotations
 
@@ -24,15 +24,19 @@ def _sha256(value: Any) -> str:
 
 
 def build_capture(page: CorporateActionsPage, *, as_of: date, symbols: Sequence[str]) -> dict[str, Any]:
-    """The journal payload for one fetch; ``content_sha256`` covers the sorted actions only."""
+    """The journal payload for one fetch; ``content_sha256`` covers the sorted actions only and ``symbols``
+    is the coverage: every symbol requested, so a lookup can tell "checked, clear" from "never checked".
+    """
     actions = [action.model_dump(mode="json") for action in page.actions]
     counts = Counter(action.kind.value for action in page.actions)
+    requested = sorted({s.upper() for s in symbols})
     return {
         "captured_at": page.received_at.isoformat(),
         "requested_at": page.requested_at.isoformat(),
         "as_of": as_of.isoformat(),
+        "symbols": requested,
         "symbols_count": len(symbols),
-        "symbols_sha256": _sha256(sorted({s.upper() for s in symbols})),
+        "symbols_sha256": _sha256(requested),
         "window": [page.window[0].isoformat(), page.window[1].isoformat()],
         "actions": actions,
         "counts_by_kind": dict(sorted(counts.items())),
@@ -59,11 +63,17 @@ class CorporateActionsStore:
         return await self._latest(CHECK_STREAM)
 
     async def record(self, capture: dict[str, Any]) -> bool:
-        """Append the check always and the capture only when its content changed; True when it did."""
+        """Append the check always and the capture only when its content or its requested symbols changed (the
+        lookup's coverage is the latest capture's ``symbols``, so it must follow the latest run); True when it did.
+        """
         if len(capture["actions"]) > self.max_actions:
             raise ValueError(f"Corporate-action capture exceeds {self.max_actions} actions")
         latest = await self.latest_capture()
-        changed = latest is None or latest["content_sha256"] != capture["content_sha256"]
+        changed = (
+            latest is None
+            or latest["content_sha256"] != capture["content_sha256"]
+            or latest.get("symbols") != capture["symbols"]
+        )
         check = {
             "checked_at": capture["captured_at"],
             "as_of": capture["as_of"],

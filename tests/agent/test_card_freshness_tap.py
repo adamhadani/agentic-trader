@@ -460,7 +460,7 @@ async def test_corporate_action_blocks_a_fresh_card_only_under_enforce(tap_desk,
     )
     tap_desk.config.corporate_actions.entry_block = mode
     tap_desk.corporate_actions = AsyncMock()
-    tap_desk.corporate_actions.lookup.return_value = CorporateActionsLookup("ok", today, (split,))
+    tap_desk.corporate_actions.lookup.return_value = CorporateActionsLookup("ok", today, (split,), frozenset({"SPY"}))
 
     reply = await tap_desk.execute_signal_by_id(sid)
 
@@ -473,6 +473,28 @@ async def test_corporate_action_blocks_a_fresh_card_only_under_enforce(tap_desk,
     else:
         tap_desk.entry_service.authorize.assert_awaited_once()
         tap_desk.corporate_actions.lookup.assert_not_awaited()  # preview never reads at tap time
+
+
+async def test_corporate_action_evidence_that_does_not_cover_the_symbol_never_refuses_a_tap(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    today = datetime.now(UTC).astimezone(ET_TZ).date()
+    split = CorporateAction(
+        id="split-SPY",
+        kind=CorporateActionKind.FORWARD_SPLIT,
+        symbol="SPY",
+        effective_on=today,
+        old_rate=1.0,
+        new_rate=2.0,
+    )
+    tap_desk.config.corporate_actions.entry_block = "enforce"
+    tap_desk.corporate_actions = AsyncMock()
+    tap_desk.corporate_actions.lookup.return_value = CorporateActionsLookup("ok", today, (split,), frozenset({"QQQ"}))
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    tap_desk.corporate_actions.lookup.assert_awaited_once()
+    tap_desk.entry_service.authorize.assert_awaited_once()
+    assert (await temp_db.get_signal_by_id(sid))["status"] != SignalStatus.EXPIRED
 
 
 async def test_macro_gate_turns_a_fresh_card_into_missed(tap_desk, temp_db):

@@ -1,5 +1,8 @@
 import math
+import subprocess
+import sys
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,6 +20,7 @@ from agentic_trader.risk import (
     admission_gates,
     aggregate_stop_risk,
     asset_class_notional,
+    blocking_corporate_action,
     book_gates,
     concurrent_positions,
     corporate_action_block,
@@ -34,6 +38,7 @@ from agentic_trader.risk import (
     portfolio_notional,
     quantity_cap,
     regime_breakout,
+    relative_days,
     required_reward_risk,
     reward_risk,
     same_symbol,
@@ -380,3 +385,32 @@ def test_corporate_action_rule_text_and_dividends():
     assert corporate_action_block((dividend,), "NVDA", CA_TODAY, pre_days=7, post_days=5) is None
     assert corporate_action_block((), "NVDA", CA_TODAY, pre_days=7, post_days=5) is None
     assert corporate_action_block((split,), "AAPL", CA_TODAY, pre_days=7, post_days=5) is None
+
+
+def test_blocking_corporate_action_sorts_matches_case_and_skips_dividends():
+    later = _corporate(CorporateActionKind.REVERSE_SPLIT, "nvda", CA_TODAY + timedelta(days=4), id="later")
+    earlier = _corporate(CorporateActionKind.FORWARD_SPLIT, "NVDA", CA_TODAY - timedelta(days=2), id="earlier")
+    dividend = _corporate(CorporateActionKind.CASH_DIVIDEND, "NVDA", CA_TODAY - timedelta(days=3))
+    unsorted = (later, dividend, earlier)
+    assert blocking_corporate_action(unsorted, " Nvda ", CA_TODAY, pre_days=7, post_days=5) is earlier
+    assert blocking_corporate_action(unsorted, "NVDA", CA_TODAY, pre_days=7, post_days=1) is later
+    assert blocking_corporate_action((dividend,), "NVDA", CA_TODAY, pre_days=7, post_days=5) is None
+    assert (relative_days(CA_TODAY, CA_TODAY), relative_days(CA_TODAY - timedelta(days=1), CA_TODAY)) == (
+        "today",
+        "1 day ago",
+    )
+
+
+def test_risk_package_imports_no_transport_or_data_adapter():
+    """Every entry rule is pure: importing ``agentic_trader.risk`` loads no provider adapter or data module."""
+    script = (
+        "import sys, agentic_trader.risk; "
+        "loaded = sorted(m for m in sys.modules if m.startswith(('agentic_trader.transport', 'agentic_trader.data'))); "
+        "assert 'agentic_trader.transport.alpaca' not in sys.modules, loaded; "
+        "assert 'agentic_trader.data.corporate_actions' not in sys.modules, loaded"
+    )
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=root, check=False, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr

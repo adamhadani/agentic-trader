@@ -13,7 +13,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
@@ -21,6 +21,7 @@ from alpaca.data.requests import CorporateActionsRequest
 from pydantic import BaseModel, Field
 
 from agentic_trader.data.pacing import RequestPacer
+from agentic_trader.risk import blocking_corporate_action, relative_days
 from agentic_trader.transport.alpaca import BoundedCorporateActionsClient
 
 
@@ -243,22 +244,6 @@ def between(actions: Sequence[CorporateAction], symbol: str, start: date, end: d
     return tuple(a for a in actions_for(actions, symbol) if start <= a.effective_on <= end)
 
 
-def blocking_corporate_action(
-    actions: Sequence[CorporateAction], symbol: str, today: date, *, pre_days: int, post_days: int
-) -> CorporateAction | None:
-    """The first structural action effective within ``[today - post_days, today + pre_days]``; dividends never block."""
-    window = between(actions, symbol, today - timedelta(days=post_days), today + timedelta(days=pre_days))
-    return next((a for a in window if a.is_structural), None)
-
-
-def relative_days(effective_on: date, today: date) -> str:
-    days = (effective_on - today).days
-    if days == 0:
-        return "today"
-    unit = "day" if abs(days) == 1 else "days"
-    return f"in {days} {unit}" if days > 0 else f"{-days} {unit} ago"
-
-
 def position_note(action: CorporateAction, today: date) -> str:
     """One ``/positions`` note for a held symbol's action."""
     when = f"{action.effective_on.isoformat()} ({relative_days(action.effective_on, today)})"
@@ -342,11 +327,17 @@ class AlpacaCorporateActionsSource:
 
 @dataclass(frozen=True)
 class CorporateActionsLookup:
-    """What one scan or report sees: the latest capture's actions and whether it is fresh."""
+    """What one scan or report sees: the latest capture's actions, whether it is fresh, and which symbols
+    it requested. A symbol outside ``symbols`` was never checked: callers label it uncovered and never refuse.
+    """
 
     status: LookupStatus
     as_of: date | None
     actions: tuple[CorporateAction, ...]
+    symbols: frozenset[str] = frozenset()
+
+    def covers(self, symbol: str) -> bool:
+        return symbol.strip().upper() in self.symbols
 
     @staticmethod
     def build(
@@ -359,4 +350,5 @@ class CorporateActionsLookup:
         if not 0 <= age <= max_age_seconds:
             return CorporateActionsLookup("stale", as_of, ())
         actions = tuple(CorporateAction.model_validate(row) for row in capture["actions"])
-        return CorporateActionsLookup("ok", as_of, actions)
+        symbols = frozenset(str(symbol).upper() for symbol in capture.get("symbols", ()))
+        return CorporateActionsLookup("ok", as_of, actions, symbols)

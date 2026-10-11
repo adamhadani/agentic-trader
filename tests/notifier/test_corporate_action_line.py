@@ -65,6 +65,7 @@ def test_dividend_note_line(base_eval_res):  # noqa: F811
     [
         None,
         {"status": "stale", "mode": "preview"},
+        {"status": "uncovered", "mode": "enforce", "as_of": "2026-10-12"},
         {"status": "ok", "mode": "preview", "would_block": False, "action": None, "note": None},
     ],
 )

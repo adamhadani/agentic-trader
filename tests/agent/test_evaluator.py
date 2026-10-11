@@ -532,8 +532,8 @@ async def test_no_earnings_calendar_injected_note_is_none(evaluator_factory):
     assert eval_res.earnings_note is None
 
 
-def _lookup(*actions, status="ok", as_of=None):
-    return CorporateActionsLookup(status, as_of or datetime.now(UTC).date(), tuple(actions))
+def _lookup(*actions, status="ok", as_of=None, symbols=("AAPL", "NVDA")):
+    return CorporateActionsLookup(status, as_of or datetime.now(UTC).date(), tuple(actions), frozenset(symbols))
 
 
 def _split(symbol="AAPL", days=3):
@@ -624,3 +624,47 @@ async def test_other_symbols_actions_do_not_touch_the_candidate(config, evaluato
         create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_split("NVDA"))
     )
     assert eval_res.approved is True and eval_res.corporate_actions["would_block"] is False
+
+
+async def test_uncovered_symbol_is_labelled_and_never_refused(config, evaluator_factory):
+    """A fresh capture that never requested the candidate's symbol says so; it never claims "checked, clear"."""
+    evaluator = evaluator_factory(config=_with_mode(config, "enforce"))
+    as_of = datetime.now(UTC).date()
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_split(), as_of=as_of, symbols=("NVDA",))
+    )
+    assert eval_res.approved is True and eval_res.rejection_rule is None
+    assert eval_res.corporate_actions == {"status": "uncovered", "mode": "enforce", "as_of": as_of.isoformat()}
+
+
+def _llm_reply(**fields):
+    content = json.dumps({"macro_clearance": True, "thesis_summary": "fixture thesis", **fields})
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+
+@pytest.mark.parametrize(
+    ("reply", "approved"),
+    [
+        ({"approved": True}, True),
+        ({"approved": False, "rejection_reason": "LLM veto"}, False),
+        ({"approved": True, "corporate_actions": {"would_block": False}}, True),
+        ({"approved": False, "rejection_reason": "LLM veto", "corporate_actions": "junk"}, False),
+    ],
+)
+async def test_llm_path_keeps_the_deterministic_corporate_action_block(
+    config, evaluator_factory, monkeypatch, reply, approved
+):
+    """The preview block survives an LLM approval or veto; a stray key in the reply never replaces it."""
+    evaluator = evaluator_factory(config=_with_mode(config, "preview"))
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    completion = AsyncMock(return_value=_llm_reply(**reply))
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", completion)
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=True, corporate_actions=_lookup(_split())
+    )
+    completion.assert_awaited_once()
+    assert eval_res.approved is approved
+    assert eval_res.llm_verdict is not None and eval_res.llm_verdict["approved"] is approved
+    block = eval_res.corporate_actions
+    assert (block["status"], block["mode"], block["would_block"]) == ("ok", "preview", True)
+    assert block["reason"].startswith("Corporate action: AAPL forward split 4-for-1 effective ")
