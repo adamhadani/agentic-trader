@@ -359,9 +359,18 @@ async def run_card_stats_worker(copilot, config, readiness) -> None:
 
 
 async def corporate_action_symbols(copilot, config) -> list[str]:
-    """The configured universe, tracked equity positions and the configured extras, de-duplicated."""
+    """The configured universe, held equities and the configured extras, de-duplicated.
+
+    Held names come from the tracked signals and, on a brokerage account, from the broker's own
+    positions as well, so an untracked position is covered too. Futures (``/`` prefix) and crypto
+    (``/`` in the symbol) are not corporate-action instruments and are left out.
+    """
     positions = await copilot.db.get_active_positions()
-    held = {str(p["contract"]).strip().upper() for p in positions if not str(p["contract"]).startswith("/")}
+    held = {str(p["contract"]).strip().upper() for p in positions if "/" not in str(p["contract"])}
+    if copilot.broker.authoritative_positions:
+        held |= {
+            str(bp.symbol).strip().upper() for bp in await copilot.broker.get_positions() if "/" not in str(bp.symbol)
+        }
     return sorted(set(config.universe.symbols) | held | set(config.corporate_actions.extra_symbols))
 
 

@@ -61,7 +61,8 @@ Measured on 2026-10-11 from the installed checkout (read-only probe):
   An unknown type key, or a missing required date or rate, fails the whole normalisation with the
   type and field name and never the payload.
 - `between(actions, symbol, start, end)` selects one symbol's actions by `effective_on`.
-  `blocking_corporate_action` is the entry rule's predicate.
+  `agentic_trader.risk.blocking_corporate_action` is the entry rule's predicate (it lives in `risk`, so the
+  policy layer imports no provider code; `data` only types against it).
 - `AlpacaCorporateActionsSource` chunks symbols (`chunk_size`), takes one SDK call per chunk under
   a request pacer, records a SHA-256 of each raw page, and fails the whole fetch if any chunk
   fails. `transport/alpaca.py:BoundedCorporateActionsClient` applies the desk's socket bounds.
@@ -74,15 +75,16 @@ Measured on 2026-10-11 from the installed checkout (read-only probe):
 - It polls every `poll_seconds`, does nothing inside a suggestion-scan window, and works once per
   New York date. A date is done when the worker has checked it in memory or the latest journaled
   check carries that `as_of`.
-- Symbols are the configured universe, tracked equity positions (contracts without a `/` prefix)
-  and `corporate_actions.extra_symbols`. More than `max_symbols` fails the run with a
+- Symbols are the configured universe, held equities (tracked signals and, on a brokerage account, the
+  broker's own positions; no futures or crypto) and `corporate_actions.extra_symbols`. More than `max_symbols` fails the run with a
   `ValueError`; nothing is truncated.
 - The window is `process_date` in `[today - lookback_days, today + lookahead_days]` (45 and 120
   calendar days by default). Dividends pay about 30 days after the ex-date, so ex-dates roughly 90
   days ahead are covered.
 - A run appends one `corporate_actions_captured` event on stream `corporate-actions/capture` only
-  when the content digest differs from the latest capture, and one `corporate_actions_checked`
-  event on `corporate-actions/check` every run. A capture above `max_actions` fails the run.
+  when the content digest or the requested symbol set differs from the latest capture, and one
+  `corporate_actions_checked` event on `corporate-actions/check` every run. The capture carries the
+  sorted `symbols` it requested, so every consumer knows which names it covers. A capture above `max_actions` fails the run.
 - A failed fetch or normalisation records nothing. The previous capture stays authoritative until
   it ages out, and the next poll retries.
 - Readiness component `corporate_actions` has an age limit of `max_age_seconds` (four days by
@@ -107,7 +109,10 @@ Rule id `corporate_action` (`agentic_trader/risk`, [risk policy](risk-policy.md#
 | `enforce` | refuses with the rule's text | refuses with the same text |
 
 - Stale (older than `max_age_seconds`) or missing evidence never refuses. The provenance records
-  `{"status": "stale"}` or `{"status": "unavailable"}` plus the mode.
+  `{"status": "stale"}` or `{"status": "unavailable"}` plus the mode. An equity the latest capture
+  did not request (a dynamic-universe name, a `/scan SYMBOL` outside the universe) records
+  `{"status": "uncovered", "mode": …, "as_of": …}` and never refuses either; only a covered symbol
+  can be `ok`.
 - Provenance key `corporate_actions` holds `status`, `mode`, `as_of`, `would_block`, `action`,
   `reason` and `note`. With no blocking action, a cash dividend with an ex-date inside `pre_days`
   is recorded as `note`.
@@ -129,7 +134,9 @@ with `effective_on` in `[today - post_days, today + notes_horizon_days]`:
   target predate it until reconciled.`
 
 A stale or missing capture adds the single note `Corporate-action evidence stale.` or
-`Corporate-action evidence unavailable.` while the feature is enabled. Notes are display only: the
+`Corporate-action evidence unavailable.` while the feature is enabled; a held equity the capture did
+not request gets `SYMBOL: corporate-action evidence does not cover this symbol yet.` until the next
+run includes it. Notes are display only: the
 tracked quantity, stop and target are not adjusted.
 
 ## Ledger
@@ -160,8 +167,7 @@ copilot alpha corporate-actions --symbol XOM --cohort COHORT.json \
 `actions.json` and `manifest.json` (request hash, content SHA-256, counts by kind, cache file,
 whether it was a cache hit, the research environment). The window filters on `process_date`, so
 choose it with the filter in [Data](#data) in mind. Research only: no database, registry, broker
-or Telegram, and no promotion credit. A later catalog entry can pin the file's SHA-256 in its
-manifest.
+or Telegram, and no promotion credit. The manifest's request and content digests are what a later catalog entry would pin; no such entry exists yet.
 
 ## Configuration
 

@@ -662,9 +662,9 @@ process exit waits for the labelling thread's provider reads to finish. Details:
 
 **Corporate-actions worker (October 11).** The daemon runs `corporate_actions` beside the research
 workers: once per New York date, outside the suggestion-scan windows, it fetches Alpaca corporate
-actions for the configured universe, tracked equity positions and `corporate_actions.extra_symbols`
-over a `process_date` window of 45 days back and 120 ahead, and appends one
-`corporate_actions_captured` event only when the content changed, plus one
+actions for the configured universe, held equities (tracked and broker-held) and
+`corporate_actions.extra_symbols` over a `process_date` window of 45 days back and 120 ahead, and
+appends one `corporate_actions_captured` event only when the content or the symbol set changed, plus one
 `corporate_actions_checked` event per run (`copilot db events --stream corporate-actions/capture
 --limit 1`). `/readyz` includes `corporate_actions` with a four-day limit
 (`corporate_actions.max_age_seconds`), so weekends and holidays stay ready. A failed run (a provider

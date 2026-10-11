@@ -1,6 +1,6 @@
 """`/positions` notes for held symbols' corporate actions; stale/missing evidence is one note; disabled adds none."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -127,3 +127,15 @@ async def test_a_held_symbol_the_capture_did_not_request_gets_one_coverage_note(
 def today_plus(days: int) -> date:
     """New York dates, as the report computes them: a UTC date would flake between 20:00 and 24:00 ET."""
     return datetime.now(ET_TZ).date() + timedelta(days=days)
+
+
+async def test_lookup_helper_is_none_when_disabled_and_unavailable_on_a_store_failure(copilot):
+    copilot.corporate_actions = MagicMock()
+    copilot.corporate_actions.lookup = AsyncMock(side_effect=RuntimeError("db down"))
+    degraded = await copilot._corporate_actions_lookup(datetime.now(UTC))
+    assert degraded is not None and degraded.status == "unavailable" and degraded.actions == ()
+    copilot.config = copilot.config.model_copy(
+        update={"corporate_actions": copilot.config.corporate_actions.model_copy(update={"enabled": False})}
+    )
+    assert await copilot._corporate_actions_lookup(datetime.now(UTC)) is None
+    copilot.corporate_actions.lookup.assert_awaited_once()

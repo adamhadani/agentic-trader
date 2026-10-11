@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import date
@@ -28,9 +29,29 @@ def _sha256(value: Any) -> str:
 
 
 def _write_private(path: Path, text: str) -> None:
+    """Create the file owner-only from the start and publish it atomically (no truncated cache file)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
-    path.chmod(0o600)
+    temporary = path.with_suffix(".json.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write(text)
+    temporary.replace(path)
+
+
+def _load_cached(path: Path) -> dict[str, Any]:
+    """The cache document, or a ValueError naming the file when it is unreadable or incomplete."""
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Corporate-action cache {path.name} is unreadable: {type(exc).__name__}") from None
+    missing = [key for key in ("actions", "content_sha256", "requested_at", "received_at") if key not in document]
+    if missing:
+        raise ValueError(f"Corporate-action cache {path.name} is missing {', '.join(missing)}")
+    if _sha256(document["actions"]) != document["content_sha256"]:
+        raise ValueError(
+            f"Corporate-action cache {path.name} does not match its recorded SHA-256; refusing a corrupt cache"
+        )
+    return document
 
 
 async def fetch_corporate_actions_cached(
@@ -43,15 +64,15 @@ async def fetch_corporate_actions_cached(
     pace: Callable[[], Awaitable[None]],
 ) -> tuple[tuple[CorporateAction, ...], dict[str, Any]]:
     ordered = sorted({s.strip().upper() for s in symbols if s.strip()})
+    if not ordered:
+        raise ValueError("At least one symbol is required")
+    if end < start:
+        raise ValueError("The window end precedes its start")
     request = {"source": "alpaca", "symbols": ordered, "start": start.isoformat(), "end": end.isoformat()}
     request_sha = _sha256(request)
     path = Path(cache_dir) / "corporate-actions" / f"{request_sha}.json"
     if path.exists():
-        document = json.loads(await asyncio.to_thread(path.read_text))
-        if _sha256(document["actions"]) != document["content_sha256"]:
-            raise ValueError(
-                f"Corporate-action cache {path.name} does not match its recorded SHA-256; refusing a corrupt cache"
-            )
+        document = await asyncio.to_thread(_load_cached, path)
         actions = tuple(CorporateAction.model_validate(row) for row in document["actions"])
         cached = True
     else:

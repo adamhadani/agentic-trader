@@ -51,3 +51,36 @@ async def test_a_different_request_is_a_different_file_and_a_corrupt_cache_is_re
         await fetch_corporate_actions_cached(
             source, ["AAPL"], date(2024, 1, 1), date(2024, 12, 31), tmp_path, pace=_pace
         )
+
+
+async def test_cache_file_is_private_and_malformed_files_are_named(tmp_path):
+    source = CountingSource()
+    _, manifest = await fetch_corporate_actions_cached(
+        source, ["AAPL"], date(2024, 1, 1), date(2024, 12, 31), tmp_path, pace=_pace
+    )
+    cache_file = tmp_path / "corporate-actions" / f"{manifest['request_sha256']}.json"
+    assert oct(cache_file.stat().st_mode & 0o777) == "0o600"
+    cache_file.write_text("{not json")
+    with pytest.raises(ValueError, match="is unreadable: JSONDecodeError"):
+        await fetch_corporate_actions_cached(
+            source, ["AAPL"], date(2024, 1, 1), date(2024, 12, 31), tmp_path, pace=_pace
+        )
+    cache_file.write_text(json.dumps({"actions": []}))
+    with pytest.raises(ValueError, match="is missing content_sha256, requested_at, received_at"):
+        await fetch_corporate_actions_cached(
+            source, ["AAPL"], date(2024, 1, 1), date(2024, 12, 31), tmp_path, pace=_pace
+        )
+    assert source.calls == 1  # no provider call on any of the refused hits
+
+
+async def test_empty_symbols_and_inverted_windows_are_rejected_before_any_fetch(tmp_path):
+    source = CountingSource()
+    with pytest.raises(ValueError, match="At least one symbol"):
+        await fetch_corporate_actions_cached(
+            source, [" ", ""], date(2024, 1, 1), date(2024, 12, 31), tmp_path, pace=_pace
+        )
+    with pytest.raises(ValueError, match="end precedes its start"):
+        await fetch_corporate_actions_cached(
+            source, ["AAPL"], date(2024, 12, 31), date(2024, 1, 1), tmp_path, pace=_pace
+        )
+    assert source.calls == 0

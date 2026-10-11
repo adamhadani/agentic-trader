@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date
 from pathlib import Path
 
 import click
@@ -65,7 +64,7 @@ async def corporate_actions_cmd(symbols, cohort: Path | None, start, end, cache:
     wanted = list(symbols) + (_cohort_symbols(cohort) if cohort else [])
     if not wanted:
         raise click.ClickException("Pass --symbol and/or --cohort")
-    start_date, end_date = date.fromisoformat(start.strftime("%Y-%m-%d")), date.fromisoformat(end.strftime("%Y-%m-%d"))
+    start_date, end_date = start.date(), end.date()
     if end_date < start_date:
         raise click.ClickException("--end must not precede --start")
     actions, manifest = await fetch_corporate_actions_cached(

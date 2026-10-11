@@ -21,7 +21,7 @@ from alpaca.data.requests import CorporateActionsRequest
 from pydantic import BaseModel, Field
 
 from agentic_trader.data.pacing import RequestPacer
-from agentic_trader.risk import blocking_corporate_action, relative_days
+from agentic_trader.risk import relative_days
 from agentic_trader.transport.alpaca import BoundedCorporateActionsClient
 
 
@@ -35,10 +35,8 @@ __all__ = [
     "LookupStatus",
     "actions_for",
     "between",
-    "blocking_corporate_action",
     "normalize_actions",
     "position_note",
-    "relative_days",
 ]
 
 LookupStatus = Literal["ok", "stale", "unavailable"]
