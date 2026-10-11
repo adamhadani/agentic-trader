@@ -199,3 +199,74 @@ def test_pending_exit_at_the_last_session():
     assert trade.exit_reason == "window_end" and trade.exit_pos == 4
     assert trade.gross_return == pytest.approx(0.5 * (cy[4] / oy[2] - 1.0))
     assert sim.turnover[4] == 1.0
+
+
+V2 = TradingRule(
+    z_entry=2.0, z_exit=0.5, z_stop=4.0, fill="next_open", entry="crossing", z_entry_max=4.0, reenter_after_stop=False
+)
+
+
+def test_crossing_requires_previous_z_inside_band():
+    # starts outside: never enters while it stays out; enters only after coming back inside and crossing again
+    cy, cx, oy, ox = paths([2.5, 2.6, 2.4, 0.0, 0.0, 2.5, 0.0, 0.0, 0.0, 0.0])
+    sim = simulate_pair(fit(), cy, cx, oy, ox, V2, window=0)
+    assert [t.entry_pos for t in sim.trades] == [6]
+    assert sim.trades[0].side == -1 and sim.trades[0].entry_z == pytest.approx(2.5)
+    v1 = simulate_pair(fit(), cy, cx, oy, ox, RULE, window=0)
+    assert v1.trades[0].entry_pos == 1  # threshold mode enters at the first signal
+
+
+def test_crossing_blocked_by_gap_before_signal():
+    cy, cx, oy, ox = paths([0.0, 0.0, 2.5, 2.5, 0.0, 0.0, 0.0])
+    cy[1] = np.nan  # the close before the divergence is missing
+    sim = simulate_pair(fit(), cy, cx, oy, ox, V2, window=0)
+    assert sim.trades == ()
+    cy2, cx2, oy2, ox2 = paths([0.0, 0.0, 2.5, 2.5, 0.0, 0.0, 0.0])
+    assert simulate_pair(fit(), cy2, cx2, oy2, ox2, V2, window=0).trades[0].entry_pos == 3
+
+
+def test_upper_band_blocks_entries_beyond_z_entry_max():
+    cy, cx, oy, ox = paths([0.0, 4.5, 4.5, 0.0, 0.0, 3.9, 0.0, 0.0])
+    sim = simulate_pair(fit(), cy, cx, oy, ox, V2, window=0)
+    assert [t.entry_pos for t in sim.trades] == [6]
+    assert sim.trades[0].entry_z == pytest.approx(3.9)
+
+
+def test_stop_retires_the_pair_for_the_window():
+    z = [0.0, 2.5, 4.5, 4.5, 0.0, 0.0, 2.5, 0.0, 0.0, 0.0]
+    cy, cx, oy, ox = paths(z)
+    sim = simulate_pair(fit(), cy, cx, oy, ox, V2, window=0)
+    assert [t.exit_reason for t in sim.trades] == ["stop"]
+    allow = TradingRule(z_entry=2.0, z_exit=0.5, z_stop=4.0, fill="next_open", entry="crossing", z_entry_max=4.0)
+    again = simulate_pair(fit(), cy, cx, oy, ox, allow, window=0)
+    assert [t.exit_reason for t in again.trades] == ["stop", "reverted"]
+
+
+def test_reverted_exit_does_not_retire():
+    cy, cx, oy, ox = paths([0.0, 2.5, 2.5, 0.0, 0.0, -2.5, -2.5, 0.0, 0.0, 0.0])
+    sim = simulate_pair(fit(), cy, cx, oy, ox, V2, window=0)
+    assert [t.exit_reason for t in sim.trades] == ["reverted", "reverted"]
+    assert [t.side for t in sim.trades] == [-1, 1]
+
+
+def test_defaulted_rule_is_bit_identical_to_v1_on_every_fixture():
+    rng = np.random.default_rng(7)
+    explicit = TradingRule(
+        z_entry=2.0,
+        z_exit=0.5,
+        z_stop=4.0,
+        fill="next_open",
+        entry="threshold",
+        z_entry_max=None,
+        reenter_after_stop=True,
+    )
+    for _ in range(20):
+        z = list(np.cumsum(rng.normal(0.0, 1.2, 60)))
+        cy, cx, oy, ox = paths(z)
+        if rng.random() < 0.5:
+            cy[int(rng.integers(1, 59))] = np.nan
+        a = simulate_pair(fit(), cy, cx, oy, ox, RULE, window=0)
+        b = simulate_pair(fit(), cy, cx, oy, ox, explicit, window=0)
+        assert a.trades == b.trades
+        np.testing.assert_array_equal(a.daily, b.daily)
+        np.testing.assert_array_equal(a.turnover, b.turnover)
