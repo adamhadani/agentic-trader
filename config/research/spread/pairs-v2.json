@@ -27,7 +27,7 @@
   },
   "trading": {"z_entry": 2.0, "z_exit": 0.5, "z_stop": 4.0, "fill": "next_open", "entry": "crossing", "z_entry_max": 4.0, "reenter_after_stop": false},
   "second_look": true,
-  "second_look_note": "Second protocol evaluated on the same discovery window; the entry rule was chosen from construction statistics of the v1 run (where entries occurred, how often |z|>=4 occurs), not from returns. A v2 discovery pass is weaker evidence than v1's would have been; the confirmation window, never read, is the clean test.",
+  "second_look_note": "Second protocol evaluated on the same discovery window. The crossing and stop-retirement facets were chosen from construction statistics of the v1 run (84% of v1 entries opened at |z|>=4; 14.7% of trading sessions sit at |z|>=4); the upper-band facet was motivated after a post hoc read of v1 returns on the 377 trades entered in the band 2<=|z|<4 (+7.5 bp net per trade, 7 of 11 windows positive), reported in docs/alpha-spread-results-2026-10-10.md before this protocol was written. A v2 discovery pass is therefore weaker evidence than v1's would have been; the confirmation window, never read, is the clean test.",
   "costs_bps_per_side": [0.0, 5.0, 10.0],
   "decision_cost_bps": 5.0,
   "bootstrap": {"block_mean": 10, "draws": 2000, "seed": 20261010},

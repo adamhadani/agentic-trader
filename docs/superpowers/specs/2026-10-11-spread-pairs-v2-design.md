@@ -61,11 +61,15 @@ lane stops there and that is the result.
 
 ## 4. Second look, declared
 
-v2 is the second protocol evaluated on the same discovery window. The change was chosen from
-*construction* statistics of the v1 run (where entries happened, how often |z| ≥ 4 occurs), not from
-returns; no return statistic conditional on the new rule was computed before this spec. A v2 discovery pass
-is nonetheless weaker evidence than v1's would have been, and the confirmation window (never read) is the
-only clean test. The protocol file records `"second_look": true` and this sentence; the results doc repeats it.
+v2 is the second protocol evaluated on the same discovery window. The crossing and stop-retirement facets
+were chosen from *construction* statistics of the v1 run (where entries happened, how often |z| ≥ 4 occurs).
+The upper-band facet is not clean: the v1 results doc (2026-10-10) had already reported a post hoc read of v1
+returns on the 377 trades entered in the band 2 ≤ |z| < 4 (+7.5 bp net per trade, 7 of 11 windows positive)
+and called it a reason to predeclare a v2, so discovery returns conditional on that facet were seen before
+this spec. No return statistic conditional on the crossing or retirement facets, or on the combined rule, was
+computed. A v2 discovery pass is therefore weaker evidence than v1's would have been, and the confirmation
+window (never read) is the only clean test. The protocol file records `"second_look": true` and a note saying
+exactly this; the lane doc and the results doc repeat it.
 No third protocol runs on this discovery window without a new spec and operator approval.
 
 ## 5. Scope and non-goals

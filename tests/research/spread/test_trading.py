@@ -288,3 +288,15 @@ def test_defaulted_rule_is_bit_identical_to_v1_on_every_fixture():
     assert entry_positions == 12526
     assert turnover == 744.0
     assert daily == pytest.approx(187.74269034618726, abs=1e-9)
+
+
+def test_exact_thresholds_at_the_band_edges():
+    # |z| == z_entry enters under the threshold rule (>=), |z| == z_entry_max is blocked by the band (<),
+    # and a previous close at exactly z_entry blocks a crossing (<).
+    cy, cx, oy, ox = paths([0.0, 2.0, 2.0, 0.0, 0.0])
+    assert simulate_pair(fit(), cy, cx, oy, ox, RULE, window=0).trades[0].entry_pos == 2
+    cy, cx, oy, ox = paths([0.0, 4.0, 4.0, 0.0, 0.0, 0.0])
+    assert simulate_pair(fit(), cy, cx, oy, ox, V2, window=0).trades == ()
+    cy, cx, oy, ox = paths([0.0, 2.0, 2.5, 2.5, 0.0, 0.0, 0.0])
+    sim = simulate_pair(fit(), cy, cx, oy, ox, V2, window=0)
+    assert [t.entry_pos for t in sim.trades] == [2]  # the crossing happened at session 1 (0.0 -> 2.0), not at 2
