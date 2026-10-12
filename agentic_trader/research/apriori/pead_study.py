@@ -36,7 +36,7 @@ import pandas as pd
 
 from agentic_trader.agent.earnings import CalendarRow
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.apriori.catalog import LoadedEntry, PeadEntry
+from agentic_trader.research.apriori.catalog import ExdivEntry, LoadedEntry, PeadEntry
 from agentic_trader.research.apriori.earnings_history import CalendarAcquisition
 from agentic_trader.research.apriori.pead_events import MarketData, build_events
 from agentic_trader.research.apriori.statistics import mean_test, paired_test, trimmed_mean
@@ -53,7 +53,9 @@ __all__ = [
     "execute_pead_study",
     "label_events",
     "levels_for",
+    "save_frame",
     "universe_summary",
+    "utc_index",
 ]
 
 _DIRECTIONS = ("LONG", "SHORT")
@@ -73,7 +75,7 @@ class PeadInputs:
     static_requested: tuple[str, ...]  # the configured static equities, before any bar failure
 
 
-def _utc_index(frame: pd.DataFrame) -> pd.DatetimeIndex:
+def utc_index(frame: pd.DataFrame) -> pd.DatetimeIndex:
     index = pd.DatetimeIndex(frame.index)
     return index.tz_localize("UTC") if index.tz is None else index
 
@@ -81,7 +83,7 @@ def _utc_index(frame: pd.DataFrame) -> pd.DatetimeIndex:
 def decision_price(hourly: pd.DataFrame, when: datetime) -> float | None:
     if hourly is None or hourly.empty:
         return None
-    index = _utc_index(hourly)
+    index = utc_index(hourly)
     local = index.tz_convert(ET_TZ)
     day = when.astimezone(ET_TZ).date()
     eligible = (
@@ -93,7 +95,7 @@ def decision_price(hourly: pd.DataFrame, when: datetime) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
-def levels_for(direction: str, price: float, atr: float, entry: PeadEntry) -> SetupLevels | None:
+def levels_for(direction: str, price: float, atr: float, entry: PeadEntry | ExdivEntry) -> SetupLevels | None:
     risk = entry.trade.stop_atr_multiple * atr
     reward = entry.trade.target_r * risk
     if direction == "LONG":
@@ -131,7 +133,7 @@ def label_events(
             miss("no_hourly_bars", event)
             continue
         when = event["decision_at"]
-        index = _utc_index(bars)
+        index = utc_index(bars)
         window = bars.loc[(index >= when - timedelta(days=1)) & (index <= when + _LABEL_SPAN)]
         price = decision_price(window, when)
         if price is None:
@@ -289,7 +291,7 @@ def universe_summary(
     }
 
 
-def _save_frame(frame: pd.DataFrame, path: Path) -> None:
+def save_frame(frame: pd.DataFrame, path: Path) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as target:
         target.write(frame.to_csv(index=False).encode())
@@ -328,8 +330,8 @@ async def execute_pead_study(
         events, event_counts = await asyncio.to_thread(build_events, inputs.rows, inputs.market, entry)
         reference_names = event_counts.pop("reference_names")
         labels, label_counts = await asyncio.to_thread(label_events, events, inputs.hourly, entry)
-        await asyncio.to_thread(_save_frame, events, directory / "events.csv.gz")
-        await asyncio.to_thread(_save_frame, labels, directory / "labels.csv.gz")
+        await asyncio.to_thread(save_frame, events, directory / "events.csv.gz")
+        await asyncio.to_thread(save_frame, labels, directory / "labels.csv.gz")
         legs = {direction: evaluate_leg(labels, direction, entry) for direction in _DIRECTIONS}
         result = {
             "status": "completed",
