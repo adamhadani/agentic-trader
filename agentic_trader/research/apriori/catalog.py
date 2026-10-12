@@ -1,4 +1,4 @@
-"""Catalog entries: one frozen JSON file per a priori alpha under ``config/research/apriori/``.
+"""Catalog entries (``pead`` and ``exdiv``): one frozen JSON file per a priori alpha under ``config/research/apriori/``.
 
 An entry is committed before any data is read. Its identity is the SHA-256 of the file's
 bytes, recorded in every run manifest; a changed file is a new version (``pead-v2``) with a
@@ -10,7 +10,9 @@ human record; the computation lives in ``pead_study``.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, time, timedelta
 from pathlib import Path
@@ -22,7 +24,18 @@ from agentic_trader.execution.lifetime_policy import DAILY_ENTRY_LIFETIME_SECOND
 from agentic_trader.research.alpha.strategy import AprioriBracketPolicy
 
 
-__all__ = ["LoadedEntry", "PeadEntry", "load_pead_entry", "pead_execution_policy"]
+__all__ = [
+    "ExdivEntry",
+    "ExdivEvent",
+    "ExdivTrade",
+    "LoadedEntry",
+    "LoadedExdivEntry",
+    "PeadEntry",
+    "catalog_entry_id",
+    "load_exdiv_entry",
+    "load_pead_entry",
+    "pead_execution_policy",
+]
 
 # Every labelled decision needs its full holding window of bars before the data cutoff.
 _MIN_MATURATION_DAYS = 30
@@ -158,3 +171,107 @@ def pead_execution_policy(entry: PeadEntry) -> AprioriBracketPolicy:
             close_time_et="15:45",
         ),
     )
+
+
+class ExdivEvent(BaseModel, frozen=True, extra="forbid"):
+    min_gap_days: int = Field(ge=1)
+    max_gap_days: int = Field(ge=1)
+    exclude_special: Literal[True]
+    structural_exclusion_days: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _gap_ordered(self) -> ExdivEvent:
+        if self.min_gap_days > self.max_gap_days:
+            raise ValueError("gap band must be ordered (min_gap_days <= max_gap_days)")
+        return self
+
+
+class ExdivTrade(BaseModel, frozen=True, extra="forbid"):
+    decision_time_et: str
+    entry_lead_sessions: int = Field(ge=1)
+    control_offset_sessions: int = Field(ge=1)
+    stop_atr_multiple: float = Field(gt=0)
+    atr_window: int = Field(ge=2)
+    target_r: float = Field(gt=0)
+    secondary_hold_sessions: int = Field(ge=1)
+
+    @field_validator("decision_time_et")
+    @classmethod
+    def _clock(cls, value: str) -> str:
+        if not re.fullmatch(r"\d{2}:\d{2}", value):
+            raise ValueError("decision_time_et must be HH:MM")
+        time.fromisoformat(value)
+        return value
+
+    @model_validator(mode="after")
+    def _holds_ordered(self) -> ExdivTrade:
+        if self.secondary_hold_sessions <= self.entry_lead_sessions:
+            raise ValueError("secondary_hold_sessions must exceed the hold (entry_lead_sessions)")
+        if self.control_offset_sessions <= self.entry_lead_sessions + 1:
+            raise ValueError("control_offset_sessions must start after the ex-date (entry_lead_sessions + 1)")
+        return self
+
+    @property
+    def max_hold_sessions(self) -> int:
+        """The hold is the lead: the fill session is session 1, the exit is session ``entry_lead_sessions``."""
+        return self.entry_lead_sessions
+
+    def decision_time(self) -> time:
+        return time.fromisoformat(self.decision_time_et)
+
+
+class ExdivEntry(BaseModel, frozen=True, extra="forbid"):
+    """The frozen pre-ex-dividend run-up protocol (catalog entry ``exdiv``)."""
+
+    id: Literal["exdiv"]
+    version: int = Field(ge=1)
+    title: str
+    references: tuple[str, ...]
+    hypotheses: str
+    decision_rule: str
+    window: PeadWindow
+    actions_window: tuple[date, date]
+    cohort: str = Field(min_length=1)
+    feed: Literal["alpaca:sip"]
+    adjustment: Literal["all"]
+    event: ExdivEvent
+    universe: PeadUniverse
+    trade: ExdivTrade
+    costs_bps_per_side: tuple[float, ...] = Field(min_length=1)
+    decision_cost_bps: float
+    bootstrap: BootstrapSpec
+    pass_rule: PassRule
+
+    @model_validator(mode="after")
+    def _consistent(self) -> ExdivEntry:
+        if self.decision_cost_bps not in self.costs_bps_per_side:
+            raise ValueError("decision_cost_bps must be one of costs_bps_per_side")
+        start, end = self.actions_window
+        if start >= self.window.decisions[0]:
+            raise ValueError("actions_window must start before the first decision (the previous ex-date is needed)")
+        if end < self.window.bars_through:
+            raise ValueError("actions_window must end at or after bars_through")
+        return self
+
+
+@dataclass(frozen=True)
+class LoadedExdivEntry:
+    entry: ExdivEntry
+    sha256: str
+    path: Path
+
+
+def load_exdiv_entry(path: Path) -> LoadedExdivEntry:
+    raw = path.read_bytes()
+    return LoadedExdivEntry(
+        entry=ExdivEntry.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path
+    )
+
+
+def catalog_entry_id(path: Path) -> str:
+    """The ``id`` of a catalog entry file, read before choosing which model validates it."""
+    document = json.loads(path.read_bytes())
+    value = document.get("id") if isinstance(document, Mapping) else None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Catalog entry {path} has no string 'id'")
+    return value
