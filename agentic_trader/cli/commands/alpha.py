@@ -1265,38 +1265,45 @@ async def alpha_setup_baserates_cmd(protocol_path, output, max_workers, cache):
 
 
 class _AprioriClients:
-    """Alpaca calendar and SIP data clients for the a priori study; sessions closed on exit."""
+    """Alpaca calendar, SIP data and corporate-actions clients for the a priori study; sessions closed on exit."""
 
     def __init__(self):
         self._stack = ExitStack()
 
     def __enter__(self) -> Self:
         config = load_config()
-        calendar_client = BoundedTradingClient(
-            config.alpaca_api_key,
-            config.alpaca_api_secret,
-            paper=config.alpaca_paper,
-            request_timeout=config.market_data.timeout_seconds,
-        )
-        self._stack.callback(calendar_client._session.close)
-        data_client = BoundedStockDataClient(
-            config.alpaca_api_key, config.alpaca_api_secret, request_timeout=config.market_data.timeout_seconds
-        )
-        self._stack.callback(data_client._session.close)
-        # No bar evidence store: the study's cache files and digests are its bar artifact
-        # (raw evidence for thousands of symbols would be many gigabytes).
-        self.bars = AlpacaDataProvider(stock_client=data_client, feed="sip")
-        self.calendar = AlpacaCalendarProvider(trading_client=calendar_client)
-        self.static_symbols = sorted(
-            contract
-            for contract, info in config.contracts.items()
-            if normalize_asset_class(str(info.asset_class)) == normalize_asset_class(AssetClass.EQUITY)
-        )
-        self.pace = _build_pacer(config)
+        # First, before any other client exists: missing credentials refuse with nothing to close.
         try:
             self.actions = build_corporate_actions_source(config)
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
+        try:
+            self._stack.callback(self.actions.client._session.close)
+            calendar_client = BoundedTradingClient(
+                config.alpaca_api_key,
+                config.alpaca_api_secret,
+                paper=config.alpaca_paper,
+                request_timeout=config.market_data.timeout_seconds,
+            )
+            self._stack.callback(calendar_client._session.close)
+            data_client = BoundedStockDataClient(
+                config.alpaca_api_key, config.alpaca_api_secret, request_timeout=config.market_data.timeout_seconds
+            )
+            self._stack.callback(data_client._session.close)
+            # No bar evidence store: the study's cache files and digests are its bar artifact
+            # (raw evidence for thousands of symbols would be many gigabytes).
+            self.bars = AlpacaDataProvider(stock_client=data_client, feed="sip")
+            self.calendar = AlpacaCalendarProvider(trading_client=calendar_client)
+            self.static_symbols = sorted(
+                contract
+                for contract, info in config.contracts.items()
+                if normalize_asset_class(str(info.asset_class)) == normalize_asset_class(AssetClass.EQUITY)
+            )
+            self.pace = _build_pacer(config)
+        except BaseException:
+            # `__exit__` never runs when `__enter__` raises: close what was built before re-raising.
+            self._stack.close()
+            raise
         return self
 
     def __exit__(self, *exc) -> None:
@@ -1339,6 +1346,8 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache):
             result = await execute_pead_study(loaded, output, build=build, environment=environment)
     elif entry_id == "exdiv":
         loaded_exdiv = await asyncio.to_thread(load_exdiv_entry, protocol_path)
+        # The entry names its cohort relative to the repository, never to the working directory.
+        cohort_path = REPO_ROOT / loaded_exdiv.entry.cohort
         with _apriori_clients() as clients:
 
             async def build_exdiv():
@@ -1350,13 +1359,16 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache):
                     cache_dir=cache_dir,
                     static_symbols=clients.static_symbols,
                     pace=clients.pace,
-                    cohort_path=Path(loaded_exdiv.entry.cohort),
+                    cohort_path=cohort_path,
                 )
 
-            result = await execute_exdiv_study(loaded_exdiv, output, build=build_exdiv, environment=environment)
+            result = await execute_exdiv_study(
+                loaded_exdiv, output, build=build_exdiv, environment=environment, cohort_path=cohort_path
+            )
     else:
         raise click.ClickException(f"Unknown catalog entry id: {entry_id}")
-    click.echo(json.dumps({k: result.get(k) for k in ("status", "decisions", "error")}, indent=2, default=str))
+    summary = ("status", "decision", "decisions", "error")  # exdiv has one leg (`decision`); pead has two
+    click.echo(json.dumps({k: result.get(k) for k in summary}, indent=2, default=str))
     if result.get("status") == "failed":
         raise click.ClickException("A priori study failed; see result.json for the reason")
 

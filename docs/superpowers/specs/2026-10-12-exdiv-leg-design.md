@@ -67,9 +67,13 @@ into the run manifest; a change is a new version with a new window, never an edi
   dividend is the payable date, typically two to six weeks after the ex-date). It starts
   seven months before the first decision so the first events have a previous ex-date, and
   ends three months after the last bar so every in-window ex-date's payable date is inside;
-- `cohort: "config/research/spread/cohort-v1.json"` (the 127-name frozen research cohort;
-  its SHA-256 and symbol list go into the manifest, like the pooled campaign pins its
-  cohort; the file is read exactly as `alpha corporate-actions --cohort` reads it);
+- `cohort: "config/research/spread/cohort-v1.json"` (the 127-name frozen research cohort,
+  resolved against the repository root; its path, SHA-256 and symbol list go into the
+  manifest, like the pooled campaign pins its cohort; the file is parsed exactly as
+  `alpha corporate-actions --cohort` parses it);
+- `cohort_sha256: "6f3a4a322d6333845b75208af71d3a81f46d5cc882ce110d870b6349ae3adbea"` (the
+  cohort is pinned by content: a run whose cohort file has another digest fails closed after
+  the manifest and before any provider call, naming both digests);
 - `feed: "alpaca:sip"`, `adjustment: "all"`;
 - `event`: `min_gap_days: 77`, `max_gap_days: 105` (quarterly regularity: the previous
   non-special ex-date of the same symbol lies 11–15 weeks earlier; 3,490 of 3,800 cohort
@@ -96,7 +100,7 @@ that does not exceed it.
 
 **Corporate actions.** `fetch_corporate_actions_cached` (part 1, `research/corporate_actions.py`)
 with the cohort's symbols over `actions_window`, cache under `CACHE/corporate-actions/`.
-The study's manifest records the acquisition manifest (request and content digests,
+The result records the acquisition manifest (request and content digests,
 counts by kind). A failed fetch fails the run (`status: failed`); nothing is partial.
 
 **Sessions.** The Alpaca trading calendar from 60 calendar days before the first decision
@@ -118,14 +122,18 @@ reason, never silently dropped. No benchmark is needed: the control is the same 
 ## 5. Event and trade rule
 
 Sessions are indexed on the observed calendar. For a cash dividend of symbol `s` with
-ex-date `E` (`effective_on`):
+ex-date `E` (`effective_on`), placement is checked before eligibility, so a dividend outside
+the study is never counted under an eligibility reason: `E` inside the calendar span (else
+`outside_calendar`), an observed session (else `non_session_ex_date`), and `D` (step 2)
+inside the decision window (else `outside_window`).
 
-1. **Eligibility.** Not `special`; `s` matches the supported symbol pattern; `E` is an
-   observed session (else `non_session_ex_date`); the previous non-special cash dividend of
-   `s` in the acquisition has ex-date `P` with `min_gap_days ≤ E − P ≤ max_gap_days`
-   calendar days (else `no_predecessor` / `irregular_gap`); no non-dividend action of `s`
-   has `effective_on` within `structural_exclusion_days` of any date in `[D, E]`
-   (else `structural_action_nearby`).
+1. **Eligibility.** Not `special`; `s` matches the supported symbol pattern; the previous
+   non-special cash dividend of `s` in the acquisition (inside the window or not) has ex-date
+   `P` with `min_gap_days ≤ E − P ≤ max_gap_days` calendar days (else `no_predecessor` /
+   `irregular_gap`; `P = E` is `duplicate_ex_date`, so one ex-date is counted once); no other
+   ex-date of `s` (specials included) falls in `[D − 1, E − 1]` (else `leg_overlaps_ex_date`);
+   no non-dividend action of `s` has `effective_on` within `structural_exclusion_days` of any
+   date in `[D, E]` (else `structural_action_nearby`).
 2. **Decision session.** `D = E − entry_lead_sessions` sessions; `D` must lie inside
    `window.decisions` (else `outside_window`) and have enough calendar before it (else
    `outside_calendar`). `decision_at = D 10:35 New York` (UTC), as PEAD.
@@ -138,13 +146,18 @@ ex-date `E` (`effective_on`):
    open of the first regular bar at or after `decision_at`; the bracket walks hourly bars
    (`label_bracket`, conservative touch rules) with `max_hold_sessions =
    entry_lead_sessions`, so the time exit is the last bar's close on session `E − 1`,
-   **cum-dividend**. Labelled at every cost in `costs_bps_per_side`; the decision cost
+   **cum-dividend**. A leg whose regular hourly bars miss any observed session of
+   `[D, E − 1]` is excluded (`missing_session_bars`), so a gap cannot move the exit onto the
+   ex-date (an exit on or after `E` is still excluded as `exit_on_or_after_ex_date`).
+   Labelled at every cost in `costs_bps_per_side`; the decision cost
    decides. `IMMATURE` labels are counted, not scored.
 5. **Control (placebo) trade.** The same symbol, same bracket construction and hold, with
    decision session `D_c = D + control_offset_sessions` (32 sessions ≈ the middle of a
    63-session quarter), liquidity and ATR as of `D_c − 1`, and the same structural
    exclusion around `[D_c, D_c + entry_lead_sessions − 1]`; additionally no ex-date of `s`
-   may fall in `[D_c − 1, D_c + entry_lead_sessions]` (else `control_overlaps_ex_date`).
+   may fall in `[D_c − 1, D_c + entry_lead_sessions]` (else `control_overlaps_ex_date`), and
+   its hourly bars must hold every session of `[D_c, D_c + entry_lead_sessions − 1]` (else
+   `missing_session_bars`).
    The control row carries the leg's `session` as its pairing key (`pair_id` = the leg
    event's dividend id) and its own `control_session`. A leg event whose control is missing
    keeps its P1/P3/P4 row and is absent from P2 only; the count of unpaired legs is reported.
@@ -184,7 +197,8 @@ a change is a new version with a new window. The window has no reserved confirma
 Per year; liquidity terciles; hit counts (stop / target / timeout); events per session
 (median, p90, max; the cohort's ex-dates carry a median of 2 and at most 10 events);
 costs; the secondary hold (post-ex); by `foreign` flag; by dividend-yield tercile
-(`rate / decision price`, the H–S effect is stronger for higher yields); the control's own
+(`rate / raw close as of D − 1`, both unadjusted; the H–S effect is stronger for higher
+yields); the control's own
 mean; unpaired leg count.
 
 ## 7. Code layout
@@ -192,11 +206,11 @@ mean; unpaired leg count.
 | File | Responsibility |
 | --- | --- |
 | `config/research/apriori/exdiv-v1.json` | the frozen entry |
-| `research/apriori/catalog.py` | `ExdivEntry` (+ `ExdivWindow` reusing `PeadWindow`, `ExdivEvent`, `ExdivTrade` with derived `max_hold_sessions`), `load_exdiv_entry`, `load_entry_id(path)` (peeks `id` for CLI dispatch) |
+| `research/apriori/catalog.py` | `ExdivEntry` (reusing `PeadWindow`, + `ExdivEvent`, `ExdivTrade` with derived `max_hold_sessions`), `load_exdiv_entry`, `catalog_entry_id(path)` (peeks `id` for CLI dispatch) |
 | `research/apriori/statistics.py` | `mean_test`, `paired_test`, `trimmed_mean` (moved; `pead_study` imports) |
-| `research/apriori/exdiv_events.py` | `build_exdiv_events(actions, market, entry)` → events frame (`role` leg/control, `pair_id`, `session`, `control_session`, `ex_date`, `previous_ex_date`, `gap_days`, `rate`, `foreign`, `atr`, `median_dollar_volume`, `reference`, `decision_at`) + counts by reason/year; reuses `MarketData`, `_by_session`, `_atr`, `decision_at` from `pead_events` (the private helpers become public names) |
-| `research/apriori/exdiv_study.py` | `ExdivInputs`, `label_exdiv_events` (one direction, both roles), `evaluate_exdiv` (P1–P4 + diagnostics), `execute_exdiv_study` (protocol + manifest before `build`, `status: failed` on any exception, `authorizes_promotion: false`) |
-| `research/apriori/exdiv_runner.py` | `build_exdiv_inputs(entry, *, bars, calendar, actions_source, cache_dir, static_symbols, pace)` |
+| `research/apriori/exdiv_events.py` | `build_exdiv_events(actions, market, entry)` → events frame (`role` leg/control, `pair_id`, `session`, `control_session`, `ex_date`, `previous_ex_date`, `gap_days`, `rate`, `foreign`, `atr`, `median_dollar_volume`, `reference`, `raw_close`, `decision_at`) + counts by reason/year and `payers`; reuses `MarketData`, `_by_session`, `_atr`, `decision_at` from `pead_events` (the private helpers become public names) |
+| `research/apriori/exdiv_study.py` | `ExdivInputs`, `read_cohort` (one read, digest checked against `cohort_sha256`), `label_exdiv_events(events, hourly, entry, trading_days)` (one direction, both roles), `evaluate_exdiv` (P1–P4 + diagnostics), `execute_exdiv_study` (protocol + manifest with the verified cohort before `build`, `status: failed` on any exception, `authorizes_promotion: false`) |
+| `research/apriori/exdiv_runner.py` | `build_exdiv_inputs(entry, *, bars, calendar, actions_source, cache_dir, static_symbols, pace, cohort_path)` (re-reads and re-verifies the cohort before any provider call) |
 | `cli/commands/alpha.py` | `apriori-study` dispatches on the entry id (`pead` → existing path; `exdiv` → new path, building the `AlpacaCorporateActionsSource` the way `alpha corporate-actions` does) |
 
 No new config, no database, no migration, no daemon change.
@@ -207,7 +221,7 @@ No new config, no database, no migration, no daemon change.
 | --- | --- |
 | Entry file invalid (unknown id, hold ≥ secondary hold, window order, cost not listed) | `load_*` raises before any I/O |
 | Output directory exists | CLI refuses |
-| Cohort file missing/unparseable | `status: failed` after manifest |
+| Cohort file missing, unparseable or with a SHA-256 other than `cohort_sha256` | `status: failed` after the manifest, before any provider call |
 | Corporate-actions fetch fails or returns zero actions | `status: failed` |
 | A symbol's bars fail | `bar_failures[symbol]`, its events counted as `no_daily_bars` / `no_hourly_bars` |
 | Malformed action row | part 1's `normalize_actions` already fails closed naming kind and field |
@@ -253,8 +267,12 @@ PR.
   typically two to six weeks ahead for quarterly payers, and the regularity filter is the
   same predictability Hartzmark–Solomon use, but a part 3 probe must measure its own
   lead-time coverage from the daemon's captures before claiming parity.
-- The decision price is the 10:30 hourly close, not a broker fill; slippage is not
+- The decision price is the close of the last regular hourly bar ending at or before 10:35
+  (the 09:30–10:30 bar), not a broker fill; the fill is the next bar's open. Slippage is not
   measured. Costs are the desk's standing 5 bp per side assumption.
+- A control can sit inside the run-up window of the name's next ex-date when that ex-date
+  falls at `D_c + 6..10` (about 6 of ~3,300 controls); this is the design (the overlap guard
+  covers only `[D_c − 1, D_c + entry_lead_sessions]`) and a v2 consideration.
 - One hypothesis, one test: no parameter (lead, offset, gap band, bracket) is tuned on
   this data. The diagnostics may suggest a v2 with a new window; they cannot pass or fail
   anything.

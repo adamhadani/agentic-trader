@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -8,8 +9,10 @@ import pandas as pd
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import LoadedExdivEntry, load_exdiv_entry
+from agentic_trader.research.apriori.exdiv_events import EXDIV_EVENT_COLUMNS
 from agentic_trader.research.apriori.exdiv_study import (
     ExdivInputs,
+    _diagnostics,
     evaluate_exdiv,
     execute_exdiv_study,
     label_exdiv_events,
@@ -20,6 +23,7 @@ from agentic_trader.research.apriori.pead_events import MarketData, decision_at
 ENTRY_PATH = Path(__file__).resolve().parents[3] / "config/research/apriori/exdiv-v1.json"
 LOADED = load_exdiv_entry(ENTRY_PATH)
 ENTRY = LOADED.entry
+COHORT_PATH = Path(__file__).resolve().parents[3] / ENTRY.cohort
 
 
 def hourly_day(day: date, prices: list[float]) -> pd.DataFrame:
@@ -49,6 +53,7 @@ def _event(symbol, session, *, role="leg", pair_id="p1", control_session=None, a
         "atr": atr,
         "median_dollar_volume": 5e6,
         "reference": 1e6,
+        "raw_close": 100.0,
     }
 
 
@@ -61,7 +66,7 @@ def test_time_exit_is_the_close_of_the_last_cum_dividend_session():
     session, ex = days[2], days[7]  # five sessions before the ex-date
     bars = hourly(days, lambda d: 100.0 + days.index(d))  # rises one dollar per session; no bracket hit at ATR 10
     events = pd.DataFrame([_event("XYZ", session, atr=10.0, ex_date=ex)])
-    labels, counts = label_exdiv_events(events, {"XYZ": bars}, ENTRY)
+    labels, counts = label_exdiv_events(events, {"XYZ": bars}, ENTRY, days)
     assert not [reason for reason in counts if reason not in ("by_year", "by_role")]  # no misses
     row = labels.iloc[0]
     assert row["hit"] == "timeout" and row["holding_sessions"] == 5
@@ -70,14 +75,44 @@ def test_time_exit_is_the_close_of_the_last_cum_dividend_session():
     assert np.isfinite(row["hold_secondary_r_cost"])  # the 10-session hold crosses the ex-date
 
 
-def test_a_label_that_would_exit_on_or_after_the_ex_date_is_excluded_and_counted():
+def test_a_leg_whose_hourly_bars_miss_a_session_before_the_ex_date_is_excluded_and_counted():
     days = _sessions(12)
     session, ex = days[2], days[7]
-    gappy = [d for d in days if d != days[4]]  # one missing session shifts the fifth distinct date onto the ex-date
+    gappy = [d for d in days if d != days[4]]  # one missing session would shift the fifth date onto the ex-date
     bars = hourly(gappy, lambda d: 100.0)
     events = pd.DataFrame([_event("XYZ", session, atr=10.0, ex_date=ex)])
-    labels, counts = label_exdiv_events(events, {"XYZ": bars}, ENTRY)
+    labels, counts = label_exdiv_events(events, {"XYZ": bars}, ENTRY, days)
+    assert labels.empty and counts["missing_session_bars"] == 1 and "exit_on_or_after_ex_date" not in counts
+    assert counts["by_role"]["missing_session_bars"] == {"leg": 1}
+    # A missing session after the ex-date is outside the leg's span and does not exclude it.
+    later = [d for d in days if d != days[9]]
+    labels, counts = label_exdiv_events(events, {"XYZ": hourly(later, lambda d: 100.0)}, ENTRY, days)
+    assert len(labels) == 1 and "missing_session_bars" not in counts
+
+
+def test_an_exit_on_or_after_the_ex_date_is_still_excluded_when_the_calendar_itself_lacks_the_session():
+    days = _sessions(12)
+    session, ex = days[2], days[7]
+    gappy = [d for d in days if d != days[4]]  # bars and calendar agree, so the span check passes
+    events = pd.DataFrame([_event("XYZ", session, atr=10.0, ex_date=ex)])
+    labels, counts = label_exdiv_events(events, {"XYZ": hourly(gappy, lambda d: 100.0)}, ENTRY, gappy)
     assert labels.empty and counts["exit_on_or_after_ex_date"] == 1
+
+
+def test_a_control_whose_hourly_bars_miss_a_session_of_its_hold_is_excluded_and_counted():
+    days = _sessions(60)
+    bars = hourly([d for d in days if d != days[36]], lambda d: 100.0)  # D_c = days[34]; hold days[34..38]
+    events = pd.DataFrame(
+        [
+            _event("XYZ", days[2], atr=10.0, ex_date=days[7]),
+            _event("XYZ", days[2], role="control", control_session=days[34], atr=10.0, ex_date=days[7]),
+        ]
+    )
+    labels, counts = label_exdiv_events(events, {"XYZ": bars}, ENTRY, days)
+    assert list(labels["role"]) == ["leg"] and counts["by_role"]["missing_session_bars"] == {"control": 1}
+    bars = hourly([d for d in days if d != days[39]], lambda d: 100.0)  # the session after the hold
+    labels, counts = label_exdiv_events(events, {"XYZ": bars}, ENTRY, days)
+    assert list(labels["role"]) == ["leg", "control"]
 
 
 def test_control_rows_are_labelled_without_a_secondary_hold_and_misses_count_by_role():
@@ -90,7 +125,7 @@ def test_control_rows_are_labelled_without_a_secondary_hold_and_misses_count_by_
             _event("ABC", days[2], pair_id="p2", atr=10.0, ex_date=days[7]),  # no hourly bars
         ]
     )
-    labels, counts = label_exdiv_events(events, {"XYZ": bars}, ENTRY)
+    labels, counts = label_exdiv_events(events, {"XYZ": bars}, ENTRY, days)
     assert list(labels["role"]) == ["leg", "control"]
     assert np.isnan(labels.iloc[1]["hold_secondary_r_cost"]) and labels.iloc[1]["hit"] == "timeout"
     assert counts["no_hourly_bars"] == 1 and counts["by_role"]["no_hourly_bars"] == {"leg": 1}
@@ -150,6 +185,44 @@ def test_evaluate_fails_p4_and_p3_on_small_or_recent_losing_samples():
         for k, s in enumerate(_sessions(700, "2021-01-01"))
     ]
     assert not evaluate_exdiv(_labels(rows), ENTRY)["p3"]["holds"]
+
+
+def test_diagnostics_yield_terciles_divide_the_rate_by_the_raw_close():
+    sessions = _sessions(6, "2023-03-01")
+    rows = []
+    for k, session in enumerate(sessions):
+        row = _row(f"p{k}", session, "leg", float(k))
+        # Raw closes fall as k rises (yield rises with k); decision prices rise, so they would rank the other way.
+        row.update(rate=1.0, raw_close=60.0 - 10.0 * k, decision_price=10.0 + 10.0 * k)
+        row.update(median_dollar_volume=1e6 * (k + 1))
+        rows.append(row)
+    rows.extend(_row(f"p{k}", sessions[k], "control", -1.0) for k in range(3))
+    diagnostics = _diagnostics(_labels(rows))
+    assert diagnostics["yield_terciles"] == {
+        "low": {"n": 2, "mean_r_cost": 0.5},
+        "mid": {"n": 2, "mean_r_cost": 2.5},
+        "high": {"n": 2, "mean_r_cost": 4.5},
+    }
+    assert diagnostics["liquidity_terciles"]["high"] == {"n": 2, "mean_r_cost": 4.5}
+    assert diagnostics["control"] == {"n": 3, "mean_r_cost": -1.0}
+    assert diagnostics["by_year"] == {2023: {"n": 6, "mean_r_cost": 2.5}}
+    assert diagnostics["events_per_session"] == {"max": 1, "median": 1.0, "p90": 1.0}
+    # Fewer than three finite yields leave the terciles empty rather than mis-bucketing them.
+    for row in rows[:4]:
+        row["raw_close"] = float("nan")
+    diagnostics = _diagnostics(_labels(rows))
+    assert diagnostics["yield_terciles"] == {} and len(diagnostics["liquidity_terciles"]) == 3
+
+
+def test_diagnostics_of_an_empty_label_frame_are_empty_not_an_error():
+    labels, counts = label_exdiv_events(pd.DataFrame(columns=list(EXDIV_EVENT_COLUMNS)), {}, ENTRY, ())
+    assert labels.empty and counts == {"by_year": {}, "by_role": {}}
+    diagnostics = _diagnostics(labels)
+    assert diagnostics["control"]["n"] == 0 and np.isnan(diagnostics["control"]["mean_r_cost"])
+    assert diagnostics["yield_terciles"] == {} and diagnostics["liquidity_terciles"] == {}
+    assert diagnostics["by_year"] == {} and diagnostics["hits"] == {} and diagnostics["by_foreign"] == {}
+    assert diagnostics["events_per_session"] == {"max": 0, "median": 0.0, "p90": 0.0}
+    assert set(diagnostics["costs"]) == {"r_cost_0bps", "r_cost_5bps", "r_cost_10bps"}
 
 
 def _dividend(symbol, ex, special=False):
@@ -213,7 +286,7 @@ async def test_execute_writes_protocol_and_manifest_before_building_and_records_
         seen["manifest"] = (directory / "manifest.json").exists() and (directory / "protocol.json").exists()
         raise RuntimeError("provider down")
 
-    result = await execute_exdiv_study(LOADED, directory, build=build, environment={"e": 1})
+    result = await execute_exdiv_study(LOADED, directory, build=build, environment={"e": 1}, cohort_path=COHORT_PATH)
     assert seen == {"manifest": True}
     assert (
         result["status"] == "failed" and "RuntimeError" in result["error"] and result["authorizes_promotion"] is False
@@ -224,6 +297,35 @@ async def test_execute_writes_protocol_and_manifest_before_building_and_records_
         and manifest["sha256"] == LOADED.sha256
         and manifest["authorizes_promotion"] is False
     )
+    cohort = manifest["cohort"]
+    assert cohort["path"] == str(COHORT_PATH) and cohort["sha256"] == ENTRY.cohort_sha256
+    assert cohort["sha256"] == hashlib.sha256(COHORT_PATH.read_bytes()).hexdigest()
+    assert len(cohort["symbols"]) == cohort["count"] > 100 and cohort["symbols"] == sorted(cohort["symbols"])
+    assert {"XOM", "AEM"} <= set(cohort["symbols"]) and isinstance(cohort["unsupported"], list)
+
+
+async def test_a_cohort_whose_digest_differs_from_the_entry_fails_after_the_manifest_without_building(tmp_path):
+    called = []
+
+    async def build():
+        called.append(True)
+        raise AssertionError("build must not run when the cohort digest differs")
+
+    wrong = LoadedExdivEntry(
+        entry=ENTRY.model_copy(update={"cohort_sha256": "0" * 64}), sha256=LOADED.sha256, path=LOADED.path
+    )
+    result = await execute_exdiv_study(wrong, tmp_path / "run", build=build, environment={}, cohort_path=COHORT_PATH)
+    assert result["status"] == "failed" and "cohort" in result["error"] and "0" * 64 in result["error"]
+    assert ENTRY.cohort_sha256 in result["error"] and called == []
+    manifest = json.loads((tmp_path / "run" / "manifest.json").read_text())
+    assert manifest["entry_id"] == "exdiv" and manifest["cohort"]["path"] == str(COHORT_PATH)
+    assert "symbols" not in manifest["cohort"] and "cohort" in manifest["cohort"]["error"]
+    assert json.loads((tmp_path / "run" / "result.json").read_text())["status"] == "failed"
+
+    missing = tmp_path / "missing-cohort.json"
+    result = await execute_exdiv_study(LOADED, tmp_path / "gone", build=build, environment={}, cohort_path=missing)
+    assert result["status"] == "failed" and "missing-cohort.json" in result["error"] and called == []
+    assert (tmp_path / "gone" / "manifest.json").exists()
 
 
 async def test_execute_completes_on_synthetic_inputs_and_fails_closed_on_zero_actions(tmp_path):
@@ -232,7 +334,9 @@ async def test_execute_completes_on_synthetic_inputs_and_fails_closed_on_zero_ac
     async def build():
         return inputs
 
-    result = await execute_exdiv_study(_small_window_entry(), tmp_path / "ok", build=build, environment={})
+    result = await execute_exdiv_study(
+        _small_window_entry(), tmp_path / "ok", build=build, environment={}, cohort_path=COHORT_PATH
+    )
     assert result["status"] == "completed" and result["decision"] in {"eligible_for_probe", "failed"}
     assert result["events"]["legs"] == 1 and result["labels"]["rows"] == 2
     assert result["actions"]["content_sha256"] == "c" * 64 and result["cohort"]["sha256"] == "h" * 64
@@ -245,5 +349,7 @@ async def test_execute_completes_on_synthetic_inputs_and_fails_closed_on_zero_ac
     async def build_empty():
         return empty
 
-    result = await execute_exdiv_study(_small_window_entry(), tmp_path / "empty", build=build_empty, environment={})
+    result = await execute_exdiv_study(
+        _small_window_entry(), tmp_path / "empty", build=build_empty, environment={}, cohort_path=COHORT_PATH
+    )
     assert result["status"] == "failed" and "no corporate actions" in result["error"]

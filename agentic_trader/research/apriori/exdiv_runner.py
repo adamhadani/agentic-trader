@@ -1,7 +1,8 @@
 """Provider access for the exdiv study: trading calendar, cached corporate actions and SIP bars.
 
 Called only from inside ``execute_exdiv_study``'s ``build`` callable, after the manifest exists.
-The cohort file is read (and digested) first; part 1's ``fetch_corporate_actions_cached`` supplies
+The cohort file is read once and verified against the entry's ``cohort_sha256`` first (a mismatch
+fails closed before any provider call); part 1's ``fetch_corporate_actions_cached`` supplies
 the actions over the entry's process-date window; adjusted daily bars for the cohort (ATR), raw daily
 bars for the cohort and static universe (the liquidity gate) and regular-session hourly bars for
 symbols with at least one event all reuse the setup study's immutable ``.npz`` cache. A symbol whose
@@ -11,7 +12,6 @@ bars fail is recorded in ``bar_failures``, never silently dropped.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -21,10 +21,10 @@ import pandas as pd
 from agentic_trader.data.corporate_actions import CorporateActionsSource
 from agentic_trader.research.apriori.catalog import ExdivEntry
 from agentic_trader.research.apriori.exdiv_events import build_exdiv_events
-from agentic_trader.research.apriori.exdiv_study import ExdivInputs
-from agentic_trader.research.apriori.pead_events import SUPPORTED_SYMBOL, MarketData
+from agentic_trader.research.apriori.exdiv_study import ExdivInputs, read_cohort
+from agentic_trader.research.apriori.pead_events import MarketData
 from agentic_trader.research.apriori.pead_runner import bars_or_failure, record_failure
-from agentic_trader.research.corporate_actions import cohort_symbols, fetch_corporate_actions_cached
+from agentic_trader.research.corporate_actions import fetch_corporate_actions_cached
 from agentic_trader.research.setups.runner import BarSource, CalendarSource, _claim_cache_range
 
 
@@ -46,11 +46,8 @@ async def build_exdiv_inputs(
     pace: Callable[[], Awaitable[None]],
     cohort_path: Path,
 ) -> ExdivInputs:
-    cohort_bytes = cohort_path.read_bytes()  # before any provider call
-    symbols = sorted(
-        {s.strip().upper() for s in cohort_symbols(cohort_path) if SUPPORTED_SYMBOL.fullmatch(s.strip().upper())}
-    )
-    cohort = {"path": str(cohort_path), "sha256": hashlib.sha256(cohort_bytes).hexdigest(), "symbols": len(symbols)}
+    cohort = read_cohort(entry, cohort_path)  # before any provider call; raises on a digest mismatch
+    symbols: list[str] = cohort["symbols"]
 
     first, _last = entry.window.decisions
     bars_through = entry.window.bars_through

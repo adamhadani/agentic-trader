@@ -171,9 +171,12 @@ copilot alpha corporate-actions --symbol XOM --cohort COHORT.json \
 command writes `actions.json` and `manifest.json` (request hash, content SHA-256, counts by kind,
 cache file, whether it was a cache hit, the research environment). The window filters on
 `process_date`, so choose it with the filter in [Data](#data) in mind. Research only: no database,
-registry, broker or Telegram, and no promotion credit. The manifest's request and content digests
-are what the [`exdiv` catalog entry](apriori-alphas.md#entry-2-pre-ex-dividend-run-up) pins
-(`config/research/apriori/exdiv-v1.json`: `actions_window` and the cohort digest in its manifest).
+registry, broker or Telegram, and no promotion credit. The
+[`exdiv` catalog entry](apriori-alphas.md#entry-2-pre-ex-dividend-run-up)
+(`config/research/apriori/exdiv-v1.json`) pins this acquisition's inputs: the process-date window
+(`actions_window`) and the cohort file's SHA-256 (`cohort_sha256`). Its study manifest records the
+cohort's path, digest and symbols, and its `result.json` records the acquisition's request and
+content digests.
 
 ## Configuration
 

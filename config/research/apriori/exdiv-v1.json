@@ -23,6 +23,7 @@
     "2026-12-01"
   ],
   "cohort": "config/research/spread/cohort-v1.json",
+  "cohort_sha256": "6f3a4a322d6333845b75208af71d3a81f46d5cc882ce110d870b6349ae3adbea",
   "feed": "alpaca:sip",
   "adjustment": "all",
   "event": {

@@ -232,6 +232,8 @@ class ExdivEntry(BaseModel, frozen=True, extra="forbid"):
     window: PeadWindow
     actions_window: tuple[date, date]
     cohort: str = Field(min_length=1)
+    # The cohort is pinned by content: a run whose cohort file has another digest fails closed.
+    cohort_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     feed: Literal["alpaca:sip"]
     adjustment: Literal["all"]
     event: ExdivEvent

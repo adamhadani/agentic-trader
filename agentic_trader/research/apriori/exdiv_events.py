@@ -2,11 +2,18 @@
 
 For a non-special cash dividend of symbol ``s`` with ex-date ``E`` on the observed calendar:
 
-- regularity: the previous non-special ex-date ``P`` of ``s`` lies ``min_gap_days..max_gap_days``
-  calendar days earlier (the Hartzmark-Solomon "predicted dividend");
-- the leg decides at 10:35 on session ``D = E - entry_lead_sessions``; liquidity (raw bars, the live
-  dynamic-universe functions) and ATR (adjusted bars) are measured as of ``D - 1``;
-- no other corporate action of ``s`` falls within ``structural_exclusion_days`` of ``[D, E]``;
+- placement first: ``E`` inside the calendar span (else ``outside_calendar``), an observed session
+  (else ``non_session_ex_date``) and a decision session ``D = E - entry_lead_sessions`` inside the
+  decision window (else ``outside_window``), so a dividend outside the study is never counted under
+  an eligibility reason;
+- regularity: the previous non-special ex-date ``P`` of ``s`` (in the window or not) lies
+  ``min_gap_days..max_gap_days`` calendar days earlier (the Hartzmark-Solomon "predicted dividend");
+  a second regular dividend on the same ex-date is ``duplicate_ex_date``;
+- the leg decides at 10:35 on ``D``; liquidity (raw bars, the live dynamic-universe functions) and
+  ATR (adjusted bars) are measured as of ``D - 1``, and the raw close there is kept as ``raw_close``;
+- no other ex-date of ``s`` (specials included) falls in ``[D - 1, E - 1]``, so the hold is
+  cum-dividend by construction, and no other corporate action of ``s`` falls within
+  ``structural_exclusion_days`` of ``[D, E]``;
 - the control is the same name decided at ``D_c = D + control_offset_sessions``, same gates as of
   ``D_c - 1``, dropped when any ex-date of ``s`` (specials included) falls within one session of its
   span or a structural action is nearby. It carries the leg's ``session`` as the pairing key.
@@ -19,6 +26,7 @@ from __future__ import annotations
 import math
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 import pandas as pd
@@ -52,7 +60,18 @@ EXDIV_EVENT_COLUMNS: tuple[str, ...] = (
     "atr",
     "median_dollar_volume",
     "reference",
+    "raw_close",
 )
+
+
+@dataclass(frozen=True)
+class _Measured:
+    """A passing gate as of the session before a decision."""
+
+    atr: float
+    median_dollar_volume: float
+    reference: float
+    raw_close: float  # unadjusted, the dividend-yield denominator
 
 
 def build_exdiv_events(
@@ -81,86 +100,108 @@ def build_exdiv_events(
         reasons[reason] += 1
         by_year[reason][ex.year] += 1
 
-    def gate(symbol: str, d: int) -> tuple[tuple[float, float, float] | None, str | None]:
-        """Liquidity and ATR as of ``days[d - 1]``: ``(atr, median_dollar_volume, reference)`` or a reason."""
+    def gate(symbol: str, d: int) -> _Measured | str:
+        """Liquidity and ATR as of ``days[d - 1]``: the measurements, or the reason the gate failed."""
         as_of = days[d - 1]
         if as_of not in references:
             references[as_of] = static_reference(static_daily, entry.universe.static_percentile, as_of=as_of)
         reference = references[as_of].value
         if reference is None:
-            return None, "no_reference"
+            return "no_reference"
         raw = market.liquidity_daily[symbol]
         dollar_volume = median_dollar_volume(raw, as_of)
         if dollar_volume is None:
-            return None, "short_history"
+            return "short_history"
         liquidity = keyed_raw.setdefault(symbol, by_session(raw))
         close = float(liquidity.at[as_of, "Close"]) if as_of in liquidity.index else math.nan
         if not math.isfinite(close):
-            return None, "no_raw_close"
+            return "no_raw_close"
         if close < entry.universe.min_price:
-            return None, "illiquid_price"
+            return "illiquid_price"
         if dollar_volume < reference:
-            return None, "illiquid_volume"
+            return "illiquid_volume"
         sym = keyed.setdefault(symbol, by_session(market.daily[symbol]))
         atr = atr_through(sym, days, d - 1, atr_window)
         if atr is None:
-            return None, "no_atr"
-        return (atr, dollar_volume, reference), None
+            return "no_atr"
+        return _Measured(atr=atr, median_dollar_volume=dollar_volume, reference=reference, raw_close=close)
+
+    def measured_columns(measured: _Measured) -> dict:
+        return {
+            "atr": measured.atr,
+            "median_dollar_volume": measured.median_dollar_volume,
+            "reference": measured.reference,
+            "raw_close": measured.raw_close,
+        }
 
     total = legs = controls = 0
     for symbol in sorted(dividends):
         series = sorted(dividends[symbol], key=lambda a: (a.effective_on, a.id))
         total += len(series)
         ex_dates = {a.effective_on for a in series}
-        regular: list[CorporateAction] = []
+        supported = SUPPORTED_SYMBOL.fullmatch(symbol) is not None
+        predecessor: CorporateAction | None = None  # the previous non-special dividend, wherever it fell
         for action in series:
-            if action.special:
-                skip("special_dividend", action.effective_on)
-            else:
-                regular.append(action)
-        for k, action in enumerate(regular):
             ex = action.effective_on
-            if not SUPPORTED_SYMBOL.fullmatch(symbol):
+            if action.special:
+                skip("special_dividend", ex)
+                continue
+            previous, predecessor = predecessor, action
+            if not supported:
                 skip("unsupported_symbol", ex)
                 continue
-            if k == 0:
-                skip("no_predecessor", ex)
-                continue
-            previous = regular[k - 1].effective_on
-            gap = (ex - previous).days
-            if not entry.event.min_gap_days <= gap <= entry.event.max_gap_days:
-                skip("irregular_gap", ex)
+            # Placement before eligibility: a dividend outside the calendar or the decision window is
+            # counted as such, never as no_predecessor / irregular_gap.
+            if not days or not days[0] <= ex <= days[-1]:
+                skip("outside_calendar", ex)
                 continue
             e = position.get(ex)
             if e is None:
                 skip("non_session_ex_date", ex)
                 continue
             d = e - lead
-            if d - 1 - atr_window < 0:
+            if d < 0:  # the decision session precedes the calendar
                 skip("outside_calendar", ex)
                 continue
             session = days[d]
             if not start <= session <= end:
                 skip("outside_window", ex)
                 continue
+            if previous is None:
+                skip("no_predecessor", ex)
+                continue
+            gap = (ex - previous.effective_on).days
+            if gap == 0:
+                skip("duplicate_ex_date", ex)
+                continue
+            if not entry.event.min_gap_days <= gap <= entry.event.max_gap_days:
+                skip("irregular_gap", ex)
+                continue
+            if d - 1 - atr_window < 0:  # not enough calendar before D for the ATR window
+                skip("outside_calendar", ex)
+                continue
             adjusted = market.daily.get(symbol)
             raw = market.liquidity_daily.get(symbol)
             if adjusted is None or adjusted.empty or raw is None or raw.empty:
                 skip("no_daily_bars", ex)
                 continue
+            # Cum-dividend by construction: no other ex-date of the name from D - 1 through E - 1.
+            if any(days[d - 1] <= other <= days[e - 1] for other in ex_dates):
+                skip("leg_overlaps_ex_date", ex)
+                continue
             if between(structural[symbol], symbol, session - pad, ex + pad):
                 skip("structural_action_nearby", ex)
                 continue
-            measured, reason = gate(symbol, d)
-            if measured is None:
-                skip(reason or "no_atr", ex)
+            measured = gate(symbol, d)
+            if isinstance(measured, str):
+                skip(measured, ex)
                 continue
             base = {
                 "pair_id": action.id,
                 "symbol": symbol,
                 "session": session,
                 "ex_date": ex,
-                "previous_ex_date": previous,
+                "previous_ex_date": previous.effective_on,
                 "gap_days": gap,
                 "rate": action.rate,
                 "foreign": action.foreign,
@@ -171,12 +212,12 @@ def build_exdiv_events(
                     "role": "leg",
                     "control_session": None,
                     "decision_at": decision_at(session, clock),
-                    "atr": measured[0],
-                    "median_dollar_volume": measured[1],
-                    "reference": measured[2],
+                    **measured_columns(measured),
                 }
             )
             legs += 1
+            # Control reasons share the `reasons` dict (and `reasons_by_year`) under a `control_` prefix,
+            # keyed by the leg's ex-date year; the leg row above is kept whatever happens to its control.
             dc = d + offset
             if dc >= len(days):
                 skip("control_outside_calendar", ex)
@@ -190,9 +231,9 @@ def build_exdiv_events(
             if between(structural[symbol], symbol, control_session - pad, last + pad):
                 skip("control_structural_action_nearby", ex)
                 continue
-            measured, reason = gate(symbol, dc)
-            if measured is None:
-                skip(f"control_{reason or 'no_atr'}", ex)
+            control = gate(symbol, dc)
+            if isinstance(control, str):
+                skip(f"control_{control}", ex)
                 continue
             rows.append(
                 {
@@ -200,9 +241,7 @@ def build_exdiv_events(
                     "role": "control",
                     "control_session": control_session,
                     "decision_at": decision_at(control_session, clock),
-                    "atr": measured[0],
-                    "median_dollar_volume": measured[1],
-                    "reference": measured[2],
+                    **measured_columns(control),
                 }
             )
             controls += 1
@@ -211,6 +250,7 @@ def build_exdiv_events(
     frame["control_session"] = frame["control_session"].astype(object).where(frame["control_session"].notna(), None)
     counts = {
         "dividends": total,
+        "payers": len(dividends),  # symbols with at least one cash dividend (specials included)
         "legs": legs,
         "controls": controls,
         "unpaired_legs": legs - controls,

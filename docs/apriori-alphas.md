@@ -30,17 +30,24 @@ is desk item 3, part 2. Research only, one frozen hypothesis, long leg only; the
 into the manifest and a change is a new version with a new window.
 
 - **Event source.** Part 1's cached [corporate-actions acquisition](corporate-actions.md) on the frozen
-  spread cohort (`config/research/spread/cohort-v1.json`; its SHA-256 is in the manifest). The
-  entry pins the process-date window (`actions_window`). A failed or empty fetch fails the run.
+  spread cohort (`config/research/spread/cohort-v1.json`, resolved against the repository root). The
+  entry pins the cohort by content (`cohort_sha256`; a cohort file with another digest fails the run
+  before any provider call) and the process-date window (`actions_window`). The manifest records the
+  cohort's path, digest and symbols; `result.json` records the acquisition's request and content
+  digests. A failed or empty fetch fails the run.
 - **Event rule.** A non-special cash dividend whose previous non-special ex-date lies 77–105
   calendar days earlier (quarterly regularity), with no split, merger, spin-off, name change or
-  other non-dividend action for the symbol within 10 calendar days of the decision-to-ex span, and
-  passing PEAD's liquidity gate on raw bars as of the session before the decision. The decision is
-  at 10:35 New York on E−5 (five sessions before the ex-date E).
+  other non-dividend action for the symbol within 10 calendar days of the decision-to-ex span, no
+  other ex-date of the symbol from the session before the decision through E−1, and passing PEAD's
+  liquidity gate on raw bars as of the session before the decision. The decision is at 10:35 New
+  York on E−5 (five sessions before the ex-date E). Dividends outside the calendar or the decision
+  window are counted as such before any eligibility reason; a second dividend on the same ex-date
+  is counted once (`duplicate_ex_date`).
 - **The hold is the lead.** The position is long from the fill after the decision and exits at the
   last cum-dividend close (the close of session E−1), or at the stop (2 ATR) or target (3R) first.
-  No dividend is received and no ex-date drop is crossed. Labels that would exit on or after the
-  ex-date are excluded and counted.
+  No dividend is received and no ex-date drop is crossed. A leg whose hourly bars miss any session
+  from the decision through E−1 is excluded and counted (`missing_session_bars`), as is any exit on
+  or after the ex-date.
 - **Control.** The same symbol, same bracket and hold, decided 32 sessions later (the middle of a
   quarter), with the same gates; dropped when an ex-date of the symbol falls within one session of
   its span. P2 pairs each leg with its control by `pair_id`; a leg without a control stays in

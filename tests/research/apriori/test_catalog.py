@@ -80,6 +80,8 @@ def test_exdiv_entry_loads_with_the_spec_values():
     assert entry.window.bars_through == date(2026, 10, 1) and entry.window.recent_from == date(2023, 1, 1)
     assert entry.actions_window == (date(2016, 1, 1), date(2026, 12, 1))
     assert entry.cohort == "config/research/spread/cohort-v1.json"
+    cohort = Path(__file__).resolve().parents[3] / entry.cohort
+    assert entry.cohort_sha256 == hashlib.sha256(cohort.read_bytes()).hexdigest()
     assert (entry.event.min_gap_days, entry.event.max_gap_days, entry.event.structural_exclusion_days) == (77, 105, 10)
     assert entry.event.exclude_special is True
     assert (entry.universe.min_price, entry.universe.static_percentile, entry.universe.liquidity_adjustment) == (
@@ -116,6 +118,10 @@ def _exdiv_document() -> dict:
         (lambda d: d.__setitem__("decision_cost_bps", 7.5), "decision_cost_bps"),
         (lambda d: d.__setitem__("id", "pead"), "id"),
         (lambda d: d["trade"].__setitem__("max_hold_sessions", 5), "[Ee]xtra"),
+        (lambda d: d["trade"].__setitem__("decision_time_et", "25:00"), "decision_time_et"),
+        (lambda d: d["event"].__setitem__("exclude_special", False), "exclude_special"),
+        (lambda d: d.__setitem__("cohort_sha256", "ABC"), "cohort_sha256"),
+        (lambda d: d.pop("cohort_sha256"), "cohort_sha256"),
     ],
 )
 def test_exdiv_entry_rejects_inconsistent_documents(mutate, message):

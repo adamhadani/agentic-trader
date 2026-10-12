@@ -109,17 +109,22 @@ STATIC = [f"S{i:02d}" for i in range(20)]
 
 def _cohort(tmp_path):
     path = tmp_path / "cohort.json"
-    path.write_text(json.dumps({"sectors": {"energy": ["XYZ", "ABC"]}}))
+    path.write_text(json.dumps({"sectors": {"energy": ["XYZ", "ABC"], "financials": ["BRK.B"]}}))
     return path
 
 
+def _pinned(entry, cohort):
+    """The entry pinned to this cohort file's content, as a frozen entry pins its cohort."""
+    return entry.model_copy(update={"cohort_sha256": hashlib.sha256(cohort.read_bytes()).hexdigest()})
+
+
 async def test_builds_inputs_fetches_actions_once_and_records_bar_failures(tmp_path):
-    entry = tiny_entry()
+    cohort = _cohort(tmp_path)
+    entry = _pinned(tiny_entry(), cohort)
     bars = Bars(missing={"ABC"})
     actions = Actions(
         [_dividend("XYZ", date(2021, 1, 20)), _dividend("XYZ", date(2021, 4, 21)), _dividend("ABC", date(2021, 4, 21))]
     )
-    cohort = _cohort(tmp_path)
     inputs = await build_exdiv_inputs(
         entry,
         bars=bars,
@@ -131,8 +136,14 @@ async def test_builds_inputs_fetches_actions_once_and_records_bar_failures(tmp_p
         cohort_path=cohort,
     )
     assert actions.calls == [(("ABC", "XYZ"), date(2020, 10, 1), date(2021, 10, 31))]
-    assert inputs.actions_manifest["count"] == 3 and inputs.cohort["symbols"] == 2
-    assert inputs.cohort["sha256"] == hashlib.sha256(cohort.read_bytes()).hexdigest()
+    assert inputs.actions_manifest["count"] == 3
+    assert inputs.cohort == {
+        "path": str(cohort),
+        "sha256": hashlib.sha256(cohort.read_bytes()).hexdigest(),
+        "symbols": ["ABC", "XYZ"],
+        "unsupported": ["BRK.B"],
+        "count": 2,
+    }
     assert "ABC" in inputs.bar_failures and "XYZ" in inputs.hourly and "ABC" not in inputs.hourly
     assert set(inputs.market.static_symbols) == set(STATIC) and inputs.static_requested == tuple(STATIC)
     assert {c for c in bars.calls if c[0] == "XYZ"} == {
@@ -144,8 +155,8 @@ async def test_builds_inputs_fetches_actions_once_and_records_bar_failures(tmp_p
 
 
 async def test_rerun_reuses_actions_and_bars(tmp_path):
-    entry = tiny_entry()
     cohort = _cohort(tmp_path)
+    entry = _pinned(tiny_entry(), cohort)
     first_bars, actions = Bars(), Actions([_dividend("XYZ", date(2021, 1, 20)), _dividend("XYZ", date(2021, 4, 21))])
     kwargs = {
         "calendar": Calendar(),
@@ -175,4 +186,24 @@ async def test_a_missing_cohort_file_raises_before_any_provider_call(tmp_path):
             pace=_pace,
             cohort_path=tmp_path / "missing.json",
         )
+    assert actions.calls == [] and bars.calls == []
+
+
+async def test_a_cohort_whose_digest_differs_from_the_entry_fails_closed_before_any_provider_call(tmp_path):
+    actions, bars = Actions([]), Bars()
+    cohort = _cohort(tmp_path)
+    entry = tiny_entry()  # pins the frozen spread cohort, not this file
+    digest = hashlib.sha256(cohort.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="cohort") as raised:
+        await build_exdiv_inputs(
+            entry,
+            bars=bars,
+            calendar=Calendar(),
+            actions_source=actions,
+            cache_dir=tmp_path / "cache",
+            static_symbols=STATIC,
+            pace=_pace,
+            cohort_path=cohort,
+        )
+    assert entry.cohort_sha256 in str(raised.value) and digest in str(raised.value)
     assert actions.calls == [] and bars.calls == []

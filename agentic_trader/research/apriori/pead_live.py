@@ -21,10 +21,10 @@ from agentic_trader.agent.earnings import ReportedPage
 from agentic_trader.research.apriori.catalog import PeadEntry
 from agentic_trader.research.apriori.earnings_history import dedupe_rows
 
-# `by_session` is the study's own UTC -> New York session-date mapping (leading
-# underscore: a deliberate same-package reuse, not a public contract). Reusing it here
-# means the benchmark availability check uses exactly the date mapping `build_events`
-# uses, rather than a second, possibly divergent tz-conversion rule.
+# `by_session` is the study's own UTC -> New York session-date mapping, a public helper of
+# `pead_events` that the exdiv study shares. Reusing it here means the benchmark
+# availability check uses exactly the date mapping `build_events` uses, rather than a
+# second, possibly divergent tz-conversion rule.
 from agentic_trader.research.apriori.pead_events import SUPPORTED_SYMBOL, MarketData, build_events, by_session
 from agentic_trader.screeners.dynamic_universe import static_reference
 
