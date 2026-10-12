@@ -66,6 +66,7 @@ def evaluation(candidate_, approved=True):
         notional_value=100.0,
         asset_class=AssetClass.EQUITY,
         quantity=1.0,
+        corporate_actions=None,  # as LLMTradeEvaluation: no corporate-action block
         model_dump_json=lambda: "{}",
         model_dump=lambda mode=None: {},
     )

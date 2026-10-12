@@ -23,12 +23,13 @@ from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.cli.main import cli
 from agentic_trader.config import ScanBudget
 from agentic_trader.constants import AssetClass, SignalStatus
+from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind, CorporateActionsLookup
 from agentic_trader.execution.durable import EventKind, WorkKind
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessionType
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.storage.models import SignalRecord
-from tests.agent.test_scan_budget import budget_desk  # noqa: F401  (pytest fixture)
+from tests.agent.test_scan_budget import budget_desk, evaluation  # noqa: F401  (pytest fixture + helper)
 
 
 NEXT_OPEN = datetime(2026, 9, 24, 13, 30, tzinfo=UTC)
@@ -445,6 +446,57 @@ async def test_earnings_calendar_failure_fails_open_like_the_evaluator(tap_desk,
     tap_desk.entry_service.authorize.assert_awaited_once()
 
 
+@pytest.mark.parametrize("mode", ["enforce", "preview"])
+async def test_corporate_action_blocks_a_fresh_card_only_under_enforce(tap_desk, temp_db, mode):
+    sid = await record_card(temp_db)
+    today = datetime.now(UTC).astimezone(ET_TZ).date()
+    split = CorporateAction(
+        id="split-SPY",
+        kind=CorporateActionKind.FORWARD_SPLIT,
+        symbol="SPY",
+        effective_on=today,
+        old_rate=1.0,
+        new_rate=2.0,
+    )
+    tap_desk.config.corporate_actions.entry_block = mode
+    tap_desk.corporate_actions = AsyncMock()
+    tap_desk.corporate_actions.lookup.return_value = CorporateActionsLookup("ok", today, (split,), frozenset({"SPY"}))
+
+    reply = await tap_desk.execute_signal_by_id(sid)
+
+    if mode == "enforce":
+        assert reply.offer_reevaluate is True and "Corporate action:" in reply.text
+        (event,) = await tap_events(temp_db, sid)
+        assert event["payload"]["reason"].startswith("Corporate action: SPY forward split 2-for-1 effective ")
+        assert (await temp_db.get_signal_by_id(sid))["status"] == SignalStatus.EXPIRED
+        tap_desk.entry_service.authorize.assert_not_awaited()
+    else:
+        tap_desk.entry_service.authorize.assert_awaited_once()
+        tap_desk.corporate_actions.lookup.assert_not_awaited()  # preview never reads at tap time
+
+
+async def test_corporate_action_evidence_that_does_not_cover_the_symbol_never_refuses_a_tap(tap_desk, temp_db):
+    sid = await record_card(temp_db)
+    today = datetime.now(UTC).astimezone(ET_TZ).date()
+    split = CorporateAction(
+        id="split-SPY",
+        kind=CorporateActionKind.FORWARD_SPLIT,
+        symbol="SPY",
+        effective_on=today,
+        old_rate=1.0,
+        new_rate=2.0,
+    )
+    tap_desk.config.corporate_actions.entry_block = "enforce"
+    tap_desk.corporate_actions = AsyncMock()
+    tap_desk.corporate_actions.lookup.return_value = CorporateActionsLookup("ok", today, (split,), frozenset({"QQQ"}))
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    tap_desk.corporate_actions.lookup.assert_awaited_once()
+    tap_desk.entry_service.authorize.assert_awaited_once()
+    assert (await temp_db.get_signal_by_id(sid))["status"] != SignalStatus.EXPIRED
+
+
 async def test_macro_gate_turns_a_fresh_card_into_missed(tap_desk, temp_db):
     sid = await record_card(temp_db)
     tap_desk.calendar.is_in_lockout_window.return_value = (
@@ -493,6 +545,26 @@ async def test_scan_omits_valid_until_when_the_session_close_is_unavailable(budg
     assert len(sent) == 2 and all("valid_until" not in s["decision_provenance"] for s in sent)
     payloads = [n.payload["arguments"] for n in await temp_db.workflows.list_work(WorkKind.NOTIFICATION)]
     assert all("valid_until" not in p for p in payloads)
+
+
+async def test_scan_reads_corporate_actions_once_and_records_each_cards_block(budget_desk, temp_db):  # noqa: F811
+    lookup = CorporateActionsLookup("stale", None, ())
+    budget_desk.corporate_actions = AsyncMock()
+    budget_desk.corporate_actions.lookup.return_value = lookup
+    block = {"status": "stale", "mode": "preview"}
+
+    async def evaluate(cand, **kwargs):
+        return SimpleNamespace(**{**vars(evaluation(cand)), "corporate_actions": block})
+
+    budget_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=evaluate)
+
+    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.SESSION)
+
+    budget_desk.corporate_actions.lookup.assert_awaited_once()  # one read for COLLECT and SEND
+    calls = budget_desk.evaluator.evaluate_candidate.await_args_list
+    assert len(calls) > 5 and all(c.kwargs["corporate_actions"] is lookup for c in calls)
+    sent = await temp_db.get_recent_signals(limit=10)
+    assert len(sent) == 2 and all(s["decision_provenance"]["corporate_actions"] == block for s in sent)
 
 
 async def test_dedup_exemption_applies_to_the_exact_setup_only(budget_desk, temp_db):  # noqa: F811

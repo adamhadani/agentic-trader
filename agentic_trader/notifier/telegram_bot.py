@@ -156,6 +156,22 @@ def _book_line(book_sizing: dict[str, Any] | None, *, markup: bool) -> str:
     return line + "\n"
 
 
+def _corporate_action_line(block: dict[str, Any] | None, *, markup: bool) -> str:
+    """The corporate-action line, newline-terminated; empty without a fresh block or anything to say."""
+    if not block or block.get("status") != "ok":
+        return ""
+    action, note = block.get("action"), block.get("note")
+    if block.get("would_block") and isinstance(action, dict):
+        text = f"🏷 Corporate action: {action['symbol']} {action['describe']} effective {action['effective_on']}"
+        if block.get("mode") == "preview":
+            text += " — preview, card unchanged"
+    elif isinstance(note, dict):
+        text = f"🏷 Ex-dividend {note['effective_on']} ({note['describe']})"
+    else:
+        return ""
+    return (html.escape(text) if markup else text) + "\n"
+
+
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
@@ -287,8 +303,10 @@ def format_alert_card(
             "unless the stop or target fills first\n\n"
         )
 
-    evidence_block = _evidence_block(card_evidence, strategy, eval_res, markup=True) + _book_line(
-        book_sizing, markup=True
+    evidence_block = (
+        _evidence_block(card_evidence, strategy, eval_res, markup=True)
+        + _book_line(book_sizing, markup=True)
+        + _corporate_action_line(eval_res.corporate_actions, markup=True)
     )
 
     # Using HTML formatting for rock-solid reliability with special characters
@@ -430,8 +448,10 @@ def format_terminal_card(
             sizing_lines.extend(f"  [Risk Gate] {g}" for g in gating)
         sizing_section = "\n".join(sizing_lines) + "\n"
 
-    evidence_block = _evidence_block(card_evidence, strategy, eval_res, markup=False) + _book_line(
-        book_sizing, markup=False
+    evidence_block = (
+        _evidence_block(card_evidence, strategy, eval_res, markup=False)
+        + _book_line(book_sizing, markup=False)
+        + _corporate_action_line(eval_res.corporate_actions, markup=False)
     )
 
     border = "=" * 65

@@ -18,8 +18,11 @@ from apscheduler.events import EVENT_JOB_MISSED, JobExecutionEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agentic_trader.cli.utils import artifact_directory, coro, get_copilot_and_config, session_source
-from agentic_trader.config import AppConfig, ScanBudget, load_config
-from agentic_trader.constants import MAX_DAILY_COMPARISONS, AuditEventType
+from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live, load_config
+from agentic_trader.constants import MAX_DAILY_COMPARISONS, AssetClass, AuditEventType
+from agentic_trader.data.corporate_actions import AlpacaCorporateActionsSource
+from agentic_trader.data.corporate_actions_worker import CorporateActionsWorker
+from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 from agentic_trader.diagnostics.monitor import OperationsMonitor
 from agentic_trader.diagnostics.probe import probe_readiness
@@ -42,6 +45,7 @@ from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.maintenance import RetentionService
 from agentic_trader.storage.operations import OperationsStore
 from agentic_trader.telemetry.event_loop import monitor_event_loop
+from agentic_trader.transport.alpaca import BoundedCorporateActionsClient
 
 
 logger = logging.getLogger("copilot")
@@ -354,6 +358,77 @@ async def run_card_stats_worker(copilot, config, readiness) -> None:
             await asyncio.wait_for(shutdown.wait(), timeout=config.card_policy.stats_poll_seconds)
 
 
+async def corporate_action_symbols(copilot, config) -> list[str]:
+    """The configured universe, held equities and the configured extras, de-duplicated.
+
+    Held names come from the tracked signals and, on a brokerage account, from the broker's own
+    equity positions as well, so an untracked position is covered too. Tracked futures (``/`` prefix)
+    and crypto (``/`` in the symbol) are not corporate-action instruments and are left out; broker
+    positions are filtered by asset class, since Alpaca reports crypto as ``BTCUSD``. A failed broker
+    read is logged (type name only) and the capture continues with the tracked positions.
+    """
+    positions = await copilot.db.get_active_positions()
+    held = {str(p["contract"]).strip().upper() for p in positions if "/" not in str(p["contract"])}
+    if copilot.broker.authoritative_positions:
+        try:
+            broker_positions = await copilot.broker.get_positions()
+        except Exception as exc:
+            logger.warning(
+                "Broker positions unavailable to the corporate-action symbols; using tracked positions",
+                extra={"event": "corporate_actions_broker_positions_unavailable", "reason": type(exc).__name__},
+            )
+        else:
+            held |= {str(bp.symbol).strip().upper() for bp in broker_positions if bp.asset_class == AssetClass.EQUITY}
+    return sorted(set(config.universe.symbols) | held | set(config.corporate_actions.extra_symbols))
+
+
+async def run_corporate_actions_worker(copilot, config, readiness) -> None:
+    """Capture corporate actions once per New York date; readiness is worker progress.
+
+    Every successful poll (idle or not) observes ``corporate_actions`` ready with the worker's
+    status; a failed run records nothing and observes it failed with the exception type name
+    only, so the previous capture stays authoritative until it ages out. Only shutdown ends the loop.
+    """
+    component = HealthComponent.CORPORATE_ACTIONS
+    policy = config.corporate_actions
+    shutdown = copilot._shutdown_event
+    client = BoundedCorporateActionsClient(
+        config.alpaca_api_key,
+        config.alpaca_api_secret,
+        request_timeout=config.market_data.timeout_seconds,
+        raw_data=True,
+    )
+    source = AlpacaCorporateActionsSource(
+        client, pacer=RequestPacer(policy.max_requests_per_minute), chunk_size=policy.chunk_size
+    )
+
+    async def progress(detail: str) -> None:
+        await readiness.observe(component, True, detail)
+
+    worker = CorporateActionsWorker(
+        source,
+        copilot.corporate_actions,
+        config,
+        symbols=lambda: corporate_action_symbols(copilot, config),
+        on_progress=progress,
+    )
+    while not shutdown.is_set():
+        try:
+            status = await worker.run_once()
+            await readiness.observe(component, True, status)
+        except Exception as exc:
+            logger.exception("Corporate-actions worker failed", extra={"event": "corporate_actions_failed"})
+            try:
+                await readiness.observe(component, False, type(exc).__name__)
+            except Exception:
+                logger.exception(
+                    "Corporate-actions readiness could not be recorded",
+                    extra={"event": "corporate_actions_readiness_failed"},
+                )
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(shutdown.wait(), timeout=policy.poll_seconds)
+
+
 def _slot_due_at(slot_et: str) -> datetime:
     """The instant a New York ``HH:MM`` suggestion-scan slot was due today."""
     return datetime.combine(datetime.now(ET_TZ).date(), dt_time.fromisoformat(slot_et), tzinfo=ET_TZ)
@@ -628,6 +703,12 @@ async def daemon(no_llm: bool) -> None:
     # policy (docs/card-evidence.md). Shutdown cancels it; an in-flight labelling thread finishes
     # on its own and records nothing.
     card_stats_task = asyncio.create_task(run_card_stats_worker(copilot, config, copilot.readiness))
+    # Once-daily corporate-action capture (docs/corporate-actions.md); only with the feature on and data credentials.
+    corporate_actions_task = (
+        asyncio.create_task(run_corporate_actions_worker(copilot, config, copilot.readiness))
+        if corporate_actions_live(config)
+        else None
+    )
 
     scheduler = AsyncIOScheduler(
         job_defaults={
@@ -695,6 +776,16 @@ async def daemon(no_llm: bool) -> None:
         except Exception:
             # A worker that died must not cut the rest of the shutdown short.
             logger.exception("Card statistics worker ended with an error", extra={"event": "card_stats_task_failed"})
+        if corporate_actions_task is not None:
+            corporate_actions_task.cancel()
+            try:
+                await corporate_actions_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "Corporate-actions worker ended with an error", extra={"event": "corporate_actions_task_failed"}
+                )
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await workflow_task

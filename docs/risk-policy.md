@@ -104,6 +104,7 @@ paths are under `tests/`.
 | `correlation_group` | normalised groups, same-direction book positions, `max_correlated_positions` | `book_gates` | — | yes | `Correlation group '{group}' already has {n} {DIRECTION} position(s) ({symbols}); max {max}.` | `risk/test_rules.py`, `risk/test_limits.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_risk_policy_integration.py` |
 | `macro_lockout` | the calendar's tier-1 event (title, timezone-aware time), now, `risk.lockout_pre_event_minutes` / `lockout_post_event_minutes` | evaluator gate | tap gate | preflight macro check, on both broker branches | `Macro event lockout: {title} at {HH:MM} UTC.` An untitled event prints `scheduled release`. | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `workflows/test_entries_macro.py`, `agent/test_risk_policy_integration.py` |
 | `earnings_blackout` | next earnings date, the New York date, `risk.earnings_blackout_days` (predicate `earnings_days_out`) | evaluator gate, equities | tap gate, equities | — | `Earnings Blackout: {SYMBOL} reports {YYYY-MM-DD} {before open \| after close \| timing unspecified} (in {n} day(s)) — within {days}-day blackout` (the prefix `Earnings Blackout: ` is added by the caller) | `risk/test_rules.py`, `agent/test_earnings.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
+| `corporate_action` | the latest fresh corporate-action capture and the symbols it covers, the New York date, `corporate_actions.pre_days` / `post_days` (predicate `blocking_corporate_action`) | evaluator gate, equities; preview annotates, enforce refuses; stale, missing or uncovered evidence never refuses | tap gate, equities, enforce only | — | `Corporate action: {SYMBOL} {describe} effective {YYYY-MM-DD} ({in n day(s) \| n day(s) ago \| today}) — within the {pre}/{post}-day blackout.` | `risk/test_rules.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
 | `session_closed` | the session's `is_open`, the provider's detail | evaluator gate | tap, re-evaluate, `/scan`, card validity, expired-card reply | — | `Market session closed: {detail}.` (`Market session closed.` without detail) | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py` |
 | `session_not_rth` | the session's `is_rth`, `session.enforce_rth` | evaluator gate | as `session_closed` | — | `Outside regular trading hours.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py`, `agent/test_risk_policy_integration.py` |
 | `regime_breakout` | strategy, `regime.breakout_allowed` | evaluator gate | tap regime gate | preflight regime gate, on both broker branches | `Volatility/macro policy suppresses breakout entries.` | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `agent/test_evaluator.py` |
@@ -159,11 +160,12 @@ Most layers show the rule's text unchanged. Some layers wrap it:
 5. `macro_lockout`. The calendar finds the event on the evaluator's own clock, and the
    rule judges the same instant.
 6. The earnings blackout (equities).
-7. The regime rules: `regime_breakout`, then `reward_risk` on the bracket at the
+7. The corporate-action rule (equities; `corporate_actions.entry_block`: `off` skips it, `preview` annotates, `enforce` refuses; stale, missing or uncovered evidence never refuses).
+8. The regime rules: `regime_breakout`, then `reward_risk` on the bracket at the
    required ratio (the tap-time regime gate's order and text). A native target is built
    at that ratio and always passes; a versioned alpha-policy bracket can fail it.
-8. `entry_session_open` (`session_closed`, `session_not_rth`).
-9. The LLM, when enabled, then the final-bracket check.
+9. `entry_session_open` (`session_closed`, `session_not_rth`).
+10. The LLM, when enabled, then the final-bracket check.
 
 A refusal by a shared rule sets `LLMTradeEvaluation.rejection_reason` to the rule's text
 and `rejection_rule` to its id. Sizing, the bracket check, the statistical check and an
@@ -189,7 +191,8 @@ and logged as `macro_lockout_active`.
 3. The gate reason, first refusal wins: `macro_lockout`, then the regime gate
    (`regime_breakout`; `reward_risk` at `required_reward_risk` for the cached regime;
    `per_trade_risk` against the budget on configured cash with the regime multiplier),
-   then the earnings blackout for equities. A refusal makes the card `MISSED`.
+   then the earnings blackout for equities, then the `corporate_action` rule for equities
+   (`enforce` only). A refusal makes the card `MISSED`.
 4. Freshness: `EXECUTE` within the fresh bounds; past them, `REPRICE` when the current
    price still meets the required ratio (`meets_min_reward_risk`), otherwise `MISSED`.
 5. The re-priced quantity (`_capped_replacement_quantity`) is the smallest of the tapped

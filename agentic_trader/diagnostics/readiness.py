@@ -25,6 +25,7 @@ class HealthComponent(StrEnum):
     ALPHA_DECISIONS = "alpha_decisions"
     ALPHA_DAILY_PANEL = "alpha_daily_panel"
     CARD_STATS = "card_stats"
+    CORPORATE_ACTIONS = "corporate_actions"
 
 
 class ReadinessService:
@@ -39,6 +40,7 @@ class ReadinessService:
         accounting_enabled: bool = False,
         alpha_registry_report: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         card_stats_enabled: bool = False,
+        corporate_actions_enabled: bool = False,
     ):
         self.store, self.config, self.metrics, self.run_id = store, config, metrics, run_id
         self.started = False
@@ -46,6 +48,7 @@ class ReadinessService:
         self.accounting_enabled = accounting_enabled
         self.alpha_registry_report = alpha_registry_report
         self.card_stats_enabled = card_stats_enabled
+        self.corporate_actions_enabled = corporate_actions_enabled
         self.stream_connected = stream_connected
         self._last_observation: dict[str, tuple[float, bool, str]] = {}
 
@@ -87,6 +90,9 @@ class ReadinessService:
         if self.card_stats_enabled:
             # Once-daily work: the limit spans weekends and holidays (card_policy.stats_max_age_seconds).
             limits[HealthComponent.CARD_STATS] = self.config.card_policy.stats_max_age_seconds
+        if self.corporate_actions_enabled:
+            # Once-daily work: the limit spans weekends and holidays (corporate_actions.max_age_seconds).
+            limits[HealthComponent.CORPORATE_ACTIONS] = self.config.corporate_actions.max_age_seconds
         if self.accounting_enabled:
             limits[HealthComponent.ACCOUNTING] = self.config.accounting.max_age_seconds
         checks: dict[str, Any] = {"daemon_started": {"ready": self.started}}

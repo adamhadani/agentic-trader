@@ -11,7 +11,8 @@ from agentic_trader.agent.earnings import EarningsEvent, EarningsLookup, Earning
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.constants import AssetClass, StrategyType, VolatilityRegime
-from agentic_trader.market.session import MarketSessionInfo, MarketSessionType
+from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind, CorporateActionsLookup
+from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessionType
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
 from agentic_trader.risk import RiskRule
 from agentic_trader.screeners.base import ScreenerCandidate
@@ -21,7 +22,7 @@ from agentic_trader.screeners.base import ScreenerCandidate
 def evaluator_factory(config):
     """Deterministic risk tests explicitly supply calendar and market context."""
 
-    def build(**overrides):
+    def build(config=config, **overrides):
         detector = RegimeDetector(config.regime)
         detector.get_regime = AsyncMock(
             return_value=RegimeSnapshot(
@@ -529,3 +530,141 @@ async def test_no_earnings_calendar_injected_note_is_none(evaluator_factory):
 
     assert eval_res.approved is True
     assert eval_res.earnings_note is None
+
+
+def _lookup(*actions, status="ok", as_of=None, symbols=("AAPL", "NVDA")):
+    return CorporateActionsLookup(status, as_of or datetime.now(UTC).date(), tuple(actions), frozenset(symbols))
+
+
+def _split(symbol="AAPL", days=3):
+    effective = datetime.now(UTC).astimezone(ET_TZ).date() + timedelta(days=days)
+    return CorporateAction(
+        id=f"split-{symbol}",
+        kind=CorporateActionKind.FORWARD_SPLIT,
+        symbol=symbol,
+        effective_on=effective,
+        old_rate=1.0,
+        new_rate=4.0,
+    )
+
+
+def _dividend(symbol="AAPL", days=2):
+    effective = datetime.now(UTC).astimezone(ET_TZ).date() + timedelta(days=days)
+    return CorporateAction(
+        id=f"div-{symbol}", kind=CorporateActionKind.CASH_DIVIDEND, symbol=symbol, effective_on=effective, rate=0.25
+    )
+
+
+def _with_mode(config, mode):
+    return config.model_copy(
+        update={"corporate_actions": config.corporate_actions.model_copy(update={"entry_block": mode})}
+    )
+
+
+async def test_corporate_action_preview_annotates_without_refusing(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_mode(config, "preview"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_split())
+    )
+    assert eval_res.approved is True
+    block = eval_res.corporate_actions
+    assert (block["status"], block["mode"], block["would_block"]) == ("ok", "preview", True)
+    assert block["action"]["describe"] == "forward split 4-for-1" and block["reason"].startswith(
+        "Corporate action: AAPL"
+    )
+    assert block["note"] is None
+
+
+async def test_corporate_action_enforce_refuses(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_split())
+    )
+    assert eval_res.approved is False
+    assert eval_res.rejection_rule == RiskRule.CORPORATE_ACTION
+    assert eval_res.rejection_reason.startswith("Corporate action: AAPL forward split 4-for-1 effective ")
+    assert eval_res.corporate_actions["would_block"] is True
+
+
+async def test_dividend_within_pre_days_is_a_note_not_a_block(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_dividend())
+    )
+    assert eval_res.approved is True
+    block = eval_res.corporate_actions
+    assert block["would_block"] is False and block["action"] is None
+    assert block["note"]["describe"] == "cash dividend $0.25/share"
+
+
+@pytest.mark.parametrize("status", ["stale", "unavailable"])
+async def test_stale_lookup_never_refuses(config, evaluator_factory, status):
+    evaluator = evaluator_factory(config=_with_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_split(), status=status)
+    )
+    assert eval_res.approved is True
+    assert eval_res.corporate_actions == {"status": status, "mode": "enforce"}
+
+
+async def test_disabled_leaves_no_block(config, evaluator_factory):
+    off = evaluator_factory(config=_with_mode(config, "off"))
+    eval_res = await off.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_split())
+    )
+    assert eval_res.approved is True and eval_res.corporate_actions is None
+    none = evaluator_factory(config=_with_mode(config, "enforce"))
+    eval_res = await none.evaluate_candidate(create_equity_candidate(), use_llm=False, corporate_actions=None)
+    assert eval_res.approved is True and eval_res.corporate_actions is None
+
+
+async def test_other_symbols_actions_do_not_touch_the_candidate(config, evaluator_factory):
+    evaluator = evaluator_factory(config=_with_mode(config, "enforce"))
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_split("NVDA"))
+    )
+    assert eval_res.approved is True and eval_res.corporate_actions["would_block"] is False
+
+
+async def test_uncovered_symbol_is_labelled_and_never_refused(config, evaluator_factory):
+    """A fresh capture that never requested the candidate's symbol says so; it never claims "checked, clear"."""
+    evaluator = evaluator_factory(config=_with_mode(config, "enforce"))
+    as_of = datetime.now(UTC).date()
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=False, corporate_actions=_lookup(_split(), as_of=as_of, symbols=("NVDA",))
+    )
+    assert eval_res.approved is True and eval_res.rejection_rule is None
+    assert eval_res.corporate_actions == {"status": "uncovered", "mode": "enforce", "as_of": as_of.isoformat()}
+
+
+def _llm_reply(**fields):
+    content = json.dumps({"macro_clearance": True, "thesis_summary": "fixture thesis", **fields})
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+
+@pytest.mark.parametrize(
+    ("reply", "approved"),
+    [
+        ({"approved": True}, True),
+        ({"approved": False, "rejection_reason": "LLM veto"}, False),
+        ({"approved": True, "corporate_actions": {"would_block": False}}, True),
+        ({"approved": False, "rejection_reason": "LLM veto", "corporate_actions": "junk"}, False),
+    ],
+)
+async def test_llm_path_keeps_the_deterministic_corporate_action_block(
+    config, evaluator_factory, monkeypatch, reply, approved
+):
+    """The preview block survives an LLM approval or veto; a stray key in the reply never replaces it."""
+    evaluator = evaluator_factory(config=_with_mode(config, "preview"))
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    completion = AsyncMock(return_value=_llm_reply(**reply))
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", completion)
+    eval_res = await evaluator.evaluate_candidate(
+        create_equity_candidate(), use_llm=True, corporate_actions=_lookup(_split())
+    )
+    completion.assert_awaited_once()
+    assert eval_res.approved is approved
+    assert eval_res.llm_verdict is not None and eval_res.llm_verdict["approved"] is approved
+    block = eval_res.corporate_actions
+    assert (block["status"], block["mode"], block["would_block"]) == ("ok", "preview", True)
+    assert block["reason"].startswith("Corporate action: AAPL forward split 4-for-1 effective ")

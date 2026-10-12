@@ -30,7 +30,7 @@ from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
-from agentic_trader.config import AppConfig, ScanBudget
+from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live
 from agentic_trader.constants import (
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
@@ -46,6 +46,7 @@ from agentic_trader.constants import (
     executes_asset_class,
     normalize_asset_class,
 )
+from agentic_trader.data.corporate_actions import CorporateActionsLookup, between, position_note
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
@@ -116,6 +117,7 @@ from agentic_trader.resilience.reads import DEFAULT_READ_WORKERS, BoundedReadExe
 from agentic_trader.risk import (
     EntryIntent,
     RiskLimits,
+    corporate_action_block,
     entry_session_open,
     macro_lockout,
     per_trade_risk,
@@ -150,6 +152,7 @@ from agentic_trader.screeners.earnings_drift import (
 )
 from agentic_trader.screeners.strategies import StrategyEngine
 from agentic_trader.storage.alpha import AlphaRepository
+from agentic_trader.storage.corporate_actions import CorporateActionsStore
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.lifetimes import LifetimeRepository
@@ -260,6 +263,7 @@ class TradingCopilot:
         dynamic_universe: DynamicUniverseSource | None = None,
         earnings_drift: EarningsDriftService | None = None,
         card_stats: CardStatsRepository | None = None,
+        corporate_actions: CorporateActionsStore | None = None,
         book_sizer: BookSizer | None = None,
         bar_source: AlpacaDataProvider | None = None,
     ):
@@ -293,6 +297,12 @@ class TradingCopilot:
         self.alpha_shadow = AlphaShadowService(self.alpha_repository)
         # Read side of the daemon's daily card statistics; tests inject a fake with a fixed snapshot.
         self.card_stats = card_stats if card_stats is not None else CardStatsRepository(self.db.workflows)
+        # Corporate-action captures (docs/corporate-actions.md); the daemon's worker writes, scans and reports read.
+        self.corporate_actions = (
+            corporate_actions
+            if corporate_actions is not None
+            else CorporateActionsStore(self.db.workflows, max_actions=config.corporate_actions.max_actions)
+        )
         # Book-aware sizing: the sizer asks for its raw-bar provider only when a scan needs bars
         # outside its own datasets, so construction (and every dry run) never builds a client.
         self.book_sizer = (
@@ -465,7 +475,12 @@ class TradingCopilot:
             ledger
             if ledger is not None
             else (
-                AccountLedgerService(self.broker, LedgerStore(self.db.workflows), config.accounting)
+                AccountLedgerService(
+                    self.broker,
+                    LedgerStore(self.db.workflows),
+                    config.accounting,
+                    corporate_actions=self.corporate_actions,
+                )
                 if self.broker.supports_activity_ledger
                 else None
             )
@@ -493,6 +508,7 @@ class TradingCopilot:
             accounting_enabled=self.ledger is not None,
             alpha_registry_report=lambda: self.alpha_repository.status(run_id=RUN_ID),
             card_stats_enabled=True,  # the daemon always runs the card-statistics worker
+            corporate_actions_enabled=corporate_actions_live(config),
             stream_connected=(lambda: self.broker.trade_stream_connected)
             if self.broker.supports_trade_stream
             else None,
@@ -836,6 +852,9 @@ class TradingCopilot:
             # sequential per-contract phase so the whole universe competes for the few
             # cards this session may still spend.
             approved_candidates: list[tuple[Any, Any, Any]] = []
+            # One corporate-action read per scan: the deterministic COLLECT pass and the send phase
+            # judge every equity candidate against the same capture (None when the feature is off).
+            corporate_lookup = await self._corporate_actions_lookup(datetime.now(UTC))
 
             target_syms = [s.strip().upper() for s in symbols] if symbols else None
 
@@ -1082,6 +1101,7 @@ class TradingCopilot:
                             current_exposure=current_exposure,
                             active_positions=active_positions,
                             dry_run=dry_run,
+                            corporate_actions=corporate_lookup,
                         )
                         if reason == "duplicate":
                             if candidate.contract not in summary["duplicates"]:
@@ -1117,6 +1137,7 @@ class TradingCopilot:
                             current_exposure=current_exposure,
                             active_positions=active_positions,
                             dry_run=dry_run,
+                            corporate_actions=corporate_lookup,
                         )
                         if admitted is None:
                             drift_outcomes[symbol] = reason or "rejected"
@@ -1326,6 +1347,7 @@ class TradingCopilot:
                         active_positions=active_positions,
                         current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
                         current_equity=float(account_risk.equity) if account_risk else None,
+                        corporate_actions=corporate_lookup,
                     )
 
                     llm_by_rank[rank - 1] = self._llm_block(eval_res)
@@ -1430,6 +1452,7 @@ class TradingCopilot:
                             "shadow_ranker": shadow_by_rank[rank - 1],
                             "llm_verdict": llm_by_rank[rank - 1],
                             "book_sizing": book_block,
+                            "corporate_actions": eval_res.corporate_actions,
                             **evidence_keys,
                             # A drift card is never tagged dynamic; catalog admission requires
                             # its same-session event naming the contract.
@@ -1635,6 +1658,7 @@ class TradingCopilot:
         current_exposure: float,
         active_positions: list[dict[str, Any]],
         dry_run: bool,
+        corporate_actions: CorporateActionsLookup | None,
     ) -> tuple[tuple[Any, Any, Any] | None, str | None]:
         """Dedup, account risk and the deterministic evaluation shared by native and drift candidates.
 
@@ -1698,6 +1722,7 @@ class TradingCopilot:
             active_positions=active_positions,
             current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
             current_equity=float(account_risk.equity) if account_risk else None,
+            corporate_actions=corporate_actions,
         )
 
         if not det_res.approved:
@@ -2627,6 +2652,27 @@ class TradingCopilot:
                 for pos in tracked
                 if pos["contract"].strip("/") not in broker_symbols
             )
+            ca_lookup = await self._corporate_actions_lookup(datetime.now(UTC))
+            if ca_lookup is not None:
+                if ca_lookup.status != "ok":
+                    notes.append(f"Corporate-action evidence {ca_lookup.status}.")
+                else:
+                    policy = self.config.corporate_actions
+                    today = datetime.now(ET_TZ).date()
+                    for bp in broker_positions:
+                        if bp.asset_class != AssetClass.EQUITY:
+                            continue
+                        if not ca_lookup.covers(bp.symbol):
+                            # Never checked: the worker adds tracked equity positions on its next daily run.
+                            notes.append(f"{bp.symbol}: corporate-action evidence does not cover this symbol yet.")
+                            continue
+                        window = between(
+                            ca_lookup.actions,
+                            bp.symbol,
+                            today - timedelta(days=policy.post_days),
+                            today + timedelta(days=policy.notes_horizon_days),
+                        )
+                        notes.extend(position_note(action, today) for action in window)
         else:
             for pos in tracked:
                 contract = pos["contract"]
@@ -3085,6 +3131,17 @@ class TradingCopilot:
         rounded = round_to_tick(price, tick_size)
         return rounded if rounded > 0 else None
 
+    async def _corporate_actions_lookup(self, now: datetime) -> CorporateActionsLookup | None:
+        """The latest capture as one frozen read; None when the feature is off; a read failure is ``unavailable``."""
+        policy = self.config.corporate_actions
+        if not policy.enabled:
+            return None
+        try:
+            return await self.corporate_actions.lookup(now=now, max_age_seconds=policy.max_age_seconds)
+        except Exception:
+            logger.exception("Corporate-action lookup failed", extra={"event": "corporate_actions_lookup_failed"})
+            return CorporateActionsLookup("unavailable", None, ())
+
     async def _earnings_blackout_reason(self, contract: str, now: datetime) -> str | None:
         """The evaluator's equity earnings gate, failing open on a calendar failure exactly as it does."""
         blackout_days = self.config.risk.earnings_blackout_days
@@ -3102,10 +3159,28 @@ class TradingCopilot:
         reason = earnings_blackout_reason(lookup, contract, now, blackout_days)
         return f"Earnings Blackout: {reason}" if reason else None
 
+    async def _corporate_action_reason(self, contract: str, now: datetime) -> str | None:
+        """The evaluator's corporate-action gate at tap time: enforce refuses; preview, stale evidence and a symbol
+        the capture never requested (uncovered) never do."""
+        policy = self.config.corporate_actions
+        if policy.entry_block != "enforce":
+            return None
+        ca_lookup = await self._corporate_actions_lookup(now)
+        if ca_lookup is None or ca_lookup.status != "ok" or not ca_lookup.covers(contract):
+            return None
+        rejection = corporate_action_block(
+            ca_lookup.actions,
+            contract,
+            now.astimezone(ET_TZ).date(),
+            pre_days=policy.pre_days,
+            post_days=policy.post_days,
+        )
+        return rejection.reason if rejection is not None else None
+
     async def _tap_gate_reason(
         self, request: OrderRequest, sig: dict[str, Any], regime: Any, *, asset_class: str, now: datetime
     ) -> str | None:
-        """First failing tap-time gate: macro/regime/reward:risk, then the equity earnings blackout."""
+        """First failing tap-time gate: macro/regime/reward:risk, then equity earnings and corporate-action gates."""
         assert request.entry_price is not None and request.stop_loss is not None
         # Degenerate levels are MISSED by the assessment itself; the macro gate divides by the risk.
         if abs(request.entry_price - request.stop_loss) > 0:
@@ -3113,7 +3188,8 @@ class TradingCopilot:
             if reason:
                 return reason
         if asset_class.upper() == AssetClass.EQUITY:
-            return await self._earnings_blackout_reason(sig["contract"], now)
+            reason = await self._earnings_blackout_reason(sig["contract"], now)
+            return reason or await self._corporate_action_reason(sig["contract"], now)
         return None
 
     async def _journal_card_tap(

@@ -554,10 +554,23 @@ problem.
    window is untouched ([results](alpha-spread-results-2026-10-10.md)). Protocol v1 is closed on
    its discovery window; 84% of its entries were already beyond the stop (no entry band, in-sample
    σ), which is the one change a predeclared v2 would make. Baskets (Johansen/PCA) remain unbuilt. v2 (entry rule only: crossing entry, upper band, no re-entry after a stop; declared second look) is frozen as `pairs-v2.json` and runs checks A/C and the study after merge.
+
+   *Status (October 11):* v2 ran the same day it merged (#114): checks A and C passed, the study
+   **failed discovery** (234 trades, lane mean +0.02 bp/day at 5 bp, CI90 [−0.75, +0.67], 54% hit rate,
+   6 of 11 windows positive). The entry churn is gone; stops and reversions are symmetric and the edge is
+   zero. The confirmation window is unused and the lane is **closed as an alpha source** on this cohort
+   and window; baskets stay unbuilt ([v2 results](alpha-spread-results-2026-10-11.md)).
 3. **Second event leg** after the PEAD probe reports (events from about 2026-10-14; probe expires
    2026-10-28). Ingest corporate actions (splits, dividends) first: it is also the architecture
    review's P1 reconciliation gap, so the data work pays twice. Index inclusion is skipped (paid
    constituent history).
+
+   *Status (October 11):* corporate-actions ingestion is implemented ([corporate actions](corporate-actions.md)):
+   a typed Alpaca model and source, a daily daemon capture journaled under `corporate-actions/capture`
+   (readiness component `corporate_actions`), the `corporate_action` entry rule (default `preview`),
+   `/positions` notes, a named reason in the ledger's unsupported-activity issue, and a cached
+   research acquisition (`alpha corporate-actions`). Live bars stay raw and totals stay withheld. The
+   event-leg entry (part 2) follows with the acquisition's counts on the research cohort.
 4. **News as measured context.** Wire a news feed (none exists today; only a config heading) and
    attach LLM news scoring to cards as labelled context, attributed the way the LLM gate is
    attributed. Never a gate or signal until the attribution says so.

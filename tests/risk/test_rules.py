@@ -1,11 +1,15 @@
 import math
+import subprocess
+import sys
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import StrategyType
+from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 from agentic_trader.risk import (
     Book,
     BookPosition,
@@ -16,8 +20,10 @@ from agentic_trader.risk import (
     admission_gates,
     aggregate_stop_risk,
     asset_class_notional,
+    blocking_corporate_action,
     book_gates,
     concurrent_positions,
+    corporate_action_block,
     correlation_group,
     drawdown_halt,
     earnings_days_out,
@@ -32,6 +38,7 @@ from agentic_trader.risk import (
     portfolio_notional,
     quantity_cap,
     regime_breakout,
+    relative_days,
     required_reward_risk,
     reward_risk,
     same_symbol,
@@ -341,3 +348,69 @@ def test_book_gates_on_an_invalid_book_report_only_the_unknown_exposure():
     valid_book = Book(bad_book.positions[1:])
     assert RiskRule.EXPOSURE_UNKNOWN not in {r.rule for r in book_gates(intent(), valid_book, BUDGET, limits())}
     assert len(book_gates(intent(), valid_book, BUDGET, limits())) > 1
+
+
+def _corporate(kind, symbol, effective, **extra):
+    base = {"id": f"{kind}-{symbol}-{effective}", "kind": kind, "symbol": symbol, "effective_on": effective}
+    if kind in (CorporateActionKind.FORWARD_SPLIT, CorporateActionKind.REVERSE_SPLIT):
+        base.update(old_rate=1.0, new_rate=10.0)
+    if kind == CorporateActionKind.CASH_DIVIDEND:
+        base.update(rate=0.5)
+    return CorporateAction.model_validate({**base, **extra})
+
+
+CA_TODAY = date(2026, 10, 12)
+
+
+@pytest.mark.parametrize(
+    ("offset", "blocks"),
+    [(-6, False), (-5, True), (0, True), (7, True), (8, False)],
+)
+def test_corporate_action_rule_boundaries(offset, blocks):
+    split = _corporate(CorporateActionKind.FORWARD_SPLIT, "NVDA", CA_TODAY + timedelta(days=offset))
+    rejection = corporate_action_block((split,), "nvda", CA_TODAY, pre_days=7, post_days=5)
+    assert (rejection is not None) is blocks
+    if rejection is not None:
+        assert rejection.rule == RiskRule.CORPORATE_ACTION == "corporate_action"
+        assert str(rejection).startswith("Corporate action: NVDA forward split 10-for-1 effective ")
+        assert str(rejection).endswith("— within the 7/5-day blackout.")
+
+
+def test_corporate_action_rule_text_and_dividends():
+    split = _corporate(CorporateActionKind.FORWARD_SPLIT, "NVDA", CA_TODAY + timedelta(days=3))
+    assert str(corporate_action_block((split,), "NVDA", CA_TODAY, pre_days=7, post_days=5)) == (
+        "Corporate action: NVDA forward split 10-for-1 effective 2026-10-15 (in 3 days) — within the 7/5-day blackout."
+    )
+    dividend = _corporate(CorporateActionKind.CASH_DIVIDEND, "NVDA", CA_TODAY)
+    assert corporate_action_block((dividend,), "NVDA", CA_TODAY, pre_days=7, post_days=5) is None
+    assert corporate_action_block((), "NVDA", CA_TODAY, pre_days=7, post_days=5) is None
+    assert corporate_action_block((split,), "AAPL", CA_TODAY, pre_days=7, post_days=5) is None
+
+
+def test_blocking_corporate_action_sorts_matches_case_and_skips_dividends():
+    later = _corporate(CorporateActionKind.REVERSE_SPLIT, "nvda", CA_TODAY + timedelta(days=4), id="later")
+    earlier = _corporate(CorporateActionKind.FORWARD_SPLIT, "NVDA", CA_TODAY - timedelta(days=2), id="earlier")
+    dividend = _corporate(CorporateActionKind.CASH_DIVIDEND, "NVDA", CA_TODAY - timedelta(days=3))
+    unsorted = (later, dividend, earlier)
+    assert blocking_corporate_action(unsorted, " Nvda ", CA_TODAY, pre_days=7, post_days=5) is earlier
+    assert blocking_corporate_action(unsorted, "NVDA", CA_TODAY, pre_days=7, post_days=1) is later
+    assert blocking_corporate_action((dividend,), "NVDA", CA_TODAY, pre_days=7, post_days=5) is None
+    assert (relative_days(CA_TODAY, CA_TODAY), relative_days(CA_TODAY - timedelta(days=1), CA_TODAY)) == (
+        "today",
+        "1 day ago",
+    )
+
+
+def test_risk_package_imports_no_transport_or_data_adapter():
+    """Every entry rule is pure: importing ``agentic_trader.risk`` loads no provider adapter or data module."""
+    script = (
+        "import sys, agentic_trader.risk; "
+        "loaded = sorted(m for m in sys.modules if m.startswith(('agentic_trader.transport', 'agentic_trader.data'))); "
+        "assert 'agentic_trader.transport.alpaca' not in sys.modules, loaded; "
+        "assert 'agentic_trader.data.corporate_actions' not in sys.modules, loaded"
+    )
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=root, check=False, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
