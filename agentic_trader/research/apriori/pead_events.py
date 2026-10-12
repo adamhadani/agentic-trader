@@ -38,7 +38,16 @@ from agentic_trader.research.apriori.catalog import PeadEntry, PeadEvent
 from agentic_trader.screeners.dynamic_universe import StaticReference, median_dollar_volume, static_reference
 
 
-__all__ = ["EVENT_COLUMNS", "SUPPORTED_SYMBOL", "MarketData", "build_events", "decision_at", "surprise_pct"]
+__all__ = [
+    "EVENT_COLUMNS",
+    "SUPPORTED_SYMBOL",
+    "MarketData",
+    "atr_through",
+    "build_events",
+    "by_session",
+    "decision_at",
+    "surprise_pct",
+]
 
 SUPPORTED_SYMBOL = re.compile(r"^[A-Z]{1,5}$")
 _SURPRISE_DECIMALS = 9
@@ -84,7 +93,7 @@ def decision_at(day: date, clock: time) -> datetime:
     return datetime.combine(day, clock, tzinfo=ET_TZ).astimezone(UTC)
 
 
-def _by_session(frame: pd.DataFrame) -> pd.DataFrame:
+def by_session(frame: pd.DataFrame) -> pd.DataFrame:
     index = pd.DatetimeIndex(frame.index)
     if index.tz is None:
         index = index.tz_localize("UTC")
@@ -112,7 +121,7 @@ def _reaction_z(sym: pd.DataFrame, bench: pd.DataFrame, days: Sequence[date], i:
     return (r_i - r_m) / (sigma * math.sqrt(2.0))
 
 
-def _atr(sym: pd.DataFrame, days: Sequence[date], j: int, window: int) -> float | None:
+def atr_through(sym: pd.DataFrame, days: Sequence[date], j: int, window: int) -> float | None:
     if j - window < 0:
         return None
     ranges = []
@@ -138,7 +147,7 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
     references: dict[date, StaticReference] = {}
     static_daily = {s: market.liquidity_daily[s] for s in market.static_symbols if s in market.liquidity_daily}
     benchmark = entry.event.benchmark
-    bench = _by_session(market.daily[benchmark])
+    bench = by_session(market.daily[benchmark])
 
     reasons: Counter[str] = Counter()
     by_year: dict[str, Counter[int]] = defaultdict(Counter)
@@ -178,11 +187,11 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
         if dollar_volume is None:
             skip("short_history", row.date)
             continue
-        sym = keyed.setdefault(row.symbol, _by_session(adjusted))
+        sym = keyed.setdefault(row.symbol, by_session(adjusted))
         if as_of not in sym.index or not math.isfinite(float(sym.at[as_of, "Close"])):
             skip("no_reaction_bars", row.date)
             continue
-        liquidity = keyed_raw.setdefault(row.symbol, _by_session(raw))
+        liquidity = keyed_raw.setdefault(row.symbol, by_session(raw))
         as_of_close = float(liquidity.at[as_of, "Close"]) if as_of in liquidity.index else math.nan
         if not math.isfinite(as_of_close):
             skip("no_raw_close", row.date)
@@ -197,7 +206,7 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
         if z is None:
             skip("no_reaction_bars", row.date)
             continue
-        atr = _atr(sym, days, i + 1, atr_window)
+        atr = atr_through(sym, days, i + 1, atr_window)
         if atr is None:
             skip("no_atr", row.date)
             continue
