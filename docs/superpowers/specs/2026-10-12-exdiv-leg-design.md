@@ -102,8 +102,8 @@ counts by kind). A failed fetch fails the run (`status: failed`); nothing is par
 **Sessions.** The Alpaca trading calendar from 60 calendar days before the first decision
 through `bars_through`, as PEAD's runner reads it.
 
-**Prices.** Adjusted (`all`) daily bars for every cohort symbol and SPY over the whole span
-(ATR, and the diagnostics' yield); raw daily bars for cohort and static-universe names (the
+**Prices.** Adjusted (`all`) daily bars for every cohort symbol over the whole span (ATR); raw
+daily bars for cohort and static-universe names (the
 liquidity gate); regular-session hourly bars for every symbol with at least one event, over
 its event span in the setup study's one-year chunks. All through the setup study's immutable
 `.npz` cache with its range claim (`bars` and `bars_raw` sibling directories), so a rerun
@@ -113,7 +113,7 @@ across the ex-date (the secondary hold only) the dividend is folded into the pri
 is what a total-return diagnostic wants.
 
 A symbol whose bars fail is recorded in `bar_failures` and its events are counted under a
-reason, never silently dropped. SPY missing fails the run.
+reason, never silently dropped. No benchmark is needed: the control is the same name.
 
 ## 5. Event and trade rule
 
@@ -209,7 +209,6 @@ No new config, no database, no migration, no daemon change.
 | Output directory exists | CLI refuses |
 | Cohort file missing/unparseable | `status: failed` after manifest |
 | Corporate-actions fetch fails or returns zero actions | `status: failed` |
-| SPY bars missing | `status: failed` |
 | A symbol's bars fail | `bar_failures[symbol]`, its events counted as `no_daily_bars` / `no_hourly_bars` |
 | Malformed action row | part 1's `normalize_actions` already fails closed naming kind and field |
 | Fewer than `min_events` leg events | P4 fails; the result is still complete and written |
