@@ -122,7 +122,8 @@ reason, never silently dropped. No benchmark is needed: the control is the same 
 ## 5. Event and trade rule
 
 Sessions are indexed on the observed calendar. For a cash dividend of symbol `s` with
-ex-date `E` (`effective_on`), placement is checked before eligibility, so a dividend outside
+ex-date `E` (`effective_on`), after the special and symbol checks placement is checked before
+eligibility, so a dividend outside
 the study is never counted under an eligibility reason: `E` inside the calendar span (else
 `outside_calendar`), an observed session (else `non_session_ex_date`), and `D` (step 2)
 inside the decision window (else `outside_window`).
@@ -208,7 +209,7 @@ mean; unpaired leg count.
 | `config/research/apriori/exdiv-v1.json` | the frozen entry |
 | `research/apriori/catalog.py` | `ExdivEntry` (reusing `PeadWindow`, + `ExdivEvent`, `ExdivTrade` with derived `max_hold_sessions`), `load_exdiv_entry`, `catalog_entry_id(path)` (peeks `id` for CLI dispatch) |
 | `research/apriori/statistics.py` | `mean_test`, `paired_test`, `trimmed_mean` (moved; `pead_study` imports) |
-| `research/apriori/exdiv_events.py` | `build_exdiv_events(actions, market, entry)` → events frame (`role` leg/control, `pair_id`, `session`, `control_session`, `ex_date`, `previous_ex_date`, `gap_days`, `rate`, `foreign`, `atr`, `median_dollar_volume`, `reference`, `raw_close`, `decision_at`) + counts by reason/year and `payers`; reuses `MarketData`, `_by_session`, `_atr`, `decision_at` from `pead_events` (the private helpers become public names) |
+| `research/apriori/exdiv_events.py` | `build_exdiv_events(actions, market, entry)` → events frame (`role` leg/control, `pair_id`, `session`, `control_session`, `ex_date`, `previous_ex_date`, `gap_days`, `rate`, `foreign`, `atr`, `median_dollar_volume`, `reference`, `raw_close`, `decision_at`) + counts by reason/year and `payers`; reuses `MarketData`, `by_session`, `atr_through`, `decision_at` from `pead_events` (made public in Task 1) |
 | `research/apriori/exdiv_study.py` | `ExdivInputs`, `read_cohort` (one read, digest checked against `cohort_sha256`), `label_exdiv_events(events, hourly, entry, trading_days)` (one direction, both roles), `evaluate_exdiv` (P1–P4 + diagnostics), `execute_exdiv_study` (protocol + manifest with the verified cohort before `build`, `status: failed` on any exception, `authorizes_promotion: false`) |
 | `research/apriori/exdiv_runner.py` | `build_exdiv_inputs(entry, *, bars, calendar, actions_source, cache_dir, static_symbols, pace, cohort_path)` (re-reads and re-verifies the cohort before any provider call) |
 | `cli/commands/alpha.py` | `apriori-study` dispatches on the entry id (`pead` → existing path; `exdiv` → new path, building the `AlpacaCorporateActionsSource` the way `alpha corporate-actions` does) |

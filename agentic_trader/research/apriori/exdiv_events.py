@@ -2,7 +2,7 @@
 
 For a non-special cash dividend of symbol ``s`` with ex-date ``E`` on the observed calendar:
 
-- placement first: ``E`` inside the calendar span (else ``outside_calendar``), an observed session
+- after the special-dividend and symbol checks, placement: ``E`` inside the calendar span (else ``outside_calendar``), an observed session
   (else ``non_session_ex_date``) and a decision session ``D = E - entry_lead_sessions`` inside the
   decision window (else ``outside_window``), so a dividend outside the study is never counted under
   an eligibility reason;

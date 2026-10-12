@@ -5,8 +5,9 @@ placebo survived its own gates, a control row with the same ``pair_id`` and ``se
 bracket is PEAD's trade block walked by ``label_bracket`` with ``max_hold_sessions`` equal to the
 lead, so the time exit is the close of the last cum-dividend session. A row whose regular hourly
 bars miss any observed session it must hold (``[D, E - 1]`` for a leg, ``[D_c, D_c + lead - 1]``
-for a control) is excluded as ``missing_session_bars``, so a gap can never push the walk onto the
-ex-date; a leg exit on or after the ex-date is still excluded and counted. The secondary hold
+for a control) is excluded as ``missing_session_bars``; a leg whose walk still ends on or after the
+ex-date (for example when the decision session has no regular bar after 10:35, so the fill moves to
+the next session) is excluded and counted as ``exit_on_or_after_ex_date``. The secondary hold
 crosses the ex-date on adjusted bars and is descriptive only.
 
 ``execute_exdiv_study`` reads the cohort file once and verifies it against the entry's
@@ -168,7 +169,8 @@ def label_exdiv_events(
             miss("immature", event)
             continue
         exit_at = decisive.exit_time
-        # Unreachable when the bars hold every session of [D, E - 1]; kept as a guard on the cum-dividend claim.
+        # Rare once every session of [D, E - 1] has bars (the fill can still slip a session when D has no
+        # regular bar after the decision); the cum-dividend claim is structural because of this guard.
         if event["role"] == "leg" and exit_at is not None and exit_at.astimezone(ET_TZ).date() >= event["ex_date"]:
             miss("exit_on_or_after_ex_date", event)
             continue
