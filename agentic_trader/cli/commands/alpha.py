@@ -81,10 +81,13 @@ from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_volume_study
-from agentic_trader.research.apriori.catalog import load_pead_entry
+from agentic_trader.research.apriori.catalog import catalog_entry_id, load_exdiv_entry, load_pead_entry
+from agentic_trader.research.apriori.exdiv_runner import build_exdiv_inputs
+from agentic_trader.research.apriori.exdiv_study import execute_exdiv_study
 from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
+from agentic_trader.research.corporate_actions import build_corporate_actions_source
 from agentic_trader.research.pooled.campaign import load_campaign_protocol
 from agentic_trader.research.pooled.campaign_run import (
     LITERATURE_ENTRIES,
@@ -1290,6 +1293,10 @@ class _AprioriClients:
             if normalize_asset_class(str(info.asset_class)) == normalize_asset_class(AssetClass.EQUITY)
         )
         self.pace = _build_pacer(config)
+        try:
+            self.actions = build_corporate_actions_source(config)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         return self
 
     def __exit__(self, *exc) -> None:
@@ -1308,26 +1315,47 @@ def _apriori_clients() -> _AprioriClients:
 )
 @coro
 async def alpha_apriori_study_cmd(protocol_path, output, cache):
-    """Run a frozen a priori catalog study (research only; grants no credit)."""
+    """Run a frozen a priori catalog study (`pead` or `exdiv` by the entry's id; research only; grants no credit)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
-    loaded = await asyncio.to_thread(load_pead_entry, protocol_path)
+    entry_id = await asyncio.to_thread(catalog_entry_id, protocol_path)
     cache_dir = cache if cache is not None else output / "raw"
     environment = await asyncio.to_thread(research_environment)
 
-    with _apriori_clients() as clients:
+    if entry_id == "pead":
+        loaded = await asyncio.to_thread(load_pead_entry, protocol_path)
+        with _apriori_clients() as clients:
 
-        async def build():
-            return await build_pead_inputs(
-                loaded.entry,
-                bars=clients.bars,
-                calendar=clients.calendar,
-                cache_dir=cache_dir,
-                static_symbols=clients.static_symbols,
-                pace=clients.pace,
-            )
+            async def build():
+                return await build_pead_inputs(
+                    loaded.entry,
+                    bars=clients.bars,
+                    calendar=clients.calendar,
+                    cache_dir=cache_dir,
+                    static_symbols=clients.static_symbols,
+                    pace=clients.pace,
+                )
 
-        result = await execute_pead_study(loaded, output, build=build, environment=environment)
+            result = await execute_pead_study(loaded, output, build=build, environment=environment)
+    elif entry_id == "exdiv":
+        loaded_exdiv = await asyncio.to_thread(load_exdiv_entry, protocol_path)
+        with _apriori_clients() as clients:
+
+            async def build_exdiv():
+                return await build_exdiv_inputs(
+                    loaded_exdiv.entry,
+                    bars=clients.bars,
+                    calendar=clients.calendar,
+                    actions_source=clients.actions,
+                    cache_dir=cache_dir,
+                    static_symbols=clients.static_symbols,
+                    pace=clients.pace,
+                    cohort_path=Path(loaded_exdiv.entry.cohort),
+                )
+
+            result = await execute_exdiv_study(loaded_exdiv, output, build=build_exdiv, environment=environment)
+    else:
+        raise click.ClickException(f"Unknown catalog entry id: {entry_id}")
     click.echo(json.dumps({k: result.get(k) for k in ("status", "decisions", "error")}, indent=2, default=str))
     if result.get("status") == "failed":
         raise click.ClickException("A priori study failed; see result.json for the reason")

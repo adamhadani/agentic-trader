@@ -29,14 +29,14 @@ from agentic_trader.research.apriori.pead_study import PeadInputs
 from agentic_trader.research.setups.runner import BarSource, CalendarSource, _claim_cache_range, _fetch_cached
 
 
-__all__ = ["build_pead_inputs"]
+__all__ = ["bars_or_failure", "build_pead_inputs", "record_failure"]
 
 _CALENDAR_PAD = timedelta(days=60)
 _REPORT_PAD = timedelta(days=7)
 _HOURLY_TAIL = timedelta(days=130)
 
 
-async def _bars_or_failure(
+async def bars_or_failure(
     symbol: str,
     timeframe: str,
     bars: BarSource,
@@ -58,7 +58,7 @@ async def _bars_or_failure(
     return frame, None
 
 
-def _record(failures: dict[str, str], symbol: str, reason: str) -> None:
+def record_failure(failures: dict[str, str], symbol: str, reason: str) -> None:
     failures[symbol] = f"{failures[symbol]}; {reason}" if symbol in failures else reason
 
 
@@ -99,18 +99,18 @@ async def build_pead_inputs(
     liquidity_daily: dict[str, pd.DataFrame] = {}
     failures: dict[str, str] = {}
     for symbol in sorted({benchmark, *liquidity_symbols}):
-        frame, failure = await _bars_or_failure(symbol, "1d", bars, bar_dir, start, end, pace, chunk=end - start)
+        frame, failure = await bars_or_failure(symbol, "1d", bars, bar_dir, start, end, pace, chunk=end - start)
         if frame is None:
-            _record(failures, symbol, failure or "daily: unavailable")
+            record_failure(failures, symbol, failure or "daily: unavailable")
         else:
             daily[symbol] = frame
         if symbol not in liquidity_symbols:
             continue  # the benchmark is only used for the reaction
-        frame, failure = await _bars_or_failure(
+        frame, failure = await bars_or_failure(
             symbol, "1d", bars, raw_dir, start, end, pace, adjustment="raw", chunk=end - start
         )
         if frame is None:
-            _record(failures, symbol, failure or "daily_raw: unavailable")
+            record_failure(failures, symbol, failure or "daily_raw: unavailable")
         else:
             liquidity_daily[symbol] = frame
     if benchmark not in daily:
@@ -127,9 +127,9 @@ async def build_pead_inputs(
     for symbol, group in events.groupby("symbol"):
         span_start = datetime.combine(min(group["session"]) - _REPORT_PAD, time.min, tzinfo=UTC)
         span_end = min(datetime.combine(max(group["session"]), time.max, tzinfo=UTC) + _HOURLY_TAIL, end)
-        frame, failure = await _bars_or_failure(str(symbol), "1h", bars, bar_dir, span_start, span_end, pace)
+        frame, failure = await bars_or_failure(str(symbol), "1h", bars, bar_dir, span_start, span_end, pace)
         if frame is None:
-            _record(failures, str(symbol), failure or "hourly: unavailable")
+            record_failure(failures, str(symbol), failure or "hourly: unavailable")
         else:
             hourly[str(symbol)] = frame
     return PeadInputs(
