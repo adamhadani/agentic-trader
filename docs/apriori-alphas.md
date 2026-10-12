@@ -21,7 +21,7 @@ Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output 
 | --- | --- | --- | --- | --- | --- |
 | `pead` | 1 | Post-earnings drift when EPS surprise and price reaction agree | — | — | Failed closed on calendar coverage (Nasdaq gap 2016-06-06..07-08); no outcomes computed |
 | `pead` | 2 | Same, decisions from 2016-08-01 | **eligible** (+0.149R; +0.055R vs control) | failed (−0.064R) | [result](apriori-pead-2026-09-26.md), [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |
-| `exdiv` | 1 | Regular quarterly payers run up in the five sessions before the ex-date (Hartzmark & Solomon 2013); long from E−5 at 10:35 to the last cum-dividend close; same-name mid-quarter placebo | pending | — | run pending ([spec](superpowers/specs/2026-10-12-exdiv-leg-design.md)) |
+| `exdiv` | 1 | Regular quarterly payers run up in the five sessions before the ex-date (Hartzmark & Solomon 2013); long from E−5 at 10:35 to the last cum-dividend close; same-name mid-quarter placebo | failed (+0.069R, ci90 [+0.035, +0.102]; but the same-name placebo earns +0.046R and the paired difference +0.025R has ci90 [−0.026, +0.072], so P2 fails) | — | failed on P2, 2026-10-12 ([result](apriori-exdiv-2026-10-12.md), [spec](superpowers/specs/2026-10-12-exdiv-leg-design.md)) |
 
 ## Entry 2: pre-ex-dividend run-up
 
@@ -61,6 +61,12 @@ into the manifest and a change is a new version with a new window.
   knows the ex-date five sessions ahead from history, while live knowledge depends on the
   declaration: the 2026-10-12 capture held 17 future ex-dates up to 60 days ahead, and a probe must
   measure its own lead-time coverage before claiming parity. Slippage is not measured.
+
+**Result (2026-10-12):** the leg is positive (+0.069R per event at 5 bp, 2,647 events, P1, P3 and P4 hold)
+but not distinguishable from the same name's mid-quarter drift (control +0.046R; paired difference +0.025R,
+ci90 [−0.026, +0.072]), so P2 fails and the leg is **failed**; no probe. The yield gradient (low +0.038R →
+high +0.117R) is the one descriptive the placebo cannot explain and would motivate a yield-conditioned v2
+declared as a second look ([result](apriori-exdiv-2026-10-12.md)).
 
 ## Pooled literature entries
 
