@@ -343,6 +343,32 @@ class CorporateActionsConfig(BaseModel):
         return self
 
 
+class NewsConfig(BaseModel):
+    """News as measured context (docs/news-context.md).
+
+    One bounded news fetch per universe scan for the ranked candidates' symbols; the first
+    ``max_scored_per_scan`` ranked symbols with items are scored by the LLM (tone, catalyst),
+    the rest keep counts and headlines. The block is context on the card and in the journal,
+    attributed by ``cards outcomes``; nothing reads it as a gate or signal.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = True
+    window_hours: int = Field(default=48, ge=1, le=168)
+    max_items_per_symbol: int = Field(default=12, ge=1, le=100)
+    max_symbols_per_item: int = Field(default=5, ge=1, le=50)
+    max_scored_per_scan: int = Field(default=6, ge=1, le=50)
+    max_headlines_recorded: int = Field(default=5, ge=1, le=20)
+    max_headline_chars: int = Field(default=110, ge=20, le=300)
+    chunk_size: int = Field(default=50, ge=1, le=200)
+    max_items_per_fetch: int = Field(default=1000, ge=50, le=5000)
+    max_requests_per_minute: int = Field(default=100, ge=1, le=200)
+    fetch_timeout_seconds: float = Field(default=15.0, gt=0, le=120, allow_inf_nan=False)
+    score_timeout_seconds: float = Field(default=20.0, gt=0, le=120, allow_inf_nan=False)
+    model: str | None = None
+
+
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
     "us_broad_market": ["/MES", "/ES", "SPY", "VOO", "IVV"],
     "us_tech": ["/MNQ", "/NQ", "QQQ", "XLK"],
@@ -817,6 +843,7 @@ class AppConfig(BaseModel):
     card_policy: CardPolicyConfig = Field(default_factory=CardPolicyConfig)
     book_sizing: BookSizingConfig = Field(default_factory=BookSizingConfig)
     corporate_actions: CorporateActionsConfig = Field(default_factory=CorporateActionsConfig)
+    news: NewsConfig = Field(default_factory=NewsConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -907,6 +934,11 @@ class AppConfig(BaseModel):
 def corporate_actions_live(config: AppConfig) -> bool:
     """The capture worker runs only with the feature on and Alpaca data credentials present."""
     return config.corporate_actions.enabled and bool(config.alpaca_api_key and config.alpaca_api_secret)
+
+
+def news_live(config: AppConfig) -> bool:
+    """News context is computed only with the feature on and Alpaca data credentials present."""
+    return config.news.enabled and bool(config.alpaca_api_key and config.alpaca_api_secret)
 
 
 def normalize_db_url(value: str) -> str:
@@ -1084,6 +1116,8 @@ def load_config(
         scan=ScanConfig(**(cfg_dict.get("scan") or {})),
         card_policy=CardPolicyConfig(**(cfg_dict.get("card_policy") or {})),
         book_sizing=BookSizingConfig(**(cfg_dict.get("book_sizing") or {})),
+        corporate_actions=CorporateActionsConfig(**(cfg_dict.get("corporate_actions") or {})),
+        news=NewsConfig(**(cfg_dict.get("news") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,
