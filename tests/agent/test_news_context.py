@@ -80,6 +80,22 @@ async def test_scorer_invalid_tone_is_score_failed_through_the_service():
         await scorer.score("AAPL", items("a"))
 
 
+async def test_scorer_strips_markdown_fences_like_the_evaluator():
+    fenced = "```json\n" + json.dumps(GOOD) + "\n```"
+
+    async def complete(**_kwargs):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=fenced))])
+
+    score = await NewsScorer(model="m", api_key=None, timeout_seconds=1, complete=complete).score("AAPL", items("a"))
+    assert score == NewsScore(**GOOD)
+
+
+def test_user_message_clips_each_summary_to_400_characters():
+    long = normalize_news([row(1, "Apple misses", ["AAPL"], summary="s" * 2000)])
+    message = NewsScorer.user_message("AAPL", long)
+    assert "Apple misses — " + "s" * 400 in message and "s" * 401 not in message
+
+
 def page_with(*rows):
     return NewsPage(
         normalize_news(rows), NOW, NOW, ("AAPL", "MSFT"), (NOW - timedelta(hours=48), NOW), 1, ("sha-p",), False

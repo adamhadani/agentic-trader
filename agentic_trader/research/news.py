@@ -1,10 +1,11 @@
 """Cached news acquisition for research (docs/news-context.md#research-acquisition).
 
-One gzip JSON file per request under ``cache_dir/news/<sha256 of the request>.json.gz`` holding the
-normalised items (headline, summary, source, url, created_at, symbols — never bodies), the receipt and
-the content digest; a reuse verifies the digest and refuses a corrupt file. Requests go per symbol
-chunk per calendar month with each request bounded to RESEARCH_MAX_ITEMS; a truncated window is split in half down to one day.
-Research only: no database, registry, broker or Telegram.
+One gzip JSON file per acquisition under ``cache_dir/news/<sha256 of the request>.json.gz`` holding all
+its normalised items (headline, summary, source, url, created_at, symbols — never bodies), the receipt,
+the request/split counts and the content digest; a reuse verifies the digest and refuses a corrupt file.
+Requests go per symbol chunk per calendar month with each request bounded to RESEARCH_MAX_ITEMS; a
+truncated window is split in half down to one day. Research only: no database, registry, broker or
+Telegram.
 """
 
 from __future__ import annotations

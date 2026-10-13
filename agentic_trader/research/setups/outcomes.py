@@ -555,22 +555,31 @@ def _news_bucket(rows: pd.DataFrame) -> dict[str, Any]:
     return {"n": len(rows), "mean_r_cost": _mean_r_cost(rows), "hit_rate": float(hits.mean())}
 
 
+def _with_news_block(rows: pd.DataFrame) -> pd.DataFrame:
+    """Rows whose candidate carried a news block (any status); pre-deploy history and futures are ``absent``."""
+    return rows.loc[rows["news_status"].notna() & (rows["news_status"] != "absent")]
+
+
 def _news_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
-    present = frame.loc[frame["news_status"].notna() & (frame["news_status"] != "absent")]
+    """The descriptive ``news_context`` block.
+
+    ``blocks``, ``by_status``, ``scored`` and ``by_catalyst`` count every row with a block, mature or not.
+    ``by_alignment`` and ``by_tone`` use mature rows with a block only, so ``none`` counts ``no_news``,
+    ``unscored``, ``score_failed`` and ``unavailable`` rows, never rows without a block.
+    """
+    present = _with_news_block(frame)
     by_status = {str(k): int(v) for k, v in present["news_status"].value_counts().items()} if len(present) else {}
     catalysts = present["news_catalyst"].dropna() if len(present) else pd.Series(dtype=object)
     by_catalyst = {str(k): int(v) for k, v in catalysts.value_counts().items()} if len(catalysts) else {}
-    tones = mature["news_tone"].dropna() if "news_tone" in mature else pd.Series(dtype=object)
+    measured = _with_news_block(mature)
+    tones = measured["news_tone"].dropna()
     return {
         "blocks": len(present),
         "by_status": by_status,
         "scored": int((present["news_status"] == "ok").sum()) if len(present) else 0,
-        "by_alignment": {
-            key: _news_bucket(mature.loc[mature["news_alignment"] == key]) if len(mature) else _news_bucket(mature)
-            for key in NEWS_ALIGNMENTS
-        },
+        "by_alignment": {key: _news_bucket(measured.loc[measured["news_alignment"] == key]) for key in NEWS_ALIGNMENTS},
         "by_tone": {
-            str(tone): _news_bucket(mature.loc[mature["news_tone"] == tone]) for tone in sorted(tones.unique())
+            str(tone): _news_bucket(measured.loc[measured["news_tone"] == tone]) for tone in sorted(tones.unique())
         },
         "by_catalyst": by_catalyst,
     }

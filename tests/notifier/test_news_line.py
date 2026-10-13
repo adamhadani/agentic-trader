@@ -59,6 +59,14 @@ def test_news_line_escapes_html_and_collapses_whitespace():
     assert line.startswith("📰 News (context, not a gate):") and line.endswith("\n")
 
 
+def test_non_list_headlines_render_without_the_latest_fragment():
+    line = _news_line(block(headlines={"x": 1}), markup=False, now=NOW)
+    assert line == (
+        '📰 News (context, not a gate): 4 items/48h · tone negative · earnings · "Revenue miss; guidance cut."\n'
+    )
+    assert "latest" not in line
+
+
 def test_headline_is_clipped_and_age_in_days():
     long = block(
         headlines=[

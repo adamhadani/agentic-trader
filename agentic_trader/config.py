@@ -346,10 +346,12 @@ class CorporateActionsConfig(BaseModel):
 class NewsConfig(BaseModel):
     """News as measured context (docs/news-context.md).
 
-    One bounded news fetch per universe scan for the ranked candidates' symbols; the first
-    ``max_scored_per_scan`` ranked symbols with items are scored by the LLM (tone, catalyst),
-    the rest keep counts and headlines. The block is context on the card and in the journal,
-    attributed by ``cards outcomes``; nothing reads it as a gate or signal.
+    One bounded news fetch for the ranked native equity candidates' symbols on every scan that ranks
+    candidates without a timeframe (the scheduled universe scans, operator ``/scan`` and
+    ``scan --dry-run``); the intraday job never fetches. The first ``max_scored_per_scan`` ranked
+    symbols with items are scored by the LLM (tone, catalyst), the rest keep counts and headlines;
+    ``--no-llm`` scans score nothing. The block is context on the card and in the journal, attributed
+    by ``cards outcomes``; nothing reads it as a gate or signal.
     """
 
     model_config = {"extra": "forbid"}
@@ -360,7 +362,6 @@ class NewsConfig(BaseModel):
     max_symbols_per_item: int = Field(default=5, ge=1, le=50)
     max_scored_per_scan: int = Field(default=6, ge=1, le=50)
     max_headlines_recorded: int = Field(default=5, ge=1, le=20)
-    max_headline_chars: int = Field(default=110, ge=20, le=300)
     chunk_size: int = Field(default=50, ge=1, le=200)
     max_items_per_fetch: int = Field(default=1000, ge=50, le=5000)
     max_requests_per_minute: int = Field(default=100, ge=1, le=200)

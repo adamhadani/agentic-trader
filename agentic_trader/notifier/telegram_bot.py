@@ -173,7 +173,7 @@ def _corporate_action_line(block: dict[str, Any] | None, *, markup: bool) -> str
 
 
 NEWS_LABEL = "📰 News (context, not a gate): "
-NEWS_HEADLINE_CHARS = 110  # the renderer has no config; mirrors NewsConfig.max_headline_chars' default
+NEWS_HEADLINE_CHARS = 110  # the card clips headlines at a fixed width; not configurable
 
 
 def _age(created_at: str, now: datetime) -> str:
@@ -202,8 +202,9 @@ def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | No
     window = block.get("window_hours")
     n_items = block.get("n_items")
     error_type = block.get("error_type")
-    headlines = block.get("headlines") or []
-    latest = headlines[0] if headlines and isinstance(headlines[0], dict) else None
+    headlines = block.get("headlines")
+    entries = headlines if isinstance(headlines, list) else []
+    latest = next((entry for entry in entries if isinstance(entry, dict)), None)
     latest_text = ""
     if latest is not None:
         age = _age(str(latest.get("created_at")), now or datetime.now(UTC))

@@ -277,7 +277,9 @@ only, never a gate, and uses the same proxy bracket labels as the rest of the re
 
 News context ([news context](news-context.md)) is a fourth descriptive block in `cards outcomes`
 (`news_context`, with `news_*` columns), attributed beside selection, the LLM gate and market exposure.
-Its alignment buckets use mature rows only. It never feeds `card_policy` or `card_stats`.
+Only its alignment and tone buckets are mature-row-only (and leave out rows without a block); its
+counts cover every row with a block (populations in [news context](news-context.md#attribution)). It
+never feeds `card_policy` or `card_stats`.
 
 ## Limits
 

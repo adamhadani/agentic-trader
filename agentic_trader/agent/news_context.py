@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -47,6 +48,7 @@ NEWS_SYSTEM_PROMPT = (
 )
 NEWS_PROMPT_SHA256 = hashlib.sha256(NEWS_SYSTEM_PROMPT.encode()).hexdigest()
 ONE_LINE_MAX = 160
+SUMMARY_MAX = 400  # provider summaries are clipped in the scorer's prompt
 
 BLOCK_KEYS: tuple[str, ...] = (
     "status",
@@ -104,7 +106,7 @@ class NewsScorer:
     def user_message(symbol: str, items: Sequence[NewsItem]) -> str:
         lines = [
             f"- {item.created_at.isoformat()} [{item.source}] {item.headline}"
-            + (f" — {item.summary}" if item.summary else "")
+            + (f" — {item.summary[:SUMMARY_MAX]}" if item.summary else "")
             for item in items
         ]
         return f"Symbol: {symbol}\nNews, newest first:\n" + "\n".join(lines)
@@ -125,7 +127,10 @@ class NewsScorer:
             ),
             timeout=self.timeout_seconds,
         )
-        payload = json.loads(response.choices[0].message.content)
+        raw_text = response.choices[0].message.content.strip()
+        # Clean possible markdown wrapping, exactly as the evaluator does.
+        cleaned = re.sub(r"^```json\s*|\s*```$", "", raw_text, flags=re.MULTILINE).strip()
+        payload = json.loads(cleaned)
         if not isinstance(payload, dict):
             raise TypeError("News score reply is not a JSON object")
         return NewsScore.model_validate(payload)

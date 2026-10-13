@@ -43,11 +43,12 @@ measured facts behind them are in §7.
 **Out of scope (named so they are not implied):** any gate, rule, signal or sizing input derived
 from news (nothing in `agentic_trader/risk`, `card_policy` or admission reads it); news text in the
 LLM gate's prompt (it would contaminate the gate's attribution — §7); a daemon worker, readiness
-component or `/positions` notes (news is fetched at scan time, §3.3); journal/attribution for
-`/scan SYMBOL` and the intraday job (their cards carry the block but have no journal row), and
-blocks for drift (catalog) cards; full article bodies (`include_content` stays false); a `/news`
-Telegram command; a frozen news study or catalog entry (its own spec); any schema migration (head
-stays `008_alpha_pipeline`).
+component or `/positions` notes (news is fetched at scan time, §3.3); news for scans with a
+timeframe (the 15-minute intraday job never fetches or scores, §3.3); LLM scoring on `--no-llm`
+scans (their blocks keep counts and headlines); journal/attribution for `/scan SYMBOL` (its cards
+carry the block but have no journal row), and blocks for drift (catalog) cards; full article
+bodies (`include_content` stays false); a `/news` Telegram command; a frozen news study or catalog
+entry (its own spec); any schema migration (head stays `008_alpha_pipeline`).
 
 ## 3. Components
 
@@ -58,11 +59,12 @@ stays `008_alpha_pipeline`).
   (upper-case, as tagged by the provider). `updated_at` is dropped (measured identical to
   `created_at` on every item in the probe).
 - `NewsPage` (frozen dataclass): `items: tuple[NewsItem, ...]`, `requested_at`, `received_at`,
-  `symbols: tuple[str, ...]`, `window: tuple[datetime, datetime]`, `pages: int`, `page_sha256: str`
-  (SHA-256 over the raw pages in order), `truncated: bool` (the provider still had a page token
-  when `max_items` was reached).
+  `symbols: tuple[str, ...]`, `window: tuple[datetime, datetime]`, `pages: int`,
+  `page_sha256: tuple[str, ...]` (per-page digests: one SHA-256 per raw page, in order),
+  `truncated: bool` (the provider still had a page token when `max_items` was reached).
 - `NewsSource` Protocol: `fetch(self, symbols: Sequence[str], start: datetime, end: datetime) -> NewsPage`.
-- `AlpacaNewsSource(client, *, chunk_size: int, max_items: int, clock)` — `client` is a
+- `AlpacaNewsSource(client, *, pacer: RequestPacer | None, chunk_size: int, max_items: int | None, clock)`
+  — `pacer` is acquired once per symbol chunk (not per HTTP page); `client` is a
   `BoundedNewsClient(BoundedTransport, NewsClient)` with `raw_data=True` (one-line subclass in
   `transport/alpaca.py`, same socket deadline and GET-only retry as the other bounded clients).
   Symbols are sent in chunks of `chunk_size` as the comma-joined string the SDK expects, with
@@ -80,16 +82,18 @@ stays `008_alpha_pipeline`).
 
 ### 3.2 Scoring — `agentic_trader/agent/news_context.py`
 
-- `NewsScore` (frozen pydantic, strict): `tone: Literal["negative", "neutral", "positive"]`,
+- `NewsScore` (frozen pydantic; enum strings are lower-cased and stripped before validation, extra
+  keys are ignored): `tone: Literal["negative", "neutral", "positive"]`,
   `relevance: Literal["company", "sector", "market"]`,
   `catalyst: Literal["earnings", "guidance", "m_and_a", "regulatory", "product", "analyst", "macro", "other"]`,
   `one_line: str` (≤ 160 characters, trimmed; HTML-escaped at render time).
 - `NewsScorer(*, model: str, api_key: str | None, timeout_seconds: float, complete=litellm.acompletion)`
   with `async score(symbol: str, items: Sequence[NewsItem]) -> NewsScore`. One call,
-  `temperature=0`, `response_format={"type": "json_object"}`, `timeout=timeout_seconds`. The user
-  message lists `created_at`, `source`, `headline` and `summary` per item (newest first); the
-  system prompt asks for tone of the news **for the company's shares**, independent of any trade
-  direction, and for JSON only. `prompt_sha256` = SHA-256 of the system prompt text (recorded, so a
+  `temperature=0`, `response_format={"type": "json_object"}`, `timeout=timeout_seconds`; markdown
+  fences are stripped from the reply exactly as the evaluator strips them. The user message lists
+  `created_at`, `source`, `headline` and `summary` (clipped to 400 characters) per item (newest
+  first); the system prompt asks for tone of the news **for the company's shares**, independent of
+  any trade direction, and for JSON only. `prompt_sha256` = SHA-256 of the system prompt text (recorded, so a
   prompt change is visible in the journal). `complete` is injectable for tests; the scorer never
   raises into the scan: failures surface as the block's `status`.
 - `NewsContextService(source, scorer, config: NewsConfig, *, clock)` with
@@ -118,11 +122,16 @@ stays `008_alpha_pipeline`).
 ### 3.3 Scan integration — `agent/copilot.py`, `agent/evaluator.py`
 
 - After ranking and before the send loop (beside the other `*_by_rank` lists), `run_scan` computes
-  `news_by_rank`: the ranked candidates' equity symbols (contracts without a `/` prefix, in rank
-  order, de-duplicated), `score_first = config.news.max_scored_per_scan`,
-  `blocks = await news_service.for_symbols(...)`, then `news_by_rank[i] = blocks.get(symbol)` (a
-  futures candidate gets `None`). When `news.enabled` is false or no Alpaca data keys exist, the
-  service is `None` and every entry is `None` (no block, no line, no column value). The step is
+  `news_by_rank` only when `timeframe is None`: the scheduled universe scans, operator `/scan`
+  (symbol-scoped included) and `scan --dry-run`. A scan with a timeframe (the 15-minute intraday
+  job) gets `[None] * len(ranked)` and never fetches or scores. Otherwise: the ranked native
+  candidates' equity symbols (contracts without a `/`, no drift card, in rank order, de-duplicated),
+  `score_first = config.news.max_scored_per_scan if use_llm else 0` (a `--no-llm` scan keeps counts
+  and headlines, `unscored`/`no_news`, and makes no LLM call),
+  `blocks = await news_service.for_symbols(...)`, then `news_by_rank[i] = blocks.get(symbol)` keyed
+  by the upper-cased, stripped symbol (a futures candidate, or a drift card even when it shares a
+  native candidate's symbol, gets `None`). When `news.enabled` is false or no Alpaca data keys
+  exist, the service is `None` and every entry is `None` (no block, no line, no column value). The step is
   wrapped so any exception yields `unavailable` blocks with the type name; it never raises into
   the scan and never touches the budget, ranking or candidate order.
 - `RiskEvaluator.evaluate_candidate(..., news_context: Mapping[str, Any] | None = None)` attaches
@@ -158,8 +167,9 @@ stays `008_alpha_pipeline`).
 | `unavailable` | `unavailable ({error_type})` or `unavailable` |
 
 `age` is "2h ago"/"1d ago" from `created_at` to the card's time; `truncated` adds " · feed truncated".
-Headlines and `one_line` are HTML-escaped when `markup` is true and clipped to
-`max_headline_chars` (default 110). A missing block renders nothing. The thesis text is untouched.
+Headlines and `one_line` are HTML-escaped when `markup` is true; the card clips headlines at a fixed
+110 characters (`NEWS_HEADLINE_CHARS`, not configurable) and `one_line` at 160. A missing block
+renders nothing. The thesis text is untouched.
 
 ### 3.5 Outcomes — `research/setups/outcomes.py`
 
@@ -169,22 +179,24 @@ Headlines and `one_line` are HTML-escaped when `markup` is true and clipped to
   `neutral` (tone neutral), `none` (no score). Rows without a block get `None`/`"absent"`.
 - `summarize()` adds `news_context`: `{"blocks": n, "by_status": {status: n}, "scored": n,
   "by_alignment": {alignment: {"n", "mean_r_cost", "hit_rate"}}, "by_tone": {...},
-  "by_catalyst": {catalyst: n}}` over the same mature rows the LLM-gate block uses; the empty-frame
+  "by_catalyst": {catalyst: n}}`. The counts (`blocks`, `by_status`, `scored`, `by_catalyst`) cover
+  every row with a block; `by_alignment` and `by_tone` cover mature rows with a block only (rows
+  without one are excluded, so `none` never counts pre-deploy history or futures); the empty-frame
   dict carries the block with zeros. Everything is descriptive, printed next to `llm_gate`.
 
 ### 3.6 Config — `NewsConfig` on `AppConfig` as `news`
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `True` | compute blocks on universe scans |
+| `enabled` | `True` | compute blocks on scans without a timeframe (§3.3) |
 | `window_hours` | `48` | item age window at scan time |
 | `max_items_per_symbol` | `12` | newest items kept per symbol (scoring input) |
 | `max_symbols_per_item` | `5` | items tagged with more symbols are market-wide lists: excluded, counted |
 | `max_scored_per_scan` | `6` | ranked symbols scored by the LLM per scan (the rest `unscored`) |
 | `max_headlines_recorded` | `5` | headlines kept in provenance and the journal |
-| `max_headline_chars` | `110` | clip on the card |
 | `chunk_size` | `50` | symbols per provider request |
 | `max_items_per_fetch` | `1000` | the SDK `limit` (aggregate cap; `truncated` when hit) |
+| `max_requests_per_minute` | `100` | provider pacing, once per symbol chunk |
 | `fetch_timeout_seconds` | `15` | whole-fetch bound (`wait_for`); per-request socket deadline is `market_data.timeout_seconds` |
 | `score_timeout_seconds` | `20` | per LLM call |
 | `model` | `None` | scorer model; `None` means `AppConfig.llm_model` |
@@ -199,9 +211,10 @@ Validation: positive bounds, `extra="forbid"`, `max_scored_per_scan ≥ 1`, `win
 
 - `fetch_news_cached(source, symbols, start, end, cache_dir, *, pace, chunk_symbols=20) -> (items, manifest)`
   mirroring `fetch_corporate_actions_cached`: request dict `{source: "alpaca-news", format: 1,
-  symbols, start, end}` → `cache_dir/news/<request_sha256>.json` holding `items` (id, headline,
-  summary, source, url, created_at, symbols — no content), `content_sha256`, timestamps, pages and
-  page digests; reuse re-hashes and refuses a mismatch; private writes (0700/0600, temp + rename).
+  symbols, start, end}` → one gzip file per acquisition, `cache_dir/news/<request_sha256>.json.gz`,
+  holding `items` (id, headline, summary, source, url, created_at, symbols — no content),
+  `content_sha256`, `requested_at`, `received_at`, `requests` and `splits` (no page digests); reuse
+  re-hashes and refuses a mismatch; private writes (0700/0600, temp + rename).
   Requests are issued per symbol chunk per calendar month bounded by `RESEARCH_MAX_ITEMS = 5000`
   (`limit=None` would follow every page without bound); a window whose last raw page still has a
   token is split in half down to one day (`ValueError` mentioning "page cap" at one day), so no
@@ -221,6 +234,8 @@ Validation: positive bounds, `extra="forbid"`, `max_scored_per_scan ≥ 1`, `win
 | `truncated` fetch | block flag | " · feed truncated" | — | — |
 | `news.enabled: false` or no data keys | no block (`None`) | no line | no fetch | `absent` |
 | Futures candidate | no block | no line | — | `absent` |
+| Scan with a timeframe (intraday job) | no block | no line | no fetch | no journal row |
+| `--no-llm` scan | `unscored`/`no_news` | counts + latest headline | no LLM call | counted |
 
 Nothing here touches readiness, the halt state, ranking, budget, sizing, admission or the broker.
 No exception text reaches a card, provenance or the journal; `error_type` is a type name.
@@ -252,12 +267,13 @@ All tests use fakes; network is blocked by the suite.
 
 ## 6. Operations
 
-- No restart-visible component: the first live block appears on the next universe scan after
-  deploy; `copilot db events --stream scan/<date> --limit 1` shows the `news` key per candidate;
+- No restart-visible component: the first live block appears on the next scan without a timeframe
+  after deploy (a scheduled universe scan or an operator `/scan`);
+  `copilot db events --stream scan/<date> --limit 1` shows the `news` key per candidate;
   `copilot cards outcomes --days 30` prints `news_context`.
-- Cost: ≤ `max_scored_per_scan` LLM calls per scan (≈ 1.5k tokens each) and one news request per
-  scan; measured fetch for 159 symbols over 7 days took 3.3 s, so a 48 h window is well inside the
-  15 s bound.
+- Cost: ≤ `max_scored_per_scan` LLM calls per scan (≈ 1.5k tokens each; none on `--no-llm` scans)
+  and one paced fetch per 50-symbol chunk per scan (the SDK pages inside it); measured fetch for 159
+  symbols over 7 days took 3.3 s, so a 48 h window is well inside the 15 s bound.
 - The research acquisition is operator-run (`alpha news`), paced, cached, outside scan windows.
 
 ## 7. Design decisions
@@ -271,9 +287,10 @@ All tests use fakes; network is blocked by the suite.
    `updated_at` equals `created_at`. No new credentials, same bounded transport.
 2. **Fetch at scan time, no worker.** News is only useful fresh, and the scan already does bounded
    provider reads; a worker would need a readiness component, journal retention for a feed that
-   changes every poll, and a staleness contract for a 48 h window. One bounded request per scan
-   with `unavailable` as the only failure mode is simpler and honest. A daemon worker becomes
-   worthwhile only if `/positions` news notes are wanted (not asked).
+   changes every poll, and a staleness contract for a 48 h window. One bounded fetch per scan (one
+   paced request per 50-symbol chunk) with `unavailable` as the only failure mode is simpler and
+   honest. A daemon worker becomes worthwhile only if `/positions` news notes are wanted (not
+   asked).
 3. **Score per symbol, direction-free; alignment computed deterministically.** One LLM call serves
    every candidate of a symbol, the score cannot be steered by the trade direction, and the
    outcomes report derives `aligned/opposed` itself. Scoring the first `max_scored_per_scan` ranked
@@ -284,10 +301,11 @@ All tests use fakes; network is blocked by the suite.
    and both are recorded.
 5. **Carried on the evaluation.** `LLMTradeEvaluation.news_context` follows the `corporate_actions`
    precedent: no notification-signature change (a missing kwarg dead-letters a card), reprice
-   carries it explicitly, dry runs render it.
+   keeps it through the stored `raw_response` (§3.3), dry runs render it.
 6. **Bounded journal payload.** The journal keeps `max_headlines_recorded` headlines plus digests,
-   never bodies; `domain_events` is retained forever, so the per-scan block stays a few hundred
-   bytes per candidate. The research cache holds the bulk, outside the database.
+   never bodies; `domain_events` is retained forever, so the per-scan block stays about 1.5 KB per
+   candidate for an `ok` block with five headlines and 0.3 KB for `no_news`. The research cache
+   holds the bulk, outside the database.
 7. **Loader fix bundled.** `load_config` never passed `corporate_actions`, so the YAML block the
    corporate-actions docs describe had no effect; adding `news` to the loader without fixing that
    would repeat the gap. Both are one line each, covered by a regression test, behaviour-neutral

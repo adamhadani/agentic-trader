@@ -1247,8 +1247,12 @@ class TradingCopilot:
                 else None
                 for (candidate, _det_res, _account_risk), evidence in zip(ranked, evidence_by_rank, strict=True)
             ]
-            # NEWS CONTEXT: one fetch per scan, before the send loop, for every ranked equity candidate.
-            news_by_rank = await self._news_blocks(ranked)
+            # NEWS CONTEXT: one fetch per scan without a timeframe, before the send loop, for every ranked
+            # native equity candidate. The intraday job (it passes a timeframe) never fetches or scores news;
+            # a scan without the LLM keeps counts and headlines and scores nothing.
+            news_by_rank: list[dict[str, Any] | None] = (
+                await self._news_blocks(ranked, use_llm=use_llm) if timeframe is None else [None] * len(ranked)
+            )
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
             if budget == ScanBudget.NONE:
@@ -3152,10 +3156,11 @@ class TradingCopilot:
         rounded = round_to_tick(price, tick_size)
         return rounded if rounded > 0 else None
 
-    async def _news_blocks(self, ranked: list[tuple[Any, Any, Any]]) -> list[dict[str, Any] | None]:
-        """One news block per ranked equity candidate (drift and futures candidates get None); never raises.
+    async def _news_blocks(self, ranked: list[tuple[Any, Any, Any]], *, use_llm: bool) -> list[dict[str, Any] | None]:
+        """One news block per ranked native equity candidate (drift and futures candidates get None); never raises.
 
-        One fetch per scan; scoring follows rank order up to ``news.max_scored_per_scan``. Any failure
+        One fetch per scan; scoring follows rank order up to ``news.max_scored_per_scan``, and a scan without
+        the LLM (``use_llm=False``) scores nothing, so its blocks keep counts and headlines only. Any failure
         of the step yields ``unavailable`` blocks carrying the exception type name only.
         """
         blocks: list[dict[str, Any] | None] = [None] * len(ranked)
@@ -3169,15 +3174,20 @@ class TradingCopilot:
         ]
         if not wanted:
             return blocks
+        score_first = self.config.news.max_scored_per_scan if use_llm else 0
         try:
-            found = await service.for_symbols(wanted, score_first=self.config.news.max_scored_per_scan)
+            found = await service.for_symbols(wanted, score_first=score_first)
             if not isinstance(found, dict):
                 raise TypeError("news service returned a non-mapping")
         except Exception as exc:
             logger.exception("News context failed; cards are unaffected", extra={"event": "news_context_failed"})
-            found = {symbol: unavailable_block(self.config.news, type(exc).__name__) for symbol in wanted}
+            # Keyed like the service's own blocks, so a lower-case or padded contract still finds its block.
+            found = {
+                symbol.strip().upper(): unavailable_block(self.config.news, type(exc).__name__) for symbol in wanted
+            }
         for index, (candidate, _det, _risk) in enumerate(ranked):
-            if candidate.contract in wanted:
+            # A drift card sharing a native candidate's symbol still gets no block.
+            if candidate.contract in wanted and getattr(candidate, "catalog_event", None) is None:
                 blocks[index] = found.get(candidate.contract.strip().upper())
         return blocks
 

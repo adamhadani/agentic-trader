@@ -807,7 +807,7 @@ def test_rows_flatten_the_news_block_and_absent_blocks():
     assert set(summary["by_alignment"]) == {"aligned", "opposed", "neutral", "none"}
     aligned = summary["by_alignment"]["aligned"]
     assert aligned["n"] == 2 and isinstance(aligned["mean_r_cost"], float) and 0 <= aligned["hit_rate"] <= 1
-    assert summary["by_alignment"]["none"]["n"] == 2
+    assert summary["by_alignment"]["none"]["n"] == 1  # NVDA (unscored); TSLA has no block and is excluded
     assert summary["by_tone"]["positive"]["n"] == 1 and summary["by_tone"]["negative"]["n"] == 1
 
 

@@ -20,7 +20,7 @@ def test_defaults_match_the_spec():
     cfg = NewsConfig()
     assert cfg.enabled is True
     assert (cfg.window_hours, cfg.max_items_per_symbol, cfg.max_symbols_per_item) == (48, 12, 5)
-    assert (cfg.max_scored_per_scan, cfg.max_headlines_recorded, cfg.max_headline_chars) == (6, 5, 110)
+    assert (cfg.max_scored_per_scan, cfg.max_headlines_recorded) == (6, 5)
     assert (cfg.chunk_size, cfg.max_items_per_fetch, cfg.max_requests_per_minute) == (50, 1000, 100)
     assert (cfg.fetch_timeout_seconds, cfg.score_timeout_seconds, cfg.model) == (15.0, 20.0, None)
     assert AppConfig().news == cfg
