@@ -10,12 +10,14 @@ import pytest
 import agentic_trader.research.setups.outcomes as outcomes_module
 from agentic_trader.research.setups.labels import BracketHit
 from agentic_trader.research.setups.outcomes import (
+    _COLUMNS,
     DEFAULT_COST_BPS_PER_SIDE,
     DEFAULT_MAX_HOLD_SESSIONS,
     FETCH_FAILED_HIT,
     MARKET_PROXY_SYMBOL,
     label_journaled,
     market_r,
+    news_alignment,
     summarize,
 )
 
@@ -734,3 +736,90 @@ def test_book_sizing_summary_without_any_status_and_on_an_empty_frame():
     bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
     older = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW)
     assert summarize(older)["book_sizing"] == empty
+
+
+def _frame_for(candidates):
+    target_bars = _bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.5, 100.8, 100.2, 100.6),
+            ("2026-03-02T15:00:00+00:00", 100.6, 102.5, 100.3, 102.0),
+        ]
+    )
+    bars = FakeBarSource({c["contract"]: target_bars for c in candidates})
+    return label_journaled([_event("scan-1", DECIDED_AT, candidates)], bars, now=NOW)
+
+
+def _news(status="ok", tone="positive", catalyst="earnings", n_items=3):
+    return {
+        "status": status,
+        "as_of": DECIDED_AT.isoformat(),
+        "window_hours": 48,
+        "n_items": n_items,
+        "n_market_wide": 0,
+        "truncated": False,
+        "headlines": [],
+        "score": {"tone": tone, "relevance": "company", "catalyst": catalyst, "one_line": "x"}
+        if status == "ok"
+        else None,
+        "model": "m" if status == "ok" else None,
+        "prompt_sha256": "a" * 64 if status == "ok" else None,
+        "error_type": None,
+        "page_sha256": "p",
+        "applied": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("direction", "tone", "expected"),
+    [
+        ("LONG", "positive", "aligned"),
+        ("LONG", "negative", "opposed"),
+        ("SHORT", "negative", "aligned"),
+        ("SHORT", "positive", "opposed"),
+        ("LONG", "neutral", "neutral"),
+        ("LONG", None, "none"),
+        (None, "positive", "none"),
+    ],
+)
+def test_news_alignment(direction, tone, expected):
+    assert news_alignment(direction, tone) == expected
+
+
+def test_rows_flatten_the_news_block_and_absent_blocks():
+    candidates = [
+        _candidate(contract="AAPL", rank=1) | {"news": _news()},
+        _candidate(contract="MSFT", rank=2, direction="SHORT", stop=101.0, target=98.0, outcome="runner_up")
+        | {"news": _news(tone="negative", catalyst="guidance")},
+        _candidate(contract="NVDA", rank=3, outcome="runner_up") | {"news": _news(status="unscored")},
+        _candidate(contract="TSLA", rank=4, outcome="runner_up"),
+    ]
+    frame = _frame_for(candidates)  # see note below
+    by = frame.set_index("contract")
+    assert by.loc["AAPL", "news_status"] == "ok" and by.loc["AAPL", "news_tone"] == "positive"
+    assert by.loc["AAPL", "news_alignment"] == "aligned" and by.loc["AAPL", "news_catalyst"] == "earnings"
+    assert by.loc["MSFT", "news_alignment"] == "aligned" and by.loc["MSFT", "news_n_items"] == 3
+    assert by.loc["NVDA", "news_status"] == "unscored" and by.loc["NVDA", "news_alignment"] == "none"
+    assert by.loc["TSLA", "news_status"] == "absent" and by.loc["TSLA", "news_alignment"] == "none"
+    assert pd.isna(by.loc["TSLA", "news_n_items"])
+    summary = summarize(frame)["news_context"]
+    assert summary["blocks"] == 3 and summary["by_status"] == {"ok": 2, "unscored": 1}
+    assert summary["scored"] == 2 and summary["by_catalyst"] == {"earnings": 1, "guidance": 1}
+    assert set(summary["by_alignment"]) == {"aligned", "opposed", "neutral", "none"}
+    aligned = summary["by_alignment"]["aligned"]
+    assert aligned["n"] == 2 and isinstance(aligned["mean_r_cost"], float) and 0 <= aligned["hit_rate"] <= 1
+    assert summary["by_alignment"]["none"]["n"] == 2
+    assert summary["by_tone"]["positive"]["n"] == 1 and summary["by_tone"]["negative"]["n"] == 1
+
+
+def test_summary_empty_frame_carries_the_news_block():
+    summary = summarize(pd.DataFrame(columns=_COLUMNS))
+    assert summary["news_context"] == {
+        "blocks": 0,
+        "by_status": {},
+        "scored": 0,
+        "by_alignment": {
+            k: {"n": 0, "mean_r_cost": None, "hit_rate": None} for k in ("aligned", "opposed", "neutral", "none")
+        },
+        "by_tone": {},
+        "by_catalyst": {},
+    }
