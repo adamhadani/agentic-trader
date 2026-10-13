@@ -10,7 +10,6 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_trader.data.news import (
-    SDK_PAGE_CAP,
     AlpacaNewsSource,
     NewsItem,
     NewsPage,
@@ -73,9 +72,9 @@ class FakeClient:
         if self.fail_on is not None and self.fail_on in key:
             raise RuntimeError("provider down")
         rows = self.pages_by_chunk[key]
-        response = {"news": rows, "next_page_token": "more" if key in self.token_for else None}
-        self.observer(SimpleNamespace(response=response))
-        return response
+        token = "more" if key in self.token_for else None
+        self.observer(SimpleNamespace(response={"news": rows, "next_page_token": token}))
+        return {"news": rows}
 
 
 def test_source_chunks_symbols_dedupes_items_and_records_page_evidence():
@@ -91,15 +90,14 @@ def test_source_chunks_symbols_dedupes_items_and_records_page_evidence():
     assert page.truncated is False and page.requested_at == page.received_at == NOW
 
 
-def test_source_marks_truncation_from_a_page_token_or_the_cap():
+def test_source_marks_truncation_from_the_last_observed_page_token():
     client = FakeClient({("AAPL",): [row(1, "A", ["AAPL"])]}, token_for={("AAPL",)})
     assert AlpacaNewsSource(client, max_items=100, clock=lambda: NOW).fetch(["AAPL"], NOW, NOW).truncated is True
     many = [row(i, "A", ["AAPL"]) for i in range(100)]
-    client = FakeClient({("AAPL",): many})
-    assert AlpacaNewsSource(client, max_items=100, clock=lambda: NOW).fetch(["AAPL"], NOW, NOW).truncated is True
+    client = FakeClient({("AAPL",): many})  # exactly max_items rows, no token left: complete
+    assert AlpacaNewsSource(client, max_items=100, clock=lambda: NOW).fetch(["AAPL"], NOW, NOW).truncated is False
     client = FakeClient({("AAPL",): many})
     assert AlpacaNewsSource(client, max_items=None, clock=lambda: NOW).fetch(["AAPL"], NOW, NOW).truncated is False
-    assert SDK_PAGE_CAP == 2500
 
 
 def test_source_sends_limit_none_when_unbounded():

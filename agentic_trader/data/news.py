@@ -20,7 +20,6 @@ from agentic_trader.data.pacing import RequestPacer
 
 
 __all__ = [
-    "SDK_PAGE_CAP",
     "AlpacaNewsSource",
     "NewsItem",
     "NewsPage",
@@ -29,9 +28,6 @@ __all__ = [
     "normalize_news",
     "select_items",
 ]
-
-# alpaca-py's ``_get_marketdata`` follows at most 50 pages of 50 items when ``limit`` is None.
-SDK_PAGE_CAP = 2500
 
 
 class NewsItem(BaseModel):
@@ -96,9 +92,12 @@ class AlpacaNewsSource:
     """Blocking source over a raw-data ``BoundedNewsClient``; callers offload it to a thread.
 
     Symbols are requested in chunks as the comma-joined string the SDK expects. ``max_items`` is the
-    SDK ``limit``, a cap on the whole paginated result of one request; ``None`` follows every page
-    up to the SDK's own 50-page cap. A chunk is ``truncated`` when the provider still had a page
-    token or the chunk filled its cap. A failed chunk fails the whole fetch.
+    SDK ``limit``: the SDK pages (50 items per request) until that many items arrived or the provider
+    has no more. ``None`` is full pagination: the SDK follows every page until the token is exhausted
+    (an unbounded request count), so research callers pass a numeric cap and split windows on
+    truncation. The SDK's aggregated result drops ``next_page_token``, so truncation is read from the
+    last raw page seen by the response observer: a chunk is ``truncated`` when that page still
+    carried a token. A failed chunk fails the whole fetch.
     """
 
     def __init__(
@@ -130,10 +129,11 @@ class AlpacaNewsSource:
         digests: list[str] = []
         rows: list[Mapping[str, Any]] = []
         truncated = False
-        cap = self.max_items if self.max_items is not None else SDK_PAGE_CAP
+        last_token: list[Any] = [None]
 
         def observe(page: Any) -> None:
             digests.append(_page_digest(page.response))
+            last_token[0] = page.response.get("next_page_token")
 
         for index in range(0, len(ordered), self.chunk_size):
             chunk = ordered[index : index + self.chunk_size]
@@ -147,13 +147,14 @@ class AlpacaNewsSource:
                 include_content=False,
                 limit=self.max_items,
             )
+            last_token[0] = None
             with self.client.observe_responses(observe):
                 data = self.client.get_news(request)
             if not isinstance(data, Mapping):
                 raise TypeError("News response is not a mapping; construct the client with raw_data=True")
             chunk_rows = list(data.get("news") or [])
             rows.extend(chunk_rows)
-            if data.get("next_page_token") or len(chunk_rows) >= cap:
+            if last_token[0]:
                 truncated = True
         return NewsPage(
             items=normalize_news(rows),
