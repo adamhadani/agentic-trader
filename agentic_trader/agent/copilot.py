@@ -27,10 +27,11 @@ from agentic_trader.agent.earnings import (
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.macro_explainer import MacroExplainer
+from agentic_trader.agent.news_context import NewsContextService, build_news_context_service, unavailable_block
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
-from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live
+from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live, news_live
 from agentic_trader.constants import (
     BROKER_PRICE_TOLERANCE,
     BROKER_QUANTITY_TOLERANCE,
@@ -264,6 +265,7 @@ class TradingCopilot:
         earnings_drift: EarningsDriftService | None = None,
         card_stats: CardStatsRepository | None = None,
         corporate_actions: CorporateActionsStore | None = None,
+        news_context: NewsContextService | None = None,
         book_sizer: BookSizer | None = None,
         bar_source: AlpacaDataProvider | None = None,
     ):
@@ -302,6 +304,12 @@ class TradingCopilot:
             corporate_actions
             if corporate_actions is not None
             else CorporateActionsStore(self.db.workflows, max_actions=config.corporate_actions.max_actions)
+        )
+        # News as measured context (docs/news-context.md): a per-scan fetch and scorer, None when off or without keys.
+        self.news_context: NewsContextService | None = (
+            news_context
+            if news_context is not None
+            else (build_news_context_service(config) if news_live(config) else None)
         )
         # Book-aware sizing: the sizer asks for its raw-bar provider only when a scan needs bars
         # outside its own datasets, so construction (and every dry run) never builds a client.
@@ -637,6 +645,12 @@ class TradingCopilot:
             "setup_quality": cls._setup_quality(candidate),
             "reason": reason,
         }
+
+    @staticmethod
+    def _news_block(evaluation: Any) -> dict[str, Any] | None:
+        """The evaluation's news block as recorded (already JSON-safe), or None when the scan computed none."""
+        block = getattr(evaluation, "news_context", None)
+        return dict(block) if isinstance(block, dict) else None
 
     @staticmethod
     def _llm_block(evaluation: Any) -> dict[str, Any] | None:
@@ -1233,6 +1247,8 @@ class TradingCopilot:
                 else None
                 for (candidate, _det_res, _account_risk), evidence in zip(ranked, evidence_by_rank, strict=True)
             ]
+            # NEWS CONTEXT: one fetch per scan, before the send loop, for every ranked equity candidate.
+            news_by_rank = await self._news_blocks(ranked)
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
             if budget == ScanBudget.NONE:
@@ -1348,6 +1364,7 @@ class TradingCopilot:
                         current_drawdown_pct=float(account_risk.drawdown_pct) if account_risk else 0.0,
                         current_equity=float(account_risk.equity) if account_risk else None,
                         corporate_actions=corporate_lookup,
+                        news_context=news_by_rank[rank - 1],
                     )
 
                     llm_by_rank[rank - 1] = self._llm_block(eval_res)
@@ -1453,6 +1470,7 @@ class TradingCopilot:
                             "llm_verdict": llm_by_rank[rank - 1],
                             "book_sizing": book_block,
                             "corporate_actions": eval_res.corporate_actions,
+                            "news": self._news_block(eval_res),
                             **evidence_keys,
                             # A drift card is never tagged dynamic; catalog admission requires
                             # its same-session event naming the contract.
@@ -1574,6 +1592,7 @@ class TradingCopilot:
                     outcomes=outcomes[:native_count],
                     shadow_by_rank=shadow_by_rank[:native_count],
                     llm_by_rank=llm_by_rank[:native_count],
+                    news_by_rank=news_by_rank[:native_count],
                     signal_ids_by_rank=signal_ids_by_rank[:native_count],
                     card_policy_by_rank=policy_by_rank[:native_count],
                     book_by_rank=book_by_rank[:native_count],
@@ -1833,6 +1852,7 @@ class TradingCopilot:
         outcomes: list[str | None],
         shadow_by_rank: list[dict[str, Any] | None],
         llm_by_rank: list[dict[str, Any] | None],
+        news_by_rank: list[dict[str, Any] | None],
         signal_ids_by_rank: list[int | None],
         card_policy_by_rank: list[CardPolicyDecision | None],
         book_by_rank: list[BookSizingDecision | None],
@@ -1858,6 +1878,7 @@ class TradingCopilot:
                     "outcome": outcomes[rank - 1],
                     "shadow": shadow_by_rank[rank - 1],
                     "llm": llm_by_rank[rank - 1],
+                    "news": news_by_rank[rank - 1],
                     "signal_id": signal_ids_by_rank[rank - 1],
                     "card_policy": journal_block(card_policy_by_rank[rank - 1], policy.mode),
                     "book_sizing": self.book_sizer.journal_block(book_by_rank[rank - 1]),
@@ -3130,6 +3151,35 @@ class TradingCopilot:
             return None
         rounded = round_to_tick(price, tick_size)
         return rounded if rounded > 0 else None
+
+    async def _news_blocks(self, ranked: list[tuple[Any, Any, Any]]) -> list[dict[str, Any] | None]:
+        """One news block per ranked equity candidate (drift and futures candidates get None); never raises.
+
+        One fetch per scan; scoring follows rank order up to ``news.max_scored_per_scan``. Any failure
+        of the step yields ``unavailable`` blocks carrying the exception type name only.
+        """
+        blocks: list[dict[str, Any] | None] = [None] * len(ranked)
+        service = self.news_context
+        if service is None or not ranked:
+            return blocks
+        wanted = [
+            candidate.contract
+            for candidate, _det, _risk in ranked
+            if "/" not in candidate.contract and getattr(candidate, "catalog_event", None) is None
+        ]
+        if not wanted:
+            return blocks
+        try:
+            found = await service.for_symbols(wanted, score_first=self.config.news.max_scored_per_scan)
+            if not isinstance(found, dict):
+                raise TypeError("news service returned a non-mapping")
+        except Exception as exc:
+            logger.exception("News context failed; cards are unaffected", extra={"event": "news_context_failed"})
+            found = {symbol: unavailable_block(self.config.news, type(exc).__name__) for symbol in wanted}
+        for index, (candidate, _det, _risk) in enumerate(ranked):
+            if candidate.contract in wanted:
+                blocks[index] = found.get(candidate.contract.strip().upper())
+        return blocks
 
     async def _corporate_actions_lookup(self, now: datetime) -> CorporateActionsLookup | None:
         """The latest capture as one frozen read; None when the feature is off; a read failure is ``unavailable``."""
