@@ -109,3 +109,11 @@ async def test_rejects_empty_symbols_and_inverted_windows(tmp_path):
         await fetch_news_cached(FakeSource({}), [" "], date(2024, 3, 1), date(2024, 3, 2), tmp_path, pace=_noop)
     with pytest.raises(ValueError):
         await fetch_news_cached(FakeSource({}), ["AAPL"], date(2024, 3, 2), date(2024, 3, 1), tmp_path, pace=_noop)
+
+
+async def test_garbage_cache_is_unreadable(tmp_path):
+    source = FakeSource({"AAPL": [at(1, 1, "AAPL")]})
+    _, manifest = await fetch_news_cached(source, ["AAPL"], date(2024, 3, 1), date(2024, 3, 1), tmp_path, pace=_noop)
+    (tmp_path / "news" / f"{manifest['request_sha256']}.json.gz").write_bytes(b"not gzip at all")
+    with pytest.raises(ValueError, match="unreadable"):
+        await fetch_news_cached(source, ["AAPL"], date(2024, 3, 1), date(2024, 3, 1), tmp_path, pace=_noop)

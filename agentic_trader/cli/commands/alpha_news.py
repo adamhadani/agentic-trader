@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import os
 from pathlib import Path
 
 import click
@@ -18,6 +19,12 @@ from agentic_trader.research.news import build_news_source, fetch_news_cached
 
 async def _noop_pace() -> None:
     return None
+
+
+def _write_private(path: Path, payload: bytes) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
 
 
 @click.command("news")
@@ -57,6 +64,6 @@ async def news_cmd(symbols, cohort: Path | None, start, end, cache: Path, output
     manifest["environment"] = await asyncio.to_thread(research_environment)
     output.mkdir(mode=0o700, parents=True)
     rows = [item.model_dump(mode="json") for item in items]
-    (output / "news.json.gz").write_bytes(gzip.compress(json.dumps(rows, sort_keys=True).encode()))
-    (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str))
+    _write_private(output / "news.json.gz", gzip.compress(json.dumps(rows, sort_keys=True).encode()))
+    _write_private(output / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True, default=str).encode())
     click.echo(f"{len(items)} news items for {len(manifest['symbols'])} symbols; {output / 'manifest.json'}")

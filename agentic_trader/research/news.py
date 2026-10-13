@@ -14,6 +14,7 @@ import gzip
 import hashlib
 import json
 import os
+import zlib
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
@@ -78,8 +79,10 @@ def _write_private(path: Path, payload: bytes) -> None:
 def _load_cached(path: Path) -> dict[str, Any]:
     try:
         document = json.loads(gzip.decompress(path.read_bytes()))
-    except (OSError, EOFError, json.JSONDecodeError) as exc:
+    except (OSError, EOFError, zlib.error, json.JSONDecodeError) as exc:
         raise ValueError(f"News cache {path.name} is unreadable: {type(exc).__name__}") from None
+    if not isinstance(document, dict):
+        raise ValueError(f"News cache {path.name} is unreadable: not a JSON object")  # noqa: TRY004
     missing = [key for key in ("items", "content_sha256", "requested_at", "received_at") if key not in document]
     if missing:
         raise ValueError(f"News cache {path.name} is missing {', '.join(missing)}")

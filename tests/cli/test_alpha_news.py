@@ -54,6 +54,8 @@ def test_command_writes_items_and_manifest(tmp_path, monkeypatch):
     assert len(items) == 2 and manifest["count"] == 2 and manifest["symbols"] == ["AAPL", "NVDA", "PXD", "XOM"]
     assert manifest["request_sha256"] and manifest["content_sha256"] and "environment" in manifest
     assert "2 news items" in result.output
+    for name in ("news.json.gz", "manifest.json"):
+        assert oct((output / name).stat().st_mode & 0o777) == "0o600"
     assert oct(output.stat().st_mode & 0o777) == "0o700"
     assert oct((tmp_path / "cache" / "news").stat().st_mode & 0o777) == "0o700"
 
