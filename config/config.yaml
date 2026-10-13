@@ -505,3 +505,17 @@ alpha_pipeline:
     poll_seconds: 30
     max_candidates: 12
     max_decisions_per_poll: 128
+
+# Corporate actions (docs/corporate-actions.md): daily capture, entry rule mode. `enforce` is an operator decision.
+corporate_actions:
+  enabled: true
+  entry_block: "preview"
+
+# News as measured context (docs/news-context.md): one bounded fetch per scan without a timeframe (the
+# scheduled universe scans, operator /scan, scan --dry-run; never the intraday job), LLM tone for the
+# first `max_scored_per_scan` ranked symbols (none on --no-llm scans); a card line and journal block,
+# never a gate.
+news:
+  enabled: true
+  window_hours: 48
+  max_scored_per_scan: 6

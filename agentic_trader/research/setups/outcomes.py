@@ -82,6 +82,12 @@ _COLUMNS = (
     "book_sizing_status",
     "book_factor",
     "book_would_scale",
+    "news_status",
+    "news_n_items",
+    "news_tone",
+    "news_catalyst",
+    "news_relevance",
+    "news_alignment",
     "market_r",
     "excess_r",
     "market_reason",
@@ -219,6 +225,19 @@ def _would_withhold(entry: dict[str, Any]) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+NEWS_ALIGNMENTS = ("aligned", "opposed", "neutral", "none")
+
+
+def news_alignment(direction: str | None, tone: str | None) -> str:
+    """Deterministic direction x tone bucket; the scorer never sees the direction."""
+    if tone not in {"positive", "negative", "neutral"} or direction not in {"LONG", "SHORT"}:
+        return "none"
+    if tone == "neutral":
+        return "neutral"
+    bullish = tone == "positive"
+    return "aligned" if bullish == (direction == "LONG") else "opposed"
+
+
 def _mean_r_cost(rows: pd.DataFrame) -> float | None:
     if rows.empty:
         return None
@@ -245,6 +264,10 @@ def _row(
     raw_book = entry.get("book_sizing")
     book: dict[str, Any] = raw_book if isinstance(raw_book, dict) else {}
     llm = entry.get("llm") if isinstance(entry.get("llm"), dict) else None
+    raw_news = entry.get("news")
+    news: dict[str, Any] = raw_news if isinstance(raw_news, dict) else {}
+    raw_score = news.get("score")
+    score: dict[str, Any] = raw_score if isinstance(raw_score, dict) else {}
     decided_at = entry["decided_at"]
     outcome = entry.get("outcome")
     return {
@@ -278,6 +301,12 @@ def _row(
         "book_sizing_status": book.get("status"),
         "book_factor": book.get("factor"),
         "book_would_scale": book.get("would_scale"),
+        "news_status": news.get("status") if news else "absent",
+        "news_n_items": news.get("n_items") if news else None,
+        "news_tone": score.get("tone"),
+        "news_catalyst": score.get("catalyst"),
+        "news_relevance": score.get("relevance"),
+        "news_alignment": news_alignment(entry.get("direction"), score.get("tone")),
         "market_r": market_value,
         "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
         "market_reason": market_reason,
@@ -519,6 +548,43 @@ def _book_sizing_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str,
     }
 
 
+def _news_bucket(rows: pd.DataFrame) -> dict[str, Any]:
+    if rows.empty:
+        return {"n": 0, "mean_r_cost": None, "hit_rate": None}
+    hits = rows["hit"] == BracketHit.TARGET.value
+    return {"n": len(rows), "mean_r_cost": _mean_r_cost(rows), "hit_rate": float(hits.mean())}
+
+
+def _with_news_block(rows: pd.DataFrame) -> pd.DataFrame:
+    """Rows whose candidate carried a news block (any status); pre-deploy history and futures are ``absent``."""
+    return rows.loc[rows["news_status"].notna() & (rows["news_status"] != "absent")]
+
+
+def _news_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
+    """The descriptive ``news_context`` block.
+
+    ``blocks``, ``by_status``, ``scored`` and ``by_catalyst`` count every row with a block, mature or not.
+    ``by_alignment`` and ``by_tone`` use mature rows with a block only, so ``none`` counts ``no_news``,
+    ``unscored``, ``score_failed`` and ``unavailable`` rows, never rows without a block.
+    """
+    present = _with_news_block(frame)
+    by_status = {str(k): int(v) for k, v in present["news_status"].value_counts().items()} if len(present) else {}
+    catalysts = present["news_catalyst"].dropna() if len(present) else pd.Series(dtype=object)
+    by_catalyst = {str(k): int(v) for k, v in catalysts.value_counts().items()} if len(catalysts) else {}
+    measured = _with_news_block(mature)
+    tones = measured["news_tone"].dropna()
+    return {
+        "blocks": len(present),
+        "by_status": by_status,
+        "scored": int((present["news_status"] == "ok").sum()) if len(present) else 0,
+        "by_alignment": {key: _news_bucket(measured.loc[measured["news_alignment"] == key]) for key in NEWS_ALIGNMENTS},
+        "by_tone": {
+            str(tone): _news_bucket(measured.loc[measured["news_tone"] == tone]) for tone in sorted(tones.unique())
+        },
+        "by_catalyst": by_catalyst,
+    }
+
+
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     """Counts by outcome/maturity, base rates, per-scan selection quality by scorer and card-policy counts."""
     if frame.empty:
@@ -553,6 +619,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
                 "would_withhold_mean_r_cost": None,
             },
             "book_sizing": _book_sizing_summary(frame, frame),
+            "news_context": _news_summary(frame, frame),
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -651,4 +718,5 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "market_exposure": market_exposure,
         "card_policy": card_policy,
         "book_sizing": _book_sizing_summary(frame, mature),
+        "news_context": _news_summary(frame, mature),
     }

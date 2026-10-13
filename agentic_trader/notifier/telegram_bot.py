@@ -172,6 +172,64 @@ def _corporate_action_line(block: dict[str, Any] | None, *, markup: bool) -> str
     return (html.escape(text) if markup else text) + "\n"
 
 
+NEWS_LABEL = "📰 News (context, not a gate): "
+NEWS_HEADLINE_CHARS = 110  # the card clips headlines at a fixed width; not configurable
+
+
+def _age(created_at: str, now: datetime) -> str:
+    try:
+        seconds = (now - datetime.fromisoformat(created_at)).total_seconds()
+    except TypeError, ValueError:
+        return "recent"
+    hours = max(int(seconds // 3600), 0)
+    return f"{hours // 24}d ago" if hours >= 24 else f"{hours}h ago"
+
+
+def _clip(text: str, limit: int) -> str:
+    collapsed = " ".join(str(text).split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
+
+
+def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | None = None) -> str:
+    """The news context line, newline-terminated; empty without a block or for an unknown status.
+
+    One line per card, always labelled as context. Text from the provider or the LLM is
+    whitespace-collapsed, clipped and HTML-escaped for the Telegram renderer.
+    """
+    if not block or not isinstance(block, dict):
+        return ""
+    status = block.get("status")
+    window = block.get("window_hours")
+    n_items = block.get("n_items")
+    error_type = block.get("error_type")
+    headlines = block.get("headlines")
+    entries = headlines if isinstance(headlines, list) else []
+    latest = next((entry for entry in entries if isinstance(entry, dict)), None)
+    latest_text = ""
+    if latest is not None:
+        age = _age(str(latest.get("created_at")), now or datetime.now(UTC))
+        latest_text = f' · latest "{_clip(str(latest.get("headline", "")), NEWS_HEADLINE_CHARS)}" ({latest.get("source", "?")}, {age})'
+    if status == "ok" and isinstance(block.get("score"), dict):
+        score = block["score"]
+        text = (
+            f"{n_items} items/{window}h · tone {score.get('tone')} · {score.get('catalyst')} "
+            f'· "{_clip(str(score.get("one_line", "")), 160)}"{latest_text}'
+        )
+    elif status == "unscored":
+        text = f"{n_items} items/{window}h · not scored{latest_text}"
+    elif status == "no_news":
+        text = f"none in {window}h"
+    elif status == "score_failed":
+        text = f"{n_items} items/{window}h · scoring failed ({error_type or 'unknown'})"
+    elif status == "unavailable":
+        text = f"unavailable ({error_type})" if error_type else "unavailable"
+    else:
+        return ""
+    if block.get("truncated"):
+        text += " · feed truncated"
+    return NEWS_LABEL + (html.escape(text, quote=False) if markup else text) + "\n"
+
+
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
@@ -307,6 +365,7 @@ def format_alert_card(
         _evidence_block(card_evidence, strategy, eval_res, markup=True)
         + _book_line(book_sizing, markup=True)
         + _corporate_action_line(eval_res.corporate_actions, markup=True)
+        + _news_line(eval_res.news_context, markup=True)
     )
 
     # Using HTML formatting for rock-solid reliability with special characters
@@ -452,6 +511,7 @@ def format_terminal_card(
         _evidence_block(card_evidence, strategy, eval_res, markup=False)
         + _book_line(book_sizing, markup=False)
         + _corporate_action_line(eval_res.corporate_actions, markup=False)
+        + _news_line(eval_res.news_context, markup=False)
     )
 
     border = "=" * 65

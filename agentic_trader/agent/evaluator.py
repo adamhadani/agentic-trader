@@ -55,6 +55,8 @@ from agentic_trader.screeners.base import ScreenerCandidate
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from agentic_trader.data.market_data import MarketDataFetcher
 
 
@@ -115,6 +117,8 @@ class LLMTradeEvaluation(BaseModel):
     session_type: str = "RTH"
     earnings_note: str | None = None
     corporate_actions: dict[str, Any] | None = None  # the scan's corporate-action block (docs/corporate-actions.md)
+    # The scan's news block (docs/news-context.md): labelled context on the card and in the journal, never read as a gate.
+    news_context: dict[str, Any] | None = None
     # Every parsed LLM answer: approved/rejection_reason, the bracket as it would be
     # applied, and whether the verdict decided the card (native) or is commentary (catalog).
     llm_verdict: dict[str, Any] | None = None
@@ -364,6 +368,7 @@ class RiskEvaluator:
         current_drawdown_pct: float = 0.0,
         current_equity: float | None = None,
         corporate_actions: CorporateActionsLookup | None = None,
+        news_context: Mapping[str, Any] | None = None,
     ) -> LLMTradeEvaluation:
         """Size the candidate, run the deterministic gates, then (optionally) the LLM.
 
@@ -569,6 +574,7 @@ class RiskEvaluator:
         # 2c. Corporate actions (agentic_trader.risk.corporate_action_block; equities only). A missing
         # or stale capture, or one that never requested this symbol ("uncovered"), never refuses;
         # preview annotates; enforce refuses a structural action.
+        news_block = dict(news_context) if news_context is not None else None
         corporate_block: dict[str, Any] | None = None
         corporate_policy = self.config.corporate_actions
         if asset_class == AssetClass.EQUITY and corporate_actions is not None and corporate_policy.entry_block != "off":
@@ -708,6 +714,7 @@ class RiskEvaluator:
                 asset_class=asset_class,
                 earnings_note=earnings_note_value,
                 corporate_actions=corporate_block,
+                news_context=news_block,
             )
 
         # 3. Call LLM for final reasoning & thesis synthesis
@@ -847,6 +854,7 @@ class RiskEvaluator:
             # The corporate-action block is attached below; a malformed key in the reply must not
             # fail validation and turn an LLM veto into the fallback approval.
             data.pop("corporate_actions", None)
+            data.pop("news_context", None)  # attached below from the scan's block; never taken from the reply
             applied = candidate.catalog_event is None
             data["llm_verdict"] = {
                 "approved": _explicit_true(data.get("approved")),
@@ -864,7 +872,11 @@ class RiskEvaluator:
             # Never ask the LLM for the earnings note (prompt/schema stay untouched);
             # attach it deterministically after the LLM result is parsed.
             evaluation = LLMTradeEvaluation(**data).model_copy(
-                update={"earnings_note": earnings_note_value, "corporate_actions": corporate_block}
+                update={
+                    "earnings_note": earnings_note_value,
+                    "corporate_actions": corporate_block,
+                    "news_context": news_block,
+                }
             )
             if applied and evaluation.llm_verdict is not None:
                 # Record exactly the decision taken, after pydantic's own bool parsing.
@@ -901,4 +913,5 @@ class RiskEvaluator:
                 session_type=current_session_type,
                 earnings_note=earnings_note_value,
                 corporate_actions=corporate_block,
+                news_context=news_block,
             )
