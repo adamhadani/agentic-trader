@@ -23,7 +23,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.apriori.pead_events import _atr, _by_session
+from agentic_trader.research.apriori.pead_events import atr_through, by_session
 from agentic_trader.screeners.dynamic_universe import median_dollar_volume, static_reference
 
 
@@ -202,7 +202,7 @@ def point_in_time_eligibility(
 
     raw_slicers = {s: _DailySlicer(f) for s, f in raw.items() if f is not None and not f.empty}
     static_slicers = {s: _DailySlicer(f) for s, f in static_raw.items() if f is not None and not f.empty}
-    keyed = {s: _by_session(f) for s, f in adjusted.items() if f is not None and not f.empty}
+    keyed = {s: by_session(f) for s, f in adjusted.items() if f is not None and not f.empty}
 
     for row, i in enumerate(rows):
         if progress is not None and row and row % _PROGRESS_SESSIONS == 0:
@@ -235,7 +235,7 @@ def point_in_time_eligibility(
             if volume < ref.value:
                 reasons["illiquid_volume"] += 1
                 continue
-            value = _atr(adj, days, i - 1, atr_window)
+            value = atr_through(adj, days, i - 1, atr_window)
             if value is None:
                 reasons["no_atr"] += 1
                 continue

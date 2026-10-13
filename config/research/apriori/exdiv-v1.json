@@ -1,0 +1,66 @@
+{
+  "id": "exdiv",
+  "version": 1,
+  "title": "Pre-ex-dividend run-up: regular quarterly payers in the five sessions before the ex-date",
+  "references": [
+    "Hartzmark and Solomon (2013), The Dividend Month Premium, Journal of Financial Economics",
+    "Lakonishok and Vermaelen (1986), Tax-Induced Trading Around Ex-Dividend Days",
+    "Kalay (1982), The Ex-Dividend Day Behavior of Stock Prices: A Re-Examination of the Clientele Effect",
+    "Elton and Gruber (1970), Marginal Stockholder Tax Rates and the Clientele Effect"
+  ],
+  "hypotheses": "LONG only, over decisions 2016-08-01..2026-07-31 on the frozen 127-name research cohort (config/research/spread/cohort-v1.json): for a non-special cash dividend whose previous non-special ex-date of the same name lies 77..105 calendar days earlier and with no other corporate action for the name within 10 calendar days of the decision-to-ex span, enter at 10:35 New York five sessions before the ex-date (2 x ATR14 stop, 3R target, liquidity gate on raw bars as of the session before) and exit at the close of the last cum-dividend session unless the stop or target fills first; 5 bps per side decides. Control = the same name, same bracket and hold, decided 32 sessions after the leg's decision (mid-quarter), dropped when any ex-date of the name falls within one session of its span or a corporate action is nearby. P1: mean R_cost > 0 with the bootstrap ci90 lower bound > 0. P2: mean R_cost(leg) - mean R_cost(control) > 0 with the paired ci90 lower bound > 0, pairs keyed by the leg's decision session. P3: the 1%-trimmed mean > 0 and the mean over decisions from 2023-01-01 > 0. P4: at least 300 leg events, at least 100 from 2023-01-01. Stationary session-block bootstrap over leg decision sessions, block mean 10, 2000 draws, seed 20261012; ci90 = [5th, 95th] percentiles. See docs/superpowers/specs/2026-10-12-exdiv-leg-design.md.",
+  "decision_rule": "The leg becomes eligible for a capped live paper probe (its own spec) only if P1, P2, P3 and P4 all hold; otherwise it stays off and is recorded as failed. No threshold, lead, offset, gap band or bracket is revisited after the run; any change is a new version with a new, non-overlapping window. The secondary 10-session hold (crossing the ex-date on adjusted bars) is a descriptive diagnostic and decides nothing.",
+  "window": {
+    "decisions": [
+      "2016-08-01",
+      "2026-07-31"
+    ],
+    "bars_through": "2026-10-01",
+    "recent_from": "2023-01-01"
+  },
+  "actions_window": [
+    "2016-01-01",
+    "2026-12-01"
+  ],
+  "cohort": "config/research/spread/cohort-v1.json",
+  "cohort_sha256": "6f3a4a322d6333845b75208af71d3a81f46d5cc882ce110d870b6349ae3adbea",
+  "feed": "alpaca:sip",
+  "adjustment": "all",
+  "event": {
+    "min_gap_days": 77,
+    "max_gap_days": 105,
+    "exclude_special": true,
+    "structural_exclusion_days": 10
+  },
+  "universe": {
+    "min_price": 10.0,
+    "dollar_volume_window": 20,
+    "static_percentile": 0.25,
+    "liquidity_adjustment": "raw"
+  },
+  "trade": {
+    "decision_time_et": "10:35",
+    "entry_lead_sessions": 5,
+    "control_offset_sessions": 32,
+    "stop_atr_multiple": 2.0,
+    "atr_window": 14,
+    "target_r": 3.0,
+    "secondary_hold_sessions": 10
+  },
+  "costs_bps_per_side": [
+    0.0,
+    5.0,
+    10.0
+  ],
+  "decision_cost_bps": 5.0,
+  "bootstrap": {
+    "block_mean": 10,
+    "draws": 2000,
+    "seed": 20261012
+  },
+  "pass_rule": {
+    "min_events": 300,
+    "min_recent_events": 100,
+    "trim_fraction": 0.01
+  }
+}

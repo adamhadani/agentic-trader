@@ -26,7 +26,7 @@ import hashlib
 import math
 import os
 from collections import Counter, defaultdict
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -36,12 +36,12 @@ import pandas as pd
 
 from agentic_trader.agent.earnings import CalendarRow
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.apriori.catalog import LoadedEntry, PeadEntry
+from agentic_trader.research.apriori.catalog import ExdivEntry, LoadedEntry, PeadEntry
 from agentic_trader.research.apriori.earnings_history import CalendarAcquisition
 from agentic_trader.research.apriori.pead_events import MarketData, build_events
-from agentic_trader.research.setups.baserates import _ci90, _p_one_sided_positive, _weighted
+from agentic_trader.research.apriori.statistics import mean_test, paired_test, trimmed_mean
 from agentic_trader.research.setups.labels import BracketHit, SetupLevels, label_bracket
-from agentic_trader.research.setups.study import _finite_json, _stationary_index_draws
+from agentic_trader.research.setups.study import _finite_json
 from agentic_trader.screeners.coverage import REGULAR_SESSION_HOURS_NY
 from agentic_trader.storage.artifacts import save_json_report
 
@@ -53,6 +53,9 @@ __all__ = [
     "execute_pead_study",
     "label_events",
     "levels_for",
+    "save_frame",
+    "universe_summary",
+    "utc_index",
 ]
 
 _DIRECTIONS = ("LONG", "SHORT")
@@ -72,7 +75,7 @@ class PeadInputs:
     static_requested: tuple[str, ...]  # the configured static equities, before any bar failure
 
 
-def _utc_index(frame: pd.DataFrame) -> pd.DatetimeIndex:
+def utc_index(frame: pd.DataFrame) -> pd.DatetimeIndex:
     index = pd.DatetimeIndex(frame.index)
     return index.tz_localize("UTC") if index.tz is None else index
 
@@ -80,7 +83,7 @@ def _utc_index(frame: pd.DataFrame) -> pd.DatetimeIndex:
 def decision_price(hourly: pd.DataFrame, when: datetime) -> float | None:
     if hourly is None or hourly.empty:
         return None
-    index = _utc_index(hourly)
+    index = utc_index(hourly)
     local = index.tz_convert(ET_TZ)
     day = when.astimezone(ET_TZ).date()
     eligible = (
@@ -92,7 +95,7 @@ def decision_price(hourly: pd.DataFrame, when: datetime) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
-def levels_for(direction: str, price: float, atr: float, entry: PeadEntry) -> SetupLevels | None:
+def levels_for(direction: str, price: float, atr: float, entry: PeadEntry | ExdivEntry) -> SetupLevels | None:
     risk = entry.trade.stop_atr_multiple * atr
     reward = entry.trade.target_r * risk
     if direction == "LONG":
@@ -130,7 +133,7 @@ def label_events(
             miss("no_hourly_bars", event)
             continue
         when = event["decision_at"]
-        index = _utc_index(bars)
+        index = utc_index(bars)
         window = bars.loc[(index >= when - timedelta(days=1)) & (index <= when + _LABEL_SPAN)]
         price = decision_price(window, when)
         if price is None:
@@ -180,72 +183,14 @@ def label_events(
 # --- Statistics ----------------------------------------------------------------------------
 
 
-def _sums(frame: pd.DataFrame, sessions: pd.Index) -> tuple[np.ndarray, np.ndarray]:
-    grouped = frame.groupby("session")["r_cost"].agg(["sum", "count"]).reindex(sessions, fill_value=0)
-    return grouped["sum"].to_numpy(float), grouped["count"].to_numpy(float)
-
-
-def _draws(n: int, entry: PeadEntry) -> np.ndarray:
-    spec = entry.bootstrap
-    return _stationary_index_draws(n, spec.block_mean, spec.draws, spec.seed)
-
-
-def _mean_test(leg: pd.DataFrame, entry: PeadEntry) -> dict:
-    sessions = pd.Index(sorted(leg["session"].unique()))
-    sums, counts = _sums(leg, sessions)
-    boot = np.array([_weighted(sums, counts, rows) for rows in _draws(len(sessions), entry)], dtype=float)
-    ci90 = _ci90(boot)
-    mean_r_cost = _weighted(sums, counts, np.arange(len(sessions))) if len(sessions) else float("nan")
-    return {
-        "n": int(counts.sum()),
-        "n_sessions": len(sessions),
-        "mean_r_cost": mean_r_cost,
-        "ci90": ci90,
-        "finite_draws": int(np.isfinite(boot).sum()),
-        "p_one_sided": _p_one_sided_positive(boot),
-        "holds": bool(np.isfinite(mean_r_cost) and mean_r_cost > 0.0 and np.isfinite(ci90[0]) and ci90[0] > 0.0),
-    }
-
-
-def _paired_test(leg: pd.DataFrame, control: pd.DataFrame, entry: PeadEntry) -> dict:
-    sessions = pd.Index(sorted(control["session"].unique()))
-    leg_sums, leg_n = _sums(leg, sessions)
-    ctl_sums, ctl_n = _sums(control, sessions)
-
-    def diff(rows: np.ndarray) -> float:
-        return _weighted(leg_sums, leg_n, rows) - _weighted(ctl_sums, ctl_n, rows)
-
-    boot = np.array([diff(rows) for rows in _draws(len(sessions), entry)], dtype=float)
-    ci90 = _ci90(boot)
-    mean_diff = diff(np.arange(len(sessions))) if len(sessions) else float("nan")
-    return {
-        "n_leg": int(leg_n.sum()),
-        "n_control": int(ctl_n.sum()),
-        "n_sessions": len(sessions),
-        "control_mean_r_cost": _weighted(ctl_sums, ctl_n, np.arange(len(sessions))) if len(sessions) else float("nan"),
-        "mean_diff": mean_diff,
-        "ci90": ci90,
-        "finite_draws": int(np.isfinite(boot).sum()),
-        "p_one_sided": _p_one_sided_positive(boot),
-        "holds": bool(np.isfinite(mean_diff) and mean_diff > 0.0 and np.isfinite(ci90[0]) and ci90[0] > 0.0),
-    }
-
-
-def _trimmed_mean(values: np.ndarray, fraction: float) -> float:
-    ordered = np.sort(values[np.isfinite(values)])
-    cut = math.floor(fraction * len(ordered))
-    kept = ordered[cut : len(ordered) - cut]
-    return float(kept.mean()) if kept.size else float("nan")
-
-
 def evaluate_leg(labels: pd.DataFrame, direction: str, entry: PeadEntry) -> dict:
     control = labels[labels["direction"] == direction]
     leg = control[control["is_leg"].astype(bool)]
     recent = leg[leg["session"] >= entry.window.recent_from]
-    trimmed = _trimmed_mean(leg["r_cost"].to_numpy(float), entry.pass_rule.trim_fraction)
+    trimmed = trimmed_mean(leg["r_cost"].to_numpy(float), entry.pass_rule.trim_fraction)
     recent_mean = float(recent["r_cost"].mean()) if len(recent) else float("nan")
-    p1 = _mean_test(leg, entry) if len(leg) else {"n": 0, "holds": False}
-    p2 = _paired_test(leg, control, entry) if len(leg) else {"n_leg": 0, "holds": False}
+    p1 = mean_test(leg, entry.bootstrap) if len(leg) else {"n": 0, "holds": False}
+    p2 = paired_test(leg, control, entry.bootstrap) if len(leg) else {"n_leg": 0, "holds": False}
     p3 = {
         "trimmed_mean": trimmed,
         "recent_mean": recent_mean,
@@ -320,16 +265,20 @@ def _empty_sessions(acquisition: CalendarAcquisition, trading_days: tuple[date, 
     return {"empty": dict(sorted(empty.items())), "requested": dict(sorted(requested.items()))}
 
 
-def _universe(inputs: PeadInputs, reference_names: Mapping[str, int]) -> dict:
-    market = inputs.market
+def universe_summary(
+    market: MarketData,
+    bar_failures: Mapping[str, str],
+    static_requested: Sequence[str],
+    reference_names: Mapping[str, int],
+) -> dict:
     used = sorted(s for s in market.static_symbols if s in market.liquidity_daily)
     names = np.asarray(list(reference_names.values()), dtype=float)
     return {
         "static_symbols": used,
         "static_symbols_sha256": hashlib.sha256("\n".join(used).encode()).hexdigest(),
         "static_missing": {
-            s: inputs.bar_failures.get(s, "no raw daily bars")
-            for s in sorted(inputs.static_requested)
+            s: bar_failures.get(s, "no raw daily bars")
+            for s in sorted(static_requested)
             if s not in market.liquidity_daily
         },
         "reference_names": {
@@ -342,7 +291,7 @@ def _universe(inputs: PeadInputs, reference_names: Mapping[str, int]) -> dict:
     }
 
 
-def _save_frame(frame: pd.DataFrame, path: Path) -> None:
+def save_frame(frame: pd.DataFrame, path: Path) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as target:
         target.write(frame.to_csv(index=False).encode())
@@ -381,8 +330,8 @@ async def execute_pead_study(
         events, event_counts = await asyncio.to_thread(build_events, inputs.rows, inputs.market, entry)
         reference_names = event_counts.pop("reference_names")
         labels, label_counts = await asyncio.to_thread(label_events, events, inputs.hourly, entry)
-        await asyncio.to_thread(_save_frame, events, directory / "events.csv.gz")
-        await asyncio.to_thread(_save_frame, labels, directory / "labels.csv.gz")
+        await asyncio.to_thread(save_frame, events, directory / "events.csv.gz")
+        await asyncio.to_thread(save_frame, labels, directory / "labels.csv.gz")
         legs = {direction: evaluate_leg(labels, direction, entry) for direction in _DIRECTIONS}
         result = {
             "status": "completed",
@@ -400,7 +349,7 @@ async def execute_pead_study(
                 "rows": len(inputs.rows),
                 "duplicates": inputs.duplicates,
             },
-            "universe": _universe(inputs, reference_names),
+            "universe": universe_summary(inputs.market, inputs.bar_failures, inputs.static_requested, reference_names),
             "events": event_counts,
             "labels": label_counts,
             "bar_failures": dict(inputs.bar_failures),

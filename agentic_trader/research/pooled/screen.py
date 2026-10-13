@@ -28,7 +28,7 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from agentic_trader.research.apriori.pead_events import _by_session
+from agentic_trader.research.apriori.pead_events import by_session
 from agentic_trader.research.pooled.cohort import SUPPORTED_SYMBOL, Cohort
 from agentic_trader.research.pooled.study import _save_frame
 from agentic_trader.research.setups.runner import CalendarSource
@@ -177,7 +177,7 @@ def _window_row(symbol: str, frame: pd.DataFrame | None, window: set[date], rule
         "last_close": float("nan"),
     }
     if frame is not None and not frame.empty:
-        keyed = _by_session(frame)
+        keyed = by_session(frame)
         keyed = keyed[[day in window for day in keyed.index]]
         close = keyed["Close"].to_numpy(float)
         volume = keyed["Volume"].to_numpy(float)

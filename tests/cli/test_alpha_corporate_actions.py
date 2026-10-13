@@ -22,7 +22,7 @@ class FakeSource:
 
 def test_command_writes_actions_and_manifest(tmp_path, monkeypatch):
     source = FakeSource()
-    monkeypatch.setattr(cmd, "_build_source", lambda: source)
+    monkeypatch.setattr(cmd, "build_corporate_actions_source", lambda config: source)
     cohort = tmp_path / "cohort.json"
     cohort.write_text(json.dumps({"sectors": {"energy": ["XOM"], "technology": ["NVDA", "AAPL"]}}))
     output = tmp_path / "out"
@@ -55,7 +55,7 @@ def test_command_writes_actions_and_manifest(tmp_path, monkeypatch):
 
 
 def test_command_refuses_an_existing_output_directory(tmp_path, monkeypatch):
-    monkeypatch.setattr(cmd, "_build_source", lambda: FakeSource())
+    monkeypatch.setattr(cmd, "build_corporate_actions_source", lambda config: FakeSource())
     output = tmp_path / "out"
     output.mkdir()
     result = CliRunner().invoke(

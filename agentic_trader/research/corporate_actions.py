@@ -17,11 +17,49 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionsSource
+from agentic_trader.config import AppConfig
+from agentic_trader.data.corporate_actions import AlpacaCorporateActionsSource, CorporateAction, CorporateActionsSource
+from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.storage.workflow import encode
+from agentic_trader.transport.alpaca import BoundedCorporateActionsClient
 
 
-__all__ = ["fetch_corporate_actions_cached"]
+__all__ = ["build_corporate_actions_source", "cohort_symbols", "fetch_corporate_actions_cached", "parse_cohort_symbols"]
+
+
+def cohort_symbols(path: Path) -> list[str]:
+    """Symbols of a frozen cohort file (see ``parse_cohort_symbols``)."""
+    return parse_cohort_symbols(path.read_bytes())
+
+
+def parse_cohort_symbols(raw: bytes) -> list[str]:
+    """Symbols of a cohort document's bytes: a ``sectors`` mapping (symbols per sector) or a ``symbols`` list.
+
+    Callers that pin the file by digest parse the same bytes they hashed (one read, no second open).
+    """
+    document = json.loads(raw)
+    if "sectors" in document:
+        return [symbol for members in document["sectors"].values() for symbol in members]
+    if "symbols" in document:
+        return list(document["symbols"])
+    raise ValueError("Cohort file needs a 'sectors' mapping or a 'symbols' list")
+
+
+def build_corporate_actions_source(config: AppConfig) -> AlpacaCorporateActionsSource:
+    """The research acquisition's Alpaca source (bounded client, raw rows, the configured pacer)."""
+    if not (config.alpaca_api_key and config.alpaca_api_secret):
+        raise ValueError("Alpaca data credentials are required")
+    client = BoundedCorporateActionsClient(
+        config.alpaca_api_key,
+        config.alpaca_api_secret,
+        request_timeout=config.market_data.timeout_seconds,
+        raw_data=True,
+    )
+    return AlpacaCorporateActionsSource(
+        client,
+        pacer=RequestPacer(config.corporate_actions.max_requests_per_minute),
+        chunk_size=config.corporate_actions.chunk_size,
+    )
 
 
 def _sha256(value: Any) -> str:

@@ -11,36 +11,11 @@ import click
 from agentic_trader.cli.commands.alpha import research_environment
 from agentic_trader.cli.utils import coro
 from agentic_trader.config import load_config
-from agentic_trader.data.corporate_actions import AlpacaCorporateActionsSource, CorporateActionsSource
-from agentic_trader.data.pacing import RequestPacer
-from agentic_trader.research.corporate_actions import fetch_corporate_actions_cached
-from agentic_trader.transport.alpaca import BoundedCorporateActionsClient
-
-
-def _build_source() -> CorporateActionsSource:
-    config = load_config()
-    if not (config.alpaca_api_key and config.alpaca_api_secret):
-        raise click.ClickException("Alpaca data credentials are required")
-    client = BoundedCorporateActionsClient(
-        config.alpaca_api_key,
-        config.alpaca_api_secret,
-        request_timeout=config.market_data.timeout_seconds,
-        raw_data=True,
-    )
-    return AlpacaCorporateActionsSource(
-        client,
-        pacer=RequestPacer(config.corporate_actions.max_requests_per_minute),
-        chunk_size=config.corporate_actions.chunk_size,
-    )
-
-
-def _cohort_symbols(path: Path) -> list[str]:
-    document = json.loads(path.read_text())
-    if "sectors" in document:
-        return [symbol for members in document["sectors"].values() for symbol in members]
-    if "symbols" in document:
-        return list(document["symbols"])
-    raise click.ClickException("Cohort file needs a 'sectors' mapping or a 'symbols' list")
+from agentic_trader.research.corporate_actions import (
+    build_corporate_actions_source,
+    cohort_symbols,
+    fetch_corporate_actions_cached,
+)
 
 
 async def _noop_pace() -> None:
@@ -61,14 +36,21 @@ async def corporate_actions_cmd(symbols, cohort: Path | None, start, end, cache:
     """Fetch and cache corporate actions (process_date window) for research; no database, no trading."""
     if output.exists():
         raise click.ClickException(f"Output directory exists: {output}")
-    wanted = list(symbols) + (_cohort_symbols(cohort) if cohort else [])
+    try:
+        wanted = list(symbols) + (cohort_symbols(cohort) if cohort else [])
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     if not wanted:
         raise click.ClickException("Pass --symbol and/or --cohort")
     start_date, end_date = start.date(), end.date()
     if end_date < start_date:
         raise click.ClickException("--end must not precede --start")
+    try:
+        source = build_corporate_actions_source(load_config())
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     actions, manifest = await fetch_corporate_actions_cached(
-        _build_source(), wanted, start_date, end_date, cache, pace=_noop_pace
+        source, wanted, start_date, end_date, cache, pace=_noop_pace
     )
     manifest["environment"] = await asyncio.to_thread(research_environment)
     output.mkdir(mode=0o700, parents=True)

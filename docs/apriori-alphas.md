@@ -15,12 +15,58 @@ Rules:
 - A leg that passes becomes eligible for a live, capped paper probe, which needs its own
   spec (Part 2). A failed leg stays off.
 
-Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output NEW_DIR [--cache DIR]`.
+Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output NEW_DIR [--cache DIR]` — the command reads the entry's `id` (`pead`, `exdiv`) to choose the study.
 
 | Entry | Version | Hypothesis | Long | Short | Result |
 | --- | --- | --- | --- | --- | --- |
 | `pead` | 1 | Post-earnings drift when EPS surprise and price reaction agree | — | — | Failed closed on calendar coverage (Nasdaq gap 2016-06-06..07-08); no outcomes computed |
 | `pead` | 2 | Same, decisions from 2016-08-01 | **eligible** (+0.149R; +0.055R vs control) | failed (−0.064R) | [result](apriori-pead-2026-09-26.md), [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |
+| `exdiv` | 1 | Regular quarterly payers run up in the five sessions before the ex-date (Hartzmark & Solomon 2013); long from E−5 at 10:35 to the last cum-dividend close; same-name mid-quarter placebo | failed (+0.069R, ci90 [+0.035, +0.102]; but the same-name placebo earns +0.046R and the paired difference +0.025R has ci90 [−0.026, +0.072], so P2 fails) | — | failed on P2, 2026-10-12 ([result](apriori-exdiv-2026-10-12.md), [spec](superpowers/specs/2026-10-12-exdiv-leg-design.md)) |
+
+## Entry 2: pre-ex-dividend run-up
+
+`exdiv` version 1 (`config/research/apriori/exdiv-v1.json`, [spec](superpowers/specs/2026-10-12-exdiv-leg-design.md))
+is desk item 3, part 2. Research only, one frozen hypothesis, long leg only; the entry's SHA-256 goes
+into the manifest and a change is a new version with a new window.
+
+- **Event source.** Part 1's cached [corporate-actions acquisition](corporate-actions.md) on the frozen
+  spread cohort (`config/research/spread/cohort-v1.json`, resolved against the repository root). The
+  entry pins the cohort by content (`cohort_sha256`; a cohort file with another digest fails the run
+  before any provider call) and the process-date window (`actions_window`). The manifest records the
+  cohort's path, digest and symbols; `result.json` records the acquisition's request and content
+  digests. A failed or empty fetch fails the run.
+- **Event rule.** A non-special cash dividend whose previous non-special ex-date lies 77–105
+  calendar days earlier (quarterly regularity), with no split, merger, spin-off, name change or
+  other non-dividend action for the symbol within 10 calendar days of the decision-to-ex span, no
+  other ex-date of the symbol from the session before the decision through E−1, and passing PEAD's
+  liquidity gate on raw bars as of the session before the decision. The decision is at 10:35 New
+  York on E−5 (five sessions before the ex-date E). Dividends outside the calendar or the decision
+  window are counted as such before any eligibility reason; a second dividend on the same ex-date
+  is counted once (`duplicate_ex_date`).
+- **The hold is the lead.** The position is long from the fill after the decision and exits at the
+  last cum-dividend close (the close of session E−1), or at the stop (2 ATR) or target (3R) first.
+  No dividend is received and no ex-date drop is crossed. A leg whose hourly bars miss any session
+  from the decision through E−1 is excluded and counted (`missing_session_bars`), as is any exit on
+  or after the ex-date.
+- **Control.** The same symbol, same bracket and hold, decided 32 sessions later (the middle of a
+  quarter), with the same gates; dropped when an ex-date of the symbol falls within one session of
+  its span. P2 pairs each leg with its control by `pair_id`; a leg without a control stays in
+  P1, P3 and P4 and is counted as unpaired.
+- **Secondary hold.** A 10-session hold crosses the ex-date; it is descriptive only.
+- **Costs and pass rule.** 0, 5 and 10 bp per side; 5 bp decides. The same P1–P4 criteria and
+  stationary session-block bootstrap as PEAD, via the shared `research/apriori/statistics.py`
+  (300 events, 100 from 2023-01-01). A pass makes the leg `eligible_for_probe`; a probe needs its
+  own spec.
+- **Caveats.** The cohort is current-member (survivorship-biased, not point-in-time). The study
+  knows the ex-date five sessions ahead from history, while live knowledge depends on the
+  declaration: the 2026-10-12 capture held 17 future ex-dates up to 60 days ahead, and a probe must
+  measure its own lead-time coverage before claiming parity. Slippage is not measured.
+
+**Result (2026-10-12):** the leg is positive (+0.069R per event at 5 bp, 2,647 events, P1, P3 and P4 hold)
+but not distinguishable from the same name's mid-quarter drift (control +0.046R; paired difference +0.025R,
+ci90 [−0.026, +0.072]), so P2 fails and the leg is **failed**; no probe. The yield gradient (low +0.038R →
+high +0.117R) is the one descriptive the placebo cannot explain and would motivate a yield-conditioned v2
+declared as a second look ([result](apriori-exdiv-2026-10-12.md)).
 
 ## Pooled literature entries
 

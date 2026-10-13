@@ -22,7 +22,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator, compile_expression
-from agentic_trader.research.apriori.pead_events import _by_session
+from agentic_trader.research.apriori.pead_events import by_session
 from agentic_trader.research.pooled.cube import CubeView
 
 
@@ -99,7 +99,7 @@ def prepare_daily(adjusted: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFram
     for symbol, frame in adjusted.items():
         if frame is None or frame.empty:
             continue
-        keyed = _by_session(frame)
+        keyed = by_session(frame)
         prepared[symbol] = keyed.set_axis(pd.DatetimeIndex(keyed.index))
     return prepared
 
