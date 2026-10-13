@@ -576,6 +576,8 @@ problem.
 4. **News as measured context.** Wire a news feed (none exists today; only a config heading) and
    attach LLM news scoring to cards as labelled context, attributed the way the LLM gate is
    attributed. Never a gate or signal until the attribution says so.
+
+   *Status (October 13):* wired as measured context ([news context](news-context.md), [spec](superpowers/specs/2026-10-13-news-context-design.md)): one bounded Benzinga fetch per scan that ranks candidates, through the desk's Alpaca data keys, a direction-free LLM tone score for the first six ranked symbols, one labelled card line, `decision_provenance["news"]`, the journal candidate's `news` (universe scans) and `cards outcomes` `news_context` (status, tone, direction alignment). Never a gate; the LLM gate's prompt is unchanged so both attributions stay separate. `alpha news` is the cached research acquisition (history to 2015) for a later frozen entry. The loader now passes the `corporate_actions:` and `news:` YAML blocks (`entry_block: enforce` was previously ignored).
 5. **Deferred.** Daily-bar cross-sectional mining is paused until intraday SIP data exists; three
    lanes found nothing on this cohort. Deep learning across many symbols waits for intraday data
    and a predeclared protocol.

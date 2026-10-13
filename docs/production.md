@@ -517,6 +517,13 @@ healthy observation — a silent whole-universe data failure must be visible in
 | `coverage_reference_symbol` | `SPY` | Reference name; if it is unavailable the gate is skipped and the summary says so. |
 | `shadow_ranker_artifact` | unset | Path to a frozen setup-study `ranker.json`, scored in shadow only. A relative path is resolved against the repository root at config load, regardless of the process's working directory. Every scheduled suggestion scan's ranked candidates get a `setup_features_v2` vector, recorded in sent-card provenance (`shadow_ranker`) and in one `scan_candidates_ranked` journal event per scan (`scope=universe`, `trigger=suggestion_scan`); the score is recorded only when the artifact's sha256 and `features_version` verify. It never changes ranking, the budget or any card. |
 
+**News context (October 13).** Each scan that ranks candidates adds one `News (context, not a gate)`
+line to equity cards from a single Benzinga fetch and at most `news.max_scored_per_scan` (6) LLM
+calls; see [news context](news-context.md). Inspect it with `copilot db events --stream scan/<date>
+--limit 1` (the `news` key per candidate, universe scans) and `copilot cards outcomes --days 30`
+(`news_context`). A fetch or scoring failure shows as `unavailable` or `scoring failed` on the card and
+never changes the scan, readiness or the halt state; `news.enabled: false` removes the step.
+
 ### Shadow card ranker
 
 `scan.shadow_ranker_artifact` scores every ranked candidate in shadow only, whether or

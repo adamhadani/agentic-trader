@@ -273,6 +273,12 @@ only, never a gate, and uses the same proxy bracket labels as the rest of the re
   repeated journaling of one setup inflates counts. Moving to `enforce` is an operator decision after
   reading the journaled factors.
 
+## News context
+
+News context ([news context](news-context.md)) is a fourth descriptive block in `cards outcomes`
+(`news_context`, with `news_*` columns), attributed beside selection, the LLM gate and market exposure.
+Its alignment buckets use mature rows only. It never feeds `card_policy` or `card_stats`.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket

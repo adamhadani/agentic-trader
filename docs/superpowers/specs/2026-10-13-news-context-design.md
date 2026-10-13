@@ -43,8 +43,9 @@ measured facts behind them are in §7.
 **Out of scope (named so they are not implied):** any gate, rule, signal or sizing input derived
 from news (nothing in `agentic_trader/risk`, `card_policy` or admission reads it); news text in the
 LLM gate's prompt (it would contaminate the gate's attribution — §7); a daemon worker, readiness
-component or `/positions` notes (news is fetched at scan time, §3.3); blocks for `/scan SYMBOL`,
-the intraday job or drift cards; full article bodies (`include_content` stays false); a `/news`
+component or `/positions` notes (news is fetched at scan time, §3.3); journal/attribution for
+`/scan SYMBOL` and the intraday job (their cards carry the block but have no journal row), and
+blocks for drift (catalog) cards; full article bodies (`include_content` stays false); a `/news`
 Telegram command; a frozen news study or catalog entry (its own spec); any schema migration (head
 stays `008_alpha_pipeline`).
 
@@ -66,9 +67,10 @@ stays `008_alpha_pipeline`).
   `transport/alpaca.py`, same socket deadline and GET-only retry as the other bounded clients).
   Symbols are sent in chunks of `chunk_size` as the comma-joined string the SDK expects, with
   `NewsRequest(start, end, sort="desc", include_content=False, limit=max_items)`; a set `limit`
-  caps the whole paginated result (SDK fact, same as corporate actions) and a remaining
-  `next_page_token` marks `truncated`. Raw pages are observed through `client.observe_responses`
-  for `pages`/`page_sha256`. Items are de-duplicated by `id` across chunks. Any chunk failure or
+  caps the whole paginated result (SDK fact, same as corporate actions) and `limit=None` follows
+  every page until the token is exhausted (unbounded, no page cap). `truncated` comes only from the
+  `next_page_token` on the last raw page observed through `client.observe_responses`, which also
+  supplies `pages`/`page_sha256`. Items are de-duplicated by `id` across chunks. Any chunk failure or
   normalisation error fails the whole fetch (no partial pages).
 - `select_items(page, symbol, *, now, window_hours, max_items, max_symbols_per_item) -> NewsSelection`
   (frozen dataclass: `items` newest first, `n_items`, `n_market_wide`): items tagged with
@@ -110,7 +112,7 @@ stays `008_alpha_pipeline`).
 | `score` | `NewsScore` dict or `None` |
 | `model`, `prompt_sha256` | the scorer's identity (`None` when not scored) |
 | `error_type` | exception type name or `None` — never exception text |
-| `page_sha256` | fetch evidence or `None` |
+| `page_sha256` | digest of the last raw page observed for the fetch, or `None` |
 | `applied` | always `False`: mirrors `llm_verdict`'s shape and states that nothing read it |
 
 ### 3.3 Scan integration — `agent/copilot.py`, `agent/evaluator.py`
@@ -133,8 +135,10 @@ stays `008_alpha_pipeline`).
   the journal candidate as `"news"` via a new `news_by_rank` keyword of `_journal_scan_ranking`,
   and rides to the notification inside `eval_res` (no `send_signal_alert` signature change).
   The dry-run path renders the same line through `format_terminal_card`.
-- Reprice: `_replacement_card` passes `news_context=old_provenance.get("news")` into the
-  re-evaluation so the replacement card keeps the scan-time block (its `as_of` says when).
+- Reprice: no code change. The block rides in the card's stored `raw_response`
+  (`eval_res.model_dump_json()`), so `news_context` survives `_replacement_card`'s
+  `model_validate_json` and the replacement keeps the scan-time block (its `as_of` says when); a
+  round-trip test in `tests/agent/test_evaluator_news_context.py` covers it.
 - `cards outcomes` is the only reader. `card_stats`, `card_policy`, `agentic_trader/risk`,
   admission and the tap gate do not import or read the block (test: `card_policy.decide` and
   `compute_card_stats` sources contain no `news`).
@@ -198,9 +202,10 @@ Validation: positive bounds, `extra="forbid"`, `max_scored_per_scan ≥ 1`, `win
   symbols, start, end}` → `cache_dir/news/<request_sha256>.json` holding `items` (id, headline,
   summary, source, url, created_at, symbols — no content), `content_sha256`, timestamps, pages and
   page digests; reuse re-hashes and refuses a mismatch; private writes (0700/0600, temp + rename).
-  Requests are issued per symbol chunk per calendar month with `limit=None` (full pagination); a
-  month whose last page still has a token is split in half (down to one day) so no window is ever
-  truncated; every request is paced.
+  Requests are issued per symbol chunk per calendar month bounded by `RESEARCH_MAX_ITEMS = 5000`
+  (`limit=None` would follow every page without bound); a window whose last raw page still has a
+  token is split in half down to one day (`ValueError` mentioning "page cap" at one day), so no
+  accepted window is truncated; the source paces once per symbol chunk, not per HTTP page.
 - `alpha news --symbol/--cohort --start --end --cache --output` writes `news.json.gz` and
   `manifest.json` (counts per symbol and per month, request/content digests, `research_environment()`),
   refuses an existing output directory, and uses no database, broker or Telegram.

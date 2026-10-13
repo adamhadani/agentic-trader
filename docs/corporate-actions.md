@@ -180,7 +180,7 @@ content digests.
 
 ## Configuration
 
-`corporate_actions` in `AppConfig` (`CorporateActionsConfig`).
+`corporate_actions` in `AppConfig` (`CorporateActionsConfig`). `load_config` reads the `corporate_actions:` YAML block (fixed 2026-10-13; before that the block, including `entry_block: enforce`, was ignored and the defaults ran).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
