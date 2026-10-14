@@ -18,6 +18,7 @@ mkdir -p "$DATA_DIR"
 
 UV_BIN="$(which uv || echo "$HOME/.local/bin/uv")"
 USER_ID="$(id -u)"
+MINER_RETIRED_NOTICE="Alpha miner retired 2026-10-14: the per-symbol ETF32 miner produced no finalist in 62 runs; mining runs as predeclared pooled campaigns under operator approval (docs/alpha-pooled-mining.md)."
 
 generate_copilot_plist() {
     mkdir -p "$LAUNCH_AGENTS_DIR"
@@ -84,43 +85,6 @@ generate_watchdog_plist() {
 </plist>
 EOF
     echo "Generated $TARGET_WATCHDOG_PLIST"
-}
-
-generate_alphaminer_plist() {
-    mkdir -p "$LAUNCH_AGENTS_DIR"
-    cat <<EOF > "$TARGET_MINER_PLIST"
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>$MINER_PLIST_NAME</string>
-    <key>WorkingDirectory</key>
-    <string>$REPO_DIR</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/zsh</string>
-        <string>-l</string>
-        <string>-c</string>
-        <string>cd "$REPO_DIR" &amp;&amp; if [ -f .envrc ]; then set -a; source .envrc; set +a; fi &amp;&amp; exec "$UV_BIN" run copilot alpha mine --universe etf32 --feed alpaca --interval 1d --lookback 5y --iterations 9 --method genetic --max-seconds 120 --entry-policy gtc</string>
-    </array>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Weekday</key>
-        <integer>6</integer>
-        <key>Hour</key>
-        <integer>3</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
-    <key>StandardOutPath</key>
-    <string>$DATA_DIR/alphaminer.log</string>
-    <key>StandardErrorPath</key>
-    <string>$DATA_DIR/alphaminer.err.log</string>
-</dict>
-</plist>
-EOF
-    echo "Generated $TARGET_MINER_PLIST"
 }
 
 generate_awake_plist() {
@@ -220,14 +184,11 @@ case "${1:-status}" in
     install)
         generate_copilot_plist
         generate_watchdog_plist
-        generate_alphaminer_plist
         launchctl unload "$TARGET_PLIST" 2>/dev/null || true
         launchctl load "$TARGET_PLIST"
         launchctl unload "$TARGET_WATCHDOG_PLIST" 2>/dev/null || true
         launchctl load "$TARGET_WATCHDOG_PLIST"
-        launchctl unload "$TARGET_MINER_PLIST" 2>/dev/null || true
-        launchctl load "$TARGET_MINER_PLIST"
-        echo "Services $PLIST_NAME, $WATCHDOG_PLIST_NAME, and $MINER_PLIST_NAME installed and loaded."
+        echo "Services $PLIST_NAME and $WATCHDOG_PLIST_NAME installed and loaded (the alpha miner is retired and not installed)."
         ;;
     uninstall)
         launchctl unload "$TARGET_MINER_PLIST" 2>/dev/null || true
@@ -239,10 +200,7 @@ case "${1:-status}" in
         echo "Services $PLIST_NAME, $WATCHDOG_PLIST_NAME, and $MINER_PLIST_NAME unloaded and removed."
         ;;
     install-miner)
-        generate_alphaminer_plist
-        launchctl unload "$TARGET_MINER_PLIST" 2>/dev/null || true
-        launchctl load "$TARGET_MINER_PLIST"
-        echo "Scheduled alpha miner $MINER_PLIST_NAME installed and loaded."
+        echo "$MINER_RETIRED_NOTICE"
         ;;
     uninstall-miner)
         launchctl unload "$TARGET_MINER_PLIST" 2>/dev/null || true
@@ -261,8 +219,7 @@ case "${1:-status}" in
         echo "Market-hours awake agent $AWAKE_PLIST_NAME unloaded and removed."
         ;;
     run-miner)
-        echo "Triggering offline alpha mining run..."
-        cd "$REPO_DIR" && if [ -f .envrc ]; then set -a; source .envrc; set +a; fi && "$UV_BIN" run copilot alpha mine --universe etf32 --feed alpaca --interval 1d --lookback 5y --iterations 9 --method genetic --max-seconds 120 --entry-policy gtc
+        echo "$MINER_RETIRED_NOTICE"
         ;;
     start)
         launchctl start "$PLIST_NAME"
@@ -283,8 +240,7 @@ case "${1:-status}" in
         launchctl list | grep "$PLIST_NAME" || echo "  Not currently registered in launchd."
         echo "Watchdog ($WATCHDOG_PLIST_NAME):"
         launchctl list | grep "$WATCHDOG_PLIST_NAME" || echo "  Not currently registered in launchd."
-        echo "Alpha Miner ($MINER_PLIST_NAME):"
-        launchctl list | grep "$MINER_PLIST_NAME" || echo "  Not currently registered in launchd."
+        echo "Alpha Miner: retired (see docs/alpha-pooled-mining.md)"
         echo "Market-hours awake ($AWAKE_PLIST_NAME):"
         launchctl list | grep "$AWAKE_PLIST_NAME" || echo "  Not currently registered in launchd."
         ;;

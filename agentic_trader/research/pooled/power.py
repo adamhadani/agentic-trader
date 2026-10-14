@@ -35,6 +35,7 @@ from agentic_trader.research.pooled.campaign import (
 from agentic_trader.research.pooled.cohort import LoadedCohort
 from agentic_trader.research.pooled.cube import _ARRAYS, CubeView, LabelCube, check_coverage
 from agentic_trader.research.pooled.runner import CubeBuild
+from agentic_trader.research.pooled.scoring import score_read_document
 from agentic_trader.research.setups.study import _finite_json, _stationary_index_draws
 from agentic_trader.storage.artifacts import save_json_report
 
@@ -325,6 +326,8 @@ async def execute_power_check(
             "cohort_sha256": cohort.sha256,
             "cube_spec_identity": protocol.cube_spec().identity,
             "reads": "discovery window cells only",
+            "score_inputs": protocol.score_inputs,
+            "score_read": score_read_document(protocol),
             "environment": environment,
             "started_at": datetime.now(UTC).isoformat(),
             "authorizes_promotion": False,

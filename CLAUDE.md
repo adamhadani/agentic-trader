@@ -223,7 +223,7 @@ A and C only. On 2026-10-07 both passed and the approved campaign found **no fin
 (seven of eight formulas have a negative discovery edge), so nothing froze, the confirmation
 window is still unused, and the fixed-set lane is closed on this window
 ([v4 checks](docs/alpha-pooled-checks-v4-2026-10-07.md)). The next alpha source is an
-operator decision.
+operator decision. `IntradayCampaignProtocol` (`id: pooled-intraday-campaign`) scores regular-session hourly bars read at the first completed regular bucket (09:00 New York, closing 10:00) of the decision session on the same cohort-v2 cube; v1 is a fixed set of eight intraday formulas under checks A and C; the weekly per-symbol ETF32 miner is retired (`launchd.sh install-miner` installs nothing).
 
 The [spread-reversion lane](docs/alpha-spread-lane.md) (desk-direction item 2) is a predeclared, research-only pairs protocol on daily SIP bars: same-sector pairs from a frozen 127-name cohort, Engle-Granger formation (`coint`, MacKinnon p-values) over 504 sessions, z-score trading over the next 126 with frozen `α, β, σ_f` and next-open fills, four pass rules (lane bootstrap, trade means, counts, SPY beta) and a one-use confirmation window journaled under `spread/confirmation` before it is read. `alpha spread-study` refuses without passing `spread-power` (A) and `spread-null` (C) results at the same clean revision; nothing promotes, no probe or two-leg execution contract exists, and `/pairs` stays display-only. On 2026-10-10 both checks passed and the v1 study **failed discovery** (lane mean −0.3 bp/day at 5 bp; 84% of entries already beyond the stop because v1 has no upper entry band); the confirmation window is unused and v1 is closed ([results](docs/alpha-spread-results-2026-10-10.md)); a v2 needs a new frozen protocol and operator approval. Protocol v2 (`pairs-v2.json`, `second_look: true`) changes only the entry rule (crossing entry, |z| < 4 at the signal, no re-entry after a stop) and runs through the same checks and study by its own hash. On 2026-10-11 v2's checks passed and its study also **failed discovery** (234 trades, lane mean +0.02 bp/day, 6 of 11 windows positive); the confirmation window is still unused and the lane is closed as an alpha source on this cohort and discovery window ([v2 results](docs/alpha-spread-results-2026-10-11.md)).
 
@@ -422,5 +422,6 @@ Semantics version 5 is the production native-daily contract: no clock, exactly
 `DAILY_ENTRY_LIFETIME_SECONDS = 57,600` resting and no holding deadline, so
 research (bar label) and live (`submitted_at`) both mean one regular session.
 Never relax it to a configurable value, add a holding deadline to it, or re-fence
-it on `semantics_version`; the miner's `--entry-policy session` default and the
-scheduled `--entry-policy gtc` pin are deliberate.
+it on `semantics_version`; the miner's `--entry-policy session` default is deliberate, and a
+scheduled `alpha mine` run must pin `--entry-policy gtc` (the weekly ETF32 job itself was retired on
+2026-10-14; `launchd.sh install-miner` installs nothing).

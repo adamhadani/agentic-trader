@@ -260,6 +260,52 @@ all pick through it. A protocol has either `k` (meaning `top_k` with hold-skippi
 compared as sorted `int64` codes (`Picks.codes`: session x names + symbol) and
 `jaccard_codes` intersects the sorted arrays instead of Python sets of tuples.
 
+## Intraday score inputs (protocol `pooled-intraday-campaign`)
+
+`IntradayCampaignProtocol` (`id: pooled-intraday-campaign`, loaded by `load_campaign_protocol`
+alongside `CampaignProtocol`) keeps the cohort-v2 label cube, windows, selection, gates, bootstrap
+and null-check of the daily protocols and changes only what a formula reads. `score_inputs:
+"hourly"` with `score_read.bars_before_decision: 1` means a formula sees regular-session hourly
+SIP bars up to the first completed regular bucket of the decision session. The cached Alpaca bars
+are clock-aligned (buckets open 04:00, 05:00, ..., 19:00 New York; regular start hours 9-15), so
+for a 10:35 decision the read is the 09:00 bucket, which closes 10:00, includes the opening
+auction and about 30 minutes of pre-market trades, and is the cube's decision reference bar
+(`pead_study.decision_price`). The 10:00 bucket (closing 11:00) is never read. Fields keep their daily meaning at bar scale, bar over bar (`open_gap` is this
+bar's open over the previous bar's close, so on the first bucket it is the overnight return to the
+first trade of the 09:00 bucket versus the last regular bucket's close; `oc_spread` and `hl_spread`
+are within-bar), windows count bars (140 = 20 sessions x 7 regular bars), and scores are NaN early in discovery until a
+window fills.
+
+`load_hourly` loads the hourly frames; `score_book` builds the hourly book. The null-check pool uses
+frozen panels, and check A needs no book (its formulas are synthetic). The campaign manifest records
+`score_inputs` and `score_read`; `result.json` records them with each formula's
+`first_finite_session` (first discovery session with a finite score) and
+`symbols_without_hourly`. The cached frames have no VWAP, so no seed may use it. A frozen
+candidate's identity binds `score_inputs` and `score_read`, and an intraday campaign is journaled as
+`pooled-intraday-campaign-v1-<sha16>`. Literature overlap is computed from daily bars.
+
+The v1 fixed set (all dimensionless; signs are the long-side hypothesis; decile selection and the
+literature-overlap rule as v4; realized-volatility operators forbidden):
+
+| Family | Score | Hypothesis |
+| --- | --- | --- |
+| `first_hour_momentum` | `oc_spread` | first-bucket return continues (intraday momentum, Gao-Han-Li-Zhou 2018) |
+| `overnight_persistence` | `open_gap` | overnight return persists (Lou-Polk-Skouras 2019) |
+| `overnight_vs_intraday` | `open_gap - oc_spread` | overnight strength not yet traded away intraday |
+| `relative_volume` | `volume / ts_mean(volume, 140)` | first-bucket volume shock (high-volume premium, Gervais-Kaniel-Mingelgrin 2001) |
+| `range_expansion` | `hl_spread / ts_mean(hl_spread, 140)` | opening-range expansion |
+| `range_location` | `(close - low) / (high - low)` | close near the first-bucket high |
+| `first_bucket_efficiency` | `(close - open) / (high - low)` | net move of the first regular bucket relative to its range (replaced `vwap_strength`: the cache has no VWAP) |
+| `intraday_high_proximity` | `close / ts_max(high, 140)` | near the 20-session intraday high |
+
+The frozen protocol's SHA-256 is `5b4c3fdf23aa180039aecd97cb4d067e22ffb0302e858aaebb905a54a22a7d5d` (first 16 hex `5b4c3fdf23aa1800`); nothing has run against an earlier hash.
+
+Run order, each from `pooled-cache-v1` and each refusing an existing output: check A
+(`alpha pooled power config/research/pooled/intraday-v1.json`), check C (`null-check`), then the
+campaign. The campaign needs operator approval; it is not started by the checks. Nothing here
+registers, trades or earns promotion credit, and the lane-wide confirmation window stays unused
+until a finalist freezes. See the [design](superpowers/specs/2026-10-14-pooled-intraday-design.md).
+
 ## Statistics
 
 The unit is `R_cost` at 5 bps per side; 0 bps is reported alongside (a study result's
@@ -816,6 +862,8 @@ and C pass.
 The checks and the campaign outcome are written up in [alpha-pooled-checks-v4-2026-10-07.md](alpha-pooled-checks-v4-2026-10-07.md): A and C passed, the approved campaign found no finalists (seven of eight formulas have a negative discovery edge, best t 0.76), nothing froze, the confirmation window is still unused, and the lane is closed on this window as pre-registered.
 
 ## Commands
+
+Every command accepts either protocol id (`pooled-campaign` or `pooled-intraday-campaign`).
 
 ```bash
 copilot alpha pooled screen RULE --snapshot SNAPSHOT --output DIR --cache DIR

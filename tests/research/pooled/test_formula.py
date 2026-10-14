@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.apriori.pead_study import decision_price
 from agentic_trader.research.pooled.cube import CubeView
 from agentic_trader.research.pooled.formula import (
     Formula,
@@ -14,8 +15,10 @@ from agentic_trader.research.pooled.formula import (
     Picks,
     allowed_mask,
     evaluate_panel,
+    evaluate_prepared_hourly,
     expression_nodes,
     jaccard_codes,
+    prepare_hourly,
     select_picks,
     select_top_fraction,
 )
@@ -208,3 +211,148 @@ def test_pick_codes_and_their_jaccard_match_the_set_versions():
     assert jaccard_codes(codes_a, codes_b) == pytest.approx(expected) == pytest.approx(0.4)
     empty = np.zeros(0, dtype=np.int64)
     assert jaccard_codes(empty, empty) == 0.0
+
+
+REGULAR_HOURS = (9, 10, 11, 12, 13, 14, 15)
+EXTENDED_HOURS = (4, 5, 6, 7, 8, 16, 17, 18, 19)
+
+
+def hourly(
+    days: list[date],
+    *,
+    hours: Sequence[int] = REGULAR_HOURS,
+    extended: bool = False,
+    closes_by_bar: Sequence[float] | None = None,
+    with_vwap: bool = False,
+) -> pd.DataFrame:
+    """Cache-shaped Alpaca hourly bars: clock-aligned buckets stamped 09:00, 10:00, ... New York,
+    columns exactly Open/High/Low/Close/Volume. ``extended`` adds the 04:00-08:00 and 16:00-19:00
+    buckets that ``regular_session_bars`` must drop; ``with_vwap`` adds an extra column."""
+    stamps, rows = [], []
+    k = 0  # counts regular buckets only; extended buckets get a far-away close so a leak is visible
+    for d in days:
+        bar_hours = sorted([*hours, *EXTENDED_HOURS]) if extended else list(hours)
+        for h in bar_hours:
+            stamps.append(datetime.combine(d, time(h, 0), tzinfo=ET_TZ).astimezone(UTC))
+            regular = h in REGULAR_HOURS
+            c = (100.0 + k if closes_by_bar is None else closes_by_bar[k]) if regular else 5000.0 + h
+            row = {"Open": c - 0.5, "High": c + 1.0, "Low": c - 1.0, "Close": c, "Volume": 1000.0 + k}
+            if with_vwap:
+                row["VWAP"] = c - 0.25
+            rows.append(row)
+            k += int(regular)
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(stamps))
+
+
+def test_prepare_hourly_keeps_regular_session_bars_only():
+    days = weekdays(date(2024, 1, 2), 3)
+    prepared = prepare_hourly({"AAA": hourly(days, extended=True), "BBB": pd.DataFrame(), "CCC": None})
+    assert set(prepared) == {"AAA"}
+    frame = prepared["AAA"]
+    assert len(frame) == 21 and frame.index.tz is not None and frame.index.is_monotonic_increasing
+    assert set(frame.columns) == {"open", "high", "low", "close", "volume"}
+    assert all(ts.astimezone(ET_TZ).hour in range(9, 16) for ts in frame.index)
+
+
+def test_prepare_hourly_keeps_any_extra_column_lower_cased():
+    days = weekdays(date(2024, 1, 2), 2)
+    frame = prepare_hourly({"AAA": hourly(days, with_vwap=True)})["AAA"]
+    assert set(frame.columns) == {"open", "high", "low", "close", "volume", "vwap"}
+
+
+def test_hourly_read_takes_the_last_bar_closed_before_the_decision():
+    days = weekdays(date(2024, 1, 2), 3)
+    prepared = prepare_hourly({"AAA": hourly(days, extended=True)})
+    out = evaluate_prepared_hourly(
+        "close", prepared, days, ("AAA", "ZZZ"), decision_time_et="10:35", bars_before_decision=1
+    )
+    # Regular buckets open 09:00..15:00; closes are 100..106 on day 1. At 10:35 the 09:00 bucket
+    # (closes 10:00) is the last closed one; the 10:00 bucket (closes 11:00) is never read.
+    assert out.shape == (3, 2)
+    assert out[:, 0].tolist() == [100.0, 107.0, 114.0]
+    assert np.isnan(out[:, 1]).all()
+    two = evaluate_prepared_hourly("close", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=2)
+    # The bar before the 09:00 bucket is the previous session's 15:00 bucket; day 1 has none.
+    assert np.isnan(two[0, 0]) and two[1, 0] == 106.0 and two[2, 0] == 113.0
+    late = evaluate_prepared_hourly("close", prepared, days, ("AAA",), decision_time_et="11:35", bars_before_decision=1)
+    assert late[:, 0].tolist() == [101.0, 108.0, 115.0]
+
+
+def test_the_score_bar_is_the_cubes_decision_reference_bar():
+    days = weekdays(date(2024, 1, 2), 3)
+    frame = hourly(days, extended=True)
+    prepared = prepare_hourly({"AAA": frame})
+    out = evaluate_prepared_hourly("close", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=1)
+    for row, day in enumerate(days):
+        when = datetime.combine(day, time(10, 35), tzinfo=ET_TZ)
+        assert out[row, 0] == decision_price(frame, when)
+
+
+def test_hourly_read_is_nan_when_no_bar_closed_before_the_decision():
+    days = weekdays(date(2024, 1, 2), 2)
+    frame = hourly(days)
+    # Drop day 2's 09:00 bucket: at 10:35 on day 2 nothing has closed yet today.
+    day2_open = datetime.combine(days[1], time(9, 0), tzinfo=ET_TZ).astimezone(UTC)
+    frame = frame.drop(index=pd.Timestamp(day2_open))
+    out = evaluate_prepared_hourly(
+        "close", prepare_hourly({"AAA": frame}), days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    assert out[0, 0] == 100.0 and np.isnan(out[1, 0])
+
+
+def test_hourly_read_is_the_09_bucket_on_both_sides_of_the_us_dst_change():
+    days = [date(2024, 3, 8), date(2024, 3, 11)]  # EST on the 8th, EDT on the 11th
+    prepared = prepare_hourly({"AAA": hourly(days)})
+    out = evaluate_prepared_hourly("close", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=1)
+    assert out[:, 0].tolist() == [100.0, 107.0]
+
+
+def test_hourly_dsl_fields_are_bar_over_bar():
+    days = weekdays(date(2024, 1, 2), 2)
+    prepared = prepare_hourly({"AAA": hourly(days)})
+    gap = evaluate_prepared_hourly(
+        "open_gap", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    # Day 2's 09:00 bucket opens at 106.5 after day 1's last close 106: open_gap = 106.5/106 - 1.
+    assert np.isnan(gap[0, 0]) and gap[1, 0] == pytest.approx(106.5 / 106.0 - 1.0)
+    oc = evaluate_prepared_hourly(
+        "oc_spread", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    assert oc[0, 0] == pytest.approx(0.5 / 100.0)
+    windowed = evaluate_prepared_hourly(
+        "volume / ts_mean(volume, 7)", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    assert np.isnan(windowed[0, 0]) and np.isfinite(windowed[1, 0])
+
+
+def test_hourly_read_never_sees_bars_at_or_after_the_decision():
+    """Poisoning the current day's 10:00+ buckets (close 11:00 or later) leaves the 10:35 read unchanged."""
+    days = weekdays(date(2024, 1, 2), 3)
+    base = hourly(days)
+    poisoned = base.copy()
+    late = [ts for ts in poisoned.index if ts.astimezone(ET_TZ).time() >= time(10, 0)]
+    poisoned.loc[late, ["Open", "High", "Low", "Close", "Volume"]] = 1e9
+    # Poisoning every day's 10:00+ buckets also poisons earlier sessions, so use a read that only
+    # needs the current session's 09:00 bucket: the single-bar expression.
+    for expression in ("close", "oc_spread", "hl_spread"):
+        a = evaluate_prepared_hourly(
+            expression,
+            prepare_hourly({"AAA": base}),
+            days,
+            ("AAA",),
+            decision_time_et="10:35",
+            bars_before_decision=1,
+        )
+        b = evaluate_prepared_hourly(
+            expression,
+            prepare_hourly({"AAA": poisoned}),
+            days,
+            ("AAA",),
+            decision_time_et="10:35",
+            bars_before_decision=1,
+        )
+        np.testing.assert_array_equal(a, b)
+    close = evaluate_prepared_hourly(
+        "close", prepare_hourly({"AAA": poisoned}), days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    assert close[:, 0].tolist() == [100.0, 107.0, 114.0]

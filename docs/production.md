@@ -16,7 +16,7 @@ See [development notes](development-notes.md), [CLI reference](cli-reference.md)
 
 `com.agentictrader.copilot` runs `uv run copilot daemon` from this checkout after
 its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID and runs the external readiness monitor every
-60 seconds; `com.agentictrader.alphaminer` runs weekly. Do not start a second daemon,
+60 seconds; the weekly `com.agentictrader.alphaminer` job is retired (see below). Do not start a second daemon,
 `listen`, or Compose service while the installed poller owns the bot.
 
 - Swing scans: every four hours from startup, immediate first run, all timeframes,
@@ -33,11 +33,12 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 - Position monitor: every minute, with additional broker stream wakeups.
 - Macro briefing: weekdays 12:30. Automatic legacy retuning is removed. Cron schedules
   inherit scheduler/system timezone. Intervals are not candle-close aligned.
-- Alpha miner: Saturday 03:00 local launchd time; ETF32, 9 genetic + 7 catalog trials/symbol,
-  5y daily Alpaca data, 120s compute/symbol; no automatic qualification or promotion.
-  Reviewed prospective equity cohorts are available only through the manual,
-  capped `alpha mine --universe snapshot --universe-file ...` path; the scheduled
-  job remains ETF32 until a snapshot campaign is explicitly enrolled.
+- Alpha miner: **retired 2026-10-14** (the per-symbol ETF32 miner produced no finalist in 62
+  runs). `launchd.sh install-miner` and `run-miner` print a retirement notice and install or run
+  nothing; `install` loads the daemon and watchdog only; `uninstall-miner` still removes a stale
+  plist (run it on the installed checkout to unload the old weekly job). Mining runs as
+  predeclared pooled campaigns under operator approval
+  ([pooled mining](alpha-pooled-mining.md)). The manual `alpha mine` command remains.
 
 Scans stage suggestions; an operator approves entry orders. Configuration loads at construction. The journal-backed alpha registry reloads
 atomically between scans; external config edits still require restart.
@@ -843,14 +844,9 @@ Notifications enqueued by this revision carry a `probe_risk_cap` argument, so
 rolling BACK to an earlier revision with such a notice still queued would
 dead-letter it; drain or inspect `copilot db outbox` before a rollback.
 
-Deploying the native-daily entry-expiry change (`--entry-policy` on `alpha mine`)
-is a case of step 4's plist rule: editing `scripts/launchd.sh` does not regenerate
-the installed plist. After updating the installed checkout, run
-`./scripts/launchd.sh install-miner` and verify that
-`~/Library/LaunchAgents/com.agentictrader.alphaminer.plist` contains
-`--entry-policy gtc`; otherwise the scheduled ETF32 benchmark would silently adopt
-the new `session` default for daily mining instead of keeping its pinned GTC
-identity. See [trade lifetimes](alpha-trade-lifetimes.md#native-daily-one-session-entries-semantics-version-5).
+The native-daily entry-expiry change (`--entry-policy` on `alpha mine`) once required
+regenerating the miner plist; the scheduled miner is now retired, so the pinned
+`--entry-policy gtc` job no longer exists. See [trade lifetimes](alpha-trade-lifetimes.md#native-daily-one-session-entries-semantics-version-5).
 
 Do not restore old code against a newer schema without checking compatibility.
 Quarantined records can be reviewed/restored with an audited migration; they were
@@ -860,7 +856,7 @@ not deleted. Keep broker-held protective orders in place during a daemon restart
 
 - `data/copilot.err.log`: JSON application logs with UTC time and process run ID.
 - `data/copilot.log`: printed cards; `data/watchdog.log`: process checks and readiness reports; `.err.log`: probe errors.
-- `data/alphaminer.log` and `.err.log`: scheduled research output.
+- `data/alphaminer.log` and `.err.log`: historical output of the retired scheduled miner.
 - `audit_events`: signal creation, exact fill changes, stream and REST evidence,
   valuations, close submissions/completions, notification message IDs/results,
   quarantine/restoration, and source revision at daemon startup.
@@ -1090,8 +1086,6 @@ is activated by the migration/import. Confirm `alpha list`, `alpha status` and t
 `alpha_registry` readiness component after the first scan. `/alphas` uses the same
 registry. See [pipeline contracts](alpha-pipeline.md) before any qualification.
 
-Regenerate only the miner plist with `./scripts/launchd.sh install-miner` to apply
-its staggered schedule. This does not start another daemon or Telegram poller.
 Private research artifacts live in `~/.local/state/agentic-trader/research` with
 atomic writes and mode 0600. Retain them with the journal for reproducibility.
 

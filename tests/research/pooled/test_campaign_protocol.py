@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -5,7 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_trader.research.alpha.search import WINDOWS
-from agentic_trader.research.pooled.campaign import Selection, load_campaign_protocol
+from agentic_trader.research.pooled.campaign import (
+    CampaignProtocol,
+    IntradayCampaignProtocol,
+    ScoreRead,
+    Selection,
+    load_campaign_protocol,
+)
 from agentic_trader.research.pooled.cohort import load_cohort
 
 
@@ -221,3 +228,86 @@ def test_a_protocol_has_exactly_one_of_k_or_selection(tmp_path):
 def test_v1_protocols_select_top_k_with_hold_skipping():
     protocol = load_campaign_protocol(PROTOCOL).protocol
     assert protocol.selection_rule == Selection(rule="top_k", k=3)
+
+
+V4_PATH = REPO / "config/research/pooled/campaign-v4.json"
+V4_SHA256 = "a72f2e65"  # recorded prefix of the v4 file's SHA-256 (docs/alpha-pooled-checks-v4-2026-10-07.md)
+
+
+def _intraday_document() -> dict:
+    doc = json.loads(V4_PATH.read_text())
+    doc["id"] = "pooled-intraday-campaign"
+    doc["version"] = 1
+    doc["score_inputs"] = "hourly"
+    doc["score_read"] = {"bars_before_decision": 1}
+    return doc
+
+
+def test_v4_identity_is_unchanged_by_the_dispatching_loader():
+    loaded = load_campaign_protocol(V4_PATH)
+    assert type(loaded.protocol) is CampaignProtocol
+    assert loaded.sha256.startswith(V4_SHA256)
+    assert hashlib.sha256(V4_PATH.read_bytes()).hexdigest() == loaded.sha256
+    assert loaded.protocol.score_inputs == "daily"
+    assert "score_inputs" not in loaded.protocol.model_dump(mode="json")
+
+
+def test_intraday_protocol_is_a_subclass_with_its_three_fields(tmp_path):
+    path = tmp_path / "intraday.json"
+    path.write_text(json.dumps(_intraday_document()))
+    loaded = load_campaign_protocol(path)
+    protocol = loaded.protocol
+    assert isinstance(protocol, IntradayCampaignProtocol) and isinstance(protocol, CampaignProtocol)
+    assert protocol.score_inputs == "hourly" and protocol.score_read == ScoreRead(bars_before_decision=1)
+    assert protocol.cube_spec().identity == CampaignProtocol(**json.loads(V4_PATH.read_text())).cube_spec().identity
+    assert protocol.gates == (("power", "power_a"), ("null_check", "null_check"))
+    dumped = protocol.model_dump(mode="json")
+    assert dumped["id"] == "pooled-intraday-campaign" and dumped["score_read"] == {"bars_before_decision": 1}
+    assert dumped["score_inputs"] == "hourly"
+
+
+def test_intraday_protocol_refuses_genetic_mode_and_bad_reads():
+    doc = _intraday_document()
+    with pytest.raises(ValidationError, match="fixed_set"):
+        IntradayCampaignProtocol(
+            **{
+                **doc,
+                "search_mode": "genetic",
+                "power_search": {"families": ["reversal_5"], "seeds": 10, "delta": 0.1, "min_recovered": 5, "seed": 1},
+            }
+        )
+    with pytest.raises(ValidationError):
+        IntradayCampaignProtocol(**{**doc, "score_read": {"bars_before_decision": 0}})
+    with pytest.raises(ValidationError):
+        IntradayCampaignProtocol(**{**doc, "score_inputs": "daily"})
+    with pytest.raises(ValidationError):
+        CampaignProtocol(**doc)  # the base refuses the intraday id and the extra fields
+
+
+def test_loader_refuses_an_unknown_id(tmp_path):
+    doc = _intraday_document()
+    doc["id"] = "pooled-something"
+    path = tmp_path / "x.json"
+    path.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="id"):
+        load_campaign_protocol(path)
+
+
+@pytest.mark.parametrize("document", ["[]", "3", '"pooled-campaign"', "null"])
+def test_loader_refuses_a_document_that_is_not_an_object(tmp_path, document):
+    path = tmp_path / "x.json"
+    path.write_text(document)
+    with pytest.raises(ValueError, match="JSON object"):
+        load_campaign_protocol(path)
+
+
+def test_loader_refuses_a_missing_or_non_string_id(tmp_path):
+    missing = _intraday_document()
+    del missing["id"]
+    unhashable = {**_intraday_document(), "id": ["pooled-campaign"]}
+    numeric = {**_intraday_document(), "id": 4}
+    for index, doc in enumerate((missing, unhashable, numeric)):
+        path = tmp_path / f"x{index}.json"
+        path.write_text(json.dumps(doc))
+        with pytest.raises(ValueError, match="id"):
+            load_campaign_protocol(path)

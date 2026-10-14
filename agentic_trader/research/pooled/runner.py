@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
@@ -54,6 +54,8 @@ class CubeBuild:
     adjusted: Mapping[str, pd.DataFrame]  # the cohort symbols' adjusted daily bars
     bar_failures: Mapping[str, str]  # as stored in the cube's coverage by the run that built it
     static_used: tuple[str, ...]  # likewise
+    # The cohort symbols' hourly bars the cube was built from; empty unless ``load_hourly`` was asked.
+    hourly: Mapping[str, pd.DataFrame] = field(default_factory=dict)
 
 
 def _record(target: dict[str, str], symbol: str, reason: str) -> None:
@@ -156,6 +158,7 @@ async def build_cube_inputs(
     pace: Callable[[], Awaitable[None]],
     progress: Callable[[str], None] | None = None,
     require_cached: bool = False,
+    load_hourly: bool = False,
 ) -> CubeBuild:
     def say(message: str) -> None:
         if progress is not None:
@@ -184,6 +187,7 @@ async def build_cube_inputs(
     symbols = tuple(cohort.cohort.symbols)
     acquisition = _Acquisition(bars, pace, say)
     adjusted: dict[str, pd.DataFrame] = {}
+    hourly: dict[str, pd.DataFrame] = {}
     if cube_path.exists():
         cube = await asyncio.to_thread(load_cube, cube_path)
         if cube.spec_identity != spec.identity or cube.cohort_sha256 != cohort.sha256:
@@ -199,6 +203,17 @@ async def build_cube_inputs(
             if frame is not None:
                 adjusted[symbol] = frame
             counted("daily bars", count, len(symbols))
+        if load_hourly:
+            # The span the build fetched (spec-only), so the bar cache serves it without the provider.
+            hourly_start = max(start, datetime.combine(spec.decisions[0], time.min, tzinfo=UTC) - _HOURLY_PAD)
+            # Only symbols with an eligible cell were fetched by the build; others have no cache files.
+            eligible_any = cube.window(cube.sessions[0], cube.sessions[-1]).eligible.any(axis=0)
+            wanted = [symbol for symbol, flag in zip(cube.symbols, eligible_any, strict=True) if flag]
+            for count, symbol in enumerate(wanted, start=1):
+                frame = await acquisition.fetch(symbol, "1h", bar_dir, hourly_start, end)
+                if frame is not None:
+                    hourly[symbol] = frame
+                counted("hourly bars", count, len(wanted))
         acquisition.raise_on_errors()
     else:
         raw: dict[str, pd.DataFrame] = {}
@@ -233,7 +248,6 @@ async def build_cube_inputs(
         )
         # One span for every symbol, whatever its own eligible sessions are.
         hourly_start = max(start, datetime.combine(spec.decisions[0], time.min, tzinfo=UTC) - _HOURLY_PAD)
-        hourly: dict[str, pd.DataFrame] = {}
         for count, symbol in enumerate(wanted, start=1):
             frame = await acquisition.fetch(symbol, "1h", bar_dir, hourly_start, end)
             if frame is not None:
@@ -263,4 +277,5 @@ async def build_cube_inputs(
         adjusted={symbol: adjusted[symbol] for symbol in symbols if symbol in adjusted},
         bar_failures=dict(coverage["bar_failures"]),
         static_used=tuple(coverage["static_used"]),
+        hourly={symbol: hourly[symbol] for symbol in symbols if symbol in hourly} if load_hourly else {},
     )

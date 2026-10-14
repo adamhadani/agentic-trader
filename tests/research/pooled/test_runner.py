@@ -105,7 +105,7 @@ def _no_retry_sleep(monkeypatch):
     monkeypatch.setattr(setups_runner, "_RETRY_DELAYS", ())
 
 
-def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SPEC):
+def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SPEC, load_hourly=False):
     return asyncio.run(
         build_cube_inputs(
             loaded or cohort(),
@@ -116,6 +116,7 @@ def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SP
             static_symbols=static,
             pace=_no_pace,
             progress=progress,
+            load_hourly=load_hourly,
         )
     )
 
@@ -366,3 +367,46 @@ def test_a_required_cache_hit_refuses_a_missing_cube_before_any_provider_access(
     assert bars.calls == []
     built = build(FakeBars(), tmp_path)  # check A's build caches the cube
     assert required(FakeBars(), FakeCalendar()).cube.sha256 == built.cube.sha256
+
+
+def test_build_cube_inputs_keeps_hourly_frames_when_asked(tmp_path):
+    built = build(FakeBars(), tmp_path / "with", load_hourly=True)
+    assert sorted(built.hourly) == ["AAA", "BBB"]
+    for frame in built.hourly.values():
+        assert not frame.empty and frame.index.tz is not None
+    assert build(FakeBars(), tmp_path / "without").hourly == {}
+
+
+def test_cache_hit_reloads_hourly_from_the_bar_cache(tmp_path):
+    bars = FakeBars()
+    first = build(bars, tmp_path, load_hourly=True)
+    calls = list(bars.calls)
+    second = build(bars, tmp_path, load_hourly=True)
+    assert bars.calls == calls  # the cube and every bar frame came from the cache: no provider request
+    assert sorted(second.hourly) == sorted(first.hourly) == ["AAA", "BBB"]
+    for symbol, frame in first.hourly.items():
+        assert np.array_equal(second.hourly[symbol].to_numpy(), frame.to_numpy())
+        assert (second.hourly[symbol].index == frame.index).all()
+    assert build(bars, tmp_path).hourly == {}  # not asked: not loaded
+
+
+def test_cache_hit_reloads_hourly_only_for_symbols_with_an_eligible_cell(tmp_path):
+    loaded = cohort()
+    names = ("AAA", "BBB", "CCC")
+    source = CohortSource(kind="config_groups", description="t", identity="x", symbols=names)
+    loaded = LoadedCohort(
+        cohort=Cohort(
+            id="pooled-cohort", version=1, survivorship="test", sources=(source,), excluded={}, symbols=names
+        ),
+        sha256=loaded.sha256,
+        path=loaded.path,
+    )
+    bars = FakeBars(empty={("CCC", "1d", "raw")})  # CCC has no raw bars: never eligible, so no hourly fetch
+    first = build(bars, tmp_path, loaded=loaded, load_hourly=True)
+    assert sorted(first.hourly) == ["AAA", "BBB"]
+    assert not first.cube.window(*WINDOW).eligible[:, 2].any()
+    assert ("CCC", "1h", "all") not in bars.calls
+    calls = list(bars.calls)
+    second = build(bars, tmp_path, loaded=loaded, load_hourly=True)
+    assert sorted(second.hourly) == ["AAA", "BBB"]
+    assert bars.calls == calls  # no provider request, in particular none for CCC's hourly bars
