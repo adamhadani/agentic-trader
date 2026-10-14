@@ -20,6 +20,7 @@ from sqlalchemy import delete
 import agentic_trader.agent.copilot as copilot_module
 import agentic_trader.research.setups.ranker as ranker_module
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
+from agentic_trader.agent.regime import REGIME_BLOCK_KEYS
 from agentic_trader.config import ScanBudget, UniverseConfig, UniverseEntry
 from agentic_trader.constants import AssetClass
 from agentic_trader.execution.durable import EventKind, ScanTrigger
@@ -497,3 +498,20 @@ async def test_scan_candidates_ranked_round_trips_through_label_journaled(shadow
     sent = frame.loc[frame["contract"] == "DDD"].iloc[0]
     assert bool(sent["sent"]) is True
     assert sent["scan_id"] == event["payload"]["scan_id"]
+
+
+async def test_journal_and_provenance_carry_the_regime_block(shadow_desk, temp_db):
+    """The scan-level regime is journaled once at the top level and copied into each card's provenance."""
+    await shadow_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
+    [event] = await _ranked_events(temp_db)
+    payload = event["payload"]
+    block = payload["regime"]
+    # The fixture's detector is a bare namespace: every key present, every value None.
+    # (The journal serializes with sorted keys, so compare as a set.)
+    assert set(block) == set(REGIME_BLOCK_KEYS)
+    assert all(value is None for value in block.values())
+    assert all("regime" not in candidate for candidate in payload["candidates"])
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    assert signal["decision_provenance"]["regime"] == block

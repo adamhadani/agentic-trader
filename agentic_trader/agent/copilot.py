@@ -28,7 +28,7 @@ from agentic_trader.agent.earnings import (
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.news_context import NewsContextService, build_news_context_service, unavailable_block
-from agentic_trader.agent.regime import RegimeDetector
+from agentic_trader.agent.regime import RegimeDetector, regime_journal_block
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
 from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live, news_live
@@ -779,6 +779,7 @@ class TradingCopilot:
             logger.info("=== Starting Quantitative Scan ===")
             regime = await self.regime_detector.get_regime()
             logger.info("Current market volatility context: %s", regime.summary_text)
+            regime_block = regime_journal_block(regime)
             current_exposure = await self.db.get_active_notional_exposure()
             active_count = await self.db.get_active_position_count()
             active_positions = await self.db.get_active_positions()
@@ -1475,6 +1476,7 @@ class TradingCopilot:
                             "book_sizing": book_block,
                             "corporate_actions": eval_res.corporate_actions,
                             "news": self._news_block(eval_res),
+                            "regime": regime_block,
                             **evidence_keys,
                             # A drift card is never tagged dynamic; catalog admission requires
                             # its same-session event naming the contract.
@@ -1592,6 +1594,7 @@ class TradingCopilot:
                     decided_at=decided_at,
                     budget=budget,
                     trigger=trigger,
+                    regime_block=regime_block,
                     ranked=ranked[:native_count],
                     outcomes=outcomes[:native_count],
                     shadow_by_rank=shadow_by_rank[:native_count],
@@ -1852,6 +1855,7 @@ class TradingCopilot:
         decided_at: datetime,
         budget: ScanBudget,
         trigger: ScanTrigger,
+        regime_block: dict[str, Any],
         ranked: list[tuple[Any, Any, Any]],
         outcomes: list[str | None],
         shadow_by_rank: list[dict[str, Any] | None],
@@ -1896,6 +1900,9 @@ class TradingCopilot:
                 "scope": "universe",
                 # Which caller ran this full-universe scan; never read by ranking or sending.
                 "trigger": str(trigger),
+                # The regime the whole scan observed (scan-level, like trigger and budget); the
+                # outcomes report copies it onto each candidate and buckets by it. Never a gate.
+                "regime": regime_block,
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
                 "card_policy": {

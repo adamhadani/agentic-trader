@@ -3,6 +3,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import yfinance as yf
 
@@ -18,6 +19,7 @@ from agentic_trader.constants import (
     VIX_TICKER,
     VolatilityRegime,
 )
+from agentic_trader.research.setups.ranker import finite_or_none
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,50 @@ def classify_vix_level(vix: float, config: RegimeConfig | None = None) -> Volati
         return VolatilityRegime.ELEVATED
     else:
         return VolatilityRegime.EXTREME
+
+
+REGIME_BLOCK_KEYS: tuple[str, ...] = (
+    "vix",
+    "vix_regime",
+    "breakout_allowed",
+    "risk_multiplier",
+    "min_rr_threshold",
+    "macro_stress",
+    "observed_at",
+)
+
+
+def _number(snapshot: Any, name: str) -> float | None:
+    value = getattr(snapshot, name, None)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return finite_or_none(float(value))
+
+
+def regime_journal_block(snapshot: Any) -> dict[str, Any]:
+    """JSON-safe record of the regime a scan observed; every key present, missing values None.
+
+    Scan-level evidence for ``scan_candidates_ranked`` and ``decision_provenance``: what the desk
+    saw and gated on (the VIX bucket, breakout flag, risk multiplier, required reward/risk, macro
+    stress) cannot be rebuilt from bars later, so it is journaled; the tape itself is derived by
+    the outcomes report. Never raises: a detector stub or a partial snapshot yields None fields.
+    """
+    try:
+        regime = getattr(snapshot, "vix_regime", None)
+        level = getattr(getattr(getattr(snapshot, "macro_report", None), "stress", None), "level", None)
+        allowed = getattr(snapshot, "breakout_allowed", None)
+        timestamp = getattr(snapshot, "timestamp", None)
+        return {
+            "vix": _number(snapshot, "vix"),
+            "vix_regime": str(getattr(regime, "value", regime)) if regime is not None else None,
+            "breakout_allowed": bool(allowed) if allowed is not None else None,
+            "risk_multiplier": _number(snapshot, "risk_multiplier"),
+            "min_rr_threshold": _number(snapshot, "min_rr_threshold"),
+            "macro_stress": str(getattr(level, "value", level)) if level is not None else None,
+            "observed_at": timestamp.isoformat() if isinstance(timestamp, datetime) else None,
+        }
+    except Exception:
+        return dict.fromkeys(REGIME_BLOCK_KEYS)
 
 
 def _fetch_ticker_sync(ticker: str) -> float | None:
