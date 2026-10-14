@@ -166,7 +166,8 @@ def preflight(protocol: CampaignProtocol, book: ScoreBook, view: CubeView) -> in
 def first_finite_sessions(protocol: CampaignProtocol, book: ScoreBook, view: CubeView) -> dict[str, str | None]:
     """Per seed, the first discovery session with any finite score (ISO date), None when there is none.
 
-    Label-blind: reads only the score panel and the view's sessions. Shows how much of the window a
+    Label-blind: reads only the score panel and the view's sessions; counts finite scores over all symbols,
+    including ineligible cells (descriptive only). Shows how much of the window a
     long-lookback formula spends warming up."""
     out: dict[str, str | None] = {}
     for seed in protocol.seed_expressions:

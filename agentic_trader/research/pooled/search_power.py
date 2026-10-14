@@ -219,6 +219,7 @@ async def execute_search_power(
             campaign_protocol_sha256=loaded.sha256,
             cube_sha256=built.cube.sha256,
         )
+        # Check B is genetic and daily only: the daily score book, no hourly bars.
         book = ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)
         outcome = await asyncio.to_thread(run_search_power, protocol, built.cube, book, progress=progress)
         result = {**outcome, **base, "cube_sha256": built.cube.sha256}

@@ -206,11 +206,14 @@ async def build_cube_inputs(
         if load_hourly:
             # The span the build fetched (spec-only), so the bar cache serves it without the provider.
             hourly_start = max(start, datetime.combine(spec.decisions[0], time.min, tzinfo=UTC) - _HOURLY_PAD)
-            for count, symbol in enumerate(symbols, start=1):
+            # Only symbols with an eligible cell were fetched by the build; others have no cache files.
+            eligible_any = cube.window(cube.sessions[0], cube.sessions[-1]).eligible.any(axis=0)
+            wanted = [symbol for symbol, flag in zip(cube.symbols, eligible_any, strict=True) if flag]
+            for count, symbol in enumerate(wanted, start=1):
                 frame = await acquisition.fetch(symbol, "1h", bar_dir, hourly_start, end)
                 if frame is not None:
                     hourly[symbol] = frame
-                counted("hourly bars", count, len(symbols))
+                counted("hourly bars", count, len(wanted))
         acquisition.raise_on_errors()
     else:
         raw: dict[str, pd.DataFrame] = {}

@@ -437,10 +437,14 @@ def test_mine_help_documents_the_entry_policy():
     assert result.exit_code == 0 and "--entry-policy" in result.output
 
 
-def test_scheduled_benchmark_is_pinned_to_gtc():
+def test_scheduled_benchmark_is_retired_not_rescheduled():
+    """The weekly ETF32 per-symbol miner was retired on 2026-10-14 (62 runs, no finalist): the launchd
+    script must install no `alpha mine` job. The CLI's `--entry-policy` options (session default, gtc
+    for a scheduled run) stay, and a re-added scheduled job would again have to pin gtc."""
     script = Path(__file__).resolve().parents[2] / "scripts" / "launchd.sh"
-    lines = [line for line in script.read_text().splitlines() if "copilot alpha mine --universe etf32" in line]
-    assert len(lines) == 2 and all("--entry-policy gtc" in line for line in lines)
+    text = script.read_text()
+    assert "copilot alpha mine" not in text
+    assert "Alpha miner retired 2026-10-14" in text
 
 
 def _daily_cli_frame():

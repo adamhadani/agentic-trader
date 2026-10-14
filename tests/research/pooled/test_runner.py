@@ -388,3 +388,25 @@ def test_cache_hit_reloads_hourly_from_the_bar_cache(tmp_path):
         assert np.array_equal(second.hourly[symbol].to_numpy(), frame.to_numpy())
         assert (second.hourly[symbol].index == frame.index).all()
     assert build(bars, tmp_path).hourly == {}  # not asked: not loaded
+
+
+def test_cache_hit_reloads_hourly_only_for_symbols_with_an_eligible_cell(tmp_path):
+    loaded = cohort()
+    names = ("AAA", "BBB", "CCC")
+    source = CohortSource(kind="config_groups", description="t", identity="x", symbols=names)
+    loaded = LoadedCohort(
+        cohort=Cohort(
+            id="pooled-cohort", version=1, survivorship="test", sources=(source,), excluded={}, symbols=names
+        ),
+        sha256=loaded.sha256,
+        path=loaded.path,
+    )
+    bars = FakeBars(empty={("CCC", "1d", "raw")})  # CCC has no raw bars: never eligible, so no hourly fetch
+    first = build(bars, tmp_path, loaded=loaded, load_hourly=True)
+    assert sorted(first.hourly) == ["AAA", "BBB"]
+    assert not first.cube.window(*WINDOW).eligible[:, 2].any()
+    assert ("CCC", "1h", "all") not in bars.calls
+    calls = list(bars.calls)
+    second = build(bars, tmp_path, loaded=loaded, load_hourly=True)
+    assert sorted(second.hourly) == ["AAA", "BBB"]
+    assert bars.calls == calls  # no provider request, in particular none for CCC's hourly bars

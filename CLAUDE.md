@@ -422,5 +422,6 @@ Semantics version 5 is the production native-daily contract: no clock, exactly
 `DAILY_ENTRY_LIFETIME_SECONDS = 57,600` resting and no holding deadline, so
 research (bar label) and live (`submitted_at`) both mean one regular session.
 Never relax it to a configurable value, add a holding deadline to it, or re-fence
-it on `semantics_version`; the miner's `--entry-policy session` default and the
-scheduled `--entry-policy gtc` pin are deliberate.
+it on `semantics_version`; the miner's `--entry-policy session` default is deliberate, and a
+scheduled `alpha mine` run must pin `--entry-policy gtc` (the weekly ETF32 job itself was retired on
+2026-10-14; `launchd.sh install-miner` installs nothing).
