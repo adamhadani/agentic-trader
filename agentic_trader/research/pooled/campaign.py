@@ -47,8 +47,12 @@ from agentic_trader.research.setups.study import holm
 __all__ = [
     "CampaignProtocol",
     "CampaignWindows",
+    "CorporateActionInputs",
     "DiscoveryEvaluator",
     "DiscoveryScore",
+    "EarningsInputs",
+    "EventInputs",
+    "EventsCampaignProtocol",
     "Family",
     "InMemoryLedger",
     "IntradayCampaignProtocol",
@@ -407,6 +411,51 @@ class IntradayCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
         return self
 
 
+class EarningsInputs(BaseModel, frozen=True, extra="forbid"):
+    """The Nasdaq calendar pages an events protocol reads, pinned by a digest over every weekday page."""
+
+    source: Literal["nasdaq-calendar"]
+    pages_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    calendar_from: date
+    calendar_through: date
+    min_estimates: int = Field(ge=1)
+    min_abs_forecast: float = Field(gt=0)
+    vol_window: int = Field(ge=2)
+    benchmark: str = Field(min_length=1)
+
+
+class CorporateActionInputs(BaseModel, frozen=True, extra="forbid"):
+    """The corporate-actions acquisition (``actions.json``) an events protocol reads, pinned by its content digest."""
+
+    source: Literal["alpaca"]
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    window: tuple[date, date]
+    trailing_sessions: int = Field(ge=1)
+
+
+class EventInputs(BaseModel, frozen=True, extra="forbid"):
+    fields_version: Literal["events_fields_v1"]
+    earnings: EarningsInputs
+    corporate_actions: CorporateActionInputs
+
+
+class EventsCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
+    """A pooled protocol whose formulas read daily bars at D-1 plus the event fields of
+    ``events_fields_v1`` (spec 2026-10-14, events): everything else is inherited."""
+
+    id: Literal["pooled-events-campaign"]  # type: ignore[assignment]
+    score_inputs: Literal["daily"] = Field(default="daily", exclude=False)
+    event_inputs: EventInputs
+
+    @model_validator(mode="after")
+    def _events(self) -> EventsCampaignProtocol:
+        if self.search_mode != "fixed_set":
+            raise ValueError(
+                "an events protocol is fixed_set in v1: a genetic search on event fields needs check B and its own spec"
+            )
+        return self
+
+
 @dataclass(frozen=True)
 class LoadedProtocol:
     protocol: CampaignProtocol
@@ -417,6 +466,7 @@ class LoadedProtocol:
 _PROTOCOL_CLASSES: dict[str, type[CampaignProtocol]] = {
     "pooled-campaign": CampaignProtocol,
     "pooled-intraday-campaign": IntradayCampaignProtocol,
+    "pooled-events-campaign": EventsCampaignProtocol,
 }
 
 

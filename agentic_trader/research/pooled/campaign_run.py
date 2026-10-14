@@ -73,7 +73,13 @@ from agentic_trader.research.pooled.formula import Formula, allowed_mask, jaccar
 from agentic_trader.research.pooled.genetic import SearchOutcome, run_search_stages
 from agentic_trader.research.pooled.ledger import CampaignAborted, JournalLedger
 from agentic_trader.research.pooled.runner import CubeBuild
-from agentic_trader.research.pooled.scoring import ScoreBook, formula_id, score_book, score_read_document
+from agentic_trader.research.pooled.scoring import (
+    ScoreBook,
+    event_inputs_document,
+    formula_id,
+    score_book,
+    score_read_document,
+)
 from agentic_trader.research.setups.study import _finite_json
 from agentic_trader.storage.alpha import POOLED_CONFIRMATION_KEY
 from agentic_trader.storage.artifacts import save_json_report
@@ -231,6 +237,9 @@ def frozen_document(expression: str, protocol: CampaignProtocol) -> dict:
     read = score_read_document(protocol)
     if read is not None:  # an intraday score is a different formula from the same text on daily bars
         body = {**body, "score_inputs": protocol.score_inputs, "score_read": read}
+    events = event_inputs_document(protocol)
+    if events is not None:  # an event-conditioned score is a different formula from the same text on bars alone
+        body = {**body, "score_inputs": protocol.score_inputs, "event_inputs": events}
     identity = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {"formula": body, "identity": identity}
 
@@ -362,6 +371,7 @@ async def execute_campaign(
             "cube_spec_identity": protocol.cube_spec().identity,
             "score_inputs": protocol.score_inputs,
             "score_read": score_read_document(protocol),
+            "event_inputs": event_inputs_document(protocol),
             "gates": {
                 name: {"status": gate.get("status"), "cube_sha256": gate.get("cube_sha256")}
                 for name, gate in gates.items()
@@ -576,6 +586,7 @@ async def _run_campaign(
         "code_revision": revision,
         "score_inputs": protocol.score_inputs,
         "score_read": score_read_document(protocol),
+        "event_inputs": event_inputs_document(protocol),
         "first_finite_session": first_finite,
         "symbols_without_hourly": (
             sum(1 for symbol in built.cube.symbols if symbol not in built.hourly)

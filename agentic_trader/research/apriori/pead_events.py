@@ -46,6 +46,7 @@ __all__ = [
     "build_events",
     "by_session",
     "decision_at",
+    "reaction_z",
     "surprise_pct",
 ]
 
@@ -101,7 +102,7 @@ def by_session(frame: pd.DataFrame) -> pd.DataFrame:
     return keyed[~keyed.index.duplicated(keep="last")]
 
 
-def _reaction_z(sym: pd.DataFrame, bench: pd.DataFrame, days: Sequence[date], i: int, vol_window: int) -> float | None:
+def reaction_z(sym: pd.DataFrame, bench: pd.DataFrame, days: Sequence[date], i: int, vol_window: int) -> float | None:
     history = days[i - 1 - vol_window : i]  # vol_window + 1 closes ending D-1
     needed = [*history, days[i + 1]]
     if any(day not in sym.index for day in needed) or any(day not in bench.index for day in (days[i - 1], days[i + 1])):
@@ -202,7 +203,7 @@ def build_events(rows: Sequence[CalendarRow], market: MarketData, entry: PeadEnt
         if dollar_volume < reference:
             skip("illiquid_volume", row.date)
             continue
-        z = _reaction_z(sym, bench, days, i, vol_window)
+        z = reaction_z(sym, bench, days, i, vol_window)
         if z is None:
             skip("no_reaction_bars", row.date)
             continue

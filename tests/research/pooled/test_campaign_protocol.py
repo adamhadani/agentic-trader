@@ -8,12 +8,14 @@ from pydantic import ValidationError
 from agentic_trader.research.alpha.search import WINDOWS
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
+    EventsCampaignProtocol,
     IntradayCampaignProtocol,
     ScoreRead,
     Selection,
     load_campaign_protocol,
 )
 from agentic_trader.research.pooled.cohort import load_cohort
+from agentic_trader.research.pooled.scoring import event_inputs_document
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -311,3 +313,78 @@ def test_loader_refuses_a_missing_or_non_string_id(tmp_path):
         path.write_text(json.dumps(doc))
         with pytest.raises(ValueError, match="id"):
             load_campaign_protocol(path)
+
+
+INTRADAY_PATH = Path("config/research/pooled/intraday-v1.json")
+INTRADAY_SHA256 = "5b4c3fdf"  # docs/alpha-pooled-mining.md, intraday score inputs
+
+
+def _events_document() -> dict:
+    document = json.loads(INTRADAY_PATH.read_text())
+    document.pop("score_read")
+    document.update(
+        id="pooled-events-campaign",
+        score_inputs="daily",
+        event_inputs={
+            "fields_version": "events_fields_v1",
+            "earnings": {
+                "source": "nasdaq-calendar",
+                "pages_sha256": "a" * 64,
+                "calendar_from": "2016-02-23",
+                "calendar_through": "2026-07-31",
+                "min_estimates": 1,
+                "min_abs_forecast": 0.05,
+                "vol_window": 20,
+                "benchmark": "SPY",
+            },
+            "corporate_actions": {
+                "source": "alpaca",
+                "content_sha256": "b" * 64,
+                "window": ["2016-01-01", "2027-03-31"],
+                "trailing_sessions": 252,
+            },
+        },
+    )
+    return document
+
+
+def test_intraday_v1_identity_is_unchanged_by_the_events_subclass():
+    loaded = load_campaign_protocol(INTRADAY_PATH)
+    assert loaded.sha256.startswith(INTRADAY_SHA256)
+    assert "event_inputs" not in loaded.protocol.model_dump(mode="json")
+    assert "event_inputs" not in CampaignProtocol(**json.loads(V4_PATH.read_text())).model_dump(mode="json")
+
+
+def test_events_protocol_loads_by_id_and_dumps_its_inputs(tmp_path):
+    path = tmp_path / "events.json"
+    path.write_text(json.dumps(_events_document()))
+    loaded = load_campaign_protocol(path)
+    protocol = loaded.protocol
+    assert isinstance(protocol, EventsCampaignProtocol)
+    assert protocol.score_inputs == "daily" and protocol.search_mode == "fixed_set"
+    dumped = protocol.model_dump(mode="json")
+    assert dumped["score_inputs"] == "daily"
+    assert dumped["event_inputs"]["earnings"]["vol_window"] == 20
+    assert dumped["event_inputs"]["corporate_actions"]["trailing_sessions"] == 252
+    assert protocol.cube_spec().identity.startswith("f1c835a3d3364d2b")
+
+
+def test_events_protocol_refuses_genetic_search_and_unknown_fields_version():
+    genetic = _events_document()
+    genetic.update(
+        search_mode="genetic",
+        power_search={"families": ["first_hour_momentum"], "seeds": 10, "delta": 0.1, "min_recovered": 5, "seed": 1},
+    )
+    with pytest.raises(ValidationError, match="fixed_set"):
+        EventsCampaignProtocol.model_validate(genetic)
+    other = _events_document()
+    other["event_inputs"]["fields_version"] = "events_fields_v2"
+    with pytest.raises(ValidationError):
+        EventsCampaignProtocol.model_validate(other)
+
+
+def test_event_inputs_document_is_none_for_daily_and_intraday_protocols():
+    assert event_inputs_document(load_campaign_protocol(V4_PATH).protocol) is None
+    assert event_inputs_document(load_campaign_protocol(INTRADAY_PATH).protocol) is None
+    events = EventsCampaignProtocol.model_validate(_events_document())
+    assert event_inputs_document(events) == events.event_inputs.model_dump(mode="json")

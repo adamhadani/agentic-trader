@@ -21,7 +21,13 @@ import numpy as np
 import pandas as pd
 
 from agentic_trader.research.alpha.search import canonical_expression
-from agentic_trader.research.pooled.campaign import CampaignProtocol, IntradayCampaignProtocol, ScoredFormula, _calls
+from agentic_trader.research.pooled.campaign import (
+    CampaignProtocol,
+    EventsCampaignProtocol,
+    IntradayCampaignProtocol,
+    ScoredFormula,
+    _calls,
+)
 from agentic_trader.research.pooled.cube import CubeView
 from agentic_trader.research.pooled.formula import (
     evaluate_prepared,
@@ -43,6 +49,7 @@ __all__ = [
     "FrozenPanels",
     "ScoreBook",
     "Vetted",
+    "event_inputs_document",
     "formula_id",
     "score_book",
     "score_read_document",
@@ -236,6 +243,11 @@ class FrozenPanels:
 def score_read_document(protocol: CampaignProtocol) -> dict | None:
     """The protocol's hourly read as recorded in manifests; None for a daily protocol."""
     return protocol.score_read.model_dump() if isinstance(protocol, IntradayCampaignProtocol) else None
+
+
+def event_inputs_document(protocol: CampaignProtocol) -> dict | None:
+    """The protocol's event inputs as recorded in manifests; None for a protocol without event fields."""
+    return protocol.event_inputs.model_dump(mode="json") if isinstance(protocol, EventsCampaignProtocol) else None
 
 
 def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:

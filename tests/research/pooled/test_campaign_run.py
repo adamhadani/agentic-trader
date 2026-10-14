@@ -14,8 +14,10 @@ import pytest
 from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled import campaign as campaign_module, campaign_run
 from agentic_trader.research.pooled.campaign import (
+    CampaignProtocol,
     CampaignWindows,
     DiscoveryEvaluator,
+    EventsCampaignProtocol,
     LoadedProtocol,
     ScoreRead,
 )
@@ -43,6 +45,7 @@ from tests.research.pooled.mini_world import (
     mini_v3_protocol,
     planted_cube,
 )
+from tests.research.pooled.test_campaign_protocol import _events_document
 
 
 PLANTED = "-1.0 * roc(close, 21)"
@@ -768,3 +771,14 @@ def test_a_frozen_identity_binds_the_score_inputs_for_an_intraday_protocol():
     # A different read is a different identity.
     other = mini_intraday_protocol().model_copy(update={"score_read": ScoreRead(bars_before_decision=2)})
     assert campaign_run.frozen_document("oc_spread", other)["identity"] != intraday_doc["identity"]
+
+
+def test_frozen_document_binds_event_inputs():
+    events = EventsCampaignProtocol.model_validate(_events_document())
+    daily = CampaignProtocol(**json.loads(Path("config/research/pooled/campaign-v4.json").read_text()))
+    with_events = campaign_run.frozen_document("close / ts_mean(close, 20)", events)
+    without = campaign_run.frozen_document("close / ts_mean(close, 20)", daily)
+    assert with_events["formula"]["event_inputs"] == events.event_inputs.model_dump(mode="json")
+    assert with_events["formula"]["score_inputs"] == "daily"
+    assert "event_inputs" not in without["formula"] and "score_inputs" not in without["formula"]
+    assert with_events["identity"] != without["identity"]
