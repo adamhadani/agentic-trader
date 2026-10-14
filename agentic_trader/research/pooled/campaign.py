@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import calendar
 import hashlib
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -50,9 +51,11 @@ __all__ = [
     "DiscoveryScore",
     "Family",
     "InMemoryLedger",
+    "IntradayCampaignProtocol",
     "Ledger",
     "LoadedProtocol",
     "NullCheckSpec",
+    "ScoreRead",
     "ScoredFormula",
     "Selection",
     "finish_discovery",
@@ -221,6 +224,13 @@ class Selection(BaseModel, frozen=True, extra="forbid"):
 SearchMode = Literal["genetic", "fixed_set"]
 
 
+class ScoreRead(BaseModel, frozen=True, extra="forbid"):
+    """Which completed hourly bar a session's score is read at: 1 = the last bar whose close is at or
+    before the decision instant (the 09:30 bar for a 10:35 decision)."""
+
+    bars_before_decision: int = Field(ge=1)
+
+
 class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
     """A frozen pooled campaign protocol, pinned by the SHA-256 of its file.
 
@@ -235,6 +245,9 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
     version: int = Field(ge=1)
     title: str
     rationale: str | None = None
+    # What a formula reads: adjusted daily bars at D-1 (v1-v4). Excluded from the dump so daily
+    # documents and their hashes are unchanged; the intraday subclass narrows it to "hourly".
+    score_inputs: Literal["daily"] = Field(default="daily", exclude=True)
     search_mode: SearchMode = "genetic"
     cohort: str
     cohort_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -375,6 +388,24 @@ class CampaignProtocol(BaseModel, frozen=True, extra="forbid"):
             )
 
 
+class IntradayCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
+    """A pooled protocol whose formulas read regular-session hourly bars through the first completed
+    bar of the decision session (spec 2026-10-14). Everything else -- cohort, cube, gates, stages,
+    ledger -- is the daily protocol's, inherited; v1-v4 documents and hashes are untouched."""
+
+    id: Literal["pooled-intraday-campaign"]  # type: ignore[assignment]
+    score_inputs: Literal["hourly"] = Field(exclude=False)  # type: ignore[assignment]
+    score_read: ScoreRead
+
+    @model_validator(mode="after")
+    def _intraday(self) -> IntradayCampaignProtocol:
+        if self.search_mode != "fixed_set":
+            raise ValueError(
+                "an intraday protocol is fixed_set in v1: a genetic search on hourly inputs needs check B and its own spec"
+            )
+        return self
+
+
 @dataclass(frozen=True)
 class LoadedProtocol:
     protocol: CampaignProtocol
@@ -382,11 +413,22 @@ class LoadedProtocol:
     path: Path
 
 
+_PROTOCOL_CLASSES: dict[str, type[CampaignProtocol]] = {
+    "pooled-campaign": CampaignProtocol,
+    "pooled-intraday-campaign": IntradayCampaignProtocol,
+}
+
+
 def load_campaign_protocol(path: Path) -> LoadedProtocol:
     raw = path.read_bytes()
-    return LoadedProtocol(
-        protocol=CampaignProtocol.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path
-    )
+    try:
+        identity = json.loads(raw).get("id")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: not a JSON protocol") from exc
+    cls = _PROTOCOL_CLASSES.get(identity)
+    if cls is None:
+        raise ValueError(f"{path}: unknown protocol id {identity!r}")
+    return LoadedProtocol(protocol=cls.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path)
 
 
 @dataclass(frozen=True)
