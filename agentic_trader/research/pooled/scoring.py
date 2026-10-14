@@ -29,6 +29,7 @@ from agentic_trader.research.pooled.campaign import (
     _calls,
 )
 from agentic_trader.research.pooled.cube import CubeView
+from agentic_trader.research.pooled.events import EVENT_FIELDS
 from agentic_trader.research.pooled.formula import (
     evaluate_prepared,
     evaluate_prepared_hourly,
@@ -172,6 +173,40 @@ class ScoreBook:
         )
         return book
 
+    @classmethod
+    def with_events(
+        cls,
+        adjusted: Mapping[str, pd.DataFrame],
+        events: Mapping[str, pd.DataFrame],
+        trading_days: Sequence[date],
+        sessions: Sequence[date],
+        symbols: Sequence[str],
+        *,
+        capacity: int = DEFAULT_CAPACITY,
+    ) -> ScoreBook:
+        """A daily book whose frames also carry the ``events_fields_v1`` columns (spec 2026-10-14, events):
+        the same D-1 read for bar and event fields; a symbol without an event frame keeps its bars and
+        gets NaN event fields."""
+        book = cls.__new__(cls)
+        prepared = prepare_daily(adjusted)
+        for symbol, keyed in prepared.items():
+            frame = events.get(symbol)
+            columns = (
+                frame.reindex(keyed.index)
+                if frame is not None
+                else pd.DataFrame(index=keyed.index, columns=list(EVENT_FIELDS), dtype=float)
+            )
+            prepared[symbol] = keyed.join(columns, how="left")
+        trading = tuple(trading_days)
+        book._setup(
+            sessions,
+            symbols,
+            capacity,
+            lambda expression: evaluate_prepared(expression, prepared, trading, book._sessions, book._symbols),
+            "daily",
+        )
+        return book
+
     @property
     def sessions(self) -> tuple[date, ...]:
         return self._sessions
@@ -263,5 +298,13 @@ def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:
             built.cube.symbols,
             decision_time_et=protocol.bracket.decision_time_et,
             bars_before_decision=protocol.score_read.bars_before_decision,
+        )
+    if isinstance(protocol, EventsCampaignProtocol):
+        if built.events is None:
+            raise ValueError(
+                "this protocol scores event fields but the build carries no event frames; build with events=..."
+            )
+        return ScoreBook.with_events(
+            built.adjusted, built.events.frames, built.trading_days, built.cube.sessions, built.cube.symbols
         )
     return ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)

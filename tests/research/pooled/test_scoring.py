@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import date
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from agentic_trader.research.pooled import scoring
@@ -19,9 +20,16 @@ from agentic_trader.research.pooled.scoring import (
     vet_expression,
 )
 from tests.research.pooled.mini_world import (
+    ADJUSTED as MINI_ADJUSTED,
+    BAR_DAYS as MINI_BAR_DAYS,
+    EVENT_FRAMES,
+    NAMES as MINI_NAMES,
+    SESSIONS as MINI_SESSIONS,
     cube_build,
+    events_cube_build,
     intraday_cube_build,
     label_cube,
+    mini_events_protocol,
     mini_fixed_set_protocol,
     mini_intraday_protocol,
 )
@@ -165,3 +173,54 @@ def test_score_book_dispatches_on_protocol_inputs():
     assert score_book(mini_intraday_protocol(), intraday_cube_build(cube)).score_inputs == "hourly"
     with pytest.raises(ValueError, match="hourly frames"):
         score_book(mini_intraday_protocol(), replace(intraday_cube_build(cube), hourly={}))
+
+
+def _events_book():
+    return ScoreBook.with_events(MINI_ADJUSTED, EVENT_FRAMES, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
+
+
+def test_with_events_reads_event_columns_at_d_minus_one_like_daily_fields():
+    book = _events_book()
+    assert book.score_inputs == "daily"
+    panel = book.panel("earnings_age")
+    position = {d: i for i, d in enumerate(MINI_BAR_DAYS)}
+    for row, session in ((0, MINI_SESSIONS[0]), (500, MINI_SESSIONS[500])):
+        previous = MINI_BAR_DAYS[position[session] - 1]
+        for col, name in enumerate(MINI_NAMES):
+            expected = EVENT_FRAMES[name].loc[pd.Timestamp(previous), "earnings_age"]
+            assert (np.isnan(panel[row, col]) and np.isnan(expected)) or panel[row, col] == expected
+    # bar fields still work on the same book
+    assert np.isfinite(book.panel("close / ts_mean(close, 20)")[-1]).all()
+
+
+def test_with_events_mixes_bar_and_event_fields_in_one_expression():
+    book = _events_book()
+    mixed = book.panel("if_else(earnings_age > 20, ts_sum(returns, 20), 0)")
+    plain = book.panel("ts_sum(returns, 20)")
+    age = book.panel("earnings_age")
+    quiet = np.isfinite(age) & (age > 20)
+    assert np.allclose(mixed[quiet], plain[quiet], equal_nan=True)
+    assert (mixed[np.isfinite(age) & (age <= 20)] == 0).all()
+
+
+def test_with_events_without_a_symbols_frame_leaves_bar_fields_and_nans_event_fields():
+    frames = {k: v for k, v in EVENT_FRAMES.items() if k != MINI_NAMES[0]}
+    book = ScoreBook.with_events(MINI_ADJUSTED, frames, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
+    assert np.isnan(book.panel("earnings_age")[:, 0]).all()
+    assert np.isfinite(book.panel("close")[-1, 0])
+
+
+def test_score_book_dispatches_events_protocol_and_refuses_a_build_without_events():
+    cube = label_cube()
+    protocol = mini_events_protocol()
+    book = score_book(protocol, events_cube_build(cube))
+    assert book.score_inputs == "daily" and np.isfinite(book.panel("dividend_yield")[-1]).any()
+    with pytest.raises(ValueError, match="event"):
+        score_book(protocol, cube_build(cube))
+
+
+def test_frozen_panels_from_an_events_book_serve_event_expressions():
+    book = _events_book()
+    frozen = book.freeze(["earnings_surprise / (1 + earnings_age)"])
+    assert frozen.score_inputs == "daily"
+    assert frozen.panel("earnings_surprise / (1 + earnings_age)").shape == (len(MINI_SESSIONS), len(MINI_NAMES))

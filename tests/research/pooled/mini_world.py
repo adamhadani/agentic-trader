@@ -10,6 +10,7 @@ import pandas as pd
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
+    EventsCampaignProtocol,
     Family,
     IntradayCampaignProtocol,
     NullCheckSpec,
@@ -17,6 +18,7 @@ from agentic_trader.research.pooled.campaign import (
     load_campaign_protocol,
 )
 from agentic_trader.research.pooled.cube import LabelCube
+from agentic_trader.research.pooled.events import EVENT_FIELDS, EventCoverage, EventFrames
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook
 from tests.research.pooled.test_formula import hourly
@@ -202,3 +204,86 @@ def mini_intraday_protocol(**update):
     document = mini_fixed_set_protocol(**update).model_dump(mode="json")
     document.update(id="pooled-intraday-campaign", score_inputs="hourly", score_read={"bars_before_decision": 1})
     return IntradayCampaignProtocol.model_validate(document)
+
+
+def event_frames(seed: int = 3) -> dict[str, pd.DataFrame]:
+    """Synthetic events_fields_v1 frames on BAR_DAYS: a report every ~63 sessions per name."""
+    rng = np.random.default_rng(seed)
+    index = pd.DatetimeIndex([pd.Timestamp(d) for d in BAR_DAYS])
+    n = len(BAR_DAYS)
+    frames = {}
+    for j, name in enumerate(NAMES):
+        age = np.full(n, np.nan)
+        surprise = np.full(n, np.nan)
+        reaction = np.full(n, np.nan)
+        starts = list(range(30 + j, n, 63))
+        for k, start in enumerate(starts):
+            stop = starts[k + 1] if k + 1 < len(starts) else n
+            age[start:stop] = np.arange(stop - start, dtype=float)
+            surprise[start:stop] = rng.normal(0.0, 10.0)
+            reaction[start:stop] = rng.normal(0.0, 1.0)
+        dividend_yield = np.full(n, np.nan)
+        dividend_yield[251:] = 0.01 * (j % 4)
+        frames[name] = pd.DataFrame(
+            {
+                "earnings_age": age,
+                "earnings_surprise": surprise,
+                "earnings_reaction": reaction,
+                "dividend_yield": dividend_yield,
+            },
+            index=index,
+        )
+    return frames
+
+
+EVENT_FRAMES = event_frames()
+
+
+def mini_events_protocol(**update):
+    """The mini fixed-set protocol reading daily bars plus the events_fields_v1 columns."""
+    document = mini_fixed_set_protocol(**update).model_dump(mode="json")
+    document.update(
+        id="pooled-events-campaign",
+        score_inputs="daily",
+        event_inputs={
+            "fields_version": "events_fields_v1",
+            "earnings": {
+                "source": "nasdaq-calendar",
+                "pages_sha256": "a" * 64,
+                "calendar_from": "2016-02-23",
+                "calendar_through": "2026-07-31",
+                "min_estimates": 1,
+                "min_abs_forecast": 0.05,
+                "vol_window": 20,
+                "benchmark": "SPY",
+            },
+            "corporate_actions": {
+                "source": "alpaca",
+                "content_sha256": "b" * 64,
+                "window": ["2016-01-01", "2027-03-31"],
+                "trailing_sessions": 252,
+            },
+        },
+    )
+    return EventsCampaignProtocol.model_validate(document)
+
+
+def events_cube_build(cube: LabelCube) -> CubeBuild:
+    coverage = EventCoverage(
+        symbols_without_reports=(),
+        symbols_without_actions=(),
+        non_session_reports=0,
+        unpriced_dividends=0,
+        unscaled_dividends=0,
+        symbols_without_raw=(),
+        first_finite={name: dict.fromkeys(EVENT_FIELDS, BAR_DAYS[251].isoformat()) for name in NAMES},
+    )
+    return CubeBuild(
+        cube=cube,
+        trading_days=BAR_DAYS,
+        adjusted=ADJUSTED,
+        raw=ADJUSTED,
+        bar_failures={},
+        static_used=(),
+        events=EventFrames(frames=EVENT_FRAMES, coverage=coverage),
+    )

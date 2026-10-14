@@ -53,7 +53,7 @@ import signal
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -588,6 +588,7 @@ async def _run_campaign(
         "score_read": score_read_document(protocol),
         "event_inputs": event_inputs_document(protocol),
         "first_finite_session": first_finite,
+        "event_coverage": asdict(built.events.coverage) if built.events is not None else None,
         "symbols_without_hourly": (
             sum(1 for symbol in built.cube.symbols if symbol not in built.hourly)
             if protocol.score_inputs == "hourly"

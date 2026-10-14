@@ -1,6 +1,7 @@
 # tests/research/pooled/test_runner.py
 import asyncio
 import hashlib
+import json
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -15,8 +16,11 @@ from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.pooled import runner as runner_module
 from agentic_trader.research.pooled.cohort import Cohort, CohortSource, LoadedCohort, UniverseSpec
 from agentic_trader.research.pooled.cube import _ARRAYS, BracketSpec, CubeSpec, LabelCube, save_cube
-from agentic_trader.research.pooled.runner import build_cube_inputs
+from agentic_trader.research.pooled.events import EVENT_FIELDS, load_actions, pages_sha256
+from agentic_trader.research.pooled.runner import EventSources, build_cube_inputs
 from agentic_trader.research.setups import runner as setups_runner
+from tests.research.pooled.mini_world import mini_events_protocol, weekdays
+from tests.research.pooled.test_events import _dividend, _write_pages
 
 
 @dataclass
@@ -105,7 +109,7 @@ def _no_retry_sleep(monkeypatch):
     monkeypatch.setattr(setups_runner, "_RETRY_DELAYS", ())
 
 
-def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SPEC, load_hourly=False):
+def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SPEC, load_hourly=False, events=None):
     return asyncio.run(
         build_cube_inputs(
             loaded or cohort(),
@@ -117,6 +121,7 @@ def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SP
             pace=_no_pace,
             progress=progress,
             load_hourly=load_hourly,
+            events=events,
         )
     )
 
@@ -410,3 +415,56 @@ def test_cache_hit_reloads_hourly_only_for_symbols_with_an_eligible_cell(tmp_pat
     second = build(bars, tmp_path, loaded=loaded, load_hourly=True)
     assert sorted(second.hourly) == ["AAA", "BBB"]
     assert bars.calls == calls  # no provider request, in particular none for CCC's hourly bars
+
+
+def _event_world(tmp_path, *, pinned: bool):
+    """Pages and actions on disk plus the protocol inputs pinning their digests (or not)."""
+    first, last = date(2021, 2, 1), date(2021, 2, 5)
+    pages = tmp_path / "nasdaq"
+    _write_pages(pages, list(weekdays(first, last)), {})
+    actions_file = tmp_path / "actions.json"
+    actions_file.write_text(json.dumps([_dividend("AAA", date(2021, 3, 1)).model_dump(mode="json")]))
+    protocol = mini_events_protocol()
+    pinned_pages = pages_sha256(pages, first, last) if pinned else "a" * 64
+    pinned_actions = load_actions(actions_file)[1] if pinned else "b" * 64
+    inputs = protocol.event_inputs.model_copy(
+        update={
+            "earnings": protocol.event_inputs.earnings.model_copy(
+                update={"calendar_from": first, "calendar_through": last, "pages_sha256": pinned_pages}
+            ),
+            "corporate_actions": protocol.event_inputs.corporate_actions.model_copy(
+                update={"content_sha256": pinned_actions}
+            ),
+        }
+    )
+    return inputs, EventSources(earnings_pages=pages, actions_file=actions_file)
+
+
+def test_events_build_fails_closed_on_digest_mismatch_before_any_bar_is_read(tmp_path):
+    bars = FakeBars()
+    with pytest.raises(ValueError, match="digest"):
+        build(bars, tmp_path / "cache", events=_event_world(tmp_path, pinned=False))
+    assert bars.calls == []
+
+
+def test_events_build_on_a_cache_hit_fetches_the_benchmark_and_builds_frames(tmp_path):
+    cache = tmp_path / "cache"
+    bars = FakeBars()
+    plain = build(bars, cache)  # check A's build caches the cube, adjusted and raw bars
+    assert plain.events is None and plain.raw == {}
+    bars.calls.clear()
+    built = build(bars, cache, events=_event_world(tmp_path, pinned=True))
+    assert built.events is not None
+    assert set(built.events.frames) == {"AAA", "BBB"}
+    for frame in built.events.frames.values():
+        assert tuple(frame.columns) == EVENT_FIELDS
+        assert len(frame) == len(built.trading_days)
+    assert sorted(built.raw) == ["AAA", "BBB"]
+    assert sorted(built.adjusted) == ["AAA", "BBB"]  # the benchmark is not a cohort symbol
+    assert bars.calls == [("SPY", "1d", "all")]  # cohort bars, raw and the cube came from the cache
+
+
+def test_events_build_on_a_fresh_build_keeps_the_cohorts_raw_bars(tmp_path):
+    built = build(FakeBars(), tmp_path / "cache", events=_event_world(tmp_path, pinned=True))
+    assert sorted(built.raw) == ["AAA", "BBB"] and built.events is not None
+    assert sorted(built.events.frames) == ["AAA", "BBB"]
