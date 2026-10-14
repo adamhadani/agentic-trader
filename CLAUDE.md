@@ -116,7 +116,9 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    fill slippage, news, the journaled regime with the derived SPY tape, and setup recurrence
    (`regime_context`, `recurrence`; [card evidence](docs/card-evidence.md#regime-and-recurrence-context));
    these are descriptive, never gates. Every journaled universe scan carries a top-level `regime` block
-   (`regime_journal_block`), and every card from any scan carries it in `decision_provenance["regime"]`. `alpha setup-recurrence` is the predeclared, research-only test of the recurrence split (R1–R4 on replayed history; a pass only makes a construction rule eligible).
+   (`regime_journal_block`), and every card from any scan carries it in `decision_provenance["regime"]`.
+   `alpha setup-recurrence` is the predeclared, research-only test of the recurrence split (R1–R4 on
+   replayed history; a pass only makes a construction rule eligible).
    The one gate derived from measured outcomes is `card_policy` ([card evidence](docs/card-evidence.md)):
    operator-configured, default `off`, `preview` before `enforce`, withholding native cards only on
    complete measured evidence above a sample floor (`card_policy_withheld`; partial, stale or missing

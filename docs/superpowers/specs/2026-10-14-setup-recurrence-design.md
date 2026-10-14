@@ -24,6 +24,11 @@ construction rule *eligible*.
 - It is cheap: both windows' bars are already cached from the September studies
   (`~/agentic-trader-research/setup-cache-v1`, `setup-cache-2017`), so the run is replay and
   labelling only.
+- This test is not the live block. The live `recurrence` block keys on `(contract, strategy,
+  direction)` and counts any earlier session in its window as a repeat; this test keys on
+  `(symbol, strategy, timeframe, direction)` within a 20-session lookback and requires the prior
+  to have resolved before the decision. The live block's own definition is reported as the
+  `live_definition` descriptive (§3.4).
 
 ## 2. Scope
 
@@ -113,6 +118,9 @@ Immature rows are dropped and counted. Statistics use the primary cost (5 bp per
 setup-weighted means, and the stationary session-block bootstrap
 (`study._stationary_index_draws`; block mean 10, 2,000 draws, seed 20261014); every two-group
 comparison resamples whole sessions once per draw and computes both means on the same draw.
+R2 resamples the full session calendar of the primary window (every session with any setup,
+the same unit as R1), not only sessions holding after-stop rows; a draw that selects none
+gives NaN and is dropped (`finite_draws`). R2 reports `n_sessions` and `n_sessions_with_rows`.
 
 | Rule | Statistic (primary window) | Holds when |
 | --- | --- | --- |
@@ -125,16 +133,26 @@ comparison resamples whole sessions once per draw and computes both means on the
 recorded with `authorizes_promotion: false`. Descriptives (never decisive): per-state and
 per-`prior_outcome` means and hit rates on both windows; the same split per `(strategy,
 timeframe)`; by calendar year; R1 recomputed at lookbacks 5 and 10 sessions; the
-`repeat_open` count; mean holding sessions per state; the 0 bp means.
+`repeat_open` count; mean holding sessions per state; the 0 bp means. Also per window:
+`within_session` (over sessions holding both `repeat` and `first` rows, the mean of the
+per-session repeat-minus-first mean, with a session-block bootstrap ci90), `by_tape` (R1
+recomputed on rows with the SPY-above-200-day feature 1.0 and 0.0; rows without it are only
+counted as `unknown`) and `live_definition` (`repeat` plus `repeat_open` against `first`, the
+live block's definition). The per-setup and per-year buckets cover all three states and split
+`repeat` by `prior_outcome`; frames are sorted by `(decision_at, symbol, strategy, timeframe,
+direction)` before writing.
 
-### 3.5 CLI — `alpha setup-recurrence PROTOCOL --output DIR [--cache DIR] [--robustness-cache DIR] [--max-workers N]`
+### 3.5 CLI — `alpha setup-recurrence PROTOCOL --output DIR --cache DIR --robustness-cache DIR [--max-workers N]`
 
 Validates the protocol against the loaded `strategies` block and `SECTOR_ETF` exactly as
 `setup-baserates` does (refuses a stale protocol), refuses an existing output directory, then
-calls `build_window_frames` twice — `{"primary": window}` with `--cache` (default
-`OUTPUT/raw`) and `data_cutoff`, then `{"robustness": robustness_window}` with
-`--robustness-cache` (default `OUTPUT/raw-robustness`) and `robustness_data_cutoff` — so each
-window reuses its existing cache. The two coverage maps go into the manifest's environment.
+claims both cache ranges (`claim_cache_range`, the exact ranges the runner will compute) before
+the first replay so a mismatched cache fails fast, then calls `build_window_frames` twice —
+`{"primary": window}` with `--cache` and `data_cutoff`, then `{"robustness": robustness_window}`
+with `--robustness-cache` and `robustness_data_cutoff` — so each window reuses its existing
+cache. Both caches are required (a default inside OUTPUT would be created before the executor's
+`mkdir(exist_ok=False)`). The two coverage maps and each cache's path and recorded range go into
+the manifest's environment; a `failed` result exits non-zero.
 `execute_recurrence` runs in a thread and also writes `frames/primary.csv.gz` and
 `frames/robustness.csv.gz` (the labelled frames with the recurrence columns) at mode 0600.
 
@@ -205,7 +223,9 @@ result and the two frames at 0600; the CLI refuses an existing output and a stal
    live 45-day block spans about 30 sessions. 5 and 10 are descriptive.
 4. **Exit-bar close, not open.** Same rule as the live block after the 2026-10-14 review.
 5. **Seed 20261014, not the September seed.** A new test gets its own draw stream.
-6. **Two caches, two calls.** `_claim_cache_range` binds a cache to one bar range; one call
+6. **Two caches, two calls.** `claim_cache_range` binds a cache to one bar range; one call
    over both windows would force a fresh 2016–2026 fetch for nothing.
 7. **No construction rule in this PR.** A pass is eligibility, not a change: the rule's shape
    (rank repeats first, or withhold firsts) and its preview period deserve their own spec.
+8. **R2 on the full calendar.** The same resampling unit as R1, slightly wider than resampling
+   only sessions holding after-stop rows.

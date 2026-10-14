@@ -49,6 +49,7 @@ DESCRIPTIVE_LOOKBACKS = (5, 10, 20)
 
 _MIN_MATURATION_DAYS = 30
 _SETUP_KEY = ["symbol", "strategy", "timeframe", "direction"]
+_SORT_KEY = ["decision_at", *_SETUP_KEY]
 
 
 def _is_timestamp(value: Any) -> bool:
@@ -67,6 +68,12 @@ def with_setup_recurrence(frame: pd.DataFrame, *, lookback_sessions: int) -> pd.
     the setup inside the lookback; ``prior_r_cost`` is the resolved prior's ``r_cost`` (NaN
     otherwise). Rows without a strategy, timeframe or direction are ``first``. Requires a
     unique index. Pure.
+
+    Window-start truncation: priors are looked up only inside ``frame``, so the first
+    ``lookback_sessions`` sessions of a window can only be ``first`` (their true priors
+    precede the window). A caller that drops immature rows first (``execute_recurrence`` does)
+    cannot produce ``repeat_open`` from an immature prior; ``repeat_open`` then only arises
+    from a resolved-but-not-yet-closed exit bar.
     """
     if lookback_sessions < 1:
         raise ValueError("lookback_sessions must be at least 1")
@@ -205,8 +212,18 @@ def _weighted(sums: np.ndarray, counts: np.ndarray, rows: np.ndarray) -> float:
     return float(sums[rows].sum() / n) if n > 0 else float("nan")
 
 
-def _paired_difference(frame: pd.DataFrame, a: pd.Series, b: pd.Series, protocol: SetupRecurrenceProtocol) -> dict:
-    """Setup-weighted mean(a) − mean(b); each draw resamples whole sessions once for both."""
+def _paired_difference(
+    frame: pd.DataFrame,
+    a: pd.Series,
+    b: pd.Series,
+    protocol: SetupRecurrenceProtocol,
+    *,
+    names: tuple[str, str] = ("repeat", "first"),
+) -> dict:
+    """Setup-weighted mean(a) − mean(b); each draw resamples whole sessions once for both.
+
+    ``names`` labels the two groups in the output keys (``n_<name>``, ``mean_<name>``).
+    """
     table = _session_table(frame, {"a": a, "b": b})
     sa, na = table["sum_a"].to_numpy(float), table["n_a"].to_numpy(float)
     sb, nb = table["sum_b"].to_numpy(float), table["n_b"].to_numpy(float)
@@ -219,11 +236,11 @@ def _paired_difference(frame: pd.DataFrame, a: pd.Series, b: pd.Series, protocol
     ci90 = _ci90(boot)
     point = diff(np.arange(n_sessions)) if n_sessions else float("nan")
     return {
-        "n_a": int(na.sum()),
-        "n_b": int(nb.sum()),
+        f"n_{names[0]}": int(na.sum()),
+        f"n_{names[1]}": int(nb.sum()),
         "n_sessions": n_sessions,
-        "mean_a": _weighted(sa, na, np.arange(n_sessions)) if n_sessions else float("nan"),
-        "mean_b": _weighted(sb, nb, np.arange(n_sessions)) if n_sessions else float("nan"),
+        f"mean_{names[0]}": _weighted(sa, na, np.arange(n_sessions)) if n_sessions else float("nan"),
+        f"mean_{names[1]}": _weighted(sb, nb, np.arange(n_sessions)) if n_sessions else float("nan"),
         "mean_diff": point,
         "ci90": ci90,
         "finite_draws": int(np.isfinite(boot).sum()),
@@ -233,12 +250,14 @@ def _paired_difference(frame: pd.DataFrame, a: pd.Series, b: pd.Series, protocol
 
 
 def _group_mean(frame: pd.DataFrame, mask: pd.Series, protocol: SetupRecurrenceProtocol) -> dict:
-    """Setup-weighted mean r_cost of the masked rows; whole sessions holding them resampled."""
-    rows_only = frame.loc[mask]
-    sessions = pd.Index(sorted(rows_only["session"].unique()))
-    grouped = rows_only.groupby("session")["r_cost"].agg(["sum", "count"]).reindex(sessions)
-    sums, counts = grouped["sum"].to_numpy(float), grouped["count"].to_numpy(float)
-    n_sessions = len(sessions)
+    """Setup-weighted mean r_cost of the masked rows.
+
+    Resamples the full session calendar (every session with any setup), the same unit as R1;
+    a draw that selects no masked row is NaN and is dropped, as ``finite_draws`` reports.
+    """
+    table = _session_table(frame, {"g": mask})
+    sums, counts = table["sum_g"].to_numpy(float), table["n_g"].to_numpy(float)
+    n_sessions = len(table)
     boot = (
         np.array([_weighted(sums, counts, rows) for rows in _draws(n_sessions, protocol)], dtype=float)
         if n_sessions
@@ -246,8 +265,9 @@ def _group_mean(frame: pd.DataFrame, mask: pd.Series, protocol: SetupRecurrenceP
     )
     ci90 = _ci90(boot)
     return {
-        "n": int(counts.sum()) if n_sessions else 0,
+        "n": int(counts.sum()),
         "n_sessions": n_sessions,
+        "n_sessions_with_rows": int((counts > 0).sum()),
         "mean_r_cost": _weighted(sums, counts, np.arange(n_sessions)) if n_sessions else float("nan"),
         "ci90": ci90,
         "finite_draws": int(np.isfinite(boot).sum()),
@@ -277,22 +297,62 @@ def _bucket(rows: pd.DataFrame) -> dict:
     }
 
 
+def _state_buckets(group: pd.DataFrame) -> dict:
+    """All three states, plus the repeat rows split by the resolved prior's outcome."""
+    out = {name: _bucket(group.loc[group["state"] == name]) for name in STATES}
+    repeats = group.loc[group["state"] == "repeat"]
+    out["repeat_by_prior_outcome"] = {
+        name: _bucket(repeats.loc[repeats["prior_outcome"] == name]) for name in PRIOR_OUTCOMES
+    }
+    return out
+
+
+def _within_session(frame: pd.DataFrame, protocol: SetupRecurrenceProtocol) -> dict:
+    """Mean per-session (repeat mean − first mean) over sessions holding both, session-block bootstrapped."""
+    repeat = frame.loc[frame["state"] == "repeat"].groupby("session")["r_cost"].mean()
+    first = frame.loc[frame["state"] == "first"].groupby("session")["r_cost"].mean()
+    both = repeat.index.intersection(first.index)
+    diffs = (repeat.loc[both] - first.loc[both]).to_numpy(float)
+    n = len(diffs)
+    if n == 0:
+        return {"n_sessions": 0, "mean_diff": float("nan"), "ci90": [float("nan"), float("nan")]}
+    boot = np.array([diffs[rows].mean() for rows in _draws(n, protocol)], dtype=float)
+    return {"n_sessions": n, "mean_diff": float(diffs.mean()), "ci90": _ci90(boot)}
+
+
+def _by_tape(frame: pd.DataFrame, protocol: SetupRecurrenceProtocol) -> dict:
+    """R1 recomputed by the SPY tape feature (above/below its 200-day average); NaN is counted only."""
+    tape = frame["spy_above_200"] if "spy_above_200" in frame.columns else pd.Series(np.nan, index=frame.index)
+    repeat = frame["state"] == "repeat"
+    first = frame["state"] == "first"
+    unknown = tape.isna()
+    return {
+        "above_200": _paired_difference(frame, repeat & (tape == 1.0), first & (tape == 1.0), protocol),
+        "below_200": _paired_difference(frame, repeat & (tape == 0.0), first & (tape == 0.0), protocol),
+        "unknown": {"n_repeat": int((repeat & unknown).sum()), "n_first": int((first & unknown).sum())},
+    }
+
+
 def _descriptives(tagged: pd.DataFrame, clean: pd.DataFrame, protocol: SetupRecurrenceProtocol) -> dict:
     by_state = {name: _bucket(tagged.loc[tagged["state"] == name]) for name in STATES}
     by_prior = {
         name: _bucket(tagged.loc[(tagged["state"] == "repeat") & (tagged["prior_outcome"] == name)])
         for name in PRIOR_OUTCOMES
     }
-    by_setup: dict[str, dict] = {}
-    for (strategy, timeframe), group in tagged.groupby(["strategy", "timeframe"]):
-        by_setup[f"{strategy}/{timeframe}"] = {
-            name: _bucket(group.loc[group["state"] == name]) for name in ("first", "repeat")
-        }
-    years = tagged["session"].map(lambda value: str(value.year))
-    by_year = {
-        year: {name: _bucket(group.loc[group["state"] == name]) for name in ("first", "repeat")}
-        for year, group in tagged.groupby(years)
+    by_setup = {
+        f"{strategy}/{timeframe}": _state_buckets(group)
+        for (strategy, timeframe), group in tagged.groupby(["strategy", "timeframe"])
     }
+    years = tagged["session"].map(lambda value: str(value.year))
+    by_year = {year: _state_buckets(group) for year, group in tagged.groupby(years)}
+    state = tagged["state"]
+    live_definition = _paired_difference(
+        tagged,
+        state.isin(("repeat", "repeat_open")),
+        state == "first",
+        protocol,
+        names=("repeat_or_open", "first"),
+    )
     by_lookback = {}
     for k in DESCRIPTIVE_LOOKBACKS:
         retagged = tagged if k == protocol.lookback_sessions else with_setup_recurrence(clean, lookback_sessions=k)
@@ -305,6 +365,9 @@ def _descriptives(tagged: pd.DataFrame, clean: pd.DataFrame, protocol: SetupRecu
         "by_setup": by_setup,
         "by_year": by_year,
         "by_lookback": by_lookback,
+        "within_session": _within_session(tagged, protocol),
+        "by_tape": _by_tape(tagged, protocol),
+        "live_definition": live_definition,
         "repeat_open": int((tagged["state"] == "repeat_open").sum()),
         "base_rates": _base_rates(tagged),
     }
@@ -324,7 +387,12 @@ def execute_recurrence(
     frames: Mapping[str, Callable[[], pd.DataFrame]],
     environment: dict,
 ) -> dict:
-    """Run R1–R4 on the primary window and R3 on the robustness window; write the artifacts."""
+    """Run R1–R4 on the primary window and R3 on the robustness window; write the artifacts.
+
+    ``protocol.data_cutoff`` does not clip the cached bars here: labels end at the cutoff
+    because the caches end there (the command claims the cache range from the cutoff) and the
+    ``max_hold_sessions`` cap bounds every label.
+    """
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     save_json_report({**protocol.document(), "identity": protocol.identity}, directory / "protocol.json")
     save_json_report(
@@ -343,7 +411,8 @@ def execute_recurrence(
         immature: dict[str, int] = {}
         for name in ("primary", "robustness"):
             raw = frames[name]()
-            clean[name], immature[name] = _drop_immature(raw)
+            dropped, immature[name] = _drop_immature(raw)
+            clean[name] = dropped.sort_values(_SORT_KEY, kind="stable").reset_index(drop=True)
             tagged[name] = with_setup_recurrence(clean[name], lookback_sessions=protocol.lookback_sessions)
             _write_private_gzip(tagged[name], directory / "frames" / f"{name}.csv.gz")
         primary = tagged["primary"]

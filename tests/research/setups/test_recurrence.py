@@ -4,6 +4,7 @@ import gzip
 import json
 import math
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 from pydantic import ValidationError
 
+from agentic_trader.cli.commands import alpha as alpha_cmd
 from agentic_trader.cli.main import cli
 from agentic_trader.config import WORKSPACE_ROOT, load_config
 from agentic_trader.research.setups import recurrence as module
@@ -87,12 +89,50 @@ def test_prior_counts_only_once_its_exit_bar_has_closed():
         # Exit bar opens 30 minutes before the later decision: still open at that decision.
         _row("AAA", "2024-01-02", "2024-01-02T15:35Z", "target", exit_time="2024-01-03T15:05Z", r_cost=1.9),
         _row("AAA", "2024-01-03", "2024-01-03T15:35Z", "stop", exit_time="2024-01-03T17:30Z", r_cost=-1.0),
-        # Exit bar opened exactly one bar before: closed.
+        # The prior stopped out in an earlier session: closed.
         _row("AAA", "2024-01-04", "2024-01-04T14:35Z", "timeout", r_cost=0.1),
     ]
     out = with_setup_recurrence(_frame(rows), lookback_sessions=20)
     assert out["state"].tolist() == ["first", "repeat_open", "repeat"]
     assert out["prior_outcome"].tolist() == ["none", "none", "stop"]
+
+
+def test_prior_closes_exactly_one_bar_after_its_exit_bar_opens():
+    rows = [
+        _row("AAA", "2024-01-02", "2024-01-02T15:35Z", "stop", exit_time="2024-01-03T14:35Z", r_cost=-1.0),
+        _row("AAA", "2024-01-03", "2024-01-03T15:35Z", "target", exit_time="2024-01-03T18:30Z", r_cost=1.9),
+    ]
+    out = with_setup_recurrence(_frame(rows), lookback_sessions=20)
+    # exit_time + 1h == decision_at: resolved by this decision.
+    assert pd.Timestamp("2024-01-03T14:35Z") + BAR == pd.Timestamp("2024-01-03T15:35Z")
+    assert out["state"].tolist() == ["first", "repeat"]
+    assert out["prior_outcome"].tolist() == ["none", "stop"]
+
+
+def test_latest_prior_still_open_makes_repeat_open_even_if_an_earlier_prior_resolved():
+    rows = [
+        _row("AAA", "2024-01-02", "2024-01-02T15:35Z", "stop", exit_time="2024-01-02T17:30Z", r_cost=-1.0),
+        # Session 2's exit bar opens 15:00Z on 01-04, so it closes (16:00Z) after session 3's 15:35Z decision.
+        _row("AAA", "2024-01-03", "2024-01-03T15:35Z", "target", exit_time="2024-01-04T15:00Z", r_cost=1.9),
+        _row("AAA", "2024-01-04", "2024-01-04T15:35Z", "timeout", r_cost=0.1),
+    ]
+    out = with_setup_recurrence(_frame(rows), lookback_sessions=20)
+    assert out["state"].tolist() == ["first", "repeat", "repeat_open"]
+    assert out["prior_outcome"].tolist() == ["none", "stop", "none"]
+    assert math.isnan(out["prior_r_cost"].iloc[2])
+
+
+def test_two_priors_in_one_session_the_later_decided_prior_wins():
+    rows = [
+        _row("AAA", "2024-01-02", "2024-01-02T15:35Z", "stop", exit_time="2024-01-02T17:30Z", r_cost=-1.0),
+        _row("AAA", "2024-01-02", "2024-01-02T19:35Z", "target", exit_time="2024-01-02T20:30Z", r_cost=1.9),
+        _row("AAA", "2024-01-03", "2024-01-03T15:35Z", "timeout", r_cost=0.1),
+    ]
+    out = with_setup_recurrence(_frame(rows), lookback_sessions=20)
+    assert out["state"].tolist() == ["first", "first", "repeat"]
+    assert out["prior_outcome"].tolist() == ["none", "none", "target"]
+    assert out["prior_r_cost"].iloc[2] == pytest.approx(1.9)
+    assert out["prior_sessions_k"].tolist() == [0, 0, 1]
 
 
 def test_an_immature_prior_is_repeat_open():
@@ -214,8 +254,8 @@ def test_protocol_identity_and_validation():
         _protocol(data_cutoff=date(2026, 2, 1))
     with pytest.raises(ValidationError, match="robustness_data_cutoff"):
         _protocol(robustness_data_cutoff=date(2021, 5, 1))
-    with pytest.raises(ValidationError, match="robustness_window"):
-        _protocol(robustness_window=(date(2017, 1, 3), date(2021, 5, 20)))
+    with pytest.raises(ValidationError, match="one label horizon"):
+        _protocol(robustness_window=(date(2017, 1, 3), date(2021, 5, 20)), robustness_data_cutoff=date(2021, 7, 1))
     with pytest.raises(ValidationError):
         _protocol(lookback_sessions=0)
     with pytest.raises(ValidationError):
@@ -280,6 +320,8 @@ def test_r1_r2_r3_r4_hold_on_a_clear_split(tmp_path):
     assert result["status"] == "completed"
     r1, r2, r3, r4 = result["r1"], result["r2"], result["r3"], result["r4"]
     assert r1["holds"] and r1["mean_diff"] > 0.3 and r1["ci90"][0] > 0
+    assert {"n_repeat", "n_first", "mean_repeat", "mean_first"} <= set(r1)
+    assert not {"n_a", "n_b", "mean_a", "mean_b"} & set(r1)
     assert r2["holds"] and r2["n"] >= 100 and r2["mean_r_cost"] > 0.8
     assert r3["holds"] and r3["mean_diff"] > 0
     assert r4["holds"] and r4["n_repeat"] >= 300 and r4["n_repeat_sessions"] >= 60 and r4["n_after_stop"] >= 100
@@ -299,27 +341,116 @@ def test_r1_r2_r3_r4_hold_on_a_clear_split(tmp_path):
     assert manifest["hypotheses"] == list(HYPOTHESES) and manifest["authorizes_promotion"] is False
 
 
-def test_r1_is_paired_on_the_same_session_draws(tmp_path, monkeypatch):
-    """Both group means in a draw come from the same resampled sessions."""
-    seen = []
+def test_paired_difference_uses_the_same_resampled_sessions_for_both_groups(monkeypatch):
+    """Two fixed, non-identity draws; expected values are hand-computed from session sums/counts.
+
+    Sessions s0, s1, s2 (group a: sum, n | group b: sum, n):
+      s0: a 1.0, 1 | b 0.0, 1
+      s1: a 4.0, 2 | b 2.0, 1
+      s2: a -1.0, 1 | b 4.0, 2
+    Draw [0, 0, 1]: a = (1+1+4)/(1+1+2) = 1.5; b = (0+0+2)/(1+1+1) = 2/3; diff = 5/6.
+    Draw [2, 2, 1]: a = (-1-1+4)/(1+1+2) = 0.5; b = (4+4+2)/(2+2+1) = 2.0; diff = -1.5.
+    Point (all sessions): a = 4/4 = 1.0; b = 6/4 = 1.5; diff = -0.5.
+    """
 
     def fake_draws(n, block_mean, draws, seed):
-        out = np.tile(np.arange(n), (draws, 1))
-        seen.append(n)
-        return out
+        assert n == 3
+        return np.array([[0, 0, 1], [2, 2, 1]])
 
     monkeypatch.setattr(module, "_stationary_index_draws", fake_draws)
-    primary = _study_frame(n_sessions=70)
+    days = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    rows = [
+        (days[0], 1.0, "a"),
+        (days[0], 0.0, "b"),
+        (days[1], 3.0, "a"),
+        (days[1], 1.0, "a"),
+        (days[1], 2.0, "b"),
+        (days[2], -1.0, "a"),
+        (days[2], 1.0, "b"),
+        (days[2], 3.0, "b"),
+    ]
+    frame = pd.DataFrame(rows, columns=["session", "r_cost", "group"])
+    result = module._paired_difference(frame, frame["group"] == "a", frame["group"] == "b", _protocol())
+    assert result["n_repeat"] == 4 and result["n_first"] == 4 and result["n_sessions"] == 3
+    assert result["mean_repeat"] == pytest.approx(1.0) and result["mean_first"] == pytest.approx(1.5)
+    assert result["mean_diff"] == pytest.approx(-0.5)
+    high, low = 5 / 6, -1.5
+    assert result["ci90"][0] == pytest.approx(low + 0.05 * (high - low))
+    assert result["ci90"][1] == pytest.approx(low + 0.95 * (high - low))
+    assert result["finite_draws"] == 2
+    named = module._paired_difference(
+        frame, frame["group"] == "a", frame["group"] == "b", _protocol(), names=("x", "y")
+    )
+    assert {"n_x", "n_y", "mean_x", "mean_y"} <= set(named)
+
+
+def test_r2_resamples_the_full_session_calendar(tmp_path):
+    primary = _study_frame(n_sessions=80)
     result = execute_recurrence(
         _protocol(),
         tmp_path / "out",
         frames={"primary": lambda: primary, "robustness": lambda: primary},
         environment={},
     )
-    r1 = result["r1"]
-    # Identity draws: every draw equals the point estimate, so the CI collapses onto it.
-    assert r1["ci90"][0] == pytest.approx(r1["mean_diff"]) and r1["ci90"][1] == pytest.approx(r1["mean_diff"])
-    assert seen and all(n == primary["session"].nunique() for n in seen[:1])
+    r2 = result["r2"]
+    assert r2["n_sessions"] == primary["session"].nunique() == 80
+    assert r2["n_sessions_with_rows"] == 40
+
+
+def test_only_r2_failing_is_no_change(tmp_path):
+    # Repeats after a stop lose 0.9R; the other repeats lose 1.0R; firsts lose 2.0R, so R1 still holds.
+    primary = _study_frame(n_sessions=80, repeat_r=-0.9, first_r=-2.0)
+    result = execute_recurrence(
+        _protocol(),
+        tmp_path / "out",
+        frames={"primary": lambda: primary, "robustness": lambda: _study_frame(n_sessions=30, seed=2)},
+        environment={},
+    )
+    assert result["r1"]["holds"] and result["r3"]["holds"] and result["r4"]["holds"]
+    assert result["r2"]["holds"] is False
+    assert result["decision"] == "no_change"
+
+
+@pytest.mark.parametrize("floor", ["min_repeats", "min_repeat_sessions", "min_after_stop"])
+def test_each_r4_floor_alone_blocks_the_decision(tmp_path, floor):
+    primary = _study_frame(n_sessions=80)
+    frames = {"primary": lambda: primary, "robustness": lambda: _study_frame(n_sessions=30, seed=2)}
+    baseline = execute_recurrence(_protocol(), tmp_path / "base", frames=frames, environment={})
+    assert baseline["r4"]["holds"] and baseline["decision"] == "eligible_repeat_preference"
+    result = execute_recurrence(_protocol(**{floor: 1000}), tmp_path / "out", frames=frames, environment={})
+    assert result["r4"]["holds"] is False
+    assert result["decision"] == "no_change"
+
+
+def test_descriptives_split_by_session_tape_and_live_definition(tmp_path):
+    primary = _study_frame(n_sessions=80)
+    ordinal = {session: i for i, session in enumerate(sorted(primary["session"].unique()))}
+    primary["spy_above_200"] = [1.0 if ordinal[session] < 40 else 0.0 for session in primary["session"]]
+    primary.loc[primary.index[:3], "spy_above_200"] = np.nan
+    shuffled = primary.sample(frac=1.0, random_state=0)
+    result = execute_recurrence(
+        _protocol(),
+        tmp_path / "out",
+        frames={"primary": lambda: shuffled, "robustness": lambda: _study_frame(n_sessions=30, seed=2)},
+        environment={},
+    )
+    desc = result["descriptives"]["primary"]
+    within = desc["within_session"]
+    assert within["n_sessions"] == 79
+    assert within["mean_diff"] == pytest.approx(0.51, abs=0.05)
+    assert within["ci90"][0] <= within["mean_diff"] <= within["ci90"][1]
+    tape = desc["by_tape"]
+    assert set(tape) == {"above_200", "below_200", "unknown"}
+    assert tape["above_200"]["n_repeat"] == 39 * 5 and tape["below_200"]["n_repeat"] == 40 * 5
+    assert tape["unknown"] == {"n_repeat": 0, "n_first": 3}
+    live = desc["live_definition"]
+    assert live["n_repeat_or_open"] == result["r1"]["n_repeat"] and live["n_first"] == result["r1"]["n_first"]
+    for bucket in (desc["by_setup"]["TREND_PULLBACK/4h"], desc["by_year"]["2024"]):
+        assert set(bucket) == {*STATES, "repeat_by_prior_outcome"}
+        assert set(bucket["repeat_by_prior_outcome"]) == set(PRIOR_OUTCOMES)
+    with gzip.open(tmp_path / "out" / "frames" / "primary.csv.gz") as handle:
+        saved = pd.read_csv(handle)
+    assert saved["decision_at"].is_monotonic_increasing
 
 
 def test_no_repeats_is_no_change_without_error(tmp_path):
@@ -405,10 +536,30 @@ def _protocol_document(**overrides) -> dict:
     return doc
 
 
+def _cache_args(tmp_path) -> list[str]:
+    return ["--cache", str(tmp_path / "cache-a"), "--robustness-cache", str(tmp_path / "cache-b")]
+
+
 def test_cli_setup_recurrence_is_registered():
     result = CliRunner().invoke(cli, ["alpha", "setup-recurrence", "--help"])
     assert result.exit_code == 0
     assert "--robustness-cache" in result.output
+
+
+def test_cli_setup_recurrence_requires_both_caches_before_any_work(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("config must not load before the required options are checked")
+
+    monkeypatch.setattr(alpha_cmd, "load_config", forbidden)
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(_protocol_document()))
+    result = CliRunner().invoke(
+        cli,
+        ["alpha", "setup-recurrence", str(protocol_path), "--output", str(tmp_path / "out"), "--cache", str(tmp_path)],
+    )
+    assert result.exit_code != 0
+    assert "Missing option" in result.output and "--robustness-cache" in result.output
+    assert not (tmp_path / "out").exists()
 
 
 def test_cli_setup_recurrence_refuses_existing_output(tmp_path):
@@ -416,7 +567,9 @@ def test_cli_setup_recurrence_refuses_existing_output(tmp_path):
     protocol_path.write_text(json.dumps(_protocol_document()))
     existing = tmp_path / "out"
     existing.mkdir()
-    result = CliRunner().invoke(cli, ["alpha", "setup-recurrence", str(protocol_path), "--output", str(existing)])
+    result = CliRunner().invoke(
+        cli, ["alpha", "setup-recurrence", str(protocol_path), "--output", str(existing), *_cache_args(tmp_path)]
+    )
     assert result.exit_code != 0
     assert "already exists" in result.output
 
@@ -427,10 +580,87 @@ def test_cli_setup_recurrence_refuses_a_stale_strategy_config(tmp_path):
     document["strategy_config"] = {"mode": "stale"}
     protocol_path.write_text(json.dumps(document))
     result = CliRunner().invoke(
-        cli, ["alpha", "setup-recurrence", str(protocol_path), "--output", str(tmp_path / "out")]
+        cli,
+        ["alpha", "setup-recurrence", str(protocol_path), "--output", str(tmp_path / "out"), *_cache_args(tmp_path)],
     )
     assert result.exit_code != 0
     assert "strategy_config" in result.output
+
+
+def test_cli_setup_recurrence_fails_fast_on_a_mismatched_cache_range(tmp_path, monkeypatch):
+    async def never(*args, **kwargs):
+        raise AssertionError("build_window_frames must not run after a cache-range mismatch")
+
+    monkeypatch.setattr(alpha_cmd, "build_window_frames", never)
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(_protocol_document()))
+    stale = tmp_path / "cache-b"
+    stale.mkdir()
+    (stale / "cache_range.json").write_text(
+        json.dumps({"start": "2030-01-01T00:00:00+00:00", "end": "2030-02-01T00:00:00+00:00"})
+    )
+    result = CliRunner().invoke(
+        cli,
+        ["alpha", "setup-recurrence", str(protocol_path), "--output", str(tmp_path / "out"), *_cache_args(tmp_path)],
+    )
+    assert result.exit_code != 0
+    assert "use a fresh cache directory" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+class _FakeClient:
+    def __init__(self, *args, **kwargs):
+        self._session = SimpleNamespace(close=lambda: None)
+
+
+def _fake_command_environment(monkeypatch, result: dict) -> dict:
+    """Stub clients, frame building and the executor; returns a dict capturing the environment."""
+    captured: dict = {}
+
+    async def fake_build(windows, *args, **kwargs):
+        return {name: (lambda: pd.DataFrame()) for name in windows}, {"covered": True}
+
+    def fake_execute(protocol, output, *, frames, environment):
+        captured["environment"] = environment
+        return result
+
+    for name in ("BoundedTradingClient", "BoundedStockDataClient"):
+        monkeypatch.setattr(alpha_cmd, name, _FakeClient)
+    for name in ("AlpacaDataProvider", "BarEvidenceStore", "AlpacaCalendarProvider"):
+        monkeypatch.setattr(alpha_cmd, name, lambda *args, **kwargs: object())
+    monkeypatch.setattr(alpha_cmd, "build_window_frames", fake_build)
+    monkeypatch.setattr(alpha_cmd, "execute_recurrence", fake_execute)
+    monkeypatch.setattr(alpha_cmd, "research_environment", dict)
+    return captured
+
+
+def test_cli_setup_recurrence_exits_nonzero_when_the_study_failed(tmp_path, monkeypatch):
+    _fake_command_environment(monkeypatch, {"status": "failed", "error": "RuntimeError: boom"})
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(_protocol_document()))
+    result = CliRunner().invoke(
+        cli,
+        ["alpha", "setup-recurrence", str(protocol_path), "--output", str(tmp_path / "out"), *_cache_args(tmp_path)],
+    )
+    assert result.exit_code != 0
+    assert "setup recurrence failed: RuntimeError: boom" in result.output
+
+
+def test_cli_setup_recurrence_records_the_caches_in_the_manifest_environment(tmp_path, monkeypatch):
+    captured = _fake_command_environment(monkeypatch, {"status": "completed"})
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(_protocol_document()))
+    result = CliRunner().invoke(
+        cli,
+        ["alpha", "setup-recurrence", str(protocol_path), "--output", str(tmp_path / "out"), *_cache_args(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    caches = captured["environment"]["caches"]
+    assert caches["primary"]["path"] == str(tmp_path / "cache-a")
+    assert caches["robustness"]["path"] == str(tmp_path / "cache-b")
+    assert caches["primary"]["range"]["start"].startswith((date(2021, 6, 1) - timedelta(days=400)).isoformat())
+    assert caches["primary"]["range"]["end"].startswith("2026-09-22")
+    assert caches["robustness"]["range"]["end"].startswith("2021-06-15")
 
 
 def test_frozen_protocol_file_matches_the_spec_and_the_loaded_config():

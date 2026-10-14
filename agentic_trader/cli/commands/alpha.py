@@ -11,7 +11,7 @@ import subprocess
 from collections.abc import Callable
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Self
@@ -109,7 +109,14 @@ from agentic_trader.research.pooled.study import check_power_gate, execute_poole
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
 from agentic_trader.research.setups.recurrence import SetupRecurrenceProtocol, execute_recurrence
-from agentic_trader.research.setups.runner import _build_pacer, build_setup_frames, build_window_frames
+from agentic_trader.research.setups.runner import (
+    BARS_LOOKBACK_DAYS,
+    CACHE_RANGE_FILE,
+    _build_pacer,
+    build_setup_frames,
+    build_window_frames,
+    claim_cache_range,
+)
 from agentic_trader.research.setups.study import SetupStudyProtocol, execute_setup_study
 from agentic_trader.runtime import runtime_identity, state_directory
 from agentic_trader.screeners.earnings_drift import unscheduled_decision_time
@@ -1271,13 +1278,16 @@ async def alpha_setup_baserates_cmd(protocol_path, output, max_workers, cache):
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
 @click.option("--max-workers", type=int, default=6, show_default=True, help="Replay ProcessPoolExecutor width")
 @click.option(
-    "--cache", type=click.Path(path_type=Path), default=None, help="Primary-window bar cache; defaults to OUTPUT/raw"
+    "--cache",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="Primary-window bar cache directory (required; keep it outside OUTPUT, which must not exist yet)",
 )
 @click.option(
     "--robustness-cache",
     type=click.Path(path_type=Path),
-    default=None,
-    help="Robustness-window bar cache; defaults to OUTPUT/raw-robustness",
+    required=True,
+    help="Robustness-window bar cache directory (required; a different directory from --cache)",
 )
 @coro
 async def alpha_setup_recurrence_cmd(protocol_path, output, max_workers, cache, robustness_cache):
@@ -1303,12 +1313,22 @@ async def alpha_setup_recurrence_cmd(protocol_path, output, max_workers, cache, 
         )
 
     universe = [(entry.symbol, entry.sector) for group in config.universe.groups.values() for entry in group]
-    caches = {
-        "primary": cache if cache is not None else output / "raw",
-        "robustness": robustness_cache if robustness_cache is not None else output / "raw-robustness",
-    }
+    caches = {"primary": cache, "robustness": robustness_cache}
     windows = {"primary": protocol.window, "robustness": protocol.robustness_window}
     cutoffs = {"primary": protocol.data_cutoff, "robustness": protocol.robustness_data_cutoff}
+
+    # Claim both ranges (the exact ones the runner will compute) before the first replay, so a
+    # mismatched cache fails now rather than after the primary window has been fetched.
+    cache_record: dict[str, dict] = {}
+    for name in ("primary", "robustness"):
+        bars_start = datetime.combine(windows[name][0] - timedelta(days=BARS_LOOKBACK_DAYS), time.min, tzinfo=UTC)
+        bars_end = datetime.combine(cutoffs[name], time.max, tzinfo=UTC)
+        try:
+            claim_cache_range(caches[name], bars_start, bars_end)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        recorded = json.loads((caches[name] / CACHE_RANGE_FILE).read_text())
+        cache_record[name] = {"path": str(caches[name]), "range": recorded}
 
     frames: dict[str, Callable[[], pd.DataFrame]] = {}
     coverage: dict[str, dict] = {}
@@ -1353,8 +1373,11 @@ async def alpha_setup_recurrence_cmd(protocol_path, output, max_workers, cache, 
 
     environment = await asyncio.to_thread(research_environment)
     environment["coverage"] = coverage
+    environment["caches"] = cache_record
     result = await asyncio.to_thread(execute_recurrence, protocol, output, frames=frames, environment=environment)
     click.echo(json.dumps(result, indent=2, default=str))
+    if result.get("status") == "failed":
+        raise click.ClickException(f"setup recurrence failed: {result.get('error')}")
 
 
 class _AprioriClients:

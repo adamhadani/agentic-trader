@@ -26,7 +26,7 @@ from agentic_trader.research.apriori.catalog import PeadEntry
 from agentic_trader.research.apriori.earnings_history import CalendarPageStore, acquire_calendar, dedupe_rows, weekdays
 from agentic_trader.research.apriori.pead_events import SUPPORTED_SYMBOL, MarketData, build_events
 from agentic_trader.research.apriori.pead_study import PeadInputs
-from agentic_trader.research.setups.runner import BarSource, CalendarSource, _claim_cache_range, _fetch_cached
+from agentic_trader.research.setups.runner import BarSource, CalendarSource, _fetch_cached, claim_cache_range
 
 
 __all__ = ["bars_or_failure", "build_pead_inputs", "record_failure"]
@@ -90,8 +90,8 @@ async def build_pead_inputs(
     bar_dir, raw_dir = cache_dir / "bars", cache_dir / "bars_raw"
     start = datetime.combine(first - _CALENDAR_PAD, time.min, tzinfo=UTC)
     end = datetime.combine(bars_through, time.max, tzinfo=UTC)
-    _claim_cache_range(bar_dir, start, end)
-    _claim_cache_range(raw_dir, start, end)
+    claim_cache_range(bar_dir, start, end)
+    claim_cache_range(raw_dir, start, end)
 
     benchmark = entry.event.benchmark
     liquidity_symbols = {*static_symbols, *(r.symbol for r in rows if SUPPORTED_SYMBOL.fullmatch(r.symbol))}

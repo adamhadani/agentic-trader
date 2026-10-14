@@ -25,7 +25,7 @@ from agentic_trader.research.apriori.exdiv_study import ExdivInputs, read_cohort
 from agentic_trader.research.apriori.pead_events import MarketData
 from agentic_trader.research.apriori.pead_runner import bars_or_failure, record_failure
 from agentic_trader.research.corporate_actions import fetch_corporate_actions_cached
-from agentic_trader.research.setups.runner import BarSource, CalendarSource, _claim_cache_range
+from agentic_trader.research.setups.runner import BarSource, CalendarSource, claim_cache_range
 
 
 __all__ = ["build_exdiv_inputs"]
@@ -61,8 +61,8 @@ async def build_exdiv_inputs(
     bar_dir, raw_dir = cache_dir / "bars", cache_dir / "bars_raw"
     start = datetime.combine(first - _CALENDAR_PAD, time.min, tzinfo=UTC)
     end = datetime.combine(bars_through, time.max, tzinfo=UTC)
-    _claim_cache_range(bar_dir, start, end)
-    _claim_cache_range(raw_dir, start, end)
+    claim_cache_range(bar_dir, start, end)
+    claim_cache_range(raw_dir, start, end)
 
     daily: dict[str, pd.DataFrame] = {}
     liquidity_daily: dict[str, pd.DataFrame] = {}
