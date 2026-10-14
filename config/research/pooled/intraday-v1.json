@@ -1,0 +1,225 @@
+{
+  "bars_from": "2016-01-01",
+  "bars_through": "2026-09-01",
+  "bootstrap": {
+    "block_mean": 20,
+    "confirmation_draws": 10000,
+    "discovery_draws": 1000,
+    "seed": 20260931,
+    "selection_draws": 1000
+  },
+  "bracket": {
+    "atr_window": 14,
+    "decision_time_et": "10:35",
+    "max_hold_sessions": 20,
+    "stop_atr_multiple": 2.0,
+    "target_r": 3.0
+  },
+  "cohort": "config/research/pooled/cohort-v2.json",
+  "cohort_sha256": "c2c7941014932075110b33a7b853db7899f7b8fa43d5433d38b2e92bab1407df",
+  "complexity_penalty_per_node": 0.02,
+  "confirmation_gate": {
+    "alpha": 0.05,
+    "min_sessions": 300,
+    "recent_months": 12,
+    "trim_fraction": 0.01
+  },
+  "coverage": {
+    "max_no_reference_fraction": 0.02,
+    "max_unlabelled_fraction_per_year": 0.05
+  },
+  "decision_cost_bps": 5.0,
+  "dedupe_jaccard": 0.5,
+  "discovery_gate": {
+    "blocks": 4,
+    "carry": 5,
+    "min_positive_blocks": 3,
+    "min_sessions": 400,
+    "min_t": 3.0
+  },
+  "excluded_families": [
+    {
+      "id": "vol_20",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "sector_relative_momentum",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "residual_momentum",
+      "reason": "Factor-controls study read 2021-2026 and reported partly positive results."
+    },
+    {
+      "id": "volatility_scaled_momentum",
+      "reason": "Sector-panel study read 2021-2026 and reported a positive low-cost result."
+    },
+    {
+      "id": "reversal_5",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "signed_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "overnight_intraday",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "abnormal_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "momentum_12_1",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "price_volume_corr",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "illiquidity",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "reversal_x_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    }
+  ],
+  "families": [
+    {
+      "id": "first_hour_momentum",
+      "mutation_operators": [],
+      "rationale": "First-hour return continues into the rest of the session (intraday momentum; Gao, Han, Li and Zhou, 2018).",
+      "seeds": [
+        "oc_spread"
+      ]
+    },
+    {
+      "id": "overnight_persistence",
+      "mutation_operators": [],
+      "rationale": "The overnight return persists into the next session (Lou, Polk and Skouras, 2019).",
+      "seeds": [
+        "open_gap"
+      ]
+    },
+    {
+      "id": "overnight_vs_intraday",
+      "mutation_operators": [],
+      "rationale": "Overnight strength not yet traded away in the first hour (Lou, Polk and Skouras, 2019).",
+      "seeds": [
+        "open_gap - oc_spread"
+      ]
+    },
+    {
+      "id": "relative_volume",
+      "mutation_operators": [],
+      "rationale": "First-hour volume shock relative to the trailing 20 sessions (high-volume return premium; Gervais, Kaniel and Mingelgrin, 2001).",
+      "seeds": [
+        "volume / ts_mean(volume, 140)"
+      ]
+    },
+    {
+      "id": "range_expansion",
+      "mutation_operators": [],
+      "rationale": "Opening-range expansion relative to the trailing 20 sessions of hourly ranges.",
+      "seeds": [
+        "hl_spread / ts_mean(hl_spread, 140)"
+      ]
+    },
+    {
+      "id": "range_location",
+      "mutation_operators": [],
+      "rationale": "The first hour closes near its own high.",
+      "seeds": [
+        "(close - low) / (high - low)"
+      ]
+    },
+    {
+      "id": "vwap_strength",
+      "mutation_operators": [],
+      "rationale": "The first bar closes above its volume-weighted average price.",
+      "seeds": [
+        "(close - vwap) / close"
+      ]
+    },
+    {
+      "id": "intraday_high_proximity",
+      "mutation_operators": [],
+      "rationale": "Price near the 20-session intraday high (the 126/252-session daily variants are excluded by the overlap rule and the v4 history).",
+      "seeds": [
+        "close / ts_max(high, 140)"
+      ]
+    }
+  ],
+  "feed": "alpaca:sip",
+  "formula_budget": 8,
+  "id": "pooled-intraday-campaign",
+  "null_check": {
+    "max_false_acceptances": 2,
+    "replicates": 40,
+    "seed": 20261003
+  },
+  "power": {
+    "ar_phi": 0.95,
+    "deltas": [
+      0.0,
+      0.05,
+      0.08,
+      0.1,
+      0.12,
+      0.15
+    ],
+    "detection_delta": 0.15,
+    "max_false_acceptance": 0.05,
+    "min_detection": 0.8,
+    "null_formulas": 200,
+    "replicates": 100,
+    "seed": 20260932
+  },
+  "rationale": "A predeclared fixed set of eight intraday formulas, one per family, each scored once without search on regular-session hourly SIP bars read at the first completed bar (09:30, close 10:30) of the decision session, so search-power check B does not apply; checks A and C still bind. The cohort, label cube, windows, selection, gates, bootstrap, power and null-check parameters are campaign v4's, so the cached cube is reused and the lane-wide confirmation window remains unused until a finalist freezes; realized-volatility operators stay forbidden.",
+  "score_inputs": "hourly",
+  "score_read": {
+    "bars_before_decision": 1
+  },
+  "search": {
+    "archive_size": 16,
+    "forbidden_operators": [
+      "realized_vol",
+      "ts_std",
+      "ts_mad"
+    ],
+    "seed": 20260930
+  },
+  "search_mode": "fixed_set",
+  "selection": {
+    "fraction": 0.1,
+    "rule": "top_fraction"
+  },
+  "selection_gate": {
+    "min_fraction_of_discovery": 0.5,
+    "min_sessions": 150
+  },
+  "title": "Intraday pooled campaign v1: cohort v2, hourly score inputs read at the first completed bar of the decision session, predeclared fixed set of eight intraday formulas (checks A and C), one-shot lane-wide confirmation",
+  "universe": {
+    "min_eligible_names": 30,
+    "min_price": 10.0,
+    "static_percentile": 0.25
+  },
+  "version": 1,
+  "windows": {
+    "confirmation": [
+      "2024-01-02",
+      "2026-07-31"
+    ],
+    "discovery": [
+      "2016-08-01",
+      "2021-12-31"
+    ],
+    "selection": [
+      "2022-01-03",
+      "2023-12-29"
+    ]
+  }
+}

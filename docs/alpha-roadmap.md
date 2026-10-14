@@ -589,9 +589,16 @@ problem.
    attributed. Never a gate or signal until the attribution says so.
 
    *Status (October 13):* wired as measured context ([news context](news-context.md), [spec](superpowers/specs/2026-10-13-news-context-design.md)): one bounded Benzinga fetch per scan that ranks candidates without a timeframe (never the intraday job), through the desk's Alpaca data keys, a direction-free LLM tone score for the first six ranked symbols, one labelled card line, `decision_provenance["news"]`, the journal candidate's `news` (universe scans) and `cards outcomes` `news_context` (status, tone, direction alignment). Never a gate; the LLM gate's prompt is unchanged so both attributions stay separate. `alpha news` is the cached research acquisition (history to 2015) for a later frozen entry. The loader now passes the `corporate_actions:` and `news:` YAML blocks (`entry_block: enforce` was previously ignored).
-5. **Deferred.** Daily-bar cross-sectional mining is paused until intraday SIP data exists; three
-   lanes found nothing on this cohort. Deep learning across many symbols waits for intraday data
-   and a predeclared protocol.
+5. **Operator decisions, 2026-10-14.** Daily-bar cross-sectional mining found nothing on this
+   cohort in three lanes, so the next source is intraday: historical SIP first, events second,
+   live parity later. The weekly per-symbol ETF32 miner is retired (62 runs, no finalist). Deep
+   learning across many symbols still waits for a predeclared protocol.
+
+   *Status (October 14):* the pooled intraday lane is built ([design](superpowers/specs/2026-10-14-pooled-intraday-design.md),
+   [pooled mining](alpha-pooled-mining.md#intraday-score-inputs-protocol-pooled-intraday-campaign)):
+   `config/research/pooled/intraday-v1.json` is a frozen fixed set of eight intraday formulas on
+   cohort v2's cube. Checks A and C are to run; the campaign runs only on operator approval and the
+   confirmation window is unused.
 
 Prospective lanes keep running meanwhile: PEAD probe, native-daily panel (first outcomes mid-October),
 and the `vol_20` / `sector_rel_mom_60` evaluation window 2026-10-21 → 2026-11-04.

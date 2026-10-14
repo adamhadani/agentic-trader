@@ -260,6 +260,42 @@ all pick through it. A protocol has either `k` (meaning `top_k` with hold-skippi
 compared as sorted `int64` codes (`Picks.codes`: session x names + symbol) and
 `jaccard_codes` intersects the sorted arrays instead of Python sets of tuples.
 
+## Intraday score inputs (protocol `pooled-intraday-campaign`)
+
+`IntradayCampaignProtocol` (`id: pooled-intraday-campaign`, loaded by `load_campaign_protocol`
+alongside `CampaignProtocol`) keeps the cohort-v2 label cube, windows, selection, gates, bootstrap
+and null-check of the daily protocols and changes only what a formula reads. `score_inputs:
+"hourly"` with `score_read.bars_before_decision: 1` means a formula sees regular-session hourly
+SIP bars up to the first completed bar of the decision session: the 09:30 bar (close 10:30) for a
+10:35 decision. Fields keep their daily meaning at bar scale, bar over bar (`open_gap` is this
+bar's open over the previous bar's close, `oc_spread` and `hl_spread` are within-bar), windows
+count bars (140 = 20 sessions x 7 regular bars), and scores are NaN early in discovery until a
+window fills.
+
+Scores come from `load_hourly`, which reads the hourly book; the null-check pool uses frozen
+hourly panels, and check A needs no book (its formulas are synthetic). The campaign manifests
+record `score_inputs`, `score_read` and each formula's first discovery session with a finite score.
+
+The v1 fixed set (all dimensionless; signs are the long-side hypothesis; decile selection and the
+literature-overlap rule as v4; realized-volatility operators forbidden):
+
+| Family | Score | Hypothesis |
+| --- | --- | --- |
+| `first_hour_momentum` | `oc_spread` | first-hour return continues (intraday momentum, Gao-Han-Li-Zhou 2018) |
+| `overnight_persistence` | `open_gap` | overnight return persists (Lou-Polk-Skouras 2019) |
+| `overnight_vs_intraday` | `open_gap - oc_spread` | overnight strength not yet traded away intraday |
+| `relative_volume` | `volume / ts_mean(volume, 140)` | first-hour volume shock (high-volume premium, Gervais-Kaniel-Mingelgrin 2001) |
+| `range_expansion` | `hl_spread / ts_mean(hl_spread, 140)` | opening-range expansion |
+| `range_location` | `(close - low) / (high - low)` | close near the first-hour high |
+| `vwap_strength` | `(close - vwap) / close` | first bar closes above its VWAP |
+| `intraday_high_proximity` | `close / ts_max(high, 140)` | near the 20-session intraday high |
+
+Run order, each from `pooled-cache-v1` and each refusing an existing output: check A
+(`alpha pooled power config/research/pooled/intraday-v1.json`), check C (`null-check`), then the
+campaign. The campaign needs operator approval; it is not started by the checks. Nothing here
+registers, trades or earns promotion credit, and the lane-wide confirmation window stays unused
+until a finalist freezes. See the [design](superpowers/specs/2026-10-14-pooled-intraday-design.md).
+
 ## Statistics
 
 The unit is `R_cost` at 5 bps per side; 0 bps is reported alongside (a study result's
@@ -816,6 +852,8 @@ and C pass.
 The checks and the campaign outcome are written up in [alpha-pooled-checks-v4-2026-10-07.md](alpha-pooled-checks-v4-2026-10-07.md): A and C passed, the approved campaign found no finalists (seven of eight formulas have a negative discovery edge, best t 0.76), nothing froze, the confirmation window is still unused, and the lane is closed on this window as pre-registered.
 
 ## Commands
+
+Every command accepts either protocol id (`pooled-campaign` or `pooled-intraday-campaign`).
 
 ```bash
 copilot alpha pooled screen RULE --snapshot SNAPSHOT --output DIR --cache DIR
