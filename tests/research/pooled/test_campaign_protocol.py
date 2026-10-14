@@ -263,6 +263,7 @@ def test_intraday_protocol_is_a_subclass_with_its_three_fields(tmp_path):
     assert protocol.gates == (("power", "power_a"), ("null_check", "null_check"))
     dumped = protocol.model_dump(mode="json")
     assert dumped["id"] == "pooled-intraday-campaign" and dumped["score_read"] == {"bars_before_decision": 1}
+    assert dumped["score_inputs"] == "hourly"
 
 
 def test_intraday_protocol_refuses_genetic_mode_and_bad_reads():
@@ -290,3 +291,23 @@ def test_loader_refuses_an_unknown_id(tmp_path):
     path.write_text(json.dumps(doc))
     with pytest.raises(ValueError, match="id"):
         load_campaign_protocol(path)
+
+
+@pytest.mark.parametrize("document", ["[]", "3", '"pooled-campaign"', "null"])
+def test_loader_refuses_a_document_that_is_not_an_object(tmp_path, document):
+    path = tmp_path / "x.json"
+    path.write_text(document)
+    with pytest.raises(ValueError, match="JSON object"):
+        load_campaign_protocol(path)
+
+
+def test_loader_refuses_a_missing_or_non_string_id(tmp_path):
+    missing = _intraday_document()
+    del missing["id"]
+    unhashable = {**_intraday_document(), "id": ["pooled-campaign"]}
+    numeric = {**_intraday_document(), "id": 4}
+    for index, doc in enumerate((missing, unhashable, numeric)):
+        path = tmp_path / f"x{index}.json"
+        path.write_text(json.dumps(doc))
+        with pytest.raises(ValueError, match="id"):
+            load_campaign_protocol(path)

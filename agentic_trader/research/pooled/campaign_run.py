@@ -98,7 +98,7 @@ OUTCOME_KEYS = ("status", "carried", "selection", "frozen", "confirmation", "con
 
 
 def campaign_id_for(loaded: LoadedProtocol) -> str:
-    return f"pooled-campaign-v{loaded.protocol.version}-{loaded.sha256[:16]}"
+    return f"{loaded.protocol.id}-v{loaded.protocol.version}-{loaded.sha256[:16]}"
 
 
 def require_clean_revision(environment: Mapping) -> str:
@@ -227,7 +227,10 @@ def already_tested(
 
 def frozen_document(expression: str, protocol: CampaignProtocol) -> dict:
     """A frozen candidate: its score and the selection rule it was tested under, with a stable identity."""
-    body = {"score": expression, "filters": [], "selection": protocol.selection_rule.model_dump(mode="json")}
+    body: dict = {"score": expression, "filters": [], "selection": protocol.selection_rule.model_dump(mode="json")}
+    read = score_read_document(protocol)
+    if read is not None:  # an intraday score is a different formula from the same text on daily bars
+        body = {**body, "score_inputs": protocol.score_inputs, "score_read": read}
     identity = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {"formula": body, "identity": identity}
 
@@ -511,8 +514,14 @@ async def _run_campaign(
     first_finite = first_finite_sessions(protocol, book, discovery)
     windows = CampaignWindows(built.cube, protocol.windows, cohort_sha256=cohort.sha256)
     ledger = JournalLedger(repository, asyncio.get_running_loop(), campaign_id)
-    # Overlap is fixed from discovery picks before the search.
-    literature = await asyncio.to_thread(literature_codes, entries, discovery, book, protocol)
+    # Overlap is fixed from discovery picks before the search. Literature entries are daily
+    # formulas, so an intraday campaign reads them from the daily book (same session x symbol grid).
+    literature_book = (
+        book
+        if book.score_inputs == "daily"
+        else ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)
+    )
+    literature = await asyncio.to_thread(literature_codes, entries, discovery, literature_book, protocol)
     frozen_documents: list[dict] = []
 
     def on_frozen(frozen: list[str], search: SearchOutcome) -> None:
@@ -568,6 +577,11 @@ async def _run_campaign(
         "score_inputs": protocol.score_inputs,
         "score_read": score_read_document(protocol),
         "first_finite_session": first_finite,
+        "symbols_without_hourly": (
+            sum(1 for symbol in built.cube.symbols if symbol not in built.hourly)
+            if protocol.score_inputs == "hourly"
+            else None
+        ),
         # The worker returned, so the window was consumed exactly when candidates were frozen.
         "confirmation_consumed": bool(outcome["frozen"]),
         "families": [run.summary() for run in search.runs],

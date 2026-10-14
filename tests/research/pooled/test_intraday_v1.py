@@ -1,12 +1,17 @@
 import json
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
     IntradayCampaignProtocol,
     load_campaign_protocol,
 )
-from agentic_trader.research.pooled.formula import require_dimensionless
+from agentic_trader.research.pooled.formula import evaluate_prepared_hourly, prepare_hourly, require_dimensionless
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -19,7 +24,7 @@ EXPECTED_SCORES = {
     "relative_volume": "volume / ts_mean(volume, 140)",
     "range_expansion": "hl_spread / ts_mean(hl_spread, 140)",
     "range_location": "(close - low) / (high - low)",
-    "vwap_strength": "(close - vwap) / close",
+    "first_bucket_efficiency": "(close - open) / (high - low)",
     "intraday_high_proximity": "close / ts_max(high, 140)",
 }
 
@@ -54,3 +59,44 @@ def test_intraday_v1_excludes_every_v4_family():
     assert {entry["id"] for entry in v4["excluded_families"]} <= excluded
     assert {family["id"] for family in v4["families"]} <= excluded
     assert not excluded & set(EXPECTED_SCORES)
+
+
+def _cache_shaped_hourly(sessions: list[date], seed: int) -> pd.DataFrame:
+    """Clock-aligned Alpaca hourly buckets 04:00..19:00 New York, OHLCV columns only."""
+    rng = np.random.default_rng(seed)
+    stamps, rows = [], []
+    price = 100.0
+    for day in sessions:
+        for hour in range(4, 20):
+            stamps.append(datetime.combine(day, time(hour, 0), tzinfo=ET_TZ).astimezone(UTC))
+            open_ = price
+            price = open_ * (1.0 + rng.normal(0.0, 0.004))
+            high = max(open_, price) * (1.0 + abs(rng.normal(0.0, 0.002)))
+            low = min(open_, price) * (1.0 - abs(rng.normal(0.0, 0.002)))
+            rows.append(
+                {"Open": open_, "High": high, "Low": low, "Close": price, "Volume": 1000.0 * (1.0 + rng.random())}
+            )
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(stamps))
+
+
+def test_every_intraday_seed_evaluates_on_cache_shaped_hourly_bars():
+    sessions: list[date] = []
+    day = date(2024, 1, 2)
+    while len(sessions) < 30:
+        if day.weekday() < 5:
+            sessions.append(day)
+        day += timedelta(days=1)
+    frame = _cache_shaped_hourly(sessions, seed=7)
+    assert list(frame.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    prepared = prepare_hourly({"AAA": frame})
+    protocol = load_campaign_protocol(V1).protocol
+    for expression in protocol.seed_expressions:
+        panel = evaluate_prepared_hourly(
+            expression,
+            prepared,
+            sessions,
+            ("AAA",),
+            decision_time_et=protocol.bracket.decision_time_et,
+            bars_before_decision=protocol.score_read.bars_before_decision,
+        )
+        assert np.isfinite(panel).any(), expression

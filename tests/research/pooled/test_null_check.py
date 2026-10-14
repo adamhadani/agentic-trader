@@ -108,14 +108,20 @@ def test_the_summary_gates_on_the_false_acceptance_count_and_reports_seed_t():
         rep(),
     ]
     summary = summarize_null(reps, spec)
-    assert summary["status"] == "passed" and summary["false_acceptances"] == 1
-    assert summary["errors_total"] == 3
+    # Three formulas raised: the check fails closed whatever the false-acceptance count.
+    assert summary["status"] == "gate_failed" and summary["false_acceptances"] == 1
+    assert summary["errors_total"] == 3 and "3 formula evaluation" in summary["reason"]
     assert summary["false_acceptance_rate"] == 0.25
     assert summary["false_acceptance_upper95"] == pytest.approx(beta.ppf(0.95, 2, 3))
     assert summary["stage_counts"] == {"with_survivors": 1, "with_carried": 1, "reached_confirmation": 1}
     assert summary["seed_t"]["n"] == 3
     assert summary["seed_t"]["mean"] == pytest.approx(1.0) and summary["seed_t"]["sd"] == pytest.approx(2.0)
     assert summarize_null([*reps[:3], rep(confirmed=["y"])], spec)["status"] == "gate_failed"
+    clean = [rep(seed_t={"a": 1.0}), rep(confirmed=["x"]), rep(), rep()]
+    passed = summarize_null(clean, spec)
+    assert passed["status"] == "passed" and passed["errors_total"] == 0 and passed["reason"] is None
+    too_many = summarize_null([rep(confirmed=["x"]) for _ in range(4)], spec)
+    assert too_many["status"] == "gate_failed" and "false acceptance" in too_many["reason"]
 
 
 def test_the_null_check_is_identical_for_any_worker_count():

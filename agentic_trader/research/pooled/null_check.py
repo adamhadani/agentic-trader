@@ -115,15 +115,23 @@ def summarize_null(replicates: Sequence[Mapping], spec: NullCheckSpec) -> dict:
         dtype=float,
     )
     upper = 1.0 if false >= n else float(beta.ppf(0.95, false + 1, n - false))  # one-sided Clopper-Pearson
+    errors = sum(replicate["errors"] for replicate in replicates)
+    reasons = []
+    if false > spec.max_false_acceptances:
+        reasons.append(f"{false} false acceptance(s) exceed the allowed {spec.max_false_acceptances}")
+    if errors > 0:
+        # A formula that raised was never scored: the check cannot vouch for the gate it ran on.
+        reasons.append(f"{errors} formula evaluation(s) raised")
     return {
-        "status": "passed" if false <= spec.max_false_acceptances else "gate_failed",
+        "status": "gate_failed" if reasons else "passed",
+        "reason": "; ".join(reasons) or None,
         "false_acceptances": false,
         "replicates": n,
         "false_acceptance_rate": false / n if n else float("nan"),
         "false_acceptance_upper95": upper,
         "max_false_acceptances": spec.max_false_acceptances,
         # Formulas whose evaluation raised, over all replicates: must be 0 before a campaign.
-        "errors_total": sum(replicate["errors"] for replicate in replicates),
+        "errors_total": errors,
         "stage_counts": {
             "with_survivors": sum(1 for replicate in replicates if replicate["survivors"]),
             "with_carried": sum(1 for replicate in replicates if replicate["carried"]),

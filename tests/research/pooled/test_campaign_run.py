@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import signal
@@ -12,7 +13,12 @@ import pytest
 
 from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled import campaign as campaign_module, campaign_run
-from agentic_trader.research.pooled.campaign import CampaignWindows, DiscoveryEvaluator, LoadedProtocol
+from agentic_trader.research.pooled.campaign import (
+    CampaignWindows,
+    DiscoveryEvaluator,
+    LoadedProtocol,
+    ScoreRead,
+)
 from agentic_trader.research.pooled.campaign_run import (
     check_gate,
     execute_campaign,
@@ -704,3 +710,61 @@ async def test_campaign_manifest_records_score_inputs(tmp_path, repository):
     assert first["-1.0 * roc(close, 21)"] > protocol.windows.discovery[0].isoformat()
     on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
     assert on_disk["first_finite_session"] == first
+
+
+async def test_intraday_literature_overlap_is_computed_from_daily_bars(tmp_path, repository, monkeypatch):
+    seen = []
+    real = campaign_run.literature_codes
+
+    def spy(entries, view, book, protocol):
+        seen.append(book.score_inputs)
+        return real(entries, view, book, protocol)
+
+    monkeypatch.setattr(campaign_run, "literature_codes", spy)
+    protocol = mini_intraday_protocol()
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("campaign.json"))
+    cube = label_cube()
+    gates = {name: {"status": "passed", "cube_sha256": cube.sha256} for name, _ in protocol.gates}
+
+    async def build():
+        return intraday_cube_build(cube)
+
+    result = await execute_campaign(
+        loaded,
+        tmp_path / "out",
+        cohort=SimpleNamespace(sha256=COHORT),
+        build=build,
+        gates=gates,
+        repository=repository,
+        entries=LITERATURE,
+        environment={"runtime": {"revision": "abc1234"}},
+    )
+    assert result["status"] != "failed", result
+    # The campaign scores hourly, but the literature entries are daily formulas: their picks come
+    # from the daily book (on the shared session x symbol grid).
+    assert seen == ["daily"]
+    assert result["score_inputs"] == "hourly"
+    assert result["symbols_without_hourly"] == 0
+
+
+def test_campaign_ids_follow_the_protocol_id():
+    daily = LoadedProtocol(protocol=mini_protocol(), sha256="p" * 64, path=Path("campaign.json"))
+    intraday = LoadedProtocol(protocol=mini_intraday_protocol(), sha256="p" * 64, path=Path("campaign.json"))
+    assert campaign_run.campaign_id_for(daily) == CAMPAIGN
+    assert campaign_run.campaign_id_for(intraday) == "pooled-intraday-campaign-v1-" + "p" * 16
+
+
+def test_a_frozen_identity_binds_the_score_inputs_for_an_intraday_protocol():
+    daily_doc = campaign_run.frozen_document("oc_spread", mini_protocol())
+    intraday_doc = campaign_run.frozen_document("oc_spread", mini_intraday_protocol())
+    assert daily_doc["identity"] != intraday_doc["identity"]
+    assert intraday_doc["formula"]["score_inputs"] == "hourly"
+    assert intraday_doc["formula"]["score_read"] == {"bars_before_decision": 1}
+    assert "score_inputs" not in daily_doc["formula"] and "score_read" not in daily_doc["formula"]
+    # A daily identity is exactly the pre-change body {score, filters, selection}.
+    body = {"score": "oc_spread", "filters": [], "selection": mini_protocol().selection_rule.model_dump(mode="json")}
+    expected = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert daily_doc["identity"] == expected
+    # A different read is a different identity.
+    other = mini_intraday_protocol().model_copy(update={"score_read": ScoreRead(bars_before_decision=2)})
+    assert campaign_run.frozen_document("oc_spread", other)["identity"] != intraday_doc["identity"]

@@ -91,7 +91,7 @@
     {
       "id": "first_hour_momentum",
       "mutation_operators": [],
-      "rationale": "First-hour return continues into the rest of the session (intraday momentum; Gao, Han, Li and Zhou, 2018).",
+      "rationale": "The first regular bucket (09:00-10:00 New York, which includes the opening auction and about 30 minutes of pre-market trades) return continues into the rest of the session (intraday momentum; Gao, Han, Li and Zhou, 2018).",
       "seeds": [
         "oc_spread"
       ]
@@ -99,7 +99,7 @@
     {
       "id": "overnight_persistence",
       "mutation_operators": [],
-      "rationale": "The overnight return persists into the next session (Lou, Polk and Skouras, 2019).",
+      "rationale": "The overnight return persists into the next session (Lou, Polk and Skouras, 2019). On the first regular bucket (09:00-10:00 New York, which includes the opening auction and about 30 minutes of pre-market trades) open_gap is the return from the last regular bucket's close to the first trade of the 09:00 bucket.",
       "seeds": [
         "open_gap"
       ]
@@ -107,7 +107,7 @@
     {
       "id": "overnight_vs_intraday",
       "mutation_operators": [],
-      "rationale": "Overnight strength not yet traded away in the first hour (Lou, Polk and Skouras, 2019).",
+      "rationale": "Overnight strength not yet traded away in the first regular bucket (09:00-10:00 New York, which includes the opening auction and about 30 minutes of pre-market trades) (Lou, Polk and Skouras, 2019).",
       "seeds": [
         "open_gap - oc_spread"
       ]
@@ -115,7 +115,7 @@
     {
       "id": "relative_volume",
       "mutation_operators": [],
-      "rationale": "First-hour volume shock relative to the trailing 20 sessions (high-volume return premium; Gervais, Kaniel and Mingelgrin, 2001).",
+      "rationale": "First regular bucket (09:00-10:00 New York, which includes the opening auction and about 30 minutes of pre-market trades) volume shock relative to the trailing 20 sessions (high-volume return premium; Gervais, Kaniel and Mingelgrin, 2001).",
       "seeds": [
         "volume / ts_mean(volume, 140)"
       ]
@@ -123,7 +123,7 @@
     {
       "id": "range_expansion",
       "mutation_operators": [],
-      "rationale": "Opening-range expansion relative to the trailing 20 sessions of hourly ranges.",
+      "rationale": "Range of the first regular bucket (09:00-10:00 New York, which includes the opening auction and about 30 minutes of pre-market trades) relative to the trailing 20 sessions of regular-bucket ranges.",
       "seeds": [
         "hl_spread / ts_mean(hl_spread, 140)"
       ]
@@ -131,17 +131,17 @@
     {
       "id": "range_location",
       "mutation_operators": [],
-      "rationale": "The first hour closes near its own high.",
+      "rationale": "The first regular bucket (09:00-10:00 New York, which includes the opening auction and about 30 minutes of pre-market trades) closes near its own high.",
       "seeds": [
         "(close - low) / (high - low)"
       ]
     },
     {
-      "id": "vwap_strength",
+      "id": "first_bucket_efficiency",
       "mutation_operators": [],
-      "rationale": "The first bar closes above its volume-weighted average price.",
+      "rationale": "Net move of the first regular bucket relative to its range: directional efficiency of the opening trade (candlestick body-to-range ratio).",
       "seeds": [
-        "(close - vwap) / close"
+        "(close - open) / (high - low)"
       ]
     },
     {
@@ -178,7 +178,7 @@
     "replicates": 100,
     "seed": 20260932
   },
-  "rationale": "A predeclared fixed set of eight intraday formulas, one per family, each scored once without search on regular-session hourly SIP bars read at the first completed bar (09:30, close 10:30) of the decision session, so search-power check B does not apply; checks A and C still bind. The cohort, label cube, windows, selection, gates, bootstrap, power and null-check parameters are campaign v4's, so the cached cube is reused and the lane-wide confirmation window remains unused until a finalist freezes; realized-volatility operators stay forbidden.",
+  "rationale": "A predeclared fixed set of eight intraday formulas, one per family, each scored once without search on regular-session hourly SIP bars read at the first completed regular bucket of the decision session (the 09:00 New York bucket, closing 10:00, which is also the cube's decision reference bar; the cached bars are clock-aligned and the 10:00 bucket is never read), so search-power check B does not apply; checks A and C still bind. The cohort, label cube, windows, selection, gates, bootstrap, power and null-check parameters are campaign v4's, so the cached cube is reused and the lane-wide confirmation window remains unused until a finalist freezes; realized-volatility operators stay forbidden.",
   "score_inputs": "hourly",
   "score_read": {
     "bars_before_decision": 1
@@ -201,7 +201,7 @@
     "min_fraction_of_discovery": 0.5,
     "min_sessions": 150
   },
-  "title": "Intraday pooled campaign v1: cohort v2, hourly score inputs read at the first completed bar of the decision session, predeclared fixed set of eight intraday formulas (checks A and C), one-shot lane-wide confirmation",
+  "title": "Intraday pooled campaign v1: cohort v2, hourly score inputs read at the first completed regular bucket of the decision session, predeclared fixed set of eight intraday formulas (checks A and C), one-shot lane-wide confirmation",
   "universe": {
     "min_eligible_names": 30,
     "min_price": 10.0,

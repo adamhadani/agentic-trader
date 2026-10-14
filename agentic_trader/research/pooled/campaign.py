@@ -226,7 +226,8 @@ SearchMode = Literal["genetic", "fixed_set"]
 
 class ScoreRead(BaseModel, frozen=True, extra="forbid"):
     """Which completed hourly bar a session's score is read at: 1 = the last bar whose close is at or
-    before the decision instant (the 09:30 bar for a 10:35 decision)."""
+    before the decision instant. The cached Alpaca bars are clock-aligned, so for a 10:35 decision
+    that is the 09:00 New York bucket (closing 10:00)."""
 
     bars_before_decision: int = Field(ge=1)
 
@@ -422,10 +423,13 @@ _PROTOCOL_CLASSES: dict[str, type[CampaignProtocol]] = {
 def load_campaign_protocol(path: Path) -> LoadedProtocol:
     raw = path.read_bytes()
     try:
-        identity = json.loads(raw).get("id")
+        document = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ValueError(f"{path}: not a JSON protocol") from exc
-    cls = _PROTOCOL_CLASSES.get(identity)
+    if not isinstance(document, dict):
+        raise ValueError(f"{path}: a protocol is a JSON object, not {type(document).__name__}")  # noqa: TRY004 -- every loader refusal is a ValueError
+    identity = document.get("id")
+    cls = _PROTOCOL_CLASSES.get(identity) if isinstance(identity, str) else None
     if cls is None:
         raise ValueError(f"{path}: unknown protocol id {identity!r}")
     return LoadedProtocol(protocol=cls.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path)

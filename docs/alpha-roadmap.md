@@ -597,7 +597,9 @@ problem.
    *Status (October 14):* the pooled intraday lane is built ([design](superpowers/specs/2026-10-14-pooled-intraday-design.md),
    [pooled mining](alpha-pooled-mining.md#intraday-score-inputs-protocol-pooled-intraday-campaign)):
    `config/research/pooled/intraday-v1.json` is a frozen fixed set of eight intraday formulas on
-   cohort v2's cube. Checks A and C are to run; the campaign runs only on operator approval and the
+   cohort v2's cube (SHA-256 `5b4c3fdf23aa1800…`; the unevaluable `vwap_strength` seed, which the
+   OHLCV-only cache cannot score, was replaced by `first_bucket_efficiency`, and the read is the
+   clock-aligned 09:00 bucket closing 10:00). Checks A and C are to run; the campaign runs only on operator approval and the
    confirmation window is unused.
 
 Prospective lanes keep running meanwhile: PEAD probe, native-daily panel (first outcomes mid-October),

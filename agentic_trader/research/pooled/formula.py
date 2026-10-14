@@ -274,13 +274,13 @@ def evaluate_prepared_hourly(
             continue
         series = evaluator.evaluate(expression, keyed)
         closes = keyed.index + _BAR
-        dates = keyed.index.tz_convert(ET_TZ).date
+        dates = keyed.index.tz_convert(ET_TZ).date if bars_before_decision == 1 else None
         positions = np.searchsorted(closes.values, instants.values, side="right")  # bars closed by the instant
         for row, (pos, day) in enumerate(zip(positions, sessions, strict=True)):
             idx = pos - bars_before_decision
             if idx < 0:
                 continue
-            if bars_before_decision == 1 and dates[idx] != day:
+            if dates is not None and dates[idx] != day:
                 continue
             out[row, col] = series.iloc[idx]
     out[~np.isfinite(out)] = np.nan
