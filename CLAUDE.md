@@ -112,8 +112,11 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    stays suggestion-scan only. Never widen the intraday job to the universe or store the
    budget in a counter.
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
-   catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure and
-   fill slippage; these are descriptive, never gates.
+   catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure,
+   fill slippage, news, the journaled regime with the derived SPY tape, and setup recurrence
+   (`regime_context`, `recurrence`; [card evidence](docs/card-evidence.md#regime-and-recurrence-context));
+   these are descriptive, never gates. Every universe scan journals a top-level `regime` block
+   (`regime_journal_block`) and copies it into card provenance.
    The one gate derived from measured outcomes is `card_policy` ([card evidence](docs/card-evidence.md)):
    operator-configured, default `off`, `preview` before `enforce`, withholding native cards only on
    complete measured evidence above a sample floor (`card_policy_withheld`; partial, stale or missing
