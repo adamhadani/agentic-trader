@@ -52,12 +52,14 @@ report is `D+2`, as in the PEAD leg.
 | `earnings_age` | Sessions since the last completed report: `index(T) − index(D+1)` for the latest report with `D+1 ≤ T`; `NaN` before the symbol's first report in the calendar | dimensionless |
 | `earnings_surprise` | That report's surprise `100 × (eps − eps_forecast) / abs(eps_forecast)`, rounded as in `pead_events`, carried forward until the next completed report; `NaN` when `n_estimates < min_estimates` or `abs(eps_forecast) < min_abs_forecast` or `eps` missing | dimensionless |
 | `earnings_reaction` | That report's reaction `z = (r_i − r_SPY) / (σ_i √2)`, `r` from close(D−1) to close(D+1), `σ_i` the sample std of the `vol_window` daily log returns ending D−1 (`pead_events._reaction_z`, adjusted bars, SPY from the same cache), carried forward; `NaN` when the bars are missing | dimensionless |
-| `dividend_yield` | Sum of `cash_rate` of regular (`special = false`) `cash_dividend` actions with `effective_on` in the last 252 trading days through T, divided by the adjusted close at T; `NaN` when `T` is earlier than 252 sessions after the acquisition window start; `0.0` for a covered non-payer | dimensionless |
+| `dividend_yield` | Sum of `rate` (the per-share cash amount of a `cash_dividend` row; `cash_rate` is a merger field) of regular (`special = false`) `cash_dividend` actions whose `effective_on` (ex-date) maps to a trading day in the last 252 trading days through T (an ex-date on a non-session counts from the next session), divided by the adjusted close at T; `NaN` for the first 251 trading days of the acquisition window and where the close is missing; `0.0` for a covered non-payer | dimensionless |
 
 Rulings: carried-forward fields make a sparse event continuous across the cross-section
 (every name has a last report), so decile selection is well defined; `earnings_age`
 lets a formula window the event. Protocol parameters pin `min_estimates` = 1,
-`min_abs_forecast` = 0.05 and `vol_window` = 20, the PEAD v1/v2 values. A symbol with no
+`min_abs_forecast` = 0.05 and `vol_window` = 20, the PEAD v1/v2 values. A report dated on a
+non-session date is skipped and counted (`non_session_reports`), as the PEAD leg does; duplicate
+(symbol, date) rows keep the first. A symbol with no
 calendar row at all (never reports, or ticker mismatch) has `NaN` fields; `NaN` scores
 make a cell ineligible for that formula, as today, and the per-symbol count is reported.
 
@@ -84,6 +86,14 @@ by `load_campaign_protocol` on `id`, mirroring `IntradayCampaignProtocol`:
   }
 }
 ```
+
+The corporate-actions input is the acquisition's `actions.json` (a JSON list of
+`CorporateAction` dumps); its digest is `sha256(encode(rows))`, the acquisition's
+`content_sha256`. The earnings input is the Nasdaq page directory; its digest is the SHA-256 of
+the newline-joined, sorted `"<date>:<page sha256>"` lines for every weekday page in
+`[calendar_from, calendar_through]`, each page re-verified against its `.meta.json` on load; a
+missing page fails closed. `excluded_families` is `intraday-v1`'s list plus `intraday-v1`'s
+eight families (every earlier fixed set stays excluded).
 
 Everything else is verbatim `intraday-v1`/v4: `search_mode: fixed_set`, cohort v2,
 cube spec, windows (discovery 2016-08-01 → 2021-12-31, selection 2022 → 2023,
@@ -121,8 +131,9 @@ the frozen text is adjusted before the file is hashed, never after). The frozen 
 
 ## 5. Implementation shape
 
-- `research/pooled/events.py` (new): `EarningsCalendar.load(cache_dir, window) → rows by
-  symbol` (reusing `CalendarPageStore` + `parse_calendar_payload`), `pages_digest`,
+- `research/pooled/events.py` (new): `load_calendar_pages(directory, calendar_from, calendar_through)
+  → LoadedCalendar(rows_by_symbol, pages_sha256)` (offline: `CalendarPageStore.load` +
+  `parse_calendar_payload`, never `acquire_calendar`), `load_actions(path) → (rows, content_sha256)`,
   `build_event_fields(symbol, rows, actions, adjusted, spy, trading_days, params) →
   pd.DataFrame[earnings_age, earnings_surprise, earnings_reaction, dividend_yield]`,
   and `EventFields.coverage` (per-symbol first finite session, symbols without rows).
