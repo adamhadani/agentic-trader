@@ -85,6 +85,11 @@ def _dividend(
     )
 
 
+def _build(inputs, calendar, actions, adjusted, days, symbols, raw=None):
+    """Raw bars default to the adjusted ones (no later actions: factor 1)."""
+    return build_event_frames(inputs, calendar, actions, adjusted, adjusted if raw is None else raw, days, symbols)
+
+
 def _world(prices_aaa: list[float] | None = None):
     closes = prices_aaa or list(np.linspace(50, 80, len(DAYS)))
     return {
@@ -95,7 +100,7 @@ def _world(prices_aaa: list[float] | None = None):
 
 def test_report_is_visible_from_the_day_after_with_age_zero_and_carried_forward():
     d = DAYS[100]
-    frames = build_event_frames(INPUTS, _calendar({"AAA": [_row("AAA", d)]}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
+    frames = _build(INPUTS, _calendar({"AAA": [_row("AAA", d)]}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
     assert list(frames.columns) == list(EVENT_FIELDS)
     assert np.isnan(frames["earnings_age"].iloc[99]) and np.isnan(frames["earnings_age"].iloc[100])
     assert frames["earnings_age"].iloc[101] == 0.0 and frames["earnings_age"].iloc[150] == 49.0
@@ -109,21 +114,21 @@ def test_pre_market_and_after_hours_reports_on_the_same_day_give_identical_field
     d = DAYS[100]
     pre = _row("AAA", d)
     pre = CalendarRow(**{**pre.__dict__, "timing": EarningsTiming.PRE_MARKET})
-    a = build_event_frames(INPUTS, _calendar({"AAA": [pre]}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
-    b = build_event_frames(INPUTS, _calendar({"AAA": [_row("AAA", d)]}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
+    a = _build(INPUTS, _calendar({"AAA": [pre]}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
+    b = _build(INPUTS, _calendar({"AAA": [_row("AAA", d)]}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
     pd.testing.assert_frame_equal(a, b)
 
 
 def test_next_report_replaces_the_previous_from_its_visibility_day():
     rows = [_row("AAA", DAYS[100], eps=1.1), _row("AAA", DAYS[160], eps=0.9)]
-    f = build_event_frames(INPUTS, _calendar({"AAA": rows}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
+    f = _build(INPUTS, _calendar({"AAA": rows}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
     assert f["earnings_age"].iloc[160] == 59.0 and f["earnings_surprise"].iloc[160] == pytest.approx(10.0)
     assert f["earnings_age"].iloc[161] == 0.0 and f["earnings_surprise"].iloc[161] == pytest.approx(-10.0)
 
 
 def test_surprise_is_nan_without_estimates_or_with_a_tiny_forecast_but_age_advances():
     rows = [_row("AAA", DAYS[100], n=0), _row("AAA", DAYS[160], forecast=0.01)]
-    f = build_event_frames(INPUTS, _calendar({"AAA": rows}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
+    f = _build(INPUTS, _calendar({"AAA": rows}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
     assert np.isnan(f["earnings_surprise"].iloc[120]) and f["earnings_age"].iloc[120] == 19.0
     assert np.isnan(f["earnings_surprise"].iloc[170]) and f["earnings_age"].iloc[170] == 9.0
 
@@ -131,15 +136,13 @@ def test_surprise_is_nan_without_estimates_or_with_a_tiny_forecast_but_age_advan
 def test_reaction_is_nan_without_reaction_bars_but_age_advances():
     closes = list(np.linspace(50, 80, len(DAYS)))
     closes[101] = float("nan")  # no close at D+1
-    f = build_event_frames(
-        INPUTS, _calendar({"AAA": [_row("AAA", DAYS[100])]}), [], _world(closes), DAYS, ["AAA"]
-    ).frames["AAA"]
+    f = _build(INPUTS, _calendar({"AAA": [_row("AAA", DAYS[100])]}), [], _world(closes), DAYS, ["AAA"]).frames["AAA"]
     assert np.isnan(f["earnings_reaction"].iloc[101]) and f["earnings_age"].iloc[101] == 0.0
 
 
 def test_reaction_matches_the_pead_definition():
     world = _world()
-    f = build_event_frames(INPUTS, _calendar({"AAA": [_row("AAA", DAYS[100])]}), [], world, DAYS, ["AAA"]).frames["AAA"]
+    f = _build(INPUTS, _calendar({"AAA": [_row("AAA", DAYS[100])]}), [], world, DAYS, ["AAA"]).frames["AAA"]
     expected = reaction_z(by_session(world["AAA"]), by_session(world["SPY"]), DAYS, 100, 20)
     assert f["earnings_reaction"].iloc[101] == pytest.approx(expected)
 
@@ -147,14 +150,14 @@ def test_reaction_matches_the_pead_definition():
 def test_non_session_reports_are_skipped_and_counted():
     saturday = DAYS[100] + timedelta(days=(5 - DAYS[100].weekday()) % 7 or 7)
     assert saturday.weekday() == 5
-    built = build_event_frames(INPUTS, _calendar({"AAA": [_row("AAA", saturday)]}), [], _world(), DAYS, ["AAA"])
+    built = _build(INPUTS, _calendar({"AAA": [_row("AAA", saturday)]}), [], _world(), DAYS, ["AAA"])
     assert built.coverage.non_session_reports == 1
     assert np.isnan(built.frames["AAA"]["earnings_age"]).all()
 
 
 def test_dividend_yield_trailing_window_and_coverage_rules():
     actions = [_dividend("AAA", DAYS[260]), _dividend("AAA", DAYS[10])]
-    f = build_event_frames(INPUTS, _calendar({}), actions, _world(), DAYS, ["AAA"]).frames["AAA"]
+    f = _build(INPUTS, _calendar({}), actions, _world(), DAYS, ["AAA"]).frames["AAA"]
     assert np.isnan(f["dividend_yield"].iloc[250])  # first 251 days of the window are NaN
     close = _world()["AAA"]["Close"].to_numpy(float)
     assert f["dividend_yield"].iloc[251] == pytest.approx(0.5 / close[251])  # DAYS[10] is inside [0, 251]
@@ -169,20 +172,21 @@ def test_dividend_yield_ignores_special_and_unpriced_rows():
         _dividend("AAA", DAYS[262], kind="forward_split", rate=2.0),
         _dividend("AAA", date(2020, 6, 1)),  # before the first trading day: ignored
     ]
-    built = build_event_frames(INPUTS, _calendar({}), actions, _world(), DAYS, ["AAA"])
+    built = _build(INPUTS, _calendar({}), actions, _world(), DAYS, ["AAA"])
+    assert built.frames["AAA"]["dividend_yield"].iloc[251] == 0.0
     assert built.frames["AAA"]["dividend_yield"].iloc[270] == 0.0
     assert built.coverage.unpriced_dividends == 1
 
 
 def test_dividend_on_a_non_session_counts_from_the_next_session():
     ex = DAYS[260] + timedelta(days=(5 - DAYS[260].weekday()) % 7 or 7)  # a Saturday
-    f = build_event_frames(INPUTS, _calendar({}), [_dividend("AAA", ex)], _world(), DAYS, ["AAA"]).frames["AAA"]
+    f = _build(INPUTS, _calendar({}), [_dividend("AAA", ex)], _world(), DAYS, ["AAA"]).frames["AAA"]
     k = next(i for i, d in enumerate(DAYS) if d >= ex)
     assert f["dividend_yield"].iloc[k - 1] == 0.0 and f["dividend_yield"].iloc[k] > 0.0
 
 
 def test_symbol_without_reports_or_actions_is_all_nan_or_zero_and_reported():
-    built = build_event_frames(INPUTS, _calendar({}), [], _world(), DAYS, ["AAA"])
+    built = _build(INPUTS, _calendar({}), [], _world(), DAYS, ["AAA"])
     assert built.coverage.symbols_without_reports == ("AAA",) and built.coverage.symbols_without_actions == ("AAA",)
     f = built.frames["AAA"]
     assert np.isnan(f["earnings_age"]).all() and f["dividend_yield"].iloc[-1] == 0.0
@@ -191,7 +195,7 @@ def test_symbol_without_reports_or_actions_is_all_nan_or_zero_and_reported():
 
 
 def test_frames_align_with_prepare_daily_index():
-    f = build_event_frames(INPUTS, _calendar({}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
+    f = _build(INPUTS, _calendar({}), [], _world(), DAYS, ["AAA"]).frames["AAA"]
     keyed = prepare_daily(_world())["AAA"]
     assert f.index.equals(keyed.index)
 
@@ -239,3 +243,45 @@ def test_verify_event_sources_names_the_mismatching_digest():
         verify_event_sources(INPUTS, calendar, "c" * 64)
     with pytest.raises(ValueError, match="earnings pages"):
         verify_event_sources(INPUTS, LoadedCalendar({}, "d" * 64, 1, 0), "b" * 64)
+
+
+def test_dividend_yield_is_invariant_to_a_split_after_t():
+    raw_close = np.linspace(200.0, 240.0, len(DAYS))
+    adjusted_close = raw_close.copy()
+    adjusted_close[:280] /= 4.0  # a 4:1 split on day 280 rescales every earlier adjusted close
+    adjusted = {"AAA": daily(DAYS, adjusted_close), "SPY": daily(DAYS, list(np.linspace(300, 330, len(DAYS))))}
+    raw = {"AAA": daily(DAYS, raw_close), "SPY": adjusted["SPY"]}
+    f = _build(INPUTS, _calendar({}), [_dividend("AAA", DAYS[260], rate=1.0)], adjusted, DAYS, ["AAA"], raw=raw).frames[
+        "AAA"
+    ]
+    assert f["dividend_yield"].iloc[270] == pytest.approx(1.0 / raw_close[270])
+    assert f["dividend_yield"].iloc[290] == pytest.approx(0.25 / adjusted_close[290])
+
+
+def test_dividend_without_a_scale_factor_is_dropped_and_counted():
+    adjusted = _world()
+    adjusted["AAA"].iloc[:261, adjusted["AAA"].columns.get_loc("Close")] = float("nan")
+    built = _build(INPUTS, _calendar({}), [_dividend("AAA", DAYS[260])], adjusted, DAYS, ["AAA"])
+    assert built.coverage.unscaled_dividends == 1 and built.frames["AAA"]["dividend_yield"].iloc[270] == 0.0
+
+
+def test_symbol_without_raw_bars_has_nan_dividend_yield_and_is_reported():
+    adjusted = _world()
+    built = build_event_frames(INPUTS, _calendar({}), [], adjusted, {"SPY": adjusted["SPY"]}, DAYS, ["AAA"])
+    assert built.coverage.symbols_without_raw == ("AAA",)
+    assert np.isnan(built.frames["AAA"]["dividend_yield"]).all()
+
+
+def test_reaction_is_nan_when_the_benchmark_lacks_the_reaction_bar():
+    world = _world()
+    world["SPY"].iloc[101, world["SPY"].columns.get_loc("Close")] = float("nan")
+    f = _build(INPUTS, _calendar({"AAA": [_row("AAA", DAYS[100])]}), [], world, DAYS, ["AAA"]).frames["AAA"]
+    assert np.isnan(f["earnings_reaction"].iloc[101]) and f["earnings_age"].iloc[101] == 0.0
+
+
+def test_overlapping_dividends_sum_and_early_report_has_nan_reaction():
+    close = _world()["AAA"]["Close"].to_numpy(float)
+    actions = [_dividend("AAA", DAYS[255], rate=0.4), _dividend("AAA", DAYS[260], rate=0.6)]
+    f = _build(INPUTS, _calendar({"AAA": [_row("AAA", DAYS[5])]}), actions, _world(), DAYS, ["AAA"]).frames["AAA"]
+    assert f["dividend_yield"].iloc[261] == pytest.approx(1.0 / close[261])
+    assert f["earnings_age"].iloc[6] == 0.0 and np.isnan(f["earnings_reaction"].iloc[6])

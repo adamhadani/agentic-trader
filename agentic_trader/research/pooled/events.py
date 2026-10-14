@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from agentic_trader.agent.earnings import CalendarRow, parse_calendar_payload
-from agentic_trader.data.corporate_actions import CorporateAction
+from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 from agentic_trader.research.apriori.earnings_history import CalendarPageStore, dedupe_rows, weekdays
 from agentic_trader.research.apriori.pead_events import by_session, reaction_z
 from agentic_trader.research.pooled.campaign import EventInputs
@@ -48,6 +48,8 @@ _SURPRISE_DECIMALS = 9
 
 @dataclass(frozen=True)
 class LoadedCalendar:
+    """Deduplicated calendar rows per symbol (sorted by date) with the page-set digest and counts."""
+
     rows_by_symbol: Mapping[str, tuple[CalendarRow, ...]]
     pages_sha256: str
     pages: int
@@ -56,15 +58,21 @@ class LoadedCalendar:
 
 @dataclass(frozen=True)
 class EventCoverage:
+    """What the builder could not fill: symbols without data and skipped rows, for the results doc."""
+
     symbols_without_reports: tuple[str, ...]
     symbols_without_actions: tuple[str, ...]
     non_session_reports: int
     unpriced_dividends: int
+    unscaled_dividends: int
+    symbols_without_raw: tuple[str, ...]
     first_finite: Mapping[str, dict[str, str | None]]
 
 
 @dataclass(frozen=True)
 class EventFrames:
+    """Per-symbol event frames (naive-midnight DatetimeIndex over the trading days) and their coverage."""
+
     frames: Mapping[str, pd.DataFrame]
     coverage: EventCoverage
 
@@ -111,12 +119,13 @@ def load_actions(path: Path) -> tuple[tuple[CorporateAction, ...], str]:
     """The acquisition's ``actions.json`` rows and their content digest (the manifest's ``content_sha256``)."""
     raw = json.loads(path.read_text())
     if not isinstance(raw, list):
-        raise ValueError(f"{path}: actions.json is a JSON list of corporate actions")  # noqa: TRY004
+        raise ValueError(f"{path}: actions.json must be a JSON list of corporate actions")  # noqa: TRY004
     digest = hashlib.sha256(encode(raw).encode()).hexdigest()
     return tuple(CorporateAction.model_validate(row) for row in raw), digest
 
 
 def verify_event_sources(inputs: EventInputs, calendar: LoadedCalendar, actions_sha256: str) -> None:
+    """Fail closed unless both source digests equal the ones the protocol pins."""
     if calendar.pages_sha256 != inputs.earnings.pages_sha256:
         raise ValueError("earnings pages digest does not match the protocol's event_inputs.earnings.pages_sha256")
     if actions_sha256 != inputs.corporate_actions.content_sha256:
@@ -155,12 +164,11 @@ def _earnings_columns(
             continue
         if i + 1 >= n:
             continue  # completes after the calendar ends: never visible here
-        z = reaction_z(keyed, bench, days, i, inputs.earnings.vol_window) if keyed is not None else None
+        vol_window = inputs.earnings.vol_window
+        z = reaction_z(keyed, bench, days, i, vol_window) if keyed is not None and i - 1 - vol_window >= 0 else None
         visible.append((i + 1, _surprise(row, inputs), math.nan if z is None else z))
     for k, (start, s, z) in enumerate(visible):
         stop = visible[k + 1][0] if k + 1 < len(visible) else n
-        if stop <= start:
-            continue
         age[start:stop] = np.arange(stop - start, dtype=float)
         surprise[start:stop] = s
         reaction[start:stop] = z
@@ -170,27 +178,39 @@ def _earnings_columns(
 def _dividend_yield(
     actions: Sequence[CorporateAction],
     close: np.ndarray,
+    factor: np.ndarray,
     days: Sequence[date],
     inputs: EventInputs,
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, int, int]:
+    """Trailing regular dividends in the adjusted-price scale, over the adjusted close at T.
+
+    ``factor`` is adjusted/raw close, forward-filled. A dividend's declared ``rate`` is scaled by
+    ``factor`` at its own ex-session, so the ratio to ``close[T]`` involves only actions in (k, T].
+    """
     n = len(days)
     paid = np.zeros(n)
-    unpriced = 0
+    unpriced = unscaled = 0
     for action in actions:
-        if action.kind != "cash_dividend" or action.special:
+        if action.kind != CorporateActionKind.CASH_DIVIDEND or action.special:
             continue
         if action.rate is None:
             unpriced += 1
             continue
+        if action.effective_on < days[0]:
+            continue
         k = bisect_left(days, action.effective_on)
-        if k < n:
-            paid[k] += action.rate
+        if k >= n:
+            continue
+        if not math.isfinite(factor[k]):
+            unscaled += 1
+            continue
+        paid[k] += action.rate * factor[k]
     window = inputs.corporate_actions.trailing_sessions
     trailing = pd.Series(paid).rolling(window, min_periods=window).sum().to_numpy(float)
     with np.errstate(invalid="ignore", divide="ignore"):
         out = trailing / close
     out[~np.isfinite(out)] = np.nan
-    return out, unpriced
+    return out, unpriced, unscaled
 
 
 def build_event_frames(
@@ -198,10 +218,15 @@ def build_event_frames(
     calendar: LoadedCalendar,
     actions: Sequence[CorporateAction],
     adjusted: Mapping[str, pd.DataFrame],
+    raw: Mapping[str, pd.DataFrame],
     trading_days: Sequence[date],
     symbols: Sequence[str],
 ) -> EventFrames:
-    """One frame per symbol on the full trading-day calendar: the four ``events_fields_v1`` columns."""
+    """One frame per symbol on the full trading-day calendar: the four ``events_fields_v1`` columns.
+
+    ``raw`` is the unadjusted daily bars (same keys and ``Close`` column as ``adjusted``); it puts each
+    dividend into the adjusted-price scale at its own ex-date.
+    """
     days = tuple(trading_days)
     position = {day: i for i, day in enumerate(days)}
     benchmark = adjusted.get(inputs.earnings.benchmark)
@@ -216,22 +241,40 @@ def build_event_frames(
     first_finite: dict[str, dict[str, str | None]] = {}
     no_reports: list[str] = []
     no_actions: list[str] = []
-    skipped_total = unpriced_total = 0
+    no_raw: list[str] = []
+    skipped_total = unpriced_total = unscaled_total = 0
     for symbol in symbols:
         frame = adjusted.get(symbol)
         keyed = by_session(frame) if frame is not None and not frame.empty else None
         close = np.full(len(days), np.nan)
         if keyed is not None:
             close = keyed["Close"].reindex(list(days)).to_numpy(float)
+        factor = np.full(len(days), np.nan)
+        raw_frame = raw.get(symbol)
+        if keyed is not None:
+            if raw_frame is None or raw_frame.empty:
+                no_raw.append(symbol)
+            else:
+                raw_close = by_session(raw_frame)["Close"].reindex(list(days)).to_numpy(float)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    ratio = close / raw_close
+                ratio[~np.isfinite(ratio) | (ratio <= 0)] = np.nan
+                factor = pd.Series(ratio).ffill().to_numpy(float)
         rows = calendar.rows_by_symbol.get(symbol, ())
         if not rows:
             no_reports.append(symbol)
         if symbol not in actions_by_symbol:
             no_actions.append(symbol)
         age, surprise, reaction, skipped = _earnings_columns(rows, keyed, bench, days, position, inputs)
-        dividend_yield, unpriced = _dividend_yield(actions_by_symbol.get(symbol, ()), close, days, inputs)
+        if keyed is not None and symbol in no_raw:
+            dividend_yield, unpriced, unscaled = np.full(len(days), np.nan), 0, 0
+        else:
+            dividend_yield, unpriced, unscaled = _dividend_yield(
+                actions_by_symbol.get(symbol, ()), close, factor, days, inputs
+            )
         skipped_total += skipped
         unpriced_total += unpriced
+        unscaled_total += unscaled
         built = pd.DataFrame(
             {
                 "earnings_age": age,
@@ -257,6 +300,8 @@ def build_event_frames(
             symbols_without_actions=tuple(no_actions),
             non_session_reports=skipped_total,
             unpriced_dividends=unpriced_total,
+            unscaled_dividends=unscaled_total,
+            symbols_without_raw=tuple(no_raw),
             first_finite=first_finite,
         ),
     )

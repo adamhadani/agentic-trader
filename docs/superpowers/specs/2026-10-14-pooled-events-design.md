@@ -52,7 +52,7 @@ report is `D+2`, as in the PEAD leg.
 | `earnings_age` | Sessions since the last completed report: `index(T) − index(D+1)` for the latest report with `D+1 ≤ T`; `NaN` before the symbol's first report in the calendar | dimensionless |
 | `earnings_surprise` | That report's surprise `100 × (eps − eps_forecast) / abs(eps_forecast)`, rounded as in `pead_events`, carried forward until the next completed report; `NaN` when `n_estimates < min_estimates` or `abs(eps_forecast) < min_abs_forecast` or `eps` missing | dimensionless |
 | `earnings_reaction` | That report's reaction `z = (r_i − r_SPY) / (σ_i √2)`, `r` from close(D−1) to close(D+1), `σ_i` the sample std of the `vol_window` daily log returns ending D−1 (`pead_events._reaction_z`, adjusted bars, SPY from the same cache), carried forward; `NaN` when the bars are missing | dimensionless |
-| `dividend_yield` | Sum of `rate` (the per-share cash amount of a `cash_dividend` row; `cash_rate` is a merger field) of regular (`special = false`) `cash_dividend` actions whose `effective_on` (ex-date) maps to a trading day in the last 252 trading days through T (an ex-date on a non-session counts from the next session), divided by the adjusted close at T; `NaN` for the first 251 trading days of the acquisition window and where the close is missing; `0.0` for a covered non-payer | dimensionless |
+| `dividend_yield` | For each regular (`special = false`) `cash_dividend` with `rate` (the per-share cash amount as declared; `cash_rate` is a merger field) whose ex-date (`effective_on`, mapped to the first trading day ≥ it; ex-dates before the first trading day are skipped) is session k, the contribution is `rate_k · f(k)` with `f = adjusted close / raw close` per session (forward-filled over gaps, never back-filled; a dividend whose `f(k)` is undefined is dropped and counted as `unscaled_dividends`). The field is the sum of contributions over the trailing 252 sessions through T, divided by the adjusted close at T. `f(k)/f(T)` involves only actions between k and T, so the value is point-in-time (a bare `Σ rate / adjusted close` would leak later splits). `NaN` for the first 251 trading days and where the adjusted close or raw bars are missing; `0.0` for a covered non-payer | dimensionless |
 
 Rulings: carried-forward fields make a sparse event continuous across the cross-section
 (every name has a last report), so decile selection is well defined; `earnings_age`
@@ -137,6 +137,8 @@ the frozen text is adjusted before the file is hashed, never after). The frozen 
   `build_event_fields(symbol, rows, actions, adjusted, spy, trading_days, params) →
   pd.DataFrame[earnings_age, earnings_surprise, earnings_reaction, dividend_yield]`,
   and `EventFields.coverage` (per-symbol first finite session, symbols without rows).
+  The builder also needs the cohort's raw daily bars (the cube build already caches them
+  under `bars_raw`) to scale dividends into the adjusted-price scale.
 - `research/alpha/dsl.py`: the four names join `FIELD_UNITS` as dimensionless and
   `prepare_data_fields` keeps them when present (a frame without them, as every live
   frame, is unchanged; a formula naming them on such a frame raises the existing
@@ -172,7 +174,7 @@ Field builder: age/surprise/reaction carried forward and `NaN` before the first 
 a report dated D is invisible at row `D` and first visible at row `D+1` (age 0), so the
 first decision that reads it is `D+2`; pre-market and after-hours
 reports on the same D give identical fields; dividend window arithmetic at 252 sessions,
-special dividends excluded, non-payer `0.0`, pre-coverage `NaN`; SPY missing ⇒ `NaN`
-reaction, not an exception. Digest mismatch fails closed before evaluation. Base-class
+special dividends excluded, non-payer `0.0`, pre-coverage `NaN`; SPY missing on D+1 ⇒ `NaN`
+reaction; a wholly missing benchmark fails closed. Digest mismatch fails closed before evaluation. Base-class
 and intraday hashes unchanged (pin test). `events-v1.json` parses, is dimensionless,
 and freezes to a distinct identity from the same text under `intraday-v1`/v4.

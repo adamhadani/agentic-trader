@@ -890,7 +890,7 @@ Stage and report.
 - Test: `tests/research/pooled/test_scoring.py` (append), `tests/research/pooled/test_runner.py` (append), `tests/research/pooled/mini_world.py` (add `events_cube_build`, `mini_events_protocol`), `tests/cli/test_cli_alpha.py` (append)
 
 **Interfaces:**
-- Consumes: Task 1 models, Task 2 `EventFrames`, `build_event_frames`, `load_calendar_pages`, `load_actions`, `verify_event_sources`.
+- Consumes: Task 1 models, Task 2 `EventFrames`, `build_event_frames(inputs, calendar, actions, adjusted, raw, trading_days, symbols)` (fix round 1 added the required `raw` mapping: the cohort's raw daily bars, needed to scale each dividend into the adjusted price scale at its ex-date; `EventCoverage` also gained `unscaled_dividends` and `symbols_without_raw`), `load_calendar_pages`, `load_actions`, `verify_event_sources`.
 - Produces:
   ```python
   @dataclass(frozen=True)
@@ -898,7 +898,9 @@ Stage and report.
       earnings_pages: Path     # the Nasdaq page directory
       actions_file: Path       # the acquisition's actions.json
 
-  class CubeBuild:  events: EventFrames | None = None   # new field (default None)
+  class CubeBuild:
+      raw: Mapping[str, pd.DataFrame] = field(default_factory=dict)   # the cohort's raw (unadjusted) daily bars; filled only when events are built
+      events: EventFrames | None = None                                 # new field (default None)
 
   async def build_cube_inputs(..., load_hourly: bool = False, events: tuple[EventInputs, EventSources] | None = None) -> CubeBuild
   ScoreBook.with_events(adjusted, events: Mapping[str, pd.DataFrame], trading_days, sessions, symbols, *, capacity=64) -> ScoreBook   # score_inputs "daily", attribute event_inputs_bound=True
@@ -979,12 +981,15 @@ def events_cube_build(cube: LabelCube) -> CubeBuild:
         symbols_without_actions=(),
         non_session_reports=0,
         unpriced_dividends=0,
+        unscaled_dividends=0,
+        symbols_without_raw=(),
         first_finite={name: dict.fromkeys(EVENT_FIELDS, BAR_DAYS[251].isoformat()) for name in NAMES},
     )
     return CubeBuild(
         cube=cube,
         trading_days=BAR_DAYS,
         adjusted=ADJUSTED,
+        raw=ADJUSTED,
         bar_failures={},
         static_used=(),
         events=EventFrames(frames=EVENT_FRAMES, coverage=coverage),
@@ -1097,7 +1102,7 @@ def test_events_build_on_a_cache_hit_fetches_the_benchmark_and_builds_frames(tmp
     """Pinned digests match -> CubeBuild.events has one frame per cohort symbol and SPY came from the bar cache."""
     ...  # mirror the intraday cache-hit test: write pages + actions, compute their digests with pages_sha256/load_actions,
     # build inputs with those digests, call build_cube_inputs(events=...), assert set(built.events.frames) == set(cohort symbols),
-    # every frame has EVENT_FIELDS columns on built.trading_days, and "SPY" appears in the fake bar source's calls exactly once
+    # every frame has EVENT_FIELDS columns on built.trading_days, `built.raw` has every cohort symbol, and "SPY" appears in the fake bar source's calls exactly once
     # with timeframe "1d" (or not at all if the fixture pre-populates the SPY cache file).
 ```
 
@@ -1216,12 +1221,14 @@ if events is not None:
         acquisition.raise_on_errors()
     say(f"event fields: {calendar_pages.pages} calendar pages, {len(actions)} corporate actions")
     event_frames = await asyncio.to_thread(
-        build_event_frames, inputs, calendar_pages, actions, adjusted, trading_days, symbols
+        build_event_frames, inputs, calendar_pages, actions, adjusted, raw, trading_days, symbols
     )
     say(
         f"event fields: {len(event_frames.frames)} symbols; {len(event_frames.coverage.symbols_without_reports)} without reports"
     )
 ```
+
+**Raw bars:** the build path already fetches raw daily bars into a local `raw` dict (cohort + static symbols); keep the cohort symbols' frames and return them as `CubeBuild.raw` when `events` is given. On the cache-hit path, when `events` is given, fetch `acquisition.fetch(symbol, "1d", raw_dir, start, end, adjustment="raw")` for every cohort symbol (served from `bars_raw`, no provider access; `counted("raw bars", …)` progress). Without `events`, `CubeBuild.raw` stays empty on both paths so existing callers see no change.
 
 **Order matters for Review Focus 4:** load and verify the digests **before** the bar loop (move the three loader lines to the top of the function, right after the cube-path checks, so a digest mismatch raises before any `acquisition.fetch`); only the benchmark fetch and `build_event_frames` run after the bars. Return `events=event_frames` in `CubeBuild` (keep `adjusted` restricted to cohort symbols as today; the benchmark frame is only used inside `build_event_frames`).
 
