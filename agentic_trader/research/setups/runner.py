@@ -61,6 +61,11 @@ _FRAME_METADATA_COLUMNS: tuple[str, ...] = (
     "hit",
     "r",
     "r_cost",
+    # The zero-cost outcome's instants and holding count (the primary-cost outcome shares
+    # them): consumed by research/setups/recurrence.py, ignored by the setup study.
+    "entry_time",
+    "exit_time",
+    "holding_sessions",
 )
 
 
@@ -345,6 +350,9 @@ def _build_frame(
                     "hit": outcome_zero.hit.value,
                     "r": outcome_zero.r,
                     "r_cost": outcome_primary.r_cost,
+                    "entry_time": outcome_zero.entry_time,
+                    "exit_time": outcome_zero.exit_time,
+                    "holding_sessions": outcome_zero.holding_sessions,
                 }
             )
             rows.append(row)
