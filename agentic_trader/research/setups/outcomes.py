@@ -33,9 +33,12 @@ __all__ = [
     "DEFAULT_MAX_HOLD_SESSIONS",
     "FETCH_FAILED_HIT",
     "MARKET_PROXY_SYMBOL",
+    "PRIOR_OUTCOMES",
+    "RESOLVED_HITS",
     "label_journaled",
     "market_r",
     "summarize",
+    "with_recurrence",
 ]
 
 _BAR_TIMEFRAME = "1h"
@@ -245,6 +248,8 @@ def _would_withhold(entry: dict[str, Any]) -> bool | None:
 
 
 NEWS_ALIGNMENTS = ("aligned", "opposed", "neutral", "none")
+RESOLVED_HITS = (BracketHit.TARGET.value, BracketHit.STOP.value, BracketHit.TIMEOUT.value)
+PRIOR_OUTCOMES = (*RESOLVED_HITS, "none")
 
 
 def news_alignment(direction: str | None, tone: str | None) -> str:
@@ -415,6 +420,48 @@ def _llm_relabel(
     ).r_cost
 
 
+def _is_timestamp(value: Any) -> bool:
+    return value is not None and not pd.isna(value)
+
+
+def with_recurrence(frame: pd.DataFrame) -> pd.DataFrame:
+    """Adds prior_sessions, prior_same_session and prior_outcome per ``(contract, strategy, direction)``.
+
+    Over the other rows of the same setup in this frame: distinct earlier sessions; same-session rows
+    decided strictly earlier (a tie on ``decided_at`` is not earlier); and the hit of the most recent
+    earlier row (by ``decided_at``) whose bracket had resolved -- ``hit`` in ``RESOLVED_HITS`` with an
+    ``exit_time`` at or before this row's ``decided_at`` -- else ``"none"``. A prior card still open at
+    the decision was not information the desk had, so it never counts; immature and fetch-failed rows
+    never count. Rows without a strategy or direction keep the first-occurrence defaults. Relative
+    to the frame's window: a setup first journaled before it reads as first.
+    """
+    out = frame.copy()
+    prior_sessions = pd.Series(0, index=out.index, dtype=int)
+    prior_same = pd.Series(0, index=out.index, dtype=int)
+    prior_outcome = pd.Series("none", index=out.index, dtype=object)
+    keyed = out.dropna(subset=["contract", "strategy", "direction"])
+    for _, group in keyed.groupby(["contract", "strategy", "direction"], sort=False):
+        records = list(group[["session", "decided_at", "hit", "exit_time"]].itertuples())
+        for row in records:
+            decided = pd.Timestamp(row.decided_at)
+            earlier = [other for other in records if pd.Timestamp(other.decided_at) < decided]
+            prior_sessions.loc[row.Index] = len({other.session for other in records if other.session < row.session})
+            prior_same.loc[row.Index] = sum(1 for other in earlier if other.session == row.session)
+            resolved = [
+                other
+                for other in earlier
+                if other.hit in RESOLVED_HITS
+                and _is_timestamp(other.exit_time)
+                and pd.Timestamp(other.exit_time) <= decided
+            ]
+            if resolved:
+                prior_outcome.loc[row.Index] = max(resolved, key=lambda other: pd.Timestamp(other.decided_at)).hit
+    out["prior_sessions"] = prior_sessions
+    out["prior_same_session"] = prior_same
+    out["prior_outcome"] = prior_outcome
+    return out
+
+
 def label_journaled(
     events: list[dict[str, Any]],
     bars: BarSource,
@@ -525,7 +572,7 @@ def label_journaled(
         "tape_reason",
     ):
         frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
-    return frame
+    return with_recurrence(frame)
 
 
 def _selection_by_score(frame: pd.DataFrame, score_column: str) -> dict[str, Any] | None:
@@ -699,13 +746,17 @@ def _regime_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]
 
 
 def _recurrence_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
-    """Placeholder shape until Task 4 computes recurrence; keys are the contract."""
+    """The descriptive ``recurrence`` block: setup counts over every row, buckets over mature rows."""
+    key = ["contract", "strategy", "direction"]
+    keyed = frame.dropna(subset=key)
+    sessions_per_setup = keyed.groupby(key, sort=False)["session"].nunique() if len(keyed) else pd.Series(dtype=int)
+    first = mature["prior_sessions"].fillna(0).astype(int) == 0
     return {
-        "setups": 0,
-        "repeated_setups": 0,
-        "same_session_repeats": 0,
-        "by_prior": {"first": _bucket(mature.iloc[0:0]), "repeat": _bucket(mature.iloc[0:0])},
-        "by_prior_outcome": {},
+        "setups": len(sessions_per_setup),
+        "repeated_setups": int((sessions_per_setup > 1).sum()),
+        "same_session_repeats": int((frame["prior_same_session"].fillna(0).astype(int) > 0).sum()),
+        "by_prior": {"first": _bucket(mature.loc[first]), "repeat": _bucket(mature.loc[~first])},
+        "by_prior_outcome": {name: _bucket(mature.loc[mature["prior_outcome"] == name]) for name in PRIOR_OUTCOMES},
     }
 
 

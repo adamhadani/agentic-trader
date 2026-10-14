@@ -15,10 +15,13 @@ from agentic_trader.research.setups.outcomes import (
     DEFAULT_MAX_HOLD_SESSIONS,
     FETCH_FAILED_HIT,
     MARKET_PROXY_SYMBOL,
+    PRIOR_OUTCOMES,
+    RESOLVED_HITS,
     label_journaled,
     market_r,
     news_alignment,
     summarize,
+    with_recurrence,
 )
 from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS
 
@@ -1044,10 +1047,213 @@ def test_empty_summary_has_the_regime_and_recurrence_blocks():
         },
         "tape_reason": None,
     }
-    assert set(summary["recurrence"]) == {
-        "setups",
-        "repeated_setups",
-        "same_session_repeats",
-        "by_prior",
-        "by_prior_outcome",
+    assert summary["recurrence"] == {
+        "setups": 0,
+        "repeated_setups": 0,
+        "same_session_repeats": 0,
+        "by_prior": {
+            "first": {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None},
+            "repeat": {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None},
+        },
+        "by_prior_outcome": {
+            name: {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None} for name in PRIOR_OUTCOMES
+        },
     }
+
+
+def _labelled_row(
+    contract,
+    session,
+    decided_at,
+    hit,
+    *,
+    exit_time=None,
+    strategy="TREND_PULLBACK",
+    direction="LONG",
+    r_cost=None,
+    excess_r=None,
+    scan_id=None,
+):
+    row = dict.fromkeys(_COLUMNS)
+    row.update(
+        {
+            "scan_id": scan_id or f"{contract}-{decided_at}",
+            "session": session,
+            "contract": contract,
+            "strategy": strategy,
+            "direction": direction,
+            "hit": hit,
+            "r_cost": r_cost,
+            "excess_r": excess_r,
+            "exit_time": pd.Timestamp(exit_time) if exit_time else None,
+            "decided_at": pd.Timestamp(decided_at),
+            "sent": False,
+            "prior_sessions": 0,
+            "prior_same_session": 0,
+            "prior_outcome": "none",
+        }
+    )
+    return row
+
+
+def _frame(rows):
+    return pd.DataFrame(rows, columns=list(_COLUMNS))
+
+
+def test_recurrence_constants():
+    assert RESOLVED_HITS == ("target", "stop", "timeout")
+    assert PRIOR_OUTCOMES == ("target", "stop", "timeout", "none")
+
+
+def test_recurrence_counts_prior_sessions_and_uses_the_last_resolved_prior_outcome():
+    rows = [
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target", exit_time="2026-03-02T19:30:00Z", r_cost=1.9
+        ),
+        _labelled_row(
+            "PFE", "2026-03-03", "2026-03-03T14:35:00Z", "stop", exit_time="2026-03-03T16:30:00Z", r_cost=-1.1
+        ),
+        _labelled_row("PFE", "2026-03-04", "2026-03-04T14:35:00Z", "timeout", r_cost=0.2),
+        _labelled_row(
+            "XOM", "2026-03-04", "2026-03-04T14:35:00Z", "target", exit_time="2026-03-05T15:30:00Z", r_cost=1.9
+        ),
+    ]
+    out = with_recurrence(_frame(rows)).set_index(["contract", "session"])
+    assert out.loc[("PFE", "2026-03-02"), ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [
+        0,
+        0,
+        "none",
+    ]
+    assert out.loc[("PFE", "2026-03-03"), ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [
+        1,
+        0,
+        "target",
+    ]
+    assert out.loc[("PFE", "2026-03-04"), ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [
+        2,
+        0,
+        "stop",
+    ]
+    assert out.loc[("XOM", "2026-03-04"), ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [
+        0,
+        0,
+        "none",
+    ]
+
+
+def test_recurrence_prior_outcome_ignores_brackets_open_at_the_decision():
+    rows = [
+        # Resolved, but only after the second decision: the desk did not know it yet.
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target", exit_time="2026-03-03T18:30:00Z"),
+        _labelled_row("PFE", "2026-03-03", "2026-03-03T14:35:00Z", "stop", exit_time="2026-03-03T16:30:00Z"),
+        # Still immature at the third decision; the second row has resolved.
+        _labelled_row("PFE", "2026-03-04", "2026-03-04T14:35:00Z", "immature"),
+        _labelled_row("PFE", "2026-03-05", "2026-03-05T14:35:00Z", "fetch_failed"),
+        _labelled_row("PFE", "2026-03-06", "2026-03-06T14:35:00Z", "timeout"),
+    ]
+    out = with_recurrence(_frame(rows)).set_index("session")
+    # At the 03-03 decision the 03-02 bracket was still open (it exits at 18:30 that day).
+    assert out.loc["2026-03-03", "prior_outcome"] == "none"
+    # By 03-04 both earlier brackets had resolved; the most recent by decided_at is the 03-03 stop.
+    assert out.loc["2026-03-04", "prior_outcome"] == "stop"
+    # Immature and fetch-failed rows never count; the last resolved prior is still the 03-03 stop.
+    assert out.loc["2026-03-06", "prior_outcome"] == "stop"
+    assert out.loc["2026-03-06", "prior_sessions"] == 4
+
+
+def test_recurrence_same_session_repeats_and_ties_on_decided_at_are_not_prior():
+    rows = [
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target", exit_time="2026-03-02T16:30:00Z", scan_id="a"
+        ),
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T18:35:00Z", "stop", exit_time="2026-03-02T19:30:00Z", scan_id="b"
+        ),
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T18:35:00Z", "stop", exit_time="2026-03-02T19:30:00Z", scan_id="c"
+        ),
+    ]
+    out = with_recurrence(_frame(rows)).set_index("scan_id")
+    assert out.loc["a", ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [0, 0, "none"]
+    assert out.loc["b", ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [0, 1, "target"]
+    assert out.loc["c", ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [0, 1, "target"]
+
+
+def test_recurrence_is_per_setup_not_per_symbol():
+    rows = [
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target", exit_time="2026-03-02T16:30:00Z", direction="LONG"
+        ),
+        _labelled_row("PFE", "2026-03-03", "2026-03-03T14:35:00Z", "stop", direction="SHORT"),
+        _labelled_row("PFE", "2026-03-04", "2026-03-04T14:35:00Z", "stop", strategy="SQUEEZE_BREAKOUT"),
+        _labelled_row("PFE", "2026-03-05", "2026-03-05T14:35:00Z", "stop", strategy=None),
+    ]
+    out = with_recurrence(_frame(rows))
+    assert out["prior_sessions"].tolist() == [0, 0, 0, 0]
+    assert out["prior_outcome"].tolist() == ["none"] * 4
+
+
+def test_recurrence_leaves_other_columns_and_order_unchanged():
+    frame = _frame([_labelled_row("PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target")])
+    out = with_recurrence(frame)
+    assert list(out.columns) == list(_COLUMNS)
+    assert out.drop(columns=["prior_sessions", "prior_same_session", "prior_outcome"]).equals(
+        frame.drop(columns=["prior_sessions", "prior_same_session", "prior_outcome"])
+    )
+    assert with_recurrence(_frame([])).empty
+
+
+def test_recurrence_summary_block():
+    rows = [
+        _labelled_row(
+            "PFE",
+            "2026-03-02",
+            "2026-03-02T14:35:00Z",
+            "target",
+            exit_time="2026-03-02T16:30:00Z",
+            r_cost=1.9,
+            excess_r=1.5,
+        ),
+        _labelled_row(
+            "PFE",
+            "2026-03-03",
+            "2026-03-03T14:35:00Z",
+            "stop",
+            exit_time="2026-03-03T16:30:00Z",
+            r_cost=-1.1,
+            excess_r=-1.3,
+        ),
+        _labelled_row("PFE", "2026-03-03", "2026-03-03T18:35:00Z", "immature", scan_id="late"),
+        _labelled_row("XOM", "2026-03-03", "2026-03-03T14:35:00Z", "timeout", r_cost=0.3),
+    ]
+    frame = with_recurrence(_frame(rows))
+    block = summarize(frame)["recurrence"]
+    assert block["setups"] == 2
+    assert block["repeated_setups"] == 1
+    assert block["same_session_repeats"] == 1
+    assert block["by_prior"]["first"] == {
+        "n": 2,
+        "mean_r_cost": pytest.approx(1.1),
+        "mean_excess_r": pytest.approx(1.5),
+        "hit_rate": 0.5,
+    }
+    assert block["by_prior"]["repeat"] == {
+        "n": 1,
+        "mean_r_cost": pytest.approx(-1.1),
+        "mean_excess_r": pytest.approx(-1.3),
+        "hit_rate": 0.0,
+    }
+    assert set(block["by_prior_outcome"]) == set(PRIOR_OUTCOMES)
+    assert block["by_prior_outcome"]["target"]["n"] == 1 and block["by_prior_outcome"]["none"]["n"] == 2
+    assert block["by_prior_outcome"]["stop"]["n"] == 0
+
+
+def test_label_journaled_applies_recurrence():
+    events = [
+        _event("s1", DECIDED_AT, [_candidate()]),
+        _event("s2", DECIDED_AT + timedelta(days=1), [_candidate()]),
+    ]
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
+    frame = label_journaled(events, source, now=NOW + timedelta(days=1)).sort_values("decided_at")
+    assert frame["prior_sessions"].tolist() == [0, 1]
+    assert frame["prior_outcome"].tolist() == ["none", "target"]
