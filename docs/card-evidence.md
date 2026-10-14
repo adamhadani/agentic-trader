@@ -293,7 +293,8 @@ ranking; there is no card line.
 (`agent/regime.py:regime_journal_block`; keys `REGIME_BLOCK_KEYS`): `vix`, `vix_regime`
 (`COMPRESSED`/`NORMAL`/`ELEVATED`/`EXTREME`), `breakout_allowed`, `risk_multiplier`,
 `min_rr_threshold`, `macro_stress` (`LOW`/`MODERATE`/`HIGH`/`EXTREME`, null without a macro report) and
-`observed_at` — the snapshot the scan gated on, which cannot be rebuilt from bars later. Every card's
+`observed_at` — the snapshot observed at the start of the scan (the evaluator may refresh it during a long scan),
+which cannot be rebuilt from bars later. Every card's
 `decision_provenance["regime"]` carries the same block. Events before 2026-10-14 have none.
 
 **Derived tape.** The report fetches SPY daily bars once (raw, 400 calendar days before the earliest
@@ -302,14 +303,17 @@ strictly before it (`research/setups/tape.py:tape_state`): `spy_ret_20` (the 20-
 and `spy_above_200` (last close above the 200-session mean). Columns `regime_vix`,
 `regime_vix_regime`, `regime_risk_multiplier`, `regime_macro_stress`, `spy_ret_20`, `spy_above_200`,
 `tape_reason` sit after `news_alignment`. A failed daily fetch sets `tape_reason` on every row and leaves
-the rest of the report intact.
+the rest of the report intact; when the fetch returned bars but none precede a session, that row's
+`tape_reason` reads "no daily bars before the session". A daily frame with a naive (tz-less) index is
+refused (`unknown`): it cannot be placed on the New York calendar without guessing.
 
 **Recurrence.** Over the rows of the report (`with_recurrence`), per `(contract, strategy,
 direction)`: `prior_sessions` (distinct earlier sessions in the window), `prior_same_session`
 (same-session rows decided strictly earlier) and `prior_outcome` (the hit — `target`/`stop`/`timeout` —
-of the most recent earlier row whose bracket had resolved by this decision, else `none`; a card still
-open at the decision never counts, so there is no lookahead). The counts are relative to `--days`: a
-setup first journaled before the window reads as first.
+of the most recent earlier row whose exit bar had closed by this decision (exit time plus one hourly
+bar), else `none`; a card still open at the decision never counts, so there is no lookahead). The counts are relative to `--days`: a
+setup first journaled before the window reads as first. `first` = no earlier session in the window, so a
+same-session repeat is still `first`; `repeat` = at least one earlier session.
 
 **Summary blocks.** Buckets are `{n, mean_r_cost, mean_excess_r, hit_rate}` over mature rows
 (`mean_excess_r` over the bucket's rows with a market control):

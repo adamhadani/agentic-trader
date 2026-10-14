@@ -429,16 +429,20 @@ def with_recurrence(frame: pd.DataFrame) -> pd.DataFrame:
 
     Over the other rows of the same setup in this frame: distinct earlier sessions; same-session rows
     decided strictly earlier (a tie on ``decided_at`` is not earlier); and the hit of the most recent
-    earlier row (by ``decided_at``) whose bracket had resolved -- ``hit`` in ``RESOLVED_HITS`` with an
-    ``exit_time`` at or before this row's ``decided_at`` -- else ``"none"``. A prior card still open at
-    the decision was not information the desk had, so it never counts; immature and fetch-failed rows
-    never count. Rows without a strategy or direction keep the first-occurrence defaults. Relative
-    to the frame's window: a setup first journaled before it reads as first.
+    earlier row (by ``decided_at``) whose bracket had resolved -- ``hit`` in ``RESOLVED_HITS`` whose
+    exit bar had closed (``exit_time`` plus one bar) at or before this row's ``decided_at`` -- else
+    ``"none"``. A prior card still open at the decision was not information the desk had, so it never
+    counts; immature and fetch-failed rows never count. Rows without a strategy or direction keep the
+    first-occurrence defaults. Relative to the frame's window: a setup first journaled before it
+    reads as first. Requires a unique index (``label_journaled`` always provides a RangeIndex).
     """
+    if not frame.index.is_unique:
+        raise ValueError("with_recurrence requires a unique index")
     out = frame.copy()
     prior_sessions = pd.Series(0, index=out.index, dtype=int)
     prior_same = pd.Series(0, index=out.index, dtype=int)
     prior_outcome = pd.Series("none", index=out.index, dtype=object)
+    bar = pd.Timedelta(_BAR_TIMEFRAME)
     keyed = out.dropna(subset=["contract", "strategy", "direction"])
     for _, group in keyed.groupby(["contract", "strategy", "direction"], sort=False):
         records = list(group[["session", "decided_at", "hit", "exit_time"]].itertuples())
@@ -452,7 +456,7 @@ def with_recurrence(frame: pd.DataFrame) -> pd.DataFrame:
                 for other in earlier
                 if other.hit in RESOLVED_HITS
                 and _is_timestamp(other.exit_time)
-                and pd.Timestamp(other.exit_time) <= decided
+                and pd.Timestamp(other.exit_time) + bar <= decided
             ]
             if resolved:
                 prior_outcome.loc[row.Index] = max(resolved, key=lambda other: pd.Timestamp(other.decided_at)).hit
@@ -551,7 +555,10 @@ def label_journaled(
         state = states.get(session)
         if state is None:
             state = states[session] = tape_state(daily, date.fromisoformat(session))
-        row["spy_ret_20"], row["spy_above_200"], row["tape_reason"] = state.ret_20, state.above_200, tape_reason
+        reason = tape_reason
+        if reason is None and daily is not None and state.sessions == 0:
+            reason = "no daily bars before the session"
+        row["spy_ret_20"], row["spy_above_200"], row["tape_reason"] = state.ret_20, state.above_200, reason
 
     frame = pd.DataFrame(rows, columns=list(_COLUMNS))
     # Signal ids stay integers beside missing ones (nullable Int64, never 5.0), and an absent
@@ -711,22 +718,21 @@ def _bucket(rows: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _tape_members(rows: pd.DataFrame, name: str) -> pd.Series:
-    """Rows whose tape state belongs to bucket ``name`` -- the one membership rule, ``tape_buckets``."""
-    if rows.empty:
-        return pd.Series(dtype=bool, index=rows.index)
+def _tape_bucket_names(rows: pd.DataFrame) -> pd.Series:
+    """Each row's tape bucket names -- the one membership rule, ``tape_buckets`` -- computed once per row."""
 
-    def member(row: pd.Series) -> bool:
+    def names(row: pd.Series) -> tuple[str, ...]:
         ret = row["spy_ret_20"]
         above = row["spy_above_200"]
-        state = TapeState(
-            ret_20=float(ret) if ret is not None and not pd.isna(ret) else None,
-            above_200=bool(above) if above is not None and not pd.isna(above) else None,
-            sessions=0,
+        return tape_buckets(
+            TapeState(
+                ret_20=float(ret) if ret is not None and not pd.isna(ret) else None,
+                above_200=bool(above) if above is not None and not pd.isna(above) else None,
+                sessions=0,
+            )
         )
-        return name in tape_buckets(state)
 
-    return rows.apply(member, axis=1).astype(bool)
+    return pd.Series([names(row) for _, row in rows.iterrows()], index=rows.index, dtype=object)
 
 
 def _regime_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
@@ -736,11 +742,15 @@ def _regime_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]
     regimes = sorted(str(value) for value in measured["regime_vix_regime"].dropna().unique())
     stresses = sorted(str(value) for value in mature["regime_macro_stress"].dropna().unique())
     reasons = frame["tape_reason"].dropna()
+    tape_names = _tape_bucket_names(mature)
     return {
         "blocks": len(present),
         "by_vix_regime": {name: _bucket(measured.loc[measured["regime_vix_regime"] == name]) for name in regimes},
         "by_macro_stress": {name: _bucket(mature.loc[mature["regime_macro_stress"] == name]) for name in stresses},
-        "by_tape": {name: _bucket(mature.loc[_tape_members(mature, name)]) for name in TAPE_BUCKETS},
+        "by_tape": {
+            name: _bucket(mature.loc[tape_names.map(lambda names, key=name: key in names).astype(bool)])
+            for name in TAPE_BUCKETS
+        },
         "tape_reason": str(reasons.iloc[0]) if len(reasons) else None,
     }
 
@@ -761,7 +771,11 @@ def _recurrence_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, 
 
 
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
-    """Counts by outcome/maturity, base rates, per-scan selection quality by scorer and card-policy counts, book sizing, news, regime/tape and recurrence."""
+    """Descriptive summary of a labelled frame.
+
+    Counts by outcome and maturity, base rates, per-scan selection quality by scorer, card-policy
+    counts, book sizing, news, regime/tape and recurrence blocks.
+    """
     if frame.empty:
         return {
             "total": 0,

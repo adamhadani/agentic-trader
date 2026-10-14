@@ -95,7 +95,8 @@ def regime_journal_block(snapshot: Any) -> dict[str, Any]:
             "macro_stress": str(getattr(level, "value", level)) if level is not None else None,
             "observed_at": timestamp.isoformat() if isinstance(timestamp, datetime) else None,
         }
-    except Exception:
+    except Exception as exc:
+        logger.debug("Regime journal block unavailable: %s", type(exc).__name__)
         return dict.fromkeys(REGIME_BLOCK_KEYS)
 
 

@@ -47,10 +47,7 @@ class TapeState:
 
 
 def _closes_before(daily: pd.DataFrame, session: date) -> np.ndarray:
-    index = pd.DatetimeIndex(daily.index)
-    if index.tz is None:
-        index = index.tz_localize("UTC")
-    frame = daily.set_axis(index).sort_index()
+    frame = daily.set_axis(pd.DatetimeIndex(daily.index)).sort_index()
     ny_dates = np.array(frame.index.tz_convert(ET_TZ).date, dtype=object)
     closes = pd.to_numeric(frame.loc[ny_dates < session, "Close"], errors="coerce")
     values = closes.to_numpy(dtype=float)
@@ -62,9 +59,13 @@ def tape_state(daily: pd.DataFrame | None, session: date) -> TapeState:
 
     Today's bar, partial or complete, is never used (the decision is intraday). Rows without a
     finite close are dropped before counting. Fewer than 21 closes give no return; fewer than
-    200 give no mean comparison. A missing, empty or close-less frame is ``(None, None, 0)``.
+    200 give no mean comparison. A missing, empty or close-less frame is ``(None, None, 0)``, and
+    so is a frame with a naive (tz-less) index: it cannot be placed on the New York calendar
+    without guessing, and provider bars are tz-aware.
     """
     if daily is None or daily.empty or "Close" not in daily.columns:
+        return TapeState(ret_20=None, above_200=None, sessions=0)
+    if pd.DatetimeIndex(daily.index).tz is None:
         return TapeState(ret_20=None, above_200=None, sessions=0)
     values = _closes_before(daily, session)
     n = len(values)

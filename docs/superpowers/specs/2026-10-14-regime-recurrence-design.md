@@ -77,7 +77,7 @@ def regime_journal_block(snapshot: Any) -> dict[str, Any]:
 - `breakout_allowed`: `bool(...)` when present, else `None`.
 - `macro_stress`: `snapshot.macro_report.stress.level.value` when every link exists, else `None`.
 - `observed_at`: `snapshot.timestamp.isoformat()` when it is a `datetime`, else `None`.
-- Never raises: any attribute access error yields `None` for that key. The scan fixture stubs the
+- Never raises: any failure yields the all-`None` block and a debug log line with the exception type. The scan fixture stubs the
   detector with a `SimpleNamespace(summary_text="test")`, so a snapshot with no fields must produce
   an all-`None` block, not an exception.
 
@@ -107,12 +107,13 @@ def tape_state(daily: pd.DataFrame | None, session: date) -> TapeState
 def tape_buckets(state: TapeState) -> tuple[str, ...]
 ```
 
-- `daily` is a frame with a `Close` column indexed by timestamp (any zone); a row belongs to the
+- `daily` is a frame with a `Close` column indexed by a tz-aware timestamp; a row belongs to the
   session of its New York date. `tape_state` keeps rows whose New York date is strictly before
   `session` (today's bar, partial or complete, is never used: the decision is at 10:35 or 14:35 and
   the live feature vector uses the last completed session the same way), drops rows without a finite close, sorts them, and computes
   `ret_20` when at least 21 closes exist and `above_200` when at least 200 exist; otherwise `None`.
-  An empty or `None` frame gives `TapeState(None, None, 0)`. Non-finite results are `None`.
+  An empty or `None` frame gives `TapeState(None, None, 0)`; a naive index is refused the same way
+  (`TapeState(None, None, 0)`), since it cannot be placed on the New York calendar without guessing. Non-finite results are `None`.
 - `tape_buckets` returns the bucket names a state belongs to: `ret20_up` when `ret_20 > 0`,
   `ret20_down` when `ret_20 <= 0`, `above_200`/`below_200` by the boolean, and `("unknown",)` when
   both measures are `None`. A state with one measure present and one absent belongs only to the
@@ -135,7 +136,8 @@ For each row, over the other rows of the same `(contract, strategy, direction)` 
 - `prior_same_session` (int): rows with the same `session` and an earlier `decided_at`
   (ties on `decided_at` count as not earlier).
 - `prior_outcome` (str): the `hit` of the most recent earlier row (by `decided_at`) whose `hit` is in
-  `RESOLVED_HITS` and whose `exit_time` is not null and `<= ` this row's `decided_at`; `"none"` when
+  `RESOLVED_HITS` and whose `exit_time` is not null and whose exit bar had closed — `exit_time` (the exit bar's open) plus
+  one hourly bar — at or before this row's `decided_at`; `"none"` when
   there is no such row. A prior row that was still open at this decision is not information the
   desk had, so it never counts (no lookahead). `fetch_failed` and `immature` rows never count.
 - Rows without a strategy or direction get `prior_sessions = 0`, `prior_same_session = 0`,
@@ -163,7 +165,7 @@ New columns, inserted after `news_alignment` and before `market_r`, in this orde
 | `regime_macro_stress` | journal `regime.macro_stress` | `LOW`/`MODERATE`/`HIGH`/`EXTREME` or `None` |
 | `spy_ret_20` | `tape_state(daily, session).ret_20` | float or `None` |
 | `spy_above_200` | `tape_state(daily, session).above_200` | bool or `None` |
-| `tape_reason` | the daily fetch failure | str or `None` |
+| `tape_reason` | the daily fetch failure, or "no daily bars before the session" when the fetch returned bars but none precede the session | str or `None` |
 | `prior_sessions` | `with_recurrence` | int |
 | `prior_same_session` | `with_recurrence` | int |
 | `prior_outcome` | `with_recurrence` | `target`/`stop`/`timeout`/`none` |
@@ -272,3 +274,8 @@ rule; `same_session_repeats` and `repeated_setups` are the denominators the card
    the earliest decision, enough for the 200-session mean with margin.
 8. **No card line.** The card already shows the regime summary; recurrence on a card would be a
    nudge toward or away from a tap before its information content is measured.
+9. **Exit bar close, not open, for recurrence.** `label_bracket` stamps exits at the bar's open;
+   requiring the close keeps `prior_outcome` free of sub-hour lookahead at the cost of one bar of
+   conservatism.
+10. **Naive daily index refused.** It cannot be placed on the New York calendar without guessing;
+   provider bars are tz-aware.

@@ -51,10 +51,25 @@ def test_tape_state_short_history_is_none():
     assert state == TapeState(ret_20=None, above_200=None, sessions=20)
 
 
-def test_tape_state_excludes_the_decision_session_and_reads_naive_index_as_utc():
-    """A bar stamped on the decision's own New York date is never used; a naive index is UTC."""
+def test_tape_state_excludes_the_decision_session():
+    """A bar stamped on the decision's own New York date is never used."""
     closes = [100.0] * 20 + [105.0, 999.0]  # the 999 bar is on 2026-10-13, the decision's session
-    state = tape_state(_daily(closes, tz=None), date(2026, 10, 13))
+    state = tape_state(_daily(closes), date(2026, 10, 13))
+    assert state.sessions == 21
+    assert state.ret_20 == pytest.approx(0.05)
+
+
+def test_tape_state_refuses_a_naive_index():
+    """A naive index cannot be placed on the New York calendar without guessing."""
+    closes = [100.0] * 20 + [105.0]
+    assert tape_state(_daily(closes, tz=None), date(2026, 10, 14)) == TapeState(None, None, 0)
+
+
+def test_tape_state_reads_alpacas_midnight_new_york_daily_stamp():
+    """Alpaca stamps a daily bar 04:00Z (midnight New York, EDT) on its session date."""
+    index = pd.DatetimeIndex(pd.bdate_range(end="2026-10-14", periods=22, freq="B") + pd.Timedelta(hours=4), tz="UTC")
+    closes = [100.0] * 20 + [105.0, 999.0]  # the 999 bar is the decision date itself
+    state = tape_state(pd.DataFrame({"Close": closes}, index=index), date(2026, 10, 14))
     assert state.sessions == 21
     assert state.ret_20 == pytest.approx(0.05)
 

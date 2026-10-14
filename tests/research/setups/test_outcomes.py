@@ -1161,6 +1161,33 @@ def test_recurrence_prior_outcome_ignores_brackets_open_at_the_decision():
     assert out.loc["2026-03-06", "prior_sessions"] == 4
 
 
+def test_recurrence_prior_outcome_needs_the_exit_bar_to_have_closed():
+    """exit_time is the exit bar's open: the bar closes one hourly bar later."""
+    rows = [
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T14:00:00Z", "target", exit_time="2026-03-02T15:30:00Z"),
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T16:00:00Z", "stop", exit_time="2026-03-02T15:00:00Z"),
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T17:00:00Z", "timeout"),
+    ]
+    out = with_recurrence(_frame(rows)).set_index("decided_at")
+    # 15:30 + 1h = 16:30 > 16:00: the target bar was still open at the second decision.
+    assert out.loc[pd.Timestamp("2026-03-02T16:00:00Z"), "prior_outcome"] == "none"
+    # The 15:00 bar closed exactly at 16:00 only for a decision at or after 16:00; the third (17:00)
+    # sees both exit bars closed and the most recent by decided_at is the stop.
+    assert out.loc[pd.Timestamp("2026-03-02T17:00:00Z"), "prior_outcome"] == "stop"
+    exact = [
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T14:00:00Z", "target", exit_time="2026-03-02T15:00:00Z"),
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T16:00:00Z", "stop"),
+    ]
+    assert with_recurrence(_frame(exact))["prior_outcome"].tolist() == ["none", "target"]
+
+
+def test_recurrence_requires_a_unique_index():
+    frame = _frame([_labelled_row("PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target")] * 2)
+    frame.index = [0, 0]
+    with pytest.raises(ValueError, match="unique index"):
+        with_recurrence(frame)
+
+
 def test_recurrence_same_session_repeats_and_ties_on_decided_at_are_not_prior():
     rows = [
         _labelled_row(
@@ -1200,7 +1227,9 @@ def test_recurrence_leaves_other_columns_and_order_unchanged():
     assert out.drop(columns=["prior_sessions", "prior_same_session", "prior_outcome"]).equals(
         frame.drop(columns=["prior_sessions", "prior_same_session", "prior_outcome"])
     )
-    assert with_recurrence(_frame([])).empty
+    empty = with_recurrence(_frame([]))
+    assert empty.empty
+    assert {"prior_sessions", "prior_same_session", "prior_outcome"} <= set(empty.columns)
 
 
 def test_recurrence_summary_block():
@@ -1257,3 +1286,41 @@ def test_label_journaled_applies_recurrence():
     frame = label_journaled(events, source, now=NOW + timedelta(days=1)).sort_values("decided_at")
     assert frame["prior_sessions"].tolist() == [0, 1]
     assert frame["prior_outcome"].tolist() == ["none", "target"]
+
+
+def test_label_journaled_names_a_daily_frame_with_no_bars_before_the_session():
+    events = [_event("s1", DECIDED_AT, [_candidate()])]
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
+    frame = label_journaled(events, source, now=NOW)
+    assert frame["tape_reason"].tolist() == ["no daily bars before the session"]
+    assert summarize(frame)["regime_context"]["tape_reason"] == "no daily bars before the session"
+    # The fetch failure reason is kept when the fetch itself failed.
+    failing = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()}, raise_daily_for={"SPY"}
+    )
+    assert label_journaled(events, failing, now=NOW)["tape_reason"].tolist() == ["RuntimeError: no daily for SPY"]
+
+
+def test_summarize_by_tape_counts_a_row_in_both_the_return_and_the_mean_buckets():
+    day2 = DECIDED_AT + timedelta(days=1)
+    bars = _bars(
+        [
+            ("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2),
+            ("2026-03-02T15:30:00Z", 100.2, 102.5, 100.0, 102.2),
+            ("2026-03-03T14:30:00Z", 100.0, 100.5, 99.5, 100.2),
+            ("2026-03-03T15:30:00Z", 100.2, 102.5, 100.0, 102.2),
+        ]
+    )
+    # 02-27 closes at 110 (above the 200-session mean, up 10% over 20 sessions); 03-02 closes at 1.
+    daily = _spy_daily([100.0] * 229 + [110.0, 1.0], end="2026-03-02")
+    events = [_event("s1", DECIDED_AT, [_candidate()]), _event("s2", day2, [_candidate()])]
+    source = DailyAwareBarSource({"AAPL": bars, "SPY": bars}, {"SPY": daily})
+    frame = label_journaled(events, source, now=NOW + timedelta(days=2))
+    by_tape = summarize(frame)["regime_context"]["by_tape"]
+    assert [by_tape[name]["n"] for name in ("ret20_up", "ret20_down", "above_200", "below_200", "unknown")] == [
+        1,
+        1,
+        1,
+        1,
+        0,
+    ]
