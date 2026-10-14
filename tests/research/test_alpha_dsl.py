@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
+from agentic_trader.research.alpha.dsl import FIELD_UNITS, AlphaExpressionEvaluator, compile_expression
 from agentic_trader.research.alpha.operators import (
     decay_linear,
     ts_corr,
@@ -137,3 +137,16 @@ def test_operators_mathematical_properties(sample_ohlcv):
     series_step = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
     dl = decay_linear(series_step, 3)
     assert dl.iloc[-1] > 0
+
+
+def test_event_fields_are_dimensionless_and_only_present_when_supplied():
+    for name in ("earnings_age", "earnings_surprise", "earnings_reaction", "dividend_yield"):
+        assert FIELD_UNITS[name] == (0.0, 0.0)
+    assert tuple(float(u) for u in compile_expression("earnings_surprise / (1 + earnings_age)").units) == (0.0, 0.0)
+    index = pd.date_range("2021-01-04", periods=5, freq="B")
+    frame = pd.DataFrame({"Close": np.linspace(10, 11, 5)}, index=index)
+    assert "earnings_age" not in AlphaExpressionEvaluator.prepare_data_fields(frame)
+    with pytest.raises(ValueError, match="Missing required fields"):
+        AlphaExpressionEvaluator().evaluate("earnings_age", frame)
+    frame["earnings_age"] = np.arange(5, dtype=float)
+    assert AlphaExpressionEvaluator().evaluate("earnings_age + 1", frame).iloc[-1] == 5.0
