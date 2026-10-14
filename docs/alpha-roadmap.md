@@ -551,6 +551,8 @@ problem.
    [spec](superpowers/specs/2026-10-14-regime-recurrence-design.md)). Measurement only; the next step is
    one predeclared bracket counterfactual (2R vs 3R target, ratchet on/off, index control) as a frozen
    entry.
+
+   *Status (October 14, later):* the first live `recurrence` block split sharply (first occurrences −0.46R, repeats +0.96R, repeats after a stop +1.52R on 46 correlated rows), so the predeclared setup-recurrence test ([spec](superpowers/specs/2026-10-14-setup-recurrence-design.md)) freezes R1–R4 on the setup-outcome development window with a 2017–2021 sign check; a pass only makes a repeat-preferring construction rule eligible. **Run the same day: `no_change`** — repeats −0.067R vs firsts (ci90 [−0.138, +0.005]), repeats after a stop −0.02R, within-session −0.15R; the 2017–2021 sign check is carried by one degenerate +1,546R cell ([result](setup-recurrence-2026-10-14.md)). The live split was a small rising-tape sample; the native funnel's base rate stands and construction rules cannot be built on recurrence. The bracket counterfactual proposed on October 13 is dropped: the October 8 funnel diagnostic's stop × target grid and time exits already showed no geometry rescuing the entries (it had no trailing-ratchet arm, which remains unmeasured).
 2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
    (Engle-Granger, half-life, z-score; `/pairs` is display-only today), extended to baskets with
    Johansen or PCA-residual reversion. Market-neutral by construction; a different label from

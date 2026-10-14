@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.setups.runner import BarSource, CalendarSource, _claim_cache_range, _fetch_cached
+from agentic_trader.research.setups.runner import BarSource, CalendarSource, _fetch_cached, claim_cache_range
 from agentic_trader.research.spread.protocol import PowerSpec, SpreadCohort
 
 
@@ -82,7 +82,7 @@ async def build_spread_panel(
     index = _session_index(sessions)
     start_dt = datetime.combine(start, time.min, UTC)
     end_dt = datetime.combine(through, time.max, UTC)
-    _claim_cache_range(cache_dir, start_dt, end_dt)
+    claim_cache_range(cache_dir, start_dt, end_dt)
     closes: dict[str, pd.Series] = {}
     opens: dict[str, pd.Series] = {}
     failures: dict[str, str] = {}

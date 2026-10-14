@@ -17,7 +17,7 @@ from agentic_trader.research.setups.labels import BracketHit, BracketOutcome
 from agentic_trader.research.setups.ranker import live_cross_section, setup_features
 from agentic_trader.research.setups.replay import SetupRecord
 from agentic_trader.research.setups.runner import _fetch_cached, build_setup_frames
-from agentic_trader.research.setups.study import SetupStudyProtocol
+from agentic_trader.research.setups.study import SetupStudyProtocol, model_features
 
 
 # --- Test doubles -----------------------------------------------------------------------
@@ -646,3 +646,67 @@ async def test_non_empty_cache_without_a_recorded_range_is_refused(tmp_path, mon
     (cache / "AAA_1d").mkdir(parents=True)
     with pytest.raises(ValueError, match="cache_range.json"):
         await build_setup_frames(_protocol(), UNIVERSE, FakeBarSource(), CALENDAR, cache, load_config(), max_workers=2)
+
+
+# --- Entry/exit instants and holding count on the labelled frame -------------------------
+
+
+def _single_record(decision_at: datetime) -> SetupRecord:
+    return SetupRecord(
+        decision_at=decision_at,
+        symbol="AAA",
+        strategy="TREND_PULLBACK",
+        timeframe="4h",
+        direction="LONG",
+        setup_quality=0.5,
+        entry=100.0,
+        stop=98.0,
+        target=104.0,
+        atr=1.0,
+    )
+
+
+def _build_single(decision_at: datetime) -> pd.DataFrame:
+    daily = {"AAA": _daily_frame(decision_at, days=260), "SPY": _daily_frame(decision_at, days=260)}
+    return runner._build_frame(
+        [_single_record(decision_at)],
+        daily,
+        {"AAA": _hourly_frame(decision_at)},
+        {"AAA": "technology", "SPY": "etf_broad_equity"},
+        max_hold_sessions=20,
+        cost_bps_per_side=(0.0, 5.0),
+        trading_days=[date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
+        first_instants={date(2024, 1, 3): decision_at},
+    )
+
+
+def test_build_frame_writes_entry_exit_and_holding(monkeypatch):
+    """The labelled frame carries the zero-cost outcome's entry/exit instants and holding count."""
+    decision_at = datetime(2024, 1, 3, 15, 35, tzinfo=UTC)
+    entry_time = pd.Timestamp("2024-01-03T16:30:00Z")
+    exit_time = pd.Timestamp("2024-01-04T15:30:00Z")
+    outcome = BracketOutcome(BracketHit.TARGET, entry_time, 100.0, exit_time, 104.0, 2.0, 1.9, 2)
+    monkeypatch.setattr(runner, "label_bracket", lambda *args, **kwargs: outcome)
+    frame = _build_single(decision_at)
+    assert {"entry_time", "exit_time", "holding_sessions"} <= set(frame.columns)
+    assert frame["entry_time"].iloc[0] == entry_time
+    assert frame["entry_time"].iloc[0].tzinfo is not None
+    assert frame["exit_time"].iloc[0] == exit_time
+    assert int(frame["holding_sessions"].iloc[0]) == 2
+    assert set(runner._FRAME_METADATA_COLUMNS) >= {"entry_time", "exit_time", "holding_sessions"}
+
+
+def test_immature_outcome_leaves_times_none(monkeypatch):
+    decision_at = datetime(2024, 1, 3, 15, 35, tzinfo=UTC)
+    immature = BracketOutcome(BracketHit.IMMATURE, None, None, None, None, None, None, 0)
+    monkeypatch.setattr(runner, "label_bracket", lambda *args, **kwargs: immature)
+    frame = _build_single(decision_at)
+    assert frame["entry_time"].iloc[0] is None
+    assert frame["exit_time"].iloc[0] is None
+    assert int(frame["holding_sessions"].iloc[0]) == 0
+
+
+def test_model_features_ignore_the_new_columns():
+    base = pd.DataFrame({"mom_60": [0.1], "setup_quality": [0.5], "strategy=TREND_PULLBACK": [1.0], "r_cost": [0.1]})
+    extended = base.assign(entry_time=pd.Timestamp("2024-01-03T16:30:00Z"), exit_time=None, holding_sessions=2)
+    assert model_features(extended) == model_features(base)

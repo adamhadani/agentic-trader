@@ -329,7 +329,7 @@ Reading: a bucket that differs from the others is a hypothesis for a predeclared
 counterfactual is next), not a rule. The buckets are threshold-free by design so they cannot be fitted
 to the sample; the 20- and 200-session horizons are the setup feature vector's own. On 2026-10-14 the
 journal held 39 distinct setups since 2026-09-24, 20 of them journaled in more than one session, and the
-feature vector's `spy_above_200` was `1.0` on every candidate that had it.
+feature vector's `spy_above_200` was `1.0` on every candidate that had it. The recurrence split is under a predeclared test on replayed history (`alpha setup-recurrence`, protocol `config/research/setup-recurrence-v1.json`, [spec](superpowers/specs/2026-10-14-setup-recurrence-design.md)); it ran on 2026-10-14 and did **not** fire: on 6,342 historical setups repeats trailed first occurrences by 0.067R (ci90 [−0.138, +0.005]) and repeats after a stop averaged −0.02R, so the live split was a small rising-tape sample ([result](setup-recurrence-2026-10-14.md)); no construction rule follows.
 
 ## Limits
 

@@ -36,7 +36,7 @@ import pandas as pd
 
 from agentic_trader.research.pooled.cohort import LoadedCohort, point_in_time_eligibility
 from agentic_trader.research.pooled.cube import CubeSpec, LabelCube, build_cube, load_cube, save_cube
-from agentic_trader.research.setups.runner import BarSource, CalendarSource, _claim_cache_range, _fetch_cached
+from agentic_trader.research.setups.runner import BarSource, CalendarSource, _fetch_cached, claim_cache_range
 
 
 __all__ = ["CubeBuild", "build_cube_inputs"]
@@ -178,8 +178,8 @@ async def build_cube_inputs(
     start = datetime.combine(spec.bars_from, time.min, tzinfo=UTC)
     end = datetime.combine(spec.bars_through, time.max, tzinfo=UTC)
     bar_dir, raw_dir = cache_dir / "bars", cache_dir / "bars_raw"
-    _claim_cache_range(bar_dir, start, end)
-    _claim_cache_range(raw_dir, start, end)
+    claim_cache_range(bar_dir, start, end)
+    claim_cache_range(raw_dir, start, end)
 
     symbols = tuple(cohort.cohort.symbols)
     acquisition = _Acquisition(bars, pace, say)
