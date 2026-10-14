@@ -13,7 +13,7 @@ and the [design](superpowers/specs/2026-10-14-pooled-intraday-design.md).
 | Cohort | v2, `c2c7941014932075…` (452 names, 437 ever eligible) |
 | Cube | spec identity `f1c835a3d3364d2b…`, cube SHA-256 `9bedbf9b4b8e7541…` — the cached cube campaign v4 was checked on (cache hit; no provider access) |
 | Code revision | main `15e6939` (PR #120), clean detached worktree |
-| Runs | check A 10:47→12:08 ET, check C 12:08→12:15 ET, six workers, outside the 10:35/14:35 scan windows |
+| Runs | check A 10:47→12:14 ET, check C 12:14→12:15 ET, six workers, outside the 10:35/14:35 scan windows |
 | Artifacts | `~/agentic-trader-research/pooled-power-a-intraday-v1-20261014/`, `~/agentic-trader-research/pooled-null-check-intraday-v1-20261014/` (private) |
 
 Check A is formula-independent (it plants synthetic edges on the cube), so on the same cube it must
