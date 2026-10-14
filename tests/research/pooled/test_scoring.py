@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date
 
 import numpy as np
@@ -10,7 +11,20 @@ from agentic_trader.research.pooled.formula import (
     expression_nodes,
     prepare_hourly,
 )
-from agentic_trader.research.pooled.scoring import FrozenPanels, ScoreBook, formula_id, vet_expression
+from agentic_trader.research.pooled.scoring import (
+    FrozenPanels,
+    ScoreBook,
+    formula_id,
+    score_book,
+    vet_expression,
+)
+from tests.research.pooled.mini_world import (
+    cube_build,
+    intraday_cube_build,
+    label_cube,
+    mini_fixed_set_protocol,
+    mini_intraday_protocol,
+)
 from tests.research.pooled.test_formula import daily, hourly, weekdays
 
 
@@ -143,3 +157,11 @@ def test_frozen_panels_refuse_unknown_expressions():
 def test_daily_book_is_unchanged():
     book = ScoreBook(ADJUSTED, DAYS, SESSIONS, SYMBOLS)
     assert book.formula("roc(close, 5)").formula_id == formula_id("roc(close, 5)")
+
+
+def test_score_book_dispatches_on_protocol_inputs():
+    cube = label_cube()
+    assert score_book(mini_fixed_set_protocol(), cube_build(cube)).score_inputs == "daily"
+    assert score_book(mini_intraday_protocol(), intraday_cube_build(cube)).score_inputs == "hourly"
+    with pytest.raises(ValueError, match="hourly frames"):
+        score_book(mini_intraday_protocol(), replace(intraday_cube_build(cube), hourly={}))

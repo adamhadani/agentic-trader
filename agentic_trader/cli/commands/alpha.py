@@ -1494,8 +1494,9 @@ def alpha_pooled_group():
     """Pooled alpha mining: one formula across the frozen cohort (research only)."""
 
 
-def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False):
-    """``require_cached``: checks B and C and the campaign run only on the cube check A built."""
+def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False, load_hourly=False):
+    """``require_cached``: checks B and C and the campaign run only on the cube check A built.
+    ``load_hourly``: an hourly-input protocol keeps the cube's hourly frames for scoring."""
 
     async def build():
         return await build_cube_inputs(
@@ -1508,6 +1509,7 @@ def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False):
             pace=clients.pace,
             progress=lambda message: click.echo(message, err=True),
             require_cached=require_cached,
+            load_hourly=load_hourly,
         )
 
     return build
@@ -1544,7 +1546,13 @@ async def alpha_pooled_power_cmd(protocol_path, output, cache, workers):
             loaded,
             output,
             cohort=cohort,
-            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache),
+            build=_pooled_build(
+                clients,
+                cohort,
+                loaded.protocol.cube_spec(),
+                cache,
+                load_hourly=loaded.protocol.score_inputs == "hourly",
+            ),
             environment=environment,
             progress=lambda message: click.echo(message, err=True),
             workers=workers,
@@ -1724,7 +1732,14 @@ async def alpha_pooled_null_check_cmd(protocol_path, power_dir, output, cache, w
             loaded,
             output,
             cohort=cohort,
-            build=_pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True),
+            build=_pooled_build(
+                clients,
+                cohort,
+                loaded.protocol.cube_spec(),
+                cache,
+                require_cached=True,
+                load_hourly=loaded.protocol.score_inputs == "hourly",
+            ),
             power_result=power_result,
             environment=environment,
             progress=lambda message: click.echo(message, err=True),
@@ -1834,7 +1849,14 @@ async def alpha_pooled_campaign_cmd(
     async with alpha_repository() as repository:
         _require_journal(repository, journal_scope)
         with _apriori_clients() as clients:
-            build = _pooled_build(clients, cohort, loaded.protocol.cube_spec(), cache, require_cached=True)
+            build = _pooled_build(
+                clients,
+                cohort,
+                loaded.protocol.cube_spec(),
+                cache,
+                require_cached=True,
+                load_hourly=loaded.protocol.score_inputs == "hourly",
+            )
             if recover:
                 result = await execute_campaign_recovery(
                     loaded,

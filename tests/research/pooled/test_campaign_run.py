@@ -29,8 +29,10 @@ from tests.research.pooled.mini_world import (
     FAMILIES,
     book as mini_book,
     cube_build,
+    intraday_cube_build,
     label_cube,
     mini_fixed_set_protocol,
+    mini_intraday_protocol,
     mini_protocol,
     mini_v3_protocol,
     planted_cube,
@@ -670,3 +672,35 @@ def test_a_filtered_literature_entry_sizes_its_basket_from_its_filtered_pool():
     assert (picked_filtered <= picked_plain).all()
     # Jaccard with the unfiltered basket is capped at |entry| / |finalist|.
     assert jaccard_codes(codes["f"], codes["p"]) <= codes["f"].size / codes["p"].size
+
+
+async def test_campaign_manifest_records_score_inputs(tmp_path, repository):
+    protocol = mini_intraday_protocol()
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("campaign.json"))
+    cube = label_cube()
+    gates = {name: {"status": "passed", "cube_sha256": cube.sha256} for name, _ in protocol.gates}
+
+    async def build():
+        return intraday_cube_build(cube)
+
+    result = await execute_campaign(
+        loaded,
+        tmp_path / "out",
+        cohort=SimpleNamespace(sha256=COHORT),
+        build=build,
+        gates=gates,
+        repository=repository,
+        entries=[],
+        environment={"runtime": {"revision": "abc1234"}},
+    )
+    assert result["status"] != "failed", result
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["score_inputs"] == "hourly" and manifest["score_read"] == {"bars_before_decision": 1}
+    assert result["score_inputs"] == "hourly" and result["score_read"] == {"bars_before_decision": 1}
+    first = result["first_finite_session"]
+    assert list(first) == list(protocol.seed_expressions)
+    assert all(value is not None for value in first.values())
+    # A 21-bar rate of change cannot be finite before the third session of bars.
+    assert first["-1.0 * roc(close, 21)"] > protocol.windows.discovery[0].isoformat()
+    on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
+    assert on_disk["first_finite_session"] == first

@@ -15,12 +15,13 @@ from collections import OrderedDict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from agentic_trader.research.alpha.search import canonical_expression
-from agentic_trader.research.pooled.campaign import ScoredFormula, _calls
+from agentic_trader.research.pooled.campaign import CampaignProtocol, IntradayCampaignProtocol, ScoredFormula, _calls
 from agentic_trader.research.pooled.cube import CubeView
 from agentic_trader.research.pooled.formula import (
     evaluate_prepared,
@@ -32,7 +33,21 @@ from agentic_trader.research.pooled.formula import (
 )
 
 
-__all__ = ["DEFAULT_CAPACITY", "FORMULA_ID_HEX", "FrozenPanels", "ScoreBook", "Vetted", "formula_id", "vet_expression"]
+if TYPE_CHECKING:
+    from agentic_trader.research.pooled.runner import CubeBuild
+
+
+__all__ = [
+    "DEFAULT_CAPACITY",
+    "FORMULA_ID_HEX",
+    "FrozenPanels",
+    "ScoreBook",
+    "Vetted",
+    "formula_id",
+    "score_book",
+    "score_read_document",
+    "vet_expression",
+]
 
 FORMULA_ID_HEX = 16
 DEFAULT_CAPACITY = 64  # panels per process; one panel is sessions x symbols float64 (~9 MB for v2)
@@ -216,3 +231,25 @@ class FrozenPanels:
     def formula(self, expression: str) -> ScoredFormula:
         self.panel(expression)  # refuse an unfrozen expression now, not at first evaluation
         return _scored_formula(self, expression)
+
+
+def score_read_document(protocol: CampaignProtocol) -> dict | None:
+    """The protocol's hourly read as recorded in manifests; None for a daily protocol."""
+    return protocol.score_read.model_dump() if isinstance(protocol, IntradayCampaignProtocol) else None
+
+
+def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:
+    """The book a protocol's formulas read from: daily bars at D-1, or hourly bars before the decision."""
+    if isinstance(protocol, IntradayCampaignProtocol):
+        if not built.hourly:
+            raise ValueError(
+                "this protocol scores hourly bars but the build carries no hourly frames; build with load_hourly=True"
+            )
+        return ScoreBook.hourly(
+            built.hourly,
+            built.cube.sessions,
+            built.cube.symbols,
+            decision_time_et=protocol.bracket.decision_time_et,
+            bars_before_decision=protocol.score_read.bars_before_decision,
+        )
+    return ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)

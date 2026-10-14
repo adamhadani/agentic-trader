@@ -47,7 +47,7 @@ from agentic_trader.research.pooled.cube import CubeView, check_coverage
 from agentic_trader.research.pooled.genetic import NullCharger, run_search_stages
 from agentic_trader.research.pooled.power import synthetic_cube
 from agentic_trader.research.pooled.runner import CubeBuild
-from agentic_trader.research.pooled.scoring import ScoreBook
+from agentic_trader.research.pooled.scoring import FrozenPanels, ScoreBook, score_book, score_read_document
 from agentic_trader.research.pooled.study import check_power_gate
 from agentic_trader.research.setups.study import _finite_json
 from agentic_trader.storage.artifacts import save_json_report
@@ -145,16 +145,19 @@ def _init_worker(
     base: CubeView,
     calendar: Sequence[date],
     cohort_sha256: str,
+    frozen: FrozenPanels | None,
     adjusted: Mapping[str, pd.DataFrame],
     trading_days: Sequence[date],
     symbols: Sequence[str],
 ) -> None:
+    """``frozen``: the seeds' precomputed panels (a fixed-set protocol); otherwise a genetic daily
+    search needs every panel it may propose, so the worker builds its own book from the bars."""
     _WORKER.update(
         protocol=protocol,
         base=base,
         calendar=calendar,
         cohort_sha256=cohort_sha256,
-        book=ScoreBook(adjusted, trading_days, calendar, symbols),
+        book=frozen if frozen is not None else ScoreBook(adjusted, trading_days, calendar, symbols),
     )
 
 
@@ -169,12 +172,16 @@ def run_null_check(
     calendar: Sequence[date],
     cohort_sha256: str,
     *,
-    adjusted: Mapping[str, pd.DataFrame],
-    trading_days: Sequence[date],
-    symbols: Sequence[str],
+    book: ScoreBook,
+    adjusted: Mapping[str, pd.DataFrame] | None = None,
+    trading_days: Sequence[date] = (),
+    symbols: Sequence[str] = (),
     progress: Callable[[str], None] | None = None,
     workers: int = 1,
 ) -> dict:
+    """``book`` is the protocol's score book (``score_book``). A pool of workers gets the seeds'
+    frozen panels for a fixed-set protocol; a genetic (daily) protocol's workers rebuild a book
+    from ``adjusted``/``trading_days``/``symbols``, which it must then be given."""
     spec = protocol.null_check
     if spec is None:
         raise ValueError("this protocol has no null_check (campaign v1); check C needs protocol v2")
@@ -187,6 +194,9 @@ def run_null_check(
             progress(f"null replicate {len(results)}/{spec.replicates}: {detail['status']}")
 
     if workers > 1:
+        frozen = book.freeze(protocol.seed_expressions) if protocol.search_mode == "fixed_set" else None
+        if frozen is None and adjusted is None:
+            raise ValueError("a genetic null check with workers needs the adjusted bars to rebuild its book")
         pool = ProcessPoolExecutor(
             max_workers=workers,
             initializer=_init_worker,
@@ -195,7 +205,8 @@ def run_null_check(
                 base,
                 tuple(calendar),
                 cohort_sha256,
-                dict(adjusted),
+                frozen,
+                {} if frozen is not None or adjusted is None else dict(adjusted),
                 tuple(trading_days),
                 tuple(symbols),
             ),
@@ -208,7 +219,6 @@ def run_null_check(
             raise
         pool.shutdown()
     else:
-        book = ScoreBook(adjusted, trading_days, calendar, symbols)
         for rep in range(spec.replicates):
             done(rep, null_replicate(protocol, base, calendar, cohort_sha256, book, rep))
     ordered = [results[rep] for rep in sorted(results)]
@@ -237,6 +247,8 @@ async def execute_null_check(
             "cube_spec_identity": protocol.cube_spec().identity,
             "power_cube_sha256": power_result.get("cube_sha256"),
             "reads": "discovery window cells only (per-name demeaned); real bars for scores",
+            "score_inputs": protocol.score_inputs,
+            "score_read": score_read_document(protocol),
             "environment": environment,
             "started_at": datetime.now(UTC).isoformat(),
             "authorizes_promotion": False,
@@ -256,12 +268,14 @@ async def execute_null_check(
             campaign_protocol_sha256=loaded.sha256,
             cube_sha256=built.cube.sha256,
         )
+        book = await asyncio.to_thread(score_book, protocol, built)
         outcome = await asyncio.to_thread(
             run_null_check,
             protocol,
             built.cube.window(*protocol.windows.discovery),
             built.cube.sessions,
             cohort.sha256,
+            book=book,
             adjusted=built.adjusted,
             trading_days=built.trading_days,
             symbols=built.cube.symbols,

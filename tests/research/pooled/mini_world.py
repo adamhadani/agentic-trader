@@ -11,6 +11,7 @@ from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
     Family,
+    IntradayCampaignProtocol,
     NullCheckSpec,
     Selection,
     load_campaign_protocol,
@@ -18,6 +19,7 @@ from agentic_trader.research.pooled.campaign import (
 from agentic_trader.research.pooled.cube import LabelCube
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook
+from tests.research.pooled.test_formula import hourly
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -173,3 +175,30 @@ def mini_fixed_set_protocol(**update):
         **update,
     )
     return CampaignProtocol.model_validate(protocol.model_dump())  # model_copy skips the validators
+
+
+_HOURLY: dict[str, pd.DataFrame] = {}
+
+
+def hourly_bars(seed: int = 0) -> dict[str, pd.DataFrame]:
+    """Regular-session hourly bars for every name over the campaign sessions (built once, lazily)."""
+    if not _HOURLY:
+        rng = np.random.default_rng(seed)
+        bars_per_day = 7
+        for name in NAMES:
+            closes = 50.0 * np.exp(np.cumsum(rng.normal(0.0, 0.004, len(SESSIONS) * bars_per_day)))
+            _HOURLY[name] = hourly(list(SESSIONS), closes_by_bar=list(closes))
+    return _HOURLY
+
+
+def intraday_cube_build(cube: LabelCube) -> CubeBuild:
+    return CubeBuild(
+        cube=cube, trading_days=BAR_DAYS, adjusted=ADJUSTED, bar_failures={}, static_used=(), hourly=hourly_bars()
+    )
+
+
+def mini_intraday_protocol(**update):
+    """The mini fixed-set protocol reading hourly bars one bar before the decision."""
+    document = mini_fixed_set_protocol(**update).model_dump(mode="json")
+    document.update(id="pooled-intraday-campaign", score_inputs="hourly", score_read={"bars_before_decision": 1})
+    return IntradayCampaignProtocol.model_validate(document)

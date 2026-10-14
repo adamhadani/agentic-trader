@@ -1,6 +1,8 @@
 # tests/research/pooled/test_null_check.py
 import asyncio
 import json
+import pickle
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +21,7 @@ from agentic_trader.research.pooled.null_check import (
     run_null_check,
     summarize_null,
 )
+from agentic_trader.research.pooled.scoring import FrozenPanels, ScoreBook, score_book
 from agentic_trader.research.setups.study import _finite_json
 from tests.research.pooled.mini_world import (
     ADJUSTED,
@@ -28,8 +31,11 @@ from tests.research.pooled.mini_world import (
     SESSIONS,
     book,
     cube_build,
+    hourly_bars,
+    intraday_cube_build,
     label_cube,
     mini_fixed_set_protocol,
+    mini_intraday_protocol,
     mini_protocol,
 )
 
@@ -116,7 +122,7 @@ def test_the_null_check_is_identical_for_any_worker_count():
     protocol = mini_protocol()
     cube = label_cube()
     discovery = cube.window(*protocol.windows.discovery)
-    kwargs = {"adjusted": ADJUSTED, "trading_days": BAR_DAYS, "symbols": NAMES}
+    kwargs = {"book": book(), "adjusted": ADJUSTED, "trading_days": BAR_DAYS, "symbols": NAMES}
     serial = run_null_check(protocol, discovery, cube.sessions, COHORT, workers=1, **kwargs)
     pooled = run_null_check(protocol, discovery, cube.sessions, COHORT, workers=2, **kwargs)
     assert _finite_json(serial) == _finite_json(pooled)
@@ -217,3 +223,87 @@ def test_a_fixed_set_null_check_scores_exactly_the_seeds_and_pins_the_protocol_f
     assert dumped["power_search"] is None
     for name in ("manifest.json", "result.json"):
         assert "search_power" not in (out / name).read_text()
+
+
+class _InlinePool:
+    """Stands in for ProcessPoolExecutor: runs the initializer and every task in this process."""
+
+    initargs: tuple = ()
+
+    def __init__(self, *, max_workers, initializer, initargs):
+        type(self).initargs = initargs
+        initializer(*initargs)
+
+    def submit(self, fn, *args):
+        future: Future = Future()
+        future.set_result(fn(*args))
+        return future
+
+    def shutdown(self, **kwargs):
+        return None
+
+
+@pytest.mark.parametrize(
+    ("protocol", "expected"),
+    [
+        (mini_intraday_protocol(), FrozenPanels),
+        (mini_fixed_set_protocol(), FrozenPanels),
+        (mini_protocol(), ScoreBook),
+    ],
+)
+def test_the_pool_gets_frozen_seed_panels_for_a_fixed_set_and_a_rebuilt_book_for_a_genetic_search(
+    monkeypatch, protocol, expected
+):
+    monkeypatch.setattr(null_check, "ProcessPoolExecutor", _InlinePool)
+    cube = label_cube()
+    built = intraday_cube_build(cube) if protocol.score_inputs == "hourly" else cube_build(cube)
+    discovery = cube.window(*protocol.windows.discovery)
+    kwargs = {"adjusted": built.adjusted, "trading_days": built.trading_days, "symbols": cube.symbols}
+    pooled = run_null_check(
+        protocol, discovery, cube.sessions, COHORT, book=score_book(protocol, built), workers=2, **kwargs
+    )
+    assert type(null_check._WORKER["book"]) is expected
+    if expected is FrozenPanels:
+        assert null_check._WORKER["book"].score_inputs == protocol.score_inputs
+        assert _InlinePool.initargs[5] == {}  # the bars are not shipped to the workers
+    serial = run_null_check(protocol, discovery, cube.sessions, COHORT, book=score_book(protocol, built), **kwargs)
+    assert _finite_json(serial) == _finite_json(pooled)
+    assert serial["errors_total"] == 0
+
+
+def test_a_hourly_null_check_pickles_without_the_bars():
+    protocol = mini_intraday_protocol()
+    frozen = score_book(protocol, intraday_cube_build(label_cube())).freeze(protocol.seed_expressions)
+    assert (
+        pickle.loads(pickle.dumps(frozen)).panel(protocol.seed_expressions[0]).shape
+        == frozen.panel(protocol.seed_expressions[0]).shape
+    )
+    assert hourly_bars()  # the hourly world exists; only the panels cross the process boundary
+
+
+def test_the_null_check_manifest_records_its_score_inputs(tmp_path):
+    protocol = mini_intraday_protocol()
+    cube = label_cube()
+
+    async def build():
+        return intraday_cube_build(cube)
+
+    asyncio.run(
+        execute_null_check(
+            LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("campaign.json")),
+            tmp_path / "out",
+            cohort=SimpleNamespace(sha256=COHORT),
+            build=build,
+            power_result={
+                "status": "passed",
+                "cohort_sha256": COHORT,
+                "campaign_protocol_sha256": "p" * 64,
+                "cube_sha256": cube.sha256,
+            },
+            environment={},
+        )
+    )
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["score_inputs"] == "hourly" and manifest["score_read"] == {"bars_before_decision": 1}
+    result = json.loads((tmp_path / "out" / "result.json").read_text())
+    assert result["status"] in {"passed", "gate_failed"}, result

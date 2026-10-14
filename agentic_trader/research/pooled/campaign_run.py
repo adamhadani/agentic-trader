@@ -73,7 +73,7 @@ from agentic_trader.research.pooled.formula import Formula, allowed_mask, jaccar
 from agentic_trader.research.pooled.genetic import SearchOutcome, run_search_stages
 from agentic_trader.research.pooled.ledger import CampaignAborted, JournalLedger
 from agentic_trader.research.pooled.runner import CubeBuild
-from agentic_trader.research.pooled.scoring import ScoreBook, formula_id
+from agentic_trader.research.pooled.scoring import ScoreBook, formula_id, score_book, score_read_document
 from agentic_trader.research.setups.study import _finite_json
 from agentic_trader.storage.alpha import POOLED_CONFIRMATION_KEY
 from agentic_trader.storage.artifacts import save_json_report
@@ -161,6 +161,19 @@ def preflight(protocol: CampaignProtocol, book: ScoreBook, view: CubeView) -> in
                 ) from exc
             checked += 1
     return checked
+
+
+def first_finite_sessions(protocol: CampaignProtocol, book: ScoreBook, view: CubeView) -> dict[str, str | None]:
+    """Per seed, the first discovery session with any finite score (ISO date), None when there is none.
+
+    Label-blind: reads only the score panel and the view's sessions. Shows how much of the window a
+    long-lookback formula spends warming up."""
+    out: dict[str, str | None] = {}
+    for seed in protocol.seed_expressions:
+        scores = book.panel(seed)[view.offset : view.offset + len(view.sessions)]
+        rows = np.flatnonzero(np.isfinite(scores).any(axis=1))
+        out[seed] = view.sessions[int(rows[0])].isoformat() if rows.size else None
+    return out
 
 
 def check_gate(directory: Path, *, check: str, cohort_sha256: str, protocol_sha256: str, revision: str) -> dict:
@@ -343,6 +356,8 @@ async def execute_campaign(
             "campaign_protocol_sha256": loaded.sha256,
             "cohort_sha256": cohort.sha256,
             "cube_spec_identity": protocol.cube_spec().identity,
+            "score_inputs": protocol.score_inputs,
+            "score_read": score_read_document(protocol),
             "gates": {
                 name: {"status": gate.get("status"), "cube_sha256": gate.get("cube_sha256")}
                 for name, gate in gates.items()
@@ -486,12 +501,13 @@ async def _run_campaign(
     check_coverage(built.cube, protocol.coverage)
     if built.cube.sha256 != cube_sha256:
         raise ValueError(f"the cached cube is not the cube {checks} ran on")
-    book = ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)
+    book = await asyncio.to_thread(score_book, protocol, built)
     # The preflight and the overlap read discovery straight from the cube, so the windows'
     # opened trail stays discovery, selection, confirmation.
     discovery = built.cube.window(*protocol.windows.discovery)
     checked = await asyncio.to_thread(preflight, protocol, book, discovery)
     _say(progress, f"preflight: {checked} expressions computed on the discovery window, nothing charged")
+    first_finite = first_finite_sessions(protocol, book, discovery)
     windows = CampaignWindows(built.cube, protocol.windows, cohort_sha256=cohort.sha256)
     ledger = JournalLedger(repository, asyncio.get_running_loop(), campaign_id)
     # Overlap is fixed from discovery picks before the search.
@@ -548,6 +564,9 @@ async def _run_campaign(
         "status": outcome["status"],
         "cube_sha256": built.cube.sha256,
         "code_revision": revision,
+        "score_inputs": protocol.score_inputs,
+        "score_read": score_read_document(protocol),
+        "first_finite_session": first_finite,
         # The worker returned, so the window was consumed exactly when candidates were frozen.
         "confirmation_consumed": bool(outcome["frozen"]),
         "families": [run.summary() for run in search.runs],
@@ -691,7 +710,7 @@ async def execute_campaign_recovery(
         if built.cube.sha256 != record["cube_sha256"]:
             raise ValueError("the cached cube is not the cube the campaign ran on")
         _say(progress, f"recovery: recomputing the confirmation of {len(frozen)} frozen candidates (nothing charged)")
-        book = ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)
+        book = await asyncio.to_thread(score_book, protocol, built)
         formulas = [book.formula(expressions[fid]) for fid in frozen]
         view = built.cube.window(*protocol.windows.confirmation)
         rows, confirmed = await asyncio.to_thread(_confirmation, formulas, frozen, view, protocol)
