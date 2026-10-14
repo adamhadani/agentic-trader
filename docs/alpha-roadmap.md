@@ -542,6 +542,15 @@ problem.
    −0.47R, n 5; 17 scans for the selection comparison; `setup_quality` within noise of random) show no bracket geometry or time exit with
    non-negative EV, so the construction-side control is `card_policy` (operator: `off → preview →
    enforce`), not bracket tuning.
+
+   *Status (October 14):* the live-sandbox review of 2026-10-13 (four broker-confirmed closed trades,
+   +4.8R, two from retired mined alphas; sent cards +0.24R against a +0.21R SPY move) left two
+   hypotheses the journal could not measure: edge only in a trending tape, and informative repeats.
+   The scan now journals its regime block and `cards outcomes` derives the SPY tape per decision and
+   each setup's recurrence without lookahead ([card evidence](card-evidence.md#regime-and-recurrence-context),
+   [spec](superpowers/specs/2026-10-14-regime-recurrence-design.md)). Measurement only; the next step is
+   one predeclared bracket counterfactual (2R vs 3R target, ratchet on/off, index control) as a frozen
+   entry.
 2. **Spread-reversion lane.** A predeclared protocol for the existing `pairs` module
    (Engle-Granger, half-life, z-score; `/pairs` is display-only today), extended to baskets with
    Johansen or PCA-residual reversion. Market-neutral by construction; a different label from

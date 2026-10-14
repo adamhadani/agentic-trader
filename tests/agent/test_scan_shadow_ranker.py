@@ -20,8 +20,9 @@ from sqlalchemy import delete
 import agentic_trader.agent.copilot as copilot_module
 import agentic_trader.research.setups.ranker as ranker_module
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
+from agentic_trader.agent.regime import RegimeSnapshot, regime_journal_block
 from agentic_trader.config import ScanBudget, UniverseConfig, UniverseEntry
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import AssetClass, VolatilityRegime
 from agentic_trader.execution.durable import EventKind, ScanTrigger
 from agentic_trader.research.setups.features import CROSS_SECTIONAL, FEATURES_VERSION
 from agentic_trader.research.setups.outcomes import label_journaled
@@ -497,3 +498,31 @@ async def test_scan_candidates_ranked_round_trips_through_label_journaled(shadow
     sent = frame.loc[frame["contract"] == "DDD"].iloc[0]
     assert bool(sent["sent"]) is True
     assert sent["scan_id"] == event["payload"]["scan_id"]
+
+
+async def test_journal_and_provenance_carry_the_regime_block(shadow_desk, temp_db):
+    """The scan-level regime is journaled once at the top level and copied into each card's provenance."""
+    snapshot = RegimeSnapshot(
+        vix=17.25,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=None,
+        dxy=None,
+        breakout_allowed=True,
+        min_rr_threshold=1.5,
+        timestamp=datetime(2026, 10, 14, 14, 35, tzinfo=UTC),
+        summary_text="normal",
+        macro_report=None,
+        risk_multiplier=0.9,
+    )
+    shadow_desk.regime_detector.get_regime.return_value = snapshot
+    await shadow_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
+    [event] = await _ranked_events(temp_db)
+    payload = event["payload"]
+    block = payload["regime"]
+    assert block == regime_journal_block(snapshot)
+    assert block["vix"] == 17.25 and block["vix_regime"] == "NORMAL"
+    assert all("regime" not in candidate for candidate in payload["candidates"])
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    assert signal["decision_provenance"]["regime"] == block

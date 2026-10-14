@@ -15,11 +15,15 @@ from agentic_trader.research.setups.outcomes import (
     DEFAULT_MAX_HOLD_SESSIONS,
     FETCH_FAILED_HIT,
     MARKET_PROXY_SYMBOL,
+    PRIOR_OUTCOMES,
+    RESOLVED_HITS,
     label_journaled,
     market_r,
     news_alignment,
     summarize,
+    with_recurrence,
 )
+from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS
 
 
 def _bars(rows: list[tuple[str, float, float, float, float]]) -> pd.DataFrame:
@@ -174,7 +178,7 @@ def test_label_journaled_fetches_once_per_symbol():
     ]
     bars = FakeBarSource({"AAPL": frame})
 
-    result = label_journaled(events, bars, now=NOW, market_symbol=None)
+    result = label_journaled(events, bars, now=NOW, market_symbol=None, tape_symbol=None)
 
     assert len(result) == 2
     assert len(bars.calls) == 1
@@ -320,7 +324,7 @@ def test_label_journaled_paces_fetches(monkeypatch):
         }
     )
 
-    label_journaled(events, bars, now=NOW, max_requests_per_minute=42, market_symbol=None)
+    label_journaled(events, bars, now=NOW, max_requests_per_minute=42, market_symbol=None, tape_symbol=None)
 
     assert calls[0] == 42
     assert calls.count("acquire") == 2  # once per symbol
@@ -372,7 +376,7 @@ def test_market_r_is_none_when_spy_bars_do_not_cover_the_window():
 
 def test_label_journaled_adds_market_control_and_excess():
     bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
-    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW)
+    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW, tape_symbol=None)
     [row] = frame.to_dict("records")
     assert row["hit"] == BracketHit.TARGET.value
     assert row["entry_time"] == pd.Timestamp("2026-03-02T14:30:00+00:00")
@@ -399,7 +403,9 @@ def test_spy_fetch_failure_leaves_market_r_null_with_a_reason():
 
 def test_market_symbol_none_skips_the_control_entirely():
     bars = FakeBarSource({"AAPL": AAPL_BARS})
-    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW, market_symbol=None)
+    frame = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW, market_symbol=None, tape_symbol=None
+    )
     assert [call[0] for call in bars.calls] == ["AAPL"]
     assert frame["market_r"].isna().all()
 
@@ -573,7 +579,9 @@ def test_a_market_proxy_candidate_is_fetched_once():
     later = DECIDED_AT + timedelta(hours=1)
     spy = _candidate(contract=MARKET_PROXY_SYMBOL, entry=500.0, stop=495.0, target=505.0)
     bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
-    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()]), _event("s2", later, [spy])], bars, now=NOW)
+    frame = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()]), _event("s2", later, [spy])], bars, now=NOW, tape_symbol=None
+    )
     assert [call[0] for call in bars.calls] == ["AAPL", MARKET_PROXY_SYMBOL]
     # One fetch covers every candidate's window: it starts at the earliest decision of all.
     assert bars.calls[1][2] == DECIDED_AT
@@ -823,3 +831,496 @@ def test_summary_empty_frame_carries_the_news_block():
         "by_tone": {},
         "by_catalyst": {},
     }
+
+
+def _regime_block(**overrides):
+    block = {
+        "vix": 17.25,
+        "vix_regime": "NORMAL",
+        "breakout_allowed": True,
+        "risk_multiplier": 0.9,
+        "min_rr_threshold": 1.5,
+        "macro_stress": "LOW",
+        "observed_at": "2026-03-02T14:00:00+00:00",
+    }
+    return {**block, **overrides}
+
+
+def _event_with_regime(scan_id, decided_at, candidates, regime):
+    event = _event(scan_id, decided_at, candidates)
+    if regime is not None:
+        event["payload"]["regime"] = regime
+    return event
+
+
+def _spy_daily(closes: list[float], *, end: str) -> pd.DataFrame:
+    index = pd.bdate_range(end=end, periods=len(closes), freq="B") + pd.Timedelta(hours=20)
+    return pd.DataFrame({"Close": closes}, index=pd.DatetimeIndex(index, tz="UTC"))
+
+
+_RESOLVING_BARS = _bars(
+    [
+        ("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2),
+        ("2026-03-02T15:30:00Z", 100.2, 102.5, 100.0, 102.2),
+    ]
+)
+_SPY_HOURLY = _bars(
+    [
+        ("2026-03-02T14:30:00Z", 500.0, 501.0, 499.0, 500.5),
+        ("2026-03-02T15:30:00Z", 500.5, 502.0, 500.0, 501.0),
+    ]
+)
+# One bar that hits neither level and no later bars: the bracket is still open (IMMATURE).
+_OPEN_BARS = _bars([("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2)])
+
+
+class DailyAwareBarSource(FakeBarSource):
+    """Serves ``frames[symbol]`` for hourly calls and ``daily[symbol]`` for ``1d`` calls."""
+
+    def __init__(self, frames, daily, *, raise_for=None, raise_daily_for=None):
+        super().__init__(frames, raise_for=raise_for)
+        self.daily = daily
+        self.raise_daily_for = raise_daily_for or set()
+
+    def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+        if timeframe == "1d":
+            self.calls.append((symbol, timeframe, start, end, adjustment))
+            if symbol in self.raise_daily_for:
+                raise RuntimeError(f"no daily for {symbol}")
+            return self.daily[symbol]
+        return super().fetch_bars(symbol, timeframe, start, end, adjustment=adjustment)
+
+
+def test_regime_columns_come_from_the_event_block_and_are_none_without_one():
+    events = [
+        _event_with_regime("s1", DECIDED_AT, [_candidate(contract="AAPL")], _regime_block()),
+        _event_with_regime("s2", DECIDED_AT + timedelta(hours=1), [_candidate(contract="MSFT")], None),
+    ]
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "MSFT": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()}
+    )
+    frame = label_journaled(events, source, now=NOW).set_index("contract")
+    assert frame.loc[
+        "AAPL", ["regime_vix", "regime_vix_regime", "regime_risk_multiplier", "regime_macro_stress"]
+    ].tolist() == [
+        17.25,
+        "NORMAL",
+        0.9,
+        "LOW",
+    ]
+    assert frame.loc[
+        "MSFT", ["regime_vix", "regime_vix_regime", "regime_risk_multiplier", "regime_macro_stress"]
+    ].tolist() == [
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_non_dict_regime_block_is_absent():
+    events = [_event_with_regime("s1", DECIDED_AT, [_candidate()], "NORMAL")]
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
+    frame = label_journaled(events, source, now=NOW)
+    assert frame["regime_vix_regime"].tolist() == [None]
+    assert summarize(frame)["regime_context"]["blocks"] == 0
+
+
+def test_tape_fetch_is_one_raw_daily_request_after_the_hourly_ones():
+    events = [_event("s1", DECIDED_AT, [_candidate()])]
+    daily = _spy_daily([100.0] * 20 + [105.0], end="2026-02-27")  # last completed session before 2026-03-02
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": daily})
+    frame = label_journaled(events, source, now=NOW)
+    daily_calls = [call for call in source.calls if call[1] == "1d"]
+    assert len(daily_calls) == 1
+    symbol, _, start, end, adjustment = daily_calls[0]
+    assert (symbol, adjustment, end) == ("SPY", "raw", NOW)
+    assert start == DECIDED_AT - timedelta(days=TAPE_HISTORY_DAYS)
+    assert source.calls[-1] == daily_calls[0]
+    assert frame["spy_ret_20"].tolist() == [pytest.approx(0.05)]
+    assert frame["spy_above_200"].tolist() == [None]
+    assert frame["tape_reason"].tolist() == [None]
+
+
+def test_tape_symbol_none_skips_the_daily_fetch():
+    events = [_event("s1", DECIDED_AT, [_candidate()])]
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
+    frame = label_journaled(events, source, now=NOW, tape_symbol=None)
+    assert not [call for call in source.calls if call[1] == "1d"]
+    assert frame["spy_ret_20"].tolist() == [None] and frame["tape_reason"].tolist() == [None]
+
+
+def test_tape_fetch_failure_sets_the_reason_and_leaves_the_rest_intact():
+    events = [_event("s1", DECIDED_AT, [_candidate()])]
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()}, raise_daily_for={"SPY"}
+    )
+    frame = label_journaled(events, source, now=NOW)
+    assert frame["tape_reason"].tolist() == ["RuntimeError: no daily for SPY"]
+    assert frame["spy_ret_20"].tolist() == [None] and frame["spy_above_200"].tolist() == [None]
+    assert frame["hit"].tolist() == [BracketHit.TARGET.value]
+    assert frame["market_r"].notna().all()
+    summary = summarize(frame)
+    assert summary["regime_context"]["tape_reason"] == "RuntimeError: no daily for SPY"
+    assert summary["regime_context"]["by_tape"]["unknown"]["n"] == 1
+
+
+def test_tape_is_computed_per_session_from_closes_before_it():
+    later = DECIDED_AT + timedelta(days=1)  # 2026-03-03
+    events = [
+        _event("s1", DECIDED_AT, [_candidate(contract="AAPL")]),
+        _event("s2", later, [_candidate(contract="MSFT")]),
+    ]
+    # 2026-02-27 is the last session before 03-02; 03-02's own close (300) counts only for 03-03.
+    daily = _spy_daily([100.0] * 20 + [105.0, 300.0], end="2026-03-02")
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "MSFT": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": daily})
+    frame = label_journaled(events, source, now=NOW).set_index("contract")
+    assert frame.loc["AAPL", "spy_ret_20"] == pytest.approx(0.05)
+    assert frame.loc["MSFT", "spy_ret_20"] == pytest.approx(2.0)  # 300 / close[-21] (100) - 1
+
+
+def test_regime_context_buckets_mature_rows_only():
+    stop_bars = _bars(
+        [
+            ("2026-03-02T15:30:00Z", 100.0, 100.2, 98.5, 98.8),
+        ]
+    )
+    events = [
+        _event_with_regime("s1", DECIDED_AT, [_candidate(contract="AAPL")], _regime_block()),
+        _event_with_regime(
+            "s2",
+            DECIDED_AT + timedelta(hours=1),
+            [_candidate(contract="XOM")],
+            _regime_block(vix_regime="ELEVATED", macro_stress=None),
+        ),
+        _event_with_regime("s3", DECIDED_AT + timedelta(hours=2), [_candidate(contract="MSFT")], _regime_block()),
+    ]
+    daily = _spy_daily([100.0] * 20 + [105.0], end="2026-02-27")
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "XOM": stop_bars, "MSFT": _OPEN_BARS, "SPY": _SPY_HOURLY}, {"SPY": daily}
+    )
+    frame = label_journaled(events, source, now=NOW)
+    block = summarize(frame)["regime_context"]
+    assert block["blocks"] == 3  # MSFT is immature but has a block
+    assert set(block["by_vix_regime"]) == {"NORMAL", "ELEVATED"}
+    normal = block["by_vix_regime"]["NORMAL"]
+    assert normal["n"] == 1 and normal["hit_rate"] == 1.0 and normal["mean_r_cost"] > 0
+    assert normal["mean_excess_r"] == pytest.approx(
+        normal["mean_r_cost"] - float(frame.set_index("contract").loc["AAPL", "market_r"])
+    )
+    assert block["by_vix_regime"]["ELEVATED"]["n"] == 1 and block["by_vix_regime"]["ELEVATED"]["hit_rate"] == 0.0
+    assert set(block["by_macro_stress"]) == {"LOW"} and block["by_macro_stress"]["LOW"]["n"] == 1
+    assert set(block["by_tape"]) == set(TAPE_BUCKETS)
+    assert block["by_tape"]["ret20_up"]["n"] == 2  # both mature rows share the session's tape
+    assert block["by_tape"]["ret20_down"]["n"] == 0 and block["by_tape"]["unknown"]["n"] == 0
+    assert block["by_tape"]["above_200"]["n"] == 0  # fewer than 200 sessions: no mean comparison
+    assert block["tape_reason"] is None
+
+
+def test_new_columns_follow_news_alignment_and_precede_market_r():
+    cols = list(_COLUMNS)
+    expected = [
+        "regime_vix",
+        "regime_vix_regime",
+        "regime_risk_multiplier",
+        "regime_macro_stress",
+        "spy_ret_20",
+        "spy_above_200",
+        "tape_reason",
+        "prior_sessions",
+        "prior_same_session",
+        "prior_outcome",
+    ]
+    start = cols.index("news_alignment") + 1
+    assert cols[start : start + len(expected)] == expected
+    assert cols[start + len(expected)] == "market_r"
+
+
+def test_empty_summary_has_the_regime_and_recurrence_blocks():
+    summary = summarize(pd.DataFrame(columns=list(_COLUMNS)))
+    assert summary["regime_context"] == {
+        "blocks": 0,
+        "by_vix_regime": {},
+        "by_macro_stress": {},
+        "by_tape": {
+            name: {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None} for name in TAPE_BUCKETS
+        },
+        "tape_reason": None,
+    }
+    assert summary["recurrence"] == {
+        "setups": 0,
+        "repeated_setups": 0,
+        "same_session_repeats": 0,
+        "by_prior": {
+            "first": {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None},
+            "repeat": {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None},
+        },
+        "by_prior_outcome": {
+            name: {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None} for name in PRIOR_OUTCOMES
+        },
+    }
+
+
+def _labelled_row(
+    contract,
+    session,
+    decided_at,
+    hit,
+    *,
+    exit_time=None,
+    strategy="TREND_PULLBACK",
+    direction="LONG",
+    r_cost=None,
+    excess_r=None,
+    scan_id=None,
+):
+    row = dict.fromkeys(_COLUMNS)
+    row.update(
+        {
+            "scan_id": scan_id or f"{contract}-{decided_at}",
+            "session": session,
+            "contract": contract,
+            "strategy": strategy,
+            "direction": direction,
+            "hit": hit,
+            "r_cost": r_cost,
+            "excess_r": excess_r,
+            "exit_time": pd.Timestamp(exit_time) if exit_time else None,
+            "decided_at": pd.Timestamp(decided_at),
+            "sent": False,
+            "prior_sessions": 0,
+            "prior_same_session": 0,
+            "prior_outcome": "none",
+        }
+    )
+    return row
+
+
+def _frame(rows):
+    return pd.DataFrame(rows, columns=list(_COLUMNS))
+
+
+def test_recurrence_constants():
+    assert RESOLVED_HITS == ("target", "stop", "timeout")
+    assert PRIOR_OUTCOMES == ("target", "stop", "timeout", "none")
+
+
+def test_recurrence_counts_prior_sessions_and_uses_the_last_resolved_prior_outcome():
+    rows = [
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target", exit_time="2026-03-02T19:30:00Z", r_cost=1.9
+        ),
+        _labelled_row(
+            "PFE", "2026-03-03", "2026-03-03T14:35:00Z", "stop", exit_time="2026-03-03T16:30:00Z", r_cost=-1.1
+        ),
+        _labelled_row("PFE", "2026-03-04", "2026-03-04T14:35:00Z", "timeout", r_cost=0.2),
+        _labelled_row(
+            "XOM", "2026-03-04", "2026-03-04T14:35:00Z", "target", exit_time="2026-03-05T15:30:00Z", r_cost=1.9
+        ),
+    ]
+    out = with_recurrence(_frame(rows)).set_index(["contract", "session"])
+    assert out.loc[("PFE", "2026-03-02"), ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [
+        0,
+        0,
+        "none",
+    ]
+    assert out.loc[("PFE", "2026-03-03"), ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [
+        1,
+        0,
+        "target",
+    ]
+    assert out.loc[("PFE", "2026-03-04"), ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [
+        2,
+        0,
+        "stop",
+    ]
+    assert out.loc[("XOM", "2026-03-04"), ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [
+        0,
+        0,
+        "none",
+    ]
+
+
+def test_recurrence_prior_outcome_ignores_brackets_open_at_the_decision():
+    rows = [
+        # Resolved, but only after the second decision: the desk did not know it yet.
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target", exit_time="2026-03-03T18:30:00Z"),
+        _labelled_row("PFE", "2026-03-03", "2026-03-03T14:35:00Z", "stop", exit_time="2026-03-03T16:30:00Z"),
+        # Still immature at the third decision; the second row has resolved.
+        _labelled_row("PFE", "2026-03-04", "2026-03-04T14:35:00Z", "immature"),
+        _labelled_row("PFE", "2026-03-05", "2026-03-05T14:35:00Z", "fetch_failed"),
+        _labelled_row("PFE", "2026-03-06", "2026-03-06T14:35:00Z", "timeout"),
+    ]
+    out = with_recurrence(_frame(rows)).set_index("session")
+    # At the 03-03 decision the 03-02 bracket was still open (it exits at 18:30 that day).
+    assert out.loc["2026-03-03", "prior_outcome"] == "none"
+    # By 03-04 both earlier brackets had resolved; the most recent by decided_at is the 03-03 stop.
+    assert out.loc["2026-03-04", "prior_outcome"] == "stop"
+    # Immature and fetch-failed rows never count; the last resolved prior is still the 03-03 stop.
+    assert out.loc["2026-03-06", "prior_outcome"] == "stop"
+    assert out.loc["2026-03-06", "prior_sessions"] == 4
+
+
+def test_recurrence_prior_outcome_needs_the_exit_bar_to_have_closed():
+    """exit_time is the exit bar's open: the bar closes one hourly bar later."""
+    rows = [
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T14:00:00Z", "target", exit_time="2026-03-02T15:30:00Z"),
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T16:00:00Z", "stop", exit_time="2026-03-02T15:00:00Z"),
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T17:00:00Z", "timeout"),
+    ]
+    out = with_recurrence(_frame(rows)).set_index("decided_at")
+    # 15:30 + 1h = 16:30 > 16:00: the target bar was still open at the second decision.
+    assert out.loc[pd.Timestamp("2026-03-02T16:00:00Z"), "prior_outcome"] == "none"
+    # The 15:00 bar closed exactly at 16:00 only for a decision at or after 16:00; the third (17:00)
+    # sees both exit bars closed and the most recent by decided_at is the stop.
+    assert out.loc[pd.Timestamp("2026-03-02T17:00:00Z"), "prior_outcome"] == "stop"
+    exact = [
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T14:00:00Z", "target", exit_time="2026-03-02T15:00:00Z"),
+        _labelled_row("PFE", "2026-03-02", "2026-03-02T16:00:00Z", "stop"),
+    ]
+    assert with_recurrence(_frame(exact))["prior_outcome"].tolist() == ["none", "target"]
+
+
+def test_recurrence_requires_a_unique_index():
+    frame = _frame([_labelled_row("PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target")] * 2)
+    frame.index = [0, 0]
+    with pytest.raises(ValueError, match="unique index"):
+        with_recurrence(frame)
+
+
+def test_recurrence_same_session_repeats_and_ties_on_decided_at_are_not_prior():
+    rows = [
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target", exit_time="2026-03-02T16:30:00Z", scan_id="a"
+        ),
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T18:35:00Z", "stop", exit_time="2026-03-02T19:30:00Z", scan_id="b"
+        ),
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T18:35:00Z", "stop", exit_time="2026-03-02T19:30:00Z", scan_id="c"
+        ),
+    ]
+    out = with_recurrence(_frame(rows)).set_index("scan_id")
+    assert out.loc["a", ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [0, 0, "none"]
+    assert out.loc["b", ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [0, 1, "target"]
+    assert out.loc["c", ["prior_sessions", "prior_same_session", "prior_outcome"]].tolist() == [0, 1, "target"]
+
+
+def test_recurrence_is_per_setup_not_per_symbol():
+    rows = [
+        _labelled_row(
+            "PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target", exit_time="2026-03-02T16:30:00Z", direction="LONG"
+        ),
+        _labelled_row("PFE", "2026-03-03", "2026-03-03T14:35:00Z", "stop", direction="SHORT"),
+        _labelled_row("PFE", "2026-03-04", "2026-03-04T14:35:00Z", "stop", strategy="SQUEEZE_BREAKOUT"),
+        _labelled_row("PFE", "2026-03-05", "2026-03-05T14:35:00Z", "stop", strategy=None),
+    ]
+    out = with_recurrence(_frame(rows))
+    assert out["prior_sessions"].tolist() == [0, 0, 0, 0]
+    assert out["prior_outcome"].tolist() == ["none"] * 4
+
+
+def test_recurrence_leaves_other_columns_and_order_unchanged():
+    frame = _frame([_labelled_row("PFE", "2026-03-02", "2026-03-02T14:35:00Z", "target")])
+    out = with_recurrence(frame)
+    assert list(out.columns) == list(_COLUMNS)
+    assert out.drop(columns=["prior_sessions", "prior_same_session", "prior_outcome"]).equals(
+        frame.drop(columns=["prior_sessions", "prior_same_session", "prior_outcome"])
+    )
+    empty = with_recurrence(_frame([]))
+    assert empty.empty
+    assert {"prior_sessions", "prior_same_session", "prior_outcome"} <= set(empty.columns)
+
+
+def test_recurrence_summary_block():
+    rows = [
+        _labelled_row(
+            "PFE",
+            "2026-03-02",
+            "2026-03-02T14:35:00Z",
+            "target",
+            exit_time="2026-03-02T16:30:00Z",
+            r_cost=1.9,
+            excess_r=1.5,
+        ),
+        _labelled_row(
+            "PFE",
+            "2026-03-03",
+            "2026-03-03T14:35:00Z",
+            "stop",
+            exit_time="2026-03-03T16:30:00Z",
+            r_cost=-1.1,
+            excess_r=-1.3,
+        ),
+        _labelled_row("PFE", "2026-03-03", "2026-03-03T18:35:00Z", "immature", scan_id="late"),
+        _labelled_row("XOM", "2026-03-03", "2026-03-03T14:35:00Z", "timeout", r_cost=0.3),
+    ]
+    frame = with_recurrence(_frame(rows))
+    block = summarize(frame)["recurrence"]
+    assert block["setups"] == 2
+    assert block["repeated_setups"] == 1
+    assert block["same_session_repeats"] == 1
+    assert block["by_prior"]["first"] == {
+        "n": 2,
+        "mean_r_cost": pytest.approx(1.1),
+        "mean_excess_r": pytest.approx(1.5),
+        "hit_rate": 0.5,
+    }
+    assert block["by_prior"]["repeat"] == {
+        "n": 1,
+        "mean_r_cost": pytest.approx(-1.1),
+        "mean_excess_r": pytest.approx(-1.3),
+        "hit_rate": 0.0,
+    }
+    assert set(block["by_prior_outcome"]) == set(PRIOR_OUTCOMES)
+    assert block["by_prior_outcome"]["target"]["n"] == 1 and block["by_prior_outcome"]["none"]["n"] == 2
+    assert block["by_prior_outcome"]["stop"]["n"] == 0
+
+
+def test_label_journaled_applies_recurrence():
+    events = [
+        _event("s1", DECIDED_AT, [_candidate()]),
+        _event("s2", DECIDED_AT + timedelta(days=1), [_candidate()]),
+    ]
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
+    frame = label_journaled(events, source, now=NOW + timedelta(days=1)).sort_values("decided_at")
+    assert frame["prior_sessions"].tolist() == [0, 1]
+    assert frame["prior_outcome"].tolist() == ["none", "target"]
+
+
+def test_label_journaled_names_a_daily_frame_with_no_bars_before_the_session():
+    events = [_event("s1", DECIDED_AT, [_candidate()])]
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
+    frame = label_journaled(events, source, now=NOW)
+    assert frame["tape_reason"].tolist() == ["no daily bars before the session"]
+    assert summarize(frame)["regime_context"]["tape_reason"] == "no daily bars before the session"
+    # The fetch failure reason is kept when the fetch itself failed.
+    failing = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()}, raise_daily_for={"SPY"}
+    )
+    assert label_journaled(events, failing, now=NOW)["tape_reason"].tolist() == ["RuntimeError: no daily for SPY"]
+
+
+def test_summarize_by_tape_counts_a_row_in_both_the_return_and_the_mean_buckets():
+    day2 = DECIDED_AT + timedelta(days=1)
+    bars = _bars(
+        [
+            ("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2),
+            ("2026-03-02T15:30:00Z", 100.2, 102.5, 100.0, 102.2),
+            ("2026-03-03T14:30:00Z", 100.0, 100.5, 99.5, 100.2),
+            ("2026-03-03T15:30:00Z", 100.2, 102.5, 100.0, 102.2),
+        ]
+    )
+    # 02-27 closes at 110 (above the 200-session mean, up 10% over 20 sessions); 03-02 closes at 1.
+    daily = _spy_daily([100.0] * 229 + [110.0, 1.0], end="2026-03-02")
+    events = [_event("s1", DECIDED_AT, [_candidate()]), _event("s2", day2, [_candidate()])]
+    source = DailyAwareBarSource({"AAPL": bars, "SPY": bars}, {"SPY": daily})
+    frame = label_journaled(events, source, now=NOW + timedelta(days=2))
+    by_tape = summarize(frame)["regime_context"]["by_tape"]
+    assert [by_tape[name]["n"] for name in ("ret20_up", "ret20_down", "above_200", "below_200", "unknown")] == [
+        1,
+        1,
+        1,
+        1,
+        0,
+    ]

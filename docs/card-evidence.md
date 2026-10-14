@@ -281,6 +281,56 @@ Only its alignment and tone buckets are mature-row-only (and leave out rows with
 counts cover every row with a block (populations in [news context](news-context.md#attribution)). It
 never feeds `card_policy` or `card_stats`.
 
+## Regime and recurrence context
+
+Spec: [regime and recurrence](superpowers/specs/2026-10-14-regime-recurrence-design.md). Two more
+descriptive blocks in `cards outcomes`, measuring the two hypotheses from the 2026-10-13 review of the
+live sandbox: that the funnel's edge appears only in a trending tape, and that repeated setups are
+informative. Nothing here is read by `card_policy`, `card_stats`, any risk rule, admission or the
+ranking; there is no card line.
+
+**Journaled regime.** Every `scan_candidates_ranked` event carries one top-level `regime` block
+(`agent/regime.py:regime_journal_block`; keys `REGIME_BLOCK_KEYS`): `vix`, `vix_regime`
+(`COMPRESSED`/`NORMAL`/`ELEVATED`/`EXTREME`), `breakout_allowed`, `risk_multiplier`,
+`min_rr_threshold`, `macro_stress` (`LOW`/`MODERATE`/`HIGH`/`EXTREME`, null without a macro report) and
+`observed_at` — the snapshot observed at the start of the scan (the evaluator may refresh it during a long scan),
+which cannot be rebuilt from bars later. Every card's
+`decision_provenance["regime"]` carries the same block. Events before 2026-10-14 have none.
+
+**Derived tape.** The report fetches SPY daily bars once (raw, 400 calendar days before the earliest
+decision, after the hourly fetches) and computes, per decision session, from completed sessions
+strictly before it (`research/setups/tape.py:tape_state`): `spy_ret_20` (the 20-session close return)
+and `spy_above_200` (last close above the 200-session mean). Columns `regime_vix`,
+`regime_vix_regime`, `regime_risk_multiplier`, `regime_macro_stress`, `spy_ret_20`, `spy_above_200`,
+`tape_reason` sit after `news_alignment`. A failed daily fetch sets `tape_reason` on every row and leaves
+the rest of the report intact; when the fetch returned bars but none precede a session, that row's
+`tape_reason` reads "no daily bars before the session". A daily frame with a naive (tz-less) index is
+refused (`unknown`): it cannot be placed on the New York calendar without guessing.
+
+**Recurrence.** Over the rows of the report (`with_recurrence`), per `(contract, strategy,
+direction)`: `prior_sessions` (distinct earlier sessions in the window), `prior_same_session`
+(same-session rows decided strictly earlier) and `prior_outcome` (the hit — `target`/`stop`/`timeout` —
+of the most recent earlier row whose exit bar had closed by this decision (exit time plus one hourly
+bar), else `none`; a card still open at the decision never counts, so there is no lookahead). The counts are relative to `--days`: a
+setup first journaled before the window reads as first. `first` = no earlier session in the window, so a
+same-session repeat is still `first`; `repeat` = at least one earlier session.
+
+**Summary blocks.** Buckets are `{n, mean_r_cost, mean_excess_r, hit_rate}` over mature rows
+(`mean_excess_r` over the bucket's rows with a market control):
+
+- `regime_context`: `blocks` (rows with a journaled `vix_regime`), `by_vix_regime`, `by_macro_stress`,
+  `by_tape` (`ret20_up`/`ret20_down` by the sign of `spy_ret_20`, `above_200`/`below_200`, `unknown`
+  when neither measure exists; a row counts in each bucket it belongs to), `tape_reason`.
+- `recurrence`: `setups` (distinct setups in the window), `repeated_setups` (journaled in more than
+  one session), `same_session_repeats` (rows with `prior_same_session > 0`), `by_prior`
+  (`first`/`repeat`), `by_prior_outcome` (`target`/`stop`/`timeout`/`none`).
+
+Reading: a bucket that differs from the others is a hypothesis for a predeclared study (the bracket
+counterfactual is next), not a rule. The buckets are threshold-free by design so they cannot be fitted
+to the sample; the 20- and 200-session horizons are the setup feature vector's own. On 2026-10-14 the
+journal held 39 distinct setups since 2026-09-24, 20 of them journaled in more than one session, and the
+feature vector's `spy_above_200` was `1.0` on every candidate that had it.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket
@@ -307,7 +357,6 @@ never feeds `card_policy` or `card_stats`.
 - **Repeated setups.** The same `(contract, strategy, direction)` setup can now be journaled several
   times per session (swing runs, each in-session daemon start, back-to-back scans). Each journaled
   candidate counts once in `n_mature`, so correlated repeats inflate the sample and the
-  `min_mature_cards` floor. Counting distinct setups per session is a precondition before
-  `card_policy` moves to `enforce`.
+  `min_mature_cards` floor. `cards outcomes` now counts them (`recurrence.same_session_repeats`, `repeated_setups`); de-duplicating the `card_stats` denominator is a separate operator decision before `card_policy` moves to `enforce`.
 - **Scope.** Snapshots are per `{environment}/{execution_mode}`: simulator and Alpaca paper statistics
   never mix, and a dry scan (an empty temporary database) always says "no statistics in this scope".

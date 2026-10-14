@@ -108,6 +108,14 @@ async def test_a_provider_outage_writes_nothing_and_keeps_the_previous_snapshot(
     assert not await repository.exists(DUE.astimezone(ET_TZ).date())
 
 
+async def test_the_daemon_labelling_run_makes_no_daily_tape_request(temp_db, app_config):
+    await plant_scan(temp_db)
+    worker, bars = worker_for(temp_db, app_config)
+    assert await worker.run_once(DUE) == "recorded"
+    assert bars.calls
+    assert not [call for call in bars.calls if call[1] == "1d"]
+
+
 async def test_labelling_runs_off_the_event_loop(temp_db, app_config):
     entered, release = threading.Event(), threading.Event()
 

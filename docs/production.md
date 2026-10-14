@@ -620,7 +620,7 @@ LLM-moved stop or a re-priced entry is the one that traded; `planned_source` say
 journal had to stand in). The applied tap's age is reported too. Missing fill evidence and
 missing signal rows are counted, never zeroed. All of it is descriptive, never a gate.
 The report itself never ranks, gates or sizes a card; the one gate derived from the same labels is
-`card_policy` (below).
+`card_policy` (below). The `regime_context` and `recurrence` blocks ([card evidence](card-evidence.md#regime-and-recurrence-context)) bucket mature rows by the journaled VIX regime and macro stress, by the SPY tape derived at each decision (one extra SPY daily request per run), and by each setup's recurrence in the window; the next universe scan after the 2026-10-14 deploy is the first event with a `regime` block.
 
 **Card policy (October 8).** `card_policy.mode` is the one gate derived from these outcomes, and it
 ships `off`. Operate it in three steps: leave `off` until a `card_stats` snapshot exists; set
