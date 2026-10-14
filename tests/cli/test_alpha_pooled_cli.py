@@ -1,5 +1,6 @@
 import json
 from contextlib import asynccontextmanager, contextmanager
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,10 @@ from click.testing import CliRunner
 from agentic_trader.cli.commands import alpha as alpha_cli
 from agentic_trader.research.pooled.campaign import load_campaign_protocol
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
+from agentic_trader.research.pooled.events import pages_sha256
+from tests.research.pooled.mini_world import weekdays
+from tests.research.pooled.test_campaign_protocol import _events_document
+from tests.research.pooled.test_events import _dividend, _write_pages
 
 
 ENTRY = str(REPO_ROOT / "config/research/pooled/high52-v1.json")
@@ -653,3 +658,44 @@ def test_later_checks_and_the_campaign_require_the_cached_cube(tmp_path, monkeyp
         )
     assert result.exit_code == 0, result.output
     assert seen == {"require_cached": True, "built": "built"}
+
+
+def _events_protocol(tmp_path, *, actions_sha256: str) -> tuple[Path, Path, Path]:
+    """An events protocol pinning a small page cache on disk and ``actions_sha256``; returns the
+    protocol, page directory and actions file paths."""
+    first, last = date(2021, 2, 1), date(2021, 2, 5)
+    pages = tmp_path / "nasdaq"
+    _write_pages(pages, list(weekdays(first, last)), {})
+    actions = tmp_path / "actions.json"
+    actions.write_text(json.dumps([_dividend("AAA", date(2021, 3, 1)).model_dump(mode="json")]))
+    document = _events_document()
+    document["event_inputs"]["earnings"].update(
+        calendar_from=first.isoformat(),
+        calendar_through=last.isoformat(),
+        pages_sha256=pages_sha256(pages, first, last),
+    )
+    document["event_inputs"]["corporate_actions"]["content_sha256"] = actions_sha256
+    protocol = tmp_path / "events.json"
+    protocol.write_text(json.dumps(document))
+    return protocol, pages, actions
+
+
+def test_campaign_verifies_the_event_sources_before_opening_the_ledger(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    _forbid_campaign(monkeypatch)
+    _clean_tree(monkeypatch)
+    protocol, pages, actions = _events_protocol(tmp_path, actions_sha256="b" * 64)
+    result = _campaign(
+        tmp_path,
+        _gates(tmp_path, protocol=str(protocol)),
+        "--earnings-pages",
+        str(pages),
+        "--corporate-actions",
+        str(actions),
+        protocol=str(protocol),
+        search_power=False,
+    )
+    assert result.exit_code == 1
+    assert "corporate-actions digest does not match" in result.output
+    assert not (tmp_path / "out").exists()

@@ -89,7 +89,7 @@ from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
 from agentic_trader.research.corporate_actions import build_corporate_actions_source
-from agentic_trader.research.pooled.campaign import load_campaign_protocol
+from agentic_trader.research.pooled.campaign import EventInputs, EventsCampaignProtocol, load_campaign_protocol
 from agentic_trader.research.pooled.campaign_run import (
     LITERATURE_ENTRIES,
     check_gate,
@@ -102,7 +102,7 @@ from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
 from agentic_trader.research.pooled.null_check import execute_null_check
 from agentic_trader.research.pooled.power import execute_power_check
-from agentic_trader.research.pooled.runner import build_cube_inputs
+from agentic_trader.research.pooled.runner import EventSources, build_cube_inputs, load_event_sources
 from agentic_trader.research.pooled.screen import config_group_symbols, execute_screen, load_screen_rule
 from agentic_trader.research.pooled.search_power import execute_search_power, require_search
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
@@ -1494,9 +1494,38 @@ def alpha_pooled_group():
     """Pooled alpha mining: one formula across the frozen cohort (research only)."""
 
 
-def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False, load_hourly=False):
+def _pooled_event_sources(
+    protocol, earnings_pages: Path | None, corporate_actions: Path | None
+) -> tuple[EventInputs, EventSources] | None:
+    """The event sources an events protocol reads; refused for any other protocol."""
+    given = earnings_pages is not None or corporate_actions is not None
+    if isinstance(protocol, EventsCampaignProtocol):
+        if earnings_pages is None or corporate_actions is None:
+            raise click.ClickException("--earnings-pages and --corporate-actions are required for an events protocol")
+        return protocol.event_inputs, EventSources(earnings_pages=earnings_pages, actions_file=corporate_actions)
+    if given:
+        raise click.ClickException("--earnings-pages/--corporate-actions apply only to an events protocol")
+    return None
+
+
+_EARNINGS_PAGES_OPTION = click.option(
+    "--earnings-pages",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Nasdaq earnings-calendar page directory (events protocols only).",
+)
+_CORPORATE_ACTIONS_OPTION = click.option(
+    "--corporate-actions",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="The corporate-actions acquisition's actions.json (events protocols only).",
+)
+
+
+def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False, load_hourly=False, events=None):
     """``require_cached``: checks B and C and the campaign run only on the cube check A built.
-    ``load_hourly``: an hourly-input protocol keeps the cube's hourly frames for scoring."""
+    ``load_hourly``: an hourly-input protocol keeps the cube's hourly frames for scoring.
+    ``events``: an events protocol's pinned inputs and the files they are verified against."""
 
     async def build():
         return await build_cube_inputs(
@@ -1510,6 +1539,7 @@ def _pooled_build(clients, cohort, spec, cache_dir, *, require_cached=False, loa
             progress=lambda message: click.echo(message, err=True),
             require_cached=require_cached,
             load_hourly=load_hourly,
+            events=events,
         )
 
     return build
@@ -1531,12 +1561,15 @@ _POOLED_CACHE_HELP = "Shared bar and cube cache directory; give `power` and ever
     show_default=True,
     help="Replicates run in this many processes; the result is identical for any worker count.",
 )
+@_EARNINGS_PAGES_OPTION
+@_CORPORATE_ACTIONS_OPTION
 @coro
-async def alpha_pooled_power_cmd(protocol_path, output, cache, workers):
+async def alpha_pooled_power_cmd(protocol_path, output, cache, workers, earnings_pages, corporate_actions):
     """Power check A: detect a planted pooled edge and reject noise (discovery cells only)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded = await asyncio.to_thread(load_campaign_protocol, protocol_path)
+    events = _pooled_event_sources(loaded.protocol, earnings_pages, corporate_actions)
     cohort = await asyncio.to_thread(load_cohort, REPO_ROOT / loaded.protocol.cohort)
     if cohort.sha256 != loaded.protocol.cohort_sha256:
         raise click.ClickException("Cohort file does not match the protocol's cohort_sha256")
@@ -1552,6 +1585,7 @@ async def alpha_pooled_power_cmd(protocol_path, output, cache, workers):
                 loaded.protocol.cube_spec(),
                 cache,
                 load_hourly=loaded.protocol.score_inputs == "hourly",
+                events=events,
             ),
             environment=environment,
             progress=lambda message: click.echo(message, err=True),
@@ -1719,12 +1753,17 @@ async def alpha_pooled_search_power_cmd(protocol_path, power_dir, output, cache)
     show_default=True,
     help="Replicates run in this many processes; the result is identical for any worker count.",
 )
+@_EARNINGS_PAGES_OPTION
+@_CORPORATE_ACTIONS_OPTION
 @coro
-async def alpha_pooled_null_check_cmd(protocol_path, power_dir, output, cache, workers):
+async def alpha_pooled_null_check_cmd(
+    protocol_path, power_dir, output, cache, workers, earnings_pages, corporate_actions
+):
     """Check C: real formulas on per-name-demeaned discovery panels must rarely be confirmed."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded, cohort = await _pooled_protocol(protocol_path)
+    events = _pooled_event_sources(loaded.protocol, earnings_pages, corporate_actions)
     power_result = _passed_power(power_dir, loaded, cohort)
     environment = await asyncio.to_thread(research_environment)
     with _apriori_clients() as clients:
@@ -1739,6 +1778,7 @@ async def alpha_pooled_null_check_cmd(protocol_path, power_dir, output, cache, w
                 cache,
                 require_cached=True,
                 load_hourly=loaded.protocol.score_inputs == "hourly",
+                events=events,
             ),
             power_result=power_result,
             environment=environment,
@@ -1805,14 +1845,26 @@ def _require_journal(repository, scope: str) -> None:
     help="Recompute the outcome of this protocol's campaign after it consumed its confirmation window but "
     "did not complete; charges and consumes nothing.",
 )
+@_EARNINGS_PAGES_OPTION
+@_CORPORATE_ACTIONS_OPTION
 @coro
 async def alpha_pooled_campaign_cmd(
-    protocol_path, power_dir, search_dir, null_dir, output, cache, journal_scope, recover
+    protocol_path,
+    power_dir,
+    search_dir,
+    null_dir,
+    output,
+    cache,
+    journal_scope,
+    recover,
+    earnings_pages,
+    corporate_actions,
 ):
     """Run the budgeted pooled campaign once; writes the pooled ledger (research only; grants no credit)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded, cohort = await _pooled_protocol(protocol_path)
+    events = _pooled_event_sources(loaded.protocol, earnings_pages, corporate_actions)
     if loaded.protocol.requires_search_power and search_dir is None:
         raise click.ClickException("genetic protocols require --search-power (check B)")
     if not loaded.protocol.requires_search_power and search_dir is not None:
@@ -1837,6 +1889,9 @@ async def alpha_pooled_campaign_cmd(
             )
             for name, check in loaded.protocol.gates
         }
+        if events is not None:
+            # A wrong page cache or actions file is refused here, before the ledger reserves anything.
+            await asyncio.to_thread(load_event_sources, *events)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise click.ClickException(str(exc)) from exc
     entries = (
@@ -1856,6 +1911,7 @@ async def alpha_pooled_campaign_cmd(
                 cache,
                 require_cached=True,
                 load_hourly=loaded.protocol.score_inputs == "hourly",
+                events=events,
             )
             if recover:
                 result = await execute_campaign_recovery(

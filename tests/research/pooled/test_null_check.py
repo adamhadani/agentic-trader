@@ -3,6 +3,7 @@ import asyncio
 import json
 import pickle
 from concurrent.futures import Future
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,9 +32,11 @@ from tests.research.pooled.mini_world import (
     SESSIONS,
     book,
     cube_build,
+    events_cube_build,
     hourly_bars,
     intraday_cube_build,
     label_cube,
+    mini_events_protocol,
     mini_fixed_set_protocol,
     mini_intraday_protocol,
     mini_protocol,
@@ -313,3 +316,34 @@ def test_the_null_check_manifest_records_its_score_inputs(tmp_path):
     assert manifest["score_inputs"] == "hourly" and manifest["score_read"] == {"bars_before_decision": 1}
     result = json.loads((tmp_path / "out" / "result.json").read_text())
     assert result["status"] in {"passed", "gate_failed"}, result
+
+
+def test_the_null_check_records_event_inputs_and_event_coverage(tmp_path):
+    protocol = mini_events_protocol()
+    cube = label_cube()
+    built = events_cube_build(cube)
+
+    async def build():
+        return built
+
+    result = asyncio.run(
+        execute_null_check(
+            LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("events.json")),
+            tmp_path / "out",
+            cohort=SimpleNamespace(sha256=COHORT),
+            build=build,
+            power_result={
+                "status": "passed",
+                "cohort_sha256": COHORT,
+                "campaign_protocol_sha256": "p" * 64,
+                "cube_sha256": cube.sha256,
+            },
+            environment={},
+        )
+    )
+    assert result["status"] in {"passed", "gate_failed"}, result
+    assert built.events is not None and result["event_coverage"] == asdict(built.events.coverage)
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["event_inputs"] == protocol.event_inputs.model_dump(mode="json")
+    on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
+    assert on_disk["event_coverage"]["identity_breaks"] == {}

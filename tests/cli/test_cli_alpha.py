@@ -22,6 +22,7 @@ from agentic_trader.research.alpha.models import AlphaDefinition
 from agentic_trader.research.alpha.strategy import TimedAlphaExecutionPolicy
 from agentic_trader.research.alpha.study import MarketScenario, PanelScenario, StudyProtocol, market_bars
 from agentic_trader.research.alpha.validation import DatasetManifest, ValidationPolicy
+from tests.research.pooled.test_campaign_protocol import _events_document
 
 
 @pytest.mark.parametrize("command", ["catalog", "list", "export"])
@@ -491,3 +492,33 @@ def test_gtc_entry_policy_journals_no_lifetime(monkeypatch):
             assert run["manifest"]["entry_policy"] == "gtc"
 
     asyncio.run(check())
+
+
+def test_pooled_cli_refuses_event_options_for_non_event_protocols(tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "alpha",
+            "pooled",
+            "power",
+            "config/research/pooled/intraday-v1.json",
+            "--output",
+            str(tmp_path / "o"),
+            "--cache",
+            str(tmp_path / "c"),
+            "--earnings-pages",
+            str(tmp_path),
+            "--corporate-actions",
+            "config/research/pooled/intraday-v1.json",
+        ],
+    )
+    assert result.exit_code != 0 and "apply only to an events protocol" in result.output
+
+
+def test_pooled_cli_requires_event_options_for_an_events_protocol(tmp_path):
+    path = tmp_path / "events.json"
+    path.write_text(json.dumps(_events_document()))
+    result = CliRunner().invoke(
+        cli, ["alpha", "pooled", "power", str(path), "--output", str(tmp_path / "o"), "--cache", str(tmp_path / "c")]
+    )
+    assert result.exit_code != 0 and "--earnings-pages and --corporate-actions are required" in result.output

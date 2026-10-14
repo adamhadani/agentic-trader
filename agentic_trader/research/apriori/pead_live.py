@@ -84,7 +84,7 @@ def _unavailable(
 def _benchmark_bars_available(frame: pd.DataFrame | None, d_minus_1: date, d_plus_1: date) -> bool:
     """Whether the benchmark has finite closes at both reaction endpoints, D-1 and D+1.
 
-    ``pead_events._reaction_z`` reads the benchmark at exactly these two sessions (never
+    ``pead_events.reaction_z`` reads the benchmark at exactly these two sessions (never
     the report day D itself); reusing ``pead_events.by_session`` applies the same
     UTC -> New York session-date mapping ``build_events`` uses, rather than a second
     bespoke one.

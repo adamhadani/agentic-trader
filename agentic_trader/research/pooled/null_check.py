@@ -47,7 +47,14 @@ from agentic_trader.research.pooled.cube import CubeView, check_coverage
 from agentic_trader.research.pooled.genetic import NullCharger, run_search_stages
 from agentic_trader.research.pooled.power import synthetic_cube
 from agentic_trader.research.pooled.runner import CubeBuild
-from agentic_trader.research.pooled.scoring import FrozenPanels, ScoreBook, score_book, score_read_document
+from agentic_trader.research.pooled.scoring import (
+    FrozenPanels,
+    ScoreBook,
+    event_coverage_document,
+    event_inputs_document,
+    score_book,
+    score_read_document,
+)
 from agentic_trader.research.pooled.study import check_power_gate
 from agentic_trader.research.setups.study import _finite_json
 from agentic_trader.storage.artifacts import save_json_report
@@ -257,6 +264,7 @@ async def execute_null_check(
             "reads": "discovery window cells only (per-name demeaned); real bars for scores",
             "score_inputs": protocol.score_inputs,
             "score_read": score_read_document(protocol),
+            "event_inputs": event_inputs_document(protocol),
             "environment": environment,
             "started_at": datetime.now(UTC).isoformat(),
             "authorizes_promotion": False,
@@ -290,7 +298,12 @@ async def execute_null_check(
             progress=progress,
             workers=workers,
         )
-        result = {**outcome, **base, "cube_sha256": built.cube.sha256}
+        result = {
+            **outcome,
+            **base,
+            "cube_sha256": built.cube.sha256,
+            "event_coverage": event_coverage_document(built),
+        }
     except Exception as exc:
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", **base}
     save_json_report(_finite_json(result), directory / "result.json")

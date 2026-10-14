@@ -4,7 +4,7 @@ import json
 import os
 import signal
 import threading
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,8 +14,10 @@ import pytest
 from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled import campaign as campaign_module, campaign_run
 from agentic_trader.research.pooled.campaign import (
+    CampaignProtocol,
     CampaignWindows,
     DiscoveryEvaluator,
+    EventsCampaignProtocol,
     LoadedProtocol,
     ScoreRead,
 )
@@ -35,14 +37,17 @@ from tests.research.pooled.mini_world import (
     FAMILIES,
     book as mini_book,
     cube_build,
+    events_cube_build,
     intraday_cube_build,
     label_cube,
+    mini_events_protocol,
     mini_fixed_set_protocol,
     mini_intraday_protocol,
     mini_protocol,
     mini_v3_protocol,
     planted_cube,
 )
+from tests.research.pooled.test_campaign_protocol import _events_document
 
 
 PLANTED = "-1.0 * roc(close, 21)"
@@ -768,3 +773,43 @@ def test_a_frozen_identity_binds_the_score_inputs_for_an_intraday_protocol():
     # A different read is a different identity.
     other = mini_intraday_protocol().model_copy(update={"score_read": ScoreRead(bars_before_decision=2)})
     assert campaign_run.frozen_document("oc_spread", other)["identity"] != intraday_doc["identity"]
+
+
+def test_frozen_document_binds_event_inputs():
+    events = EventsCampaignProtocol.model_validate(_events_document())
+    daily = CampaignProtocol(**json.loads(Path("config/research/pooled/campaign-v4.json").read_text()))
+    with_events = campaign_run.frozen_document("close / ts_mean(close, 20)", events)
+    without = campaign_run.frozen_document("close / ts_mean(close, 20)", daily)
+    assert with_events["formula"]["event_inputs"] == events.event_inputs.model_dump(mode="json")
+    assert with_events["formula"]["score_inputs"] == "daily"
+    assert "event_inputs" not in without["formula"] and "score_inputs" not in without["formula"]
+    assert with_events["identity"] != without["identity"]
+
+
+async def test_an_events_campaign_result_carries_its_event_inputs_and_coverage(tmp_path, repository):
+    protocol = mini_events_protocol()
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("events.json"))
+    cube = label_cube()
+    built = events_cube_build(cube)
+    gates = {name: {"status": "passed", "cube_sha256": cube.sha256} for name, _ in protocol.gates}
+
+    async def build():
+        return built
+
+    result = await execute_campaign(
+        loaded,
+        tmp_path / "out",
+        cohort=SimpleNamespace(sha256=COHORT),
+        build=build,
+        gates=gates,
+        repository=repository,
+        entries=[],
+        environment={"runtime": {"revision": "abc1234"}},
+    )
+    assert result["status"] != "failed", result
+    assert built.events is not None and result["event_coverage"] == asdict(built.events.coverage)
+    assert result["event_inputs"] == protocol.event_inputs.model_dump(mode="json")
+    on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
+    assert on_disk["event_coverage"]["identity_breaks"] == {}
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["event_inputs"] == protocol.event_inputs.model_dump(mode="json")
