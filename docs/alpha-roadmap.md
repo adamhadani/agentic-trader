@@ -600,8 +600,10 @@ problem.
    cohort v2's cube (SHA-256 `5b4c3fdf23aa1800…`; the unevaluable `vwap_strength` seed, which the
    OHLCV-only cache cannot score, was replaced by `first_bucket_efficiency`, and the read is the
    clock-aligned 09:00 bucket closing 10:00). Checks A and C passed on 2026-10-14 (A replays v4's curve on the same
-   cube; C 0/40 false acceptances with `errors_total` 0; [checks](alpha-pooled-intraday-v1-2026-10-14.md)); the campaign
-   runs only on operator approval and the confirmation window is unused.
+   cube; C 0/40 false acceptances with `errors_total` 0; [checks](alpha-pooled-intraday-v1-2026-10-14.md)); the operator-approved
+   campaign ran at 13:00 ET and found **no finalists** (seven of eight discovery edges negative, the
+   overnight-gap formulas most negative at t ≈ −1.9; nothing carried or frozen), so the intraday fixed set is
+   closed on this window and the confirmation window is still unused ([results](alpha-pooled-intraday-v1-2026-10-14.md)).
 
    *Status (October 14, later):* the events lane is built ([design](superpowers/specs/2026-10-14-pooled-events-design.md),
    [pooled mining](alpha-pooled-mining.md#event-score-inputs-protocol-pooled-events-campaign)):

@@ -51,11 +51,39 @@ Every one of the eight intraday formulas evaluated on every replicate: the cache
 cover all 437 eligible names, and the read rule (the 09:00 New York bucket closing 10:00, the
 cube's own decision-reference bar) produced a finite score wherever a bar existed.
 
-## Campaign
+## Campaign: no finalists
 
-The campaign (`alpha pooled campaign … --journal-scope production/alpaca:paper`) runs once per
-protocol and only with the operator's explicit approval. It charges each formula to the pooled
-ledger before scoring it and consumes the lane-wide confirmation window only when a formula
-freezes. `no_finalists` closes the intraday fixed set on this window; a finalist would only make
-the formula eligible for a separately specified contract, since live scans have no hourly feed
-parity yet. Its result is recorded here when it runs.
+The operator approved the campaign and it ran at 13:00 ET the same day from the same clean
+worktree (`alpha pooled campaign … --journal-scope production/alpaca:paper`; campaign id
+`pooled-intraday-campaign-v1-5b4c3fdf23aa1800`, PostgreSQL journal scope `production/alpaca:paper`,
+artifact `~/agentic-trader-research/pooled-campaign-intraday-v1-20261014/`). Each of the eight
+formulas was charged to the pooled ledger before scoring (8 charged, 8 evaluated, 0 errors,
+0 rejected). None passed the discovery gate, so nothing was carried, selected or frozen and the
+lane-wide confirmation window is **still unused**.
+
+Discovery window 2016-08-01 → 2021-12-31, top-decile picks per session, 5 bp decisive cost;
+`edge` is the session-paired pick-minus-pool mean R, `t` its session-block statistic, `leg` the
+picks' own mean R:
+
+| Family | Expression | Sessions | Edge (R) | t | Leg (R) |
+| --- | --- | --- | --- | --- | --- |
+| first_hour_momentum | `oc_spread` | 1,359 | −0.011 | −0.72 | +0.183 |
+| overnight_persistence | `open_gap` | 1,358 | −0.035 | −1.93 | +0.158 |
+| overnight_vs_intraday | `open_gap - oc_spread` | 1,357 | −0.030 | −1.91 | +0.162 |
+| relative_volume | `volume / ts_mean(volume, 140)` | 1,344 | −0.012 | −0.79 | +0.183 |
+| range_expansion | `hl_spread / ts_mean(hl_spread, 140)` | 1,344 | −0.001 | −0.06 | +0.195 |
+| range_location | `(close - low) / (high - low)` | 1,358 | −0.004 | −0.40 | +0.189 |
+| first_bucket_efficiency | `(close - open) / (high - low)` | 1,358 | +0.001 | +0.06 | +0.194 |
+| intraday_high_proximity | `close / ts_max(high, 140)` | 1,343 | −0.013 | −0.59 | +0.186 |
+
+Seven of eight edges are negative and all are within noise of zero (the gate needs t ≥ 3 with
+three of four positive blocks); the two overnight-gap formulas are the most negative, i.e. the
+names with the largest overnight gaps did slightly worse than the pool over the 20-session
+bracket. The positive leg means are the long-bracket base rate on this cohort and window, not
+alpha. Fifteen cohort names had no cached hourly bars (never eligible, so never picked).
+
+**Conclusion.** The intraday fixed set is closed on this window: the first completed regular
+bucket carries no cross-sectional edge for the long bracket that the eight predeclared formulas
+could find. Reopening intraday mining needs a new frozen protocol (different read, e.g. more
+buckets or a later decision, or a search protocol with check B) and operator approval; the
+confirmation window remains available to the lane.
