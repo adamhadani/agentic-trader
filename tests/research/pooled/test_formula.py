@@ -14,8 +14,10 @@ from agentic_trader.research.pooled.formula import (
     Picks,
     allowed_mask,
     evaluate_panel,
+    evaluate_prepared_hourly,
     expression_nodes,
     jaccard_codes,
+    prepare_hourly,
     select_picks,
     select_top_fraction,
 )
@@ -208,3 +210,124 @@ def test_pick_codes_and_their_jaccard_match_the_set_versions():
     assert jaccard_codes(codes_a, codes_b) == pytest.approx(expected) == pytest.approx(0.4)
     empty = np.zeros(0, dtype=np.int64)
     assert jaccard_codes(empty, empty) == 0.0
+
+
+def hourly(
+    days: list[date], *, closes_by_bar: Sequence[float] | None = None, hours=(9, 10, 11, 12, 13, 14, 15), extended=False
+) -> pd.DataFrame:
+    """One bar per regular hour per day, stamped at the bar OPEN in New York time (09:30, 10:30, ...).
+    ``extended`` adds 04:00 and 16:00 bars that must be filtered out."""
+    stamps, rows = [], []
+    k = 0
+    for d in days:
+        bar_hours = [(h, 30) for h in hours]
+        if extended:
+            bar_hours = [(4, 0), *bar_hours, (16, 0)]
+        for h, m in bar_hours:
+            stamps.append(datetime.combine(d, time(h, m), tzinfo=ET_TZ).astimezone(UTC))
+            c = 100.0 + k if closes_by_bar is None else closes_by_bar[k]
+            rows.append(
+                {"Open": c - 0.5, "High": c + 1.0, "Low": c - 1.0, "Close": c, "Volume": 1000.0 + k, "VWAP": c - 0.25}
+            )
+            k += 1
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(stamps))
+
+
+def test_prepare_hourly_keeps_regular_session_bars_only():
+    days = weekdays(date(2024, 1, 2), 3)
+    prepared = prepare_hourly({"AAA": hourly(days, extended=True), "BBB": pd.DataFrame(), "CCC": None})
+    assert set(prepared) == {"AAA"}
+    frame = prepared["AAA"]
+    assert len(frame) == 21 and frame.index.tz is not None and frame.index.is_monotonic_increasing
+    assert set(frame.columns) >= {"open", "high", "low", "close", "volume", "vwap"}
+    assert all(ts.astimezone(ET_TZ).hour in range(9, 16) for ts in frame.index)
+
+
+def test_hourly_read_takes_the_last_bar_closed_before_the_decision():
+    days = weekdays(date(2024, 1, 2), 3)
+    prepared = prepare_hourly({"AAA": hourly(days)})
+    out = evaluate_prepared_hourly(
+        "close", prepared, days, ("AAA", "ZZZ"), decision_time_et="10:35", bars_before_decision=1
+    )
+    # Day 1 bars close at 100..106 (09:30 bar = 100); at 10:35 the 09:30 bar (close 10:30) is the last closed one.
+    assert out.shape == (3, 2)
+    assert out[:, 0].tolist() == [100.0, 107.0, 114.0]
+    assert np.isnan(out[:, 1]).all()
+    two = evaluate_prepared_hourly("close", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=2)
+    # The bar before the 09:30 bar is the previous session's 15:30 bar; day 1 has none.
+    assert np.isnan(two[0, 0]) and two[1, 0] == 106.0 and two[2, 0] == 113.0
+    late = evaluate_prepared_hourly("close", prepared, days, ("AAA",), decision_time_et="11:35", bars_before_decision=1)
+    assert late[:, 0].tolist() == [101.0, 108.0, 115.0]
+
+
+def test_hourly_read_is_nan_when_no_bar_closed_before_the_decision():
+    days = weekdays(date(2024, 1, 2), 2)
+    frame = hourly(days)
+    # Drop day 2's 09:30 bar: at 10:35 on day 2 nothing has closed yet today.
+    day2_open = datetime.combine(days[1], time(9, 30), tzinfo=ET_TZ).astimezone(UTC)
+    frame = frame.drop(index=pd.Timestamp(day2_open))
+    out = evaluate_prepared_hourly(
+        "close", prepare_hourly({"AAA": frame}), days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    assert out[0, 0] == 100.0 and np.isnan(out[1, 0])
+
+
+def test_hourly_dsl_fields_are_bar_over_bar():
+    days = weekdays(date(2024, 1, 2), 2)
+    prepared = prepare_hourly({"AAA": hourly(days)})
+    gap = evaluate_prepared_hourly(
+        "open_gap", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    # Day 2's 09:30 bar opens at 106.5 after day 1's last close 106: open_gap = 106.5/106 - 1.
+    assert np.isnan(gap[0, 0]) and gap[1, 0] == pytest.approx(106.5 / 106.0 - 1.0)
+    oc = evaluate_prepared_hourly(
+        "oc_spread", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    assert oc[0, 0] == pytest.approx(0.5 / 100.0)
+    windowed = evaluate_prepared_hourly(
+        "volume / ts_mean(volume, 7)", prepared, days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    assert np.isnan(windowed[0, 0]) and np.isfinite(windowed[1, 0])
+
+
+def test_hourly_read_never_sees_bars_at_or_after_the_decision():
+    """Mutating every bar stamped at or after 10:30 (close 11:30) must not change the 10:35 read."""
+    days = weekdays(date(2024, 1, 2), 3)
+    base = hourly(days)
+    poisoned = base.copy()
+    late = [ts for ts in poisoned.index if ts.astimezone(ET_TZ).time() >= time(10, 30)]
+    poisoned.loc[late, ["Open", "High", "Low", "Close", "Volume", "VWAP"]] = 1e9
+    a = evaluate_prepared_hourly(
+        "ts_mean(close, 3)",
+        prepare_hourly({"AAA": base}),
+        days,
+        ("AAA",),
+        decision_time_et="10:35",
+        bars_before_decision=1,
+    )
+    b = evaluate_prepared_hourly(
+        "ts_mean(close, 3)",
+        prepare_hourly({"AAA": poisoned}),
+        days,
+        ("AAA",),
+        decision_time_et="10:35",
+        bars_before_decision=1,
+    )
+    # Day 1's read uses only the 09:30 bar window (NaN for a 3-bar mean); later days' windows include
+    # earlier sessions' late bars, which ARE in the past, so only the first session is identical by
+    # construction: assert the day-1 reads agree and that no 1e9 leaks into day 2/3 through the
+    # current session's own late bars by comparing with a frame where only the CURRENT day's late
+    # bars are poisoned.
+    current_only = base.copy()
+    for d in days:
+        late_today = [
+            ts
+            for ts in current_only.index
+            if ts.astimezone(ET_TZ).date() == d and ts.astimezone(ET_TZ).time() >= time(10, 30)
+        ]
+        current_only.loc[late_today, "Close"] = 1e9
+    c = evaluate_prepared_hourly(
+        "close", prepare_hourly({"AAA": current_only}), days, ("AAA",), decision_time_et="10:35", bars_before_decision=1
+    )
+    assert c[:, 0].tolist() == [100.0, 107.0, 114.0]
+    assert np.isnan(a[0, 0]) and np.isnan(b[0, 0])

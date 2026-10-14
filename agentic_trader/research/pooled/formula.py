@@ -15,15 +15,17 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime, time
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator, compile_expression
 from agentic_trader.research.apriori.pead_events import by_session
 from agentic_trader.research.pooled.cube import CubeView
+from agentic_trader.research.setups.labels import regular_session_bars
 
 
 __all__ = [
@@ -33,9 +35,11 @@ __all__ = [
     "allowed_mask",
     "evaluate_panel",
     "evaluate_prepared",
+    "evaluate_prepared_hourly",
     "expression_nodes",
     "jaccard_codes",
     "prepare_daily",
+    "prepare_hourly",
     "require_dimensionless",
     "select_picks",
     "select_top_fraction",
@@ -217,3 +221,67 @@ def jaccard_codes(a: np.ndarray, b: np.ndarray) -> float:
         return 0.0
     common = np.intersect1d(a, b, assume_unique=True).size
     return common / (a.size + b.size - common)
+
+
+_BAR = pd.Timedelta("1h")
+
+
+def prepare_hourly(hourly: Mapping[str, pd.DataFrame | None]) -> dict[str, pd.DataFrame]:
+    """Regular-session hourly bars, sorted, tz-aware UTC, lower-case DSL columns; empty frames dropped."""
+    prepared: dict[str, pd.DataFrame] = {}
+    for symbol, frame in hourly.items():
+        if frame is None or frame.empty:
+            continue
+        index = pd.DatetimeIndex(frame.index)
+        if index.tz is None:
+            index = index.tz_localize("UTC")
+        regular = regular_session_bars(frame.set_axis(index.tz_convert("UTC"))).sort_index()
+        regular = regular[~regular.index.duplicated(keep="last")]
+        if regular.empty:
+            continue
+        prepared[symbol] = regular.rename(columns={c: str(c).lower() for c in regular.columns})
+    return prepared
+
+
+def _decision_instants(sessions: Sequence[date], decision_time_et: str) -> pd.DatetimeIndex:
+    hour, minute = (int(part) for part in decision_time_et.split(":"))
+    return pd.DatetimeIndex(
+        [datetime.combine(day, time(hour, minute), tzinfo=ET_TZ).astimezone(UTC) for day in sessions]
+    )
+
+
+def evaluate_prepared_hourly(
+    expression: str,
+    prepared: Mapping[str, pd.DataFrame],
+    sessions: Sequence[date],
+    symbols: Sequence[str],
+    *,
+    decision_time_et: str,
+    bars_before_decision: int,
+) -> np.ndarray:
+    """[S, N] values known at each decision: the expression over the symbol's regular hourly bars,
+    read at the ``bars_before_decision``-th last bar whose close (open stamp + 1h) is at or before
+    the session's decision instant, and only if that bar belongs to the session's own New York date
+    (an earlier session's bar is never "today's" read). No such bar: NaN."""
+    if bars_before_decision < 1:
+        raise ValueError("bars_before_decision must be at least 1")
+    instants = _decision_instants(sessions, decision_time_et)
+    out = np.full((len(sessions), len(symbols)), np.nan)
+    evaluator = AlphaExpressionEvaluator()
+    for col, symbol in enumerate(symbols):
+        keyed = prepared.get(symbol)
+        if keyed is None:
+            continue
+        series = evaluator.evaluate(expression, keyed)
+        closes = keyed.index + _BAR
+        dates = keyed.index.tz_convert(ET_TZ).date
+        positions = np.searchsorted(closes.values, instants.values, side="right")  # bars closed by the instant
+        for row, (pos, day) in enumerate(zip(positions, sessions, strict=True)):
+            idx = pos - bars_before_decision
+            if idx < 0:
+                continue
+            if bars_before_decision == 1 and dates[idx] != day:
+                continue
+            out[row, col] = series.iloc[idx]
+    out[~np.isfinite(out)] = np.nan
+    return out

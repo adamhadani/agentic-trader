@@ -4,9 +4,14 @@ import numpy as np
 import pytest
 
 from agentic_trader.research.pooled import scoring
-from agentic_trader.research.pooled.formula import evaluate_panel, expression_nodes
-from agentic_trader.research.pooled.scoring import ScoreBook, formula_id, vet_expression
-from tests.research.pooled.test_formula import daily, weekdays
+from agentic_trader.research.pooled.formula import (
+    evaluate_panel,
+    evaluate_prepared_hourly,
+    expression_nodes,
+    prepare_hourly,
+)
+from agentic_trader.research.pooled.scoring import FrozenPanels, ScoreBook, formula_id, vet_expression
+from tests.research.pooled.test_formula import daily, hourly, weekdays
 
 
 DAYS = weekdays(date(2021, 1, 4), 60)
@@ -92,3 +97,49 @@ def test_a_view_from_another_calendar_or_cohort_is_refused():
         formula.panel(BlindView(DAYS[:5], SYMBOLS, offset=0))
     with pytest.raises(ValueError, match="symbols"):
         formula.panel(BlindView(SESSIONS[:5], ("AAA",), offset=0))
+
+
+HDAYS = weekdays(date(2021, 1, 4), 30)
+HSESSIONS = tuple(HDAYS[5:])
+HOURLY = {"AAA": hourly(HDAYS), "BBB": hourly(HDAYS, closes_by_bar=list(np.linspace(300, 100, 30 * 7)))}
+
+
+def test_hourly_book_matches_the_evaluator_and_is_label_blind():
+    book = ScoreBook.hourly(HOURLY, HSESSIONS, SYMBOLS, decision_time_et="10:35", bars_before_decision=1)
+    formula = book.formula("oc_spread")
+    scores, allowed = formula.panel(BlindView(HSESSIONS[3:9], SYMBOLS, offset=3))
+    expected = evaluate_prepared_hourly(
+        "oc_spread", prepare_hourly(HOURLY), HSESSIONS[3:9], SYMBOLS, decision_time_et="10:35", bars_before_decision=1
+    )
+    np.testing.assert_array_equal(np.nan_to_num(scores, nan=-1), np.nan_to_num(expected, nan=-1))
+    assert allowed.all() and np.isnan(scores[:, 2]).all()  # CCC has no bars
+    assert book.panel("oc_spread") is book.panel("oc_spread")
+
+
+def test_frozen_panels_serve_only_the_frozen_expressions():
+    book = ScoreBook.hourly(HOURLY, HSESSIONS, SYMBOLS, decision_time_et="10:35", bars_before_decision=1)
+    frozen = book.freeze(("oc_spread", "open_gap"))
+    assert isinstance(frozen, FrozenPanels)
+    np.testing.assert_array_equal(
+        np.nan_to_num(frozen.panel("oc_spread"), nan=-1), np.nan_to_num(book.panel("oc_spread"), nan=-1)
+    )
+    scores, _ = frozen.formula("open_gap").panel(BlindView(HSESSIONS[2:5], SYMBOLS, offset=2))
+    assert scores.shape == (3, 3)
+    assert frozen.sessions == book.sessions and frozen.symbols == book.symbols
+
+
+def test_frozen_panels_refuse_unknown_expressions():
+    frozen = ScoreBook.hourly(HOURLY, HSESSIONS, SYMBOLS, decision_time_et="10:35", bars_before_decision=1).freeze(
+        ("oc_spread",)
+    )
+    with pytest.raises(ValueError, match="frozen"):
+        frozen.panel("open_gap")
+    with pytest.raises(ValueError, match="frozen"):
+        frozen.formula("roc(close, 5)")
+    # Canonical form, not the literal string, is the key.
+    assert frozen.panel("oc_spread ") is frozen.panel("oc_spread")
+
+
+def test_daily_book_is_unchanged():
+    book = ScoreBook(ADJUSTED, DAYS, SESSIONS, SYMBOLS)
+    assert book.formula("roc(close, 5)").formula_id == formula_id("roc(close, 5)")
