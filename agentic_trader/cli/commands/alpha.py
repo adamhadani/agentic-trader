@@ -8,6 +8,7 @@ import json
 import platform
 import re
 import subprocess
+from collections.abc import Callable
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -107,6 +108,7 @@ from agentic_trader.research.pooled.search_power import execute_search_power, re
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
 from agentic_trader.research.setups.features import SECTOR_ETF
+from agentic_trader.research.setups.recurrence import SetupRecurrenceProtocol, execute_recurrence
 from agentic_trader.research.setups.runner import _build_pacer, build_setup_frames, build_window_frames
 from agentic_trader.research.setups.study import SetupStudyProtocol, execute_setup_study
 from agentic_trader.runtime import runtime_identity, state_directory
@@ -1262,6 +1264,97 @@ async def alpha_setup_baserates_cmd(protocol_path, output, max_workers, cache):
     click.echo(json.dumps(result, indent=2, default=str))
     if result.get("status") == "failed":
         raise click.ClickException("Setup base-rate test failed; see result.json for the reason")
+
+
+@alpha_group.command("setup-recurrence")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--max-workers", type=int, default=6, show_default=True, help="Replay ProcessPoolExecutor width")
+@click.option(
+    "--cache", type=click.Path(path_type=Path), default=None, help="Primary-window bar cache; defaults to OUTPUT/raw"
+)
+@click.option(
+    "--robustness-cache",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Robustness-window bar cache; defaults to OUTPUT/raw-robustness",
+)
+@coro
+async def alpha_setup_recurrence_cmd(protocol_path, output, max_workers, cache, robustness_cache):
+    """Replay/label the two frozen windows (each from its own cache) and run the predeclared
+    setup-recurrence test (R1-R4); research only, no promotion credit."""
+    document = json.loads(await asyncio.to_thread(protocol_path.read_text))
+    protocol = SetupRecurrenceProtocol(**document)
+
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+
+    config = load_config()
+    expected_strategy_config = config.strategies.model_dump(mode="json")
+    if protocol.strategy_config != expected_strategy_config:
+        raise click.ClickException(
+            "Protocol strategy_config does not match the loaded config.yaml strategies; "
+            "refusing to run a study against a stale strategy configuration"
+        )
+    if dict(protocol.sector_etf) != dict(SECTOR_ETF):
+        raise click.ClickException(
+            "Protocol sector_etf does not match research.setups.features.SECTOR_ETF; "
+            "refusing to run a study against a stale sector map"
+        )
+
+    universe = [(entry.symbol, entry.sector) for group in config.universe.groups.values() for entry in group]
+    caches = {
+        "primary": cache if cache is not None else output / "raw",
+        "robustness": robustness_cache if robustness_cache is not None else output / "raw-robustness",
+    }
+    windows = {"primary": protocol.window, "robustness": protocol.robustness_window}
+    cutoffs = {"primary": protocol.data_cutoff, "robustness": protocol.robustness_data_cutoff}
+
+    frames: dict[str, Callable[[], pd.DataFrame]] = {}
+    coverage: dict[str, dict] = {}
+    with ExitStack() as clients:
+        calendar_client = BoundedTradingClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            paper=config.alpaca_paper,
+            request_timeout=config.market_data.timeout_seconds,
+        )
+        clients.callback(calendar_client._session.close)
+        data_client = BoundedStockDataClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            request_timeout=config.market_data.timeout_seconds,
+        )
+        clients.callback(data_client._session.close)
+        bars = AlpacaDataProvider(
+            stock_client=data_client,
+            feed="sip",
+            evidence=BarEvidenceStore(state_directory() / "market-data", config.market_data.evidence),
+        )
+        calendar = AlpacaCalendarProvider(trading_client=calendar_client)
+
+        for name in ("primary", "robustness"):
+            built, window_coverage = await build_window_frames(
+                {name: windows[name]},
+                universe,
+                bars,
+                calendar,
+                caches[name],
+                config,
+                data_cutoff=cutoffs[name],
+                scan_times_et=protocol.scan_times_et,
+                adjustment=protocol.adjustment,
+                max_hold_sessions=protocol.max_hold_sessions,
+                cost_bps_per_side=protocol.cost_bps_per_side,
+                max_workers=max_workers,
+            )
+            frames[name] = built[name]
+            coverage[name] = window_coverage
+
+    environment = await asyncio.to_thread(research_environment)
+    environment["coverage"] = coverage
+    result = await asyncio.to_thread(execute_recurrence, protocol, output, frames=frames, environment=environment)
+    click.echo(json.dumps(result, indent=2, default=str))
 
 
 class _AprioriClients:

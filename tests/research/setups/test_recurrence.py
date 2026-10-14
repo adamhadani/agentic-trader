@@ -8,9 +8,13 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 from pydantic import ValidationError
 
+from agentic_trader.cli.main import cli
+from agentic_trader.config import WORKSPACE_ROOT, load_config
 from agentic_trader.research.setups import recurrence as module
+from agentic_trader.research.setups.features import SECTOR_ETF
 from agentic_trader.research.setups.recurrence import (
     BAR,
     HYPOTHESES,
@@ -388,3 +392,64 @@ def test_immature_rows_are_dropped_and_counted(tmp_path):
         environment={},
     )
     assert result["immature_dropped"] == {"primary": 3, "robustness": 3}
+
+
+def _protocol_document(**overrides) -> dict:
+    doc = _protocol_kwargs(**overrides)
+    doc["window"] = [d.isoformat() for d in doc["window"]]
+    doc["robustness_window"] = [d.isoformat() for d in doc["robustness_window"]]
+    doc["data_cutoff"] = doc["data_cutoff"].isoformat()
+    doc["robustness_data_cutoff"] = doc["robustness_data_cutoff"].isoformat()
+    doc["sector_etf"] = dict(SECTOR_ETF)
+    doc["strategy_config"] = load_config().strategies.model_dump(mode="json")
+    return doc
+
+
+def test_cli_setup_recurrence_is_registered():
+    result = CliRunner().invoke(cli, ["alpha", "setup-recurrence", "--help"])
+    assert result.exit_code == 0
+    assert "--robustness-cache" in result.output
+
+
+def test_cli_setup_recurrence_refuses_existing_output(tmp_path):
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(_protocol_document()))
+    existing = tmp_path / "out"
+    existing.mkdir()
+    result = CliRunner().invoke(cli, ["alpha", "setup-recurrence", str(protocol_path), "--output", str(existing)])
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+
+
+def test_cli_setup_recurrence_refuses_a_stale_strategy_config(tmp_path):
+    protocol_path = tmp_path / "protocol.json"
+    document = _protocol_document()
+    document["strategy_config"] = {"mode": "stale"}
+    protocol_path.write_text(json.dumps(document))
+    result = CliRunner().invoke(
+        cli, ["alpha", "setup-recurrence", str(protocol_path), "--output", str(tmp_path / "out")]
+    )
+    assert result.exit_code != 0
+    assert "strategy_config" in result.output
+
+
+def test_frozen_protocol_file_matches_the_spec_and_the_loaded_config():
+    document = json.loads((WORKSPACE_ROOT / "config" / "research" / "setup-recurrence-v1.json").read_text())
+    protocol = SetupRecurrenceProtocol(**document)
+    assert protocol.window == (date(2021, 6, 1), date(2026, 1, 29)) and protocol.data_cutoff == date(2026, 9, 22)
+    assert protocol.robustness_window == (
+        date(2017, 1, 3),
+        date(2021, 4, 30),
+    ) and protocol.robustness_data_cutoff == date(2021, 6, 15)
+    assert protocol.lookback_sessions == 20 and protocol.bootstrap == {
+        "block_mean": 10,
+        "draws": 2000,
+        "seed": 20261014,
+    }
+    assert (protocol.min_repeats, protocol.min_repeat_sessions, protocol.min_after_stop) == (300, 60, 100)
+    assert protocol.cost_bps_per_side == (0.0, 5.0) and protocol.max_hold_sessions == 20
+    # The test environment loads a fixture config; the frozen file pins the deployed config.yaml.
+    deployed = load_config(str(WORKSPACE_ROOT / "config" / "config.yaml"))
+    assert protocol.strategy_config == deployed.strategies.model_dump(mode="json")
+    assert dict(protocol.sector_etf) == dict(SECTOR_ETF)
+    assert protocol.strategy_config["trend_pullback"]["allow_short"] is False
