@@ -306,6 +306,57 @@ campaign. The campaign needs operator approval; it is not started by the checks.
 registers, trades or earns promotion credit, and the lane-wide confirmation window stays unused
 until a finalist freezes. See the [design](superpowers/specs/2026-10-14-pooled-intraday-design.md).
 
+## Event score inputs (protocol `pooled-events-campaign`)
+
+`EventsCampaignProtocol` (`id: pooled-events-campaign`) scores daily bars read at `D-1`
+together with four event-conditioned, dimensionless fields (`fields_version`
+`events_fields_v1`), on the same cohort-v2 cube, windows, selection, gates, bootstrap, power
+and null-check parameters as v4 and intraday-v1 (cube identity `f1c835a3d3364d2b…`, so the
+cached cube is reused). `score_inputs` is `daily` and is part of this subclass's dump only, so
+earlier protocol hashes are unchanged. v1 is a fixed set (`search_mode: fixed_set`, formula
+budget 8, no mutation operators); a genetic search on event fields needs check B and its own
+spec.
+
+**Fields.** Each field holds the state known at the regular close of trading day `T` and is
+merged into the daily prepared frames on the cube build's trading-day calendar, so the read
+path is unchanged: the decision session `D` reads row `D-1`.
+
+| Field | Definition at trading day T |
+| --- | --- |
+| `earnings_age` | Sessions since the last completed report: `index(T) - index(D+1)` for the latest report with `D+1 <= T`; `NaN` before the symbol's first report |
+| `earnings_surprise` | That report's `100 * (eps - eps_forecast) / abs(eps_forecast)`, carried forward until the next completed report; `NaN` when `n_estimates < 1`, `abs(eps_forecast) < 0.05` or `eps` is missing |
+| `earnings_reaction` | That report's `(r_i - r_SPY) / (sigma_i * sqrt(2))`, `r` from close(`D-1`) to close(`D+1`), `sigma_i` the sample std of the 20 daily log returns ending `D-1` (adjusted bars, SPY from the same cache), carried forward; `NaN` when bars are missing |
+| `dividend_yield` | Each regular (non-special) `cash_dividend` is scaled by `f`, the adjusted/raw close ratio at its ex-date (forward-filled, never back-filled), the scaled amounts are summed over the trailing 252 sessions through `T` and divided by the adjusted close at `T`; `NaN` for the first 251 trading days, where the adjusted close is missing or for a symbol with no raw frame; `0.0` for a covered non-payer; a dividend whose `f` is undefined is dropped and counted (`unscaled_dividends`) |
+
+**Visibility convention** (the PEAD leg's): a report dated on session `D` (any timing) is
+complete when `D+1` closes, because the reaction runs from close(`D-1`) to close(`D+1`). It is
+visible from row `D+1`, and the first decision session that can use it is `D+2`. No field
+looks forward. Reports on non-session dates are skipped and counted (`non_session_reports`);
+a symbol with no calendar row has `NaN` fields.
+
+**Inputs and verification.** Both are digest-pinned in the protocol's `event_inputs` block and
+read offline. The earnings input is the Nasdaq calendar page cache (SHA-256 over the sorted
+`<date>:<page sha256>` lines of every weekday page in `2016-02-23 .. 2026-07-31`; each page is
+re-verified against its `.meta.json` and a missing page fails closed). The corporate-actions
+input is the cohort-v2 acquisition's `actions.json` (its `content_sha256`, window
+`2016-01-01 .. 2027-03-31`, 252 trailing sessions). The runner fails closed before any
+evaluation when either digest differs from the cache on disk. The digests also enter the
+frozen formula document and every manifest, so an events formula never shares an identity with
+a daily or hourly one.
+
+**Recorded coverage.** `result.json` records `event_coverage` (per-symbol first finite session,
+symbols without reports or actions, `non_session_reports`, `unscaled_dividends`).
+
+**Frozen set.** `config/research/pooled/events-v1.json` holds eight dimensionless formulas, one
+per family, each scored once: `pead_surprise_decay`, `pead_reaction_decay`,
+`pead_reaction_window`, `pead_agreement`, `surprise_x_reaction`, `quiet_momentum`,
+`quiet_reversal` and `dividend_yield` (expressions in the file). `excluded_families` carries
+intraday-v1's list plus its eight families. Checks A and C bind; check B does not apply.
+
+**Non-goals.** No news fields, no forward-looking fields, no live contract; nothing registers,
+trades or earns promotion credit, and the lane-wide confirmation window stays unused until a
+finalist freezes. See the [design](superpowers/specs/2026-10-14-pooled-events-design.md).
+
 ## Statistics
 
 The unit is `R_cost` at 5 bps per side; 0 bps is reported alongside (a study result's
@@ -863,15 +914,15 @@ The checks and the campaign outcome are written up in [alpha-pooled-checks-v4-20
 
 ## Commands
 
-Every command accepts either protocol id (`pooled-campaign` or `pooled-intraday-campaign`).
+Every command accepts any protocol id (`pooled-campaign`, `pooled-intraday-campaign` or `pooled-events-campaign`).
 
 ```bash
 copilot alpha pooled screen RULE --snapshot SNAPSHOT --output DIR --cache DIR
-copilot alpha pooled power PROTOCOL --output DIR --cache DIR [--workers N]
+copilot alpha pooled power PROTOCOL --output DIR --cache DIR [--workers N] [--earnings-pages DIR --corporate-actions ACTIONS_JSON]
 copilot alpha pooled study ENTRY --power POWER_DIR --output DIR --cache DIR
 copilot alpha pooled search-power PROTOCOL --power A_DIR --output DIR --cache DIR
-copilot alpha pooled null-check PROTOCOL --power A_DIR --output DIR --cache DIR [--workers N]
-copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --null-check C_DIR --output DIR --cache DIR --journal-scope SCOPE [--recover]
+copilot alpha pooled null-check PROTOCOL --power A_DIR --output DIR --cache DIR [--workers N] [--earnings-pages DIR --corporate-actions ACTIONS_JSON]
+copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --null-check C_DIR --output DIR --cache DIR --journal-scope SCOPE [--recover] [--earnings-pages DIR --corporate-actions ACTIONS_JSON]
 ```
 
 - `PROTOCOL` is `config/research/pooled/campaign-v1.json` for `study` and the literature
@@ -880,6 +931,11 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --nu
   `--search-power` is required for a genetic protocol and refused for a fixed set.
   `ENTRY` is a literature entry file. `--workers` exists on `power` and `null-check` and runs the
   replicates in N processes.
+- `--earnings-pages DIR` is the offline Nasdaq calendar page cache; it is required for an events
+  protocol and refused for any other, and its digest must equal the protocol's `pages_sha256`.
+- `--corporate-actions ACTIONS_JSON` is the cohort-v2 corporate-actions acquisition's
+  `actions.json`; it is required for an events protocol and refused for any other, and its
+  content digest must equal the protocol's `content_sha256`.
 - `--cache` is **required** on every command. For `power`, `study`, `search-power`,
   `null-check` and `campaign` it must be the same directory: it holds the bars and the one
   cube, and each later command passes its gate only on the cube the power check built.

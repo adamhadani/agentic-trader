@@ -1,0 +1,276 @@
+{
+  "bars_from": "2016-01-01",
+  "bars_through": "2026-09-01",
+  "bootstrap": {
+    "block_mean": 20,
+    "confirmation_draws": 10000,
+    "discovery_draws": 1000,
+    "seed": 20260931,
+    "selection_draws": 1000
+  },
+  "bracket": {
+    "atr_window": 14,
+    "decision_time_et": "10:35",
+    "max_hold_sessions": 20,
+    "stop_atr_multiple": 2.0,
+    "target_r": 3.0
+  },
+  "cohort": "config/research/pooled/cohort-v2.json",
+  "cohort_sha256": "c2c7941014932075110b33a7b853db7899f7b8fa43d5433d38b2e92bab1407df",
+  "complexity_penalty_per_node": 0.02,
+  "confirmation_gate": {
+    "alpha": 0.05,
+    "min_sessions": 300,
+    "recent_months": 12,
+    "trim_fraction": 0.01
+  },
+  "coverage": {
+    "max_no_reference_fraction": 0.02,
+    "max_unlabelled_fraction_per_year": 0.05
+  },
+  "decision_cost_bps": 5.0,
+  "dedupe_jaccard": 0.5,
+  "discovery_gate": {
+    "blocks": 4,
+    "carry": 5,
+    "min_positive_blocks": 3,
+    "min_sessions": 400,
+    "min_t": 3.0
+  },
+  "event_inputs": {
+    "corporate_actions": {
+      "content_sha256": "776d4df7ef9312456f77a85179434f026be37233efc3a27ad77991ffc41a8344",
+      "source": "alpaca",
+      "trailing_sessions": 252,
+      "window": [
+        "2016-01-01",
+        "2027-03-31"
+      ]
+    },
+    "earnings": {
+      "benchmark": "SPY",
+      "calendar_from": "2016-02-23",
+      "calendar_through": "2026-07-31",
+      "min_abs_forecast": 0.05,
+      "min_estimates": 1,
+      "pages_sha256": "9273e40a7aaed0d925003502a621ecfedf40d0aa889aeaaca992d84f187aa3da",
+      "source": "nasdaq-calendar",
+      "vol_window": 20
+    },
+    "fields_version": "events_fields_v1"
+  },
+  "excluded_families": [
+    {
+      "id": "vol_20",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "sector_relative_momentum",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "residual_momentum",
+      "reason": "Factor-controls study read 2021-2026 and reported partly positive results."
+    },
+    {
+      "id": "volatility_scaled_momentum",
+      "reason": "Sector-panel study read 2021-2026 and reported a positive low-cost result."
+    },
+    {
+      "id": "reversal_5",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "signed_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "overnight_intraday",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "abnormal_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "momentum_12_1",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "price_volume_corr",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "illiquidity",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "reversal_x_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "first_hour_momentum",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "overnight_persistence",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "overnight_vs_intraday",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "relative_volume",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "range_expansion",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "range_location",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "first_bucket_efficiency",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "intraday_high_proximity",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    }
+  ],
+  "families": [
+    {
+      "id": "pead_surprise_decay",
+      "mutation_operators": [],
+      "rationale": "Post-earnings-announcement drift continues in the direction of the earnings surprise and fades with the age of the report.",
+      "seeds": [
+        "earnings_surprise / (1 + earnings_age)"
+      ]
+    },
+    {
+      "id": "pead_reaction_decay",
+      "mutation_operators": [],
+      "rationale": "Post-earnings-announcement drift continues in the direction of the announcement-window reaction and fades with the age of the report.",
+      "seeds": [
+        "earnings_reaction / (1 + earnings_age)"
+      ]
+    },
+    {
+      "id": "pead_reaction_window",
+      "mutation_operators": [],
+      "rationale": "Reaction-direction drift is confined to roughly one holding horizon (20 sessions) after the report.",
+      "seeds": [
+        "if_else(earnings_age <= 20, earnings_reaction, 0)"
+      ]
+    },
+    {
+      "id": "pead_agreement",
+      "mutation_operators": [],
+      "rationale": "Drift is strongest when the surprise and the reaction agree (the PEAD leg rule), within one holding horizon of the report.",
+      "seeds": [
+        "if_else(earnings_age <= 20, sign(earnings_surprise) * earnings_reaction, 0)"
+      ]
+    },
+    {
+      "id": "surprise_x_reaction",
+      "mutation_operators": [],
+      "rationale": "Drift scales with the joint magnitude of the surprise and the reaction and fades with the age of the report.",
+      "seeds": [
+        "earnings_surprise * earnings_reaction / (1 + earnings_age)"
+      ]
+    },
+    {
+      "id": "quiet_momentum",
+      "mutation_operators": [],
+      "rationale": "Price momentum measured outside the announcement window continues (Jegadeesh and Titman, 1993).",
+      "seeds": [
+        "if_else(earnings_age > 20, ts_sum(returns, 20), 0)"
+      ]
+    },
+    {
+      "id": "quiet_reversal",
+      "mutation_operators": [],
+      "rationale": "Short-term reversal measured outside the announcement window (Jegadeesh, 1990; Lehmann, 1990).",
+      "seeds": [
+        "if_else(earnings_age > 20, -ts_sum(returns, 5), 0)"
+      ]
+    },
+    {
+      "id": "dividend_yield",
+      "mutation_operators": [],
+      "rationale": "Trailing dividend yield is a cross-sectional return factor (dividend-yield premium).",
+      "seeds": [
+        "dividend_yield"
+      ]
+    }
+  ],
+  "feed": "alpaca:sip",
+  "formula_budget": 8,
+  "id": "pooled-events-campaign",
+  "null_check": {
+    "max_false_acceptances": 2,
+    "replicates": 40,
+    "seed": 20261003
+  },
+  "power": {
+    "ar_phi": 0.95,
+    "deltas": [
+      0.0,
+      0.05,
+      0.08,
+      0.1,
+      0.12,
+      0.15
+    ],
+    "detection_delta": 0.15,
+    "max_false_acceptance": 0.05,
+    "min_detection": 0.8,
+    "null_formulas": 200,
+    "replicates": 100,
+    "seed": 20260932
+  },
+  "rationale": "A predeclared fixed set of eight event-conditioned formulas, one per family, each scored once without search on daily bars read at D-1 together with the four dimensionless events_fields_v1 columns (earnings_age, earnings_surprise, earnings_reaction, dividend_yield), so search-power check B does not apply; checks A and C still bind. Every field holds state known at the prior close under the PEAD visibility convention: a report dated D completes when D+1 closes and is first visible on row D+1, so the first decision session that can use it is D+2. No field looks forward. Each dividend is scaled by f, the adjusted/raw close ratio at its ex-date, before the trailing-252-session sum and divided by the adjusted close at T. The inputs are the digest-pinned offline Nasdaq calendar page cache and the cohort-v2 corporate-actions acquisition. The cohort, label cube, windows, selection, gates, bootstrap, power and null-check parameters are campaign v4's and intraday-v1's, so the cached cube is reused and the lane-wide confirmation window remains unused until a finalist freezes; realized-volatility operators stay forbidden.",
+  "score_inputs": "daily",
+  "search": {
+    "archive_size": 16,
+    "forbidden_operators": [
+      "realized_vol",
+      "ts_std",
+      "ts_mad"
+    ],
+    "seed": 20260930
+  },
+  "search_mode": "fixed_set",
+  "selection": {
+    "fraction": 0.1,
+    "rule": "top_fraction"
+  },
+  "selection_gate": {
+    "min_fraction_of_discovery": 0.5,
+    "min_sessions": 150
+  },
+  "title": "Events pooled campaign v1: cohort v2, daily bars read at D-1 plus the four events_fields_v1 event fields, predeclared fixed set of eight event-conditioned formulas (checks A and C), one-shot lane-wide confirmation",
+  "universe": {
+    "min_eligible_names": 30,
+    "min_price": 10.0,
+    "static_percentile": 0.25
+  },
+  "version": 1,
+  "windows": {
+    "confirmation": [
+      "2024-01-02",
+      "2026-07-31"
+    ],
+    "discovery": [
+      "2016-08-01",
+      "2021-12-31"
+    ],
+    "selection": [
+      "2022-01-03",
+      "2023-12-29"
+    ]
+  }
+}

@@ -434,6 +434,8 @@ class CorporateActionInputs(BaseModel, frozen=True, extra="forbid"):
 
 
 class EventInputs(BaseModel, frozen=True, extra="forbid"):
+    """The pinned event inputs of an events protocol: the fields version, the earnings pages and the actions."""
+
     fields_version: Literal["events_fields_v1"]
     earnings: EarningsInputs
     corporate_actions: CorporateActionInputs

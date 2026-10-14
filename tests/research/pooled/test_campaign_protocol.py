@@ -375,7 +375,7 @@ def test_events_protocol_refuses_genetic_search_and_unknown_fields_version():
         search_mode="genetic",
         power_search={"families": ["first_hour_momentum"], "seeds": 10, "delta": 0.1, "min_recovered": 5, "seed": 1},
     )
-    with pytest.raises(ValidationError, match="fixed_set"):
+    with pytest.raises(ValidationError, match="events protocol is fixed_set"):
         EventsCampaignProtocol.model_validate(genetic)
     other = _events_document()
     other["event_inputs"]["fields_version"] = "events_fields_v2"
