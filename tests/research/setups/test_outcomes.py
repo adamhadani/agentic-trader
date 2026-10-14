@@ -20,6 +20,7 @@ from agentic_trader.research.setups.outcomes import (
     news_alignment,
     summarize,
 )
+from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS
 
 
 def _bars(rows: list[tuple[str, float, float, float, float]]) -> pd.DataFrame:
@@ -174,7 +175,7 @@ def test_label_journaled_fetches_once_per_symbol():
     ]
     bars = FakeBarSource({"AAPL": frame})
 
-    result = label_journaled(events, bars, now=NOW, market_symbol=None)
+    result = label_journaled(events, bars, now=NOW, market_symbol=None, tape_symbol=None)
 
     assert len(result) == 2
     assert len(bars.calls) == 1
@@ -320,7 +321,7 @@ def test_label_journaled_paces_fetches(monkeypatch):
         }
     )
 
-    label_journaled(events, bars, now=NOW, max_requests_per_minute=42, market_symbol=None)
+    label_journaled(events, bars, now=NOW, max_requests_per_minute=42, market_symbol=None, tape_symbol=None)
 
     assert calls[0] == 42
     assert calls.count("acquire") == 2  # once per symbol
@@ -372,7 +373,7 @@ def test_market_r_is_none_when_spy_bars_do_not_cover_the_window():
 
 def test_label_journaled_adds_market_control_and_excess():
     bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
-    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW)
+    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW, tape_symbol=None)
     [row] = frame.to_dict("records")
     assert row["hit"] == BracketHit.TARGET.value
     assert row["entry_time"] == pd.Timestamp("2026-03-02T14:30:00+00:00")
@@ -399,7 +400,9 @@ def test_spy_fetch_failure_leaves_market_r_null_with_a_reason():
 
 def test_market_symbol_none_skips_the_control_entirely():
     bars = FakeBarSource({"AAPL": AAPL_BARS})
-    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW, market_symbol=None)
+    frame = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], bars, now=NOW, market_symbol=None, tape_symbol=None
+    )
     assert [call[0] for call in bars.calls] == ["AAPL"]
     assert frame["market_r"].isna().all()
 
@@ -573,7 +576,9 @@ def test_a_market_proxy_candidate_is_fetched_once():
     later = DECIDED_AT + timedelta(hours=1)
     spy = _candidate(contract=MARKET_PROXY_SYMBOL, entry=500.0, stop=495.0, target=505.0)
     bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
-    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()]), _event("s2", later, [spy])], bars, now=NOW)
+    frame = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()]), _event("s2", later, [spy])], bars, now=NOW, tape_symbol=None
+    )
     assert [call[0] for call in bars.calls] == ["AAPL", MARKET_PROXY_SYMBOL]
     # One fetch covers every candidate's window: it starts at the earliest decision of all.
     assert bars.calls[1][2] == DECIDED_AT
@@ -822,4 +827,227 @@ def test_summary_empty_frame_carries_the_news_block():
         },
         "by_tone": {},
         "by_catalyst": {},
+    }
+
+
+def _regime_block(**overrides):
+    block = {
+        "vix": 17.25,
+        "vix_regime": "NORMAL",
+        "breakout_allowed": True,
+        "risk_multiplier": 0.9,
+        "min_rr_threshold": 1.5,
+        "macro_stress": "LOW",
+        "observed_at": "2026-03-02T14:00:00+00:00",
+    }
+    return {**block, **overrides}
+
+
+def _event_with_regime(scan_id, decided_at, candidates, regime):
+    event = _event(scan_id, decided_at, candidates)
+    if regime is not None:
+        event["payload"]["regime"] = regime
+    return event
+
+
+def _spy_daily(closes: list[float], *, end: str) -> pd.DataFrame:
+    index = pd.bdate_range(end=end, periods=len(closes), freq="B") + pd.Timedelta(hours=20)
+    return pd.DataFrame({"Close": closes}, index=pd.DatetimeIndex(index, tz="UTC"))
+
+
+_RESOLVING_BARS = _bars(
+    [
+        ("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2),
+        ("2026-03-02T15:30:00Z", 100.2, 102.5, 100.0, 102.2),
+    ]
+)
+_SPY_HOURLY = _bars(
+    [
+        ("2026-03-02T14:30:00Z", 500.0, 501.0, 499.0, 500.5),
+        ("2026-03-02T15:30:00Z", 500.5, 502.0, 500.0, 501.0),
+    ]
+)
+# One bar that hits neither level and no later bars: the bracket is still open (IMMATURE).
+_OPEN_BARS = _bars([("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2)])
+
+
+class DailyAwareBarSource(FakeBarSource):
+    """Serves ``frames[symbol]`` for hourly calls and ``daily[symbol]`` for ``1d`` calls."""
+
+    def __init__(self, frames, daily, *, raise_for=None, raise_daily_for=None):
+        super().__init__(frames, raise_for=raise_for)
+        self.daily = daily
+        self.raise_daily_for = raise_daily_for or set()
+
+    def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+        if timeframe == "1d":
+            self.calls.append((symbol, timeframe, start, end, adjustment))
+            if symbol in self.raise_daily_for:
+                raise RuntimeError(f"no daily for {symbol}")
+            return self.daily[symbol]
+        return super().fetch_bars(symbol, timeframe, start, end, adjustment=adjustment)
+
+
+def test_regime_columns_come_from_the_event_block_and_are_none_without_one():
+    events = [
+        _event_with_regime("s1", DECIDED_AT, [_candidate(contract="AAPL")], _regime_block()),
+        _event_with_regime("s2", DECIDED_AT + timedelta(hours=1), [_candidate(contract="MSFT")], None),
+    ]
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "MSFT": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()}
+    )
+    frame = label_journaled(events, source, now=NOW).set_index("contract")
+    assert frame.loc[
+        "AAPL", ["regime_vix", "regime_vix_regime", "regime_risk_multiplier", "regime_macro_stress"]
+    ].tolist() == [
+        17.25,
+        "NORMAL",
+        0.9,
+        "LOW",
+    ]
+    assert frame.loc[
+        "MSFT", ["regime_vix", "regime_vix_regime", "regime_risk_multiplier", "regime_macro_stress"]
+    ].tolist() == [
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_non_dict_regime_block_is_absent():
+    events = [_event_with_regime("s1", DECIDED_AT, [_candidate()], "NORMAL")]
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
+    frame = label_journaled(events, source, now=NOW)
+    assert frame["regime_vix_regime"].tolist() == [None]
+    assert summarize(frame)["regime_context"]["blocks"] == 0
+
+
+def test_tape_fetch_is_one_raw_daily_request_after_the_hourly_ones():
+    events = [_event("s1", DECIDED_AT, [_candidate()])]
+    daily = _spy_daily([100.0] * 20 + [105.0], end="2026-02-27")  # last completed session before 2026-03-02
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": daily})
+    frame = label_journaled(events, source, now=NOW)
+    daily_calls = [call for call in source.calls if call[1] == "1d"]
+    assert len(daily_calls) == 1
+    symbol, _, start, end, adjustment = daily_calls[0]
+    assert (symbol, adjustment, end) == ("SPY", "raw", NOW)
+    assert start == DECIDED_AT - timedelta(days=TAPE_HISTORY_DAYS)
+    assert source.calls[-1] == daily_calls[0]
+    assert frame["spy_ret_20"].tolist() == [pytest.approx(0.05)]
+    assert frame["spy_above_200"].tolist() == [None]
+    assert frame["tape_reason"].tolist() == [None]
+
+
+def test_tape_symbol_none_skips_the_daily_fetch():
+    events = [_event("s1", DECIDED_AT, [_candidate()])]
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
+    frame = label_journaled(events, source, now=NOW, tape_symbol=None)
+    assert not [call for call in source.calls if call[1] == "1d"]
+    assert frame["spy_ret_20"].tolist() == [None] and frame["tape_reason"].tolist() == [None]
+
+
+def test_tape_fetch_failure_sets_the_reason_and_leaves_the_rest_intact():
+    events = [_event("s1", DECIDED_AT, [_candidate()])]
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()}, raise_daily_for={"SPY"}
+    )
+    frame = label_journaled(events, source, now=NOW)
+    assert frame["tape_reason"].tolist() == ["RuntimeError: no daily for SPY"]
+    assert frame["spy_ret_20"].tolist() == [None] and frame["spy_above_200"].tolist() == [None]
+    assert frame["hit"].tolist() == [BracketHit.TARGET.value]
+    assert frame["market_r"].notna().all()
+    summary = summarize(frame)
+    assert summary["regime_context"]["tape_reason"] == "RuntimeError: no daily for SPY"
+    assert summary["regime_context"]["by_tape"]["unknown"]["n"] == 1
+
+
+def test_tape_is_computed_per_session_from_closes_before_it():
+    later = DECIDED_AT + timedelta(days=1)  # 2026-03-03
+    events = [
+        _event("s1", DECIDED_AT, [_candidate(contract="AAPL")]),
+        _event("s2", later, [_candidate(contract="MSFT")]),
+    ]
+    # 2026-02-27 is the last session before 03-02; 03-02's own close (300) counts only for 03-03.
+    daily = _spy_daily([100.0] * 20 + [105.0, 300.0], end="2026-03-02")
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "MSFT": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": daily})
+    frame = label_journaled(events, source, now=NOW).set_index("contract")
+    assert frame.loc["AAPL", "spy_ret_20"] == pytest.approx(0.05)
+    assert frame.loc["MSFT", "spy_ret_20"] == pytest.approx(2.0)  # 300 / close[-21] (100) - 1
+
+
+def test_regime_context_buckets_mature_rows_only():
+    stop_bars = _bars(
+        [
+            ("2026-03-02T15:30:00Z", 100.0, 100.2, 98.5, 98.8),
+        ]
+    )
+    events = [
+        _event_with_regime("s1", DECIDED_AT, [_candidate(contract="AAPL")], _regime_block()),
+        _event_with_regime(
+            "s2",
+            DECIDED_AT + timedelta(hours=1),
+            [_candidate(contract="XOM")],
+            _regime_block(vix_regime="ELEVATED", macro_stress=None),
+        ),
+        _event_with_regime("s3", DECIDED_AT + timedelta(hours=2), [_candidate(contract="MSFT")], _regime_block()),
+    ]
+    daily = _spy_daily([100.0] * 20 + [105.0], end="2026-02-27")
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "XOM": stop_bars, "MSFT": _OPEN_BARS, "SPY": _SPY_HOURLY}, {"SPY": daily}
+    )
+    frame = label_journaled(events, source, now=NOW)
+    block = summarize(frame)["regime_context"]
+    assert block["blocks"] == 3  # MSFT is immature but has a block
+    assert set(block["by_vix_regime"]) == {"NORMAL", "ELEVATED"}
+    normal = block["by_vix_regime"]["NORMAL"]
+    assert normal["n"] == 1 and normal["hit_rate"] == 1.0 and normal["mean_r_cost"] > 0
+    assert normal["mean_excess_r"] == pytest.approx(
+        normal["mean_r_cost"] - float(frame.set_index("contract").loc["AAPL", "market_r"])
+    )
+    assert block["by_vix_regime"]["ELEVATED"]["n"] == 1 and block["by_vix_regime"]["ELEVATED"]["hit_rate"] == 0.0
+    assert set(block["by_macro_stress"]) == {"LOW"} and block["by_macro_stress"]["LOW"]["n"] == 1
+    assert set(block["by_tape"]) == set(TAPE_BUCKETS)
+    assert block["by_tape"]["ret20_up"]["n"] == 2  # both mature rows share the session's tape
+    assert block["by_tape"]["ret20_down"]["n"] == 0 and block["by_tape"]["unknown"]["n"] == 0
+    assert block["by_tape"]["above_200"]["n"] == 0  # fewer than 200 sessions: no mean comparison
+    assert block["tape_reason"] is None
+
+
+def test_new_columns_follow_news_alignment_and_precede_market_r():
+    cols = list(_COLUMNS)
+    expected = [
+        "regime_vix",
+        "regime_vix_regime",
+        "regime_risk_multiplier",
+        "regime_macro_stress",
+        "spy_ret_20",
+        "spy_above_200",
+        "tape_reason",
+        "prior_sessions",
+        "prior_same_session",
+        "prior_outcome",
+    ]
+    start = cols.index("news_alignment") + 1
+    assert cols[start : start + len(expected)] == expected
+    assert cols[start + len(expected)] == "market_r"
+
+
+def test_empty_summary_has_the_regime_and_recurrence_blocks():
+    summary = summarize(pd.DataFrame(columns=list(_COLUMNS)))
+    assert summary["regime_context"] == {
+        "blocks": 0,
+        "by_vix_regime": {},
+        "by_macro_stress": {},
+        "by_tape": {
+            name: {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None} for name in TAPE_BUCKETS
+        },
+        "tape_reason": None,
+    }
+    assert set(summary["recurrence"]) == {
+        "setups",
+        "repeated_setups",
+        "same_session_repeats",
+        "by_prior",
+        "by_prior_outcome",
     }

@@ -15,7 +15,7 @@ reads journaled events and fetches bars.
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -25,6 +25,7 @@ from agentic_trader.execution.durable import EventKind, RankedOutcome
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.setups.labels import BracketHit, SetupLevels, label_bracket, regular_session_bars
 from agentic_trader.research.setups.runner import BarSource
+from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS, TapeState, tape_buckets, tape_state
 
 
 __all__ = [
@@ -88,6 +89,16 @@ _COLUMNS = (
     "news_catalyst",
     "news_relevance",
     "news_alignment",
+    "regime_vix",
+    "regime_vix_regime",
+    "regime_risk_multiplier",
+    "regime_macro_stress",
+    "spy_ret_20",
+    "spy_above_200",
+    "tape_reason",
+    "prior_sessions",
+    "prior_same_session",
+    "prior_outcome",
     "market_r",
     "excess_r",
     "market_reason",
@@ -122,12 +133,20 @@ def _candidate_entries(events: list[dict[str, Any]]) -> dict[str, list[dict[str,
         except KeyError, TypeError, ValueError:
             continue
         scan_id = payload.get("scan_id")
+        raw_regime = payload.get("regime")
+        regime = raw_regime if isinstance(raw_regime, dict) else None
         for candidate in candidates:
             contract = candidate.get("contract")
             if not contract:
                 continue
             by_symbol.setdefault(contract, []).append(
-                {**candidate, "scan_id": scan_id, "decided_at": decided_at, "trigger": payload.get("trigger")}
+                {
+                    **candidate,
+                    "scan_id": scan_id,
+                    "decided_at": decided_at,
+                    "trigger": payload.get("trigger"),
+                    "regime": regime,
+                }
             )
     return by_symbol
 
@@ -268,6 +287,8 @@ def _row(
     news: dict[str, Any] = raw_news if isinstance(raw_news, dict) else {}
     raw_score = news.get("score")
     score: dict[str, Any] = raw_score if isinstance(raw_score, dict) else {}
+    raw_regime = entry.get("regime")
+    regime: dict[str, Any] = raw_regime if isinstance(raw_regime, dict) else {}
     decided_at = entry["decided_at"]
     outcome = entry.get("outcome")
     return {
@@ -307,6 +328,19 @@ def _row(
         "news_catalyst": score.get("catalyst"),
         "news_relevance": score.get("relevance"),
         "news_alignment": news_alignment(entry.get("direction"), score.get("tone")),
+        "regime_vix": regime.get("vix"),
+        "regime_vix_regime": regime.get("vix_regime"),
+        "regime_risk_multiplier": regime.get("risk_multiplier"),
+        "regime_macro_stress": regime.get("macro_stress"),
+        # The tape is filled per session by label_journaled once the SPY daily fetch is known.
+        "spy_ret_20": None,
+        "spy_above_200": None,
+        "tape_reason": None,
+        # Recurrence is filled over the whole frame by with_recurrence (Task 4); these are the
+        # "first occurrence" defaults.
+        "prior_sessions": 0,
+        "prior_same_session": 0,
+        "prior_outcome": "none",
         "market_r": market_value,
         "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
         "market_reason": market_reason,
@@ -390,6 +424,7 @@ def label_journaled(
     now: datetime | None = None,
     max_requests_per_minute: int = 150,
     market_symbol: str | None = MARKET_PROXY_SYMBOL,
+    tape_symbol: str | None = MARKET_PROXY_SYMBOL,
 ) -> pd.DataFrame:
     """One row per journaled ranked candidate, labelled with its realized bracket outcome.
 
@@ -406,6 +441,9 @@ def label_journaled(
     A fetch failure for a symbol marks every one of its candidates ``FETCH_FAILED_HIT``
     -- distinct from IMMATURE, which means "not enough elapsed bars yet" -- rather than
     raising: this is a best-effort report, not an admission or execution path.
+    The tape (SPY daily, ``TAPE_HISTORY_DAYS`` calendar days before the earliest decision, raw,
+    one request after the hourly ones) is computed per decision session with ``tape_state``; a
+    failed fetch records ``tape_reason`` on every row.
     """
     now = now or datetime.now(UTC)
     by_symbol = _candidate_entries(events)
@@ -414,11 +452,11 @@ def label_journaled(
     except Exception:
         pacer = None
 
-    def fetch(symbol: str, start: datetime) -> pd.DataFrame | str:
+    def fetch(symbol: str, start: datetime, timeframe: str = _BAR_TIMEFRAME) -> pd.DataFrame | str:
         if pacer is not None:
             pacer.acquire()
         try:
-            return bars.fetch_bars(symbol, _BAR_TIMEFRAME, start, now, adjustment="raw")
+            return bars.fetch_bars(symbol, timeframe, start, now, adjustment="raw")
         except Exception as exc:
             return f"{type(exc).__name__}: {exc}"
 
@@ -441,6 +479,15 @@ def label_journaled(
         else:
             market = result
 
+    daily: pd.DataFrame | None = None
+    tape_reason: str | None = None
+    if tape_symbol is not None and market_start is not None:
+        tape = fetch(tape_symbol, market_start - timedelta(days=TAPE_HISTORY_DAYS), "1d")
+        if isinstance(tape, str):
+            tape_reason = tape
+        else:
+            daily = tape
+
     rows: list[dict[str, Any]] = []
     for symbol, entries in by_symbol.items():
         hourly = fetched[symbol]
@@ -451,13 +498,32 @@ def label_journaled(
             _label_one(entry, symbol, hourly, max_hold_sessions, cost_bps, market, market_reason) for entry in entries
         )
 
+    states: dict[str, TapeState] = {}
+    for row in rows:
+        session = row["session"]
+        state = states.get(session)
+        if state is None:
+            state = states[session] = tape_state(daily, date.fromisoformat(session))
+        row["spy_ret_20"], row["spy_above_200"], row["tape_reason"] = state.ret_20, state.above_200, tape_reason
+
     frame = pd.DataFrame(rows, columns=list(_COLUMNS))
     # Signal ids stay integers beside missing ones (nullable Int64, never 5.0), and an absent
     # LLM relabel stays a real None rather than NaN.
     frame["signal_id"] = pd.array([row["signal_id"] for row in rows], dtype="Int64")
     frame["llm_r_cost"] = frame["llm_r_cost"].astype(object).where(frame["llm_r_cost"].notna(), None)
     frame["would_withhold"] = frame["would_withhold"].astype(object).where(frame["would_withhold"].notna(), None)
-    for column in ("book_sizing_status", "book_factor", "book_would_scale"):
+    for column in (
+        "book_sizing_status",
+        "book_factor",
+        "book_would_scale",
+        "regime_vix",
+        "regime_vix_regime",
+        "regime_risk_multiplier",
+        "regime_macro_stress",
+        "spy_ret_20",
+        "spy_above_200",
+        "tape_reason",
+    ):
         frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
     return frame
 
@@ -585,8 +651,66 @@ def _news_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _bucket(rows: pd.DataFrame) -> dict[str, Any]:
+    """n, mean R after cost, mean excess over the market control (rows with one) and target rate."""
+    if rows.empty:
+        return {"n": 0, "mean_r_cost": None, "mean_excess_r": None, "hit_rate": None}
+    excess = pd.to_numeric(rows["excess_r"], errors="coerce").dropna()
+    return {
+        "n": len(rows),
+        "mean_r_cost": _mean_r_cost(rows),
+        "mean_excess_r": float(excess.mean()) if len(excess) else None,
+        "hit_rate": float((rows["hit"] == BracketHit.TARGET.value).mean()),
+    }
+
+
+def _tape_members(rows: pd.DataFrame, name: str) -> pd.Series:
+    """Rows whose tape state belongs to bucket ``name`` -- the one membership rule, ``tape_buckets``."""
+    if rows.empty:
+        return pd.Series(dtype=bool, index=rows.index)
+
+    def member(row: pd.Series) -> bool:
+        ret = row["spy_ret_20"]
+        above = row["spy_above_200"]
+        state = TapeState(
+            ret_20=float(ret) if ret is not None and not pd.isna(ret) else None,
+            above_200=bool(above) if above is not None and not pd.isna(above) else None,
+            sessions=0,
+        )
+        return name in tape_buckets(state)
+
+    return rows.apply(member, axis=1).astype(bool)
+
+
+def _regime_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
+    """The descriptive ``regime_context`` block: the journaled regime and the derived tape, over mature rows."""
+    present = frame.loc[frame["regime_vix_regime"].notna()]
+    measured = mature.loc[mature["regime_vix_regime"].notna()]
+    regimes = sorted(str(value) for value in measured["regime_vix_regime"].dropna().unique())
+    stresses = sorted(str(value) for value in mature["regime_macro_stress"].dropna().unique())
+    reasons = frame["tape_reason"].dropna()
+    return {
+        "blocks": len(present),
+        "by_vix_regime": {name: _bucket(measured.loc[measured["regime_vix_regime"] == name]) for name in regimes},
+        "by_macro_stress": {name: _bucket(mature.loc[mature["regime_macro_stress"] == name]) for name in stresses},
+        "by_tape": {name: _bucket(mature.loc[_tape_members(mature, name)]) for name in TAPE_BUCKETS},
+        "tape_reason": str(reasons.iloc[0]) if len(reasons) else None,
+    }
+
+
+def _recurrence_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
+    """Placeholder shape until Task 4 computes recurrence; keys are the contract."""
+    return {
+        "setups": 0,
+        "repeated_setups": 0,
+        "same_session_repeats": 0,
+        "by_prior": {"first": _bucket(mature.iloc[0:0]), "repeat": _bucket(mature.iloc[0:0])},
+        "by_prior_outcome": {},
+    }
+
+
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
-    """Counts by outcome/maturity, base rates, per-scan selection quality by scorer and card-policy counts."""
+    """Counts by outcome/maturity, base rates, per-scan selection quality by scorer and card-policy counts, book sizing, news, regime/tape and recurrence."""
     if frame.empty:
         return {
             "total": 0,
@@ -620,6 +744,8 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
             },
             "book_sizing": _book_sizing_summary(frame, frame),
             "news_context": _news_summary(frame, frame),
+            "regime_context": _regime_summary(frame, frame),
+            "recurrence": _recurrence_summary(frame, frame),
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -719,4 +845,6 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "card_policy": card_policy,
         "book_sizing": _book_sizing_summary(frame, mature),
         "news_context": _news_summary(frame, mature),
+        "regime_context": _regime_summary(frame, mature),
+        "recurrence": _recurrence_summary(frame, mature),
     }

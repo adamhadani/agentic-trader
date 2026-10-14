@@ -213,3 +213,24 @@ def test_card_stats_count_candidates_from_every_trigger():
     frame = label_journaled(events, bars, now=NOW)
     snapshot = CardStatsSnapshot.model_validate(json.loads(json.dumps(_compute(frame), allow_nan=False)))
     assert snapshot.stats("BREAKOUT", "LONG").n_mature == 2
+
+
+def test_regime_tape_and_recurrence_columns_are_inert_in_the_snapshot():
+    """card_stats reads hit, r_cost, holding_sessions, strategy, direction and decided_at only."""
+    frame = _labelled(TP + SQ)
+    payload = _compute(frame)
+    extra = (
+        "regime_vix",
+        "regime_vix_regime",
+        "regime_risk_multiplier",
+        "regime_macro_stress",
+        "spy_ret_20",
+        "spy_above_200",
+        "tape_reason",
+        "prior_sessions",
+        "prior_same_session",
+        "prior_outcome",
+    )
+    assert set(extra) <= set(outcomes_module._COLUMNS)
+    stripped = _compute(frame.drop(columns=list(extra)))
+    assert payload == stripped
