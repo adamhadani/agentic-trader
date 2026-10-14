@@ -276,6 +276,7 @@ def events_cube_build(cube: LabelCube) -> CubeBuild:
         unpriced_dividends=0,
         unscaled_dividends=0,
         symbols_without_raw=(),
+        identity_breaks={},
         first_finite={name: dict.fromkeys(EVENT_FIELDS, BAR_DAYS[251].isoformat()) for name in NAMES},
     )
     return CubeBuild(

@@ -161,17 +161,17 @@
     {
       "id": "pead_reaction_window",
       "mutation_operators": [],
-      "rationale": "Reaction-direction drift is confined to roughly one holding horizon (20 sessions) after the report.",
+      "rationale": "Reaction-direction drift is confined to roughly one holding horizon (20 sessions) after the report. The score divides by the 0/1 window condition, so a name outside the window has no score (NaN, ineligible) and the decile is taken among in-window names only.",
       "seeds": [
-        "if_else(earnings_age <= 20, earnings_reaction, 0)"
+        "earnings_reaction / (earnings_age <= 20)"
       ]
     },
     {
       "id": "pead_agreement",
       "mutation_operators": [],
-      "rationale": "Drift is strongest when the surprise and the reaction agree (the PEAD leg rule), within one holding horizon of the report.",
+      "rationale": "Drift is strongest when the surprise and the reaction agree (the PEAD leg rule), within one holding horizon of the report. The score divides by the 0/1 window condition, so a name outside the window has no score (NaN, ineligible) and the decile is taken among in-window names only.",
       "seeds": [
-        "if_else(earnings_age <= 20, sign(earnings_surprise) * earnings_reaction, 0)"
+        "sign(earnings_surprise) * earnings_reaction / (earnings_age <= 20)"
       ]
     },
     {
@@ -185,17 +185,17 @@
     {
       "id": "quiet_momentum",
       "mutation_operators": [],
-      "rationale": "Price momentum measured outside the announcement window continues (Jegadeesh and Titman, 1993).",
+      "rationale": "Price momentum measured outside the announcement window continues (Jegadeesh and Titman, 1993). The score divides by the 0/1 condition, so a name within 20 sessions of a report has no score (NaN, ineligible) and the decile is taken among quiet names only.",
       "seeds": [
-        "if_else(earnings_age > 20, ts_sum(returns, 20), 0)"
+        "ts_sum(returns, 20) / (earnings_age > 20)"
       ]
     },
     {
       "id": "quiet_reversal",
       "mutation_operators": [],
-      "rationale": "Short-term reversal measured outside the announcement window (Jegadeesh, 1990; Lehmann, 1990).",
+      "rationale": "Short-term reversal measured outside the announcement window (Jegadeesh, 1990; Lehmann, 1990). The score divides by the 0/1 condition, so a name within 20 sessions of a report has no score (NaN, ineligible) and the decile is taken among quiet names only.",
       "seeds": [
-        "if_else(earnings_age > 20, -ts_sum(returns, 5), 0)"
+        "-ts_sum(returns, 5) / (earnings_age > 20)"
       ]
     },
     {
@@ -232,7 +232,7 @@
     "replicates": 100,
     "seed": 20260932
   },
-  "rationale": "A predeclared fixed set of eight event-conditioned formulas, one per family, each scored once without search on daily bars read at D-1 together with the four dimensionless events_fields_v1 columns (earnings_age, earnings_surprise, earnings_reaction, dividend_yield), so search-power check B does not apply; checks A and C still bind. Every field holds state known at the prior close under the PEAD visibility convention: a report dated D completes when D+1 closes and is first visible on row D+1, so the first decision session that can use it is D+2. No field looks forward. Each dividend is scaled by f, the adjusted/raw close ratio at its ex-date, before the trailing-252-session sum and divided by the adjusted close at T. The inputs are the digest-pinned offline Nasdaq calendar page cache and the cohort-v2 corporate-actions acquisition. The cohort, label cube, windows, selection, gates, bootstrap, power and null-check parameters are campaign v4's and intraday-v1's, so the cached cube is reused and the lane-wide confirmation window remains unused until a finalist freezes; realized-volatility operators stay forbidden.",
+  "rationale": "A predeclared fixed set of eight event-conditioned formulas, one per family, each scored once without search on daily bars read at D-1 together with the four dimensionless events_fields_v1 columns (earnings_age, earnings_surprise, earnings_reaction, dividend_yield), so search-power check B does not apply; checks A and C still bind. Every field holds state known at the prior close under the PEAD visibility convention: a report dated D completes when D+1 closes and is first visible on row D+1, so the first decision session that can use it is D+2. No field looks forward. A name change that moves a ticker onto or off a cohort symbol is an identity break: that symbol's fields are NaN before its latest break and earlier calendar and corporate-action rows are dropped. Each dividend is scaled by f, the adjusted/raw close ratio at its ex-date, before the trailing-252-session sum and divided by the adjusted close at T. The four windowed formulas divide by their 0/1 window condition, so an out-of-window name has no score (NaN, ineligible) and each session's decile is taken among in-window names only, never completed by tiebreak. The inputs are the digest-pinned offline Nasdaq calendar page cache and the cohort-v2 corporate-actions acquisition. The cohort, label cube, windows, selection, gates, bootstrap, power and null-check parameters are campaign v4's and intraday-v1's, so the cached cube is reused and the lane-wide confirmation window remains unused until a finalist freezes; realized-volatility operators stay forbidden.",
   "score_inputs": "daily",
   "search": {
     "archive_size": 16,

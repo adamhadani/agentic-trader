@@ -599,8 +599,9 @@ problem.
    `config/research/pooled/intraday-v1.json` is a frozen fixed set of eight intraday formulas on
    cohort v2's cube (SHA-256 `5b4c3fdf23aa1800…`; the unevaluable `vwap_strength` seed, which the
    OHLCV-only cache cannot score, was replaced by `first_bucket_efficiency`, and the read is the
-   clock-aligned 09:00 bucket closing 10:00). Checks A and C are to run; the campaign runs only on operator approval and the
-   confirmation window is unused.
+   clock-aligned 09:00 bucket closing 10:00). Checks A and C passed on 2026-10-14 (A replays v4's curve on the same
+   cube; C 0/40 false acceptances with `errors_total` 0; [checks](alpha-pooled-intraday-v1-2026-10-14.md)); the campaign
+   runs only on operator approval and the confirmation window is unused.
 
    *Status (October 14, later):* the events lane is built ([design](superpowers/specs/2026-10-14-pooled-events-design.md),
    [pooled mining](alpha-pooled-mining.md#event-score-inputs-protocol-pooled-events-campaign)):
@@ -608,6 +609,9 @@ problem.
    cube over four event-conditioned dimensionless fields (`earnings_age`, `earnings_surprise`,
    `earnings_reaction`, `dividend_yield`; PEAD visibility D+1) read at D-1, from two digest-pinned
    offline inputs (the Nasdaq calendar page cache and the cohort-v2 corporate-actions acquisition).
+   After the final review, fields are `NaN` before a symbol's identity break (a name change moving a
+   ticker onto or off it), and the four windowed formulas are `NaN` out of window rather than zero;
+   the file was re-frozen (SHA-256 prefix `4e156fd8`) before any check ran.
    Checks A and C pending; the campaign runs only on operator approval and the confirmation window is unused.
 
 Prospective lanes keep running meanwhile: PEAD probe, native-daily panel (first outcomes mid-October),

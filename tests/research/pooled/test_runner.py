@@ -39,7 +39,10 @@ class FakeCalendar:
 
 
 class FakeBars:
-    """``fail`` keys raise; ``empty`` keys return the provider's empty frame (UTC DatetimeIndex)."""
+    """``fail`` keys raise; ``empty`` keys return the provider's empty frame (UTC DatetimeIndex).
+
+    Raw bars are twice the adjusted ones (an adjusted/raw factor of 0.5), so a test can tell them apart.
+    """
 
     def __init__(self, *, fail=(), empty=()):
         self.calls = []
@@ -66,7 +69,7 @@ class FakeBars:
         else:
             index = [datetime.combine(x, time(0), tzinfo=ET_TZ).astimezone(UTC) for x in days]
         n = len(index)
-        price = np.full(n, 50.0)
+        price = np.full(n, 100.0 if adjustment == "raw" else 50.0)
         return pd.DataFrame(
             {"Open": price, "High": price * 1.01, "Low": price * 0.99, "Close": price, "Volume": 1e6},
             index=pd.DatetimeIndex(index),
@@ -417,8 +420,12 @@ def test_cache_hit_reloads_hourly_only_for_symbols_with_an_eligible_cell(tmp_pat
     assert bars.calls == calls  # no provider request, in particular none for CCC's hourly bars
 
 
+WITH_SPY = [*STATIC, "SPY"]  # the event benchmark must be among the bar files the cube was built from
+
+
 def _event_world(tmp_path, *, pinned: bool):
-    """Pages and actions on disk plus the protocol inputs pinning their digests (or not)."""
+    """Pages and actions on disk plus the protocol inputs pinning their digests (or not); a 5-session
+    dividend window so ``dividend_yield`` is finite inside the short test calendar."""
     first, last = date(2021, 2, 1), date(2021, 2, 5)
     pages = tmp_path / "nasdaq"
     _write_pages(pages, list(weekdays(first, last)), {})
@@ -433,7 +440,7 @@ def _event_world(tmp_path, *, pinned: bool):
                 update={"calendar_from": first, "calendar_through": last, "pages_sha256": pinned_pages}
             ),
             "corporate_actions": protocol.event_inputs.corporate_actions.model_copy(
-                update={"content_sha256": pinned_actions}
+                update={"content_sha256": pinned_actions, "trailing_sessions": 5}
             ),
         }
     )
@@ -447,13 +454,13 @@ def test_events_build_fails_closed_on_digest_mismatch_before_any_bar_is_read(tmp
     assert bars.calls == []
 
 
-def test_events_build_on_a_cache_hit_fetches_the_benchmark_and_builds_frames(tmp_path):
+def test_events_build_on_a_cache_hit_reads_everything_from_the_cache_and_builds_frames(tmp_path):
     cache = tmp_path / "cache"
     bars = FakeBars()
-    plain = build(bars, cache)  # check A's build caches the cube, adjusted and raw bars
+    plain = build(bars, cache, static=WITH_SPY)  # check A's build caches the cube, adjusted and raw bars
     assert plain.events is None and plain.raw == {}
     bars.calls.clear()
-    built = build(bars, cache, events=_event_world(tmp_path, pinned=True))
+    built = build(bars, cache, static=WITH_SPY, events=_event_world(tmp_path, pinned=True))
     assert built.events is not None
     assert set(built.events.frames) == {"AAA", "BBB"}
     for frame in built.events.frames.values():
@@ -461,10 +468,50 @@ def test_events_build_on_a_cache_hit_fetches_the_benchmark_and_builds_frames(tmp
         assert len(frame) == len(built.trading_days)
     assert sorted(built.raw) == ["AAA", "BBB"]
     assert sorted(built.adjusted) == ["AAA", "BBB"]  # the benchmark is not a cohort symbol
-    assert bars.calls == [("SPY", "1d", "all")]  # cohort bars, raw and the cube came from the cache
+    assert bars.calls == []  # cohort bars, raw bars, the benchmark and the cube all came from the cache
+
+
+def test_events_dividend_yield_is_scaled_by_the_raw_bars(tmp_path):
+    built = build(FakeBars(), tmp_path / "cache", static=WITH_SPY, events=_event_world(tmp_path, pinned=True))
+    assert built.events is not None
+    yield_ = built.events.frames["AAA"]["dividend_yield"]
+    ex = pd.Timestamp(date(2021, 3, 1))
+    # rate 0.5 at the ex-date, times f = adjusted 50 / raw 100, over the adjusted close 50
+    assert yield_.loc[ex] == pytest.approx(0.5 * 0.5 / 50.0)
+    assert yield_.loc[ex - pd.Timedelta(days=3)] == 0.0  # the Friday before: no dividend in the window yet
+
+
+def test_events_build_fails_closed_when_the_benchmark_is_not_a_bar_file_of_the_cube(tmp_path):
+    cache = tmp_path / "cache"
+    bars = FakeBars()
+    build(bars, cache)  # SPY is not a static reference name here: the cube never bound its bars
+    bars.calls.clear()
+    with pytest.raises(ValueError, match="benchmark SPY"):
+        build(bars, cache, events=_event_world(tmp_path, pinned=True))
+    assert ("SPY", "1d", "all") not in bars.calls
 
 
 def test_events_build_on_a_fresh_build_keeps_the_cohorts_raw_bars(tmp_path):
-    built = build(FakeBars(), tmp_path / "cache", events=_event_world(tmp_path, pinned=True))
+    built = build(FakeBars(), tmp_path / "cache", static=WITH_SPY, events=_event_world(tmp_path, pinned=True))
     assert sorted(built.raw) == ["AAA", "BBB"] and built.events is not None
     assert sorted(built.events.frames) == ["AAA", "BBB"]
+
+
+def test_events_frames_cover_only_symbols_with_an_eligible_cell(tmp_path):
+    names = ("AAA", "BBB", "CCC")
+    source = CohortSource(kind="config_groups", description="t", identity="x", symbols=names)
+    loaded = LoadedCohort(
+        cohort=Cohort(
+            id="pooled-cohort", version=1, survivorship="test", sources=(source,), excluded={}, symbols=names
+        ),
+        sha256=cohort().sha256,
+        path=cohort().path,
+    )
+    bars = FakeBars(empty={("CCC", "1d", "raw")})  # CCC has no raw bars: never eligible
+    events = _event_world(tmp_path, pinned=True)
+    for _ in range(2):  # the fresh build, then the cache hit
+        built = build(bars, tmp_path / "cache", loaded=loaded, static=WITH_SPY, events=events)
+        assert not built.cube.window(*WINDOW).eligible[:, 2].any()
+        assert built.events is not None and sorted(built.events.frames) == ["AAA", "BBB"]
+        assert built.events.coverage.symbols_without_reports == ("AAA", "BBB")
+        assert built.events.coverage.symbols_without_raw == ()

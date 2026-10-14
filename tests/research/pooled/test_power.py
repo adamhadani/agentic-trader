@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +23,14 @@ from agentic_trader.research.pooled.power import (
     tally_confirmed,
 )
 from agentic_trader.research.pooled.runner import CubeBuild
-from tests.research.pooled.mini_world import cube_build, label_cube, mini_fixed_set_protocol, mini_protocol
+from tests.research.pooled.mini_world import (
+    cube_build,
+    events_cube_build,
+    label_cube,
+    mini_events_protocol,
+    mini_fixed_set_protocol,
+    mini_protocol,
+)
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -497,6 +505,7 @@ def test_check_a_runs_unchanged_on_a_fixed_set_protocol_and_records_no_search_po
     result = asyncio.run(execute_power_check(loaded, tmp_path / "out", cohort=cohort, build=build, environment={}))
     assert result["status"] == "passed"
     assert result["campaign_protocol_sha256"] == loaded.sha256 and result["cube_sha256"] == cube.sha256
+    assert result["event_coverage"] is None  # a protocol without event fields
     out = tmp_path / "out"
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["check"] == "power_a" and manifest["campaign_protocol_sha256"] == loaded.sha256
@@ -510,3 +519,22 @@ def test_check_a_runs_unchanged_on_a_fixed_set_protocol_and_records_no_search_po
     genetic = mini_protocol(power=tiny)
     same = run_power(genetic, cube.window(*genetic.windows.discovery), cube.sessions, cohort_sha256=COHORT)
     assert result["curve"] == same["curve"] and result["replicates_detail"] == same["replicates_detail"]
+
+
+def test_check_a_on_an_events_protocol_records_its_event_inputs_and_coverage(tmp_path):
+    protocol = mini_events_protocol(power=tiny_protocol().power)
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("events.json"))
+    cohort = SimpleNamespace(sha256=COHORT, cohort=SimpleNamespace(source_of=lambda symbol: ("config_groups",)))
+    built = events_cube_build(label_cube())
+
+    async def build():
+        return built
+
+    result = asyncio.run(execute_power_check(loaded, tmp_path / "out", cohort=cohort, build=build, environment={}))
+    assert result["status"] == "passed", result
+    assert built.events is not None and result["event_coverage"] == asdict(built.events.coverage)
+    on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
+    assert on_disk["event_coverage"]["identity_breaks"] == {}
+    assert set(on_disk["event_coverage"]["first_finite"]) == set(built.cube.symbols)
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["event_inputs"] == protocol.event_inputs.model_dump(mode="json")

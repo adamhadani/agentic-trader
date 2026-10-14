@@ -34,11 +34,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from agentic_trader.data.corporate_actions import CorporateAction
 from agentic_trader.research.pooled.campaign import EventInputs
 from agentic_trader.research.pooled.cohort import LoadedCohort, point_in_time_eligibility
 from agentic_trader.research.pooled.cube import CubeSpec, LabelCube, build_cube, load_cube, save_cube
 from agentic_trader.research.pooled.events import (
     EventFrames,
+    LoadedCalendar,
     build_event_frames,
     load_actions,
     load_calendar_pages,
@@ -47,7 +49,7 @@ from agentic_trader.research.pooled.events import (
 from agentic_trader.research.setups.runner import BarSource, CalendarSource, _fetch_cached, claim_cache_range
 
 
-__all__ = ["CubeBuild", "EventSources", "build_cube_inputs"]
+__all__ = ["CubeBuild", "EventSources", "build_cube_inputs", "load_event_sources"]
 
 _HOURLY_PAD = timedelta(days=7)
 _PROGRESS_SYMBOLS = 25
@@ -59,6 +61,18 @@ _PROVENANCE = ("bar_failures", "static_used", "static_used_sha256", "bars_sha256
 class EventSources:
     earnings_pages: Path  # the Nasdaq page directory
     actions_file: Path  # the corporate-actions acquisition's actions.json
+
+
+def load_event_sources(
+    inputs: EventInputs, sources: EventSources
+) -> tuple[LoadedCalendar, tuple[CorporateAction, ...]]:
+    """Read both event sources from disk and fail closed unless their digests are the protocol's."""
+    calendar_pages = load_calendar_pages(
+        sources.earnings_pages, inputs.earnings.calendar_from, inputs.earnings.calendar_through
+    )
+    actions, actions_digest = load_actions(sources.actions_file)
+    verify_event_sources(inputs, calendar_pages, actions_digest)
+    return calendar_pages, actions
 
 
 @dataclass(frozen=True)
@@ -197,14 +211,7 @@ async def build_cube_inputs(
     event_sources = None
     if events is not None:
         inputs, sources = events
-        calendar_pages = await asyncio.to_thread(
-            load_calendar_pages,
-            sources.earnings_pages,
-            inputs.earnings.calendar_from,
-            inputs.earnings.calendar_through,
-        )
-        actions, actions_digest = await asyncio.to_thread(load_actions, sources.actions_file)
-        verify_event_sources(inputs, calendar_pages, actions_digest)
+        calendar_pages, actions = await asyncio.to_thread(load_event_sources, inputs, sources)
         event_sources = (inputs, calendar_pages, actions)
         say(f"event fields: {calendar_pages.pages} calendar pages, {len(actions)} corporate actions")
 
@@ -314,25 +321,35 @@ async def build_cube_inputs(
     if event_sources is not None:
         inputs, calendar_pages, actions = event_sources
         benchmark = inputs.earnings.benchmark
+        # The benchmark's bars must be a file the cube was built from (re-checked above on a cache hit).
+        if not any(entry.startswith(f"{benchmark}|1d|all|") for entry in cube.coverage.get("bar_file_list") or ()):
+            raise ValueError(
+                f"the event benchmark {benchmark} is not among the bar files the cube was built from; "
+                "build the cube with it as a static reference name"
+            )
         with_benchmark = dict(adjusted)
         if benchmark not in with_benchmark:
             frame = await acquisition.fetch(benchmark, "1d", bar_dir, start, end)
             if frame is not None:
                 with_benchmark[benchmark] = frame
             acquisition.raise_on_errors()
+        # Only names with an eligible cell can be picked, so only they get frames and count in coverage.
+        eligible_any = cube.window(cube.sessions[0], cube.sessions[-1]).eligible.any(axis=0)
+        scored = [symbol for symbol, flag in zip(cube.symbols, eligible_any, strict=True) if flag]
         event_frames = await asyncio.to_thread(
             build_event_frames,
             inputs,
             calendar_pages,
             actions,
             with_benchmark,
-            {symbol: raw[symbol] for symbol in symbols if symbol in raw},
+            {symbol: raw[symbol] for symbol in scored if symbol in raw},
             trading_days,
-            symbols,
+            scored,
         )
         say(
-            f"event fields: {len(event_frames.frames)} symbols; "
-            f"{len(event_frames.coverage.symbols_without_reports)} without reports"
+            f"event fields: {len(event_frames.frames)} symbols with an eligible cell; "
+            f"{len(event_frames.coverage.symbols_without_reports)} without reports, "
+            f"{len(event_frames.coverage.identity_breaks)} identity breaks"
         )
     coverage = cube.coverage
     return CubeBuild(

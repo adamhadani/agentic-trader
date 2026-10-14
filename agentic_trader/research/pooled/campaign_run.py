@@ -53,7 +53,7 @@ import signal
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -75,6 +75,7 @@ from agentic_trader.research.pooled.ledger import CampaignAborted, JournalLedger
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import (
     ScoreBook,
+    event_coverage_document,
     event_inputs_document,
     formula_id,
     score_book,
@@ -588,7 +589,7 @@ async def _run_campaign(
         "score_read": score_read_document(protocol),
         "event_inputs": event_inputs_document(protocol),
         "first_finite_session": first_finite,
-        "event_coverage": asdict(built.events.coverage) if built.events is not None else None,
+        "event_coverage": event_coverage_document(built),
         "symbols_without_hourly": (
             sum(1 for symbol in built.cube.symbols if symbol not in built.hourly)
             if protocol.score_inputs == "hourly"

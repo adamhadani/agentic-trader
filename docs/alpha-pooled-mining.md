@@ -324,9 +324,9 @@ path is unchanged: the decision session `D` reads row `D-1`.
 | Field | Definition at trading day T |
 | --- | --- |
 | `earnings_age` | Sessions since the last completed report: `index(T) - index(D+1)` for the latest report with `D+1 <= T`; `NaN` before the symbol's first report |
-| `earnings_surprise` | That report's `100 * (eps - eps_forecast) / abs(eps_forecast)`, carried forward until the next completed report; `NaN` when `n_estimates < 1`, `abs(eps_forecast) < 0.05` or `eps` is missing |
-| `earnings_reaction` | That report's `(r_i - r_SPY) / (sigma_i * sqrt(2))`, `r` from close(`D-1`) to close(`D+1`), `sigma_i` the sample std of the 20 daily log returns ending `D-1` (adjusted bars, SPY from the same cache), carried forward; `NaN` when bars are missing |
-| `dividend_yield` | Each regular (non-special) `cash_dividend` is scaled by `f`, the adjusted/raw close ratio at its ex-date (forward-filled, never back-filled), the scaled amounts are summed over the trailing 252 sessions through `T` and divided by the adjusted close at `T`; `NaN` for the first 251 trading days, where the adjusted close is missing or for a symbol with no raw frame; `0.0` for a covered non-payer; a dividend whose `f` is undefined is dropped and counted (`unscaled_dividends`) |
+| `earnings_surprise` | That report's `100 * (eps - eps_forecast) / abs(eps_forecast)`, carried forward until the next completed report; `NaN` when `eps`, `eps_forecast` or `n_estimates` is missing, `n_estimates < 1` or `abs(eps_forecast) < 0.05` |
+| `earnings_reaction` | That report's `(r_i - r_SPY) / (sigma_i * sqrt(2))`, `r` from close(`D-1`) to close(`D+1`), `sigma_i` the sample std of the 20 daily log returns ending `D-1` (adjusted bars, SPY from the same cache), carried forward; `NaN` when any of the 21 closes ending `D-1`, close(`D+1`) or SPY's closes at `D-1` and `D+1` is missing, when fewer than 21 trading days precede the report on the calendar, or when `sigma_i` is zero |
+| `dividend_yield` | Each regular (non-special) `cash_dividend` is scaled by `f`, the adjusted/raw close ratio at its ex-date (forward-filled without limit, never back-filled), the scaled amounts are summed over the trailing 252 sessions through `T` and divided by the adjusted close at `T`; `NaN` for the first 251 trading days (or 251 sessions after an identity break), where the adjusted close is missing or for a symbol with no raw frame; `0.0` for a covered non-payer; a dividend whose `f` is undefined is dropped and counted (`unscaled_dividends`) |
 
 **Visibility convention** (the PEAD leg's): a report dated on session `D` (any timing) is
 complete when `D+1` closes, because the reaction runs from close(`D-1`) to close(`D+1`). It is
@@ -334,24 +334,53 @@ visible from row `D+1`, and the first decision session that can use it is `D+2`.
 looks forward. Reports on non-session dates are skipped and counted (`non_session_reports`);
 a symbol with no calendar row has `NaN` fields.
 
+**Identity breaks.** Both sources key rows by the ticker in use at the time, but the cohort's bars
+carry today's symbol, so a reused ticker (COR: CoreSite, then Cencora) or a rename (ANTM→ELV,
+BBT→TFC) would put another issuer's rows, or none, on today's bars. Alpaca's `name_change` rows
+carry the old ticker in `symbol` and the new one in `related_symbol`. A cohort symbol's break is the
+latest `effective_on` among `name_change` rows where it is either ticker; a rename that keeps the
+ticker (`symbol == related_symbol`) is not a break. Before the break every event field is `NaN`;
+calendar rows dated before it and corporate-action rows effective before it are dropped (so a
+pre-break report is never carried forward and a pre-break dividend never enters a trailing window),
+and `dividend_yield`'s 252-session warm-up restarts at the break. A wholly pre-break symbol is
+simply ineligible for event formulas until the break. The rule is conservative (a technical rename
+such as NWG.WI→NWG or CUK→CCL only removes data) and does not see a ticker reused without a
+`name_change` row (DOW).
+
+**Declared limits.** 252 sessions are slightly shorter than four quarterly ex-date cycles, so a
+quarterly payer briefly counts three dividends just before each ex-date. `dividend_yield` is first
+finite 252 sessions into the bars, so in discovery it effectively starts on 2017-01-03. `f` is
+forward-filled without limit over gaps in either close.
+
 **Inputs and verification.** Both are digest-pinned in the protocol's `event_inputs` block and
 read offline. The earnings input is the Nasdaq calendar page cache (SHA-256 over the sorted
 `<date>:<page sha256>` lines of every weekday page in `2016-02-23 .. 2026-07-31`; each page is
 re-verified against its `.meta.json` and a missing page fails closed). The corporate-actions
 input is the cohort-v2 acquisition's `actions.json` (its `content_sha256`, window
-`2016-01-01 .. 2027-03-31`, 252 trailing sessions). The runner fails closed before any
-evaluation when either digest differs from the cache on disk. The digests also enter the
-frozen formula document and every manifest, so an events formula never shares an identity with
-a daily or hourly one.
+`2016-01-01 .. 2027-03-31`, 252 trailing sessions). The runner fails closed before any bar read
+or evaluation when either digest differs from the cache on disk, and the campaign command checks
+both before the ledger reserves anything. The SPY benchmark's adjusted daily bars must be one of
+the bar files the cube recorded (`bar_file_list`). The digests also enter the frozen formula
+document and every manifest, so an events formula never shares an identity with a daily or hourly
+one. Event frames are built only for cohort symbols with at least one eligible cell in the cube.
 
-**Recorded coverage.** `result.json` records `event_coverage` (per-symbol first finite session,
-symbols without reports or actions, `non_session_reports`, `unscaled_dividends`).
+**Recorded coverage.** Every `result.json` (checks A and C and the campaign) records
+`event_coverage` (`null` for a protocol without event fields): `symbols_without_reports`,
+`symbols_without_actions`, `symbols_without_raw`, `non_session_reports`, `unpriced_dividends`,
+`unscaled_dividends`, `identity_breaks` (symbol → ISO date of the break) and `first_finite` (each
+symbol's first finite session per field). The campaign result also records `first_finite_session`
+per formula.
 
 **Frozen set.** `config/research/pooled/events-v1.json` holds eight dimensionless formulas, one
 per family, each scored once: `pead_surprise_decay`, `pead_reaction_decay`,
 `pead_reaction_window`, `pead_agreement`, `surprise_x_reaction`, `quiet_momentum`,
-`quiet_reversal` and `dividend_yield` (expressions in the file). `excluded_families` carries
-intraday-v1's list plus its eight families. Checks A and C bind; check B does not apply.
+`quiet_reversal` and `dividend_yield` (expressions in the file; SHA-256 prefix `4e156fd8`).
+The four windowed formulas divide by their 0/1 window condition (`earnings_reaction /
+(earnings_age <= 20)`, `ts_sum(returns, 20) / (earnings_age > 20)`, ...): `safe_div` returns `NaN`
+where the condition is 0, so an out-of-window cell is ineligible and each session's top decile is
+taken among in-window names only, never completed by tiebreak among zero scores.
+`excluded_families` carries intraday-v1's list plus its eight families. Checks A and C bind;
+check B does not apply.
 
 **Non-goals.** No news fields, no forward-looking fields, no live contract; nothing registers,
 trades or earns promotion credit, and the lane-wide confirmation window stays unused until a
@@ -935,7 +964,8 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --nu
   protocol and refused for any other, and its digest must equal the protocol's `pages_sha256`.
 - `--corporate-actions ACTIONS_JSON` is the cohort-v2 corporate-actions acquisition's
   `actions.json`; it is required for an events protocol and refused for any other, and its
-  content digest must equal the protocol's `content_sha256`.
+  content digest must equal the protocol's `content_sha256`. `campaign` verifies both inputs
+  before it opens the ledger.
 - `--cache` is **required** on every command. For `power`, `study`, `search-power`,
   `null-check` and `campaign` it must be the same directory: it holds the bars and the one
   cube, and each later command passes its gate only on the cube the power check built.

@@ -285,3 +285,77 @@ def test_overlapping_dividends_sum_and_early_report_has_nan_reaction():
     f = _build(INPUTS, _calendar({"AAA": [_row("AAA", DAYS[5])]}), actions, _world(), DAYS, ["AAA"]).frames["AAA"]
     assert f["dividend_yield"].iloc[261] == pytest.approx(1.0 / close[261])
     assert f["earnings_age"].iloc[6] == 0.0 and np.isnan(f["earnings_reaction"].iloc[6])
+
+
+LONG = weekdays(date(2021, 1, 4), 450)  # long enough for a 252-session warm-up after a break on day 150
+
+
+def _rename(old: str, new: str, day: date) -> CorporateAction:
+    """Alpaca's encoding: ``symbol`` is the old ticker, ``related_symbol`` the new one."""
+    return CorporateAction(
+        id=f"{old}-{new}-{day.isoformat()}",
+        kind="name_change",
+        symbol=old,
+        related_symbol=new,
+        effective_on=day,
+        process_date=day,
+    )
+
+
+def _long_world() -> dict:
+    return {
+        "AAA": daily(LONG, list(np.linspace(50, 80, len(LONG)))),
+        "BBB": daily(LONG, list(np.linspace(40, 60, len(LONG)))),
+        "SPY": daily(LONG, list(np.linspace(300, 330, len(LONG)))),
+    }
+
+
+def test_identity_break_blanks_every_field_before_the_rename_and_drops_pre_break_rows():
+    rows = [_row("AAA", LONG[100]), _row("AAA", LONG[200], eps=0.9)]
+    actions = [_dividend("AAA", LONG[120]), _rename("OLD", "AAA", LONG[150])]
+    built = _build(INPUTS, _calendar({"AAA": rows}), actions, _long_world(), LONG, ["AAA"])
+    f = built.frames["AAA"]
+    assert f.iloc[:150].isna().all().all()  # every field NaN through day 149
+    assert f["earnings_age"].iloc[150:201].isna().all()  # the day-100 report is not carried forward
+    assert f["earnings_age"].iloc[201] == 0.0 and f["earnings_surprise"].iloc[201] == pytest.approx(-10.0)
+    assert np.isfinite(f["earnings_reaction"].iloc[201])
+    # The 252-session warm-up restarts at the break; the day-120 dividend never appears.
+    assert f["dividend_yield"].iloc[:401].isna().all()
+    assert f["dividend_yield"].iloc[401] == 0.0 and (f["dividend_yield"].iloc[401:] == 0.0).all()
+    assert built.coverage.identity_breaks == {"AAA": LONG[150].isoformat()}
+    assert built.coverage.first_finite["AAA"]["dividend_yield"] == LONG[401].isoformat()
+
+
+def test_a_post_break_dividend_counts_and_a_pre_break_one_never_does():
+    actions = [_dividend("AAA", LONG[140]), _rename("OLD", "AAA", LONG[150]), _dividend("AAA", LONG[300])]
+    built = _build(INPUTS, _calendar({}), actions, _long_world(), LONG, ["AAA"])
+    close = _long_world()["AAA"]["Close"].to_numpy(float)
+    assert built.frames["AAA"]["dividend_yield"].iloc[401] == pytest.approx(0.5 / close[401])
+
+
+def test_a_rename_off_the_cohort_symbol_is_a_break_and_a_self_rename_is_not():
+    # AAA's earlier holder moved to NEW on day 150 (a ticker later reused); BBB only renamed in place.
+    actions = [
+        _rename("AAA", "NEW", LONG[150]),
+        _rename("AAA", "AAA", LONG[180]),
+        _rename("BBB", "BBB", LONG[160]),
+    ]
+    rows = {"AAA": [_row("AAA", LONG[100])], "BBB": [_row("BBB", LONG[100])]}
+    built = _build(INPUTS, _calendar(rows), actions, _long_world(), LONG, ["AAA", "BBB"])
+    assert built.coverage.identity_breaks == {"AAA": LONG[150].isoformat()}
+    assert built.frames["AAA"]["earnings_age"].isna().all()
+    assert (
+        built.frames["BBB"]["earnings_age"].iloc[101] == 0.0 and built.frames["BBB"]["earnings_age"].iloc[200] == 99.0
+    )
+
+
+def test_the_latest_rename_is_the_break():
+    actions = [_rename("OLD", "AAA", LONG[50]), _rename("AAA", "MID", LONG[120]), _rename("MID", "AAA", LONG[150])]
+    built = _build(INPUTS, _calendar({}), actions, _long_world(), LONG, ["AAA"])
+    assert built.coverage.identity_breaks == {"AAA": LONG[150].isoformat()}
+
+
+def test_a_symbol_without_a_rename_has_no_break():
+    built = _build(INPUTS, _calendar({}), [_rename("OLD", "ZZZ", LONG[150])], _long_world(), LONG, ["AAA"])
+    assert built.coverage.identity_breaks == {}
+    assert built.frames["AAA"]["dividend_yield"].iloc[251] == 0.0

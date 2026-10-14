@@ -5,6 +5,10 @@ Every field is per symbol, indexed by NYSE trading day T and holds the state kno
 regular close; ``evaluate_prepared`` then reads it at D-1 like any daily field. A report dated
 on session D is complete when D+1 closes (its reaction is close(D-1) -> close(D+1), the PEAD
 convention), so it is first visible at row D+1 with ``earnings_age`` 0.
+
+Both sources key their rows by the ticker in use at the time, while the cohort's bars carry today's
+symbol. A name change that moves a ticker onto or off a cohort symbol is an identity break: every
+field is NaN before the latest such break, and earlier calendar and corporate-action rows are dropped.
 """
 
 from __future__ import annotations
@@ -58,7 +62,10 @@ class LoadedCalendar:
 
 @dataclass(frozen=True)
 class EventCoverage:
-    """What the builder could not fill: symbols without data and skipped rows, for the results doc."""
+    """What the builder could not fill: symbols without data and skipped rows, for the results doc.
+
+    ``identity_breaks`` maps a symbol to the ISO date of its latest identity break (see the module).
+    """
 
     symbols_without_reports: tuple[str, ...]
     symbols_without_actions: tuple[str, ...]
@@ -66,6 +73,7 @@ class EventCoverage:
     unpriced_dividends: int
     unscaled_dividends: int
     symbols_without_raw: tuple[str, ...]
+    identity_breaks: Mapping[str, str]
     first_finite: Mapping[str, dict[str, str | None]]
 
 
@@ -175,20 +183,40 @@ def _earnings_columns(
     return age, surprise, reaction, skipped
 
 
+def _identity_breaks(actions: Sequence[CorporateAction], symbols: Sequence[str]) -> dict[str, date]:
+    """Per symbol, the latest name change whose old (``symbol``) or new (``related_symbol``) ticker it is.
+
+    Before that date the ticker named another issuer or this issuer used another ticker, so rows keyed
+    by it do not belong to today's bars. A rename that keeps the ticker moves nothing and is ignored.
+    """
+    wanted = set(symbols)
+    breaks: dict[str, date] = {}
+    for action in actions:
+        if action.kind != CorporateActionKind.NAME_CHANGE or action.related_symbol == action.symbol:
+            continue
+        for symbol in (action.symbol, action.related_symbol):
+            if symbol in wanted and (symbol not in breaks or action.effective_on > breaks[symbol]):
+                breaks[symbol] = action.effective_on
+    return breaks
+
+
 def _dividend_yield(
     actions: Sequence[CorporateAction],
     close: np.ndarray,
     factor: np.ndarray,
     days: Sequence[date],
     inputs: EventInputs,
+    start: int,
 ) -> tuple[np.ndarray, int, int]:
     """Trailing regular dividends in the adjusted-price scale, over the adjusted close at T.
 
     ``factor`` is adjusted/raw close, forward-filled. A dividend's declared ``rate`` is scaled by
     ``factor`` at its own ex-session, so the ratio to ``close[T]`` involves only actions in (k, T].
+    Sessions before ``start`` (an identity break) count as missing, so the warm-up restarts there.
     """
     n = len(days)
     paid = np.zeros(n)
+    paid[:start] = np.nan
     unpriced = unscaled = 0
     for action in actions:
         if action.kind != CorporateActionKind.CASH_DIVIDEND or action.special:
@@ -237,6 +265,7 @@ def build_event_frames(
     actions_by_symbol: dict[str, list[CorporateAction]] = defaultdict(list)
     for action in actions:
         actions_by_symbol[action.symbol].append(action)
+    breaks = _identity_breaks(actions, symbols)
     frames: dict[str, pd.DataFrame] = {}
     first_finite: dict[str, dict[str, str | None]] = {}
     no_reports: list[str] = []
@@ -261,17 +290,25 @@ def build_event_frames(
                 ratio[~np.isfinite(ratio) | (ratio <= 0)] = np.nan
                 factor = pd.Series(ratio).ffill().to_numpy(float)
         rows = calendar.rows_by_symbol.get(symbol, ())
+        symbol_actions: Sequence[CorporateAction] = actions_by_symbol.get(symbol, ())
+        break_on = breaks.get(symbol)
+        start = 0
+        if break_on is not None:
+            # Rows keyed by this ticker before the break belong to another issuer or ticker.
+            start = bisect_left(days, break_on)
+            rows = tuple(row for row in rows if row.date >= break_on)
+            symbol_actions = [action for action in symbol_actions if action.effective_on >= break_on]
         if not rows:
             no_reports.append(symbol)
-        if symbol not in actions_by_symbol:
+        if not symbol_actions:
             no_actions.append(symbol)
         age, surprise, reaction, skipped = _earnings_columns(rows, keyed, bench, days, position, inputs)
         if keyed is not None and symbol in no_raw:
             dividend_yield, unpriced, unscaled = np.full(len(days), np.nan), 0, 0
         else:
-            dividend_yield, unpriced, unscaled = _dividend_yield(
-                actions_by_symbol.get(symbol, ()), close, factor, days, inputs
-            )
+            dividend_yield, unpriced, unscaled = _dividend_yield(symbol_actions, close, factor, days, inputs, start)
+        for column in (age, surprise, reaction, dividend_yield):
+            column[:start] = np.nan
         skipped_total += skipped
         unpriced_total += unpriced
         unscaled_total += unscaled
@@ -302,6 +339,7 @@ def build_event_frames(
             unpriced_dividends=unpriced_total,
             unscaled_dividends=unscaled_total,
             symbols_without_raw=tuple(no_raw),
+            identity_breaks={symbol: breaks[symbol].isoformat() for symbol in symbols if symbol in breaks},
             first_finite=first_finite,
         ),
     )

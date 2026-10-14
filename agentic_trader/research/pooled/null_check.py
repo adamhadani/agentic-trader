@@ -50,6 +50,7 @@ from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import (
     FrozenPanels,
     ScoreBook,
+    event_coverage_document,
     event_inputs_document,
     score_book,
     score_read_document,
@@ -297,7 +298,12 @@ async def execute_null_check(
             progress=progress,
             workers=workers,
         )
-        result = {**outcome, **base, "cube_sha256": built.cube.sha256}
+        result = {
+            **outcome,
+            **base,
+            "cube_sha256": built.cube.sha256,
+            "event_coverage": event_coverage_document(built),
+        }
     except Exception as exc:
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", **base}
     save_json_report(_finite_json(result), directory / "result.json")

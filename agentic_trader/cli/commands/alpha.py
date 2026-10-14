@@ -102,7 +102,7 @@ from agentic_trader.research.pooled.cohort import load_cohort
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
 from agentic_trader.research.pooled.null_check import execute_null_check
 from agentic_trader.research.pooled.power import execute_power_check
-from agentic_trader.research.pooled.runner import EventSources, build_cube_inputs
+from agentic_trader.research.pooled.runner import EventSources, build_cube_inputs, load_event_sources
 from agentic_trader.research.pooled.screen import config_group_symbols, execute_screen, load_screen_rule
 from agentic_trader.research.pooled.search_power import execute_search_power, require_search
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
@@ -1889,6 +1889,9 @@ async def alpha_pooled_campaign_cmd(
             )
             for name, check in loaded.protocol.gates
         }
+        if events is not None:
+            # A wrong page cache or actions file is refused here, before the ledger reserves anything.
+            await asyncio.to_thread(load_event_sources, *events)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise click.ClickException(str(exc)) from exc
     entries = (

@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 from collections import OrderedDict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -50,6 +50,7 @@ __all__ = [
     "FrozenPanels",
     "ScoreBook",
     "Vetted",
+    "event_coverage_document",
     "event_inputs_document",
     "formula_id",
     "score_book",
@@ -283,6 +284,11 @@ def score_read_document(protocol: CampaignProtocol) -> dict | None:
 def event_inputs_document(protocol: CampaignProtocol) -> dict | None:
     """The protocol's event inputs as recorded in manifests; None for a protocol without event fields."""
     return protocol.event_inputs.model_dump(mode="json") if isinstance(protocol, EventsCampaignProtocol) else None
+
+
+def event_coverage_document(built: CubeBuild) -> dict | None:
+    """The build's event coverage as recorded in results; None for a build without event fields."""
+    return asdict(built.events.coverage) if built.events is not None else None
 
 
 def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:

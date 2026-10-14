@@ -35,7 +35,11 @@ from agentic_trader.research.pooled.campaign import (
 from agentic_trader.research.pooled.cohort import LoadedCohort
 from agentic_trader.research.pooled.cube import _ARRAYS, CubeView, LabelCube, check_coverage
 from agentic_trader.research.pooled.runner import CubeBuild
-from agentic_trader.research.pooled.scoring import event_inputs_document, score_read_document
+from agentic_trader.research.pooled.scoring import (
+    event_coverage_document,
+    event_inputs_document,
+    score_read_document,
+)
 from agentic_trader.research.setups.study import _finite_json, _stationary_index_draws
 from agentic_trader.storage.artifacts import save_json_report
 
@@ -359,6 +363,7 @@ async def execute_power_check(
             "bar_failures": dict(built.bar_failures),
             "static_used": list(built.static_used),
             "breadth": breadth(built.cube, cohort),
+            "event_coverage": event_coverage_document(built),
         }
     except Exception as exc:
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", **base}
