@@ -56,51 +56,21 @@ IEX/SIP live-parity decision; `features.py`; any runtime change.
 
 ### 3.1 Protocol — `research/pooled/campaign.py`
 
-```python
-class ScoreRead(BaseModel, frozen=True, extra="forbid"):
-    bars_before_decision: int = Field(ge=1)  # 1 = the last hourly bar whose close is at or before the decision instant
+`IntradayCampaignProtocol` is a **subclass** of `CampaignProtocol` (every field, validator and
+method inherited) with three fields of its own:
 
+- `id: Literal["pooled-intraday-campaign"]` (overrides the base's literal);
+- `score_inputs: Literal["hourly"]`;
+- `score_read: ScoreRead` where `ScoreRead(bars_before_decision: int >= 1)`; `1` reads the last
+  hourly bar whose close is at or before the decision instant.
 
-class IntradayCampaignProtocol(BaseModel, frozen=True, extra="forbid"):
-    id: Literal["pooled-intraday-campaign"]
-    version: int
-    title: str
-    rationale: str | None = None
-    search_mode: Literal["fixed_set"]  # v1; a genetic mode needs check B and its own spec
-    score_inputs: Literal["hourly"]
-    score_read: ScoreRead
-    (
-        cohort,
-        cohort_sha256,
-        feed,
-        bars_from,
-        bars_through,
-        windows,
-        selection,
-        bracket,
-        universe,
-    )
-    (
-        decision_cost_bps,
-        coverage,
-        formula_budget,
-        families,
-        excluded_families,
-        search,
-    )
-    (
-        complexity_penalty_per_node,
-        dedupe_jaccard,
-        bootstrap,
-        discovery_gate,
-        selection_gate,
-    )
-    confirmation_gate, power, null_check  # same component models and validators as CampaignProtocol
-```
-
-`identity` = SHA-256 of the sorted JSON document (own namespace by `id`). `cube_spec()` returns the
-same `CubeSpec` as the daily protocol would for identical values, so the cached cube is reused.
-`search_mode` is `fixed_set` only in v1 (`power_search` absent, check B not applicable).
+`CampaignProtocol` gains a read-only property `score_inputs` returning `"daily"` (a property, not a
+field, so the v1–v4 documents and SHA-256 hashes are unchanged; the subclass's field shadows it).
+The subclass's validator requires `search_mode == "fixed_set"` in v1 (a genetic mode on hourly
+inputs needs check B and its own spec). `load_campaign_protocol` reads the document's `id` and
+validates with the matching class, so every pooled command accepts either file; `LoadedProtocol`
+keeps its `CampaignProtocol` type. `cube_spec()` is inherited: identical cube values give the cached
+cube `f1c835a3…` on cohort v2.
 
 ### 3.2 Hourly score inputs — `research/pooled/formula.py`, `scoring.py`
 
@@ -119,17 +89,24 @@ same `CubeSpec` as the daily protocol would for identical values, so the cached 
   an alternate constructor; `panel()` and `formula()` keep their interface and label-blindness.
   Dimensionlessness (`require_dimensionless`) applies unchanged.
 
-### 3.3 Runner and dispatch — `research/pooled/runner.py`, `campaign_run.py`, `power.py`, `null_check.py`, `cli`
+### 3.3 Runner and dispatch — `research/pooled/runner.py`, `scoring.py`, `campaign_run.py`, `null_check.py`, `cli`
 
-- `CubeBuild` gains `hourly: Mapping[str, pd.DataFrame]` (the frames the build loaded; on a cube
-  cache hit they are re-read from the bar cache without provider access). Memory: 452 names ×
-  ~17,500 regular bars ≈ 8M rows; acceptable in the research process.
-- A `score_book(protocol, built)` helper returns the daily or the hourly book by
-  `protocol.score_inputs`; `power`, `null-check` and `campaign` use it. The protocol loader
-  dispatches on `id` (`load_campaign_protocol(path) -> CampaignProtocol | IntradayCampaignProtocol`).
-- Power check A's null formulas are drawn from the protocol's families (hourly seeds), as today.
-- The manifests record `score_inputs`, `score_read`, the hourly history span and, per formula, the
-  first discovery session with a finite score.
+- `build_cube_inputs(..., load_hourly: bool = False)`: `CubeBuild` gains `hourly:
+  Mapping[str, pd.DataFrame]` (empty unless requested). On a build the frames the cube used are
+  kept; on a cube cache hit they are re-read from the bar cache (no provider access). The CLI
+  passes `load_hourly=protocol.score_inputs == "hourly"` for `power`, `null-check` and `campaign`
+  (`power` needs no book, but building with the flag keeps one code path).
+- `score_book(protocol, built) -> ScoreBook` (in `scoring.py`) returns the daily book or
+  `ScoreBook.hourly(built.hourly, ...)` by `protocol.score_inputs`; `campaign_run` and
+  `null_check` use it instead of constructing `ScoreBook` directly.
+- The null check's process pool must not pickle the hourly frames (hundreds of MB per worker). For
+  a fixed-set protocol the only expressions a replicate scores are the seeds, so the parent computes
+  their panels once and hands workers `book.freeze(protocol.seed_expressions)`: a `FrozenPanels`
+  book with the same `panel`/`formula` interface that raises `ValueError` on any other expression.
+  The daily path is unchanged (it keeps passing `adjusted`); the frozen path is used whenever
+  `score_inputs == "hourly"`. Check A needs no book (its formulas are synthetic).
+- Power check A is otherwise unchanged; the manifests record `score_inputs`, `score_read` and,
+  in the campaign, each formula's first discovery session with a finite score.
 
 ### 3.4 The fixed set — `config/research/pooled/intraday-v1.json`
 
@@ -203,9 +180,9 @@ retirement message (shell test as existing script tests do, or a docs-only check
 1. **Reuse the hourly cube; change the score inputs.** Labels, bracket, cohort, windows and the
    cached cube are v4's; the only new object is what a formula may read. Cost if wrong: none to the
    label contract; a rerun of checks A and C (hours, cached).
-2. **Separate protocol model, not a new field.** Adding a defaulted field to `CampaignProtocol`
-   would change every v1–v4 identity; a sibling model with its own `id` keeps the old hashes
-   reproducible.
+2. **A subclass, not a new field on the base.** Adding a defaulted field to `CampaignProtocol`
+   would change every v1–v4 identity; a subclass with its own `id` adds fields only to the new
+   documents and inherits every validator, gate and method.
 3. **Fixed set, not genetic.** Check B failed twice on daily inputs; a search on hourly inputs would
    need its own power demonstration. Eight predeclared formulas test the signal space honestly.
 4. **Read the 09:30 bar, not the 10:30 one.** At 10:35 the 10:30 bar is open; its close is 11:30.
