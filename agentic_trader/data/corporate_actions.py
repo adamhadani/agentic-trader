@@ -56,6 +56,7 @@ class CorporateActionKind(StrEnum):
     NAME_CHANGE = "name_change"
     WORTHLESS_REMOVAL = "worthless_removal"
     RIGHTS_DISTRIBUTION = "rights_distribution"
+    REORGANIZATION = "reorganization"
 
 
 # kind -> (symbol field, related-symbol field, effective-date field) in the provider's record.
@@ -73,6 +74,7 @@ _SHAPES: dict[CorporateActionKind, tuple[str, str | None, str]] = {
     CorporateActionKind.NAME_CHANGE: ("old_symbol", "new_symbol", "process_date"),
     CorporateActionKind.WORTHLESS_REMOVAL: ("symbol", None, "process_date"),
     CorporateActionKind.RIGHTS_DISTRIBUTION: ("source_symbol", "new_symbol", "ex_date"),
+    CorporateActionKind.REORGANIZATION: ("symbol", None, "effective_date"),
 }
 # kind -> {model field: provider field} for the required rates.
 _RATES: dict[CorporateActionKind, dict[str, str]] = {
@@ -93,6 +95,7 @@ _RATES: dict[CorporateActionKind, dict[str, str]] = {
     CorporateActionKind.NAME_CHANGE: {},
     CorporateActionKind.WORTHLESS_REMOVAL: {},
     CorporateActionKind.RIGHTS_DISTRIBUTION: {"rate": "rate"},
+    CorporateActionKind.REORGANIZATION: {},  # optional cash and first-movement rates: see _reorganization_fields
 }
 _PLURAL = {f"{kind.value}s": kind for kind in CorporateActionKind}
 _OPTIONAL_DATES = ("record_date", "payable_date", "process_date")
@@ -156,6 +159,13 @@ class CorporateAction(BaseModel, frozen=True, extra="forbid"):
             return f"name change to {related}"
         if kind == CorporateActionKind.RIGHTS_DISTRIBUTION:
             return f"rights distribution of {related} ({self.rate:g} per share)"
+        if kind == CorporateActionKind.REORGANIZATION:
+            parts = []
+            if self.new_rate is not None and self.old_rate is not None:
+                parts.append(f"{self.new_rate:g} {related} per {self.old_rate:g}")
+            if self.cash_rate is not None:
+                parts.append(f"${self.cash_rate:.2f} cash")
+            return "reorganization" + (f" ({' plus '.join(parts)})" if parts else "")
         return "worthless removal"
 
     def summary(self) -> dict[str, Any]:
@@ -189,6 +199,32 @@ def _optional_date(value: Any, *, kind: CorporateActionKind, field: str) -> date
     return _as_date(value, kind=kind, field=field)
 
 
+def _reorganization_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Optional cash rate plus the single stock movement's symbol and rates; several movements are refused."""
+    identity = raw["id"]
+    fields: dict[str, Any] = {}
+    cash = raw.get("cash_rate")
+    if cash is not None:
+        if not isinstance(cash, int | float) or isinstance(cash, bool):
+            raise ValueError(f"corporate action reorganization {identity}: invalid cash_rate")
+        fields["cash_rate"] = float(cash)
+    movements = raw.get("stock_movements") or []
+    if len(movements) > 1:
+        raise ValueError(
+            f"corporate action reorganization {identity}: {len(movements)} stock movements are not supported"
+        )
+    if movements:
+        movement = movements[0]
+        for model_field, raw_field in (("old_rate", "source_rate"), ("new_rate", "new_rate")):
+            value = movement.get(raw_field)
+            if not isinstance(value, int | float) or isinstance(value, bool):
+                raise ValueError(f"corporate action reorganization {identity}: missing or invalid {raw_field}")  # noqa: TRY004 - one ValueError contract for every bad record
+            fields[model_field] = float(value)
+        related = movement.get("symbol")
+        fields["related_symbol"] = str(related).upper() if related else None
+    return fields
+
+
 def _normalize_one(kind: CorporateActionKind, raw: Mapping[str, Any]) -> CorporateAction:
     symbol_field, related_field, effective_field = _SHAPES[kind]
     identity = raw.get("id")
@@ -215,6 +251,8 @@ def _normalize_one(kind: CorporateActionKind, raw: Mapping[str, Any]) -> Corpora
         **{name: _optional_date(raw.get(name), kind=kind, field=name) for name in _OPTIONAL_DATES},
         **rates,
     }
+    if kind == CorporateActionKind.REORGANIZATION:
+        fields.update(_reorganization_fields(raw))
     return CorporateAction.model_validate(fields)
 
 
