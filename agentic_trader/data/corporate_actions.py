@@ -209,12 +209,16 @@ def _reorganization_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"corporate action reorganization {identity}: invalid cash_rate")
         fields["cash_rate"] = float(cash)
     movements = raw.get("stock_movements") or []
+    if not isinstance(movements, list):
+        raise ValueError(f"corporate action reorganization {identity}: stock_movements is not a list")  # noqa: TRY004 - one ValueError contract for every bad record
     if len(movements) > 1:
         raise ValueError(
             f"corporate action reorganization {identity}: {len(movements)} stock movements are not supported"
         )
     if movements:
         movement = movements[0]
+        if not isinstance(movement, dict):
+            raise ValueError(f"corporate action reorganization {identity}: stock movement is not a mapping")
         for model_field, raw_field in (("old_rate", "source_rate"), ("new_rate", "new_rate")):
             value = movement.get(raw_field)
             if not isinstance(value, int | float) or isinstance(value, bool):

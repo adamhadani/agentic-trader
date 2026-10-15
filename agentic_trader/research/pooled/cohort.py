@@ -139,7 +139,7 @@ class UniverseSpec(BaseModel, frozen=True, extra="forbid"):
         }
 
     @property
-    def floor_rule(self) -> str:
+    def floor_rule(self) -> Literal["static_percentile", "absolute"]:
         return "absolute" if self.min_median_dollar_volume is not None else "static_percentile"
 
 

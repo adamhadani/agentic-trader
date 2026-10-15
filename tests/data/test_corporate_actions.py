@@ -469,3 +469,10 @@ def test_reorganization_with_several_movements_is_refused():
         normalize_actions({"reorganizations": [{**REORG, "stock_movements": movements}]})
     with pytest.raises(ValueError, match="reorg-aaa.*new_rate"):
         normalize_actions({"reorganizations": [{**REORG, "stock_movements": [{"symbol": "BBB", "source_rate": 1}]}]})
+
+
+def test_reorganization_with_malformed_movements_is_refused():
+    with pytest.raises(ValueError, match="reorg-aaa.*not a list"):
+        normalize_actions({"reorganizations": [{**REORG, "stock_movements": {"symbol": "BBB"}}]})
+    with pytest.raises(ValueError, match="reorg-aaa.*not a mapping"):
+        normalize_actions({"reorganizations": [{**REORG, "stock_movements": ["BBB"]}]})
