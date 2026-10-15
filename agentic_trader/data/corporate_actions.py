@@ -161,7 +161,7 @@ class CorporateAction(BaseModel, frozen=True, extra="forbid"):
             return f"rights distribution of {related} ({self.rate:g} per share)"
         if kind == CorporateActionKind.REORGANIZATION:
             parts = []
-            if self.new_rate is not None and self.old_rate is not None:
+            if self.related_symbol and self.new_rate is not None and self.old_rate is not None:
                 parts.append(f"{self.new_rate:g} {related} per {self.old_rate:g}")
             if self.cash_rate is not None:
                 parts.append(f"${self.cash_rate:.2f} cash")

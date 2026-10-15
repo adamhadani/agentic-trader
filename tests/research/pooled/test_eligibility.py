@@ -230,6 +230,25 @@ def test_absolute_floor_boundary_is_inclusive():
     assert result.reasons["illiquid_volume"] == result.eligible.shape[0]
 
 
+def test_absolute_floor_skips_sessions_with_too_few_eligible_names():
+    sessions = days(60)
+    frame = daily(sessions, 20.0, volume=1e6)
+    low = daily(sessions, 12.0, volume=1e3)
+    universe = UniverseSpec(min_price=10.0, min_median_dollar_volume=1.5e7, min_eligible_names=2)
+    result = point_in_time_eligibility(
+        sessions,
+        (sessions[30], sessions[-1]),
+        ["AAA", "LOW"],
+        {"AAA": frame, "LOW": low},
+        {"AAA": frame, "LOW": low},
+        {},
+        universe=universe,
+        atr_window=14,
+    )
+    assert not result.eligible.any()
+    assert result.skipped_sessions == {"too_few_eligible": result.eligible.shape[0]}
+
+
 def test_percentile_rule_is_unchanged():
     sessions = days(60)
     frame = daily(sessions, 20.0, volume=1e6)

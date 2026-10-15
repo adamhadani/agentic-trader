@@ -142,7 +142,7 @@ prospective equity snapshot observed 2026-10-15 (id `00a9a363b02a6f49...`, full 
 Median daily dollar volume over the 60 sessions ending 2023-12-29: rank 400 PAYC $142.5M,
 rank 401 MLM $141.9M, rank 1,000 ZWS $35.1M, rank 1,400 CXM $16.6M. The cohort file's
 SHA-256 is `8c0d807aa47b19d391b3967c97e35715caf974faa9ed4418075d794766fbe8d1`. Overlap with
-cohort v2's 400 screened names is zero by construction; 41 names are also in v2's configured
+cohort v2's 400 screened names is zero as measured; 41 names are also in v2's configured
 groups.
 
 **Declared limitations.**
@@ -176,8 +176,11 @@ actually used is recorded (`static_used`, below).
 **Absolute floor (cohort v3).** `UniverseSpec` takes exactly one of `static_percentile` and
 `min_median_dollar_volume`. With `min_median_dollar_volume` the second rule above becomes: the
 same 20-session median of raw dollar volume at D-1 is at least that dollar amount. No static
-reference set is read, so there is no `static_used` and no static-reference skip; the
-percentile floor would be dominated by mega caps and exclude most of the band. Coverage
+reference set is read, so there is no static-reference skip; the
+percentile floor would be dominated by mega caps and exclude most of the band. The configured
+static names are still fetched (SPY, the events benchmark, is one of them and reaches the cube's
+bar list only that way) and listed in `static_used`, but the absolute floor never reads them:
+`reference_names` is 0 and `eligibility_rule` is `absolute`. Coverage
 records `eligibility_rule` (`static_percentile` or `absolute`) and `dollar_volume_floor`.
 Identities of existing protocols are unchanged (the unset field is left out of the dump).
 
@@ -404,7 +407,7 @@ forward-filled without limit over gaps in either close.
 read offline. The earnings input is the Nasdaq calendar page cache (SHA-256 over the sorted
 `<date>:<page sha256>` lines of every weekday page in `2016-02-23 .. 2026-07-31`; each page is
 re-verified against its `.meta.json` and a missing page fails closed). The corporate-actions
-input is the cohort-v2 acquisition's `actions.json` (its `content_sha256`, window
+input is the cohort-v2 acquisition's `actions.json` (the cohort-v3 acquisition for the cohort3 protocols; its `content_sha256`, window
 `2016-01-01 .. 2027-03-31`, 252 trailing sessions). The runner fails closed before any bar read
 or evaluation when either digest differs from the cache on disk, and the campaign command checks
 both before the ledger reserves anything. The SPY benchmark's adjusted daily bars must be one of
@@ -458,7 +461,7 @@ the others reuse the cached cube where their spec matches. Each protocol runs ch
 
 ## Statistics
 
-The unit is `R_cost` at 5 bps per side; 0 bps is reported alongside (a study result's
+The unit is `R_cost` at 5 bps per side (15 bp for the cohort3 protocols); 0 bps is reported alongside (a study result's
 `gross` key holds the paired edge and leg mean at 0 bps, on the same picks and bootstrap
 draws). Only the 5 bps figures decide.
 
@@ -1033,7 +1036,7 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --nu
 - `screen` takes `config/research/pooled/screen-v3.json` for cohort v3 (a snapshot with a different hash is refused). For `cohort3-events-v1`, `--earnings-pages` is the Nasdaq page cache and `--corporate-actions` is the cohort-v3 acquisition's `actions.json`.
 - `--earnings-pages DIR` is the offline Nasdaq calendar page cache; it is required for an events
   protocol and refused for any other, and its digest must equal the protocol's `pages_sha256`.
-- `--corporate-actions ACTIONS_JSON` is the cohort-v2 corporate-actions acquisition's
+- `--corporate-actions ACTIONS_JSON` is the cohort-v2 (cohort-v3 for the cohort3 protocols) corporate-actions acquisition's
   `actions.json`; it is required for an events protocol and refused for any other, and its
   content digest must equal the protocol's `content_sha256`. `campaign` verifies both inputs
   before it opens the ledger.

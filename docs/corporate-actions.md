@@ -31,8 +31,7 @@ stock-and-cash mergers; redemptions; name changes; worthless removals; rights di
 
 `CorporateAction.effective_on` is the first session whose prices reflect the action: `ex_date` for
 splits (forward and reverse), stock and cash dividends, spin-offs and rights; `effective_date` for
-mergers and unit splits; `process_date` for name changes, redemptions and worthless removals; `effective_date` for
-reorganizations.
+mergers, unit splits and reorganizations; `process_date` for name changes, redemptions and worthless removals.
 
 Measured on 2026-10-11 from the installed checkout (read-only probe):
 
@@ -56,7 +55,7 @@ Measured on 2026-10-11 from the installed checkout (read-only probe):
 - `is_structural` is true for every kind except `cash_dividend`.
 - `reorganization` is a cash-and/or-stock reorganization of the symbol into `related_symbol`, effective on
   `effective_date`; it carries the optional `cash_rate` and the first stock movement's rates, records with
-  several stock movements are refused, and `price_factor()` is `None`.
+  several stock movements fail the whole normalisation (the day's live capture fails closed and the evidence goes stale, which never refuses), and `price_factor()` is `None`.
 - `price_factor()` is `old_rate / new_rate` for forward and reverse splits, `1 / (1 + rate)` for a
   stock dividend, and `None` otherwise.
 - `describe()` is the operator text, for example `forward split 10-for-1`, `cash dividend

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -43,6 +44,16 @@ def test_cohort_v3_is_the_band_without_config_groups():
     v2 = load_cohort(POOLED / "cohort-v2.json").cohort
     screened_v2 = next(s for s in v2.sources if s.kind == "liquidity_screen").symbols
     assert not set(cohort.symbols) & set(screened_v2)  # the band starts where v2's top cut ends
+
+
+def test_cohort3_protocol_files_are_pinned():
+    pins = {
+        "cohort3-daily-v1.json": "002b0ac2",
+        "cohort3-events-v1.json": "b692d7f9",
+        "cohort3-intraday-v1.json": "e6cda73e",
+    }
+    for name, prefix in pins.items():
+        assert hashlib.sha256((POOLED / name).read_bytes()).hexdigest().startswith(prefix), name
 
 
 def test_cohort3_protocols_equal_their_parents_except_the_declared_keys():

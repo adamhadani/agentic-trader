@@ -1660,7 +1660,7 @@ def _repo_relative(path: Path) -> str:
 )
 @coro
 async def alpha_pooled_screen_cmd(rule_path, snapshot_path, output, cache):
-    """The pooled lane's liquidity screen (cohort v2 top cut, cohort v3 band): rank listed equities by SIP median dollar volume (research only)."""
+    """The pooled lane's liquidity screen (v2 top cut, v3 band): rank listed equities by SIP median dollar volume."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     loaded = await asyncio.to_thread(load_screen_rule, rule_path)

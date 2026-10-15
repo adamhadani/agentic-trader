@@ -14,7 +14,7 @@ the [design](superpowers/specs/2026-10-14-pooled-events-design.md).
 | Cohort | v2, `c2c7941014932075…` (452 names, 437 ever eligible) |
 | Cube | spec identity `f1c835a3d3364d2b…`, cube SHA-256 `9bedbf9b4b8e7541…` (cache hit; the cube v4 and intraday-v1 ran on) |
 | Code revision | main `d6fd22e` (PR #121), clean detached worktree |
-| Runs | check A 14:46→16:12 ET and check C 16:12→16:13 ET on 2026-10-14; campaign 04:46→04:50 ET on 2026-10-15 (operator-approved); all outside scan windows |
+| Runs | check A 14:46→16:12 ET and check C 16:12→16:13 ET on 2026-10-14; campaign 05:02 ET on 2026-10-15 (manifest `started_at` 09:02:03 UTC, last artifact 09:02:17 UTC) (operator-approved); all outside scan windows |
 | Artifacts | `~/agentic-trader-research/pooled-power-a-events-v1-20261014/`, `pooled-null-check-events-v1-20261014/`, `pooled-campaign-events-v1-20261015/` (private) |
 
 Event coverage on the real data (recorded in every result): 437 eligible symbols, 2 with no
@@ -67,7 +67,7 @@ mean R:
 | pead_reaction_window | `earnings_reaction / (earnings_age <= 20)` | 1,357 | +0.031 | +0.79 | +0.192 |
 | pead_agreement | `sign(earnings_surprise) * earnings_reaction / (earnings_age <= 20)` | 1,357 | +0.011 | +0.32 | +0.172 |
 | surprise_x_reaction | `earnings_surprise * earnings_reaction / (1 + earnings_age)` | 1,361 | −0.032 | −1.60 | +0.160 |
-| quiet_momentum | `ts_sum(returns, 20) / (earnings_age > 20)` | 1,358 | −0.119 | −3.34 | +0.074 |
+| quiet_momentum | `ts_sum(returns, 20) / (earnings_age > 20)` | 1,358 | −0.119 | −3.34 | +0.073 |
 | quiet_reversal | `-ts_sum(returns, 5) / (earnings_age > 20)` | 1,357 | +0.011 | +0.37 | +0.207 |
 | dividend_yield | `dividend_yield` | 1,248 | −0.049 | −1.17 | +0.158 |
 

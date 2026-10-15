@@ -460,7 +460,10 @@ def test_reorganization_optional_cash_and_movements():
     bare = {k: v for k, v in REORG.items() if k not in ("cash_rate", "stock_movements")}
     (action,) = normalize_actions({"reorganizations": [bare]})
     assert action.related_symbol is None and action.old_rate is None and action.new_rate is None
-    assert action.describe()
+    assert action.describe() == "reorganization"
+    no_symbol = {**REORG, "stock_movements": [{"new_rate": 0.3356, "source_rate": 1}]}
+    (action,) = normalize_actions({"reorganizations": [no_symbol]})
+    assert "?" not in action.describe() and "per 1" not in action.describe()
 
 
 def test_reorganization_with_several_movements_is_refused():

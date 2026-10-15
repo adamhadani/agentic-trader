@@ -68,9 +68,10 @@ class UniverseSpec(BaseModel, frozen=True, extra="forbid"):
 `min_median_dollar_volume` is excluded from the dump when `None`, so the v1–v4, intraday-v1 and
 events-v1 cube spec identity (`f1c835a3d3364d2b…`) and file hashes are unchanged (pin tests).
 `point_in_time_eligibility` applies the absolute floor to the same 20-session median raw dollar
-volume at D−1 (`median_dollar_volume`, the live function) when it is set, and skips the static
-reference entirely (the cube's `reference_names` records 0 and `static_used` is empty for such
-a spec). v3 protocols use:
+volume at D−1 (`median_dollar_volume`, the live function) when it is set, and never reads the static
+reference (the cube's `reference_names` records 0 and `eligibility_rule` is `absolute`; the
+configured static names are still fetched, SPY, the events benchmark, being one, and listed in
+`static_used`). v3 protocols use:
 
 ```json
 "universe": {"min_price": 10.0, "min_median_dollar_volume": 5000000.0, "min_eligible_names": 30}
