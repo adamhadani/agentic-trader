@@ -52,6 +52,7 @@ class ScreenProvenance(BaseModel, frozen=True, extra="forbid"):
     snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     window_end: date
     top: int = Field(ge=1)
+    rank_from: int = Field(default=1, ge=1)
     candidates: int = Field(ge=0)
     excluded: int = Field(ge=0)
     ranked: int = Field(ge=0)

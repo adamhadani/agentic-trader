@@ -1,0 +1,36 @@
+{
+  "id": "pooled-screen",
+  "version": 3,
+  "title": "Pooled cohort v3 screen: the mid-liquidity band, ranks 401-1400 by SIP median raw dollar volume over the 60 sessions ending 2023-12-29, no config-group source",
+  "cohort_version": 3,
+  "survivorship": "listed and active on 2026-10-15; ranked on SIP raw dollar volume of the 60 sessions ending 2023-12-29; not point-in-time; delisted names are absent (a stronger bias for smaller names)",
+  "snapshot": {
+    "snapshot_id": "00a9a363b02a6f4930489c72e275ed9bcf2b7bf4571a327fca9a496cd7d22fac",
+    "sha256": "725a23d735d1dcc4ceb9950a74ce407a06594e35d75dc2711067d60ada63c9cb",
+    "observed": "2026-10-15",
+    "classification": "listed_non_etf_equity_candidate"
+  },
+  "config_groups": [],
+  "feed": "alpaca:sip",
+  "adjustment": "raw",
+  "window_end": "2023-12-29",
+  "window_sessions": 60,
+  "min_sessions_with_bars": 55,
+  "min_price": 10.0,
+  "rank_from": 401,
+  "top": 1400,
+  "excluded_fifth_letters": ["P", "Q", "R", "U", "V", "W", "Z"],
+  "excluded_name_patterns": [
+    "\\bwarrants?\\b",
+    "-\\s*rights?\\.?\\s*$",
+    "\\bpreferred\\b",
+    "%",
+    "\\bnotes?\\b",
+    "\\bdebentures?\\b",
+    "\\bfund\\b",
+    "\\bunits?,? each consist",
+    "\\btangible equity units?\\b",
+    "\\bcorporate units?\\b",
+    "-\\s*units?\\.?\\s*$"
+  ]
+}
