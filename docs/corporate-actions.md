@@ -25,13 +25,13 @@ It waits for the counts the research acquisition below produces on the research 
 
 ## Data
 
-Alpaca's `/v1/corporate-actions` (data API, the keys the desk already uses) returns thirteen typed
+Alpaca's `/v1/corporate-actions` (data API, the keys the desk already uses) returns fourteen typed
 shapes: forward, reverse and unit splits; cash and stock dividends; spin-offs; cash, stock and
-stock-and-cash mergers; redemptions; name changes; worthless removals; rights distributions.
+stock-and-cash mergers; redemptions; name changes; worthless removals; rights distributions; reorganizations.
 
 `CorporateAction.effective_on` is the first session whose prices reflect the action: `ex_date` for
 splits (forward and reverse), stock and cash dividends, spin-offs and rights; `effective_date` for
-mergers and unit splits; `process_date` for name changes, redemptions and worthless removals.
+mergers, unit splits and reorganizations; `process_date` for name changes, redemptions and worthless removals.
 
 Measured on 2026-10-11 from the installed checkout (read-only probe):
 
@@ -53,6 +53,9 @@ Measured on 2026-10-11 from the installed checkout (read-only probe):
   affects), `related_symbol`, `effective_on`, the optional record, payable and process dates, the
   rates, and `special` and `foreign` flags.
 - `is_structural` is true for every kind except `cash_dividend`.
+- `reorganization` is a cash-and/or-stock reorganization of the symbol into `related_symbol`, effective on
+  `effective_date`; it carries the optional `cash_rate` and the first stock movement's rates, records with
+  several stock movements fail the whole normalisation (the day's live capture fails closed and the evidence goes stale, which never refuses), and `price_factor()` is `None`.
 - `price_factor()` is `old_rate / new_rate` for forward and reverse splits, `1 / (1 + rate)` for a
   stock dividend, and `None` otherwise.
 - `describe()` is the operator text, for example `forward split 10-for-1`, `cash dividend

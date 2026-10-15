@@ -428,3 +428,54 @@ def test_lookup_freshness():
     )
     future = {**check, "checked_at": (now + timedelta(hours=1)).isoformat()}
     assert CorporateActionsLookup.build(capture, future, now=now, max_age_seconds=3600).status == "stale"
+
+
+REORG = {
+    "id": "reorg-aaa",
+    "symbol": "aaa",
+    "cusip": "813921103",
+    "cash_rate": 3.57426787,
+    "effective_date": "2026-09-01",
+    "payable_date": "2026-09-08",
+    "process_date": "2026-09-08",
+    "stock_movements": [{"cusip": "36168Q104", "new_rate": 0.3356, "source_rate": 1, "symbol": "bbb"}],
+}
+
+
+def test_reorganization_uses_first_stock_movement():
+    (action,) = normalize_actions({"reorganizations": [REORG]})
+    assert action.kind == CorporateActionKind.REORGANIZATION
+    assert (action.symbol, action.related_symbol) == ("AAA", "BBB")
+    assert action.effective_on == date(2026, 9, 1)
+    assert action.payable_date == date(2026, 9, 8) and action.process_date == date(2026, 9, 8)
+    assert (action.cash_rate, action.old_rate, action.new_rate) == (3.57426787, 1.0, 0.3356)
+    assert action.is_structural and action.price_factor() is None
+    assert "reorganization" in action.describe() and "BBB" in action.describe()
+
+
+def test_reorganization_optional_cash_and_movements():
+    stock_only = {k: v for k, v in REORG.items() if k != "cash_rate"}
+    (action,) = normalize_actions({"reorganizations": [stock_only]})
+    assert action.cash_rate is None and action.new_rate == 0.3356
+    bare = {k: v for k, v in REORG.items() if k not in ("cash_rate", "stock_movements")}
+    (action,) = normalize_actions({"reorganizations": [bare]})
+    assert action.related_symbol is None and action.old_rate is None and action.new_rate is None
+    assert action.describe() == "reorganization"
+    no_symbol = {**REORG, "stock_movements": [{"new_rate": 0.3356, "source_rate": 1}]}
+    (action,) = normalize_actions({"reorganizations": [no_symbol]})
+    assert "?" not in action.describe() and "per 1" not in action.describe()
+
+
+def test_reorganization_with_several_movements_is_refused():
+    movements = [*REORG["stock_movements"], {"symbol": "CCC", "new_rate": 1, "source_rate": 1}]
+    with pytest.raises(ValueError, match="reorg-aaa"):
+        normalize_actions({"reorganizations": [{**REORG, "stock_movements": movements}]})
+    with pytest.raises(ValueError, match="reorg-aaa.*new_rate"):
+        normalize_actions({"reorganizations": [{**REORG, "stock_movements": [{"symbol": "BBB", "source_rate": 1}]}]})
+
+
+def test_reorganization_with_malformed_movements_is_refused():
+    with pytest.raises(ValueError, match="reorg-aaa.*not a list"):
+        normalize_actions({"reorganizations": [{**REORG, "stock_movements": {"symbol": "BBB"}}]})
+    with pytest.raises(ValueError, match="reorg-aaa.*not a mapping"):
+        normalize_actions({"reorganizations": [{**REORG, "stock_movements": ["BBB"]}]})

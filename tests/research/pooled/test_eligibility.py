@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, time, timedelta
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.pooled.cohort import UniverseSpec, _DailySlicer, point_in_time_eligibility
@@ -170,3 +171,95 @@ def test_eligibility_reports_progress_about_every_hundred_sessions():
     )
     assert len(result.sessions) == 250 and result.eligible.all()
     assert messages == ["eligibility 100/250 sessions", "eligibility 200/250 sessions"]
+
+
+ABSOLUTE = UniverseSpec(min_price=10.0, min_median_dollar_volume=1.5e7, min_eligible_names=1)
+
+
+def test_universe_spec_needs_exactly_one_floor():
+    with pytest.raises(ValidationError):
+        UniverseSpec(min_price=10.0, min_eligible_names=1)
+    with pytest.raises(ValidationError):
+        UniverseSpec(min_price=10.0, static_percentile=0.25, min_median_dollar_volume=1e7, min_eligible_names=1)
+    assert UNIVERSE.floor_rule == "static_percentile" and ABSOLUTE.floor_rule == "absolute"
+
+
+def test_universe_dump_omits_the_unused_floor():
+    assert "min_median_dollar_volume" not in UNIVERSE.model_dump(mode="json")
+    assert "static_percentile" not in ABSOLUTE.model_dump(mode="json")
+    assert ABSOLUTE.model_dump(mode="json") == {
+        "min_price": 10.0,
+        "min_median_dollar_volume": 1.5e7,
+        "min_eligible_names": 1,
+    }
+
+
+def test_absolute_floor_ignores_the_static_reference():
+    sessions = days(60)
+    frame = daily(sessions, 20.0, volume=1e6)  # $2e7 median dollar volume
+    result = point_in_time_eligibility(
+        sessions,
+        (sessions[30], sessions[-1]),
+        ["AAA"],
+        {"AAA": frame},
+        {"AAA": frame},
+        {},  # no static names at all
+        universe=ABSOLUTE,
+        atr_window=14,
+    )
+    assert result.skipped_sessions == {}
+    assert result.eligible.all()
+    assert set(result.reference) == {1.5e7} and set(result.reference_names) == {0}
+
+
+def test_absolute_floor_boundary_is_inclusive():
+    sessions = days(60)
+    exactly = daily(sessions, 15.0, volume=1e6)  # $1.5e7 == floor -> eligible
+    below = daily(sessions, 14.0, volume=1e6)  # $1.4e7 < floor -> illiquid_volume
+    result = point_in_time_eligibility(
+        sessions,
+        (sessions[30], sessions[-1]),
+        ["EQ", "LO"],
+        {"EQ": exactly, "LO": below},
+        {"EQ": exactly, "LO": below},
+        {},
+        universe=ABSOLUTE,
+        atr_window=14,
+    )
+    assert result.eligible[:, 0].all() and not result.eligible[:, 1].any()
+    assert result.reasons["illiquid_volume"] == result.eligible.shape[0]
+
+
+def test_absolute_floor_skips_sessions_with_too_few_eligible_names():
+    sessions = days(60)
+    frame = daily(sessions, 20.0, volume=1e6)
+    low = daily(sessions, 12.0, volume=1e3)
+    universe = UniverseSpec(min_price=10.0, min_median_dollar_volume=1.5e7, min_eligible_names=2)
+    result = point_in_time_eligibility(
+        sessions,
+        (sessions[30], sessions[-1]),
+        ["AAA", "LOW"],
+        {"AAA": frame, "LOW": low},
+        {"AAA": frame, "LOW": low},
+        {},
+        universe=universe,
+        atr_window=14,
+    )
+    assert not result.eligible.any()
+    assert result.skipped_sessions == {"too_few_eligible": result.eligible.shape[0]}
+
+
+def test_percentile_rule_is_unchanged():
+    sessions = days(60)
+    frame = daily(sessions, 20.0, volume=1e6)
+    result = point_in_time_eligibility(
+        sessions,
+        (sessions[30], sessions[-1]),
+        ["AAA"],
+        {"AAA": frame},
+        {"AAA": frame},
+        reference(sessions),
+        universe=UNIVERSE.model_copy(update={"min_eligible_names": 1}),
+        atr_window=14,
+    )
+    assert result.eligible.all() and set(result.reference_names) == {20}

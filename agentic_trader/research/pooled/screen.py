@@ -21,12 +21,12 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from agentic_trader.research.apriori.pead_events import by_session
 from agentic_trader.research.pooled.cohort import SUPPORTED_SYMBOL, Cohort
@@ -80,7 +80,7 @@ class ScreenRule(BaseModel, frozen=True, extra="forbid"):
     cohort_version: int = Field(ge=1)
     survivorship: str
     snapshot: SnapshotRef
-    config_groups: tuple[str, ...] = Field(min_length=1)
+    config_groups: tuple[str, ...] = ()
     feed: Literal["alpaca:sip"]
     adjustment: Literal["raw"]
     window_end: date
@@ -88,6 +88,9 @@ class ScreenRule(BaseModel, frozen=True, extra="forbid"):
     min_sessions_with_bars: int = Field(ge=1)
     min_price: float = Field(gt=0)
     top: int = Field(ge=1)
+    # Band selection (cohort v3): ranks rank_from..top inclusive. Left out of the dump when 1 so
+    # the frozen screen-v2 shape is unchanged.
+    rank_from: int = Field(default=1, ge=1)
     excluded_fifth_letters: tuple[str, ...]
     excluded_name_patterns: tuple[str, ...]
 
@@ -109,7 +112,16 @@ class ScreenRule(BaseModel, frozen=True, extra="forbid"):
     def _window(self) -> ScreenRule:
         if self.min_sessions_with_bars > self.window_sessions:
             raise ValueError("min_sessions_with_bars cannot exceed window_sessions")
+        if self.rank_from > self.top:
+            raise ValueError("rank_from cannot exceed top")
         return self
+
+    @model_serializer(mode="wrap")
+    def _dump(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.rank_from == 1:
+            data.pop("rank_from", None)
+        return data
 
 
 @dataclass(frozen=True)
@@ -226,7 +238,7 @@ def screen_table(
     ranked = table[table["exclusion"] == ""].sort_values(["median_dollar_volume", "symbol"], ascending=[False, True])
     rank = {symbol: position for position, symbol in enumerate(ranked["symbol"], start=1)}
     table["rank"] = [rank.get(symbol, 0) for symbol in table["symbol"]]
-    table["selected"] = (table["rank"] >= 1) & (table["rank"] <= rule.top)
+    table["selected"] = (table["rank"] >= rule.rank_from) & (table["rank"] <= rule.top)
     ordered = pd.concat(
         [table[table["rank"] > 0].sort_values("rank"), table[table["rank"] == 0].sort_values("symbol")],
         ignore_index=True,
@@ -252,16 +264,14 @@ def cohort_document(
     screen_sha256: str,
     snapshot_sha256: str,
 ) -> dict:
-    """The cohort file this screen proposes: the scan-universe equities plus the top-ranked names."""
+    """The cohort file this screen proposes: the rule's config-group equities, if any, plus its ranked band."""
     rule = loaded.rule
     screened = sorted(str(symbol) for symbol in table.loc[table["selected"], "symbol"])
-    configured = sorted(set(config_symbols))
+    configured = sorted(set(config_symbols)) if rule.config_groups else []
     everything = sorted({*configured, *screened})
-    return {
-        "id": "pooled-cohort",
-        "version": rule.cohort_version,
-        "survivorship": rule.survivorship,
-        "sources": [
+    sources: list[dict] = []
+    if rule.config_groups:
+        sources.append(
             {
                 "kind": "config_groups",
                 "description": (
@@ -269,25 +279,35 @@ def cohort_document(
                 ),
                 "identity": hashlib.sha256("\n".join(configured).encode()).hexdigest(),
                 "symbols": configured,
-            },
-            {
-                "kind": "liquidity_screen",
-                "description": rule.title,
-                "identity": screen_sha256,
-                "symbols": screened,
-                "screen": {
-                    "rule": rule_path,
-                    "rule_sha256": loaded.sha256,
-                    "snapshot_id": rule.snapshot.snapshot_id,
-                    "snapshot_sha256": snapshot_sha256,
-                    "window_end": rule.window_end.isoformat(),
-                    "top": rule.top,
-                    "candidates": len(table),
-                    "excluded": int((table["exclusion"] != "").sum()),
-                    "ranked": int((table["rank"] > 0).sum()),
-                },
-            },
-        ],
+            }
+        )
+    provenance: dict = {
+        "rule": rule_path,
+        "rule_sha256": loaded.sha256,
+        "snapshot_id": rule.snapshot.snapshot_id,
+        "snapshot_sha256": snapshot_sha256,
+        "window_end": rule.window_end.isoformat(),
+        "top": rule.top,
+        "candidates": len(table),
+        "excluded": int((table["exclusion"] != "").sum()),
+        "ranked": int((table["rank"] > 0).sum()),
+    }
+    if rule.rank_from != 1:
+        provenance["rank_from"] = rule.rank_from
+    sources.append(
+        {
+            "kind": "liquidity_screen",
+            "description": rule.title,
+            "identity": screen_sha256,
+            "symbols": screened,
+            "screen": provenance,
+        }
+    )
+    return {
+        "id": "pooled-cohort",
+        "version": rule.cohort_version,
+        "survivorship": rule.survivorship,
+        "sources": sources,
         "excluded": {
             symbol: "unsupported symbol form" for symbol in everything if not SUPPORTED_SYMBOL.fullmatch(symbol)
         },

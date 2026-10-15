@@ -117,6 +117,46 @@ reason or rank, median dollar volume, last close and sessions with bars) and
 `cohort.json`, which is copied unchanged to `cohort-v2.json`. It reads no returns and no
 labels. Eligibility per session is unchanged: the screen only chooses candidates.
 
+### Cohort v3: the mid-liquidity band
+
+Design: [pooled cohort v3](superpowers/specs/2026-10-15-pooled-cohort-v3-design.md).
+
+**Why.** Three fixed sets (daily, intraday, events) found no finalists on cohort v2's 400
+names, which are the most liquid US listings. The literature places many cross-sectional
+anomalies in less liquid names, where mispricing is larger and arbitrage costlier, and a
+mid-liquidity band is still tradeable at paper size. Cohort v3 asks the same questions of a
+different population; it does not reopen the v2 results.
+
+**Rule.** `config/research/pooled/screen-v3.json` is the v2 rule with two changes: it takes
+ranks 401-1,400 (`rank_from: 401`, `top: 1400`) instead of the first 400, and it has no
+config-group source, so a name enters only through the snapshot. Window, price floor,
+bar-count minimum and every exclusion are the v2 rules. `rank_from` is left out of the file
+when it is 1, so the frozen `screen-v2.json` is byte-identical in meaning.
+
+**Snapshot.** Cohort v2's snapshot file was no longer on disk, so v3 pins its own: the
+prospective equity snapshot observed 2026-10-15 (id `00a9a363b02a6f49...`, full id in
+`screen-v3.json`; file SHA-256 `725a23d735d1dcc4...`), 6,683
+`listed_non_etf_equity_candidate` members of 33,571 assets.
+
+**Counts.** 6,683 candidates, 3,952 excluded, 2,731 ranked, 1,000 selected (ranks 401-1,400).
+Median daily dollar volume over the 60 sessions ending 2023-12-29: rank 400 PAYC $142.5M,
+rank 401 MLM $141.9M, rank 1,000 ZWS $35.1M, rank 1,400 CXM $16.6M. The cohort file's
+SHA-256 is `8c0d807aa47b19d391b3967c97e35715caf974faa9ed4418075d794766fbe8d1`. Overlap with
+cohort v2's 400 screened names is zero as measured; 41 names are also in v2's configured
+groups.
+
+**Declared limitations.**
+
+- *Survivorship.* Only names listed and active on 2026-10-15 are present. Delisted names are
+  absent, which biases a long-only pool upward, and more so for smaller names.
+- *Snapshot date versus ranking window.* The snapshot is 2026-10-15; the ranking window is
+  2023. The ranking is a single point in time, so a name's liquidity in 2016 may have been far
+  below the band; per-session eligibility (the absolute floor below) handles that.
+- *Cost.* 15 bp per side is an estimate, not measured slippage.
+- *Sources as served now.* The Nasdaq calendar and corporate-actions sources are as served
+  today, with identity breaks handled as in events-v1.
+- Current membership does not create point-in-time historical eligibility.
+
 ## Point-in-time eligibility
 
 A decision at 10:35 New York on session D can use only completed sessions, so
@@ -132,6 +172,17 @@ functions are reused, not reimplemented):
 The static reference set is every configured equity contract, the ETFs included, as in
 the live gate and PEAD. Only a name with raw bars enters it, and the set the build
 actually used is recorded (`static_used`, below).
+
+**Absolute floor (cohort v3).** `UniverseSpec` takes exactly one of `static_percentile` and
+`min_median_dollar_volume`. With `min_median_dollar_volume` the second rule above becomes: the
+same 20-session median of raw dollar volume at D-1 is at least that dollar amount. No static
+reference set is read, so there is no static-reference skip; the
+percentile floor would be dominated by mega caps and exclude most of the band. The configured
+static names are still fetched (SPY, the events benchmark, is one of them and reaches the cube's
+bar list only that way) and listed in `static_used`, but the absolute floor never reads them:
+`reference_names` is 0 and `eligibility_rule` is `absolute`. Coverage
+records `eligibility_rule` (`static_percentile` or `absolute`) and `dollar_volume_floor`.
+Identities of existing protocols are unchanged (the unset field is left out of the dump).
 
 Raw bars are used for price and liquidity because adjusted history depends on later
 corporate actions. Eligibility never depends on a formula, so every formula is compared
@@ -356,7 +407,7 @@ forward-filled without limit over gaps in either close.
 read offline. The earnings input is the Nasdaq calendar page cache (SHA-256 over the sorted
 `<date>:<page sha256>` lines of every weekday page in `2016-02-23 .. 2026-07-31`; each page is
 re-verified against its `.meta.json` and a missing page fails closed). The corporate-actions
-input is the cohort-v2 acquisition's `actions.json` (its `content_sha256`, window
+input is the cohort-v2 acquisition's `actions.json` (the cohort-v3 acquisition for the cohort3 protocols; its `content_sha256`, window
 `2016-01-01 .. 2027-03-31`, 252 trailing sessions). The runner fails closed before any bar read
 or evaluation when either digest differs from the cache on disk, and the campaign command checks
 both before the ledger reserves anything. The SPY benchmark's adjusted daily bars must be one of
@@ -386,9 +437,31 @@ check B does not apply.
 trades or earns promotion credit, and the lane-wide confirmation window stays unused until a
 finalist freezes. See the [design](superpowers/specs/2026-10-14-pooled-events-design.md).
 
+### Cohort v3 protocols
+
+Three files re-freeze the fixed sets on cohort v3 (`config/research/pooled/cohort-v3.json`).
+Each differs from its parent only in the cohort, the universe
+(`{"min_price": 10.0, "min_median_dollar_volume": 5000000.0, "min_eligible_names": 30}`) and
+`decision_cost_bps` 15.0; formulas, selection, statistics and thresholds are identical.
+
+| File | Parent | SHA-256 |
+| --- | --- | --- |
+| `cohort3-events-v1.json` | `events-v1` | `b692d7f9a1ec1d797542f710a69aa2f7556e72873e29f571f4bf946a37243843` |
+| `cohort3-daily-v1.json` | campaign v4 | `002b0ac27e2912105d8020495aabdf3e879c6bbc8bfa77665de45e297f290574` |
+| `cohort3-intraday-v1.json` | `intraday-v1` | `e6cda73e2c157a184b9c17beb00a0432d36aa0fac3fdbb2d6130c8a2ef14f124` |
+
+The events protocol pins the Nasdaq page cache and the cohort-v3 corporate-actions
+acquisition (acquired 2026-10-15: 23,617 actions, `content_sha256`
+`8a547b0694d9f171fa1fa7e39f492749f6468393426cf1a69de8a0bde0386c8e`). The first acquisition
+attempt failed closed on Alpaca's `reorganizations` type, which the parser now knows.
+
+Run order: events, then daily, then intraday. Check A on the first protocol builds the cube;
+the others reuse the cached cube where their spec matches. Each protocol runs checks A and C
+(fixed set, no check B); a campaign runs per protocol, only on operator approval.
+
 ## Statistics
 
-The unit is `R_cost` at 5 bps per side; 0 bps is reported alongside (a study result's
+The unit is `R_cost` at 5 bps per side (15 bp for the cohort3 protocols); 0 bps is reported alongside (a study result's
 `gross` key holds the paired edge and leg mean at 0 bps, on the same picks and bootstrap
 draws). Only the 5 bps figures decide.
 
@@ -960,9 +1033,10 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --nu
   `--search-power` is required for a genetic protocol and refused for a fixed set.
   `ENTRY` is a literature entry file. `--workers` exists on `power` and `null-check` and runs the
   replicates in N processes.
+- `screen` takes `config/research/pooled/screen-v3.json` for cohort v3 (a snapshot with a different hash is refused). For `cohort3-events-v1`, `--earnings-pages` is the Nasdaq page cache and `--corporate-actions` is the cohort-v3 acquisition's `actions.json`.
 - `--earnings-pages DIR` is the offline Nasdaq calendar page cache; it is required for an events
   protocol and refused for any other, and its digest must equal the protocol's `pages_sha256`.
-- `--corporate-actions ACTIONS_JSON` is the cohort-v2 corporate-actions acquisition's
+- `--corporate-actions ACTIONS_JSON` is the cohort-v2 (cohort-v3 for the cohort3 protocols) corporate-actions acquisition's
   `actions.json`; it is required for an events protocol and refused for any other, and its
   content digest must equal the protocol's `content_sha256`. `campaign` verifies both inputs
   before it opens the ledger.

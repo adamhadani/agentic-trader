@@ -1,4 +1,5 @@
 import hashlib
+import json
 from datetime import date
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.pooled.cohort import Cohort, CohortSource, load_cohort
 from agentic_trader.research.pooled.screen import (
     LoadedScreenRule,
+    ScreenRule,
     cohort_document,
     config_group_symbols,
     exclusion_reason,
@@ -134,13 +136,22 @@ def test_snapshot_candidates_refuse_another_snapshot():
         snapshot_candidates({"snapshot_id": "0" * 64, "members": []}, RULE)
 
 
-def test_screen_table_ranks_by_median_dollar_volume_and_breaks_ties_by_symbol():
+def _three_name_table(rule=SMALL):
     frames = {
         "AAA": daily([20.0] * 5, [1e6] * 5),
         "BBB": daily([50.0] * 5, [1e6] * 5),
         "CCC": daily([20.0] * 5, [1e6] * 5),
     }
-    table = screen_table(["AAA", "BBB", "CCC"], {}, frames, SESSIONS, SMALL)
+    return screen_table(["AAA", "BBB", "CCC"], {}, frames, SESSIONS, rule)
+
+
+def _screened_table():
+    frames = {s: daily([20.0 + i] * 5, [1e6] * 5) for i, s in enumerate(["AAA", "BBB", "CCC"])}
+    return screen_table(["AAA", "BBB", "CCC"], {"XTERW": "nasdaq fifth letter W"}, frames, SESSIONS, SMALL)
+
+
+def test_screen_table_ranks_by_median_dollar_volume_and_breaks_ties_by_symbol():
+    table = _three_name_table()
     assert list(table["symbol"]) == ["BBB", "AAA", "CCC"]
     assert list(table["rank"]) == [1, 2, 3]
     assert list(table["selected"]) == [True, True, False]
@@ -182,8 +193,7 @@ def test_the_csv_is_byte_identical_for_the_same_table():
 
 
 def test_cohort_document_unions_the_scan_equities_and_the_screened_names():
-    frames = {s: daily([20.0 + i] * 5, [1e6] * 5) for i, s in enumerate(["AAA", "BBB", "CCC"])}
-    table = screen_table(["AAA", "BBB", "CCC"], {"XTERW": "nasdaq fifth letter W"}, frames, SESSIONS, SMALL)
+    table = _screened_table()
     csv = table_csv(table)
     loaded = LoadedScreenRule(rule=SMALL, sha256="a" * 64, path=Path("screen-v2.json"))
     doc = cohort_document(
@@ -242,3 +252,69 @@ def test_cohort_v1_still_loads_with_its_frozen_hash():
     loaded = load_cohort(REPO / "config/research/pooled/cohort-v1.json")
     assert loaded.sha256 == "966b67c53ad617d698089dd5b5786b05d4d5248f8844e3326d7addbe8d4ac5a9"
     assert all(source.screen is None for source in loaded.cohort.sources)
+
+
+SCREEN_V2_SHA8 = "cfd36022"
+V2 = REPO / "config/research/pooled/screen-v2.json"
+V3 = REPO / "config/research/pooled/screen-v3.json"
+
+
+def test_screen_v2_hash_and_dump_are_unchanged_by_the_band_fields():
+    assert LOADED.sha256.startswith(SCREEN_V2_SHA8)
+    dumped = RULE.model_dump(mode="json")
+    assert "rank_from" not in dumped
+    assert list(dumped) == list(json.loads(V2.read_text()))
+    assert RULE.rank_from == 1
+
+
+def test_screen_v3_is_the_band_401_to_1400_on_the_2026_10_15_snapshot_without_config_groups():
+    loaded = load_screen_rule(V3)
+    rule = loaded.rule
+    assert rule.cohort_version == 3 and rule.version == 3
+    assert rule.rank_from == 401 and rule.top == 1400
+    assert rule.config_groups == ()
+    assert rule.snapshot.snapshot_id == "00a9a363b02a6f4930489c72e275ed9bcf2b7bf4571a327fca9a496cd7d22fac"
+    assert rule.snapshot.sha256 == "725a23d735d1dcc4ceb9950a74ce407a06594e35d75dc2711067d60ada63c9cb"
+    assert rule.snapshot.observed.isoformat() == "2026-10-15"
+    assert rule.snapshot.classification == RULE.snapshot.classification
+    for name in (
+        "window_end",
+        "window_sessions",
+        "min_sessions_with_bars",
+        "min_price",
+        "feed",
+        "adjustment",
+        "excluded_fifth_letters",
+        "excluded_name_patterns",
+    ):
+        assert getattr(rule, name) == getattr(RULE, name), name
+    assert rule.model_dump(mode="json")["rank_from"] == 401
+
+
+def test_rank_from_cannot_exceed_top():
+    document = {**RULE.model_dump(mode="json"), "rank_from": 500, "top": 400}
+    with pytest.raises(ValidationError, match="rank_from"):
+        ScreenRule.model_validate(document)
+
+
+def test_screen_table_selects_the_band_only():
+    rule = SMALL.model_copy(update={"rank_from": 2, "top": 3})
+    table = _three_name_table(rule)
+    assert list(table.sort_values("rank")["selected"]) == [False, True, True]
+
+
+def test_cohort_document_without_config_groups_has_only_the_screen_source():
+    rule = SMALL.model_copy(update={"config_groups": (), "rank_from": 2})
+    loaded = LoadedScreenRule(rule=rule, sha256="a" * 64, path=Path("screen-v3.json"))
+    document = cohort_document(
+        _screened_table(),
+        loaded,
+        rule_path="config/research/pooled/screen-v3.json",
+        config_symbols=[],
+        screen_sha256="b" * 64,
+        snapshot_sha256=rule.snapshot.sha256,
+    )
+    assert [source["kind"] for source in document["sources"]] == ["liquidity_screen"]
+    assert document["sources"][0]["screen"]["rank_from"] == 2
+    assert document["symbols"] == sorted(document["sources"][0]["symbols"])
+    Cohort.model_validate(document)

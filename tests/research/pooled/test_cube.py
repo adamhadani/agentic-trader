@@ -91,6 +91,8 @@ def test_missing_hourly_bars_are_counted_not_labelled():
     assert not view.labelled.any()
     assert view.holding[0, 0] == SPEC.bracket.max_hold_sessions
     assert cube.coverage["unlabelled_by_year"]["no_hourly_bars"] == {"2021": 1}
+    assert cube.coverage["eligibility_rule"] == "static_percentile"
+    assert cube.coverage["dollar_volume_floor"] is None
 
 
 def test_the_cube_exposes_labels_only_through_windows():

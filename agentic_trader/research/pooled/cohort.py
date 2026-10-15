@@ -16,11 +16,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.pead_events import atr_through, by_session
@@ -52,6 +52,7 @@ class ScreenProvenance(BaseModel, frozen=True, extra="forbid"):
     snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     window_end: date
     top: int = Field(ge=1)
+    rank_from: int = Field(default=1, ge=1)
     candidates: int = Field(ge=0)
     excluded: int = Field(ge=0)
     ranked: int = Field(ge=0)
@@ -115,9 +116,31 @@ def load_cohort(path: Path) -> LoadedCohort:
 
 
 class UniverseSpec(BaseModel, frozen=True, extra="forbid"):
+    """Per-session eligibility: a price floor and ONE dollar-volume floor -- the static reference
+    set's percentile (v1-v4, intraday-v1, events-v1) or an absolute 20-session median raw dollar
+    volume in dollars (cohort v3, whose names sit below the mega-cap reference)."""
+
     min_price: float = Field(gt=0)
-    static_percentile: float = Field(gt=0, lt=1)
+    static_percentile: float | None = Field(default=None, gt=0, lt=1)
+    min_median_dollar_volume: float | None = Field(default=None, gt=0)
     min_eligible_names: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _one_floor(self) -> UniverseSpec:
+        if (self.static_percentile is None) == (self.min_median_dollar_volume is None):
+            raise ValueError("exactly one of static_percentile and min_median_dollar_volume must be set")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _dump(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        return {
+            k: v for k, v in data.items() if v is not None or k not in ("static_percentile", "min_median_dollar_volume")
+        }
+
+    @property
+    def floor_rule(self) -> Literal["static_percentile", "absolute"]:
+        return "absolute" if self.min_median_dollar_volume is not None else "static_percentile"
 
 
 class _DailySlicer:
@@ -183,7 +206,8 @@ def point_in_time_eligibility(
 
     ``as_of`` is D-1, the last completed session. The $10 floor and the dollar-volume screen
     read **raw** bars (adjusted history depends on later corporate actions); ATR reads the
-    adjusted bars. Eligibility never depends on a formula, so every formula shares one control.
+    adjusted bars. The absolute floor reads the same 20-session median raw dollar volume at D-1 and
+    consults no static name. Eligibility never depends on a formula, so every formula shares one control.
     ``progress`` is told the session count about every ``_PROGRESS_SESSIONS`` sessions.
     """
     days = tuple(trading_days)
@@ -204,16 +228,24 @@ def point_in_time_eligibility(
     static_slicers = {s: _DailySlicer(f) for s, f in static_raw.items() if f is not None and not f.empty}
     keyed = {s: by_session(f) for s, f in adjusted.items() if f is not None and not f.empty}
 
+    absolute = universe.min_median_dollar_volume
+
     for row, i in enumerate(rows):
         if progress is not None and row and row % _PROGRESS_SESSIONS == 0:
             progress(f"eligibility {row}/{len(rows)} sessions")
         as_of = days[i - 1]
-        ref = static_reference(
-            {s: sl.upto(as_of) for s, sl in static_slicers.items()}, universe.static_percentile, as_of=as_of
-        )
-        reference.append(ref.value)
-        reference_names.append(ref.names)
-        if ref.value is None:
+        floor: float | None
+        if absolute is not None:
+            floor, names_used = absolute, 0
+        else:
+            assert universe.static_percentile is not None  # guaranteed by UniverseSpec._one_floor
+            ref = static_reference(
+                {s: sl.upto(as_of) for s, sl in static_slicers.items()}, universe.static_percentile, as_of=as_of
+            )
+            floor, names_used = ref.value, ref.names
+        reference.append(floor)
+        reference_names.append(names_used)
+        if floor is None:
             skipped["no_reference"] += 1
             continue
         for col, symbol in enumerate(names):
@@ -232,7 +264,7 @@ def point_in_time_eligibility(
             if close < universe.min_price:
                 reasons["illiquid_price"] += 1
                 continue
-            if volume < ref.value:
+            if volume < floor:
                 reasons["illiquid_volume"] += 1
                 continue
             value = atr_through(adj, days, i - 1, atr_window)
