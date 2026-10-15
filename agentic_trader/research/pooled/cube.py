@@ -305,6 +305,8 @@ def build_cube(
     coverage = {
         **(provenance or {}),
         "sessions": len(eligibility.sessions),
+        "eligibility_rule": spec.universe.floor_rule,
+        "dollar_volume_floor": spec.universe.min_median_dollar_volume,
         "skipped_sessions": dict(eligibility.skipped_sessions),
         "eligibility_reasons": dict(eligibility.reasons),
         "eligible_by_year": dict(eligible_by_year),

@@ -388,3 +388,15 @@ def test_event_inputs_document_is_none_for_daily_and_intraday_protocols():
     assert event_inputs_document(load_campaign_protocol(INTRADAY_PATH).protocol) is None
     events = EventsCampaignProtocol.model_validate(_events_document())
     assert event_inputs_document(events) == events.event_inputs.model_dump(mode="json")
+
+
+def test_existing_protocol_identities_survive_the_universe_floor_field():
+    for path, sha8 in (
+        ("campaign-v4.json", "a72f2e65"),
+        ("intraday-v1.json", "5b4c3fdf"),
+        ("events-v1.json", "4e156fd8"),
+    ):
+        loaded = load_campaign_protocol(Path("config/research/pooled") / path)
+        assert loaded.sha256.startswith(sha8)
+        assert loaded.protocol.cube_spec().identity.startswith("f1c835a3d3364d2b"), path
+        assert "min_median_dollar_volume" not in loaded.protocol.model_dump(mode="json")["universe"]
