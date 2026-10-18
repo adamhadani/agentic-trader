@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
@@ -24,8 +24,12 @@ from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.execution.durable import EventKind, RankedOutcome
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.setups.labels import BracketHit, SetupLevels, label_bracket, regular_session_bars
-from agentic_trader.research.setups.runner import BarSource
 from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS, TapeState, tape_buckets, tape_state
+
+
+if TYPE_CHECKING:
+    # runner imports market_r from here, so the bar-source protocol is type-only.
+    from agentic_trader.research.setups.runner import BarSource
 
 
 __all__ = [
