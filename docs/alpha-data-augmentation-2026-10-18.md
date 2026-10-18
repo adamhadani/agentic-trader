@@ -69,12 +69,12 @@ each about the size of the events-v1 work (one SDD day each).
   surprise fields are therefore contaminated by later revisions. EDGAR timestamps (#3) fix the
   *when*; the *consensus history* stays unavailable without a paid estimates vendor.
 - **Power, not search.** 48 fixed-set tests found nothing partly because the label's base rate
-  is low and the arms are correlated. The bracket counterfactual (started 2026-10-18; run pending) settles the exit
+  is low and the arms are correlated. The bracket counterfactual (ran 2026-10-18: `no_change`, [result](bracket-counterfactual-2026-10-18.md)) settled the exit
   side; new fields should be tested as fixed sets of ≤ 8 formulas on one cohort, as before.
 
 ## 4. Recommended order
 
-1. **Bracket counterfactual v1** (started 2026-10-18): exits, on the replayed native setups.
+1. **Bracket counterfactual v1** (ran 2026-10-18: `no_change`, [result](bracket-counterfactual-2026-10-18.md)): exits, on the replayed native setups.
 2. **Survivorship spike** (#5): does Alpaca return SIP bars for inactive symbols? If yes, build a
    dated inactive-asset list and re-screen cohort v2 with point-in-time eligibility; if no,
    record it and price option #11.
