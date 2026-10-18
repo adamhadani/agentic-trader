@@ -211,7 +211,7 @@ is on the entry side.
 
 | Field | Value |
 | --- | --- |
-| `version` | `"bracket-counterfactual-v1"` |
+| `version` | `"bracket_counterfactual_v1"` (underscore form, like `setup_recurrence_v1`) |
 | `window`, `data_cutoff` | `["2021-06-01", "2026-01-29"]`, `"2026-09-22"` |
 | `robustness_window`, `robustness_data_cutoff` | `["2017-01-03", "2021-04-30"]`, `"2021-06-15"` |
 | `confirmation_window`, `confirmation_data_cutoff` | `["2026-03-02", "2026-08-14"]`, `"2026-09-22"` |

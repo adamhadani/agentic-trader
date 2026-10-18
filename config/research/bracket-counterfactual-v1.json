@@ -1,0 +1,136 @@
+{
+  "adjustment": "all",
+  "arms": [
+    {
+      "name": "A0_live",
+      "target_r": "planned",
+      "trail": null
+    },
+    {
+      "name": "A1_3r",
+      "target_r": 3.0,
+      "trail": null
+    },
+    {
+      "name": "A2_2r_trail",
+      "target_r": 2.0,
+      "trail": {
+        "distance_r": 1.5,
+        "trigger_r": 1.5
+      }
+    },
+    {
+      "name": "A3_3r_trail",
+      "target_r": 3.0,
+      "trail": {
+        "distance_r": 1.5,
+        "trigger_r": 1.5
+      }
+    },
+    {
+      "name": "A4_trail_only",
+      "target_r": null,
+      "trail": {
+        "distance_r": 1.5,
+        "trigger_r": 1.5
+      }
+    }
+  ],
+  "bootstrap": {
+    "block_mean": 10,
+    "draws": 2000,
+    "seed": 20261018
+  },
+  "confirmation_data_cutoff": "2026-09-22",
+  "confirmation_prior_use": "setup-outcomes-v1 one-shot holdout, read once on 2026-09-23 for the shadow ranker's acceptance test (docs/setup-outcomes-2026-09-23.md); declared second use, different hypothesis, read at most once for at most one arm",
+  "confirmation_window": [
+    "2026-03-02",
+    "2026-08-14"
+  ],
+  "cost_bps_per_side": [
+    0.0,
+    5.0
+  ],
+  "data_cutoff": "2026-09-22",
+  "decision_rule": "If no arm passes B1-B4: no_change; the confirmation window is not read. If one or more pass, the selected arm is read once on the confirmation window (B5): if it holds, eligible_bracket_change(arm), a separately specified card-construction PR (preview before enforce, operator approval); otherwise no_change. Reading: eligible_bracket_change(A2) or (A3) means the live ratchet is worth what the desk pays for it and the card's stated target should carry it; (A1) means the native target should be 3R; (A4) means the card should state a trailing exit and no fixed target. In every case the follow-up changes card construction only, states the measured arm record on the card, and ships preview first; nothing changes until that PR. no_change closes the bracket as an explanation for the native funnel's base rate: the entries, not the exits, are the problem, and the next work is on the entry side. All three windows (primary, robustness, confirmation) are used once for this test.",
+  "embargo_sessions": 20,
+  "feed": "alpaca:sip",
+  "holm_alpha": 0.05,
+  "hypotheses": "Population: setups replayed as the live desk scans them (10:35 and 14:35 New York, current long-only strategy configuration, 159-name current universe, SIP all-adjusted), over the primary window 2021-06-01 -> 2026-01-29 (decisions; bars through 2026-09-22), each labelled under five exit arms that share the entry (open of the first regular-session hourly bar at or after the decision), the planned stop, the planned risk unit R, the 20-session timeout and cost at 5 bp per side, so rows are paired by setup. Arms: A0_live (planned 2R target, no ratchet; byte-identical to the live labeller), A1_3r (3R target, no ratchet), A2_2r_trail (2R target with ratchet), A3_3r_trail (3R target with ratchet), A4_trail_only (no target, ratchet). Ratchet on hourly bars: at each completed regular-session bar's close, if close >= entry + 1.5R (trigger 1.5R, measured from the fill entry on the planned risk) the proposed stop is close - 1.5R (distance 1.5R); the stop becomes max(current stop, proposed) and takes effect from the next bar; exits through a ratcheted stop count as stop; a bar touching both stop and target counts as a stop; gaps fill at the open. Statistics: setup-weighted means; r and r_cost winsorised at +/-10R for statistics; stationary session-block bootstrap (block mean 10, 2000 draws, seed 20261018), whole sessions resampled once per draw and applied to every arm; one-sided p-values are the fraction of draws with the contrast <= 0; 90% CIs are the 5th and 95th percentiles. Rules, for each counterfactual arm i in A1..A4 (primary window unless stated): B1: the paired mean (excess_r_i - excess_r_A0) > 0 with Holm-adjusted one-sided p < 0.05 over the four arms. B2: the arm's own mean R_cost has a 90% CI lower bound >= 0. B3: on the robustness window 2017-01-03 -> 2021-04-30 (bars through 2021-06-15) the paired excess advantage point estimate > 0. B4: at least 3000 labelled setups over at least 600 sessions, at least 95% of setups mature, and at least 300 setups whose A0 and arm-i outcomes differ (divergent pairs). An arm passes discovery when B1-B4 all hold; the selected arm is the passing arm with the largest B1 point estimate (ties: the earlier arm, A1 before A2 before A3 before A4). B5: the confirmation window 2026-03-02 -> 2026-08-14 is read once, for the selected arm and A0 only; the arm is eligible when its paired excess advantage over A0 is > 0 (point estimate) and its own mean R_cost is >= 0 there. Per-arm hit rates, timeout shares, holding sessions, market_r, strata, per-year means, unpaired means, 0 bp figures and live-card figures are descriptive only. See docs/superpowers/specs/2026-10-18-bracket-counterfactual-design.md.",
+  "max_hold_sessions": 20,
+  "min_divergent": 300,
+  "min_mature_fraction": 0.95,
+  "min_sessions": 600,
+  "min_setups": 3000,
+  "r_cap": 10.0,
+  "robustness_data_cutoff": "2021-06-15",
+  "robustness_window": [
+    "2017-01-03",
+    "2021-04-30"
+  ],
+  "scan_times_et": [
+    "10:35",
+    "14:35"
+  ],
+  "sector_etf": {
+    "basic_materials": "XLB",
+    "communication_services": "XLC",
+    "consumer_cyclical": "XLY",
+    "consumer_defensive": "XLP",
+    "energy": "XLE",
+    "etf_broad_equity": "SPY",
+    "etf_international": "SPY",
+    "etf_metals": "SPY",
+    "etf_rates_credit": "SPY",
+    "financial_services": "XLF",
+    "healthcare": "XLV",
+    "industrials": "XLI",
+    "real_estate": "XLRE",
+    "technology": "XLK",
+    "utilities": "XLU"
+  },
+  "strategy_config": {
+    "active_strategies": [
+      "trend_pullback",
+      "squeeze_breakout"
+    ],
+    "active_strategy": "trend_pullback",
+    "conflict_resolution": "netting",
+    "mode": "parallel",
+    "squeeze_breakout": {
+      "allow_short": false,
+      "bb_length": 20,
+      "bb_std": 2.0,
+      "enabled": true,
+      "kc_atr_mult": 1.5,
+      "kc_length": 20,
+      "min_squeeze_bars": 5,
+      "volume_factor": 1.3,
+      "volume_sma_period": 20
+    },
+    "strategy_allocations": {
+      "squeeze_breakout": 0.4,
+      "trend_pullback": 0.6
+    },
+    "trend_pullback": {
+      "allow_short": false,
+      "atr_multiplier": 1.5,
+      "atr_period": 14,
+      "daily_ema_fast": 50,
+      "daily_ema_slow": 200,
+      "enabled": true,
+      "rsi_overbought": 60.0,
+      "rsi_overbought_surge": 55.0,
+      "rsi_oversold": 40.0,
+      "rsi_oversold_dip": 45.0,
+      "rsi_period": 14,
+      "trigger_atr_distance_mult": 0.5,
+      "trigger_ema_span": 20
+    }
+  },
+  "version": "bracket_counterfactual_v1",
+  "window": [
+    "2021-06-01",
+    "2026-01-29"
+  ]
+}
