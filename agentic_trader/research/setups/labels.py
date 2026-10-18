@@ -20,10 +20,13 @@ from agentic_trader.screeners.coverage import REGULAR_SESSION_HOURS_NY
 
 
 __all__ = [
+    "LIVE_ARM",
     "REGULAR_SESSION_HOURS_NY",
+    "BracketArm",
     "BracketHit",
     "BracketOutcome",
     "SetupLevels",
+    "TrailSpec",
     "label_bracket",
     "regular_session_bars",
 ]
@@ -70,6 +73,28 @@ class BracketOutcome:
     r: float | None  # None iff IMMATURE
     r_cost: float | None
     holding_sessions: int  # distinct NY session dates touched from entry bar through exit bar
+    final_stop: float | None = None  # stop in force at exit (planned stop if never ratcheted)
+    ratchet_moves: int = 0
+
+
+@dataclass(frozen=True)
+class TrailSpec:
+    """Close-based ratchet: once gain reaches trigger_r, trail distance_r behind the close."""
+
+    trigger_r: float
+    distance_r: float
+
+
+@dataclass(frozen=True)
+class BracketArm:
+    """An alternative exit policy; target_r None means no target (except for LIVE_ARM)."""
+
+    name: str
+    target_r: float | None
+    trail: TrailSpec | None
+
+
+LIVE_ARM = BracketArm(name="A0_live", target_r=None, trail=None)
 
 
 def regular_session_bars(hourly: pd.DataFrame) -> pd.DataFrame:
@@ -82,6 +107,9 @@ def _immature(
     holding_sessions: int = 0,
     entry_time: datetime | None = None,
     entry_price: float | None = None,
+    *,
+    final_stop: float | None = None,
+    ratchet_moves: int = 0,
 ) -> BracketOutcome:
     return BracketOutcome(
         hit=BracketHit.IMMATURE,
@@ -92,6 +120,8 @@ def _immature(
         r=None,
         r_cost=None,
         holding_sessions=holding_sessions,
+        final_stop=final_stop,
+        ratchet_moves=ratchet_moves,
     )
 
 
@@ -106,6 +136,8 @@ def _resolved(
     levels: SetupLevels,
     risk_unit: float,
     cost_bps_per_side: float,
+    final_stop: float,
+    ratchet_moves: int,
 ) -> BracketOutcome:
     sign = 1.0 if levels.direction == "LONG" else -1.0
     r = sign * (exit_price - entry_price) / risk_unit
@@ -119,6 +151,8 @@ def _resolved(
         r=r,
         r_cost=r_cost,
         holding_sessions=holding_sessions,
+        final_stop=final_stop,
+        ratchet_moves=ratchet_moves,
     )
 
 
@@ -129,20 +163,23 @@ def label_bracket(
     *,
     max_hold_sessions: int,
     cost_bps_per_side: float = 0.0,
+    arm: BracketArm | None = None,
 ) -> BracketOutcome:
     """Walk regular-session hourly bars to see whether the target or stop hits first.
 
     Conservative by construction: a bar that touches both levels counts as the
     stop, and a gap through either level fills at that bar's open rather than
-    the level itself.
+    the level itself. An optional ``arm`` swaps the target (a multiple of the
+    planned risk, or none) and adds a close-based trailing ratchet that takes
+    effect from the next bar.
     """
     regular = regular_session_bars(hourly)
     if regular.empty:
-        return _immature()
+        return _immature(final_stop=levels.stop)
 
     entry_positions = regular.index >= decision_at
     if not entry_positions.any():
-        return _immature()
+        return _immature(final_stop=levels.stop)
 
     entry_idx = int(entry_positions.argmax())
     entry_bar = regular.iloc[entry_idx]
@@ -150,15 +187,26 @@ def label_bracket(
     entry_price = float(entry_bar["Open"])
     risk_unit = abs(levels.entry - levels.stop)
     is_long = levels.direction == "LONG"
+    sign = 1.0 if is_long else -1.0
+    target: float | None
+    if arm is None or arm is LIVE_ARM:
+        target = levels.target
+    elif arm.target_r is None:
+        target = None
+    else:
+        target = levels.entry + sign * arm.target_r * risk_unit
+    trail = None if arm is None else arm.trail
+    stop = levels.stop
+    moves = 0
 
     # Gap at entry: the entry bar's own open has already jumped through a level.
     entry_open = float(entry_bar["Open"])
     if is_long:
         gapped_stop = entry_open <= levels.stop
-        gapped_target = entry_open >= levels.target
+        gapped_target = target is not None and entry_open >= target
     else:
         gapped_stop = entry_open >= levels.stop
-        gapped_target = entry_open <= levels.target
+        gapped_target = target is not None and entry_open <= target
     if gapped_stop:
         return _resolved(
             hit=BracketHit.STOP,
@@ -170,6 +218,8 @@ def label_bracket(
             levels=levels,
             risk_unit=risk_unit,
             cost_bps_per_side=cost_bps_per_side,
+            final_stop=stop,
+            ratchet_moves=moves,
         )
     if gapped_target:
         return _resolved(
@@ -182,6 +232,8 @@ def label_bracket(
             levels=levels,
             risk_unit=risk_unit,
             cost_bps_per_side=cost_bps_per_side,
+            final_stop=stop,
+            ratchet_moves=moves,
         )
 
     walk = regular.iloc[entry_idx:]
@@ -210,6 +262,8 @@ def label_bracket(
                     levels=levels,
                     risk_unit=risk_unit,
                     cost_bps_per_side=cost_bps_per_side,
+                    final_stop=stop,
+                    ratchet_moves=moves,
                 )
 
         bar_open = float(bar["Open"])
@@ -217,14 +271,14 @@ def label_bracket(
         bar_low = float(bar["Low"])
 
         if is_long:
-            stop_hit = bar_low <= levels.stop
-            target_hit = bar_high >= levels.target
+            stop_hit = bar_low <= stop
+            target_hit = target is not None and bar_high >= target
         else:
-            stop_hit = bar_high >= levels.stop
-            target_hit = bar_low <= levels.target
+            stop_hit = bar_high >= stop
+            target_hit = target is not None and bar_low <= target
 
         if stop_hit:
-            fill = min(bar_open, levels.stop) if is_long else max(bar_open, levels.stop)
+            fill = min(bar_open, stop) if is_long else max(bar_open, stop)
             return _resolved(
                 hit=BracketHit.STOP,
                 entry_time=entry_time,
@@ -235,9 +289,11 @@ def label_bracket(
                 levels=levels,
                 risk_unit=risk_unit,
                 cost_bps_per_side=cost_bps_per_side,
+                final_stop=stop,
+                ratchet_moves=moves,
             )
-        if target_hit:
-            fill = max(bar_open, levels.target) if is_long else min(bar_open, levels.target)
+        if target_hit and target is not None:
+            fill = max(bar_open, target) if is_long else min(bar_open, target)
             return _resolved(
                 hit=BracketHit.TARGET,
                 entry_time=entry_time,
@@ -248,9 +304,25 @@ def label_bracket(
                 levels=levels,
                 risk_unit=risk_unit,
                 cost_bps_per_side=cost_bps_per_side,
+                final_stop=stop,
+                ratchet_moves=moves,
             )
+
+        if trail is not None:
+            bar_close = float(bar["Close"])
+            if sign * (bar_close - entry_price) >= trail.trigger_r * risk_unit:
+                proposed = bar_close - sign * trail.distance_r * risk_unit
+                if sign * (proposed - stop) > 0:
+                    stop = proposed
+                    moves += 1
 
         prev_bar = bar
         prev_time = bar_time
 
-    return _immature(holding_sessions=len(dates_seen), entry_time=entry_time, entry_price=entry_price)
+    return _immature(
+        holding_sessions=len(dates_seen),
+        entry_time=entry_time,
+        entry_price=entry_price,
+        final_stop=stop,
+        ratchet_moves=moves,
+    )

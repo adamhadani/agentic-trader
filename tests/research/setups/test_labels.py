@@ -4,9 +4,12 @@ import pandas as pd
 import pytest
 
 from agentic_trader.research.setups.labels import (
+    LIVE_ARM,
     REGULAR_SESSION_HOURS_NY,
+    BracketArm,
     BracketHit,
     SetupLevels,
+    TrailSpec,
     label_bracket,
 )
 
@@ -235,3 +238,148 @@ def test_cost_reduces_r():
 def test_invalid_levels_raise(kwargs):
     with pytest.raises(ValueError):
         SetupLevels(**kwargs)
+
+
+A1 = BracketArm(name="A1_3r", target_r=3.0, trail=None)
+TRAIL = TrailSpec(trigger_r=1.5, distance_r=1.5)
+A2 = BracketArm(name="A2_2r_trail", target_r=2.0, trail=TRAIL)
+A3 = BracketArm(name="A3_3r_trail", target_r=3.0, trail=TRAIL)
+A4 = BracketArm(name="A4_trail_only", target_r=None, trail=TRAIL)
+
+
+def test_arm_none_is_byte_identical_to_live_arm():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.5, 100.8, 100.2, 100.6),
+            ("2026-03-02T15:00:00+00:00", 100.6, 102.5, 100.3, 102.0),
+        ]
+    )
+    base = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5)
+    assert base == label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5, arm=LIVE_ARM)
+    assert base.ratchet_moves == 0
+    assert base.final_stop == pytest.approx(LONG.stop)
+
+
+def test_3r_target_arm_hits_where_live_times_out():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.5, 100.8, 100.2, 100.6),
+            ("2026-03-02T15:00:00+00:00", 100.6, 101.9, 100.3, 101.8),
+            ("2026-03-02T16:00:00+00:00", 101.8, 103.6, 101.5, 103.2),
+        ]
+    )
+    out = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5, arm=A1)
+    assert out.hit == BracketHit.TARGET
+    assert out.exit_price == pytest.approx(103.0)
+    assert out.r == pytest.approx((103.0 - 100.5) / 1.0)
+    live = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5)
+    assert live.exit_price == pytest.approx(102.0)
+
+
+def test_ratchet_triggers_on_close_and_is_effective_next_bar():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.0, 100.5, 99.9, 100.2),
+            ("2026-03-02T15:00:00+00:00", 100.3, 101.6, 99.95, 101.5),  # low would hit 100.0 stop if early
+            ("2026-03-02T16:00:00+00:00", 101.4, 101.5, 99.9, 100.0),
+        ]
+    )
+    out = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5, arm=A4)
+    assert out.hit == BracketHit.STOP
+    assert out.exit_time == pd.Timestamp("2026-03-02T16:00:00+00:00")
+    assert out.exit_price == pytest.approx(100.0)
+    assert out.r == pytest.approx(0.0)
+    assert out.ratchet_moves == 1
+    assert out.final_stop == pytest.approx(100.0)
+
+
+def test_ratchet_never_moves_down():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.0, 100.5, 99.9, 100.2),
+            ("2026-03-02T15:00:00+00:00", 100.2, 102.1, 100.1, 102.0),
+            ("2026-03-02T16:00:00+00:00", 102.0, 102.0, 100.9, 101.0),
+            ("2026-03-02T17:00:00+00:00", 101.0, 101.2, 100.4, 100.6),
+        ]
+    )
+    out = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5, arm=A4)
+    assert out.hit == BracketHit.STOP
+    assert out.exit_price == pytest.approx(100.5)
+    assert out.ratchet_moves == 1
+    assert out.final_stop == pytest.approx(100.5)
+
+
+def test_trail_only_arm_never_returns_target():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.0, 100.5, 99.9, 100.2),
+            ("2026-03-03T14:00:00+00:00", 100.2, 110.0, 100.1, 110.0),
+            ("2026-03-04T14:00:00+00:00", 110.0, 112.0, 109.0, 112.0),
+            ("2026-03-05T14:00:00+00:00", 112.0, 112.2, 111.0, 112.0),
+            ("2026-03-06T14:00:00+00:00", 112.0, 112.2, 111.0, 112.0),
+            ("2026-03-09T14:00:00+00:00", 112.0, 112.2, 111.0, 112.0),
+        ]
+    )
+    out = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5, arm=A4)
+    assert out.hit == BracketHit.TIMEOUT
+    assert out.r is not None
+    assert out.r > 0
+    assert out.ratchet_moves >= 2
+    assert out.final_stop == pytest.approx(110.5)
+
+
+def test_gap_through_ratcheted_stop_fills_at_open():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.0, 100.5, 99.9, 100.2),
+            ("2026-03-02T15:00:00+00:00", 100.2, 102.1, 100.1, 102.0),
+            ("2026-03-02T16:00:00+00:00", 99.0, 99.5, 98.5, 99.2),
+        ]
+    )
+    out = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5, arm=A4)
+    assert out.hit == BracketHit.STOP
+    assert out.exit_price == pytest.approx(99.0)
+    assert out.final_stop == pytest.approx(100.5)
+
+
+def test_both_touched_bar_counts_as_stop_with_ratcheted_level():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.0, 100.5, 99.9, 100.2),
+            ("2026-03-02T15:00:00+00:00", 100.2, 102.1, 100.1, 102.0),
+            ("2026-03-02T16:00:00+00:00", 102.0, 103.5, 100.4, 103.0),
+        ]
+    )
+    for arm in (A4, A3):
+        out = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5, arm=arm)
+        assert out.hit == BracketHit.STOP
+        assert out.exit_price == pytest.approx(100.5)
+
+
+def test_short_ratchet_mirrors_long():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.0, 100.2, 99.8, 99.9),
+            ("2026-03-02T15:00:00+00:00", 99.9, 100.0, 98.4, 98.5),
+            ("2026-03-02T16:00:00+00:00", 98.6, 100.1, 98.5, 99.0),
+        ]
+    )
+    out = label_bracket(SHORT, BEFORE_OPEN, frame, max_hold_sessions=5, arm=A4)
+    assert out.hit == BracketHit.STOP
+    assert out.exit_price == pytest.approx(100.0)
+    assert out.r == pytest.approx(0.0)
+    assert out.ratchet_moves == 1
+    assert out.final_stop == pytest.approx(100.0)
+
+
+def test_arm_outcome_defaults_without_trail():
+    frame = bars(
+        [
+            ("2026-03-02T14:00:00+00:00", 100.5, 100.8, 100.2, 100.6),
+            ("2026-03-02T15:00:00+00:00", 100.6, 101.9, 100.3, 101.8),
+        ]
+    )
+    out = label_bracket(LONG, BEFORE_OPEN, frame, max_hold_sessions=5, arm=A1)
+    assert out.hit == BracketHit.IMMATURE
+    assert out.ratchet_moves == 0
+    assert out.final_stop == pytest.approx(LONG.stop)
