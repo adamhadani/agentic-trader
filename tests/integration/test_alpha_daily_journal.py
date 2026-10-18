@@ -774,6 +774,12 @@ async def test_postgres_clock_is_sampled_after_actual_cross_client_lock_wait(pos
             available_at=actual_now - pd.Timedelta(milliseconds=100),
             expires_at=actual_now + pd.Timedelta(milliseconds=500),
         )
+        # The outcome window must stay in the future relative to the sampled clock too; the
+        # fixture's fixed 2026-10-17 window aged out of "future" once the calendar passed it.
+        kwargs["context"]["decision_window"] = {
+            "outcome_available_at": (actual_now + pd.Timedelta(days=1)).isoformat(),
+            "outcome_expires_at": (actual_now + pd.Timedelta(days=1, hours=3)).isoformat(),
+        }
         monkeypatch.setattr(repos[0], "_now", original)
         claim = await repos[0].claim_decision("daily", "2099-01-01", **kwargs)
         async with asyncio.timeout(10):
