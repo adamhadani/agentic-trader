@@ -11,8 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping
-from datetime import date, timedelta
+from collections.abc import Callable, Mapping
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -20,8 +21,9 @@ import pandas as pd
 from pydantic import BaseModel, model_validator
 
 from agentic_trader.research.setups.labels import LIVE_ARM, BracketArm, TrailSpec
-from agentic_trader.research.setups.recurrence import _ci90, _p_positive, _weighted
-from agentic_trader.research.setups.study import _stationary_index_draws
+from agentic_trader.research.setups.recurrence import _ci90, _p_positive, _weighted, _write_private_gzip
+from agentic_trader.research.setups.study import _finite_json, _stationary_index_draws
+from agentic_trader.storage.artifacts import save_json_report
 
 
 __all__ = [
@@ -33,6 +35,7 @@ __all__ = [
     "arm_mean",
     "confirmation",
     "discovery",
+    "execute_bracket_counterfactual",
     "holm",
     "pair_arms",
     "paired_contrast",
@@ -334,3 +337,151 @@ def confirmation(confirmation_long: pd.DataFrame, arm: str, protocol: BracketCou
         and mean["mean_r_cost"] >= 0.0
     )
     return {"contrast": contrast, "arm_mean": mean, "holds": bool(holds)}
+
+
+# ---------------------------------------------------------------- executor
+
+_WINDOWS = ("primary", "robustness", "confirmation")
+_RULES = ("b1", "b2", "b3", "b4")
+
+
+def _mean_or_nan(frame: pd.DataFrame, column: str) -> float:
+    if column not in frame.columns or frame.empty:
+        return float("nan")
+    return float(pd.to_numeric(frame[column], errors="coerce").mean())
+
+
+def _arm_block(rows: pd.DataFrame) -> dict:
+    """Descriptive block for one arm's resolved rows (never decisive)."""
+    n = len(rows)
+
+    def rate(hit: str) -> float:
+        return float((rows["hit"] == hit).mean()) if n else float("nan")
+
+    return {
+        "n": n,
+        "target_rate": rate("target"),
+        "stop_rate": rate("stop"),
+        "timeout_rate": rate("timeout"),
+        "mean_r_cost": _mean_or_nan(rows, "r_cost"),
+        "mean_r": _mean_or_nan(rows, "r"),
+        "mean_holding_sessions": _mean_or_nan(rows, "holding_sessions"),
+        "mean_market_r": _mean_or_nan(rows, "market_r"),
+        "mean_excess_r": _mean_or_nan(rows, "excess_r"),
+        "mean_ratchet_moves": _mean_or_nan(rows, "ratchet_moves"),
+    }
+
+
+def _per_arm(resolved: pd.DataFrame, arms: list[str]) -> dict:
+    return {arm: _arm_block(resolved[resolved["arm"] == arm]) for arm in arms}
+
+
+def _yearly_contrast(pairs: pd.DataFrame) -> dict:
+    """Plain setup-weighted mean paired excess difference per calendar year of ``session``."""
+    if pairs.empty:
+        return {}
+    diff = pairs["excess_other"].astype(float) - pairs["excess_live"].astype(float)
+    years = pd.to_datetime(pairs["session"]).dt.year
+    return {str(year): {"mean_diff": float(diff[years == year].mean())} for year in sorted(years.unique())}
+
+
+def _window_descriptives(long: pd.DataFrame, protocol: BracketCounterfactualProtocol) -> dict:
+    wins = winsorized(long, protocol.r_cap)
+    resolved = wins[wins["hit"] != "immature"]
+    arms = [arm.name for arm in protocol.arms]
+    stratum = resolved["strategy"].astype(str) + "/" + resolved["timeframe"].astype(str)
+    return {
+        "arms": _per_arm(resolved, arms),
+        "by_setup": {name: _per_arm(resolved[stratum == name], arms) for name in sorted(stratum.unique())},
+        "by_year": {
+            arm: _yearly_contrast(pair_arms(wins, LIVE_ARM_NAME, arm)) for arm in protocol.counterfactual_arm_names()
+        },
+        "zero_cost": {arm: _mean_or_nan(resolved[resolved["arm"] == arm], "r") for arm in arms},
+    }
+
+
+def execute_bracket_counterfactual(
+    protocol: BracketCounterfactualProtocol,
+    directory: Path,
+    *,
+    frames: Mapping[str, Callable[[], pd.DataFrame]],
+    environment: dict,
+) -> dict:
+    """Run B1-B5 and write the write-once artifacts.
+
+    The confirmation declaration is its own file, written before the confirmation frame is
+    called, because ``save_json_report`` never overwrites the manifest. Like ``execute_recurrence``
+    a failure is recorded in ``result.json`` and returned, not raised.
+    """
+    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    started_at = datetime.now(UTC).isoformat()
+    save_json_report({**protocol.document(), "identity": protocol.identity}, directory / "protocol.json")
+    save_json_report(
+        {
+            "protocol_id": protocol.identity,
+            "environment": environment,
+            "started_at": started_at,
+            "hypotheses": list(HYPOTHESES),
+            "arms": [arm.name for arm in protocol.arms],
+            "windows": {
+                "primary": [
+                    protocol.window[0].isoformat(),
+                    protocol.window[1].isoformat(),
+                    protocol.data_cutoff.isoformat(),
+                ],
+                "robustness": [
+                    protocol.robustness_window[0].isoformat(),
+                    protocol.robustness_window[1].isoformat(),
+                    protocol.robustness_data_cutoff.isoformat(),
+                ],
+                "confirmation": [
+                    protocol.confirmation_window[0].isoformat(),
+                    protocol.confirmation_window[1].isoformat(),
+                    protocol.confirmation_data_cutoff.isoformat(),
+                ],
+            },
+            "authorizes_promotion": False,
+            "confirmation_declaration": "confirmation.json",
+        },
+        directory / "manifest.json",
+    )
+    try:
+        read: dict[str, pd.DataFrame] = {}
+        for name in ("primary", "robustness"):
+            read[name] = frames[name]()
+            _write_private_gzip(read[name], directory / "frames" / f"{name}.csv.gz")
+        found = discovery(read["primary"], read["robustness"], protocol)
+        selected = found["selected_arm"]
+        b5 = None
+        if selected is not None:
+            save_json_report(
+                {
+                    "protocol_id": protocol.identity,
+                    "confirmation_read": True,
+                    "confirmation_arm": selected,
+                    "declared_at": datetime.now(UTC).isoformat(),
+                },
+                directory / "confirmation.json",
+            )
+            read["confirmation"] = frames["confirmation"]()
+            _write_private_gzip(read["confirmation"], directory / "frames" / "confirmation.csv.gz")
+            b5 = confirmation(read["confirmation"], selected, protocol)
+        result = {
+            "status": "completed",
+            "decision": "eligible_bracket_change" if b5 is not None and b5["holds"] else "no_change",
+            "selected_arm": selected,
+            **{rule: {arm: found["arms"][arm][rule] for arm in found["arms"]} for rule in _RULES},
+            "b5": b5,
+            "passing": found["passing"],
+            "holm": found["holm"],
+            "floors": found["floors"],
+            "descriptives": {name: _window_descriptives(read[name], protocol) for name in read},
+            "n_rows": {name: len(read[name]) for name in read},
+            "authorizes_promotion": False,
+            "started_at": started_at,
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+    except Exception as exc:
+        result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "authorizes_promotion": False}
+    save_json_report(_finite_json(result), directory / "result.json")
+    return result

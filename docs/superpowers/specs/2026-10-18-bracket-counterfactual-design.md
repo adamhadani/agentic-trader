@@ -259,7 +259,7 @@ setup frames (decision rows with levels and the hourly bars needed to label them
    selected arm, compute B5, write `frames/confirmation.csv.gz`.
 5. Write `result.json`: `decision`, `selected_arm`, `b1`..`b5` (estimate, ci90, p, holm_p, holds,
    per arm), `descriptives`, `windows`, `started_at`, `finished_at`. Any exception writes
-   `result.json` with `status: "failed"` and the exception type name, and re-raises.
+   `result.json` with `status: "failed"` and the exception type name and returns it (the CLI then exits non-zero), as `execute_recurrence` does.
 
 **CLI** `copilot alpha bracket-counterfactual PROTOCOL --output DIR --cache DIR
 --robustness-cache DIR [--max-workers N]` (`cli/commands/alpha.py`, beside

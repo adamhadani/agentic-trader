@@ -17,6 +17,7 @@ from agentic_trader.research.setups.bracket_counterfactual import (
     BracketCounterfactualProtocol,
     confirmation,
     discovery,
+    execute_bracket_counterfactual,
     holm,
     pair_arms,
     paired_contrast,
@@ -372,3 +373,142 @@ def test_confirmation_holds_requires_positive_contrast_and_nonnegative_mean():
     negative = _long(arms=("A0_live", "A1_3r"), offsets={"A1_3r": -4.8, "A0_live": -5.0})
     assert negative.loc[negative["arm"] == "A1_3r", "r_cost"].mean() < 0
     assert confirmation(negative, "A1_3r", protocol)["holds"] is False
+
+
+# ---------------------------------------------------------------- executor (Task 5)
+
+
+def _exec_protocol():
+    return _floor_free(bootstrap={"block_mean": 5, "draws": 200, "seed": 11})
+
+
+def _lifted(frame, extra=0.0):
+    out = frame.copy()
+    for column in ("r", "r_cost", "excess_r"):
+        out[column] += 1.0 + extra
+    return out
+
+
+def _winning_frame(seed=7, offset=0.5):
+    hits = dict.fromkeys(_ARM_NAMES[1:], "stop")
+    return _lifted(_long(n_sessions=40, seed=seed, offsets={"A1_3r": offset}, hits=hits))
+
+
+def _losing_confirmation():
+    hits = dict.fromkeys(_ARM_NAMES[1:], "stop")
+    return _lifted(_long(n_sessions=30, seed=3, offsets={"A1_3r": -0.5}, hits=hits))
+
+
+def _run(tmp_path, primary, robustness, confirmation_callable, environment=None):
+    out = tmp_path / "out"
+    frames = {
+        "primary": lambda: primary,
+        "robustness": lambda: robustness,
+        "confirmation": confirmation_callable,
+    }
+    result = execute_bracket_counterfactual(
+        _exec_protocol(), out, frames=frames, environment=environment or {"python": "3.14"}
+    )
+    return out, result
+
+
+def _never():
+    raise AssertionError("confirmation must not be read")
+
+
+def test_executor_writes_protocol_manifest_frames_and_result_in_order(tmp_path):
+    calls = []
+
+    def read_confirmation():
+        out = tmp_path / "out"
+        calls.append(sorted(p.name for p in out.iterdir()))
+        assert (out / "confirmation.json").exists(), "confirmation read without declaration"
+        return _winning_frame(seed=5, offset=0.5)
+
+    out, result = _run(tmp_path, _winning_frame(7), _winning_frame(9), read_confirmation)
+    protocol = _exec_protocol()
+    assert json.loads((out / "protocol.json").read_text())["identity"] == protocol.identity
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["protocol_id"] == protocol.identity
+    assert manifest["confirmation_declaration"] == "confirmation.json"
+    assert manifest["hypotheses"] == list(HYPOTHESES)
+    assert manifest["arms"] == [arm.name for arm in protocol.arms]
+    assert manifest["authorizes_promotion"] is False
+    assert set(manifest["windows"]) == {"primary", "robustness", "confirmation"}
+    assert manifest["windows"]["primary"] == ["2021-06-01", "2026-01-29", "2026-09-22"]
+    assert {"protocol.json", "manifest.json", "frames"} <= set(calls[0])
+    assert "result.json" not in calls[0]
+    saved = json.loads((out / "result.json").read_text())
+    assert saved["status"] == "completed" and saved["authorizes_promotion"] is False
+    assert saved["selected_arm"] == "A1_3r" and saved["decision"] == "eligible_bracket_change"
+    assert set(saved["b1"]) == set(protocol.counterfactual_arm_names())
+    assert set(saved["b1"]["A1_3r"]) >= {"mean_diff", "holds"}
+    assert "mean_r_cost" in saved["b2"]["A1_3r"] and "holds" in saved["b3"]["A1_3r"]
+    assert "n_divergent" in saved["b4"]["A1_3r"]
+    assert saved["b5"]["holds"] is True
+    assert saved["passing"] == ["A1_3r"] and "holm" in saved and "floors" in saved
+    assert saved["n_rows"] == {"primary": 600, "robustness": 600, "confirmation": 600}
+    assert {"started_at", "finished_at"} <= set(saved)
+    for window in ("primary", "robustness", "confirmation"):
+        block = saved["descriptives"][window]
+        assert block["arms"]["A0_live"]["n"] > 0
+        assert "trend_pullback/1d" in block["by_setup"]
+        assert "2024" in block["by_year"]["A1_3r"]
+        assert "A0_live" in block["zero_cost"]
+        assert (out / "frames" / f"{window}.csv.gz").exists()
+    assert result["decision"] == saved["decision"]
+
+
+def test_no_pass_never_calls_confirmation(tmp_path):
+    frame = _long(n_sessions=30)
+    out, result = _run(tmp_path, frame, frame, _never)
+    assert result["status"] == "completed" and result["decision"] == "no_change"
+    assert result["selected_arm"] is None and result["b5"] is None
+    assert not (out / "confirmation.json").exists()
+    assert not (out / "frames" / "confirmation.csv.gz").exists()
+    assert "confirmation" not in result["descriptives"] and "confirmation" not in result["n_rows"]
+
+
+def test_declaration_written_before_confirmation_read(tmp_path):
+    def read_confirmation():
+        if not (tmp_path / "out" / "confirmation.json").exists():
+            raise AssertionError("confirmation read without declaration")
+        return _winning_frame(seed=5)
+
+    out, result = _run(tmp_path, _winning_frame(7), _winning_frame(9), read_confirmation)
+    declaration = json.loads((out / "confirmation.json").read_text())
+    assert declaration["confirmation_read"] is True and declaration["confirmation_arm"] == "A1_3r"
+    assert declaration["protocol_id"] == _exec_protocol().identity and "declared_at" in declaration
+    assert result["status"] == "completed"
+
+
+def test_pass_then_confirmation_fail_is_no_change_with_selected_arm_recorded(tmp_path):
+    out, result = _run(tmp_path, _winning_frame(7), _winning_frame(9), _losing_confirmation)
+    assert result["selected_arm"] == "A1_3r" and result["decision"] == "no_change"
+    assert result["b5"]["holds"] is False
+    assert json.loads((out / "result.json").read_text())["selected_arm"] == "A1_3r"
+
+
+def test_pass_then_confirmation_pass_is_eligible_bracket_change(tmp_path):
+    _, result = _run(tmp_path, _winning_frame(7), _winning_frame(9), lambda: _winning_frame(seed=5))
+    assert result["decision"] == "eligible_bracket_change" and result["b5"]["holds"] is True
+
+
+def test_frame_failure_writes_status_failed(tmp_path):
+    def boom():
+        raise RuntimeError("boom")
+
+    frames = {"primary": boom, "robustness": boom, "confirmation": _never}
+    out = tmp_path / "failed"
+    result = execute_bracket_counterfactual(_exec_protocol(), out, frames=frames, environment={})
+    saved = json.loads((out / "result.json").read_text())
+    assert saved["status"] == "failed" and "RuntimeError" in saved["error"] and "boom" in saved["error"]
+    assert saved["authorizes_promotion"] is False and result == saved
+
+
+def test_frames_are_private_gzip(tmp_path):
+    out, _ = _run(tmp_path, _winning_frame(7), _winning_frame(9), lambda: _winning_frame(seed=5))
+    for name in ("primary", "robustness", "confirmation"):
+        path = out / "frames" / f"{name}.csv.gz"
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert len(pd.read_csv(path)) == 600
