@@ -119,6 +119,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    (`regime_journal_block`), and every card from any scan carries it in `decision_provenance["regime"]`.
    `alpha setup-recurrence` is the predeclared, research-only test of the recurrence split (R1–R4 on
    replayed history; a pass only makes a construction rule eligible); v1 ran 2026-10-14 and did not fire (`no_change`: repeats −0.067R vs firsts on 2021–2026, [result](docs/setup-recurrence-2026-10-14.md)).
+   `alpha bracket-counterfactual` is the predeclared, research-only exit-policy test (five bracket arms paired by setup on replayed history, rules B1–B5, one-shot confirmation read declared in `confirmation.json` before the read; a pass only makes a card-construction PR eligible), and `cards outcomes` reports the same arms descriptively under `counterfactual`, never as a gate.
    The one gate derived from measured outcomes is `card_policy` ([card evidence](docs/card-evidence.md)):
    operator-configured, default `off`, `preview` before `enforce`, withholding native cards only on
    complete measured evidence above a sample floor (`card_policy_withheld`; partial, stale or missing

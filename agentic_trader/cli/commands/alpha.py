@@ -20,6 +20,7 @@ from uuid import uuid4
 import click
 import pandas as pd
 import yfinance as yf
+from pydantic import ValidationError
 
 from agentic_trader.cli.utils import artifact_directory, coro, session_source
 from agentic_trader.config import load_config
@@ -107,6 +108,10 @@ from agentic_trader.research.pooled.screen import config_group_symbols, execute_
 from agentic_trader.research.pooled.search_power import execute_search_power, require_search
 from agentic_trader.research.pooled.study import check_power_gate, execute_pooled_study
 from agentic_trader.research.setups.baserates import SetupBaseRateProtocol, execute_baserates
+from agentic_trader.research.setups.bracket_counterfactual import (
+    BracketCounterfactualProtocol,
+    execute_bracket_counterfactual,
+)
 from agentic_trader.research.setups.features import SECTOR_ETF
 from agentic_trader.research.setups.recurrence import SetupRecurrenceProtocol, execute_recurrence
 from agentic_trader.research.setups.runner import (
@@ -1378,6 +1383,144 @@ async def alpha_setup_recurrence_cmd(protocol_path, output, max_workers, cache, 
     click.echo(json.dumps(result, indent=2, default=str))
     if result.get("status") == "failed":
         raise click.ClickException(f"setup recurrence failed: {result.get('error')}")
+
+
+@alpha_group.command("bracket-counterfactual")
+@click.argument("protocol_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", type=click.Path(path_type=Path), required=True, help="New private directory; no overwrite")
+@click.option("--max-workers", type=int, default=6, show_default=True, help="Replay ProcessPoolExecutor width")
+@click.option(
+    "--cache",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="Primary/confirmation bar cache directory (required; keep it outside OUTPUT, which must not exist yet)",
+)
+@click.option(
+    "--robustness-cache",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="Robustness-window bar cache directory (required; a different directory from --cache)",
+)
+@coro
+async def alpha_bracket_counterfactual_cmd(protocol_path, output, max_workers, cache, robustness_cache):
+    """Replay/label the three frozen windows (primary and confirmation from one cache, robustness
+    from its own) under the five bracket arms and run the predeclared B1-B5 bracket counterfactual;
+    research only, no promotion credit."""
+    document = json.loads(await asyncio.to_thread(protocol_path.read_text))
+    try:
+        protocol = BracketCounterfactualProtocol(**document)
+    except ValidationError as exc:
+        raise click.ClickException(f"Invalid bracket counterfactual protocol: {exc}") from exc
+
+    if output.exists():
+        raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
+    if protocol.confirmation_data_cutoff != protocol.data_cutoff:
+        raise click.ClickException(
+            "Protocol confirmation_data_cutoff must equal data_cutoff: the primary and confirmation windows "
+            "share one replay and one cache"
+        )
+
+    config = load_config()
+    expected_strategy_config = config.strategies.model_dump(mode="json")
+    if protocol.strategy_config != expected_strategy_config:
+        raise click.ClickException(
+            "Protocol strategy_config does not match the loaded config.yaml strategies; "
+            "refusing to run a study against a stale strategy configuration"
+        )
+    if dict(protocol.sector_etf) != dict(SECTOR_ETF):
+        raise click.ClickException(
+            "Protocol sector_etf does not match research.setups.features.SECTOR_ETF; "
+            "refusing to run a study against a stale sector map"
+        )
+
+    universe = [(entry.symbol, entry.sector) for group in config.universe.groups.values() for entry in group]
+    arms = protocol.bracket_arms()
+    # Claim both ranges (the exact ones the runner will compute) before the first replay, so a
+    # mismatched cache fails now rather than after the first replay has been fetched.
+    claims = {
+        "primary": (
+            cache,
+            min(protocol.window[0], protocol.confirmation_window[0]),
+            protocol.data_cutoff,
+        ),
+        "robustness": (robustness_cache, protocol.robustness_window[0], protocol.robustness_data_cutoff),
+    }
+    cache_record: dict[str, dict] = {}
+    for name, (directory, first_day, cutoff) in claims.items():
+        bars_start = datetime.combine(first_day - timedelta(days=BARS_LOOKBACK_DAYS), time.min, tzinfo=UTC)
+        bars_end = datetime.combine(cutoff, time.max, tzinfo=UTC)
+        try:
+            claim_cache_range(directory, bars_start, bars_end)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        recorded = json.loads((directory / CACHE_RANGE_FILE).read_text())
+        cache_record[name] = {"path": str(directory), "range": recorded}
+
+    frames: dict[str, Callable[[], pd.DataFrame]] = {}
+    coverage: dict[str, dict] = {}
+    with ExitStack() as clients:
+        calendar_client = BoundedTradingClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            paper=config.alpaca_paper,
+            request_timeout=config.market_data.timeout_seconds,
+        )
+        clients.callback(calendar_client._session.close)
+        data_client = BoundedStockDataClient(
+            config.alpaca_api_key,
+            config.alpaca_api_secret,
+            request_timeout=config.market_data.timeout_seconds,
+        )
+        clients.callback(data_client._session.close)
+        bars = AlpacaDataProvider(
+            stock_client=data_client,
+            feed="sip",
+            evidence=BarEvidenceStore(state_directory() / "market-data", config.market_data.evidence),
+        )
+        calendar = AlpacaCalendarProvider(trading_client=calendar_client)
+
+        builds = (
+            (
+                "primary_confirmation",
+                {"primary": protocol.window, "confirmation": protocol.confirmation_window},
+                cache,
+                protocol.data_cutoff,
+            ),
+            (
+                "robustness",
+                {"robustness": protocol.robustness_window},
+                robustness_cache,
+                protocol.robustness_data_cutoff,
+            ),
+        )
+        for label, windows, directory, cutoff in builds:
+            built, window_coverage = await build_window_frames(
+                windows,
+                universe,
+                bars,
+                calendar,
+                directory,
+                config,
+                data_cutoff=cutoff,
+                scan_times_et=protocol.scan_times_et,
+                adjustment=protocol.adjustment,
+                max_hold_sessions=protocol.max_hold_sessions,
+                cost_bps_per_side=protocol.cost_bps_per_side,
+                max_workers=max_workers,
+                arms=arms,
+            )
+            frames.update(built)
+            coverage[label] = window_coverage
+
+    environment = await asyncio.to_thread(research_environment)
+    environment["coverage"] = coverage
+    environment["caches"] = cache_record
+    result = await asyncio.to_thread(
+        execute_bracket_counterfactual, protocol, output, frames=frames, environment=environment
+    )
+    click.echo(json.dumps(result, indent=2, default=str))
+    if result.get("status") == "failed":
+        raise click.ClickException(f"bracket counterfactual failed: {result.get('error')}")
 
 
 class _AprioriClients:

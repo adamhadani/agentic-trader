@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import date, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 from pydantic import ValidationError
 
+from agentic_trader.cli.commands import alpha as alpha_cmd
+from agentic_trader.cli.main import cli
 from agentic_trader.config import WORKSPACE_ROOT, load_config
 from agentic_trader.research.setups.bracket_counterfactual import (
     HYPOTHESES,
@@ -26,6 +30,7 @@ from agentic_trader.research.setups.bracket_counterfactual import (
 )
 from agentic_trader.research.setups.features import SECTOR_ETF
 from agentic_trader.research.setups.labels import LIVE_ARM, BracketArm, TrailSpec
+from agentic_trader.research.setups.runner import ARM_FRAME_COLUMNS
 
 
 _TRAIL = {"trigger_r": 1.5, "distance_r": 1.5}
@@ -512,3 +517,141 @@ def test_frames_are_private_gzip(tmp_path):
         path = out / "frames" / f"{name}.csv.gz"
         assert path.stat().st_mode & 0o777 == 0o600
         assert len(pd.read_csv(path)) == 600
+
+
+# ---------------------------------------------------------------- CLI (Task 6)
+
+
+def _protocol_document(**overrides) -> dict:
+    document = json.loads((WORKSPACE_ROOT / "config" / "research" / "bracket-counterfactual-v1.json").read_text())
+    document.update(overrides)
+    document["strategy_config"] = load_config().strategies.model_dump(mode="json")
+    return document
+
+
+def _cache_args(tmp_path) -> list[str]:
+    return ["--cache", str(tmp_path / "cache-a"), "--robustness-cache", str(tmp_path / "cache-b")]
+
+
+def _invoke(tmp_path, document, *extra):
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(document))
+    return CliRunner().invoke(
+        cli,
+        [
+            "alpha",
+            "bracket-counterfactual",
+            str(protocol_path),
+            "--output",
+            str(tmp_path / "out"),
+            *_cache_args(tmp_path),
+        ],
+    )
+
+
+def test_cli_bracket_counterfactual_is_registered():
+    result = CliRunner().invoke(cli, ["alpha", "bracket-counterfactual", "--help"])
+    assert result.exit_code == 0
+    assert "--robustness-cache" in result.output
+
+
+def test_cli_refuses_existing_output(tmp_path):
+    (tmp_path / "out").mkdir()
+    result = _invoke(tmp_path, _protocol_document())
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+
+
+def test_cli_refuses_a_stale_strategy_config(tmp_path):
+    document = _protocol_document()
+    document["strategy_config"] = {"mode": "stale"}
+    result = _invoke(tmp_path, document)
+    assert result.exit_code != 0
+    assert "strategy_config" in result.output
+
+
+def test_cli_refuses_a_stale_sector_map(tmp_path):
+    result = _invoke(tmp_path, _protocol_document(sector_etf={"technology": "XXX"}))
+    assert result.exit_code != 0
+    assert "sector_etf" in result.output
+
+
+def test_cli_fails_fast_on_a_mismatched_cache_range(tmp_path, monkeypatch):
+    async def never(*args, **kwargs):
+        raise AssertionError("build_window_frames must not run after a cache-range mismatch")
+
+    monkeypatch.setattr(alpha_cmd, "build_window_frames", never)
+    stale = tmp_path / "cache-b"
+    stale.mkdir()
+    (stale / "cache_range.json").write_text(
+        json.dumps({"start": "2030-01-01T00:00:00+00:00", "end": "2030-02-01T00:00:00+00:00"})
+    )
+    result = _invoke(tmp_path, _protocol_document())
+    assert result.exit_code != 0
+    assert "use a fresh cache directory" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_cli_refuses_a_non_sip_feed_and_mismatched_cutoffs(tmp_path):
+    result = _invoke(tmp_path, _protocol_document(feed="alpaca:iex"))
+    assert result.exit_code != 0
+    assert "feed" in result.output
+    result = _invoke(tmp_path, _protocol_document(confirmation_data_cutoff="2026-09-21"))
+    assert result.exit_code != 0
+    assert "confirmation_data_cutoff" in result.output
+
+
+class _FakeClient:
+    def __init__(self, *args, **kwargs):
+        self._session = SimpleNamespace(close=lambda: None)
+
+
+def _fake_command(monkeypatch, result: dict) -> dict:
+    captured: dict = {"builds": []}
+
+    async def fake_build(windows, universe, bars, calendar, cache_dir, config, **kwargs):
+        captured["builds"].append({"windows": dict(windows), "cache": cache_dir, **kwargs})
+        return {name: (lambda: pd.DataFrame(columns=list(ARM_FRAME_COLUMNS))) for name in windows}, {}
+
+    def fake_execute(protocol, output, *, frames, environment):
+        captured["frames"] = set(frames)
+        captured["environment"] = environment
+        return result
+
+    for name in ("BoundedTradingClient", "BoundedStockDataClient"):
+        monkeypatch.setattr(alpha_cmd, name, _FakeClient)
+    for name in ("AlpacaDataProvider", "BarEvidenceStore", "AlpacaCalendarProvider"):
+        monkeypatch.setattr(alpha_cmd, name, lambda *args, **kwargs: object())
+    monkeypatch.setattr(alpha_cmd, "build_window_frames", fake_build)
+    monkeypatch.setattr(alpha_cmd, "execute_bracket_counterfactual", fake_execute)
+    monkeypatch.setattr(alpha_cmd, "research_environment", dict)
+    return captured
+
+
+def test_cli_builds_primary_and_confirmation_from_one_replay(tmp_path, monkeypatch):
+    captured = _fake_command(monkeypatch, {"status": "completed"})
+    result = _invoke(tmp_path, _protocol_document())
+    assert result.exit_code == 0, result.output
+    protocol = BracketCounterfactualProtocol(**_protocol_document())
+    first, second = captured["builds"]
+    assert set(first["windows"]) == {"primary", "confirmation"}
+    assert first["cache"] == tmp_path / "cache-a" and first["arms"] == protocol.bracket_arms()
+    assert first["data_cutoff"] == protocol.data_cutoff
+    assert set(second["windows"]) == {"robustness"}
+    assert second["cache"] == tmp_path / "cache-b" and second["arms"] == protocol.bracket_arms()
+    assert second["data_cutoff"] == protocol.robustness_data_cutoff
+    assert captured["frames"] == {"primary", "robustness", "confirmation"}
+    caches = captured["environment"]["caches"]
+    assert caches["primary"]["path"] == str(tmp_path / "cache-a")
+    assert caches["robustness"]["path"] == str(tmp_path / "cache-b")
+    start = min(protocol.window[0], protocol.confirmation_window[0]) - timedelta(days=400)
+    assert caches["primary"]["range"]["start"].startswith(start.isoformat())
+    assert caches["primary"]["range"]["end"].startswith("2026-09-22")
+    assert caches["robustness"]["range"]["end"].startswith("2021-06-15")
+
+
+def test_cli_exits_nonzero_when_the_study_fails(tmp_path, monkeypatch):
+    _fake_command(monkeypatch, {"status": "failed", "error": "RuntimeError: boom"})
+    result = _invoke(tmp_path, _protocol_document())
+    assert result.exit_code != 0
+    assert "bracket counterfactual failed: RuntimeError: boom" in result.output
