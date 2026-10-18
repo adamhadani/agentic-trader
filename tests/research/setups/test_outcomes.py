@@ -8,12 +8,16 @@ import pandas as pd
 import pytest
 
 import agentic_trader.research.setups.outcomes as outcomes_module
+from agentic_trader.config import WORKSPACE_ROOT
+from agentic_trader.research.setups.bracket_counterfactual import BracketCounterfactualProtocol
 from agentic_trader.research.setups.labels import BracketHit
 from agentic_trader.research.setups.outcomes import (
     _COLUMNS,
+    CF_COLUMN_PREFIX,
     DEFAULT_COST_BPS_PER_SIDE,
     DEFAULT_MAX_HOLD_SESSIONS,
     FETCH_FAILED_HIT,
+    LIVE_COUNTERFACTUAL_ARMS,
     MARKET_PROXY_SYMBOL,
     PRIOR_OUTCOMES,
     RESOLVED_HITS,
@@ -1324,3 +1328,132 @@ def test_summarize_by_tape_counts_a_row_in_both_the_return_and_the_mean_buckets(
         1,
         0,
     ]
+
+
+# --------------------------------------------------------------- bracket counterfactual arms
+
+CF_BARS = _bars(
+    [
+        ("2026-03-02T14:30:00+00:00", 100.5, 100.8, 100.2, 100.6),
+        ("2026-03-02T15:30:00+00:00", 100.6, 103.5, 100.3, 103.2),
+    ]
+)
+
+
+def _cf_names(suffix):
+    return [f"cf_{arm.name}_{suffix}" for arm in LIVE_COUNTERFACTUAL_ARMS]
+
+
+def test_live_counterfactual_arms_match_the_frozen_protocol():
+    doc = json.loads((WORKSPACE_ROOT / "config" / "research" / "bracket-counterfactual-v1.json").read_text())
+    assert BracketCounterfactualProtocol(**doc).bracket_arms()[1:] == LIVE_COUNTERFACTUAL_ARMS
+    assert [arm.name for arm in LIVE_COUNTERFACTUAL_ARMS] == ["A1_3r", "A2_2r_trail", "A3_3r_trail", "A4_trail_only"]
+
+
+def test_columns_include_target_atr_and_cf_columns():
+    columns = list(_COLUMNS)
+    assert columns[columns.index("stop") + 1 : columns.index("stop") + 3] == ["target", "atr_14"]
+    expected = [f"cf_{arm.name}_{kind}" for arm in LIVE_COUNTERFACTUAL_ARMS for kind in ("hit", "r_cost", "market_r")]
+    start = columns.index("excess_r") + 1
+    assert columns[start : start + 12] == expected
+    assert columns[start + 12] == "market_reason"
+    assert all(name.startswith(CF_COLUMN_PREFIX) for name in expected)
+
+
+def test_label_journaled_fills_cf_columns_from_the_same_bars():
+    events = [_event("scan-1", DECIDED_AT, [_candidate(contract="AAPL")])]
+    bars = FakeBarSource({"AAPL": CF_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    row = label_journaled(events, bars, now=NOW, tape_symbol=None).iloc[0]
+    assert row["hit"] == BracketHit.TARGET.value
+    assert row["target"] == 102.0 and row["atr_14"] == 1.0
+    assert row["cf_A1_3r_hit"] == "target"
+    assert row["cf_A1_3r_r_cost"] is not None and row["cf_A1_3r_r_cost"] > row["r_cost"]
+    assert not pd.isna(row["cf_A1_3r_market_r"])
+    assert all(not pd.isna(value) for value in row[_cf_names("hit")])
+
+
+def test_counterfactual_columns_none_without_target():
+    candidate = _candidate()
+    del candidate["target"]
+    events = [_event("scan-1", DECIDED_AT, [candidate])]
+    row = label_journaled(events, FakeBarSource({"AAPL": CF_BARS}), now=NOW, market_symbol=None, tape_symbol=None).iloc[
+        0
+    ]
+    assert row["hit"] == BracketHit.IMMATURE.value
+    for suffix in ("hit", "r_cost", "market_r"):
+        assert all(pd.isna(value) for value in row[_cf_names(suffix)])
+
+
+def test_counterfactual_columns_none_on_fetch_failure():
+    events = [_event("scan-1", DECIDED_AT, [_candidate(contract="ZZZZ")])]
+    row = label_journaled(events, FakeBarSource({}, raise_for={"ZZZZ"}), now=NOW).iloc[0]
+    assert row["hit"] == FETCH_FAILED_HIT
+    for suffix in ("hit", "r_cost", "market_r"):
+        assert all(pd.isna(value) for value in row[_cf_names(suffix)])
+
+
+def _cf_frame(rows):
+    """rows: dicts overriding the live and A1 columns, on top of an all-None frame."""
+    records = [{**dict.fromkeys(_COLUMNS), "sent": True, "llm_ran": False, **row} for row in rows]
+    return pd.DataFrame(records, columns=list(_COLUMNS))
+
+
+def test_counterfactual_summary_shapes_and_advantage():
+    frame = _cf_frame(
+        [
+            {
+                "hit": "target",
+                "r_cost": 2.0,
+                "market_r": 0.5,
+                "cf_A1_3r_hit": "target",
+                "cf_A1_3r_r_cost": 3.0,
+                "cf_A1_3r_market_r": 1.0,
+            },
+            {
+                "hit": "stop",
+                "r_cost": -1.0,
+                "market_r": 0.0,
+                "cf_A1_3r_hit": "stop",
+                "cf_A1_3r_r_cost": -1.0,
+                "cf_A1_3r_market_r": None,
+            },
+            {
+                "hit": "timeout",
+                "r_cost": 0.2,
+                "market_r": None,
+                "cf_A1_3r_hit": "timeout",
+                "cf_A1_3r_r_cost": 0.4,
+                "cf_A1_3r_market_r": 0.1,
+            },
+            {"hit": "immature", "r_cost": None, "cf_A1_3r_hit": "immature", "cf_A1_3r_r_cost": None},
+        ]
+    )
+    block = summarize(frame)["counterfactual"]
+    assert block["caveat"] == "descriptive; not a gate"
+    assert list(block["arms"]) == [arm.name for arm in LIVE_COUNTERFACTUAL_ARMS]
+    a1 = block["arms"]["A1_3r"]
+    assert a1["n_pairs"] == 3
+    assert a1["target_rate"] == pytest.approx(1 / 3) and a1["stop_rate"] == pytest.approx(1 / 3)
+    assert a1["timeout_rate"] == pytest.approx(1 / 3)
+    assert a1["mean_r_cost"] == pytest.approx(2.4 / 3)
+    assert a1["mean_excess_r"] == pytest.approx(((3.0 - 1.0) + (0.4 - 0.1)) / 2)
+    # rows 1 and 3 have all four: (2.0 - 0.5) vs (3.0 - 1.0) -> +0.5; (0.2 - nan) skipped for row 3.
+    assert a1["advantage_vs_live_excess"] == pytest.approx(0.5)
+    empty = block["arms"]["A2_2r_trail"]
+    assert empty == {
+        "n_pairs": 0,
+        "target_rate": None,
+        "stop_rate": None,
+        "timeout_rate": None,
+        "mean_r_cost": None,
+        "mean_excess_r": None,
+        "advantage_vs_live_excess": None,
+    }
+
+
+def test_summarize_empty_frame_has_counterfactual_block():
+    block = summarize(pd.DataFrame(columns=list(_COLUMNS)))["counterfactual"]
+    assert block["caveat"] == "descriptive; not a gate"
+    assert set(block["arms"]) == {arm.name for arm in LIVE_COUNTERFACTUAL_ARMS}
+    for arm in block["arms"].values():
+        assert arm["n_pairs"] == 0 and arm["mean_r_cost"] is None and arm["advantage_vs_live_excess"] is None

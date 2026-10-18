@@ -234,3 +234,12 @@ def test_regime_tape_and_recurrence_columns_are_inert_in_the_snapshot():
     assert set(extra) <= set(outcomes_module._COLUMNS)
     stripped = _compute(frame.drop(columns=list(extra)))
     assert payload == stripped
+
+
+def test_card_stats_ignores_cf_columns():
+    plain = _labelled([*TP, *SQ])
+    filled = plain.copy()
+    for column in filled.columns:
+        if column.startswith(outcomes_module.CF_COLUMN_PREFIX):
+            filled[column] = 0.7 if column.endswith(("r_cost", "market_r")) else "target"
+    assert _compute(filled)["keys"] == _compute(plain)["keys"]

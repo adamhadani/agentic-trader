@@ -21,6 +21,7 @@ from agentic_trader.research.apriori.pead_study import label_events
 from agentic_trader.research.apriori.probe_outcomes import decision_frame, probe_signals, summarize_probe
 from agentic_trader.research.setups.execution_evidence import collect_execution, summarize_execution
 from agentic_trader.research.setups.outcomes import (
+    CF_COLUMN_PREFIX,
     DEFAULT_COST_BPS_PER_SIDE,
     DEFAULT_MAX_HOLD_SESSIONS,
     label_journaled,
@@ -83,7 +84,12 @@ async def outcomes_cmd(days: int) -> None:
         if frame.empty:
             click.echo(f"No scan_candidates_ranked events in the last {days} day(s).")
         else:
-            click.echo(frame.drop(columns=["decided_at", "entry_time", "exit_time"]).to_string(index=False))
+            hidden = [c for c in frame.columns if c.startswith(CF_COLUMN_PREFIX)] + [
+                "decided_at",
+                "entry_time",
+                "exit_time",
+            ]
+            click.echo(frame.drop(columns=hidden).to_string(index=False))
         if not execution.empty:
             click.echo("Execution evidence:")
             click.echo(execution.to_string(index=False))

@@ -23,7 +23,14 @@ import pandas as pd
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.execution.durable import EventKind, RankedOutcome
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.research.setups.labels import BracketHit, SetupLevels, label_bracket, regular_session_bars
+from agentic_trader.research.setups.labels import (
+    BracketArm,
+    BracketHit,
+    SetupLevels,
+    TrailSpec,
+    label_bracket,
+    regular_session_bars,
+)
 from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS, TapeState, tape_buckets, tape_state
 
 
@@ -33,9 +40,11 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "CF_COLUMN_PREFIX",
     "DEFAULT_COST_BPS_PER_SIDE",
     "DEFAULT_MAX_HOLD_SESSIONS",
     "FETCH_FAILED_HIT",
+    "LIVE_COUNTERFACTUAL_ARMS",
     "MARKET_PROXY_SYMBOL",
     "PRIOR_OUTCOMES",
     "RESOLVED_HITS",
@@ -59,6 +68,20 @@ DEFAULT_COST_BPS_PER_SIDE = 5.0
 # "the labeler was never able to try", not "not enough elapsed bars yet" (IMMATURE).
 FETCH_FAILED_HIT = "fetch_failed"
 
+# The four counterfactual exit arms of config/research/bracket-counterfactual-v1.json (the live
+# arm A0 is the journaled bracket itself). Hard-coded so the live report needs no file at import;
+# test_live_counterfactual_arms_match_the_frozen_protocol pins them to the frozen protocol.
+_CF_TRAIL = TrailSpec(trigger_r=1.5, distance_r=1.5)
+LIVE_COUNTERFACTUAL_ARMS: tuple[BracketArm, ...] = (
+    BracketArm(name="A1_3r", target_r=3.0, trail=None),
+    BracketArm(name="A2_2r_trail", target_r=2.0, trail=_CF_TRAIL),
+    BracketArm(name="A3_3r_trail", target_r=3.0, trail=_CF_TRAIL),
+    BracketArm(name="A4_trail_only", target_r=None, trail=_CF_TRAIL),
+)
+CF_COLUMN_PREFIX = "cf_"
+_CF_KINDS = ("hit", "r_cost", "market_r")
+_CF_COLUMNS = tuple(f"{CF_COLUMN_PREFIX}{arm.name}_{kind}" for arm in LIVE_COUNTERFACTUAL_ARMS for kind in _CF_KINDS)
+
 _COLUMNS = (
     "scan_id",
     "session",
@@ -72,6 +95,8 @@ _COLUMNS = (
     "signal_id",
     "entry",
     "stop",
+    "target",
+    "atr_14",
     "setup_quality",
     "shadow_score",
     "hit",
@@ -108,6 +133,7 @@ _COLUMNS = (
     "prior_outcome",
     "market_r",
     "excess_r",
+    *_CF_COLUMNS,
     "market_reason",
     "decided_at",
     "reason",
@@ -287,6 +313,7 @@ def _row(
     llm_r_cost: float | None = None,
     market_value: float | None = None,
     market_reason: str | None = None,
+    counterfactual: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     shadow = entry.get("shadow") or {}
     raw_book = entry.get("book_sizing")
@@ -313,6 +340,8 @@ def _row(
         "signal_id": entry.get("signal_id"),
         "entry": entry.get("entry"),
         "stop": entry.get("stop"),
+        "target": entry.get("target"),
+        "atr_14": entry.get("atr_14"),
         "setup_quality": entry.get("setup_quality"),
         "shadow_score": shadow.get("score"),
         "hit": hit,
@@ -352,6 +381,8 @@ def _row(
         "prior_outcome": "none",
         "market_r": market_value,
         "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
+        **dict.fromkeys(_CF_COLUMNS),
+        **(counterfactual or {}),
         "market_reason": market_reason,
         "decided_at": decided_at,
         "reason": reason,
@@ -390,6 +421,30 @@ def _label_one(
         and outcome.exit_time is not None
     ):
         market_value = market_r(direction, levels.entry, levels.stop, outcome.entry_time, outcome.exit_time, market)
+    counterfactual: dict[str, Any] = {}
+    for arm in LIVE_COUNTERFACTUAL_ARMS:
+        arm_outcome = label_bracket(
+            levels,
+            entry["decided_at"],
+            hourly,
+            max_hold_sessions=max_hold_sessions,
+            cost_bps_per_side=cost_bps,
+            arm=arm,
+        )
+        arm_market = None
+        if (
+            arm_outcome.r_cost is not None
+            and market is not None
+            and arm_outcome.entry_time is not None
+            and arm_outcome.exit_time is not None
+        ):
+            arm_market = market_r(
+                direction, levels.entry, levels.stop, arm_outcome.entry_time, arm_outcome.exit_time, market
+            )
+        prefix = f"{CF_COLUMN_PREFIX}{arm.name}_"
+        counterfactual[f"{prefix}hit"] = arm_outcome.hit.value
+        counterfactual[f"{prefix}r_cost"] = arm_outcome.r_cost
+        counterfactual[f"{prefix}market_r"] = arm_market
     return _row(
         entry,
         symbol,
@@ -402,6 +457,7 @@ def _label_one(
         llm_r_cost=llm_r_cost,
         market_value=market_value,
         market_reason=market_reason,
+        counterfactual=counterfactual,
     )
 
 
@@ -774,6 +830,30 @@ def _recurrence_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, 
     }
 
 
+def _counterfactual_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
+    """Each counterfactual arm against the live bracket on the same mature candidates (descriptive)."""
+    live_excess = pd.to_numeric(mature["r_cost"], errors="coerce") - pd.to_numeric(mature["market_r"], errors="coerce")
+    arms: dict[str, dict[str, Any]] = {}
+    for arm in LIVE_COUNTERFACTUAL_ARMS:
+        prefix = f"{CF_COLUMN_PREFIX}{arm.name}_"
+        r_cost = pd.to_numeric(mature[f"{prefix}r_cost"], errors="coerce")
+        paired = r_cost.notna()
+        hits = mature.loc[paired, f"{prefix}hit"]
+        n_pairs = int(paired.sum())
+        excess = r_cost - pd.to_numeric(mature[f"{prefix}market_r"], errors="coerce")
+        advantage = (excess - live_excess).dropna()
+        arms[arm.name] = {
+            "n_pairs": n_pairs,
+            "target_rate": float((hits == BracketHit.TARGET.value).mean()) if n_pairs else None,
+            "stop_rate": float((hits == BracketHit.STOP.value).mean()) if n_pairs else None,
+            "timeout_rate": float((hits == BracketHit.TIMEOUT.value).mean()) if n_pairs else None,
+            "mean_r_cost": float(r_cost[paired].mean()) if n_pairs else None,
+            "mean_excess_r": float(excess.dropna().mean()) if excess.notna().any() else None,
+            "advantage_vs_live_excess": float(advantage.mean()) if len(advantage) else None,
+        }
+    return {"caveat": "descriptive; not a gate", "arms": arms}
+
+
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     """Descriptive summary of a labelled frame.
 
@@ -815,6 +895,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
             "news_context": _news_summary(frame, frame),
             "regime_context": _regime_summary(frame, frame),
             "recurrence": _recurrence_summary(frame, frame),
+            "counterfactual": _counterfactual_summary(frame, frame),
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -916,4 +997,5 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "news_context": _news_summary(frame, mature),
         "regime_context": _regime_summary(frame, mature),
         "recurrence": _recurrence_summary(frame, mature),
+        "counterfactual": _counterfactual_summary(frame, mature),
     }
