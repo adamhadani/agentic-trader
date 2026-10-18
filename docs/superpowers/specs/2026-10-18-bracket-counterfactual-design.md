@@ -252,10 +252,11 @@ setup frames (decision rows with levels and the hourly bars needed to label them
 2. Label the primary frame under all five arms; compute B1, B2, B4; write
    `frames/primary.csv.gz` (mode 0600).
 3. Label the robustness frame under all five arms; compute B3; write `frames/robustness.csv.gz`.
-4. Decide. If an arm is selected, **update the manifest** (`confirmation_read: true`,
-   `confirmation_arm`, `confirmation_declared_at`) **before** calling `confirmation_frame`, then
-   label the confirmation frame under A0 and the selected arm, compute B5, write
-   `frames/confirmation.csv.gz`.
+4. Decide. If an arm is selected, write the declaration `confirmation.json`
+   (`confirmation_read: true`, `confirmation_arm`, `confirmation_declared_at`, `protocol_id`)
+   **before** calling `confirmation_frame` (artifacts are write-once, so the declaration is its
+   own file and the manifest names it), then label the confirmation frame under A0 and the
+   selected arm, compute B5, write `frames/confirmation.csv.gz`.
 5. Write `result.json`: `decision`, `selected_arm`, `b1`..`b5` (estimate, ci90, p, holm_p, holds,
    per arm), `descriptives`, `windows`, `started_at`, `finished_at`. Any exception writes
    `result.json` with `status: "failed"` and the exception type name, and re-raises.
