@@ -344,7 +344,7 @@ hourly bars as the live bracket, so the live record keeps measuring what the fro
 - Columns: `target` and `atr_14` (the journaled bracket inputs) sit after `stop`; for each arm N,
   `cf_N_hit` (`target`/`stop`/`timeout`/`immature`), `cf_N_r_cost` (R after costs) and `cf_N_market_r`
   (SPY return over that arm's own holding window in R units). All twelve are null for a candidate without
-  a `target`, malformed geometry or a failed bar fetch. The table print hides them; the JSON carries them.
+  a `target`, malformed geometry or a failed bar fetch. They are present in the labelled frame (available to callers of `label_journaled`) but the CLI table does not print them, and the CLI JSON carries only the `counterfactual` summary.
 - `counterfactual` summary: `caveat` and `arms.N` with `n_pairs` (mature rows where the arm also
   resolved), `target_rate`, `stop_rate`, `timeout_rate`, `mean_r_cost`, `mean_excess_r` (arm R minus its
   market R) and `advantage_vs_live_excess` (arm excess minus live excess, rows where all four exist).

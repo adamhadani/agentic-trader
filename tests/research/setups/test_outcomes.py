@@ -1437,7 +1437,7 @@ def test_counterfactual_summary_shapes_and_advantage():
     assert a1["timeout_rate"] == pytest.approx(1 / 3)
     assert a1["mean_r_cost"] == pytest.approx(2.4 / 3)
     assert a1["mean_excess_r"] == pytest.approx(((3.0 - 1.0) + (0.4 - 0.1)) / 2)
-    # rows 1 and 3 have all four: (2.0 - 0.5) vs (3.0 - 1.0) -> +0.5; (0.2 - nan) skipped for row 3.
+    # only row 1 has all four values: (3.0 - 1.0) - (2.0 - 0.5) -> +0.5; rows 2 and 3 lack a market_r.
     assert a1["advantage_vs_live_excess"] == pytest.approx(0.5)
     empty = block["arms"]["A2_2r_trail"]
     assert empty == {

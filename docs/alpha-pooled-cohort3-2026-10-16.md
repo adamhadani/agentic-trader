@@ -136,7 +136,7 @@ names and the next 1,000) the pooled fixed-set lane has now tested 48 formula-co
 the frozen 20-session 2-ATR-stop 3R-target long bracket and found no finalist; the confirmation
 window is unused. The constant across every negative is the bracket, not the population or the
 formula family, so the next question is whether the bracket itself is the binding constraint: the
-predeclared bracket counterfactual on the journaled card funnel (2R versus 3R target, trailing
+predeclared bracket counterfactual on the replayed native setups (the live card funnel is measured descriptively) (2R versus 3R target, trailing
 ratchet on versus off, with an index control) is the next workstream. A fourth cohort or a fifth
 formula family on this bracket is not recommended. Remaining untested sources on this lane: news
 fields as events v2 (after an `alpha news` cohort acquisition) and a real-time-SIP intraday

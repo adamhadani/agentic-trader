@@ -69,7 +69,7 @@ each about the size of the events-v1 work (one SDD day each).
   surprise fields are therefore contaminated by later revisions. EDGAR timestamps (#3) fix the
   *when*; the *consensus history* stays unavailable without a paid estimates vendor.
 - **Power, not search.** 48 fixed-set tests found nothing partly because the label's base rate
-  is low and the arms are correlated. The bracket counterfactual now running settles the exit
+  is low and the arms are correlated. The bracket counterfactual (started 2026-10-18; run pending) settles the exit
   side; new fields should be tested as fixed sets of ≤ 8 formulas on one cohort, as before.
 
 ## 4. Recommended order

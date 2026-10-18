@@ -170,11 +170,11 @@ class BracketCounterfactualProtocol(BaseModel, frozen=True, extra="forbid"):
 
 
 def winsorized(long: pd.DataFrame, r_cap: float) -> pd.DataFrame:
-    """Copy with ``r`` and ``r_cost`` clipped to +-``r_cap`` and ``excess_r`` recomputed."""
+    """Copy with ``r`` and ``r_cost`` clipped to +-``r_cap``; ``excess_r`` recomputed and clipped too."""
     out = long.copy()
     for column in ("r", "r_cost"):
         out[column] = out[column].astype(float).clip(-r_cap, r_cap)
-    out["excess_r"] = out["r_cost"] - out["market_r"].astype(float)
+    out["excess_r"] = (out["r_cost"] - out["market_r"].astype(float)).clip(-r_cap, r_cap)
     return out
 
 
@@ -222,7 +222,7 @@ def paired_contrast(pairs: pd.DataFrame, protocol: BracketCounterfactualProtocol
     return {
         "n_pairs": int(counts.sum()),
         "n_sessions": len(sums),
-        "n_divergent": int(pairs["divergent"].sum()),
+        "n_divergent": int(pairs.loc[finite, "divergent"].sum()),
         "mean_diff": float(point),
         "ci90": [float(v) for v in ci90],
         "p_one_sided": float(p_value),
@@ -246,15 +246,16 @@ def arm_mean(long: pd.DataFrame, arm: str, protocol: BracketCounterfactualProtoc
     }
 
 
+def _b1_holds(rejected: bool, mean_diff: float) -> bool:
+    """B1: Holm-rejected and a finite, positive paired mean difference."""
+    return bool(rejected and math.isfinite(mean_diff) and mean_diff > 0.0)
+
+
 def holm(p_values: Mapping[str, float], alpha: float) -> dict[str, dict]:
-    """Holm step-down over the finite p-values; NaN is never rejected and does not count toward m."""
-    finite = sorted(((p, name) for name, p in p_values.items() if math.isfinite(p)), key=lambda item: item[0])
+    """Holm step-down; a NaN p counts as p = 1.0 (included in m, never rejected)."""
+    finite = sorted(((p if math.isfinite(p) else 1.0, name) for name, p in p_values.items()), key=lambda item: item[0])
     m = len(finite)
-    out: dict[str, dict] = {
-        name: {"p": float(p), "holm_p": float("nan"), "rejected": False}
-        for name, p in p_values.items()
-        if not math.isfinite(p)
-    }
+    out: dict[str, dict] = {}
     running = 0.0
     stopped = False
     for rank, (p, name) in enumerate(finite):
@@ -281,7 +282,10 @@ def sample_floors(
     )
     arms = {}
     for arm, pairs in pairs_by_arm.items():
-        n_divergent = int(pairs["divergent"].sum())
+        usable = np.isfinite(pairs["excess_other"].astype(float).to_numpy()) & np.isfinite(
+            pairs["excess_live"].astype(float).to_numpy()
+        )
+        n_divergent = int(pairs.loc[usable, "divergent"].sum())
         arms[arm] = {"n_divergent": n_divergent, "holds": bool(base and n_divergent >= protocol.min_divergent)}
     return {
         "n_setups": n_setups,
@@ -307,7 +311,11 @@ def discovery(
         robust_contrast = paired_contrast(pair_arms(robust, LIVE_ARM_NAME, arm), protocol)
         robust_diff = robust_contrast["mean_diff"]
         arms[arm] = {
-            "b1": {**contrasts[arm], "holm_p": holm_result[arm]["holm_p"], "holds": holm_result[arm]["rejected"]},
+            "b1": {
+                **contrasts[arm],
+                "holm_p": holm_result[arm]["holm_p"],
+                "holds": _b1_holds(holm_result[arm]["rejected"], contrasts[arm]["mean_diff"]),
+            },
             "b2": arm_mean(primary, arm, protocol),
             "b3": {**robust_contrast, "holds": bool(math.isfinite(robust_diff) and robust_diff > 0.0)},
             "b4": {
@@ -388,13 +396,16 @@ def _yearly_contrast(pairs: pd.DataFrame) -> dict:
 def _window_descriptives(long: pd.DataFrame, protocol: BracketCounterfactualProtocol) -> dict:
     wins = winsorized(long, protocol.r_cap)
     resolved = wins[wins["hit"] != "immature"]
-    arms = [arm.name for arm in protocol.arms]
+    present = set(wins["arm"].unique())
+    arms = [arm.name for arm in protocol.arms if arm.name in present]
     stratum = resolved["strategy"].astype(str) + "/" + resolved["timeframe"].astype(str)
     return {
         "arms": _per_arm(resolved, arms),
         "by_setup": {name: _per_arm(resolved[stratum == name], arms) for name in sorted(stratum.unique())},
         "by_year": {
-            arm: _yearly_contrast(pair_arms(wins, LIVE_ARM_NAME, arm)) for arm in protocol.counterfactual_arm_names()
+            arm: _yearly_contrast(pair_arms(wins, LIVE_ARM_NAME, arm))
+            for arm in protocol.counterfactual_arm_names()
+            if arm in present
         },
         "zero_cost": {arm: _mean_or_nan(resolved[resolved["arm"] == arm], "r") for arm in arms},
     }
@@ -404,7 +415,7 @@ def execute_bracket_counterfactual(
     protocol: BracketCounterfactualProtocol,
     directory: Path,
     *,
-    frames: Mapping[str, Callable[[], pd.DataFrame]],
+    frames: Mapping[str, Callable[..., pd.DataFrame]],
     environment: dict,
 ) -> dict:
     """Run B1-B5 and write the write-once artifacts.
@@ -459,11 +470,13 @@ def execute_bracket_counterfactual(
                     "protocol_id": protocol.identity,
                     "confirmation_read": True,
                     "confirmation_arm": selected,
+                    "confirmation_arms": [LIVE_ARM_NAME, selected],
                     "declared_at": datetime.now(UTC).isoformat(),
                 },
                 directory / "confirmation.json",
             )
-            read["confirmation"] = frames["confirmation"]()
+            chosen = next(arm for arm in protocol.bracket_arms() if arm.name == selected)
+            read["confirmation"] = frames["confirmation"]((LIVE_ARM, chosen))
             _write_private_gzip(read["confirmation"], directory / "frames" / "confirmation.csv.gz")
             b5 = confirmation(read["confirmation"], selected, protocol)
         result = {
@@ -482,6 +495,12 @@ def execute_bracket_counterfactual(
             "finished_at": datetime.now(UTC).isoformat(),
         }
     except Exception as exc:
-        result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "authorizes_promotion": False}
+        result = {
+            "status": "failed",
+            "protocol_id": protocol.identity,
+            "started_at": started_at,
+            "error": f"{type(exc).__name__}: {exc}",
+            "authorizes_promotion": False,
+        }
     save_json_report(_finite_json(result), directory / "result.json")
     return result

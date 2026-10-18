@@ -159,15 +159,16 @@ Per window, per arm, one row per labelled setup: `decision_at`, `symbol`, `strat
 **that arm's own** holding window, in the setup's R, uncosted — the existing `market_r`
 convention), `excess_r = r_cost − market_r`.
 
-**Winsorisation.** All statistics use `r` and `r_cost` clipped to ±`r_cap` (10R). The frames keep
-the raw values. The recurrence test's robustness sign was carried by one +1,546R cell (a
+**Winsorisation.** All statistics use `r`, `r_cost` and `excess_r` clipped to ±`r_cap` (10R)
+(`excess_r` is recomputed from the clipped `r_cost`, then clipped). The frames keep the raw
+values. The recurrence test's robustness sign was carried by one +1,546R cell (a
 near-zero planned stop); a declared cap removes that artefact class without touching the
 labeller.
 
 **Weighting and resampling.** Setup-weighted means. Stationary session-block bootstrap (block
 mean 10 sessions, 2,000 draws, seed 20261018), whole sessions resampled once per draw and
-applied to every arm, so each draw's contrast is paired. One-sided p-values are the fraction of
-draws with the contrast ≤ 0; 90% CIs are the 5th and 95th percentiles.
+applied to every arm, so each draw's contrast is paired. One-sided p-values use the bootstrap's `(k+1)/(N+1)` convention
+(k = draws with the contrast ≤ 0, N = finite draws); 90% CIs are the 5th and 95th percentiles.
 
 **Rules (primary window unless stated).** For each counterfactual arm i ∈ {A1, A2, A3, A4}:
 
@@ -241,22 +242,22 @@ does.
 
 ## 8. Executor, CLI and the live measurement
 
-**Executor** `execute_bracket_counterfactual(protocol, output_dir, *, primary_frame,
-robustness_frame, confirmation_frame, started_at)`. Frames are callables returning the replayed
+**Executor** `execute_bracket_counterfactual(protocol, directory, *, frames, environment)`,
+with `frames` keyed `primary`, `robustness`, `confirmation`. Frames are callables returning the replayed
 setup frames (decision rows with levels and the hourly bars needed to label them), exactly as
 `execute_recurrence` receives them; each is called at most once, inside `try`. Order:
 
 1. Write `protocol.json` (with `identity`) and `manifest.json` (`protocol_id`, `environment`,
-   `started_at`, `arms`, `windows`, `authorizes_promotion: false`,
-   `confirmation_read: false`).
+   `started_at`, `hypotheses`, `arms`, `windows`, `authorizes_promotion: false`,
+   `confirmation_declaration: "confirmation.json"`).
 2. Label the primary frame under all five arms; compute B1, B2, B4; write
    `frames/primary.csv.gz` (mode 0600).
 3. Label the robustness frame under all five arms; compute B3; write `frames/robustness.csv.gz`.
 4. Decide. If an arm is selected, write the declaration `confirmation.json`
-   (`confirmation_read: true`, `confirmation_arm`, `confirmation_declared_at`, `protocol_id`)
-   **before** calling `confirmation_frame` (artifacts are write-once, so the declaration is its
-   own file and the manifest names it), then label the confirmation frame under A0 and the
-   selected arm, compute B5, write `frames/confirmation.csv.gz`.
+   (`protocol_id`, `confirmation_read: true`, `confirmation_arm`, `confirmation_arms`,
+   `declared_at`) **before** calling `frames["confirmation"]` (artifacts are write-once, so the declaration is its
+   own file and the manifest names it), then call it with the two-arm subset
+   `(A0_live, selected)` so only those arms are labelled, compute B5, write `frames/confirmation.csv.gz`.
 5. Write `result.json`: `decision`, `selected_arm`, `b1`..`b5` (estimate, ci90, p, holm_p, holds,
    per arm), `descriptives`, `windows`, `started_at`, `finished_at`. Any exception writes
    `result.json` with `status: "failed"` and the exception type name and returns it (the CLI then exits non-zero), as `execute_recurrence` does.
@@ -276,8 +277,8 @@ charge (the recurrence precedent; the protocol text and manifest record the wind
 that labels every journaled candidate under the same five arms with the shared labeller
 (`BracketArm` objects built from the frozen protocol file, so the CLI and the study can never
 drift), on the bars `cards outcomes` already fetches (IEX hourly, raw adjustment), reporting per
-arm: `n_mature`, `target`/`stop`/`timeout` rates, `mean_r_cost`, `mean_excess_r`, and the paired
-`advantage_vs_live` mean. The CLI renders it under the existing attribution blocks with the
+arm: `n_pairs`, `target`/`stop`/`timeout` rates, `mean_r_cost`, `mean_excess_r`, and the paired
+`advantage_vs_live_excess` mean. The CLI renders it under the existing attribution blocks with the
 standing caveat ("descriptive; not a gate"). Nothing in `risk/`, `card_policy`, `card_stats` or
 admission reads it.
 
@@ -322,7 +323,9 @@ TDD, `tests/research/setups/test_labels.py` and new `test_bracket_counterfactual
 Runtime: the recurrence run (same replay, one arm) took about an hour on this host; five arms
 share one replay and one bar read, so labelling adds minutes, not hours. The CLI must not run
 across the 10:35/14:35 New York scan windows (operational rule, not code). No new migration;
-schema head stays `008_alpha_pipeline`. Readiness, Telegram and the daemon are untouched.
+schema head stays `008_alpha_pipeline`. The daemon's daily `card_stats` snapshot calls `label_journaled`, so it now also labels the four
+arms per candidate (a few extra milliseconds per candidate; the snapshot itself ignores the
+`cf_*` columns); readiness and Telegram are untouched.
 
 ## 12. Rulings (design decisions under standing trust)
 

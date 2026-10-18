@@ -189,7 +189,7 @@ def label_bracket(
     is_long = levels.direction == "LONG"
     sign = 1.0 if is_long else -1.0
     target: float | None
-    if arm is None or arm is LIVE_ARM:
+    if arm is None or arm == LIVE_ARM:
         target = levels.target
     elif arm.target_r is None:
         target = None

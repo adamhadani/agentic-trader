@@ -761,7 +761,7 @@ def test_build_arm_frame_one_row_per_record_and_arm(monkeypatch):
     arms = [LIVE_ARM, _ARM_A1, _ARM_A2]
     frame = _arm_frame(
         [_arm_record(), _arm_record("BBB")],
-        {"AAA": _hourly_frame(_ARM_DECISION), "BBB": _hourly_frame(_ARM_DECISION)},
+        {"AAA": _hourly_frame(_ARM_DECISION), "BBB": _hourly_frame(_ARM_DECISION), "SPY": _rising_market()},
         arms,
     )
     assert list(frame.columns) == list(runner.ARM_FRAME_COLUMNS)
@@ -797,18 +797,19 @@ def test_build_arm_frame_skips_invalid_levels_and_missing_hourly(monkeypatch):
     monkeypatch.setattr(runner, "label_bracket", lambda *a, **k: _arm_outcome(pd.Timestamp("2024-01-03T18:00:00Z")))
     frame = _arm_frame(
         [_arm_record(stop=100.0), _arm_record("BBB"), _arm_record("CCC")],
-        {"AAA": _hourly_frame(_ARM_DECISION), "CCC": pd.DataFrame()},
+        {"AAA": _hourly_frame(_ARM_DECISION), "CCC": pd.DataFrame(), "SPY": _rising_market()},
         [LIVE_ARM],
     )
     assert frame.empty
     assert list(frame.columns) == list(runner.ARM_FRAME_COLUMNS)
 
 
-def test_build_arm_frame_without_spy_leaves_market_r_none(monkeypatch):
+def test_build_arm_frame_without_spy_raises(monkeypatch):
     monkeypatch.setattr(runner, "label_bracket", lambda *a, **k: _arm_outcome(pd.Timestamp("2024-01-03T18:00:00Z")))
-    frame = _arm_frame([_arm_record()], {"AAA": _hourly_frame(_ARM_DECISION)}, [LIVE_ARM])
-    assert len(frame) == 1
-    assert frame["market_r"].isna().all() and frame["excess_r"].isna().all()
+    with pytest.raises(RuntimeError, match="Market proxy SPY has no hourly bars"):
+        _arm_frame([_arm_record()], {"AAA": _hourly_frame(_ARM_DECISION)}, [LIVE_ARM])
+    with pytest.raises(RuntimeError, match="Market proxy SPY"):
+        _arm_frame([_arm_record()], {"AAA": _hourly_frame(_ARM_DECISION), "SPY": pd.DataFrame()}, [LIVE_ARM])
 
 
 async def test_build_window_frames_with_arms_returns_long_frames(tmp_path, monkeypatch):
@@ -847,3 +848,7 @@ async def test_build_window_frames_with_arms_returns_long_frames(tmp_path, monke
     assert list(long.columns) == list(runner.ARM_FRAME_COLUMNS)
     assert set(long["arm"]) == {LIVE_ARM.name, _ARM_A1.name}
     assert len(long) == 2 * len(base)
+    subset = armed["development"]([_ARM_A1])
+    assert set(subset["arm"]) == {_ARM_A1.name} and len(subset) == len(base)
+    both = armed["development"]((LIVE_ARM, _ARM_A1))
+    assert set(both["arm"]) == {LIVE_ARM.name, _ARM_A1.name}

@@ -417,6 +417,8 @@ def _build_arm_frame(
     """
     market = hourly_by_symbol.get(market_symbol)
     has_market = market is not None and not market.empty
+    if not has_market:
+        raise RuntimeError(f"Market proxy {market_symbol} has no hourly bars; the arm study needs its control")
     rows: list[dict[str, object]] = []
     for record in records:
         hourly = hourly_by_symbol.get(record.symbol)
@@ -509,7 +511,7 @@ async def build_window_frames(
     cost_bps_per_side: Sequence[float],
     max_workers: int,
     arms: Sequence[BracketArm] | None = None,
-) -> tuple[dict[str, Callable[[], pd.DataFrame]], dict]:
+) -> tuple[dict[str, Callable[..., pd.DataFrame]], dict]:
     """Fetch/cache bars once and lazily label an arbitrary set of named decision windows.
 
     Generalizes the setup-outcome study's development/holdout machinery (bar fetch,
@@ -518,7 +520,8 @@ async def build_window_frames(
     window without duplicating the fetch/replay/label pipeline. Exactly like
     ``build_setup_frames``, labelling only ever happens inside the callables this
     returns -- never eagerly here. With ``arms``, each callable instead returns the long
-    per-arm frame (``_build_arm_frame``, labelled at the decisive cost).
+    per-arm frame (``_build_arm_frame``, labelled at the decisive cost); a callable also
+    accepts an optional ``arms`` override that labels only those arms.
     """
     if not windows:
         raise ValueError("windows must be non-empty")
@@ -583,13 +586,14 @@ async def build_window_frames(
 
     window_records = {name: _window_records(records, start, end) for name, (start, end) in windows.items()}
 
-    def _make_frame(name: str) -> Callable[[], pd.DataFrame]:
-        def frame() -> pd.DataFrame:
-            if arms is not None:
+    def _make_frame(name: str) -> Callable[..., pd.DataFrame]:
+        def frame(arms_override: Sequence[BracketArm] | None = None) -> pd.DataFrame:
+            chosen = arms_override if arms_override is not None else arms
+            if chosen is not None:
                 arm_result = _build_arm_frame(
                     window_records[name],
                     hourly_by_symbol,
-                    arms,
+                    chosen,
                     max_hold_sessions=max_hold_sessions,
                     cost_bps_per_side=cost_bps_per_side[-1],
                     market_symbol="SPY",
