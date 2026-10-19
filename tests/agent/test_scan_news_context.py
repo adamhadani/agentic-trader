@@ -14,7 +14,7 @@ from agentic_trader.execution.durable import EventKind
 from tests.agent.test_news_context import GOOD, FakeComplete, FakeSource, page_with
 from tests.agent.test_scan_budget import budget_desk, candidate, evaluation  # noqa: F401  (fixture + helpers)
 from tests.agent.test_scan_shadow_ranker import shadow_desk  # noqa: F401  (fixture)
-from tests.data.test_news import row
+from tests.data.test_news import NOW, row
 
 
 def with_news(cand, news_context=None):
@@ -31,7 +31,9 @@ async def _ranked(db):
 def install(desk, source, *, answers=(), score_first=6):
     desk.config.news = NewsConfig(max_scored_per_scan=score_first)
     scorer = NewsScorer(model="m", api_key=None, timeout_seconds=1, complete=FakeComplete(answers))
-    desk.news_context = NewsContextService(source, scorer, desk.config.news, clock=lambda: datetime.now(UTC))
+    # The fixture rows are stamped relative to tests.data.test_news.NOW; the service's window must
+    # use the same clock or the items age out of the 48 h window as the calendar advances.
+    desk.news_context = NewsContextService(source, scorer, desk.config.news, clock=lambda: NOW)
     return scorer
 
 

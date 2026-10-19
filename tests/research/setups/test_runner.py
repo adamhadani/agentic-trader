@@ -13,7 +13,7 @@ from agentic_trader.config import load_config
 from agentic_trader.market.session import ET_TZ, DeterministicCalendarProvider
 from agentic_trader.research.setups import features, runner
 from agentic_trader.research.setups.features import CROSS_SECTIONAL, MARKET, SECTOR_ETF, cross_section
-from agentic_trader.research.setups.labels import BracketHit, BracketOutcome
+from agentic_trader.research.setups.labels import LIVE_ARM, BracketArm, BracketHit, BracketOutcome, TrailSpec
 from agentic_trader.research.setups.ranker import live_cross_section, setup_features
 from agentic_trader.research.setups.replay import SetupRecord
 from agentic_trader.research.setups.runner import _fetch_cached, build_setup_frames
@@ -710,3 +710,145 @@ def test_model_features_ignore_the_new_columns():
     base = pd.DataFrame({"mom_60": [0.1], "setup_quality": [0.5], "strategy=TREND_PULLBACK": [1.0], "r_cost": [0.1]})
     extended = base.assign(entry_time=pd.Timestamp("2024-01-03T16:30:00Z"), exit_time=None, holding_sessions=2)
     assert model_features(extended) == model_features(base)
+
+
+# --- Long per-arm frames -------------------------------------------------------------------
+
+_ARM_A1 = BracketArm(name="A1_3R", target_r=3.0, trail=None)
+_ARM_A2 = BracketArm(name="A2_trail", target_r=None, trail=TrailSpec(trigger_r=1.0, distance_r=1.0))
+_ARM_DECISION = datetime(2024, 1, 3, 15, 35, tzinfo=UTC)
+_ARM_ENTRY = pd.Timestamp("2024-01-03T16:00:00Z")
+
+
+def _arm_record(symbol: str = "AAA", *, stop: float = 98.0, target: float = 104.0) -> SetupRecord:
+    return SetupRecord(
+        decision_at=_ARM_DECISION,
+        symbol=symbol,
+        strategy="TREND_PULLBACK",
+        timeframe="4h",
+        direction="LONG",
+        setup_quality=0.5,
+        entry=100.0,
+        stop=stop,
+        target=target,
+        atr=1.0,
+    )
+
+
+def _arm_outcome(exit_time: pd.Timestamp, *, r: float = 1.0, r_cost: float = 0.9) -> BracketOutcome:
+    return BracketOutcome(
+        BracketHit.TARGET, _ARM_ENTRY, 100.0, exit_time, 102.0, r, r_cost, 1, final_stop=99.0, ratchet_moves=2
+    )
+
+
+def _rising_market(bars: int = 6) -> pd.DataFrame:
+    index = pd.DatetimeIndex(
+        [pd.Timestamp("2024-01-03T14:00:00Z") + pd.Timedelta(hours=i) for i in range(bars)], name="timestamp"
+    )
+    opens = [100.0 * 1.01**i for i in range(bars)]
+    closes = [o * 1.01 for o in opens]
+    return pd.DataFrame(
+        {"Open": opens, "High": closes, "Low": opens, "Close": closes, "Volume": [1.0] * bars}, index=index
+    )
+
+
+def _arm_frame(records, hourly, arms, **kwargs) -> pd.DataFrame:
+    return runner._build_arm_frame(records, hourly, arms, max_hold_sessions=20, cost_bps_per_side=5.0, **kwargs)
+
+
+def test_build_arm_frame_one_row_per_record_and_arm(monkeypatch):
+    monkeypatch.setattr(runner, "label_bracket", lambda *a, **k: _arm_outcome(pd.Timestamp("2024-01-03T18:00:00Z")))
+    arms = [LIVE_ARM, _ARM_A1, _ARM_A2]
+    frame = _arm_frame(
+        [_arm_record(), _arm_record("BBB")],
+        {"AAA": _hourly_frame(_ARM_DECISION), "BBB": _hourly_frame(_ARM_DECISION), "SPY": _rising_market()},
+        arms,
+    )
+    assert list(frame.columns) == list(runner.ARM_FRAME_COLUMNS)
+    assert len(frame) == 6
+    assert set(frame["arm"]) == {arm.name for arm in arms}
+    assert (frame["session"] == date(2024, 1, 3)).all()
+    row = frame.iloc[0]
+    assert row["final_stop"] == 99.0 and row["ratchet_moves"] == 2 and row["exit_price"] == 102.0
+
+
+def test_build_arm_frame_market_r_uses_the_arms_own_window(monkeypatch):
+    exits = {
+        LIVE_ARM.name: pd.Timestamp("2024-01-03T17:00:00Z"),
+        _ARM_A1.name: pd.Timestamp("2024-01-03T18:00:00Z"),
+    }
+
+    def fake_label(levels, decision_at, hourly, *, max_hold_sessions, cost_bps_per_side, arm=None):
+        return _arm_outcome(exits[arm.name])
+
+    monkeypatch.setattr(runner, "label_bracket", fake_label)
+    frame = _arm_frame(
+        [_arm_record()],
+        {"AAA": _hourly_frame(_ARM_DECISION), "SPY": _rising_market()},
+        [LIVE_ARM, _ARM_A1],
+        market_symbol="SPY",
+    )
+    by_arm = frame.set_index("arm")
+    assert by_arm.loc[_ARM_A1.name, "market_r"] > by_arm.loc[LIVE_ARM.name, "market_r"] > 0
+    assert by_arm["excess_r"].tolist() == pytest.approx((by_arm["r_cost"] - by_arm["market_r"]).tolist())
+
+
+def test_build_arm_frame_skips_invalid_levels_and_missing_hourly(monkeypatch):
+    monkeypatch.setattr(runner, "label_bracket", lambda *a, **k: _arm_outcome(pd.Timestamp("2024-01-03T18:00:00Z")))
+    frame = _arm_frame(
+        [_arm_record(stop=100.0), _arm_record("BBB"), _arm_record("CCC")],
+        {"AAA": _hourly_frame(_ARM_DECISION), "CCC": pd.DataFrame(), "SPY": _rising_market()},
+        [LIVE_ARM],
+    )
+    assert frame.empty
+    assert list(frame.columns) == list(runner.ARM_FRAME_COLUMNS)
+
+
+def test_build_arm_frame_without_spy_raises(monkeypatch):
+    monkeypatch.setattr(runner, "label_bracket", lambda *a, **k: _arm_outcome(pd.Timestamp("2024-01-03T18:00:00Z")))
+    with pytest.raises(RuntimeError, match="Market proxy SPY has no hourly bars"):
+        _arm_frame([_arm_record()], {"AAA": _hourly_frame(_ARM_DECISION)}, [LIVE_ARM])
+    with pytest.raises(RuntimeError, match="Market proxy SPY"):
+        _arm_frame([_arm_record()], {"AAA": _hourly_frame(_ARM_DECISION), "SPY": pd.DataFrame()}, [LIVE_ARM])
+
+
+async def test_build_window_frames_with_arms_returns_long_frames(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "replay_symbol", _fake_replay_symbol_factory([]))
+    base_label = _fake_label_bracket_factory([])
+    monkeypatch.setattr(
+        runner,
+        "label_bracket",
+        lambda levels, decision_at, hourly, *, arm=None, **kw: base_label(levels, decision_at, hourly, **kw),
+    )
+    protocol = _protocol()
+    kwargs = {
+        "data_cutoff": protocol.data_cutoff,
+        "scan_times_et": protocol.scan_times_et,
+        "adjustment": protocol.adjustment,
+        "max_hold_sessions": protocol.max_hold_sessions,
+        "cost_bps_per_side": protocol.cost_bps_per_side,
+        "max_workers": 2,
+    }
+    windows = {"development": protocol.development}
+    plain, _ = await runner.build_window_frames(
+        windows, UNIVERSE, FakeBarSource(), CALENDAR, tmp_path / "cache", load_config(), **kwargs
+    )
+    armed, _ = await runner.build_window_frames(
+        windows,
+        UNIVERSE,
+        FakeBarSource(),
+        CALENDAR,
+        tmp_path / "cache",
+        load_config(),
+        arms=[LIVE_ARM, _ARM_A1],
+        **kwargs,
+    )
+    base = plain["development"]()
+    long = armed["development"]()
+    assert list(long.columns) == list(runner.ARM_FRAME_COLUMNS)
+    assert set(long["arm"]) == {LIVE_ARM.name, _ARM_A1.name}
+    assert len(long) == 2 * len(base)
+    subset = armed["development"]([_ARM_A1])
+    assert set(subset["arm"]) == {_ARM_A1.name} and len(subset) == len(base)
+    both = armed["development"]((LIVE_ARM, _ARM_A1))
+    assert set(both["arm"]) == {LIVE_ARM.name, _ARM_A1.name}

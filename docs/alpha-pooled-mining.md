@@ -459,6 +459,17 @@ Run order: events, then daily, then intraday. Check A on the first protocol buil
 the others reuse the cached cube where their spec matches. Each protocol runs checks A and C
 (fixed set, no check B); a campaign runs per protocol, only on operator approval.
 
+**Result (2026-10-16).** The v3 cube was built 2026-10-15/16 (2,199,508 eligible cells, 2,198,811
+labelled; the hourly download alone took about eleven hours). Checks A and C passed for all three
+protocols (detection 0.98 at the 0.15R gate, false acceptance 0.01; 0/40 false acceptances each),
+and the three operator-approved campaigns all returned **no finalists**: the largest positive
+statistic is `pead_reaction_decay` at t +1.85 and the only |t| above 2 is negative
+(`intraday_high_proximity`, t −2.33, a hypothesis only). The long-bracket base rate on the band is
+about half of cohort v2's (leg means ≈ +0.08R against ≈ +0.18R at 15 bp against 5 bp). Cohort v3 is
+closed as an alpha source and the confirmation window is still unused; across both cohorts the
+fixed-set lane has tested 48 formula-cohort pairs under the frozen bracket without a finalist
+([results](alpha-pooled-cohort3-2026-10-16.md)).
+
 ## Statistics
 
 The unit is `R_cost` at 5 bps per side (15 bp for the cohort3 protocols); 0 bps is reported alongside (a study result's

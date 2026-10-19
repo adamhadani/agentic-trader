@@ -34,13 +34,14 @@ from agentic_trader.market.session import ET_TZ, MarketCalendarDay
 from agentic_trader.research.alpha.data import load_dataset, save_dataset
 from agentic_trader.research.alpha.validation import frame_digest
 from agentic_trader.research.setups.features import SECTOR_ETF, CrossSection, cross_section
-from agentic_trader.research.setups.labels import SetupLevels, label_bracket
+from agentic_trader.research.setups.labels import BracketArm, BracketHit, SetupLevels, label_bracket
+from agentic_trader.research.setups.outcomes import market_r
 from agentic_trader.research.setups.ranker import setup_features
 from agentic_trader.research.setups.replay import SetupRecord, decision_instants, live_daily_window, replay_symbol
 from agentic_trader.research.setups.study import SetupStudyProtocol
 
 
-__all__ = ["BarSource", "CalendarSource", "build_setup_frames", "build_window_frames"]
+__all__ = ["ARM_FRAME_COLUMNS", "BarSource", "CalendarSource", "build_setup_frames", "build_window_frames"]
 
 # Padding before development[0] so a prior trading session is always resolvable
 # for the very first decision date's cross-section ``as_of``.
@@ -66,6 +67,34 @@ _FRAME_METADATA_COLUMNS: tuple[str, ...] = (
     "entry_time",
     "exit_time",
     "holding_sessions",
+)
+
+# The long per-arm frame (one row per record x arm): no cross-section features.
+ARM_FRAME_COLUMNS: tuple[str, ...] = (
+    "decision_at",
+    "session",
+    "symbol",
+    "strategy",
+    "timeframe",
+    "direction",
+    "entry",
+    "stop",
+    "target",
+    "atr",
+    "setup_quality",
+    "arm",
+    "hit",
+    "entry_time",
+    "entry_price",
+    "exit_time",
+    "exit_price",
+    "holding_sessions",
+    "ratchet_moves",
+    "final_stop",
+    "r",
+    "r_cost",
+    "market_r",
+    "excess_r",
 )
 
 
@@ -371,6 +400,81 @@ def _build_frame(
     return frame
 
 
+def _build_arm_frame(
+    records: Sequence[SetupRecord],
+    hourly_by_symbol: Mapping[str, pd.DataFrame],
+    arms: Sequence[BracketArm],
+    *,
+    max_hold_sessions: int,
+    cost_bps_per_side: float,
+    market_symbol: str = "SPY",
+) -> pd.DataFrame:
+    """One row per (record, arm), each arm labelled once at the decisive cost.
+
+    ``market_r`` is the market proxy's return over that arm's own holding window, so an
+    arm that exits later is compared with the market over the same later window. Records
+    with invalid levels or without hourly bars are skipped, as in ``_build_frame``.
+    """
+    market = hourly_by_symbol.get(market_symbol)
+    has_market = market is not None and not market.empty
+    if not has_market:
+        raise RuntimeError(f"Market proxy {market_symbol} has no hourly bars; the arm study needs its control")
+    rows: list[dict[str, object]] = []
+    for record in records:
+        hourly = hourly_by_symbol.get(record.symbol)
+        if hourly is None or hourly.empty:
+            continue
+        try:
+            levels = SetupLevels(direction=record.direction, entry=record.entry, stop=record.stop, target=record.target)
+        except ValueError:
+            continue
+        session = record.decision_at.astimezone(ET_TZ).date()
+        for arm in arms:
+            outcome = label_bracket(
+                levels,
+                record.decision_at,
+                hourly,
+                max_hold_sessions=max_hold_sessions,
+                cost_bps_per_side=cost_bps_per_side,
+                arm=arm,
+            )
+            market_return: float | None = None
+            if has_market and outcome.hit != BracketHit.IMMATURE:
+                market_return = market_r(
+                    record.direction, levels.entry, levels.stop, outcome.entry_time, outcome.exit_time, market
+                )
+            excess = None if market_return is None or outcome.r_cost is None else outcome.r_cost - market_return
+            rows.append(
+                {
+                    "decision_at": record.decision_at,
+                    "session": session,
+                    "symbol": record.symbol,
+                    "strategy": record.strategy,
+                    "timeframe": record.timeframe,
+                    "direction": record.direction,
+                    "entry": record.entry,
+                    "stop": record.stop,
+                    "target": record.target,
+                    "atr": record.atr,
+                    "setup_quality": record.setup_quality,
+                    "arm": arm.name,
+                    "hit": outcome.hit.value,
+                    "entry_time": outcome.entry_time,
+                    "entry_price": outcome.entry_price,
+                    "exit_time": outcome.exit_time,
+                    "exit_price": outcome.exit_price,
+                    "holding_sessions": outcome.holding_sessions,
+                    "ratchet_moves": outcome.ratchet_moves,
+                    "final_stop": outcome.final_stop,
+                    "r": outcome.r,
+                    "r_cost": outcome.r_cost,
+                    "market_r": market_return,
+                    "excess_r": excess,
+                }
+            )
+    return pd.DataFrame(rows, columns=list(ARM_FRAME_COLUMNS))
+
+
 CACHE_RANGE_FILE = "cache_range.json"
 
 
@@ -406,7 +510,8 @@ async def build_window_frames(
     max_hold_sessions: int,
     cost_bps_per_side: Sequence[float],
     max_workers: int,
-) -> tuple[dict[str, Callable[[], pd.DataFrame]], dict]:
+    arms: Sequence[BracketArm] | None = None,
+) -> tuple[dict[str, Callable[..., pd.DataFrame]], dict]:
     """Fetch/cache bars once and lazily label an arbitrary set of named decision windows.
 
     Generalizes the setup-outcome study's development/holdout machinery (bar fetch,
@@ -414,7 +519,9 @@ async def build_window_frames(
     purely descriptive study (``baserates.py``) can reuse it over its own decision
     window without duplicating the fetch/replay/label pipeline. Exactly like
     ``build_setup_frames``, labelling only ever happens inside the callables this
-    returns -- never eagerly here.
+    returns -- never eagerly here. With ``arms``, each callable instead returns the long
+    per-arm frame (``_build_arm_frame``, labelled at the decisive cost); a callable also
+    accepts an optional ``arms`` override that labels only those arms.
     """
     if not windows:
         raise ValueError("windows must be non-empty")
@@ -479,8 +586,20 @@ async def build_window_frames(
 
     window_records = {name: _window_records(records, start, end) for name, (start, end) in windows.items()}
 
-    def _make_frame(name: str) -> Callable[[], pd.DataFrame]:
-        def frame() -> pd.DataFrame:
+    def _make_frame(name: str) -> Callable[..., pd.DataFrame]:
+        def frame(arms_override: Sequence[BracketArm] | None = None) -> pd.DataFrame:
+            chosen = arms_override if arms_override is not None else arms
+            if chosen is not None:
+                arm_result = _build_arm_frame(
+                    window_records[name],
+                    hourly_by_symbol,
+                    chosen,
+                    max_hold_sessions=max_hold_sessions,
+                    cost_bps_per_side=cost_bps_per_side[-1],
+                    market_symbol="SPY",
+                )
+                _progress(f"{name} labelled")
+                return arm_result
             result = _build_frame(
                 window_records[name],
                 daily_by_symbol,

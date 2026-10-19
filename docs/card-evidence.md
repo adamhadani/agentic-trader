@@ -331,6 +331,29 @@ to the sample; the 20- and 200-session horizons are the setup feature vector's o
 journal held 39 distinct setups since 2026-09-24, 20 of them journaled in more than one session, and the
 feature vector's `spy_above_200` was `1.0` on every candidate that had it. The recurrence split is under a predeclared test on replayed history (`alpha setup-recurrence`, protocol `config/research/setup-recurrence-v1.json`, [spec](superpowers/specs/2026-10-14-setup-recurrence-design.md)); it ran on 2026-10-14 and did **not** fire: on 6,342 historical setups repeats trailed first occurrences by 0.067R (ci90 [−0.138, +0.005]) and repeats after a stop averaged −0.02R, so the live split was a small rising-tape sample ([result](setup-recurrence-2026-10-14.md)); no construction rule follows.
 
+### Bracket counterfactual arms (descriptive)
+
+`cards outcomes` also relabels every journaled candidate under four counterfactual exit arms on the same
+hourly bars as the live bracket, so the live record keeps measuring what the frozen study tests:
+
+- `A1_3r`: target 3R, no trail. `A2_2r_trail`: target 2R plus trail. `A3_3r_trail`: target 3R plus trail.
+  `A4_trail_only`: no target, trail only. The stop is always the journaled stop.
+- The trail is an hourly close-based ratchet: once a close reaches 1.5R of gain the stop follows 1.5R
+  behind the best close, effective from the next bar. Trail exits count as stops. This approximates the
+  live trailing policy; it is not the broker's tick-level ratchet.
+- Columns: `target` and `atr_14` (the journaled bracket inputs) sit after `stop`; for each arm N,
+  `cf_N_hit` (`target`/`stop`/`timeout`/`immature`), `cf_N_r_cost` (R after costs) and `cf_N_market_r`
+  (SPY return over that arm's own holding window in R units). All twelve are null for a candidate without
+  a `target`, malformed geometry or a failed bar fetch. They are present in the labelled frame (available to callers of `label_journaled`) but the CLI table does not print them, and the CLI JSON carries only the `counterfactual` summary.
+- `counterfactual` summary: `caveat` and `arms.N` with `n_pairs` (mature rows where the arm also
+  resolved), `target_rate`, `stop_rate`, `timeout_rate`, `mean_r_cost`, `mean_excess_r` (arm R minus its
+  market R) and `advantage_vs_live_excess` (arm excess minus live excess, rows where all four exist).
+  Each statistic is null when its population is empty.
+
+Descriptive only: never a gate, and not read by `risk/`, `card_policy`, `card_stats` or admission. The
+decisive test is the frozen study (`alpha bracket-counterfactual`,
+[spec](superpowers/specs/2026-10-18-bracket-counterfactual-design.md)).
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket
