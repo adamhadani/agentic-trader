@@ -54,9 +54,18 @@ from agentic_trader.research.pooled.short_fields import (
     verify_short_sources,
 )
 from agentic_trader.research.setups.runner import BarSource, CalendarSource, _fetch_cached, claim_cache_range
+from agentic_trader.research.short_volume import ShortVolumeStore, files_sha256
 
 
-__all__ = ["CubeBuild", "EventSources", "ShortSources", "build_cube_inputs", "load_event_sources", "load_short_sources"]
+__all__ = [
+    "CubeBuild",
+    "EventSources",
+    "ShortSources",
+    "build_cube_inputs",
+    "load_event_sources",
+    "load_short_sources",
+    "verify_short_digests",
+]
 
 _HOURLY_PAD = timedelta(days=7)
 _PROGRESS_SYMBOLS = 25
@@ -101,6 +110,29 @@ def load_short_sources(
     actions, actions_digest = load_actions(sources.actions_file)
     verify_short_sources(inputs, loaded, actions_digest)
     return loaded, actions
+
+
+def verify_short_digests(inputs: ShortInputs, sources: ShortSources) -> None:
+    """Fail closed unless the files on disk and the actions carry the digests the protocol pins.
+
+    A calendar-free pre-ledger check: it digests the present sessions the store holds inside
+    ``[files_from, files_through]``; the full load (with the calendar) still runs inside the build.
+    """
+    window = inputs.short_volume
+    store = ShortVolumeStore(sources.short_volume_dir)
+    sessions = []
+    for meta_path in sorted(store.directory.glob("*.meta.json")):
+        day = date.fromisoformat(meta_path.name.removesuffix(".meta.json"))
+        meta = store.meta(day)
+        if meta is not None and meta["status"] == "present" and window.files_from <= day <= window.files_through:
+            sessions.append(day)
+    if files_sha256(store, sessions) != window.files_sha256:
+        raise ValueError("short files digest does not match the protocol's short_inputs.short_volume.files_sha256")
+    _, actions_digest = load_actions(sources.actions_file)
+    if actions_digest != inputs.corporate_actions.content_sha256:
+        raise ValueError(
+            "corporate-actions digest does not match the protocol's short_inputs.corporate_actions.content_sha256"
+        )
 
 
 @dataclass(frozen=True)

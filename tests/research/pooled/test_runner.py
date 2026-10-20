@@ -17,7 +17,7 @@ from agentic_trader.research.pooled import runner as runner_module
 from agentic_trader.research.pooled.cohort import Cohort, CohortSource, LoadedCohort, UniverseSpec
 from agentic_trader.research.pooled.cube import _ARRAYS, BracketSpec, CubeSpec, LabelCube, save_cube
 from agentic_trader.research.pooled.events import EVENT_FIELDS, load_actions, pages_sha256
-from agentic_trader.research.pooled.runner import EventSources, ShortSources, build_cube_inputs
+from agentic_trader.research.pooled.runner import EventSources, ShortSources, build_cube_inputs, verify_short_digests
 from agentic_trader.research.pooled.short_fields import SHORT_FIELDS
 from agentic_trader.research.setups import runner as setups_runner
 from agentic_trader.research.short_volume import MIN_ROWS, ShortVolumeStore, files_sha256
@@ -622,3 +622,29 @@ def test_events_and_short_together_raise_before_any_access(tmp_path):
             short=_short_world(tmp_path, pinned=True),
         )
     assert bars.calls == []
+
+
+def test_verify_short_digests_passes_for_the_pinned_files_and_actions(tmp_path):
+    inputs, sources = _short_world(tmp_path, pinned=True)
+    verify_short_digests(inputs, sources)
+
+
+def test_verify_short_digests_refuses_a_changed_file_before_any_bar_access(tmp_path):
+    inputs, sources = _short_world(tmp_path, pinned=True)
+    body = sources.short_volume_dir / "2021-02-01.txt"
+    meta_path = sources.short_volume_dir / "2021-02-01.meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["sha256"] = "0" * 64
+    meta_path.write_text(json.dumps(meta))
+    assert body.exists()
+    with pytest.raises(ValueError, match=r"short_inputs\.short_volume\.files_sha256"):
+        verify_short_digests(inputs, sources)
+
+
+def test_verify_short_digests_refuses_a_wrong_actions_digest(tmp_path):
+    inputs, sources = _short_world(tmp_path, pinned=True)
+    wrong = inputs.model_copy(
+        update={"corporate_actions": inputs.corporate_actions.model_copy(update={"content_sha256": "e" * 64})}
+    )
+    with pytest.raises(ValueError, match=r"short_inputs\.corporate_actions\.content_sha256"):
+        verify_short_digests(wrong, sources)
