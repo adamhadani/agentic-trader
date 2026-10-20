@@ -45,19 +45,25 @@ copilot alpha short-volume --from 2018-08-01 --through 2026-09-01 --cache DIR --
 ```
 
 - One `GET https://cdn.finra.org/equity/regsho/daily/CNMSshvol{YYYYMMDD}.txt` per **NYSE
-  session** in `[from, through]` (sessions from the shared calendar, `market/session.py`, where
-  Juneteenth is a holiday from 2022 only: amended 2026-10-20 in the final review), via a
+  session** in `[from, through]`, via a
   bounded `httpx.Client` (timeout 20 s, 8 MiB byte budget per file, streamed like
   `EquityMetadataSource.directory`), paced at most 4 requests per second, idempotent GETs only,
-  one retry on a transport error. Weekends and holidays are never requested.
+  one retry on a transport error. Weekends and holidays are never requested. Sessions come from
+  Alpaca's exchange calendar (`AlpacaCalendarProvider` over a `BoundedTradingClient`, the desk's
+  credentials from `load_config()`), the calendar the cube build reads, so the acquisition and the
+  build agree on the session set and ad-hoc closures (the 2018-12-05 and 2025-01-09 days of mourning)
+  are simply not sessions. The offline `DeterministicCalendarProvider` is not used because it lacks
+  such closures (amended 2026-10-20 in the final review; the offline calendar's Juneteenth rule was
+  also corrected to 2022 onward). The manifest records `calendar: "alpaca"`.
 - Cache layout, `DIR/{YYYY-MM-DD}.txt` plus `DIR/{YYYY-MM-DD}.meta.json`
   (`requested_at`, `received_at`, `status`, `bytes`, `sha256`, `rows`), mirroring the Nasdaq
   page store, written directly into `--cache DIR` (the same `DIR` the pooled commands take as
   `--short-volume`); a cached session is never refetched. A session whose file answers 403/404 is recorded
   as `absent` (`status: "absent"`, no `.txt`); the files begin on 2018-08-01, and FINRA has posted
-  every session since, so an `absent` session **inside** the window fails the acquisition closed
-  unless it is listed in `--allow-absent` (a documented exception list recorded in the manifest as
-  given; a date that is not a session inside `[from, through]` is refused).
+  every exchange session since, so an `absent` session **inside** the window fails the acquisition
+  closed unless it is listed in `--allow-absent`, which is only for a session FINRA genuinely did not
+  post (a documented exception list recorded in the manifest as given; a date that is not a session
+  inside `[from, through]` is refused). The v1 window has 2,032 sessions and none absent.
 - Parse on acquisition only to validate: header
   `Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market`, every row's `Date` equal to the
   file date, volumes non-negative decimals (the 2026 files carry fractional shares), at least 1,000

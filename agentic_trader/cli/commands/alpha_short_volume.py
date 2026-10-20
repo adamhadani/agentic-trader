@@ -15,13 +15,15 @@ import httpx
 
 from agentic_trader.cli.commands.alpha import research_environment
 from agentic_trader.cli.utils import coro
-from agentic_trader.market.session import DeterministicCalendarProvider
+from agentic_trader.config import load_config
+from agentic_trader.market.session import AlpacaCalendarProvider
 from agentic_trader.research.short_volume import (
     REQUESTS_PER_SECOND,
     ShortVolumeStore,
     acquire_short_volume,
     write_private,
 )
+from agentic_trader.transport.alpaca import BoundedTradingClient
 
 
 def _pacer() -> Callable[[], Awaitable[None]]:
@@ -36,6 +38,28 @@ def _pacer() -> Callable[[], Awaitable[None]]:
         last = time.monotonic()
 
     return pace
+
+
+async def _exchange_sessions(start: date, end: date) -> list[date]:
+    """The sessions in ``[start, end]`` on Alpaca's exchange calendar, the calendar the pooled cube build uses.
+
+    The offline calendar is not used: it lacks ad-hoc closures (the 2018-12-05 and 2025-01-09 days of
+    mourning), which would otherwise be requested and recorded as absent sessions the build never reads.
+    """
+    config = await asyncio.to_thread(load_config)
+    if not (config.alpaca_api_key and config.alpaca_api_secret):
+        raise click.ClickException("Alpaca credentials are required")
+    trading = BoundedTradingClient(
+        config.alpaca_api_key,
+        config.alpaca_api_secret,
+        paper=config.alpaca_paper,
+        request_timeout=config.market_data.timeout_seconds,
+    )
+    try:
+        days = await AlpacaCalendarProvider(trading_client=trading).get_calendar_range(start, end)
+    finally:
+        trading._session.close()
+    return [day.date for day in days if day.is_trading_day]
 
 
 @click.command("short-volume")
@@ -53,18 +77,17 @@ def _pacer() -> Callable[[], Awaitable[None]]:
     "allow_absent",
     multiple=True,
     type=click.DateTime(formats=["%Y-%m-%d"]),
-    help="An NYSE session inside the window whose file FINRA does not serve; repeatable.",
+    help="An exchange-calendar session inside the window whose file FINRA did not post; repeatable.",
 )
 @coro
 async def short_volume_cmd(start, end, cache: Path, output: Path, allow_absent):
-    """Fetch and cache FINRA Reg SHO daily short volume for each NYSE session; research only."""
+    """Fetch and cache FINRA Reg SHO daily short volume for each NYSE session (Alpaca's calendar); research only."""
     if output.exists():
         raise click.ClickException(f"Output directory exists: {output}")
     start_date, end_date = start.date(), end.date()
     if end_date < start_date:
         raise click.ClickException("--through must not precede --from")
-    calendar = await DeterministicCalendarProvider().get_calendar_range(start_date, end_date)
-    sessions: list[date] = [day.date for day in calendar if day.is_trading_day]
+    sessions = await _exchange_sessions(start_date, end_date)
     if not sessions:
         raise click.ClickException("No NYSE sessions in the window")
     allowed = [moment.date() for moment in allow_absent]
@@ -80,6 +103,7 @@ async def short_volume_cmd(start, end, cache: Path, output: Path, allow_absent):
             manifest = await acquire_short_volume(client, sessions, store, allow_absent=allowed, pace=_pacer())
     except (ValueError, httpx.HTTPError) as exc:
         raise click.ClickException(str(exc)) from exc
+    manifest["calendar"] = "alpaca"
     manifest["allow_absent"] = [day.isoformat() for day in allowed]
     manifest["command"] = list(sys.argv)
     manifest["environment"] = await asyncio.to_thread(research_environment)

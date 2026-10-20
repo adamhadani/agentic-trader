@@ -1041,28 +1041,29 @@ these fields needs check B and its own spec. Research only: no registry, broker,
 file's `TotalVolume` is not consolidated volume, and `offex_share` is an off-exchange share measure, not a
 short-interest figure. Each file is published the same day by 18:00 ET, so a field at `T` is read by
 decision session `T+1` with at least 16 hours of slack. Files exist from 2018-08-01 and are taken **as
-served** at acquisition time (a later corrected re-post is not tracked). The acquisition of 2026-10-20
-holds 2,029 present sessions of the 2,031 between 2018-08-01 and 2026-09-01; the two absent sessions,
-2018-12-05 and 2025-01-09, are NYSE closures for national days of mourning that the offline calendar does
-not model, and are the only allowed absences (`--allow-absent`, recorded in the manifest).
+served** at acquisition time (a later corrected re-post is not tracked). The acquisition and the cube
+build share Alpaca's exchange calendar, so ad-hoc closures (the national days of mourning on 2018-12-05 and
+2025-01-09) are simply not sessions; the offline calendar is not used because it lacks such closures. The
+window 2018-08-01 to 2026-09-01 holds 2,032 sessions, none absent: `--allow-absent` exists only for a
+session FINRA genuinely did not post, and is recorded in the manifest and bound by the digest.
 
 **Acquisition.** Outside the scan windows, once for both protocols:
 
 ```bash
-copilot alpha short-volume --from 2018-08-01 --through 2026-09-01 --cache DIR --output DIR \
-  --allow-absent 2018-12-05 --allow-absent 2025-01-09
+copilot alpha short-volume --from 2018-08-01 --through 2026-09-01 --cache DIR --output DIR
 ```
 
-One paced GET per NYSE session of the offline calendar (Juneteenth is a holiday from 2022 only; timeout 20 s,
-8 MiB per file). The files go directly into `--cache DIR`: `DIR/{YYYY-MM-DD}.txt` and
+One paced GET per session of Alpaca's exchange calendar (read with the desk's Alpaca credentials, the same
+calendar the cube build reads; timeout 20 s, 8 MiB per file). The files go directly into `--cache DIR`: `DIR/{YYYY-MM-DD}.txt` and
 `DIR/{YYYY-MM-DD}.meta.json` (`requested_at`, `received_at`, `status`, `bytes`, `sha256`, `rows`); an `absent`
 session has the meta file only. A cached session is never refetched; a file must end with FINRA's integer
 row-count trailer (a file without one is a truncated download and fails); an unallowed `absent` session fails
 the acquisition closed, and an `--allow-absent` date that is not a session inside `[--from, --through]` is
-refused. `output/manifest.json` records the window, sessions requested/present/absent, the allowed absences as
-given, the command line and the **files digest**: the SHA-256 of the sorted lines `<date>:<sha256>` for the
-present sessions and `<date>:absent` for the absent ones, so a protocol pins exactly which sessions may be
-absent (`17315ae2525e44481a6c3c13fc75951fe1763af4ab101213c29cce66fe8f83a2`). Both protocols pin it as
+refused. `output/manifest.json` records the window, sessions requested/present/absent, the calendar
+(`"alpaca"`), the allowed absences as given, the command line and the **files digest**: the SHA-256 of the
+sorted lines `<date>:<sha256>` for the present sessions and `<date>:absent` for the absent ones, so a protocol
+pins exactly which sessions may be absent. Over the 2,032 present sessions and no absences it is
+`838521ef4aedd1dcd43530c9be4e3ec440ff273f505861d95b1ba59f096e191b`, which both protocols pin as
 `short_inputs.short_volume.files_sha256`. No database, broker or Telegram.
 
 **Fields.** Per symbol, indexed by trading day `T`; `S_T`, `V_T` are the file's `ShortVolume` and
@@ -1129,8 +1130,8 @@ would also need its own live feed contract (a daily fetch of yesterday's file). 
 
 | File | Cohort and cost | SHA-256 prefix |
 | --- | --- | --- |
-| `config/research/pooled/short-v1.json` | cohort v2, 5 bp, static-percentile universe | `441c05b5` |
-| `config/research/pooled/cohort3-short-v1.json` | cohort v3, 15 bp, $5M median dollar-volume floor | `0bcd6d88` |
+| `config/research/pooled/short-v1.json` | cohort v2, 5 bp, static-percentile universe | `4be5bf3a` |
+| `config/research/pooled/cohort3-short-v1.json` | cohort v3, 15 bp, $5M median dollar-volume floor | `81707624` |
 
 ## Commands
 

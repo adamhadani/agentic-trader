@@ -19,9 +19,9 @@ REPO = Path(__file__).resolve().parents[3]
 SHORT_V1 = REPO / "config/research/pooled/short-v1.json"
 COHORT3_EVENTS = REPO / "config/research/pooled/cohort3-events-v1.json"
 COHORT3_SHORT_V1 = REPO / "config/research/pooled/cohort3-short-v1.json"
-SHORT_V1_SHA256 = "441c05b5"  # recorded prefix of the short-v1 file's SHA-256 (docs/alpha-pooled-mining.md)
-COHORT3_SHORT_V1_SHA256 = "0bcd6d88"  # recorded prefix of the cohort3-short-v1 file's SHA-256
-FILES_SHA256 = "17315ae2525e44481a6c3c13fc75951fe1763af4ab101213c29cce66fe8f83a2"
+SHORT_V1_SHA256 = "4be5bf3a"  # recorded prefix of the short-v1 file's SHA-256 (docs/alpha-pooled-mining.md)
+COHORT3_SHORT_V1_SHA256 = "81707624"  # recorded prefix of the cohort3-short-v1 file's SHA-256
+FILES_SHA256 = "838521ef4aedd1dcd43530c9be4e3ec440ff273f505861d95b1ba59f096e191b"
 EXPECTED_SCORES = {
     "light_shorting": "-short_ratio",
     "light_shorting_week": "-ts_mean(short_ratio, 5)",
