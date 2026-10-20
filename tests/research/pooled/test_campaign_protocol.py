@@ -9,6 +9,8 @@ from agentic_trader.research.alpha.search import WINDOWS
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
     EventsCampaignProtocol,
+    InsiderCampaignProtocol,
+    InsiderFilingInputs,
     IntradayCampaignProtocol,
     ScoreRead,
     Selection,
@@ -17,10 +19,16 @@ from agentic_trader.research.pooled.campaign import (
     load_campaign_protocol,
 )
 from agentic_trader.research.pooled.cohort import load_cohort
-from agentic_trader.research.pooled.scoring import event_inputs_document, short_inputs_document
-from tests.research.pooled.mini_world import mini_fixed_set_protocol, mini_short_protocol
+from agentic_trader.research.pooled.scoring import event_inputs_document, insider_inputs_document, short_inputs_document
+from tests.research.pooled.mini_world import mini_fixed_set_protocol, mini_insider_protocol, mini_short_protocol
 from tests.research.pooled.test_events_v1 import EVENTS_SHA256, V1 as EVENTS_V1
 from tests.research.pooled.test_intraday_v1 import V1 as INTRADAY_V1
+from tests.research.pooled.test_short_v1 import (
+    COHORT3_SHORT_V1,
+    COHORT3_SHORT_V1_SHA256,
+    SHORT_V1,
+    SHORT_V1_SHA256,
+)
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -434,3 +442,35 @@ def test_short_volume_protocol_leaves_other_protocol_hashes_unchanged():
         assert "short_inputs" not in loaded.protocol.model_dump(mode="json")
         if prefix:
             assert loaded.sha256.startswith(prefix)
+
+
+def test_insider_protocol_loads_dumps_its_inputs_and_refuses_genetic():
+    protocol = mini_insider_protocol()
+    assert isinstance(protocol, InsiderCampaignProtocol) and protocol.score_inputs == "daily"
+    dumped = protocol.model_dump(mode="json")
+    assert dumped["insider_inputs"]["fields_version"] == "insider_fields_v1" and dumped["score_inputs"] == "daily"
+    assert insider_inputs_document(protocol) == dumped["insider_inputs"]
+    assert insider_inputs_document(mini_fixed_set_protocol()) is None
+    with pytest.raises(ValueError, match="fixed_set"):
+        mini_insider_protocol(
+            search_mode="genetic",
+            power_search={"families": ["reversal"], "seeds": 10, "delta": 0.1, "min_recovered": 5, "seed": 1},
+        )
+    filings = protocol.insider_inputs.insider_filings.model_dump(mode="json")
+    InsiderFilingInputs.model_validate({**filings, "quarters_from": "2026q3"})
+    with pytest.raises(ValueError, match="quarters_from"):
+        InsiderFilingInputs.model_validate({**filings, "quarters_from": "2026q4", "quarters_through": "2026q3"})
+
+
+def test_insider_protocol_leaves_other_protocol_hashes_unchanged():
+    pinned = (
+        (EVENTS_V1, EVENTS_SHA256),
+        (INTRADAY_V1, INTRADAY_SHA256),
+        (V4_PATH, "a72f2e65"),
+        (SHORT_V1, SHORT_V1_SHA256),
+        (COHORT3_SHORT_V1, COHORT3_SHORT_V1_SHA256),
+    )
+    for path, prefix in pinned:
+        loaded = load_campaign_protocol(path)
+        assert "insider_inputs" not in loaded.protocol.model_dump(mode="json")
+        assert loaded.sha256.startswith(prefix)

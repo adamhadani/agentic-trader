@@ -12,6 +12,7 @@ from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
     EventsCampaignProtocol,
     Family,
+    InsiderCampaignProtocol,
     IntradayCampaignProtocol,
     NullCheckSpec,
     Selection,
@@ -319,6 +320,36 @@ def mini_short_protocol(**update):
     )
     document.update(update)
     return ShortVolumeCampaignProtocol.model_validate(document)
+
+
+def mini_insider_protocol(**update):
+    """The mini fixed-set protocol reading daily bars plus the insider_fields_v1 columns."""
+    document = mini_fixed_set_protocol().model_dump(mode="json")
+    document.update(
+        id="pooled-insider-campaign",
+        score_inputs="daily",
+        insider_inputs={
+            "fields_version": "insider_fields_v1",
+            "insider_filings": {
+                "source": "sec-form345-datasets",
+                "files_sha256": "e" * 64,
+                "quarters_from": "2015q1",
+                "quarters_through": "2026q3",
+                "buy_window": 63,
+                "net_window": 126,
+                "owner_roles": ["Officer", "Director"],
+                "exclude_10b5_1": True,
+            },
+            "corporate_actions": {
+                "source": "alpaca",
+                "content_sha256": "b" * 64,
+                "window": ["2016-01-01", "2027-03-31"],
+                "trailing_sessions": 252,
+            },
+        },
+    )
+    document.update(update)
+    return InsiderCampaignProtocol.model_validate(document)
 
 
 def events_cube_build(cube: LabelCube) -> CubeBuild:

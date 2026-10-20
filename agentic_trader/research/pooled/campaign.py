@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentic_trader.research.alpha.operators import OPERATOR_SPECS
 from agentic_trader.research.alpha.search import MUTATION_OPERATORS, WINDOWS, canonical_expression
+from agentic_trader.research.insider_filings import parse_quarter
 from agentic_trader.research.pooled.cohort import UniverseSpec
 from agentic_trader.research.pooled.cube import BracketSpec, CoverageSpec, CubeSpec, CubeView, LabelCube
 from agentic_trader.research.pooled.formula import (
@@ -55,6 +56,9 @@ __all__ = [
     "EventsCampaignProtocol",
     "Family",
     "InMemoryLedger",
+    "InsiderCampaignProtocol",
+    "InsiderFilingInputs",
+    "InsiderInputs",
     "IntradayCampaignProtocol",
     "Ledger",
     "LoadedProtocol",
@@ -504,6 +508,50 @@ class ShortVolumeCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid")
         return self
 
 
+class InsiderFilingInputs(BaseModel, frozen=True, extra="forbid"):
+    """The SEC Form 3/4/5 insider-transaction datasets an insider protocol reads, pinned by a digest over every archive."""
+
+    source: Literal["sec-form345-datasets"]
+    files_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    quarters_from: str = Field(pattern=r"^\d{4}q[1-4]$")
+    quarters_through: str = Field(pattern=r"^\d{4}q[1-4]$")
+    buy_window: int = Field(ge=1)
+    net_window: int = Field(ge=1)
+    owner_roles: tuple[str, ...] = Field(min_length=1)
+    exclude_10b5_1: bool
+
+    @model_validator(mode="after")
+    def _window(self) -> InsiderFilingInputs:
+        if parse_quarter(self.quarters_from) > parse_quarter(self.quarters_through):
+            raise ValueError("quarters_from must not follow quarters_through")
+        return self
+
+
+class InsiderInputs(BaseModel, frozen=True, extra="forbid"):
+    """The pinned inputs of an insider protocol: the fields version, the filing archives and the actions."""
+
+    fields_version: Literal["insider_fields_v1"]
+    insider_filings: InsiderFilingInputs
+    corporate_actions: CorporateActionInputs
+
+
+class InsiderCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
+    """A pooled protocol whose formulas read daily bars at D-1 plus the insider-filing fields of
+    ``insider_fields_v1`` (spec 2026-10-20, insider): everything else is inherited."""
+
+    id: Literal["pooled-insider-campaign"]  # type: ignore[assignment]
+    score_inputs: Literal["daily"] = Field(default="daily", exclude=False)
+    insider_inputs: InsiderInputs
+
+    @model_validator(mode="after")
+    def _insider(self) -> InsiderCampaignProtocol:
+        if self.search_mode != "fixed_set":
+            raise ValueError(
+                "an insider protocol is fixed_set in v1: a genetic search on insider fields needs check B and its own spec"
+            )
+        return self
+
+
 @dataclass(frozen=True)
 class LoadedProtocol:
     protocol: CampaignProtocol
@@ -516,6 +564,7 @@ _PROTOCOL_CLASSES: dict[str, type[CampaignProtocol]] = {
     "pooled-intraday-campaign": IntradayCampaignProtocol,
     "pooled-events-campaign": EventsCampaignProtocol,
     "pooled-short-volume-campaign": ShortVolumeCampaignProtocol,
+    "pooled-insider-campaign": InsiderCampaignProtocol,
 }
 
 

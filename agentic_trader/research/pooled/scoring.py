@@ -24,6 +24,7 @@ from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
     EventsCampaignProtocol,
+    InsiderCampaignProtocol,
     IntradayCampaignProtocol,
     ScoredFormula,
     ShortVolumeCampaignProtocol,
@@ -297,6 +298,11 @@ def event_inputs_document(protocol: CampaignProtocol) -> dict | None:
 def short_inputs_document(protocol: CampaignProtocol) -> dict | None:
     """The protocol's short-volume inputs as recorded in manifests; None for a protocol without short fields."""
     return protocol.short_inputs.model_dump(mode="json") if isinstance(protocol, ShortVolumeCampaignProtocol) else None
+
+
+def insider_inputs_document(protocol: CampaignProtocol) -> dict | None:
+    """The protocol's insider inputs as recorded in manifests; None for a protocol without insider fields."""
+    return protocol.insider_inputs.model_dump(mode="json") if isinstance(protocol, InsiderCampaignProtocol) else None
 
 
 def event_coverage_document(built: CubeBuild) -> dict | None:
