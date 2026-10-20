@@ -39,6 +39,7 @@ from agentic_trader.research.pooled.formula import (
     prepare_hourly,
     require_dimensionless,
 )
+from agentic_trader.research.pooled.short_fields import SHORT_FIELDS
 
 
 if TYPE_CHECKING:
@@ -56,6 +57,7 @@ __all__ = [
     "formula_id",
     "score_book",
     "score_read_document",
+    "short_coverage_document",
     "short_inputs_document",
     "vet_expression",
 ]
@@ -177,27 +179,28 @@ class ScoreBook:
         return book
 
     @classmethod
-    def with_events(
+    def with_fields(
         cls,
         adjusted: Mapping[str, pd.DataFrame],
-        events: Mapping[str, pd.DataFrame],
+        frames: Mapping[str, pd.DataFrame],
+        field_names: Sequence[str],
         trading_days: Sequence[date],
         sessions: Sequence[date],
         symbols: Sequence[str],
         *,
         capacity: int = DEFAULT_CAPACITY,
     ) -> ScoreBook:
-        """A daily book whose frames also carry the ``events_fields_v1`` columns (spec 2026-10-14, events):
-        the same D-1 read for bar and event fields; a symbol without an event frame keeps its bars and
-        gets NaN event fields."""
+        """A daily book whose frames also carry the extra ``field_names`` columns (events or short volume):
+        the same D-1 read for bar and extra fields; a symbol without a frame keeps its bars and gets NaN
+        extra fields."""
         book = cls.__new__(cls)
         prepared = prepare_daily(adjusted)
         for symbol, keyed in prepared.items():
-            frame = events.get(symbol)
+            frame = frames.get(symbol)
             columns = (
                 frame.reindex(keyed.index)
                 if frame is not None
-                else pd.DataFrame(index=keyed.index, columns=list(EVENT_FIELDS), dtype=float)
+                else pd.DataFrame(index=keyed.index, columns=list(field_names), dtype=float)
             )
             prepared[symbol] = keyed.join(columns, how="left")
         trading = tuple(trading_days)
@@ -298,6 +301,11 @@ def event_coverage_document(built: CubeBuild) -> dict | None:
     return asdict(built.events.coverage) if built.events is not None else None
 
 
+def short_coverage_document(built: CubeBuild) -> dict | None:
+    """The build's short-volume coverage as recorded in results; None for a build without short fields."""
+    return asdict(built.short.coverage) if built.short is not None else None
+
+
 def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:
     """The book a protocol's formulas read from: daily bars at D-1, or hourly bars before the decision."""
     if isinstance(protocol, IntradayCampaignProtocol):
@@ -317,7 +325,25 @@ def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:
             raise ValueError(
                 "this protocol scores event fields but the build carries no event frames; build with events=..."
             )
-        return ScoreBook.with_events(
-            built.adjusted, built.events.frames, built.trading_days, built.cube.sessions, built.cube.symbols
+        return ScoreBook.with_fields(
+            built.adjusted,
+            built.events.frames,
+            EVENT_FIELDS,
+            built.trading_days,
+            built.cube.sessions,
+            built.cube.symbols,
+        )
+    if isinstance(protocol, ShortVolumeCampaignProtocol):
+        if built.short is None:
+            raise ValueError(
+                "this protocol scores short-volume fields but the build carries no short frames; build with short=..."
+            )
+        return ScoreBook.with_fields(
+            built.adjusted,
+            built.short.frames,
+            SHORT_FIELDS,
+            built.trading_days,
+            built.cube.sessions,
+            built.cube.symbols,
         )
     return ScoreBook(built.adjusted, built.trading_days, built.cube.sessions, built.cube.symbols)

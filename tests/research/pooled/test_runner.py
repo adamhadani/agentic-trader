@@ -17,9 +17,11 @@ from agentic_trader.research.pooled import runner as runner_module
 from agentic_trader.research.pooled.cohort import Cohort, CohortSource, LoadedCohort, UniverseSpec
 from agentic_trader.research.pooled.cube import _ARRAYS, BracketSpec, CubeSpec, LabelCube, save_cube
 from agentic_trader.research.pooled.events import EVENT_FIELDS, load_actions, pages_sha256
-from agentic_trader.research.pooled.runner import EventSources, build_cube_inputs
+from agentic_trader.research.pooled.runner import EventSources, ShortSources, build_cube_inputs
+from agentic_trader.research.pooled.short_fields import SHORT_FIELDS
 from agentic_trader.research.setups import runner as setups_runner
-from tests.research.pooled.mini_world import mini_events_protocol, weekdays
+from agentic_trader.research.short_volume import MIN_ROWS, ShortVolumeStore, files_sha256
+from tests.research.pooled.mini_world import mini_events_protocol, mini_short_protocol, weekdays
 from tests.research.pooled.test_events import _dividend, _write_pages
 
 
@@ -112,7 +114,9 @@ def _no_retry_sleep(monkeypatch):
     monkeypatch.setattr(setups_runner, "_RETRY_DELAYS", ())
 
 
-def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SPEC, load_hourly=False, events=None):
+def build(
+    bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SPEC, load_hourly=False, events=None, short=None
+):
     return asyncio.run(
         build_cube_inputs(
             loaded or cohort(),
@@ -125,6 +129,7 @@ def build(bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SP
             progress=progress,
             load_hourly=load_hourly,
             events=events,
+            short=short,
         )
     )
 
@@ -515,3 +520,105 @@ def test_events_frames_cover_only_symbols_with_an_eligible_cell(tmp_path):
         assert built.events is not None and sorted(built.events.frames) == ["AAA", "BBB"]
         assert built.events.coverage.symbols_without_reports == ("AAA", "BBB")
         assert built.events.coverage.symbols_without_raw == ()
+
+
+_SHORT_HEADER = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\n"
+
+
+def _short_world(tmp_path, *, pinned: bool):
+    """A week of FINRA files for AAA and BBB (one absent day) plus actions on disk, and the protocol
+    inputs pinning their digests (or not)."""
+    first, last = date(2021, 2, 1), date(2021, 2, 5)
+    store = ShortVolumeStore(tmp_path / "short")
+    stamp = datetime(2021, 2, 8, tzinfo=UTC)
+    present = []
+    for day in weekdays(first, last):
+        if day == date(2021, 2, 3):
+            store.save(day, b"", requested_at=stamp, received_at=stamp, status="absent", rows=0)
+            continue
+        # Filler symbols reach the parser's minimum row count; they are outside the cohort.
+        symbols = ("AAA", "BBB", *(f"Z{i:04d}" for i in range(MIN_ROWS)))
+        body = _SHORT_HEADER + "".join(f"{day:%Y%m%d}|{name}|20000|0|50000|Q\n" for name in symbols)
+        store.save(day, body.encode(), requested_at=stamp, received_at=stamp, status="present", rows=len(symbols))
+        present.append(day)
+    actions_file = tmp_path / "actions.json"
+    actions_file.write_text(json.dumps([_dividend("AAA", date(2021, 3, 1)).model_dump(mode="json")]))
+    protocol = mini_short_protocol()
+    inputs = protocol.short_inputs.model_copy(
+        update={
+            "short_volume": protocol.short_inputs.short_volume.model_copy(
+                update={
+                    "files_from": first,
+                    "files_through": last,
+                    "z_window": 2,
+                    "files_sha256": files_sha256(store, present) if pinned else "a" * 64,
+                }
+            ),
+            "corporate_actions": protocol.short_inputs.corporate_actions.model_copy(
+                update={"content_sha256": load_actions(actions_file)[1] if pinned else "b" * 64}
+            ),
+        }
+    )
+    return inputs, ShortSources(short_volume_dir=tmp_path / "short", actions_file=actions_file)
+
+
+def test_short_build_fails_closed_on_digest_mismatch_before_any_bar_is_read(tmp_path):
+    bars = FakeBars()
+    with pytest.raises(ValueError, match="digest"):
+        build(bars, tmp_path / "cache", short=_short_world(tmp_path, pinned=False))
+    assert bars.calls == []
+
+
+def test_short_build_pins_frames_for_the_eligible_symbols_and_keeps_raw_bars(tmp_path):
+    built = build(FakeBars(), tmp_path / "cache", short=_short_world(tmp_path, pinned=True))
+    assert built.short is not None and built.events is None
+    assert set(built.short.frames) == {"AAA", "BBB"}
+    for frame in built.short.frames.values():
+        assert tuple(frame.columns) == SHORT_FIELDS
+        assert len(frame) == len(built.trading_days)
+    # file row 20000 / 50000 on a present day; the absent day stays NaN (never carried forward)
+    ratio = built.short.frames["AAA"]["short_ratio"]
+    assert ratio.loc[pd.Timestamp(date(2021, 2, 1))] == pytest.approx(0.4)
+    assert np.isnan(ratio.loc[pd.Timestamp(date(2021, 2, 3))])
+    assert sorted(built.raw) == ["AAA", "BBB"]
+
+
+def test_short_build_loads_raw_bars_on_a_cache_hit(tmp_path):
+    cache = tmp_path / "cache"
+    bars = FakeBars()
+    plain = build(bars, cache)
+    assert plain.short is None and plain.raw == {}
+    bars.calls.clear()
+    built = build(bars, cache, short=_short_world(tmp_path, pinned=True))
+    assert sorted(built.raw) == ["AAA", "BBB"]
+    assert built.short is not None and set(built.short.frames) == {"AAA", "BBB"}
+    assert bars.calls == []
+
+
+def test_short_frames_cover_only_symbols_with_an_eligible_cell(tmp_path):
+    names = ("AAA", "BBB", "CCC")
+    source = CohortSource(kind="config_groups", description="t", identity="x", symbols=names)
+    loaded = LoadedCohort(
+        cohort=Cohort(
+            id="pooled-cohort", version=1, survivorship="test", sources=(source,), excluded={}, symbols=names
+        ),
+        sha256=cohort().sha256,
+        path=cohort().path,
+    )
+    bars = FakeBars(empty={("CCC", "1d", "raw")})
+    short = _short_world(tmp_path, pinned=True)
+    for _ in range(2):  # the fresh build, then the cache hit
+        built = build(bars, tmp_path / "cache", loaded=loaded, short=short)
+        assert built.short is not None and sorted(built.short.frames) == ["AAA", "BBB"]
+
+
+def test_events_and_short_together_raise_before_any_access(tmp_path):
+    bars = FakeBars()
+    with pytest.raises(ValueError, match="events.*short|short.*events"):
+        build(
+            bars,
+            tmp_path / "cache",
+            events=_event_world(tmp_path, pinned=True),
+            short=_short_world(tmp_path, pinned=True),
+        )
+    assert bars.calls == []

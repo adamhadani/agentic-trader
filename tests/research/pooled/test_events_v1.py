@@ -6,6 +6,7 @@ import pandas as pd
 
 from agentic_trader.research.alpha.dsl import AlphaExpressionEvaluator
 from agentic_trader.research.pooled.campaign import EventsCampaignProtocol, load_campaign_protocol
+from agentic_trader.research.pooled.events import EVENT_FIELDS
 from agentic_trader.research.pooled.formula import evaluate_prepared, prepare_daily, require_dimensionless
 from agentic_trader.research.pooled.scoring import ScoreBook
 from tests.research.pooled.mini_world import ADJUSTED, BAR_DAYS, EVENT_FRAMES, NAMES, SESSIONS
@@ -97,7 +98,7 @@ def test_every_events_v1_seed_evaluates_on_a_frame_with_event_columns():
 
 def test_windowed_formulas_are_nan_out_of_window_so_the_cell_is_ineligible():
     """``x / (cond)``: safe_div gives NaN where the 0/1 condition is 0, and evaluate_prepared keeps it."""
-    book = ScoreBook.with_events(ADJUSTED, EVENT_FRAMES, BAR_DAYS, SESSIONS, NAMES)
+    book = ScoreBook.with_fields(ADJUSTED, EVENT_FRAMES, EVENT_FIELDS, BAR_DAYS, SESSIONS, NAMES)
     window = book.panel(EXPECTED_SCORES["pead_reaction_window"])
     reaction = book.panel("earnings_reaction")
     age = book.panel("earnings_age")

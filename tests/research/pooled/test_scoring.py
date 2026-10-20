@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from agentic_trader.research.pooled import scoring
+from agentic_trader.research.pooled.events import EVENT_FIELDS
 from agentic_trader.research.pooled.formula import (
     evaluate_panel,
     evaluate_prepared_hourly,
@@ -19,12 +20,14 @@ from agentic_trader.research.pooled.scoring import (
     score_book,
     vet_expression,
 )
+from agentic_trader.research.pooled.short_fields import SHORT_FIELDS
 from tests.research.pooled.mini_world import (
     ADJUSTED as MINI_ADJUSTED,
     BAR_DAYS as MINI_BAR_DAYS,
     EVENT_FRAMES,
     NAMES as MINI_NAMES,
     SESSIONS as MINI_SESSIONS,
+    SHORT_FRAMES,
     cube_build,
     events_cube_build,
     intraday_cube_build,
@@ -32,6 +35,8 @@ from tests.research.pooled.mini_world import (
     mini_events_protocol,
     mini_fixed_set_protocol,
     mini_intraday_protocol,
+    mini_short_protocol,
+    short_cube_build,
 )
 from tests.research.pooled.test_formula import daily, hourly, weekdays
 
@@ -176,10 +181,10 @@ def test_score_book_dispatches_on_protocol_inputs():
 
 
 def _events_book():
-    return ScoreBook.with_events(MINI_ADJUSTED, EVENT_FRAMES, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
+    return ScoreBook.with_fields(MINI_ADJUSTED, EVENT_FRAMES, EVENT_FIELDS, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
 
 
-def test_with_events_reads_event_columns_at_d_minus_one_like_daily_fields():
+def test_with_fields_reads_event_columns_at_d_minus_one_like_daily_fields():
     book = _events_book()
     assert book.score_inputs == "daily"
     panel = book.panel("earnings_age")
@@ -193,7 +198,7 @@ def test_with_events_reads_event_columns_at_d_minus_one_like_daily_fields():
     assert np.isfinite(book.panel("close / ts_mean(close, 20)")[-1]).all()
 
 
-def test_with_events_mixes_bar_and_event_fields_in_one_expression():
+def test_with_fields_mixes_bar_and_event_fields_in_one_expression():
     book = _events_book()
     mixed = book.panel("if_else(earnings_age > 20, ts_sum(returns, 20), 0)")
     plain = book.panel("ts_sum(returns, 20)")
@@ -203,9 +208,9 @@ def test_with_events_mixes_bar_and_event_fields_in_one_expression():
     assert (mixed[np.isfinite(age) & (age <= 20)] == 0).all()
 
 
-def test_with_events_without_a_symbols_frame_leaves_bar_fields_and_nans_event_fields():
+def test_with_fields_without_a_symbols_frame_leaves_bar_fields_and_nans_event_fields():
     frames = {k: v for k, v in EVENT_FRAMES.items() if k != MINI_NAMES[0]}
-    book = ScoreBook.with_events(MINI_ADJUSTED, frames, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
+    book = ScoreBook.with_fields(MINI_ADJUSTED, frames, EVENT_FIELDS, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
     assert np.isnan(book.panel("earnings_age")[:, 0]).all()
     assert np.isfinite(book.panel("close")[-1, 0])
 
@@ -224,3 +229,37 @@ def test_frozen_panels_from_an_events_book_serve_event_expressions():
     frozen = book.freeze(["earnings_surprise / (1 + earnings_age)"])
     assert frozen.score_inputs == "daily"
     assert frozen.panel("earnings_surprise / (1 + earnings_age)").shape == (len(MINI_SESSIONS), len(MINI_NAMES))
+
+
+def test_with_fields_reads_short_columns_at_d_minus_one():
+    book = ScoreBook.with_fields(MINI_ADJUSTED, SHORT_FRAMES, SHORT_FIELDS, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
+    panel = book.panel("short_ratio_z")
+    position = {d: i for i, d in enumerate(MINI_BAR_DAYS)}
+    for row in (0, 500):
+        previous = MINI_BAR_DAYS[position[MINI_SESSIONS[row]] - 1]
+        for col, name in enumerate(MINI_NAMES):
+            assert panel[row, col] == SHORT_FRAMES[name].loc[pd.Timestamp(previous), "short_ratio_z"]
+    windowed = book.panel("-short_ratio_z / (ts_sum(returns, 5) > 0)")
+    returns = book.panel("ts_sum(returns, 5)")
+    z = book.panel("short_ratio_z")
+    inside = np.isfinite(z) & (returns > 0)
+    outside = np.isfinite(z) & np.isfinite(returns) & (returns <= 0)
+    assert inside.any() and outside.any()
+    assert np.isnan(windowed[outside]).all()
+    assert np.allclose(windowed[inside], -z[inside])
+
+
+def test_score_book_dispatches_short_protocol_and_refuses_a_build_without_short_frames():
+    cube = label_cube()
+    protocol = mini_short_protocol()
+    book = score_book(protocol, short_cube_build(cube))
+    assert book.score_inputs == "daily" and np.isfinite(book.panel("offex_share")[-1]).any()
+    with pytest.raises(ValueError, match="short-volume"):
+        score_book(protocol, cube_build(cube))
+
+
+def test_short_coverage_document_is_the_coverage_or_none():
+    cube = label_cube()
+    document = scoring.short_coverage_document(short_cube_build(cube))
+    assert document is not None and document["unmatched_rows"] == 0
+    assert scoring.short_coverage_document(cube_build(cube)) is None

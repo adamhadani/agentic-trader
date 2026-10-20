@@ -22,6 +22,7 @@ from agentic_trader.research.pooled.cube import LabelCube
 from agentic_trader.research.pooled.events import EVENT_FIELDS, EventCoverage, EventFrames
 from agentic_trader.research.pooled.runner import CubeBuild
 from agentic_trader.research.pooled.scoring import ScoreBook
+from agentic_trader.research.pooled.short_fields import SHORT_FIELDS, ShortCoverage, ShortFrames
 from tests.research.pooled.test_formula import hourly
 
 
@@ -240,6 +241,28 @@ def event_frames(seed: int = 3) -> dict[str, pd.DataFrame]:
 EVENT_FRAMES = event_frames()
 
 
+def short_frames(seed: int = 4) -> dict[str, pd.DataFrame]:
+    """Synthetic short_fields_v1 frames on BAR_DAYS; NaN for the first 20 rows (the baseline warm-up)."""
+    rng = np.random.default_rng(seed)
+    index = pd.DatetimeIndex([pd.Timestamp(d) for d in BAR_DAYS])
+    n = len(BAR_DAYS)
+    frames = {}
+    for name in NAMES:
+        columns = {
+            "short_ratio": rng.uniform(0.2, 0.7, n),
+            "short_ratio_z": rng.normal(0.0, 1.0, n),
+            "short_volume_rel": rng.normal(1.0, 0.2, n),
+            "offex_share": rng.uniform(0.2, 0.6, n),
+        }
+        for values in columns.values():
+            values[:20] = np.nan
+        frames[name] = pd.DataFrame(columns, index=index)
+    return frames
+
+
+SHORT_FRAMES = short_frames()
+
+
 def mini_events_protocol(**update):
     """The mini fixed-set protocol reading daily bars plus the events_fields_v1 columns."""
     document = mini_fixed_set_protocol(**update).model_dump(mode="json")
@@ -317,4 +340,24 @@ def events_cube_build(cube: LabelCube) -> CubeBuild:
         bar_failures={},
         static_used=(),
         events=EventFrames(frames=EVENT_FRAMES, coverage=coverage),
+    )
+
+
+def short_cube_build(cube: LabelCube) -> CubeBuild:
+    coverage = ShortCoverage(
+        symbols_without_rows=(),
+        unmatched_rows=0,
+        thin_days=0,
+        offex_clipped=0,
+        identity_breaks={},
+        first_finite={name: dict.fromkeys(SHORT_FIELDS, BAR_DAYS[20].isoformat()) for name in NAMES},
+    )
+    return CubeBuild(
+        cube=cube,
+        trading_days=BAR_DAYS,
+        adjusted=ADJUSTED,
+        raw=ADJUSTED,
+        bar_failures={},
+        static_used=(),
+        short=ShortFrames(frames=SHORT_FRAMES, coverage=coverage),
     )
