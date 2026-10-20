@@ -52,6 +52,8 @@ from agentic_trader.research.pooled.scoring import (
     ScoreBook,
     event_coverage_document,
     event_inputs_document,
+    insider_coverage_document,
+    insider_inputs_document,
     score_book,
     score_read_document,
     short_coverage_document,
@@ -268,6 +270,7 @@ async def execute_null_check(
             "score_read": score_read_document(protocol),
             "event_inputs": event_inputs_document(protocol),
             "short_inputs": short_inputs_document(protocol),
+            "insider_inputs": insider_inputs_document(protocol),
             "environment": environment,
             "started_at": datetime.now(UTC).isoformat(),
             "authorizes_promotion": False,
@@ -307,6 +310,7 @@ async def execute_null_check(
             "cube_sha256": built.cube.sha256,
             "event_coverage": event_coverage_document(built),
             "short_coverage": short_coverage_document(built),
+            "insider_coverage": insider_coverage_document(built),
         }
     except Exception as exc:
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", **base}

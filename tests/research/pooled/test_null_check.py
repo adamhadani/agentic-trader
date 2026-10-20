@@ -34,10 +34,12 @@ from tests.research.pooled.mini_world import (
     cube_build,
     events_cube_build,
     hourly_bars,
+    insider_cube_build,
     intraday_cube_build,
     label_cube,
     mini_events_protocol,
     mini_fixed_set_protocol,
+    mini_insider_protocol,
     mini_intraday_protocol,
     mini_protocol,
     mini_short_protocol,
@@ -382,3 +384,43 @@ def test_the_null_check_records_short_inputs_and_short_coverage(tmp_path):
     assert manifest["event_inputs"] is None and result["event_coverage"] is None
     on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
     assert set(on_disk["short_coverage"]["first_finite"]) == set(built.cube.symbols)
+
+
+def _run_null_check(tmp_path, protocol, built, cube):
+    async def build():
+        return built
+
+    return asyncio.run(
+        execute_null_check(
+            LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("p.json")),
+            tmp_path / "out",
+            cohort=SimpleNamespace(sha256=COHORT),
+            build=build,
+            power_result={
+                "status": "passed",
+                "cohort_sha256": COHORT,
+                "campaign_protocol_sha256": "p" * 64,
+                "cube_sha256": cube.sha256,
+            },
+            environment={},
+        )
+    )
+
+
+def test_the_null_check_records_insider_inputs_and_insider_coverage(tmp_path):
+    protocol = mini_insider_protocol()
+    cube = label_cube()
+    built = insider_cube_build(cube)
+    result = _run_null_check(tmp_path, protocol, built, cube)
+    assert result["status"] in {"passed", "gate_failed"}, result
+    assert built.insider is not None and result["insider_coverage"] == asdict(built.insider.coverage)
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["insider_inputs"] == protocol.insider_inputs.model_dump(mode="json")
+    assert manifest["short_inputs"] is None and result["short_coverage"] is None
+
+
+def test_the_null_check_on_a_short_protocol_has_no_insider_inputs(tmp_path):
+    cube = label_cube()
+    result = _run_null_check(tmp_path, mini_short_protocol(), short_cube_build(cube), cube)
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["insider_inputs"] is None and result["insider_coverage"] is None

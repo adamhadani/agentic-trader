@@ -38,10 +38,12 @@ from tests.research.pooled.mini_world import (
     book as mini_book,
     cube_build,
     events_cube_build,
+    insider_cube_build,
     intraday_cube_build,
     label_cube,
     mini_events_protocol,
     mini_fixed_set_protocol,
+    mini_insider_protocol,
     mini_intraday_protocol,
     mini_protocol,
     mini_short_protocol,
@@ -856,3 +858,43 @@ async def test_a_short_campaign_result_carries_its_short_inputs_and_coverage(tmp
     assert set(on_disk["short_coverage"]["first_finite"]) == set(built.cube.symbols)
     manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
     assert manifest["short_inputs"] == protocol.short_inputs.model_dump(mode="json")
+
+
+def test_frozen_document_binds_insider_inputs():
+    insider = mini_insider_protocol()
+    text = "close / ts_mean(close, 20)"
+    with_insider = campaign_run.frozen_document(text, insider)
+    with_short = campaign_run.frozen_document(text, mini_short_protocol())
+    plain = campaign_run.frozen_document(text, mini_protocol())
+    assert with_insider["formula"]["insider_inputs"] == insider.insider_inputs.model_dump(mode="json")
+    assert with_insider["formula"]["score_inputs"] == "daily"
+    assert "insider_inputs" not in plain["formula"]
+    assert len({with_insider["identity"], with_short["identity"], plain["identity"]}) == 3
+
+
+async def test_an_insider_campaign_result_carries_its_insider_inputs_and_coverage(tmp_path, repository):
+    protocol = mini_insider_protocol()
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("insider.json"))
+    cube = label_cube()
+    built = insider_cube_build(cube)
+    gates = {name: {"status": "passed", "cube_sha256": cube.sha256} for name, _ in protocol.gates}
+
+    async def build():
+        return built
+
+    result = await execute_campaign(
+        loaded,
+        tmp_path / "out",
+        cohort=SimpleNamespace(sha256=COHORT),
+        build=build,
+        gates=gates,
+        repository=repository,
+        entries=[],
+        environment={"runtime": {"revision": "abc1234"}},
+    )
+    assert result["status"] != "failed", result
+    assert built.insider is not None and result["insider_coverage"] == asdict(built.insider.coverage)
+    assert result["insider_inputs"] == protocol.insider_inputs.model_dump(mode="json")
+    assert result["short_inputs"] is None and result["short_coverage"] is None
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["insider_inputs"] == protocol.insider_inputs.model_dump(mode="json")

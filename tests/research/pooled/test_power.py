@@ -26,9 +26,11 @@ from agentic_trader.research.pooled.runner import CubeBuild
 from tests.research.pooled.mini_world import (
     cube_build,
     events_cube_build,
+    insider_cube_build,
     label_cube,
     mini_events_protocol,
     mini_fixed_set_protocol,
+    mini_insider_protocol,
     mini_protocol,
     mini_short_protocol,
     short_cube_build,
@@ -560,3 +562,34 @@ def test_check_a_on_a_short_protocol_records_its_short_inputs_and_coverage(tmp_p
     manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
     assert manifest["short_inputs"] == protocol.short_inputs.model_dump(mode="json")
     assert result["event_coverage"] is None and manifest["event_inputs"] is None
+
+
+def test_check_a_on_an_insider_protocol_records_its_insider_inputs_and_coverage(tmp_path):
+    protocol = mini_insider_protocol(power=tiny_protocol().power)
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("insider.json"))
+    cohort = SimpleNamespace(sha256=COHORT, cohort=SimpleNamespace(source_of=lambda symbol: ("config_groups",)))
+    built = insider_cube_build(label_cube())
+
+    async def build():
+        return built
+
+    result = asyncio.run(execute_power_check(loaded, tmp_path / "out", cohort=cohort, build=build, environment={}))
+    assert result["status"] == "passed", result
+    assert built.insider is not None and result["insider_coverage"] == asdict(built.insider.coverage)
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["insider_inputs"] == protocol.insider_inputs.model_dump(mode="json")
+    assert result["short_coverage"] is None and manifest["short_inputs"] is None
+
+
+def test_check_a_on_a_short_protocol_has_no_insider_inputs(tmp_path):
+    protocol = mini_short_protocol(power=tiny_protocol().power)
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("short.json"))
+    cohort = SimpleNamespace(sha256=COHORT, cohort=SimpleNamespace(source_of=lambda symbol: ("config_groups",)))
+    built = short_cube_build(label_cube())
+
+    async def build():
+        return built
+
+    result = asyncio.run(execute_power_check(loaded, tmp_path / "out", cohort=cohort, build=build, environment={}))
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["insider_inputs"] is None and result["insider_coverage"] is None
