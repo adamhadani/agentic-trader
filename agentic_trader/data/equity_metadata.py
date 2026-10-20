@@ -7,10 +7,9 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 import httpx
-from alpaca.trading.enums import AssetClass
-from alpaca.trading.requests import GetAssetsRequest
 
 from agentic_trader.data.evidence import artifact_reference
 from agentic_trader.data.symbol_directory import DIRECTORY_NAMES, MAX_METADATA_ROWS, parse_directory
@@ -51,7 +50,15 @@ class EquityMetadataSource:
 
         with self.trading.observe_responses(retain):
             # No status filter: retain current inactive/nontradable assets and broker identity too.
-            self.trading.get_all_assets(GetAssetsRequest(asset_class=AssetClass.US_EQUITY))
+            # Raw rows: the typed SDK parse rejects a page with an exchange its enum lacks (TXSE).
+            rows = self.trading.list_us_equity_assets(None)
+        # The typed parse used to reject a malformed identifier inside the acquisition step; keep
+        # that failure on the source receipt (the raw page is already retained above).
+        for row in rows:
+            try:
+                UUID(str(row["id"]))
+            except ValueError as exc:
+                raise ValueError("Invalid asset identifier") from exc
         if len(pages) != 1:
             raise ValueError("Bounded SDK response capture required")
         return pages[0]

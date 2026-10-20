@@ -463,7 +463,7 @@ card_policy:
 # Book-aware sizing (docs/card-evidence.md "Book-aware sizing").
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").
 book_sizing:
-  mode: preview            # off | preview | enforce
+  mode: enforce            # off | preview | enforce; preview 2026-10-09 -> 2026-10-19 (6 factors, all 1.00); enforce since 2026-10-20
   max_portfolio_daily_vol_pct: 0.008
   lookback_sessions: 120
   min_observations: 60
@@ -509,7 +509,7 @@ alpha_pipeline:
 # Corporate actions (docs/corporate-actions.md): daily capture, entry rule mode. `enforce` is an operator decision.
 corporate_actions:
   enabled: true
-  entry_block: "preview"
+  entry_block: "enforce"   # preview 2026-10-12 -> 2026-10-19 (9 blocks, 0 would-block, 3 uncovered); enforce since 2026-10-20
 
 # News as measured context (docs/news-context.md): one bounded fetch per scan without a timeframe (the
 # scheduled universe scans, operator /scan, scan --dry-run; never the intraday job), LLM tone for the

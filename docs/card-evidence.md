@@ -227,8 +227,9 @@ come from the scan's datasets when those frames are raw Alpaca bars; a candidate
 from the yfinance fallback (auto-adjusted) is fetched raw like a book name. Other book names are
 fetched once per scan, off the event loop, with a 20 second bound.
 
-**Modes.** `off`: nothing is computed. `preview` (default): the factor is computed, journaled and
-shown on the card; size is unchanged. `enforce`: every size tier is scaled by the factor (quantities
+**Modes.** `off`: nothing is computed. `preview` (code default): the factor is computed, journaled and
+shown on the card; size is unchanged. `config/config.yaml` ships `enforce` since 2026-10-20 (preview
+2026-10-09 → 2026-10-19: six journaled factors, all 1.00 against a one-share book). `enforce`: every size tier is scaled by the factor (quantities
 floored to the minimum order size; a scaled default tier below the minimum is `blocked` and the
 candidate is skipped with outcome `book_sizing_blocked`). Statuses: `applied` (enforce, factor < 1), `unchanged` (factor 1,
 or preview), `blocked`, `unavailable` (covariance missing, invalid or timed out; never blocks and
