@@ -1,7 +1,7 @@
 import hashlib
 import json
 from contextlib import asynccontextmanager, contextmanager
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,13 +9,16 @@ import pytest
 from click.testing import CliRunner
 
 from agentic_trader.cli.commands import alpha as alpha_cli
+from agentic_trader.research.insider_filings import InsiderFilingStore, parse_quarter
 from agentic_trader.research.pooled.campaign import load_campaign_protocol
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
 from agentic_trader.research.pooled.events import pages_sha256
-from agentic_trader.research.pooled.runner import ShortSources
-from tests.research.pooled.mini_world import mini_short_protocol, weekdays
+from agentic_trader.research.pooled.runner import InsiderSources, ShortSources
+from tests.research.insider_fixtures import trade, trades_archive
+from tests.research.pooled.mini_world import mini_insider_protocol, mini_short_protocol, weekdays
 from tests.research.pooled.test_campaign_protocol import _events_document
 from tests.research.pooled.test_events import _dividend, _write_pages
+from tests.research.pooled.test_runner import _insider_world
 
 
 ENTRY = str(REPO_ROOT / "config/research/pooled/high52-v1.json")
@@ -845,5 +848,162 @@ def test_campaign_verifies_the_short_sources_before_opening_the_ledger(tmp_path,
     )
     assert result.exit_code == 1
     assert message in result.output
+    assert ran == []
+    assert not (tmp_path / "out").exists()
+
+
+def _insider_protocol(tmp_path, inputs=None) -> Path:
+    """An insider protocol on the real cohort-v3 daily fixed set (the cohort pin must hold)."""
+    inputs = inputs or mini_insider_protocol().insider_inputs
+    document = json.loads((REPO_ROOT / "config/research/pooled/cohort3-daily-v1.json").read_text())
+    document.update(
+        id="pooled-insider-campaign",
+        score_inputs="daily",
+        insider_inputs=inputs.model_dump(mode="json"),
+    )
+    protocol = tmp_path / "insider.json"
+    protocol.write_text(json.dumps(document))
+    return protocol
+
+
+def _insider_dirs(tmp_path) -> tuple[Path, Path]:
+    filings = tmp_path / "insider-filings"
+    filings.mkdir()
+    actions = tmp_path / "actions.json"
+    actions.write_text("[]")
+    return filings, actions
+
+
+def test_an_insider_protocol_requires_both_insider_filings_and_corporate_actions(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    protocol = _insider_protocol(tmp_path)
+    filings, actions = _insider_dirs(tmp_path)
+    for extra in ((), ("--insider-filings", str(filings)), ("--corporate-actions", str(actions))):
+        result = _power_with(tmp_path, protocol, *extra)
+        assert result.exit_code == 1
+        assert "--insider-filings and --corporate-actions are required for an insider protocol" in result.output
+
+
+def test_an_insider_protocol_refuses_short_volume(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    protocol = _insider_protocol(tmp_path)
+    filings, actions = _insider_dirs(tmp_path)
+    short, _ = _short_dirs(tmp_path)
+    result = _power_with(
+        tmp_path,
+        protocol,
+        "--insider-filings",
+        str(filings),
+        "--corporate-actions",
+        str(actions),
+        "--short-volume",
+        str(short),
+    )
+    assert result.exit_code == 1
+    assert "--short-volume applies only to a short-volume protocol" in result.output
+
+
+def test_an_insider_protocol_refuses_earnings_pages(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    protocol = _insider_protocol(tmp_path)
+    filings, actions = _insider_dirs(tmp_path)
+    result = _power_with(
+        tmp_path,
+        protocol,
+        "--insider-filings",
+        str(filings),
+        "--corporate-actions",
+        str(actions),
+        "--earnings-pages",
+        str(tmp_path),
+    )
+    assert result.exit_code == 1
+    assert "--earnings-pages applies only to an events protocol" in result.output
+
+
+def test_a_short_protocol_refuses_insider_filings(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    protocol = _short_protocol(tmp_path)
+    short, actions = _short_dirs(tmp_path)
+    filings, _ = _insider_dirs(tmp_path)
+    result = _power_with(
+        tmp_path,
+        protocol,
+        "--short-volume",
+        str(short),
+        "--corporate-actions",
+        str(actions),
+        "--insider-filings",
+        str(filings),
+    )
+    assert result.exit_code == 1
+    assert "--insider-filings applies only to an insider protocol" in result.output
+
+
+def test_a_plain_protocol_refuses_insider_filings(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    filings, _ = _insider_dirs(tmp_path)
+    result = _power(tmp_path, tmp_path / "out", "--insider-filings", str(filings))
+    assert result.exit_code == 1
+    assert "--insider-filings applies only to an insider protocol" in result.output
+
+
+def test_an_insider_protocol_passes_its_inputs_and_sources_into_the_build(tmp_path, monkeypatch):
+    protocol = _insider_protocol(tmp_path)
+    filings, actions = _insider_dirs(tmp_path)
+    seen = {}
+
+    async def fake_build_cube_inputs(cohort, spec, **kwargs):
+        seen.update(kwargs)
+        return "built"
+
+    async def executor(loaded, directory, **kwargs):
+        seen["built"] = await kwargs["build"]()
+        return {"status": "passed", "curve": {}}
+
+    monkeypatch.setattr(alpha_cli, "build_cube_inputs", fake_build_cube_inputs)
+    monkeypatch.setattr(alpha_cli, "execute_power_check", executor)
+    monkeypatch.setattr(alpha_cli, "_apriori_clients", _dummy_clients())
+    result = _power_with(tmp_path, protocol, "--insider-filings", str(filings), "--corporate-actions", str(actions))
+    assert result.exit_code == 0, result.output
+    loaded = load_campaign_protocol(protocol)
+    assert seen["insider"] == (
+        loaded.protocol.insider_inputs,
+        InsiderSources(insider_filings_dir=filings, actions_file=actions),
+    )
+    assert seen["events"] is None and seen["short"] is None
+
+
+def test_campaign_verifies_the_insider_sources_before_opening_the_ledger(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    _clean_tree(monkeypatch)
+    ran = []
+
+    async def recorder(*args, **kwargs):
+        ran.append(True)
+
+    monkeypatch.setattr(alpha_cli, "execute_campaign", recorder)
+    monkeypatch.setattr(alpha_cli, "execute_campaign_recovery", recorder)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    inputs, sources = _insider_world(tmp_path, pinned=True)  # pins the digests of a two-quarter store
+    protocol = _insider_protocol(tmp_path, inputs)
+    # Replace one pinned archive with another well-formed one: the files digest no longer matches.
+    store = InsiderFilingStore(sources.insider_filings_dir)
+    stamp = datetime(2021, 5, 1, tzinfo=UTC)
+    body = trades_archive([trade(cik=1000, filing="11-FEB-2021", trans="11-FEB-2021", owner=7, shares=5, price=1.0)])
+    store.save(parse_quarter("2021q1"), body, url="https://x/other", requested_at=stamp, received_at=stamp)
+    result = _campaign(
+        tmp_path,
+        _gates(tmp_path, protocol=str(protocol)),
+        "--insider-filings",
+        str(sources.insider_filings_dir),
+        "--corporate-actions",
+        str(sources.actions_file),
+        protocol=str(protocol),
+        search_power=False,
+    )
+    assert result.exit_code == 1
+    assert "insider files digest does not match" in result.output
     assert ran == []
     assert not (tmp_path / "out").exists()
