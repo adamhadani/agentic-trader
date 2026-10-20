@@ -2,9 +2,11 @@
 
 One consolidated file per NYSE session (``CNMSshvol{YYYYMMDD}.txt``), fetched paced and
 saved verbatim with its SHA-256 and receipt times. FINRA answers 403 for a file that does
-not exist; an absent session fails closed unless the caller lists it in ``allow_absent``.
-A file that fails validation is kept on disk with status ``invalid`` and the acquisition
-raises. Research only: no database, broker or Telegram.
+not exist; an absent session fails closed unless the caller lists it in ``allow_absent``
+and is then recorded by a meta file only. A file that fails validation is kept on disk with
+status ``invalid`` and the acquisition raises. The files digest binds every session of a
+window: its present files' hashes and its absences. Research only: no database, broker or
+Telegram.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import json
 import math
 import os
 import tempfile
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -33,6 +35,8 @@ __all__ = [
     "acquire_short_volume",
     "files_sha256",
     "parse_file",
+    "read_sessions",
+    "write_private",
 ]
 
 FINRA_DAILY_URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{stamp}.txt"
@@ -69,15 +73,19 @@ def _volume(text: str, line_no: int) -> float:
 
 
 def parse_file(text: str, expected_date: date) -> tuple[ShortVolumeRow, ...]:
-    """Parse one daily file; raise ``ValueError`` on any structural or numeric defect."""
+    """Parse one daily file; raise ``ValueError`` on any structural or numeric defect.
+
+    The final non-blank line must be FINRA's integer data-row count; a file without it is a
+    truncated download.
+    """
     lines = text.splitlines()
     if not lines or lines[0].strip() != _HEADER:
         raise ValueError("unexpected header")
-    trailer: int | None = None
     while len(lines) > 1 and not lines[-1].strip():
         lines.pop()
-    if len(lines) > 1 and lines[-1].strip().isdigit():
-        trailer = int(lines.pop().strip())  # FINRA's final line: the data row count
+    if len(lines) < 2 or not lines[-1].strip().isdigit():
+        raise ValueError("missing trailer line")
+    trailer = int(lines.pop().strip())
     stamp = expected_date.strftime("%Y%m%d")
     rows: list[ShortVolumeRow] = []
     for line_no, line in enumerate(lines[1:], start=2):
@@ -98,14 +106,14 @@ def parse_file(text: str, expected_date: date) -> tuple[ShortVolumeRow, ...]:
                 market=parts[5],
             )
         )
-    if trailer is not None and trailer != len(rows):
+    if trailer != len(rows):
         raise ValueError(f"trailer row count {trailer} does not match {len(rows)} data rows")
     if len(rows) < MIN_ROWS:
         raise ValueError(f"only {len(rows)} rows; at least {MIN_ROWS} expected")
     return tuple(rows)
 
 
-def _write_private(path: Path, data: bytes) -> None:
+def write_private(path: Path, data: bytes) -> None:
     """Atomic, fsynced write of a mode-0600 file (temp file renamed onto ``path``)."""
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
@@ -122,10 +130,12 @@ def _write_private(path: Path, data: bytes) -> None:
 
 
 class ShortVolumeStore:
-    """``<directory>/<YYYY-MM-DD>.txt`` (raw bytes) plus ``<YYYY-MM-DD>.meta.json``."""
+    """``<directory>/<YYYY-MM-DD>.txt`` (raw bytes) plus ``<YYYY-MM-DD>.meta.json``.
+
+    An ``absent`` session has the meta file only. Reading never creates the directory.
+    """
 
     def __init__(self, directory: Path):
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.directory = directory
 
     def paths(self, day: date) -> tuple[Path, Path]:
@@ -164,8 +174,12 @@ class ShortVolumeStore:
         status: Status,
         rows: int,
     ) -> None:
+        if status == "absent" and body:
+            raise ValueError(f"{day.isoformat()}: an absent session has no body")
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         body_path, meta_path = self.paths(day)
-        _write_private(body_path, body)
+        if status != "absent":
+            write_private(body_path, body)
         record = {
             "sha256": hashlib.sha256(body).hexdigest(),
             "requested_at": requested_at.isoformat(),
@@ -174,11 +188,15 @@ class ShortVolumeStore:
             "bytes": len(body),
             "rows": rows,
         }
-        _write_private(meta_path, json.dumps(record, sort_keys=True).encode())
+        write_private(meta_path, json.dumps(record, sort_keys=True).encode())
 
 
 def files_sha256(store: ShortVolumeStore, sessions: Sequence[date]) -> str:
-    """SHA-256 over the sorted ``<date>:<sha256>`` lines of the present sessions."""
+    """The files digest: SHA-256 over the sorted lines ``<date>:<sha256>`` of the present sessions
+    and ``<date>:absent`` of the absent ones, so a window's absences are bound like its files.
+
+    Every session needs a meta file with status ``present`` or ``absent``; anything else raises.
+    """
     return hashlib.sha256("\n".join(_digest_lines(store, sessions)).encode()).hexdigest()
 
 
@@ -190,7 +208,32 @@ def _digest_lines(store: ShortVolumeStore, sessions: Sequence[date]) -> list[str
             raise ValueError(f"{day.isoformat()}: no meta file")
         if meta["status"] == "present":
             lines.append(f"{day.isoformat()}:{meta['sha256']}")
+        elif meta["status"] == "absent":
+            lines.append(f"{day.isoformat()}:absent")
+        else:
+            raise ValueError(f"{day.isoformat()}: short-volume file is {meta['status']}")
     return sorted(lines)
+
+
+def read_sessions(store: ShortVolumeStore, sessions: Sequence[date]) -> Iterator[tuple[date, str | None]]:
+    """Yield each session's body, verified against its meta file, or ``None`` for an absent session.
+
+    A session without a meta file or a present session without its body is missing; an ``invalid``
+    session or a body whose SHA-256 differs from its meta raises ``ValueError``.
+    """
+    for day in sessions:
+        meta = store.meta(day)
+        if meta is None:
+            raise ValueError(f"short-volume file for {day.isoformat()} is missing from {store.directory}")
+        if meta["status"] == "absent":
+            yield day, None
+            continue
+        if meta["status"] != "present":
+            raise ValueError(f"short-volume file for {day.isoformat()} is {meta['status']}")
+        body = store.load(day)
+        if body is None:
+            raise ValueError(f"short-volume file for {day.isoformat()} is missing from {store.directory}")
+        yield day, body
 
 
 async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[int, bytes]:
@@ -256,14 +299,14 @@ async def acquire_short_volume(
             raise ValueError(f"{day.isoformat()}: invalid file kept on disk: {exc}") from exc
         store.save(day, body, requested_at=requested_at, received_at=received_at, status="present", rows=len(parsed))
     lines = _digest_lines(store, sessions)
-    metas = [store.meta(day) for day in sessions]
+    present = [meta for meta in (store.meta(day) for day in sessions) if meta and meta["status"] == "present"]
     return {
         "window": [sessions[0].isoformat(), sessions[-1].isoformat()] if sessions else [],
         "sessions_requested": len(sessions),
-        "sessions_present": len(lines),
+        "sessions_present": len(present),
         "sessions_absent": [day.isoformat() for day in absent],
         "sessions_reused": reused,
         "files_sha256": files_sha256(store, sessions),
-        "bytes_total": sum(m["bytes"] for m in metas if m and m["status"] == "present"),
+        "bytes_total": sum(meta["bytes"] for meta in present),
         "files": lines,
     }

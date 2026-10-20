@@ -51,20 +51,21 @@ def _rows(symbol: str, by_day: dict[date, tuple[float, float]]) -> dict[date, Sh
     return {day: _row(symbol, day, s, t) for day, (s, t) in by_day.items()}
 
 
-def _loaded(by_symbol: dict[str, dict[date, ShortVolumeRow]]) -> LoadedShortVolume:
+def _loaded(by_symbol: dict[str, dict[date, ShortVolumeRow]], unscored_rows: int = 0) -> LoadedShortVolume:
     return LoadedShortVolume(
         by_symbol=by_symbol,
         files_sha256="a" * 64,
         sessions=tuple(DAYS),
         absent=(),
         rows=sum(len(v) for v in by_symbol.values()),
+        unscored_rows=unscored_rows,
     )
 
 
-def _build(by_symbol, symbols=("AAA",), actions=(), raw=None):
+def _build(by_symbol, symbols=("AAA",), actions=(), raw=None, unscored_rows=0):
     if raw is None:
         raw = {s: daily(DAYS, [10.0] * len(DAYS)) for s in symbols}  # Volume 1e6
-    return build_short_frames(INPUTS, _loaded(by_symbol), actions, raw, DAYS, list(symbols))
+    return build_short_frames(INPUTS, _loaded(by_symbol, unscored_rows), actions, raw, DAYS, list(symbols))
 
 
 def _series(shorts, total=TOTAL):
@@ -74,6 +75,12 @@ def _series(shorts, total=TOTAL):
 def _rename(old: str, new: str, on: date) -> CorporateAction:
     return CorporateAction(
         id=f"{old}-{new}", kind="name_change", symbol=old, related_symbol=new, effective_on=on, process_date=on
+    )
+
+
+def _split(symbol: str, kind: str, old_rate: float, new_rate: float, on: date) -> CorporateAction:
+    return CorporateAction(
+        id=f"{symbol}-{kind}", kind=kind, symbol=symbol, effective_on=on, old_rate=old_rate, new_rate=new_rate
     )
 
 
@@ -189,17 +196,36 @@ def test_identity_break_blanks_fields_before_the_rename_and_drops_pre_break_rows
     assert built.coverage.first_finite["META"]["short_ratio_z"] == DAYS[50].isoformat()
 
 
-def test_symbol_without_rows_is_all_nan_and_reported_and_unmatched_rows_are_counted():
+def test_symbol_without_rows_is_all_nan_and_reported_and_unscored_rows_are_counted():
     by_symbol = {
         "AAA": _rows("AAA", _series([SHORT] * 60)),
         "ZZZZ": _rows("ZZZZ", _series([SHORT] * 60)),
         "BFHpA": _rows("BFHpA", _series([SHORT] * 60)),
     }
-    built = _build(by_symbol, symbols=("AAA", "BBB"))
+    built = _build(by_symbol, symbols=("AAA", "BBB"), unscored_rows=7)
     assert built.frames["BBB"].isna().all().all()
     assert built.coverage.symbols_without_rows == ("BBB",)
-    assert built.coverage.unmatched_rows == 120
+    # The loader's dropped rows plus the loaded rows of names the builder does not score.
+    assert built.coverage.unscored_rows == 7 + 120
     assert built.coverage.first_finite["BBB"] == dict.fromkeys(SHORT_FIELDS)
+
+
+@pytest.mark.parametrize(("kind", "old_rate", "new_rate"), [("reverse_split", 10.0, 1.0), ("forward_split", 1.0, 4.0)])
+def test_a_split_restarts_the_short_volume_baseline_but_not_the_ratio_baseline(kind, old_rate, new_rate):
+    factor = old_rate / new_rate  # shares after the split = shares before / factor
+    shorts = [(200_000.0 + 10_000.0 * (i % 5)) / (factor if i >= 30 else 1.0) for i in range(60)]
+    totals = [500_000.0 / (factor if i >= 30 else 1.0) for i in range(60)]
+    by_day = {DAYS[i]: (shorts[i], totals[i]) for i in range(60)}
+    f = _build({"AAA": _rows("AAA", by_day)}, actions=[_split("AAA", kind, old_rate, new_rate, DAYS[30])]).frames["AAA"]
+    rel = f["short_volume_rel"]
+    assert np.isfinite(rel.iloc[20:30]).all()  # the pre-split baseline is untouched
+    assert rel.iloc[30:50].isna().all()  # the split day and the 19 sessions after it: < 20 post-split values
+    assert rel.iloc[50] == pytest.approx(shorts[50] / np.mean(shorts[30:50]))
+    assert rel.iloc[50:].between(0.9, 1.1).all()
+    # The ratio is scale-free: its baseline still spans the split.
+    assert np.isfinite(f["short_ratio_z"].iloc[30:50]).all()
+    other = _build({"AAA": _rows("AAA", by_day)}, actions=[_split("BBB", kind, old_rate, new_rate, DAYS[30])])
+    assert np.isfinite(other.frames["AAA"]["short_volume_rel"].iloc[30:50]).all()  # another name's split
 
 
 def test_frames_align_with_prepare_daily_index():
@@ -212,6 +238,7 @@ def _write(store: ShortVolumeStore, day: date, status: str, pad: int = 1000) -> 
     stamp = day.strftime("%Y%m%d")
     lines = ["Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market"]
     lines += [f"{stamp}|S{i:04d}|10|0|100|Q" for i in range(pad)]
+    lines.append(str(pad))
     body = ("\n".join(lines) + "\n").encode() if status == "present" else b""
     now = datetime(2021, 1, 5, tzinfo=UTC)
     store.save(day, body, requested_at=now, received_at=now, status=status, rows=pad if status == "present" else 0)
@@ -224,21 +251,26 @@ def _store(tmp_path, statuses: dict[date, str]) -> ShortVolumeStore:
     return store
 
 
-def test_load_short_volume_is_offline_skips_absent_and_digests(tmp_path):
+COHORT = ("S0000", "S0001", "NOROWS")
+
+
+def test_load_short_volume_is_offline_skips_absent_keeps_the_symbols_and_digests(tmp_path):
     statuses = {DAYS[0]: "present", DAYS[1]: "present", DAYS[2]: "absent", DAYS[3]: "present"}
     store = _store(tmp_path, statuses)
-    loaded = load_short_volume(tmp_path / "files", INPUTS.short_volume, DAYS[:4])
+    loaded = load_short_volume(tmp_path / "files", INPUTS.short_volume, DAYS[:4], COHORT)
     assert loaded.sessions == (DAYS[0], DAYS[1], DAYS[3]) and loaded.absent == (DAYS[2],)
-    assert loaded.files_sha256 == files_sha256(store, [DAYS[0], DAYS[1], DAYS[3]])
-    assert loaded.rows == 3000
-    assert set(loaded.by_symbol) == {f"S{i:04d}" for i in range(1000)}
+    # The digest binds the absent session too.
+    assert loaded.files_sha256 == files_sha256(store, DAYS[:4])
+    assert loaded.files_sha256 != files_sha256(store, [DAYS[0], DAYS[1], DAYS[3]])
+    assert set(loaded.by_symbol) == {"S0000", "S0001"}
+    assert loaded.rows == 6 and loaded.unscored_rows == 3000 - 6
     assert sorted(loaded.by_symbol["S0000"]) == [DAYS[0], DAYS[1], DAYS[3]]
 
 
 def test_load_short_volume_fails_closed_on_a_missing_session(tmp_path):
     _store(tmp_path, {DAYS[0]: "present"})
     with pytest.raises(ValueError, match=f"short-volume file for {DAYS[1].isoformat()} is missing"):
-        load_short_volume(tmp_path / "files", INPUTS.short_volume, DAYS[:2])
+        load_short_volume(tmp_path / "files", INPUTS.short_volume, DAYS[:2], COHORT)
 
 
 def test_load_short_volume_fails_closed_on_an_invalid_session(tmp_path):
@@ -246,12 +278,19 @@ def test_load_short_volume_fails_closed_on_an_invalid_session(tmp_path):
     now = datetime(2021, 1, 5, tzinfo=UTC)
     store.save(DAYS[1], b"junk", requested_at=now, received_at=now, status="invalid", rows=0)
     with pytest.raises(ValueError, match="invalid"):
-        load_short_volume(tmp_path / "files", INPUTS.short_volume, DAYS[:2])
+        load_short_volume(tmp_path / "files", INPUTS.short_volume, DAYS[:2], COHORT)
+
+
+def test_load_short_volume_refuses_a_session_outside_the_files_window(tmp_path):
+    before = date(2020, 12, 31)
+    _store(tmp_path, {before: "present", DAYS[0]: "present"})
+    with pytest.raises(ValueError, match="outside the protocol's files window"):
+        load_short_volume(tmp_path / "files", INPUTS.short_volume, [before, DAYS[0]], COHORT)
 
 
 def test_verify_short_sources_names_the_mismatching_digest():
     verify_short_sources(INPUTS, _loaded({}), "b" * 64)
-    stale = LoadedShortVolume(by_symbol={}, files_sha256="c" * 64, sessions=(), absent=(), rows=0)
+    stale = LoadedShortVolume(by_symbol={}, files_sha256="c" * 64, sessions=(), absent=(), rows=0, unscored_rows=0)
     with pytest.raises(ValueError, match=r"short_inputs\.short_volume\.files_sha256"):
         verify_short_sources(INPUTS, stale, "b" * 64)
     with pytest.raises(ValueError, match=r"short_inputs\.corporate_actions\.content_sha256"):

@@ -346,7 +346,7 @@ def events_cube_build(cube: LabelCube) -> CubeBuild:
 def short_cube_build(cube: LabelCube) -> CubeBuild:
     coverage = ShortCoverage(
         symbols_without_rows=(),
-        unmatched_rows=0,
+        unscored_rows=0,
         thin_days=0,
         offex_clipped=0,
         identity_breaks={},

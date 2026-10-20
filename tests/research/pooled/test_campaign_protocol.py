@@ -13,6 +13,7 @@ from agentic_trader.research.pooled.campaign import (
     ScoreRead,
     Selection,
     ShortVolumeCampaignProtocol,
+    ShortVolumeInputs,
     load_campaign_protocol,
 )
 from agentic_trader.research.pooled.cohort import load_cohort
@@ -418,6 +419,13 @@ def test_short_volume_protocol_loads_dumps_its_inputs_and_refuses_genetic():
             search_mode="genetic",
             power_search={"families": ["reversal"], "seeds": 10, "delta": 0.1, "min_recovered": 5, "seed": 1},
         )
+
+
+def test_short_volume_inputs_refuse_an_inverted_files_window():
+    window = mini_short_protocol().short_inputs.short_volume.model_dump(mode="json")
+    ShortVolumeInputs.model_validate({**window, "files_through": window["files_from"]})
+    with pytest.raises(ValueError, match="files_from must not follow files_through"):
+        ShortVolumeInputs.model_validate({**window, "files_from": "2026-09-02", "files_through": "2026-09-01"})
 
 
 def test_short_volume_protocol_leaves_other_protocol_hashes_unchanged():

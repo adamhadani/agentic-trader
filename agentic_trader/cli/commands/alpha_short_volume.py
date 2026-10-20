@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from datetime import date
@@ -18,8 +19,8 @@ from agentic_trader.market.session import DeterministicCalendarProvider
 from agentic_trader.research.short_volume import (
     REQUESTS_PER_SECOND,
     ShortVolumeStore,
-    _write_private,
     acquire_short_volume,
+    write_private,
 )
 
 
@@ -40,14 +41,19 @@ def _pacer() -> Callable[[], Awaitable[None]]:
 @click.command("short-volume")
 @click.option("--from", "start", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--through", "end", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
-@click.option("--cache", required=True, type=click.Path(file_okay=False, path_type=Path))
+@click.option(
+    "--cache",
+    required=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="The directory of daily files (DIR/YYYY-MM-DD.txt and .meta.json); pooled --short-volume takes the same DIR.",
+)
 @click.option("--output", required=True, type=click.Path(file_okay=False, path_type=Path))
 @click.option(
     "--allow-absent",
     "allow_absent",
     multiple=True,
     type=click.DateTime(formats=["%Y-%m-%d"]),
-    help="A session whose file FINRA does not serve; repeatable.",
+    help="An NYSE session inside the window whose file FINRA does not serve; repeatable.",
 )
 @coro
 async def short_volume_cmd(start, end, cache: Path, output: Path, allow_absent):
@@ -61,17 +67,24 @@ async def short_volume_cmd(start, end, cache: Path, output: Path, allow_absent):
     sessions: list[date] = [day.date for day in calendar if day.is_trading_day]
     if not sessions:
         raise click.ClickException("No NYSE sessions in the window")
-    store = ShortVolumeStore(cache / "short-volume")
+    allowed = [moment.date() for moment in allow_absent]
+    for day in allowed:
+        if day not in sessions:
+            raise click.ClickException(
+                f"--allow-absent {day.isoformat()} is not an NYSE session in "
+                f"[{start_date.isoformat()}, {end_date.isoformat()}]"
+            )
+    store = ShortVolumeStore(cache)
     try:
         async with httpx.AsyncClient(follow_redirects=False) as client:
-            manifest = await acquire_short_volume(
-                client, sessions, store, allow_absent=[d.date() for d in allow_absent], pace=_pacer()
-            )
+            manifest = await acquire_short_volume(client, sessions, store, allow_absent=allowed, pace=_pacer())
     except (ValueError, httpx.HTTPError) as exc:
         raise click.ClickException(str(exc)) from exc
+    manifest["allow_absent"] = [day.isoformat() for day in allowed]
+    manifest["command"] = list(sys.argv)
     manifest["environment"] = await asyncio.to_thread(research_environment)
     output.mkdir(mode=0o700, parents=True)
-    _write_private(output / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True, default=str).encode())
+    write_private(output / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True, default=str).encode())
     click.echo(
         f"{manifest['sessions_present']} present, {len(manifest['sessions_absent'])} absent sessions; "
         f"{output / 'manifest.json'}"

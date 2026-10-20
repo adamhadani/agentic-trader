@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, date, datetime
 
 import httpx
@@ -9,6 +10,8 @@ from agentic_trader.research.short_volume import (
     acquire_short_volume,
     files_sha256,
     parse_file,
+    read_sessions,
+    write_private,
 )
 
 
@@ -100,7 +103,7 @@ async def test_acquisition_requests_sessions_only_reuses_the_cache_and_digests(t
     assert sorted(seen) == ["20260914", "20260915"]
 
 
-async def test_absent_session_fails_unless_allowed_and_is_recorded(tmp_path):
+async def test_absent_session_fails_unless_allowed_and_is_recorded_without_a_body(tmp_path):
     files = {"20260914": _file("20260914").encode()}
     store = ShortVolumeStore(tmp_path)
     async with _client(files, []) as client:
@@ -108,8 +111,70 @@ async def test_absent_session_fails_unless_allowed_and_is_recorded(tmp_path):
             await acquire_short_volume(client, (MON, TUE), store, pace=_noop)
         manifest = await acquire_short_volume(client, (MON, TUE), store, allow_absent=[TUE], pace=_noop)
     assert manifest["sessions_absent"] == ["2026-09-15"] and store.meta(TUE)["status"] == "absent"
-    assert manifest["sessions_present"] == 1 and manifest["files"] == [f"2026-09-14:{store.meta(MON)['sha256']}"]
+    assert store.meta(TUE)["bytes"] == 0 and store.meta(TUE)["rows"] == 0
+    assert not store.paths(TUE)[0].exists()  # an absent session has a meta file only
+    assert manifest["sessions_present"] == 1
+    assert manifest["files"] == [f"2026-09-14:{store.meta(MON)['sha256']}", "2026-09-15:absent"]
     assert files_sha256(store, (MON, TUE)) == manifest["files_sha256"]
+
+
+def _save(store: ShortVolumeStore, day: date, status: str, body: bytes = b"") -> None:
+    store.save(day, body, requested_at=NOW, received_at=NOW, status=status, rows=0)
+
+
+def test_files_digest_binds_present_and_absent_sessions(tmp_path):
+    store = ShortVolumeStore(tmp_path)
+    _save(store, TUE, "absent")
+    _save(store, MON, "present", b"monday")
+    monday = hashlib.sha256(b"monday").hexdigest()
+    lines = f"2026-09-14:{monday}\n2026-09-15:absent"
+    assert files_sha256(store, (TUE, MON)) == hashlib.sha256(lines.encode()).hexdigest()
+    # An extra allowed absence changes the digest, so a protocol pins exactly which sessions may be absent.
+    assert files_sha256(store, (MON,)) != files_sha256(store, (MON, TUE))
+
+
+def test_files_digest_refuses_an_invalid_session(tmp_path):
+    store = ShortVolumeStore(tmp_path)
+    _save(store, MON, "invalid", b"junk")
+    with pytest.raises(ValueError, match="invalid"):
+        files_sha256(store, (MON,))
+
+
+def test_read_sessions_verifies_bodies_and_yields_none_for_an_absent_session(tmp_path):
+    store = ShortVolumeStore(tmp_path)
+    _save(store, MON, "present", b"monday")
+    _save(store, TUE, "absent")
+    assert list(read_sessions(store, (MON, TUE))) == [(MON, "monday"), (TUE, None)]
+    store.paths(MON)[0].write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="SHA-256"):
+        list(read_sessions(store, (MON,)))
+    store.paths(MON)[0].unlink()
+    with pytest.raises(ValueError, match=f"short-volume file for {MON.isoformat()} is missing"):
+        list(read_sessions(store, (MON,)))
+    with pytest.raises(ValueError, match=f"short-volume file for {date(2026, 9, 16).isoformat()} is missing"):
+        list(read_sessions(store, (date(2026, 9, 16),)))
+    _save(store, MON, "invalid", b"junk")
+    with pytest.raises(ValueError, match="invalid"):
+        list(read_sessions(store, (MON,)))
+
+
+def test_store_creates_its_directory_only_when_saving(tmp_path):
+    store = ShortVolumeStore(tmp_path / "files")
+    assert store.meta(MON) is None and store.load(MON) is None
+    assert not (tmp_path / "files").exists()
+    _save(store, MON, "present", b"monday")
+    assert oct((tmp_path / "files").stat().st_mode & 0o777) == "0o700"
+
+
+def test_store_refuses_a_body_for_an_absent_session(tmp_path):
+    with pytest.raises(ValueError, match="absent"):
+        _save(ShortVolumeStore(tmp_path), MON, "absent", b"body")
+
+
+def test_write_private_writes_a_mode_0600_file(tmp_path):
+    write_private(tmp_path / "x.json", b"{}")
+    assert (tmp_path / "x.json").read_bytes() == b"{}"
+    assert oct((tmp_path / "x.json").stat().st_mode & 0o777) == "0o600"
 
 
 async def test_invalid_file_is_kept_on_disk_and_fails(tmp_path):
@@ -160,11 +225,16 @@ def test_parse_file_handles_crlf_and_a_matching_trailer_that_is_not_a_row():
     assert len(rows) == 1000 and rows[-1].symbol == "S0999"
 
 
-def test_parse_file_rejects_a_mismatching_trailer_and_accepts_no_trailer():
+def test_parse_file_rejects_a_mismatching_trailer_and_a_missing_trailer():
     bad = _file(trailer=False).replace("\n", "\r\n") + "1001\r\n"
     with pytest.raises(ValueError, match=r"trailer row count 1001 does not match 1000 data rows"):
         parse_file(bad, date(2026, 9, 16))
-    assert len(parse_file(_file(trailer=False), date(2026, 9, 16))) == 1000
+    # Every real file ends with its row count; a file without one is a truncated download.
+    with pytest.raises(ValueError, match="missing trailer line"):
+        parse_file(_file(trailer=False), date(2026, 9, 16))
+    with pytest.raises(ValueError, match="missing trailer line"):
+        parse_file(_file(trailer=False).replace("\n", "\r\n") + "\r\n", date(2026, 9, 16))
+    assert len(parse_file(_file() + "\r\n\n", date(2026, 9, 16))) == 1000  # trailing blank lines are allowed
 
 
 @pytest.mark.parametrize("content", ["not json", '{"sha256": "x"}', "[]"])

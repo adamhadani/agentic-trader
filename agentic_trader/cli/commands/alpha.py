@@ -1696,7 +1696,10 @@ _SHORT_VOLUME_OPTION = click.option(
     "--short-volume",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     default=None,
-    help="The alpha short-volume acquisition's cache directory (short-volume protocols only).",
+    help=(
+        "The directory of FINRA daily files that `alpha short-volume --cache DIR` filled (DIR/YYYY-MM-DD.txt "
+        "and .meta.json; short-volume protocols only)."
+    ),
 )
 
 

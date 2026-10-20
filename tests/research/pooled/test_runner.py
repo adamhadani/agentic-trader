@@ -531,7 +531,6 @@ def _short_world(tmp_path, *, pinned: bool):
     first, last = date(2021, 2, 1), date(2021, 2, 5)
     store = ShortVolumeStore(tmp_path / "short")
     stamp = datetime(2021, 2, 8, tzinfo=UTC)
-    present = []
     for day in weekdays(first, last):
         if day == date(2021, 2, 3):
             store.save(day, b"", requested_at=stamp, received_at=stamp, status="absent", rows=0)
@@ -539,8 +538,8 @@ def _short_world(tmp_path, *, pinned: bool):
         # Filler symbols reach the parser's minimum row count; they are outside the cohort.
         symbols = ("AAA", "BBB", *(f"Z{i:04d}" for i in range(MIN_ROWS)))
         body = _SHORT_HEADER + "".join(f"{day:%Y%m%d}|{name}|20000|0|50000|Q\n" for name in symbols)
+        body += f"{len(symbols)}\n"
         store.save(day, body.encode(), requested_at=stamp, received_at=stamp, status="present", rows=len(symbols))
-        present.append(day)
     actions_file = tmp_path / "actions.json"
     actions_file.write_text(json.dumps([_dividend("AAA", date(2021, 3, 1)).model_dump(mode="json")]))
     protocol = mini_short_protocol()
@@ -551,7 +550,7 @@ def _short_world(tmp_path, *, pinned: bool):
                     "files_from": first,
                     "files_through": last,
                     "z_window": 2,
-                    "files_sha256": files_sha256(store, present) if pinned else "a" * 64,
+                    "files_sha256": files_sha256(store, weekdays(first, last)) if pinned else "a" * 64,
                 }
             ),
             "corporate_actions": protocol.short_inputs.corporate_actions.model_copy(
@@ -581,6 +580,8 @@ def test_short_build_pins_frames_for_the_eligible_symbols_and_keeps_raw_bars(tmp
     assert ratio.loc[pd.Timestamp(date(2021, 2, 1))] == pytest.approx(0.4)
     assert np.isnan(ratio.loc[pd.Timestamp(date(2021, 2, 3))])
     assert sorted(built.raw) == ["AAA", "BBB"]
+    # Four present files, each with MIN_ROWS filler rows outside the cohort; the loader drops them.
+    assert built.short.coverage.unscored_rows == 4 * MIN_ROWS
 
 
 def test_short_build_loads_raw_bars_on_a_cache_hit(tmp_path):
@@ -629,16 +630,37 @@ def test_verify_short_digests_passes_for_the_pinned_files_and_actions(tmp_path):
     verify_short_digests(inputs, sources)
 
 
-def test_verify_short_digests_refuses_a_changed_file_before_any_bar_access(tmp_path):
+def test_verify_short_digests_refuses_a_meta_whose_body_no_longer_matches(tmp_path):
     inputs, sources = _short_world(tmp_path, pinned=True)
-    body = sources.short_volume_dir / "2021-02-01.txt"
     meta_path = sources.short_volume_dir / "2021-02-01.meta.json"
     meta = json.loads(meta_path.read_text())
     meta["sha256"] = "0" * 64
     meta_path.write_text(json.dumps(meta))
-    assert body.exists()
-    with pytest.raises(ValueError, match=r"short_inputs\.short_volume\.files_sha256"):
+    with pytest.raises(ValueError, match="SHA-256 does not match its meta file"):
         verify_short_digests(inputs, sources)
+
+
+def test_verify_short_digests_reads_every_body_and_refuses_a_corrupted_file(tmp_path):
+    inputs, sources = _short_world(tmp_path, pinned=True)
+    body = sources.short_volume_dir / "2021-02-04.txt"
+    body.write_bytes(body.read_bytes().replace(b"|20000|", b"|20001|", 1))  # the meta is untouched
+    with pytest.raises(ValueError, match="SHA-256 does not match its meta file"):
+        verify_short_digests(inputs, sources)
+
+
+def test_verify_short_digests_binds_the_absent_sessions(tmp_path):
+    inputs, sources = _short_world(tmp_path, pinned=True)
+    store = ShortVolumeStore(sources.short_volume_dir)
+    present_only = files_sha256(store, [date(2021, 2, 1), date(2021, 2, 2), date(2021, 2, 4), date(2021, 2, 5)])
+    stale = inputs.model_copy(
+        update={"short_volume": inputs.short_volume.model_copy(update={"files_sha256": present_only})}
+    )
+    with pytest.raises(ValueError, match=r"short_inputs\.short_volume\.files_sha256"):
+        verify_short_digests(stale, sources)
+    # A meta file outside the files window is ignored.
+    stamp = datetime(2021, 2, 8, tzinfo=UTC)
+    store.save(date(2021, 2, 8), b"", requested_at=stamp, received_at=stamp, status="absent", rows=0)
+    verify_short_digests(inputs, sources)
 
 
 def test_verify_short_digests_refuses_a_wrong_actions_digest(tmp_path):

@@ -45,24 +45,32 @@ copilot alpha short-volume --from 2018-08-01 --through 2026-09-01 --cache DIR --
 ```
 
 - One `GET https://cdn.finra.org/equity/regsho/daily/CNMSshvol{YYYYMMDD}.txt` per **NYSE
-  session** in `[from, through]` (sessions from the shared calendar, `market/session.py`), via a
+  session** in `[from, through]` (sessions from the shared calendar, `market/session.py`, where
+  Juneteenth is a holiday from 2022 only: amended 2026-10-20 in the final review), via a
   bounded `httpx.Client` (timeout 20 s, 8 MiB byte budget per file, streamed like
   `EquityMetadataSource.directory`), paced at most 4 requests per second, idempotent GETs only,
   one retry on a transport error. Weekends and holidays are never requested.
 - Cache layout, `DIR/{YYYY-MM-DD}.txt` plus `DIR/{YYYY-MM-DD}.meta.json`
   (`requested_at`, `received_at`, `status`, `bytes`, `sha256`, `rows`), mirroring the Nasdaq
-  page store; a cached session is never refetched. A session whose file answers 403/404 is recorded
+  page store, written directly into `--cache DIR` (the same `DIR` the pooled commands take as
+  `--short-volume`); a cached session is never refetched. A session whose file answers 403/404 is recorded
   as `absent` (`status: "absent"`, no `.txt`); the files begin on 2018-08-01, and FINRA has posted
   every session since, so an `absent` session **inside** the window fails the acquisition closed
-  unless it is listed in `--allow-absent` (a documented exception list recorded in the manifest).
+  unless it is listed in `--allow-absent` (a documented exception list recorded in the manifest as
+  given; a date that is not a session inside `[from, through]` is refused).
 - Parse on acquisition only to validate: header
   `Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market`, every row's `Date` equal to the
   file date, volumes non-negative decimals (the 2026 files carry fractional shares), at least 1,000
-  rows. A file failing validation is kept on disk for evidence and fails the acquisition.
-- `output/manifest.json`: window, sessions requested/present/absent, per-file sha256 list, the
-  **files digest** = SHA-256 of the newline-joined sorted `"<date>:<sha256>"` lines over the present
-  sessions, byte totals, `environment` (`research_environment()`), command line. Research only: no
-  database, broker or Telegram.
+  rows, and the final integer row-count trailer, which must be present and equal the data rows (a
+  missing trailer is a truncated download). A file failing validation is kept on disk for evidence
+  and fails the acquisition.
+- `output/manifest.json`: window, sessions requested/present/absent, per-file digest lines, the
+  **files digest** = SHA-256 of the newline-joined sorted lines `"<date>:<sha256>"` for the present
+  sessions and `"<date>:absent"` for the absent ones (amended 2026-10-20 in the final review: an
+  extra allowed absence changes the digest, so a protocol pins exactly which sessions may be absent),
+  byte totals, `allow_absent`, `environment` (`research_environment()`), `command` (the argv). The
+  loader and the campaign's pre-ledger check apply the same digest rule, and the pre-ledger check
+  reads every present body against its meta file. Research only: no database, broker or Telegram.
 
 Expected scale: about 2,040 sessions, 250–550 KB each, under 1 GB on disk, under 10 minutes.
 
@@ -88,7 +96,7 @@ symbol has no row that day), and `B_T` the **raw** (unadjusted) bar volume on T.
 | --- | --- | --- |
 | `short_ratio` | `S_T / V_T`; `NaN` when the row is missing or `V_T < min_total_volume` (protocol, 10,000 shares: thin days are noise) | dimensionless, in [0, 1] |
 | `short_ratio_z` | `(short_ratio_T − mean) / std` over the baseline: the most recent `z_window` (20) **finite prior** values of `short_ratio` (strictly before T), all within the last `2 × z_window` (40) sessions `T-40 … T-1`; `NaN` when fewer than `z_window` finite values lie in that span, or when `std = 0` (sample std) | dimensionless |
-| `short_volume_rel` | `S_T / mean(S over the same kind of baseline of the short-volume series)` (`NaN` with fewer than `z_window` finite prior values in `T-40 … T-1`, or a zero mean) | dimensionless |
+| `short_volume_rel` | `S_T / mean(S over the same kind of baseline of the short-volume series)` (`NaN` with fewer than `z_window` finite prior values in `T-40 … T-1`, or a zero mean); a forward or reverse split is a baseline break for this series (below) | dimensionless |
 | `offex_share` | `V_T / B_T`, `NaN` when either is missing or `B_T = 0`; values above 1.5 (a corrected file against a stale bar) set to `NaN` and counted | dimensionless |
 
 Rulings: the trailing statistics exclude T so a spike is measured against its own baseline;
@@ -96,10 +104,16 @@ Rulings: the trailing statistics exclude T so a spike is measured against its ow
 finite prior values within 40 sessions, so one missing or thin day is skipped rather than blanking
 the next 20 sessions, while a sparsely reported name stays `NaN` (amended 2026-10-20 during
 execution); fields are not carried forward across missing days (a missing row is `NaN`, not stale),
-unlike the sparse earnings fields, because the source is daily and dense. First finite session is 2018-08-01 for `short_ratio` and
+unlike the sparse earnings fields, because the source is daily and dense. Splits (amended 2026-10-20 in
+the final review): a `forward_split` or `reverse_split` corporate action on the symbol is a baseline
+break for the share-count series only, so the `short_volume_rel` baseline never mixes sessions before
+the split's `effective_on` with sessions on or after it (it is computed per segment between split
+dates; the split session and the 19 after it are `NaN`); `short_ratio` and `short_ratio_z` are
+ratios of same-day share counts and span splits unchanged. First finite session is 2018-08-01 for `short_ratio` and
 `offex_share` and about 2018-08-29 for the two windowed fields; the discovery window
 (2016-08-01 → 2021-12-31) therefore holds about 840 scored sessions, above the 400-session gate.
-Coverage (`ShortCoverage`): symbols without any row, rows unmatched to the cohort (count),
+Coverage (`ShortCoverage`): symbols without any row, `unscored_rows` (rows whose symbol is not among
+the scored names with an eligible cell; the loader keeps only the cohort's rows and counts the rest),
 per-symbol first finite session per field, thin-day count, `offex_share` clips, identity breaks.
 
 ## 4. Protocol: `pooled-short-volume-campaign`

@@ -1053,11 +1053,16 @@ copilot alpha short-volume --from 2018-08-01 --through 2026-09-01 --cache DIR --
   --allow-absent 2018-12-05 --allow-absent 2025-01-09
 ```
 
-One paced GET per NYSE session (timeout 20 s, 8 MiB per file). The cache holds `DIR/{YYYY-MM-DD}.txt` and
-`DIR/{YYYY-MM-DD}.meta.json` (`requested_at`, `received_at`, `status`, `bytes`, `sha256`, `rows`); a cached
-session is never refetched; an unallowed `absent` session fails the acquisition closed. `output/manifest.json`
-records the window, sessions requested/present/absent and the **files digest**
-(`17315ae2525e44481a6c3c13fc75951fe1763af4ab101213c29cce66fe8f83a2`), which both protocols pin as
+One paced GET per NYSE session of the offline calendar (Juneteenth is a holiday from 2022 only; timeout 20 s,
+8 MiB per file). The files go directly into `--cache DIR`: `DIR/{YYYY-MM-DD}.txt` and
+`DIR/{YYYY-MM-DD}.meta.json` (`requested_at`, `received_at`, `status`, `bytes`, `sha256`, `rows`); an `absent`
+session has the meta file only. A cached session is never refetched; a file must end with FINRA's integer
+row-count trailer (a file without one is a truncated download and fails); an unallowed `absent` session fails
+the acquisition closed, and an `--allow-absent` date that is not a session inside `[--from, --through]` is
+refused. `output/manifest.json` records the window, sessions requested/present/absent, the allowed absences as
+given, the command line and the **files digest**: the SHA-256 of the sorted lines `<date>:<sha256>` for the
+present sessions and `<date>:absent` for the absent ones, so a protocol pins exactly which sessions may be
+absent (`17315ae2525e44481a6c3c13fc75951fe1763af4ab101213c29cce66fe8f83a2`). Both protocols pin it as
 `short_inputs.short_volume.files_sha256`. No database, broker or Telegram.
 
 **Fields.** Per symbol, indexed by trading day `T`; `S_T`, `V_T` are the file's `ShortVolume` and
@@ -1069,7 +1074,7 @@ code), and a missing row is `NaN`, never carried forward.
 | --- | --- |
 | `short_ratio` | `S_T / V_T`; `NaN` when the row is missing or `V_T < 10,000` shares |
 | `short_ratio_z` | `(short_ratio_T - mean) / std` over the baseline: the last 20 finite prior values of `short_ratio` (strictly before T) lying within the 40 sessions `T-40 ... T-1`; `NaN` with fewer than 20 or at zero std |
-| `short_volume_rel` | `S_T` over the mean of the same kind of baseline of the short-volume series; `NaN` with fewer than 20 finite priors in the span, or a zero mean |
+| `short_volume_rel` | `S_T` over the mean of the same kind of baseline of the short-volume series; `NaN` with fewer than 20 finite priors in the span, or a zero mean; a forward or reverse split restarts this baseline (pre- and post-split share counts never mix), so it is `NaN` on the split session and the 19 after it |
 | `offex_share` | `V_T / B_T`; `NaN` when either is missing or `B_T = 0`; above 1.5 is `NaN` and counted |
 
 **Protocol block.**
@@ -1086,7 +1091,8 @@ code), and a missing row is `NaN`, never carried forward.
 ```
 
 The runner verifies both digests against the caches on disk before any bar read or evaluation, and the
-campaign command before the ledger reserves anything. `excluded_families` is `cohort3-events-v1`'s list plus
+campaign command, which also reads every cached body in the files window against its meta file, before the
+ledger reserves anything. `excluded_families` is `cohort3-events-v1`'s list plus
 the eight events-v1 families.
 
 **Frozen fixed set (eight formulas, each signed to select names the hypothesis says outperform).** The two
@@ -1106,7 +1112,11 @@ decile is taken among in-window names only.
 
 **Checks and campaigns.** A fixed set runs checks A (power; it must replay the matching events protocol's
 result on the same cube) and C (real-formula false acceptance, `errors_total: 0`) only, per protocol, from a
-clean worktree at the merged revision and outside scan windows. Each campaign runs only with the operator's
+clean worktree at the merged revision and outside scan windows. The fields start on 2018-08-01, so the first
+of the four equal-session discovery blocks (2016-08-01 to about 2017-12-05) carries no short-volume score and
+the second (to about 2019-04-17) is scored only from August 2018: the discovery gate's "3 of 4 positive
+blocks" is effectively 3 of 3, and check A, which plants its edge over the full window, slightly overstates
+this lane's power for small edges. Each campaign runs only with the operator's
 explicit approval (`--journal-scope production/alpaca:paper`), charges every formula to the pooled ledger
 before scoring and consumes the lane-wide confirmation window only for finalists.
 
@@ -1145,7 +1155,7 @@ copilot alpha pooled campaign PROTOCOL --power A_DIR [--search-power B_DIR] --nu
 - `screen` takes `config/research/pooled/screen-v3.json` for cohort v3 (a snapshot with a different hash is refused). For `cohort3-events-v1`, `--earnings-pages` is the Nasdaq page cache and `--corporate-actions` is the cohort-v3 acquisition's `actions.json`.
 - `--earnings-pages DIR` is the offline Nasdaq calendar page cache; it is required for an events
   protocol and refused for any other, and its digest must equal the protocol's `pages_sha256`.
-- `--short-volume DIR` is the `alpha short-volume` cache directory; it is required together with `--corporate-actions` for a short-volume protocol and refused for any other, `--earnings-pages` is refused for it, and the cache's files digest must equal the protocol's `files_sha256`.
+- `--short-volume DIR` is the directory `alpha short-volume --cache DIR` filled (`DIR/{YYYY-MM-DD}.txt` and `.meta.json`); it is required together with `--corporate-actions` for a short-volume protocol and refused for any other, `--earnings-pages` is refused for it, and the cache's files digest must equal the protocol's `files_sha256`.
 - `--corporate-actions ACTIONS_JSON` is the cohort-v2 (cohort-v3 for the cohort3 protocols) corporate-actions acquisition's
   `actions.json`; it is required for an events protocol and refused for any other, and its
   content digest must equal the protocol's `content_sha256`. `campaign` verifies both inputs

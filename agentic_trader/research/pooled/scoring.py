@@ -192,16 +192,19 @@ class ScoreBook:
     ) -> ScoreBook:
         """A daily book whose frames also carry the extra ``field_names`` columns (events or short volume):
         the same D-1 read for bar and extra fields; a symbol without a frame keeps its bars and gets NaN
-        extra fields."""
+        extra fields. Only the ``field_names`` columns are joined; a frame missing one raises."""
         book = cls.__new__(cls)
         prepared = prepare_daily(adjusted)
+        names = list(field_names)
         for symbol, keyed in prepared.items():
             frame = frames.get(symbol)
-            columns = (
-                frame.reindex(keyed.index)
-                if frame is not None
-                else pd.DataFrame(index=keyed.index, columns=list(field_names), dtype=float)
-            )
+            if frame is None:
+                columns = pd.DataFrame(index=keyed.index, columns=names, dtype=float)
+            else:
+                missing = [name for name in names if name not in frame.columns]
+                if missing:
+                    raise ValueError(f"{symbol}: field frame lacks column {missing[0]!r}")
+                columns = frame[names].reindex(keyed.index)
             prepared[symbol] = keyed.join(columns, how="left")
         trading = tuple(trading_days)
         book._setup(

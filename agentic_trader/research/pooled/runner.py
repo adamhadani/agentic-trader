@@ -54,7 +54,7 @@ from agentic_trader.research.pooled.short_fields import (
     verify_short_sources,
 )
 from agentic_trader.research.setups.runner import BarSource, CalendarSource, _fetch_cached, claim_cache_range
-from agentic_trader.research.short_volume import ShortVolumeStore, files_sha256
+from agentic_trader.research.short_volume import ShortVolumeStore, files_sha256, read_sessions
 
 
 __all__ = [
@@ -98,15 +98,16 @@ class ShortSources:
 
 
 def load_short_sources(
-    inputs: ShortInputs, sources: ShortSources, trading_days: Sequence[date]
+    inputs: ShortInputs, sources: ShortSources, trading_days: Sequence[date], symbols: Sequence[str]
 ) -> tuple[LoadedShortVolume, tuple[CorporateAction, ...]]:
     """Read both short-volume sources from disk and fail closed unless their digests are the protocol's.
 
-    ``trading_days`` is the full calendar; only the sessions in ``[files_from, files_through]`` are read.
+    ``trading_days`` is the full calendar; only the sessions in ``[files_from, files_through]`` are read,
+    and only the rows of ``symbols`` (the cohort) are kept.
     """
     window = inputs.short_volume
     sessions = [day for day in trading_days if window.files_from <= day <= window.files_through]
-    loaded = load_short_volume(sources.short_volume_dir, window, sessions)
+    loaded = load_short_volume(sources.short_volume_dir, window, sessions, symbols)
     actions, actions_digest = load_actions(sources.actions_file)
     verify_short_sources(inputs, loaded, actions_digest)
     return loaded, actions
@@ -115,17 +116,17 @@ def load_short_sources(
 def verify_short_digests(inputs: ShortInputs, sources: ShortSources) -> None:
     """Fail closed unless the files on disk and the actions carry the digests the protocol pins.
 
-    A calendar-free pre-ledger check: it digests the present sessions the store holds inside
-    ``[files_from, files_through]``; the full load (with the calendar) still runs inside the build.
+    A calendar-free pre-ledger check over every session the store holds inside ``[files_from,
+    files_through]``: each present body is read and verified against its meta file, then the files digest
+    (present and absent sessions, the acquisition's rule) is compared. The full load (with the calendar)
+    still runs inside the build.
     """
     window = inputs.short_volume
     store = ShortVolumeStore(sources.short_volume_dir)
-    sessions = []
-    for meta_path in sorted(store.directory.glob("*.meta.json")):
-        day = date.fromisoformat(meta_path.name.removesuffix(".meta.json"))
-        meta = store.meta(day)
-        if meta is not None and meta["status"] == "present" and window.files_from <= day <= window.files_through:
-            sessions.append(day)
+    held = (date.fromisoformat(path.name.removesuffix(".meta.json")) for path in store.directory.glob("*.meta.json"))
+    sessions = sorted(day for day in held if window.files_from <= day <= window.files_through)
+    for _ in read_sessions(store, sessions):
+        pass  # each present body is hashed against its meta file; a mismatch raises
     if files_sha256(store, sessions) != window.files_sha256:
         raise ValueError("short files digest does not match the protocol's short_inputs.short_volume.files_sha256")
     _, actions_digest = load_actions(sources.actions_file)
@@ -288,7 +289,7 @@ async def build_cube_inputs(
     if short is not None:
         short_inputs, short_where = short
         loaded_short, short_actions = await asyncio.to_thread(
-            load_short_sources, short_inputs, short_where, trading_days
+            load_short_sources, short_inputs, short_where, trading_days, tuple(cohort.cohort.symbols)
         )
         short_sources = (short_inputs, loaded_short, short_actions)
         say(

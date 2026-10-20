@@ -9,6 +9,11 @@ row is ``NaN`` that day (never carried forward); it, and a thin day for the rati
 baselines, while a sparsely reported name stays ``NaN``.
 Identity breaks are the events lane's rule: every field is ``NaN`` before a symbol's latest break and
 rows keyed by it earlier are discarded.
+A forward or reverse split (``CorporateActionKind.FORWARD_SPLIT``/``REVERSE_SPLIT`` on the symbol) is a
+baseline break for the share-count series only: the ``short_volume_rel`` baseline never mixes sessions
+before the split's ``effective_on`` with sessions on or after it, so ``short_volume_rel`` is ``NaN`` on
+the split session and until ``z_window`` finite post-split values exist. ``short_ratio`` and
+``short_ratio_z`` are ratios of same-day share counts and span splits unchanged.
 """
 
 from __future__ import annotations
@@ -18,16 +23,23 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from agentic_trader.data.corporate_actions import CorporateAction
+from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 from agentic_trader.research.apriori.pead_events import by_session
 from agentic_trader.research.pooled.campaign import ShortInputs, ShortVolumeInputs
 from agentic_trader.research.pooled.events import identity_breaks
-from agentic_trader.research.short_volume import ShortVolumeRow, ShortVolumeStore, files_sha256, parse_file
+from agentic_trader.research.short_volume import (
+    ShortVolumeRow,
+    ShortVolumeStore,
+    files_sha256,
+    parse_file,
+    read_sessions,
+)
 
 
 __all__ = [
@@ -41,29 +53,37 @@ __all__ = [
 ]
 
 SHORT_FIELDS = ("short_ratio", "short_ratio_z", "short_volume_rel", "offex_share")
+_SPLIT_KINDS = frozenset({CorporateActionKind.FORWARD_SPLIT, CorporateActionKind.REVERSE_SPLIT})
 
 
 @dataclass(frozen=True)
 class LoadedShortVolume:
-    """Every present file's rows keyed by (mapped) symbol then date, with the digest over the present files."""
+    """The present files' rows for the requested symbols, keyed by (mapped) symbol then date, with the
+    files digest over the window (present and absent sessions).
+
+    ``rows`` counts the kept rows; ``unscored_rows`` the rows dropped because their symbol was not requested.
+    """
 
     by_symbol: Mapping[str, Mapping[date, ShortVolumeRow]]
     files_sha256: str
     sessions: tuple[date, ...]
     absent: tuple[date, ...]
     rows: int
+    unscored_rows: int
 
 
 @dataclass(frozen=True)
 class ShortCoverage:
     """What the builder could not fill, for the results doc.
 
-    ``unmatched_rows`` counts file rows for symbols outside the cohort, summed over all files.
+    ``unscored_rows`` counts file rows, summed over all files, whose symbol is not among the symbols passed
+    to the builder (the eligible, scored set): the rows the loader dropped (outside the cohort it was given)
+    plus the loaded rows of cohort names without an eligible cell.
     ``identity_breaks`` maps a symbol to the ISO date of its latest identity break.
     """
 
     symbols_without_rows: tuple[str, ...]
-    unmatched_rows: int
+    unscored_rows: int
     thin_days: int
     offex_clipped: int
     identity_breaks: Mapping[str, str]
@@ -78,39 +98,45 @@ class ShortFrames:
     coverage: ShortCoverage
 
 
-def load_short_volume(directory: Path, inputs: ShortVolumeInputs, sessions: Sequence[date]) -> LoadedShortVolume:
-    """Read the cached files for ``sessions`` from disk only; a session without a usable file fails closed.
+def load_short_volume(
+    directory: Path, inputs: ShortVolumeInputs, sessions: Sequence[date], symbols: Sequence[str]
+) -> LoadedShortVolume:
+    """Read the cached files for ``sessions`` from disk only, keeping the rows of ``symbols``.
 
-    An ``absent`` session (FINRA published nothing, accepted at acquisition) is skipped and listed.
+    Every session must lie in ``[files_from, files_through]``; a session without a usable file, or a body
+    that differs from its meta file, fails closed. An ``absent`` session (FINRA published nothing, accepted
+    at acquisition) is skipped and listed. The digest is the acquisition's rule over all ``sessions``.
     """
-    del inputs  # the window is carried by ``sessions``; the digest check is ``verify_short_sources``
+    outside = [day for day in sessions if not inputs.files_from <= day <= inputs.files_through]
+    if outside:
+        raise ValueError(
+            f"session {outside[0].isoformat()} lies outside the protocol's files window "
+            f"[{inputs.files_from.isoformat()}, {inputs.files_through.isoformat()}]"
+        )
     store = ShortVolumeStore(directory)
+    wanted = set(symbols)
     present: list[date] = []
     absent: list[date] = []
     by_symbol: dict[str, dict[date, ShortVolumeRow]] = defaultdict(dict)
-    total = 0
-    for day in sessions:
-        meta = store.meta(day)
-        if meta is None:
-            raise ValueError(f"short-volume file for {day.isoformat()} is missing from {directory}")
-        if meta["status"] == "absent":
+    kept = dropped = 0
+    for day, body in read_sessions(store, sessions):
+        if body is None:
             absent.append(day)
             continue
-        if meta["status"] != "present":
-            raise ValueError(f"short-volume file for {day.isoformat()} is {meta['status']}")
-        body = store.load(day)
-        if body is None:
-            raise ValueError(f"short-volume file for {day.isoformat()} is missing from {directory}")
         present.append(day)
         for row in parse_file(body, day):
-            by_symbol[row.symbol][day] = row
-            total += 1
+            if row.symbol in wanted:
+                by_symbol[row.symbol][day] = row
+                kept += 1
+            else:
+                dropped += 1
     return LoadedShortVolume(
         by_symbol=by_symbol,
-        files_sha256=files_sha256(store, present),
+        files_sha256=files_sha256(store, sessions),
         sessions=tuple(present),
         absent=tuple(absent),
-        rows=total,
+        rows=kept,
+        unscored_rows=dropped,
     )
 
 
@@ -156,6 +182,26 @@ def _prior_stats(values: np.ndarray, window: int) -> tuple[np.ndarray, np.ndarra
     return mean, std
 
 
+def _segmented_mean(values: np.ndarray, window: int, starts: Sequence[int]) -> np.ndarray:
+    """``_prior_stats``'s mean computed separately on each segment between the ``starts`` positions."""
+    mean = np.full(len(values), np.nan)
+    bounds = [0, *starts, len(values)]
+    for lo, hi in pairwise(bounds):
+        mean[lo:hi] = _prior_stats(values[lo:hi], window)[0]
+    return mean
+
+
+def _split_starts(actions: Sequence[CorporateAction], days: Sequence[date]) -> dict[str, list[int]]:
+    """Per symbol, the positions in ``days`` where a forward or reverse split takes effect (inside the calendar)."""
+    positions: dict[str, set[int]] = defaultdict(set)
+    for action in actions:
+        if action.kind in _SPLIT_KINDS:
+            position = bisect_left(days, action.effective_on)
+            if 0 < position < len(days):
+                positions[action.symbol].add(position)
+    return {symbol: sorted(found) for symbol, found in positions.items()}
+
+
 def _first_finite(frame: pd.DataFrame, days: Sequence[date]) -> dict[str, str | None]:
     out: dict[str, str | None] = {}
     for name in SHORT_FIELDS:
@@ -182,8 +228,11 @@ def build_short_frames(
     n = len(days)
     index = pd.DatetimeIndex([pd.Timestamp(day) for day in days])
     breaks = identity_breaks(actions, symbols)
-    cohort = set(symbols)
-    unmatched = sum(len(rows) for symbol, rows in loaded.by_symbol.items() if symbol not in cohort)
+    splits = _split_starts(actions, days)
+    scored = set(symbols)
+    unscored = loaded.unscored_rows + sum(
+        len(rows) for symbol, rows in loaded.by_symbol.items() if symbol not in scored
+    )
     frames: dict[str, pd.DataFrame] = {}
     first_finite: dict[str, dict[str, str | None]] = {}
     without_rows: list[str] = []
@@ -210,7 +259,7 @@ def build_short_frames(
             mean, std = _prior_stats(ratio, params.z_window)
             z = (ratio - mean) / std
             z[~np.isfinite(z)] = np.nan
-            short_mean, _ = _prior_stats(short, params.z_window)
+            short_mean = _segmented_mean(short, params.z_window, splits.get(symbol, []))
             rel = short / short_mean
             rel[~np.isfinite(rel)] = np.nan
             offex = np.full(n, np.nan)
@@ -231,7 +280,7 @@ def build_short_frames(
         frames=frames,
         coverage=ShortCoverage(
             symbols_without_rows=tuple(without_rows),
-            unmatched_rows=unmatched,
+            unscored_rows=unscored,
             thin_days=thin_days,
             offex_clipped=clipped,
             identity_breaks={symbol: breaks[symbol].isoformat() for symbol in symbols if symbol in breaks},

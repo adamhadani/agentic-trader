@@ -249,6 +249,19 @@ def test_with_fields_reads_short_columns_at_d_minus_one():
     assert np.allclose(windowed[inside], -z[inside])
 
 
+def test_with_fields_joins_only_the_named_columns_and_refuses_a_frame_missing_one():
+    # A frame column outside ``field_names`` (here another lane's field) never becomes readable.
+    extra = {name: frame.assign(earnings_age=1.0) for name, frame in SHORT_FRAMES.items()}
+    book = ScoreBook.with_fields(MINI_ADJUSTED, extra, SHORT_FIELDS, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
+    with pytest.raises(ValueError, match="Missing required fields"):
+        book.panel("earnings_age")
+    assert np.isfinite(book.panel("short_ratio")[-1]).any()
+    partial = dict(SHORT_FRAMES)
+    partial[MINI_NAMES[1]] = SHORT_FRAMES[MINI_NAMES[1]].drop(columns=["offex_share"])
+    with pytest.raises(ValueError, match=f"{MINI_NAMES[1]}.*offex_share"):
+        ScoreBook.with_fields(MINI_ADJUSTED, partial, SHORT_FIELDS, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES)
+
+
 def test_score_book_dispatches_short_protocol_and_refuses_a_build_without_short_frames():
     cube = label_cube()
     protocol = mini_short_protocol()
@@ -261,5 +274,5 @@ def test_score_book_dispatches_short_protocol_and_refuses_a_build_without_short_
 def test_short_coverage_document_is_the_coverage_or_none():
     cube = label_cube()
     document = scoring.short_coverage_document(short_cube_build(cube))
-    assert document is not None and document["unmatched_rows"] == 0
+    assert document is not None and document["unscored_rows"] == 0
     assert scoring.short_coverage_document(cube_build(cube)) is None

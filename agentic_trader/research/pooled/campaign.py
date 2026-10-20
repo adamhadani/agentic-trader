@@ -472,6 +472,12 @@ class ShortVolumeInputs(BaseModel, frozen=True, extra="forbid"):
     min_total_volume: float = Field(ge=0)
     max_offex_share: float = Field(gt=0)
 
+    @model_validator(mode="after")
+    def _window(self) -> ShortVolumeInputs:
+        if self.files_from > self.files_through:
+            raise ValueError("files_from must not follow files_through")
+        return self
+
 
 class ShortInputs(BaseModel, frozen=True, extra="forbid"):
     """The pinned inputs of a short-volume protocol: the fields version, the FINRA files and the actions."""
