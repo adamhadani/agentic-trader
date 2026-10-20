@@ -1,0 +1,307 @@
+{
+  "bars_from": "2016-01-01",
+  "bars_through": "2026-09-01",
+  "bootstrap": {
+    "block_mean": 20,
+    "confirmation_draws": 10000,
+    "discovery_draws": 1000,
+    "seed": 20260931,
+    "selection_draws": 1000
+  },
+  "bracket": {
+    "atr_window": 14,
+    "decision_time_et": "10:35",
+    "max_hold_sessions": 20,
+    "stop_atr_multiple": 2.0,
+    "target_r": 3.0
+  },
+  "cohort": "config/research/pooled/cohort-v3.json",
+  "cohort_sha256": "8c0d807aa47b19d391b3967c97e35715caf974faa9ed4418075d794766fbe8d1",
+  "complexity_penalty_per_node": 0.02,
+  "confirmation_gate": {
+    "alpha": 0.05,
+    "min_sessions": 300,
+    "recent_months": 12,
+    "trim_fraction": 0.01
+  },
+  "coverage": {
+    "max_no_reference_fraction": 0.02,
+    "max_unlabelled_fraction_per_year": 0.05
+  },
+  "decision_cost_bps": 15.0,
+  "dedupe_jaccard": 0.5,
+  "discovery_gate": {
+    "blocks": 4,
+    "carry": 5,
+    "min_positive_blocks": 3,
+    "min_sessions": 400,
+    "min_t": 3.0
+  },
+  "excluded_families": [
+    {
+      "id": "vol_20",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "sector_relative_momentum",
+      "reason": "Survived Holm in the setup-outcome study, which read 2021-2026."
+    },
+    {
+      "id": "residual_momentum",
+      "reason": "Factor-controls study read 2021-2026 and reported partly positive results."
+    },
+    {
+      "id": "volatility_scaled_momentum",
+      "reason": "Sector-panel study read 2021-2026 and reported a positive low-cost result."
+    },
+    {
+      "id": "reversal_5",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "signed_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "overnight_intraday",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "abnormal_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "momentum_12_1",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "price_volume_corr",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "illiquidity",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "reversal_x_volume",
+      "reason": "daily-bar family, scored in campaign v4 (no finalists)"
+    },
+    {
+      "id": "first_hour_momentum",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "overnight_persistence",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "overnight_vs_intraday",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "relative_volume",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "range_expansion",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "range_location",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "first_bucket_efficiency",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "intraday_high_proximity",
+      "reason": "Tested as the intraday fixed set (intraday-v1, 2026-10-14)."
+    },
+    {
+      "id": "pead_surprise_decay",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "pead_reaction_decay",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "pead_reaction_window",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "pead_agreement",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "surprise_x_reaction",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "quiet_momentum",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "quiet_reversal",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    },
+    {
+      "id": "dividend_yield",
+      "reason": "events fixed set, scored in events-v1 / cohort3-events-v1 (no finalists)"
+    }
+  ],
+  "families": [
+    {
+      "id": "light_shorting",
+      "mutation_operators": [],
+      "rationale": "Names with the lowest share of short-sale volume outperform the heavily shorted (Boehmer, Jones and Zhang, 2008; Diether, Lee and Werner, 2009): the long leg of the daily short-flow spread.",
+      "seeds": [
+        "-short_ratio"
+      ]
+    },
+    {
+      "id": "light_shorting_week",
+      "mutation_operators": [],
+      "rationale": "The same light-shorting leg measured over one week of flow (the five-day aggregation of Boehmer, Jones and Zhang, 2008).",
+      "seeds": [
+        "-ts_mean(short_ratio, 5)"
+      ]
+    },
+    {
+      "id": "shorts_retreat",
+      "mutation_operators": [],
+      "rationale": "Shorting below its own recent norm: informed sellers stepping back.",
+      "seeds": [
+        "-short_ratio_z"
+      ]
+    },
+    {
+      "id": "shorts_retreat_week",
+      "mutation_operators": [],
+      "rationale": "The same retreat of shorting below its own norm, smoothed over one week.",
+      "seeds": [
+        "-ts_mean(short_ratio_z, 5)"
+      ]
+    },
+    {
+      "id": "shorts_retreat_volume",
+      "mutation_operators": [],
+      "rationale": "Short volume below its recent mean, independent of the day's total volume.",
+      "seeds": [
+        "-short_volume_rel"
+      ]
+    },
+    {
+      "id": "unopposed_strength",
+      "mutation_operators": [],
+      "rationale": "Shorts are contrarian and step in after price rises (Diether, Lee and Werner, 2009); a rise they do not oppose continues. The score divides by the 0/1 condition, so a name without a positive week has no score (NaN, ineligible) and the decile is taken among rising names only.",
+      "seeds": [
+        "-short_ratio_z / (ts_sum(returns, 5) > 0)"
+      ]
+    },
+    {
+      "id": "squeeze",
+      "mutation_operators": [],
+      "rationale": "The pre-registered opposite sign: abnormal shorting into a falling week reverses (a crowded-short bounce). The score divides by the 0/1 condition, so a name without a negative week has no score (NaN, ineligible) and the decile is taken among falling names only.",
+      "seeds": [
+        "short_ratio_z / (ts_sum(returns, 5) < 0)"
+      ]
+    },
+    {
+      "id": "quiet_tape",
+      "mutation_operators": [],
+      "rationale": "A low off-exchange (retail and internalised) share: names outside the retail-attention tape (Boehmer, Jones, Zhang and Zhang, 2021: retail herding precedes short-horizon reversals).",
+      "seeds": [
+        "-offex_share"
+      ]
+    }
+  ],
+  "feed": "alpaca:sip",
+  "formula_budget": 8,
+  "id": "pooled-short-volume-campaign",
+  "null_check": {
+    "max_false_acceptances": 2,
+    "replicates": 40,
+    "seed": 20261003
+  },
+  "power": {
+    "ar_phi": 0.95,
+    "deltas": [
+      0.0,
+      0.05,
+      0.08,
+      0.1,
+      0.12,
+      0.15
+    ],
+    "detection_delta": 0.15,
+    "max_false_acceptance": 0.05,
+    "min_detection": 0.8,
+    "null_formulas": 200,
+    "replicates": 100,
+    "seed": 20260932
+  },
+  "rationale": "A predeclared fixed set of eight short-sale formulas, one hypothesis each, scored once without search on daily bars read at D-1 together with the four dimensionless short_fields_v1 columns (short_ratio, short_ratio_z, short_volume_rel, offex_share), so search-power check B does not apply; checks A and C still bind. The source is FINRA's Daily Short Sale Volume Files (Consolidated NMS), which cover off-exchange (TRF and ADF) volume only: the file's TotalVolume is not consolidated volume, and offex_share is an off-exchange share measure, not a short-interest figure. Each file is published the same day by 18:00 ET, so a field holding state at T is first read by decision session T+1 at 10:35 ET with at least 16 hours of slack. Trailing statistics exclude T (the baseline is the last 20 finite prior values within 40 sessions), a missing row is NaN and never carried forward, and a thin day (under 10,000 shares) has no ratio. A name change that moves a ticker onto or off a cohort symbol is an identity break: that symbol's fields are NaN before its latest break and earlier file rows are discarded. The inputs are the digest-pinned acquisition of the FINRA files (files as served at acquisition time) and the corporate-actions acquisition. The two windowed formulas divide by their 0/1 condition, so an out-of-window name has no score (NaN, ineligible) and each session's decile is taken among in-window names only. The population is cohort v3, the mid-liquidity band of ranks 401-1,400, with the absolute $5 million 20-session median dollar-volume floor and a 15 bp decisive cost; survivorship caveat as for cohort3-events-v1. The cohort, label cube, windows, selection, gates, bootstrap, power and null-check parameters are the matching events protocol's, so the cached cube is reused and the lane-wide confirmation window remains unused until a finalist freezes; the campaign runs only on operator approval.",
+  "score_inputs": "daily",
+  "search": {
+    "archive_size": 16,
+    "forbidden_operators": [
+      "realized_vol",
+      "ts_std",
+      "ts_mad"
+    ],
+    "seed": 20260930
+  },
+  "search_mode": "fixed_set",
+  "selection": {
+    "fraction": 0.1,
+    "rule": "top_fraction"
+  },
+  "selection_gate": {
+    "min_fraction_of_discovery": 0.5,
+    "min_sessions": 150
+  },
+  "short_inputs": {
+    "corporate_actions": {
+      "content_sha256": "8a547b0694d9f171fa1fa7e39f492749f6468393426cf1a69de8a0bde0386c8e",
+      "source": "alpaca",
+      "trailing_sessions": 252,
+      "window": [
+        "2016-01-01",
+        "2027-03-31"
+      ]
+    },
+    "fields_version": "short_fields_v1",
+    "short_volume": {
+      "files_from": "2018-08-01",
+      "files_sha256": "17315ae2525e44481a6c3c13fc75951fe1763af4ab101213c29cce66fe8f83a2",
+      "files_through": "2026-09-01",
+      "max_offex_share": 1.5,
+      "min_total_volume": 10000,
+      "source": "finra-regsho-cnms",
+      "z_window": 20
+    }
+  },
+  "title": "Short-volume pooled campaign v1 on cohort v3 (mid-liquidity band, ranks 401-1,400): daily bars read at D-1 plus the four short_fields_v1 FINRA short-sale fields, predeclared fixed set of eight formulas (checks A and C), one-shot lane-wide confirmation",
+  "universe": {
+    "min_eligible_names": 30,
+    "min_median_dollar_volume": 5000000.0,
+    "min_price": 10.0
+  },
+  "version": 1,
+  "windows": {
+    "confirmation": [
+      "2024-01-02",
+      "2026-07-31"
+    ],
+    "discovery": [
+      "2016-08-01",
+      "2021-12-31"
+    ],
+    "selection": [
+      "2022-01-03",
+      "2023-12-29"
+    ]
+  }
+}

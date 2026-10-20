@@ -77,7 +77,7 @@ Symbol mapping: FINRA writes share classes with `/` (`BF/B`, `BRK/B`) and prefer
 (`BFHpA`); Alpaca writes `.` (`BF.B`). A file row maps to a cohort symbol by replacing `/` with `.`;
 preferreds and warrants (`/WS`, `/U`, `p`) never match a cohort name. Identity breaks are the events
 lane's rule, verbatim: the protocol pins the cohort's corporate-actions acquisition
-(`CorporateActionInputs`), `_identity_breaks` (shared from `events.py`, imported, not copied) gives
+(`CorporateActionInputs`), `identity_breaks` (shared from `events.py`, imported, not copied) gives
 each symbol's latest `name_change` break, and every field is `NaN` on `T < break_on`; file rows keyed
 by the symbol before the break are discarded (META was FB, ELV was ANTM, XYZ was SQ).
 
@@ -99,7 +99,7 @@ execution); fields are not carried forward across missing days (a missing row is
 unlike the sparse earnings fields, because the source is daily and dense. First finite session is 2018-08-01 for `short_ratio` and
 `offex_share` and about 2018-08-29 for the two windowed fields; the discovery window
 (2016-08-01 → 2021-12-31) therefore holds about 840 scored sessions, above the 400-session gate.
-Coverage (`ShortVolumeCoverage`): symbols without any row, rows unmatched to the cohort (count),
+Coverage (`ShortCoverage`): symbols without any row, rows unmatched to the cohort (count),
 per-symbol first finite session per field, thin-day count, `offex_share` clips, identity breaks.
 
 ## 4. Protocol: `pooled-short-volume-campaign`
@@ -177,8 +177,8 @@ results doc.
   "short_volume_rel", "offex_share")`, `load_short_volume(directory, inputs) → LoadedShortVolume
   (by_symbol, files_sha256, sessions, unmatched_rows)` (disk only, digest verified against
   `.meta.json`), `build_short_frames(inputs, loaded, actions, raw, trading_days, symbols) →
-  ShortFrames(frames, coverage)`; imports `_identity_breaks` from `events.py` (renamed public
-  `identity_breaks`, the events module updated in the same change).
+  ShortFrames(frames, coverage)`; imports `identity_breaks` from `events.py` (formerly private
+  `_identity_breaks`, the events module updated in the same change).
 - `research/alpha/dsl.py`: the four names join `FIELD_UNITS` as dimensionless; a frame without
   them is unchanged (live frames).
 - `research/pooled/scoring.py`: `ScoreBook.with_events` generalised to
