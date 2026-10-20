@@ -12,10 +12,14 @@ from agentic_trader.research.pooled.campaign import (
     IntradayCampaignProtocol,
     ScoreRead,
     Selection,
+    ShortVolumeCampaignProtocol,
     load_campaign_protocol,
 )
 from agentic_trader.research.pooled.cohort import load_cohort
-from agentic_trader.research.pooled.scoring import event_inputs_document
+from agentic_trader.research.pooled.scoring import event_inputs_document, short_inputs_document
+from tests.research.pooled.mini_world import mini_fixed_set_protocol, mini_short_protocol
+from tests.research.pooled.test_events_v1 import EVENTS_SHA256, V1 as EVENTS_V1
+from tests.research.pooled.test_intraday_v1 import V1 as INTRADAY_V1
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -400,3 +404,25 @@ def test_existing_protocol_identities_survive_the_universe_floor_field():
         assert loaded.sha256.startswith(sha8)
         assert loaded.protocol.cube_spec().identity.startswith("f1c835a3d3364d2b"), path
         assert "min_median_dollar_volume" not in loaded.protocol.model_dump(mode="json")["universe"]
+
+
+def test_short_volume_protocol_loads_dumps_its_inputs_and_refuses_genetic():
+    protocol = mini_short_protocol()
+    assert isinstance(protocol, ShortVolumeCampaignProtocol) and protocol.score_inputs == "daily"
+    dumped = protocol.model_dump(mode="json")
+    assert dumped["short_inputs"]["fields_version"] == "short_fields_v1" and dumped["score_inputs"] == "daily"
+    assert short_inputs_document(protocol) == dumped["short_inputs"]
+    assert short_inputs_document(mini_fixed_set_protocol()) is None
+    with pytest.raises(ValueError, match="fixed_set"):
+        mini_short_protocol(
+            search_mode="genetic",
+            power_search={"families": ["reversal"], "seeds": 10, "delta": 0.1, "min_recovered": 5, "seed": 1},
+        )
+
+
+def test_short_volume_protocol_leaves_other_protocol_hashes_unchanged():
+    for path, prefix in ((EVENTS_V1, EVENTS_SHA256), (INTRADAY_V1, INTRADAY_SHA256), (V4_PATH, None)):
+        loaded = load_campaign_protocol(path)
+        assert "short_inputs" not in loaded.protocol.model_dump(mode="json")
+        if prefix:
+            assert loaded.sha256.startswith(prefix)

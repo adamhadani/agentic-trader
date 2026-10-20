@@ -26,6 +26,7 @@ from agentic_trader.research.pooled.campaign import (
     EventsCampaignProtocol,
     IntradayCampaignProtocol,
     ScoredFormula,
+    ShortVolumeCampaignProtocol,
     _calls,
 )
 from agentic_trader.research.pooled.cube import CubeView
@@ -55,6 +56,7 @@ __all__ = [
     "formula_id",
     "score_book",
     "score_read_document",
+    "short_inputs_document",
     "vet_expression",
 ]
 
@@ -284,6 +286,11 @@ def score_read_document(protocol: CampaignProtocol) -> dict | None:
 def event_inputs_document(protocol: CampaignProtocol) -> dict | None:
     """The protocol's event inputs as recorded in manifests; None for a protocol without event fields."""
     return protocol.event_inputs.model_dump(mode="json") if isinstance(protocol, EventsCampaignProtocol) else None
+
+
+def short_inputs_document(protocol: CampaignProtocol) -> dict | None:
+    """The protocol's short-volume inputs as recorded in manifests; None for a protocol without short fields."""
+    return protocol.short_inputs.model_dump(mode="json") if isinstance(protocol, ShortVolumeCampaignProtocol) else None
 
 
 def event_coverage_document(built: CubeBuild) -> dict | None:

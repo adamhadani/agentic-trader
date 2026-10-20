@@ -15,6 +15,7 @@ from agentic_trader.research.pooled.campaign import (
     IntradayCampaignProtocol,
     NullCheckSpec,
     Selection,
+    ShortVolumeCampaignProtocol,
     load_campaign_protocol,
 )
 from agentic_trader.research.pooled.cube import LabelCube
@@ -266,6 +267,35 @@ def mini_events_protocol(**update):
         },
     )
     return EventsCampaignProtocol.model_validate(document)
+
+
+def mini_short_protocol(**update):
+    """The mini fixed-set protocol reading daily bars plus the short_fields_v1 columns."""
+    document = mini_fixed_set_protocol().model_dump(mode="json")
+    document.update(
+        id="pooled-short-volume-campaign",
+        score_inputs="daily",
+        short_inputs={
+            "fields_version": "short_fields_v1",
+            "short_volume": {
+                "source": "finra-regsho-cnms",
+                "files_sha256": "d" * 64,
+                "files_from": "2018-08-01",
+                "files_through": "2026-09-01",
+                "z_window": 20,
+                "min_total_volume": 10000,
+                "max_offex_share": 1.5,
+            },
+            "corporate_actions": {
+                "source": "alpaca",
+                "content_sha256": "b" * 64,
+                "window": ["2016-01-01", "2027-03-31"],
+                "trailing_sessions": 252,
+            },
+        },
+    )
+    document.update(update)
+    return ShortVolumeCampaignProtocol.model_validate(document)
 
 
 def events_cube_build(cube: LabelCube) -> CubeBuild:
