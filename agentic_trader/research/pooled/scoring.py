@@ -40,6 +40,7 @@ from agentic_trader.research.pooled.formula import (
     prepare_hourly,
     require_dimensionless,
 )
+from agentic_trader.research.pooled.insider_fields import INSIDER_FIELDS
 from agentic_trader.research.pooled.short_fields import SHORT_FIELDS
 
 
@@ -315,6 +316,11 @@ def short_coverage_document(built: CubeBuild) -> dict | None:
     return asdict(built.short.coverage) if built.short is not None else None
 
 
+def insider_coverage_document(built: CubeBuild) -> dict | None:
+    """The build's insider coverage as recorded in results; None for a build without insider fields."""
+    return asdict(built.insider.coverage) if built.insider is not None else None
+
+
 def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:
     """The book a protocol's formulas read from: daily bars at D-1, or hourly bars before the decision."""
     if isinstance(protocol, IntradayCampaignProtocol):
@@ -351,6 +357,19 @@ def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:
             built.adjusted,
             built.short.frames,
             SHORT_FIELDS,
+            built.trading_days,
+            built.cube.sessions,
+            built.cube.symbols,
+        )
+    if isinstance(protocol, InsiderCampaignProtocol):
+        if built.insider is None:
+            raise ValueError(
+                "this protocol scores insider fields but the build carries no insider frames; build with insider=..."
+            )
+        return ScoreBook.with_fields(
+            built.adjusted,
+            built.insider.frames,
+            INSIDER_FIELDS,
             built.trading_days,
             built.cube.sessions,
             built.cube.symbols,

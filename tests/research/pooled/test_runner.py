@@ -13,15 +13,30 @@ import pandas as pd
 import pytest
 
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.insider_filings import (
+    InsiderFilingStore,
+    files_sha256 as insider_files_sha256,
+    parse_quarter,
+    quarters_between,
+)
 from agentic_trader.research.pooled import runner as runner_module
 from agentic_trader.research.pooled.cohort import Cohort, CohortSource, LoadedCohort, UniverseSpec
 from agentic_trader.research.pooled.cube import _ARRAYS, BracketSpec, CubeSpec, LabelCube, save_cube
 from agentic_trader.research.pooled.events import EVENT_FIELDS, load_actions, pages_sha256
-from agentic_trader.research.pooled.runner import EventSources, ShortSources, build_cube_inputs, verify_short_digests
+from agentic_trader.research.pooled.insider_fields import INSIDER_FIELDS
+from agentic_trader.research.pooled.runner import (
+    EventSources,
+    InsiderSources,
+    ShortSources,
+    build_cube_inputs,
+    verify_insider_digests,
+    verify_short_digests,
+)
 from agentic_trader.research.pooled.short_fields import SHORT_FIELDS
 from agentic_trader.research.setups import runner as setups_runner
 from agentic_trader.research.short_volume import MIN_ROWS, ShortVolumeStore, files_sha256
-from tests.research.pooled.mini_world import mini_events_protocol, mini_short_protocol, weekdays
+from tests.research.insider_fixtures import trade, trades_archive
+from tests.research.pooled.mini_world import mini_events_protocol, mini_insider_protocol, mini_short_protocol, weekdays
 from tests.research.pooled.test_events import _dividend, _write_pages
 
 
@@ -115,7 +130,17 @@ def _no_retry_sleep(monkeypatch):
 
 
 def build(
-    bars, cache_dir, *, static=STATIC, loaded=None, progress=None, spec=SPEC, load_hourly=False, events=None, short=None
+    bars,
+    cache_dir,
+    *,
+    static=STATIC,
+    loaded=None,
+    progress=None,
+    spec=SPEC,
+    load_hourly=False,
+    events=None,
+    short=None,
+    insider=None,
 ):
     return asyncio.run(
         build_cube_inputs(
@@ -130,6 +155,7 @@ def build(
             load_hourly=load_hourly,
             events=events,
             short=short,
+            insider=insider,
         )
     )
 
@@ -615,7 +641,7 @@ def test_short_frames_cover_only_symbols_with_an_eligible_cell(tmp_path):
 
 def test_events_and_short_together_raise_before_any_access(tmp_path):
     bars = FakeBars()
-    with pytest.raises(ValueError, match="events.*short|short.*events"):
+    with pytest.raises(ValueError, match="one field source"):
         build(
             bars,
             tmp_path / "cache",
@@ -670,3 +696,95 @@ def test_verify_short_digests_refuses_a_wrong_actions_digest(tmp_path):
     )
     with pytest.raises(ValueError, match=r"short_inputs\.corporate_actions\.content_sha256"):
         verify_short_digests(wrong, sources)
+
+
+def _insider_world(tmp_path, *, pinned: bool):
+    """A two-quarter archive store (one purchase of AAA each quarter), a ticker map and actions on disk,
+    and the protocol inputs pinning their digests (or not)."""
+    stamp = datetime(2021, 5, 1, tzinfo=UTC)
+    store = InsiderFilingStore(tmp_path / "insider")
+    for quarter, filing in (("2021q1", "10-FEB-2021"), ("2021q2", "10-APR-2021")):
+        body = trades_archive([trade(cik=1000, filing=filing, trans=filing, owner=7, shares=100, price=10.0)])
+        store.save(parse_quarter(quarter), body, url=f"https://x/{quarter}", requested_at=stamp, received_at=stamp)
+    tickers = {"0": {"cik_str": 1000, "ticker": "AAA", "title": "Aaa"}, "1": {"cik_str": 2000, "ticker": "BBB"}}
+    store.save_tickers(json.dumps(tickers).encode(), url="https://x/t", requested_at=stamp, received_at=stamp)
+    actions_file = tmp_path / "actions.json"
+    actions_file.write_text(json.dumps([_dividend("AAA", date(2021, 3, 1)).model_dump(mode="json")]))
+    quarters = quarters_between(parse_quarter("2021q1"), parse_quarter("2021q2"))
+    protocol = mini_insider_protocol()
+    inputs = protocol.insider_inputs.model_copy(
+        update={
+            "insider_filings": protocol.insider_inputs.insider_filings.model_copy(
+                update={
+                    "quarters_from": "2021q1",
+                    "quarters_through": "2021q2",
+                    "files_sha256": insider_files_sha256(store, quarters) if pinned else "a" * 64,
+                }
+            ),
+            "corporate_actions": protocol.insider_inputs.corporate_actions.model_copy(
+                update={"content_sha256": load_actions(actions_file)[1] if pinned else "b" * 64}
+            ),
+        }
+    )
+    return inputs, InsiderSources(insider_filings_dir=tmp_path / "insider", actions_file=actions_file)
+
+
+def test_insider_build_fails_closed_on_digest_mismatch_before_any_bar_is_read(tmp_path):
+    bars = FakeBars()
+    with pytest.raises(ValueError, match="digest"):
+        build(bars, tmp_path / "cache", insider=_insider_world(tmp_path, pinned=False))
+    assert bars.calls == []
+
+
+def test_insider_build_pins_frames_for_the_eligible_symbols_and_keeps_raw_bars(tmp_path):
+    built = build(FakeBars(), tmp_path / "cache", insider=_insider_world(tmp_path, pinned=True))
+    assert built.insider is not None and built.events is None and built.short is None
+    assert set(built.insider.frames) == {"AAA", "BBB"}
+    for frame in built.insider.frames.values():
+        assert tuple(frame.columns) == INSIDER_FIELDS
+        assert len(frame) == len(built.trading_days)
+    assert built.insider.frames["AAA"]["insider_buy_rel"].notna().any()
+    assert sorted(built.raw) == ["AAA", "BBB"]
+
+
+def test_insider_build_loads_raw_bars_on_a_cache_hit(tmp_path):
+    cache = tmp_path / "cache"
+    bars = FakeBars()
+    plain = build(bars, cache)
+    assert plain.insider is None and plain.raw == {}
+    bars.calls.clear()
+    built = build(bars, cache, insider=_insider_world(tmp_path, pinned=True))
+    assert sorted(built.raw) == ["AAA", "BBB"]
+    assert built.insider is not None and set(built.insider.frames) == {"AAA", "BBB"}
+    assert bars.calls == []
+
+
+def test_events_and_insider_together_raise_before_any_access(tmp_path):
+    bars = FakeBars()
+    with pytest.raises(ValueError, match="one field source"):
+        build(
+            bars,
+            tmp_path / "cache",
+            events=_event_world(tmp_path, pinned=True),
+            insider=_insider_world(tmp_path, pinned=True),
+        )
+    assert bars.calls == []
+
+
+def test_verify_insider_digests_passes_for_the_pinned_files_and_actions(tmp_path):
+    inputs, sources = _insider_world(tmp_path, pinned=True)
+    verify_insider_digests(inputs, sources)
+
+
+def test_verify_insider_digests_refuses_a_tampered_archive_body(tmp_path):
+    inputs, sources = _insider_world(tmp_path, pinned=True)
+    archive = sources.insider_filings_dir / "2021q1_form345.zip"
+    archive.write_bytes(archive.read_bytes() + b"x")
+    with pytest.raises(ValueError, match="SHA-256 does not match its meta file"):
+        verify_insider_digests(inputs, sources)
+
+
+def test_verify_insider_digests_refuses_an_unpinned_digest(tmp_path):
+    inputs, sources = _insider_world(tmp_path, pinned=False)
+    with pytest.raises(ValueError, match="insider files digest"):
+        verify_insider_digests(inputs, sources)
