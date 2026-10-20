@@ -1123,8 +1123,15 @@ before scoring and consumes the lane-wide confirmation window only for finalists
 
 **Pre-registered closure.** `no_finalists` on both cubes closes the short-volume fixed set on this window;
 nothing promotes, and a finalist only becomes eligible for a separately specified capped paper probe, which
-would also need its own live feed contract (a daily fetch of yesterday's file). Results go to
-`docs/alpha-pooled-short-v1-<date>.md` with the coverage block and first-finite sessions.
+would also need its own live feed contract (a daily fetch of yesterday's file).
+
+**Result (2026-10-20).** Checks A and C passed for both protocols at `08a98ba` and the two approved campaigns
+ran the same day ([results](alpha-pooled-short-v1-2026-10-20.md)). Cohort v2: `no_finalists` (eight edges
+within ±0.022R, best |t| 1.18). Cohort v3: `no_confirmation_candidates` — `shorts_retreat` (`-short_ratio_z`)
+passed discovery (+0.020R, t +3.40, 836 sessions) and was not kept at selection (+0.006R, t +0.88 on 498
+sessions, below half its discovery edge), so nothing froze and the confirmation window was not read. The
+short-volume fixed set is **closed** on this window; the mid-cap `shorts_retreat` discovery result is a
+hypothesis only, and a second look needs its own frozen protocol and operator approval.
 
 **Frozen files** (SHA-256 prefixes pinned in `tests/research/pooled/test_short_v1.py`):
 
