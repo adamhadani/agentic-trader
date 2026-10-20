@@ -16,8 +16,13 @@ NOW = datetime(2026, 9, 17, 12, tzinfo=UTC)
 HEADER = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\n"
 
 
-def _file(day="20260916", rows=1000, extra=""):
-    return HEADER + "".join(f"{day}|S{i:04d}|{i}|0|{2 * i + 1}|B,Q,N\n" for i in range(rows)) + extra
+def _file(day="20260916", rows=1000, extra="", trailer=True):
+    return (
+        HEADER
+        + "".join(f"{day}|S{i:04d}|{i}|0|{2 * i + 1}|B,Q,N\n" for i in range(rows))
+        + extra
+        + (f"{rows + extra.count(chr(10))}\n" if trailer else "")
+    )
 
 
 def test_parse_file_maps_share_classes_and_keeps_fractional_volumes():
@@ -138,15 +143,33 @@ async def test_server_error_raises_and_transport_error_is_retried_once(tmp_path)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         manifest = await acquire_short_volume(client, (MON,), store, pace=_noop)
         assert manifest["sessions_present"] == 1 and len(calls) == 2
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500))) as failing:
         with pytest.raises(httpx.HTTPStatusError):
-            await acquire_short_volume(
-                httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500))),
-                (TUE,),
-                store,
-                pace=_noop,
-            )
+            await acquire_short_volume(failing, (TUE,), store, pace=_noop)
 
 
 def test_files_sha256_requires_meta(tmp_path):
     with pytest.raises(ValueError, match="no meta"):
         files_sha256(ShortVolumeStore(tmp_path), (MON,))
+
+
+def test_parse_file_handles_crlf_and_a_matching_trailer_that_is_not_a_row():
+    text = _file().replace("\n", "\r\n")
+    assert text.endswith("1000\r\n")
+    rows = parse_file(text, date(2026, 9, 16))
+    assert len(rows) == 1000 and rows[-1].symbol == "S0999"
+
+
+def test_parse_file_rejects_a_mismatching_trailer_and_accepts_no_trailer():
+    bad = _file(trailer=False).replace("\n", "\r\n") + "1001\r\n"
+    with pytest.raises(ValueError, match=r"trailer row count 1001 does not match 1000 data rows"):
+        parse_file(bad, date(2026, 9, 16))
+    assert len(parse_file(_file(trailer=False), date(2026, 9, 16))) == 1000
+
+
+@pytest.mark.parametrize("content", ["not json", '{"sha256": "x"}', "[]"])
+def test_store_meta_raises_value_error_on_corrupt_or_incomplete_meta(tmp_path, content):
+    store = ShortVolumeStore(tmp_path)
+    store.paths(MON)[1].write_text(content)
+    with pytest.raises(ValueError, match="meta"):
+        store.meta(MON)

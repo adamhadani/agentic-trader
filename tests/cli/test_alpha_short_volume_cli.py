@@ -10,7 +10,11 @@ HEADER = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\n"
 
 
 def _file(stamp: str) -> bytes:
-    return (HEADER + "".join(f"{stamp}|S{i:04d}|{i}|0|{2 * i + 1}|B,Q,N\n" for i in range(1000))).encode()
+    return (
+        (HEADER + "".join(f"{stamp}|S{i:04d}|{i}|0|{2 * i + 1}|B,Q,N\n" for i in range(1000)) + "1000\n")
+        .replace("\n", "\r\n")
+        .encode()
+    )
 
 
 def _patch(monkeypatch, seen):

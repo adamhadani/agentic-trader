@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from collections.abc import Awaitable, Callable
 from datetime import date
@@ -19,6 +18,7 @@ from agentic_trader.market.session import DeterministicCalendarProvider
 from agentic_trader.research.short_volume import (
     REQUESTS_PER_SECOND,
     ShortVolumeStore,
+    _write_private,
     acquire_short_volume,
 )
 
@@ -35,12 +35,6 @@ def _pacer() -> Callable[[], Awaitable[None]]:
         last = time.monotonic()
 
     return pace
-
-
-def _write_private(path: Path, payload: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(payload)
 
 
 @click.command("short-volume")

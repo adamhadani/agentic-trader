@@ -40,8 +40,10 @@ MAX_FILE_BYTES = 8 * 1024 * 1024
 REQUESTS_PER_SECOND = 4
 MIN_ROWS = 1000
 _HEADER = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market"
-_TIMEOUT_SECONDS = 30.0
+_TIMEOUT_SECONDS = 20.0
 _ABSENT_STATUSES = frozenset({403, 404})
+
+_META_KEYS = frozenset({"sha256", "requested_at", "received_at", "status", "bytes", "rows"})
 
 Status = Literal["present", "absent", "invalid"]
 
@@ -71,6 +73,11 @@ def parse_file(text: str, expected_date: date) -> tuple[ShortVolumeRow, ...]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != _HEADER:
         raise ValueError("unexpected header")
+    trailer: int | None = None
+    while len(lines) > 1 and not lines[-1].strip():
+        lines.pop()
+    if len(lines) > 1 and lines[-1].strip().isdigit():
+        trailer = int(lines.pop().strip())  # FINRA's final line: the data row count
     stamp = expected_date.strftime("%Y%m%d")
     rows: list[ShortVolumeRow] = []
     for line_no, line in enumerate(lines[1:], start=2):
@@ -91,6 +98,8 @@ def parse_file(text: str, expected_date: date) -> tuple[ShortVolumeRow, ...]:
                 market=parts[5],
             )
         )
+    if trailer is not None and trailer != len(rows):
+        raise ValueError(f"trailer row count {trailer} does not match {len(rows)} data rows")
     if len(rows) < MIN_ROWS:
         raise ValueError(f"only {len(rows)} rows; at least {MIN_ROWS} expected")
     return tuple(rows)
@@ -127,7 +136,13 @@ class ShortVolumeStore:
         _, meta_path = self.paths(day)
         if not meta_path.exists():
             return None
-        return json.loads(meta_path.read_text())
+        try:
+            record = json.loads(meta_path.read_text())
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{meta_path}: unreadable meta file: {exc}") from exc
+        if not isinstance(record, dict) or not record.keys() >= _META_KEYS:
+            raise ValueError(f"{meta_path}: meta file is incomplete")
+        return record
 
     def load(self, day: date) -> str | None:
         meta = self.meta(day)
