@@ -339,6 +339,7 @@ def mini_insider_protocol(**update):
                 "net_window": 126,
                 "owner_roles": ["Officer", "Director"],
                 "exclude_10b5_1": True,
+                "max_trade_rel": 10,
             },
             "corporate_actions": {
                 "source": "alpaca",

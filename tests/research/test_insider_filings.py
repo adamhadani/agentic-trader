@@ -1,22 +1,32 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
 
 from agentic_trader.research import insider_filings as mod
 from agentic_trader.research.insider_filings import (
+    DROP_RULES,
     INDEX_URL,
     TICKERS_URL,
     InsiderFilingStore,
+    InsiderTransaction,
     acquire_insider_filings,
     files_sha256,
     parse_quarter,
     quarters_between,
+    read_transactions,
     resolve_archive_urls,
+    symbol_ciks,
     validate_archive,
 )
-from tests.research.insider_fixtures import make_archive as _archive
+from tests.research.insider_fixtures import (
+    SUBMISSION_COLUMNS,
+    TRANS_COLUMNS,
+    make_archive as _archive,
+    trade,
+    trades_archive,
+)
 
 
 NOW = datetime(2026, 10, 20, 12, tzinfo=UTC)
@@ -237,3 +247,122 @@ def test_files_digest_changes_with_the_ticker_map(tmp_path):
     assert digests[0] != digests[1]
     with pytest.raises(ValueError, match="2025q2"):
         files_sha256(store, [q("2025q2")])
+
+
+ROLES = ("Officer", "Director")
+
+
+def _read(tmp_path, trades, *, ciks=None, exclude=True, submission_columns=SUBMISSION_COLUMNS):
+    path = tmp_path / "2025q1_form345.zip"
+    path.write_bytes(trades_archive(trades, submission_columns=submission_columns))
+    return read_transactions(
+        path,
+        cik_to_symbols={1000: ("AAA",)} if ciks is None else ciks,
+        owner_roles=ROLES,
+        exclude_10b5_1=exclude,
+    )
+
+
+def test_reader_keeps_open_market_officer_and_director_trades_only(tmp_path):
+    rows = [
+        trade(),  # P/A officer: kept
+        trade(code="S", ad="D", role="Director", shares="250.0", price="4"),  # kept
+        trade(ad="D"),  # a purchase reported as a disposition
+        trade(code="M"),  # option exercise
+        trade(doc="4/A"),  # amendment
+        trade(role="TenPercentOwner"),
+        trade(role="Director,Officer", owner=8),  # kept
+        trade(price=0),
+        trade(trans="06-MAR-2025"),  # traded after it was filed
+    ]
+    txs, drops, unscored = _read(tmp_path, rows)
+    assert [t.code for t in txs] == ["P", "S", "P"]
+    assert txs[0] == InsiderTransaction(
+        symbol="AAA",
+        filing_date=date(2025, 3, 5),
+        trans_date=date(2025, 3, 3),
+        code="P",
+        dollars=pytest.approx(1000.0),
+        owner_cik=7,
+    )
+    assert txs[1].dollars == pytest.approx(1000.0) and txs[2].owner_cik == 8
+    assert drops == {
+        "document_type": 1,
+        "code": 1,
+        "acquired_disposed": 1,
+        "owner_role": 1,
+        "plan_10b5_1": 0,
+        "non_positive": 1,
+        "trade_after_filing": 1,
+    }
+    assert tuple(drops) == DROP_RULES and unscored == 0
+
+
+def test_reader_drops_non_positive_or_missing_shares_and_parses_month_names(tmp_path):
+    rows = [
+        trade(shares=0),
+        trade(shares=""),
+        trade(price=""),
+        trade(price=-1),
+        trade(filing="31-dec-2024", trans="30-DEC-2024"),
+    ]
+    txs, drops, _ = _read(tmp_path, rows)
+    assert drops["non_positive"] == 4 and [t.filing_date for t in txs] == [date(2024, 12, 31)]
+
+
+def test_reader_drops_plan_trades_only_when_asked_and_reads_archives_without_the_column(tmp_path):
+    rows = [trade(plan="1"), trade(plan="0"), trade(plan="")]
+    txs, drops, _ = _read(tmp_path, rows)
+    assert len(txs) == 2 and drops["plan_10b5_1"] == 1
+    txs, drops, _ = _read(tmp_path, rows, exclude=False)
+    assert len(txs) == 3 and drops["plan_10b5_1"] == 0
+    old = tuple(column for column in SUBMISSION_COLUMNS if column != "AFF10B5ONE")
+    txs, drops, _ = _read(tmp_path, rows, submission_columns=old)
+    assert len(txs) == 3 and drops["plan_10b5_1"] == 0
+
+
+def test_reader_fans_a_shared_cik_out_and_counts_unmapped_issuers(tmp_path):
+    rows = [trade(cik=2000), trade(cik=3000), trade(cik=3000, code="M")]
+    txs, drops, unscored = _read(tmp_path, rows, ciks={2000: ("GOOG", "GOOGL")})
+    assert [(t.symbol, t.code, t.dollars) for t in txs] == [("GOOG", "P", 1000.0), ("GOOGL", "P", 1000.0)]
+    # Only a qualifying row outside the map is unscored; a dropped one counts under its rule.
+    assert unscored == 1 and drops["code"] == 1
+
+
+def test_reader_takes_the_first_qualifying_owner_of_a_joint_filing_and_keeps_every_row(tmp_path):
+    joint = trade(owners=[(9, "TenPercentOwner"), (7, "Officer"), (8, "Director")])
+    joint["trans"].append({**joint["trans"][0], "TRANS_SHARES": "50"})
+    txs, _, _ = _read(tmp_path, [joint, trade(owner=7)])
+    assert [(t.owner_cik, t.dollars) for t in txs] == [(7, 1000.0), (7, 500.0), (7, 1000.0)]
+
+
+def test_reader_treats_quotes_literally_and_fails_closed_on_a_malformed_archive(tmp_path):
+    columns = (*SUBMISSION_COLUMNS[:-1], "REMARKS", "AFF10B5ONE")
+    rows = [trade(), trade()]
+    rows[0]["submissions"][0]["REMARKS"] = '"an unbalanced quote'
+    txs, _, _ = _read(tmp_path, rows, submission_columns=columns)
+    assert len(txs) == 2  # the quote does not swallow the next row
+    orphan = tmp_path / "orphan.zip"
+    orphan.write_bytes(_archive(trans=[{"ACCESSION_NUMBER": "9", "TRANS_CODE": "P"}]))
+    with pytest.raises(ValueError, match="no SUBMISSION row"):
+        read_transactions(orphan, cik_to_symbols={}, owner_roles=ROLES, exclude_10b5_1=True)
+    ragged = tmp_path / "ragged.zip"
+    ragged.write_bytes(_archive(nonderiv_header="\t".join(TRANS_COLUMNS) + "\nx\ty\n"))
+    with pytest.raises(ValueError, match="NONDERIV_TRANS.tsv line 2"):
+        read_transactions(ragged, cik_to_symbols={}, owner_roles=ROLES, exclude_10b5_1=True)
+    with pytest.raises(ValueError, match="31-MAR-2025"):
+        _read(tmp_path, [trade(filing="2025-03-31")])
+
+
+def test_symbol_ciks_maps_tickers_and_reports_missing():
+    tickers = {
+        "0": {"cik_str": 1, "ticker": "BF-B", "title": "Brown-Forman"},
+        "1": {"cik_str": 2, "ticker": "GOOGL", "title": "Alphabet"},
+        "2": {"cik_str": 2, "ticker": "goog", "title": "Alphabet"},
+        "3": {"cik_str": 4, "ticker": "OTHER", "title": "Not in the cohort"},
+    }
+    ciks, missing = symbol_ciks(tickers, ["BF.B", "GOOG", "GOOGL", "ZZZZ"])
+    assert ciks == {1: ("BF.B",), 2: ("GOOG", "GOOGL")} and missing == ("ZZZZ",)
+    clash = {**tickers, "4": {"cik_str": 5, "ticker": "GOOG", "title": "Another issuer"}}
+    with pytest.raises(ValueError, match="GOOG"):
+        symbol_ciks(clash, ["GOOG"])

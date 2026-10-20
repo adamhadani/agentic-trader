@@ -156,6 +156,19 @@ transaction, rows dropped by each rule (document type, code, owner role, 10b5-1,
 acquired/disposed code, non-positive price or shares, trade after filing), rows for CIKs outside the
 cohort (`unscored_rows`), per-symbol coverage start and first finite session per field, identity breaks.
 
+Rulings (amended 2026-10-20 during execution): **filings before the calendar.** The calendar starts at
+`bars_from` (2016) while the filings start in 2015q1, and a filing dated before the first session has no
+session position. Such a filing covers the symbol from the first session and counts in the routine rule,
+but no window contains it: on sessions whose window reaches before the calendar (`T < w − 1`) a window's
+fields are `NaN` when such a filing exists on that side (a purchase blanks `insider_buy_rel`,
+`insider_opp_buy_rel` and `insider_buyers`; a sale `insider_sell_rel`; either `insider_net_ratio`), and
+`insider_buy_age` starts at the first purchase on the calendar. **Implausible size.** A transaction
+(purchase or sale) whose dollars exceed `max_trade_rel` (protocol parameter, 10) times `DV` at its filing
+session is a share-count or price entry error (2025q1 holds single "purchases" of about $1.4B): it is
+dropped before any field is computed, routine set and coverage start included, and counted in the
+coverage drops as `implausible_size`. When `DV` is not finite at that session (fewer than 20 sessions of
+bars, a missing bar, a filing before the calendar) the transaction is kept.
+
 ## 4. Protocol: `pooled-insider-campaign`
 
 `InsiderCampaignProtocol(CampaignProtocol)` in `research/pooled/campaign.py`, dispatched by
@@ -171,7 +184,8 @@ cohort (`unscored_rows`), per-symbol coverage start and first finite session per
     "files_sha256": "<the acquisition manifest's files digest>",
     "quarters_from": "2015q1", "quarters_through": "2026q3",
     "buy_window": 63, "net_window": 126,
-    "owner_roles": ["Officer", "Director"], "exclude_10b5_1": true
+    "owner_roles": ["Officer", "Director"], "exclude_10b5_1": true,
+    "max_trade_rel": 10
   },
   "corporate_actions": { "source": "alpaca", "content_sha256": "<cohort acquisition>", "window": [...], "trailing_sessions": 252 }
 }

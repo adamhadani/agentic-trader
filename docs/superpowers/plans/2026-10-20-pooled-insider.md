@@ -19,7 +19,7 @@
 - Transaction rules (spec §3): `DOCUMENT_TYPE == "4"`; `TRANS_CODE` `P` with `TRANS_ACQUIRED_DISP_CD` `A` or `S` with `D`; `TRANS_SHARES > 0` and `TRANS_PRICEPERSHARE > 0`, `dollars = shares × price`; an accession counts when a reporting owner's `RPTOWNER_RELATIONSHIP` contains one of `owner_roles`; `AFF10B5ONE == "1"` rows dropped when `exclude_10b5_1`; `trans_date <= filing_date`; `owner_cik` is the first qualifying owner's CIK.
 - Symbol mapping by issuer CIK through the ticker map: ticker upper-cased with `-` → `.`; a CIK shared by several cohort symbols fans out to each; a cohort symbol with no CIK has no rows and is reported.
 - Field names: `insider_net_ratio`, `insider_buy_rel`, `insider_sell_rel`, `insider_buyers`, `insider_buy_age`, `insider_opp_buy_rel`; `fields_version` literal `"insider_fields_v1"`; protocol id `"pooled-insider-campaign"`; `insider_inputs.insider_filings.source` literal `"sec-form345-datasets"`.
-- Protocol values pinned in the frozen files: `quarters_from` `2015q1`, `quarters_through` `2026q3`, `buy_window` 63, `net_window` 126, `owner_roles` `["Officer", "Director"]`, `exclude_10b5_1` true.
+- Protocol values pinned in the frozen files: `quarters_from` `2015q1`, `quarters_through` `2026q3`, `buy_window` 63, `net_window` 126, `owner_roles` `["Officer", "Director"]`, `exclude_10b5_1` true, `max_trade_rel` 10 (amended 2026-10-20: a trade above 10 × its filing session's `DV` is dropped as `implausible_size`; kept without a finite `DV`).
 - Visibility: a filing dated `F` counts on every trading day `T >= F`; a filing dated on a non-session counts from the next session; windows `(T − w, T]` in sessions, inclusive of `T`.
 - `DV_T` = median of raw `Close × Volume` over the last 20 finite sessions through `T` (`dropna` then `rolling(20, min_periods=20).median()`, reindexed to `trading_days`).
 - Coverage start: the first session with any qualifying transaction filed for the issuer; `insider_buy_rel`, `insider_sell_rel`, `insider_buyers`, `insider_opp_buy_rel` are `0` once covered with no activity and `NaN` before coverage; `insider_net_ratio` is `NaN` with a zero denominator; `insider_buy_age` is `NaN` before the first purchase.
@@ -72,8 +72,10 @@ def test_quarter_parsing_ordering_and_ranges():
 
 
 def test_resolve_archive_urls_handles_both_path_prefixes():
-    html = ('<a href="/files/structureddata/data/insider-transactions-data-sets/2026q1_form345.zip">x</a>'
-            '<a href="/files/datastandardsinnovation/data/insider-transactions-data-sets/2026q2_form345.zip">y</a>')
+    html = (
+        '<a href="/files/structureddata/data/insider-transactions-data-sets/2026q1_form345.zip">x</a>'
+        '<a href="/files/datastandardsinnovation/data/insider-transactions-data-sets/2026q2_form345.zip">y</a>'
+    )
     urls = resolve_archive_urls(html)
     assert urls["2026q1"].startswith("https://www.sec.gov/files/structureddata/") and "2026q2" in urls
 
@@ -153,12 +155,12 @@ def test_files_digest_changes_with_the_ticker_map(tmp_path):
 
 **Interfaces:**
 - Produces:
-  - `class InsiderFilingInputs(BaseModel, frozen=True, extra="forbid")`: `source: Literal["sec-form345-datasets"]`, `files_sha256: str` (`^[0-9a-f]{64}$`), `quarters_from: str`, `quarters_through: str` (both `^\d{4}q[1-4]$`; validator: `quarters_from <= quarters_through` by `parse_quarter`), `buy_window: int = Field(ge=1)`, `net_window: int = Field(ge=1)`, `owner_roles: tuple[str, ...] = Field(min_length=1)`, `exclude_10b5_1: bool`.
+  - `class InsiderFilingInputs(BaseModel, frozen=True, extra="forbid")`: `source: Literal["sec-form345-datasets"]`, `files_sha256: str` (`^[0-9a-f]{64}$`), `quarters_from: str`, `quarters_through: str` (both `^\d{4}q[1-4]$`; validator: `quarters_from <= quarters_through` by `parse_quarter`), `buy_window: int = Field(ge=1)`, `net_window: int = Field(ge=1)`, `owner_roles: tuple[str, ...] = Field(min_length=1)`, `exclude_10b5_1: bool`, `max_trade_rel: float = Field(gt=0)` (amended in Task 3).
   - `class InsiderInputs(BaseModel, frozen=True, extra="forbid")`: `fields_version: Literal["insider_fields_v1"]`, `insider_filings: InsiderFilingInputs`, `corporate_actions: CorporateActionInputs`.
   - `class InsiderCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid")`: `id: Literal["pooled-insider-campaign"]`, `score_inputs: Literal["daily"] = Field(default="daily", exclude=False)`, `insider_inputs: InsiderInputs`, validator refusing `search_mode != "fixed_set"` with `"an insider protocol is fixed_set in v1: a genetic search on insider fields needs check B and its own spec"`.
   - `_PROTOCOL_CLASSES["pooled-insider-campaign"] = InsiderCampaignProtocol`.
   - `insider_inputs_document(protocol: CampaignProtocol) -> dict | None` in `scoring.py`.
-  - `mini_insider_protocol(**update)`: the mini fixed-set document with `id`, `score_inputs="daily"`, `insider_inputs={"fields_version": "insider_fields_v1", "insider_filings": {"source": "sec-form345-datasets", "files_sha256": "e" * 64, "quarters_from": "2015q1", "quarters_through": "2026q3", "buy_window": 63, "net_window": 126, "owner_roles": ["Officer", "Director"], "exclude_10b5_1": True}, "corporate_actions": {...the same block as the short mini...}}`.
+  - `mini_insider_protocol(**update)`: the mini fixed-set document with `id`, `score_inputs="daily"`, `insider_inputs={"fields_version": "insider_fields_v1", "insider_filings": {"source": "sec-form345-datasets", "files_sha256": "e" * 64, "quarters_from": "2015q1", "quarters_through": "2026q3", "buy_window": 63, "net_window": 126, "owner_roles": ["Officer", "Director"], "exclude_10b5_1": True, "max_trade_rel": 10}, "corporate_actions": {...the same block as the short mini...}}`.
 
 - [ ] **Step 1: Write the failing tests** mirroring the short-volume tests in `test_campaign_protocol.py`: `test_insider_protocol_loads_dumps_its_inputs_and_refuses_genetic` (also: `quarters_from` after `quarters_through` raises `ValueError`), `test_insider_protocol_leaves_other_protocol_hashes_unchanged` (events-v1, intraday-v1, campaign-v4, short-v1 prefixes equal their pinned values; `insider_inputs` absent from their dumps).
 - [ ] **Step 2: Run to verify failure.**

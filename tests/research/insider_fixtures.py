@@ -49,13 +49,15 @@ def make_archive(
     trans: Sequence[Mapping[str, str]] | None = None,
     drop: str | None = None,
     nonderiv_header: str | None = None,
+    submission_columns: Sequence[str] = SUBMISSION_COLUMNS,
 ) -> bytes:
     """A zip with SUBMISSION, REPORTINGOWNER and NONDERIV_TRANS tables (one default row each).
 
-    ``drop`` omits a table; ``nonderiv_header`` replaces NONDERIV_TRANS's header line (and its rows).
+    ``drop`` omits a table; ``nonderiv_header`` replaces NONDERIV_TRANS's header line (and its rows);
+    ``submission_columns`` sets SUBMISSION's header (an old archive has no ``AFF10B5ONE``).
     """
     tables = {
-        "SUBMISSION.tsv": _tsv(SUBMISSION_COLUMNS, [DEFAULT_SUBMISSION] if submissions is None else submissions, None),
+        "SUBMISSION.tsv": _tsv(submission_columns, [DEFAULT_SUBMISSION] if submissions is None else submissions, None),
         "REPORTINGOWNER.tsv": _tsv(OWNER_COLUMNS, [DEFAULT_OWNER] if owners is None else owners, None),
         "NONDERIV_TRANS.tsv": _tsv(
             TRANS_COLUMNS,
@@ -69,3 +71,66 @@ def make_archive(
             if name != drop:
                 archive.writestr(name, data)
     return buffer.getvalue()
+
+
+def trade(
+    *,
+    code: str = "P",
+    ad: str = "A",
+    shares: float | str = 100,
+    price: float | str = 10.0,
+    role: str = "Officer",
+    doc: str = "4",
+    plan: str = "0",
+    filing: str = "05-MAR-2025",
+    trans: str = "03-MAR-2025",
+    cik: int = 1000,
+    owner: int = 7,
+    owners: Sequence[tuple[int, str]] | None = None,
+) -> dict[str, list[dict[str, str]]]:
+    """One accession with one non-derivative row; ``owners`` (CIK, relationship) replaces ``owner``/``role``.
+
+    ``trades_archive`` assigns the accession number.
+    """
+    return {
+        "submissions": [
+            {
+                "FILING_DATE": filing,
+                "DOCUMENT_TYPE": doc,
+                "ISSUERCIK": f"{cik:010d}",
+                "AFF10B5ONE": plan,
+            }
+        ],
+        "owners": [
+            {"RPTOWNERCIK": f"{cik_:010d}", "RPTOWNER_RELATIONSHIP": relationship}
+            for cik_, relationship in (owners if owners is not None else [(owner, role)])
+        ],
+        "trans": [
+            {
+                "TRANS_DATE": trans,
+                "TRANS_CODE": code,
+                "TRANS_SHARES": str(shares),
+                "TRANS_PRICEPERSHARE": str(price),
+                "TRANS_ACQUIRED_DISP_CD": ad,
+            }
+        ],
+    }
+
+
+def trades_archive(
+    trades: Sequence[Mapping[str, Sequence[Mapping[str, str]]]],
+    *,
+    submission_columns: Sequence[str] = SUBMISSION_COLUMNS,
+) -> bytes:
+    """An archive holding ``trades`` (from ``trade``), the i-th as accession ``0000000001-25-<i>``."""
+    tables: dict[str, list[dict[str, str]]] = {"submissions": [], "owners": [], "trans": []}
+    for i, one in enumerate(trades):
+        accession = f"0000000001-25-{i:06d}"
+        for name, rows in one.items():
+            tables[name] += [{**row, "ACCESSION_NUMBER": accession} for row in rows]
+    return make_archive(
+        submissions=tables["submissions"],
+        owners=tables["owners"],
+        trans=tables["trans"],
+        submission_columns=submission_columns,
+    )

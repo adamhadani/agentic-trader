@@ -33,6 +33,18 @@ FIELD_UNITS = {
     **dict.fromkeys(("earnings_age", "earnings_surprise", "earnings_reaction", "dividend_yield"), (0.0, 0.0)),
     # FINRA short-sale fields (pooled short-volume lane, short_fields_v1): present only when a frame carries them.
     **dict.fromkeys(("short_ratio", "short_ratio_z", "short_volume_rel", "offex_share"), (0.0, 0.0)),
+    # SEC Form 4 insider fields (pooled insider lane, insider_fields_v1): present only when a frame carries them.
+    **dict.fromkeys(
+        (
+            "insider_net_ratio",
+            "insider_buy_rel",
+            "insider_sell_rel",
+            "insider_buyers",
+            "insider_buy_age",
+            "insider_opp_buy_rel",
+        ),
+        (0.0, 0.0),
+    ),
 }
 BINARY_OPERATORS = {
     ast.Add: operator.add,

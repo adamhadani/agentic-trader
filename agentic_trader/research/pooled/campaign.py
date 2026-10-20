@@ -519,6 +519,9 @@ class InsiderFilingInputs(BaseModel, frozen=True, extra="forbid"):
     net_window: int = Field(ge=1)
     owner_roles: tuple[str, ...] = Field(min_length=1)
     exclude_10b5_1: bool
+    # A trade above this multiple of its filing session's 20-session median raw dollar volume is
+    # dropped as implausible (a share-count or price entry error); kept when that DV is missing.
+    max_trade_rel: float = Field(gt=0)
 
     @model_validator(mode="after")
     def _window(self) -> InsiderFilingInputs:
