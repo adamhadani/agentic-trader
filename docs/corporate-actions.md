@@ -105,7 +105,9 @@ Rule id `corporate_action` (`agentic_trader/risk`, [risk policy](risk-policy.md#
 **structural** action on the symbol with `today - post_days <= effective_on <= today + pre_days`
 (defaults 7 days ahead, 5 behind: raw bars straddle it). Cash dividends never refuse.
 
-`corporate_actions.entry_block` selects the mode and ships `preview`.
+`corporate_actions.entry_block` selects the mode; the code default is `preview` and `config/config.yaml`
+ships `enforce` since 2026-10-20 (preview week 2026-10-12 → 2026-10-19: nine journaled blocks, six
+`ok`, three `uncovered`, zero `would_block`; nothing the rule would have refused).
 
 | Mode | Evaluator (equities) | Tap gate |
 | --- | --- | --- |
@@ -212,7 +214,9 @@ content digests.
    refused, so the `uncovered` share of the card flow is the share the rule cannot see; weigh it
    before deciding on `enforce`.
 4. Moving to `enforce` is an operator decision, the same `off -> preview -> enforce` path as
-   `card_policy` and `book_sizing`.
+   `card_policy` and `book_sizing`. Taken 2026-10-20 on the preview week above: `enforce` shipped
+   with zero refusals expected on the day; the one-third `uncovered` share (two `most_actives`
+   cards, one `pead_long` drift card) is the share of the flow the rule still cannot see.
 
 ## Known limits
 

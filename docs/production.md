@@ -639,7 +639,9 @@ setups per session: the same setup is journaled by repeated scans in a session a
 `n_mature` and the floor. A mode change is a config edit plus the controlled restart. See
 [card evidence](card-evidence.md#send-policy).
 
-**Book-aware sizing (October 9).** `book_sizing` in `config/config.yaml` ships `mode: preview`,
+**Book-aware sizing (October 9).** `book_sizing` in `config/config.yaml` shipped `mode: preview` on
+October 9 and `mode: enforce` since October 20 (preview week: six journaled factors, all 1.00 against a
+one-share book, so enforce changed no size on the day it shipped),
 `max_portfolio_daily_vol_pct: 0.008` (0.8%/day of risk capital), `lookback_sessions: 120`,
 `min_observations: 60`, `shadow_optimizer: true`; equities only. Quote `"off"` in YAML. Preview
 journals the factor and shows `📐 Book: portfolio vol X% → Y%/day with this card (budget 0.80%; size
@@ -681,8 +683,10 @@ appends one `corporate_actions_captured` event only when the content or the symb
 chunk, a normalisation error, more than `max_symbols` or `max_actions`) writes nothing and turns the
 component not ready; its `/readyz` detail is the exception type name only (the log has the message).
 The worker retries on the next poll, and the previous capture serves every consumer until it is four
-days old, after which consumers report `stale` and never refuse. The entry rule ships
-`entry_block: preview`. Details: [corporate actions](corporate-actions.md).
+days old, after which consumers report `stale` and never refuse. The entry rule shipped
+`entry_block: preview` on October 12 and `enforce` since October 20 (preview week: nine journaled
+blocks, zero `would_block`, three `uncovered` dynamic-universe or drift cards that the rule can never
+refuse). Details: [corporate actions](corporate-actions.md).
 
 Switching live ranking away from `setup_quality` to a shadow score is an operator
 decision, not something this report or the shadow block can do by itself. It needs a

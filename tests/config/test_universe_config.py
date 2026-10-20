@@ -176,10 +176,13 @@ def test_an_empty_suggestion_scan_time_list_disables_the_cron_scans():
     assert SchedulerConfig(suggestion_scan_times_et=[]).suggestion_scan_times_et == []
 
 
-def test_book_sizing_loads_from_yaml_and_shipped_config_previews(tmp_path):
-    path = write(tmp_path, "book_sizing:\n  mode: enforce\n")
+def test_book_sizing_loads_from_yaml_and_shipped_config_enforces(tmp_path):
+    path = write(tmp_path, "book_sizing:\n  mode: preview\n")
     config = load_config(path, environ={"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""})
-    assert config.book_sizing.mode == "enforce"
+    assert config.book_sizing.mode == "preview"
     shipped = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
     config = load_config(str(shipped), environ={"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""})
-    assert config.book_sizing.mode == "preview"
+    # Preview ran 2026-10-09 -> 2026-10-19 (six factors, all 1.00); enforce ships since 2026-10-20.
+    assert config.book_sizing.mode == "enforce"
+    # The corporate-action entry rule moved to enforce the same day (preview week: zero would-block).
+    assert config.corporate_actions.entry_block == "enforce"
