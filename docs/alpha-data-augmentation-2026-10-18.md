@@ -78,6 +78,10 @@ each about the size of the events-v1 work (one SDD day each).
 2. **Survivorship spike** (#5): does Alpaca return SIP bars for inactive symbols? If yes, build a
    dated inactive-asset list and re-screen cohort v2 with point-in-time eligibility; if no,
    record it and price option #11.
+   **Ran 2026-10-20** ([spike](survivorship-spike-2026-10-20.md)): SIP serves full bars for every
+   delisted name, but Alpaca's asset master drops recent delistings (its inactive list stops being a
+   record around 2022), so point-in-time membership needs EDGAR Form 25/15 dates; deferred until a
+   cohort is next re-frozen.
 3. **Free PIT data pack, one lane at a time, each a frozen fixed set on cohort v2's cube:**
    FINRA short volume (#1) → EDGAR insider (#2) → EDGAR timestamps + PEAD v2 (#3). Each lane:
    research-only acquisition, digest-pinned cache, `NaN`-before-visible fields, checks A and C,
