@@ -63,7 +63,7 @@ REQUIRED_TABLES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_QUARTER = re.compile(r"^(\d{4})q([1-4])$")
+_QUARTER = re.compile(r"(\d{4})q([1-4])")
 _LINK = re.compile(r'href="((?:https?://[^"/]+)?/files/[^"]*?(\d{4}q[1-4])_form345\.zip)"')
 _META_KEYS = frozenset({"sha256", "url", "requested_at", "received_at", "status", "bytes"})
 _TICKER_KEYS = frozenset({"cik_str", "ticker", "title"})
@@ -79,7 +79,7 @@ class Quarter:
 
 
 def parse_quarter(text: str) -> Quarter:
-    match = _QUARTER.match(text)
+    match = _QUARTER.fullmatch(text)
     if match is None:
         raise ValueError(f"quarter must look like 2015q1, got {text!r}")
     return Quarter(int(match.group(1)), int(match.group(2)))
@@ -101,9 +101,11 @@ def resolve_archive_urls(index_html: str) -> dict[str, str]:
     urls: dict[str, str] = {}
     for href, quarter in _LINK.findall(index_html):
         url = urljoin(INDEX_URL, href)
-        host = urlparse(url).hostname
-        if host != SEC_HOST:
-            raise ValueError(f"{quarter}: archive link host {host!r} is not {SEC_HOST}")
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname != SEC_HOST or parsed.port is not None:
+            raise ValueError(f"{quarter}: archive link host {parsed.netloc!r} is not https://{SEC_HOST}")
+        if urls.get(quarter, url) != url:
+            raise ValueError(f"{quarter}: the index lists conflicting archive URLs")
         urls[quarter] = url
     return urls
 
@@ -272,17 +274,15 @@ async def _request(
 ) -> tuple[bytes, datetime, datetime]:
     if urlparse(url).hostname != SEC_HOST:
         raise ValueError(f"{url}: host is not {SEC_HOST}")
-    for attempt in (1, 2):
+    await pace()
+    requested_at = datetime.now(UTC)
+    try:
+        body = await _fetch(client, url)
+    except httpx.TransportError:
         await pace()
         requested_at = datetime.now(UTC)
-        try:
-            body = await _fetch(client, url)
-        except httpx.TransportError:
-            if attempt == 2:
-                raise
-            continue
-        return body, requested_at, datetime.now(UTC)
-    raise AssertionError("unreachable")
+        body = await _fetch(client, url)
+    return body, requested_at, datetime.now(UTC)
 
 
 def _cached(store: InsiderFilingStore, quarter: Quarter) -> bool:
@@ -310,6 +310,8 @@ async def acquire_insider_filings(
     pace: Callable[[], Awaitable[None]],
 ) -> dict[str, Any]:
     """Fetch (or reuse) the ticker map and one archive per quarter; return the digest manifest."""
+    if not quarters:
+        raise ValueError("no quarters requested")
     missing = [quarter for quarter in quarters if not _cached(store, quarter)]
     urls: dict[str, str] = {}
     if missing:
@@ -335,7 +337,7 @@ async def acquire_insider_filings(
     lines = _digest_lines(store, quarters)
     metas = [store.meta(quarter) for quarter in quarters]
     return {
-        "window": [str(quarters[0]), str(quarters[-1])] if quarters else [],
+        "window": [str(quarters[0]), str(quarters[-1])],
         "quarters": [str(quarter) for quarter in quarters],
         "quarters_fetched": len(missing),
         "quarters_reused": len(quarters) - len(missing),

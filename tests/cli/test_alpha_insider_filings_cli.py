@@ -14,9 +14,11 @@ PREFIX = "/files/structureddata/data/insider-transactions-data-sets/"
 TICKERS = json.dumps({"0": {"cik_str": 1, "ticker": "AAA", "title": "A"}}).encode()
 
 
-def _patch(monkeypatch, seen):
+def _patch(monkeypatch, seen, agents=None, built=None):
     def handler(request):
         seen.append(str(request.url))
+        if agents is not None:
+            agents.append(request.headers["user-agent"])
         if str(request.url) == INDEX_URL:
             html = "".join(f'<a href="{PREFIX}{q}_form345.zip">x</a>' for q in ("2025q1", "2025q2"))
             return httpx.Response(200, content=html.encode())
@@ -25,7 +27,14 @@ def _patch(monkeypatch, seen):
         return httpx.Response(200, content=make_archive())
 
     real = httpx.AsyncClient
-    monkeypatch.setattr(cmd.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(
+        cmd.httpx,
+        "AsyncClient",
+        lambda **kw: (
+            built.append(kw) if built is not None else None,
+            real(transport=httpx.MockTransport(handler), **kw),
+        )[1],
+    )
     monkeypatch.setattr(cmd, "research_environment", lambda: {"python": "x"})
 
     async def no_pace():
@@ -53,7 +62,9 @@ def test_refuses_without_a_declared_user_agent(tmp_path, monkeypatch):
 
 def test_writes_a_manifest_that_never_contains_the_user_agent(tmp_path, monkeypatch):
     seen: list[str] = []
-    _patch(monkeypatch, seen)
+    agents: list[str] = []
+    built: list[dict] = []
+    _patch(monkeypatch, seen, agents, built)
     monkeypatch.setenv("EDGAR_USER_AGENT", UA)
     argv = ["copilot", "alpha", "insider-filings", *_args(tmp_path)]
     monkeypatch.setattr(sys, "argv", argv)
@@ -64,6 +75,8 @@ def test_writes_a_manifest_that_never_contains_the_user_agent(tmp_path, monkeypa
     assert manifest["files_sha256"] and manifest["user_agent_set"] is True and manifest["command"] == argv
     assert manifest["environment"] == {"python": "x"} and manifest["quarters_fetched"] == 2
     assert b"test@example.com" not in raw
+    assert len(agents) == 4 and set(agents) == {UA}
+    assert built[0]["follow_redirects"] is False and built[0]["headers"] == {"User-Agent": UA}
 
 
 def test_refuses_existing_output_and_reversed_window(tmp_path, monkeypatch):

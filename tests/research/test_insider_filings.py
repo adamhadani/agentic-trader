@@ -131,18 +131,82 @@ async def test_invalid_archive_is_kept_on_disk_and_fails(tmp_path):
         store.load(q("2025q2"))
 
 
-async def test_byte_budget_and_foreign_hosts_fail_closed(tmp_path, monkeypatch):
+async def test_byte_budget_aborts_the_stream_before_all_chunks_are_read(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "MAX_ARCHIVE_BYTES", 1024)
-    client, _ = _world(bodies={"2025q1": b"x" * 4096})
-    async with client:
+    yielded = {"n": 0}
+
+    async def body():
+        for _ in range(100):
+            yielded["n"] += 1
+            yield b"x" * 512
+
+    def handler(request):
+        url = str(request.url)
+        if url == INDEX_URL:
+            return httpx.Response(200, content=f'<a href="{PREFIX}2025q1_form345.zip">x</a>'.encode())
+        if url == TICKERS_URL:
+            return httpx.Response(200, content=TICKERS)
+        return httpx.Response(200, content=body())
+
+    store = InsiderFilingStore(tmp_path)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ValueError, match="byte budget"):
-            await acquire_insider_filings(client, [q("2025q1")], InsiderFilingStore(tmp_path / "a"), pace=_noop)
-    html = '<a href="https://evil.example/files/x/data/2025q1_form345.zip">x</a>'
-    client, seen = _world(index_html=html)
+            await acquire_insider_filings(client, [q("2025q1")], store, pace=_noop)
+    assert yielded["n"] < 100 and not store.paths(q("2025q1"))[0].exists()
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "https://evil.example/files/x/data/2025q1_form345.zip",
+        "http://www.sec.gov/files/x/data/2025q1_form345.zip",
+        "https://www.sec.gov:8443/files/x/data/2025q1_form345.zip",
+    ],
+)
+async def test_foreign_hosts_fail_closed(tmp_path, href):
+    client, seen = _world(index_html=f'<a href="{href}">x</a>')
     async with client:
         with pytest.raises(ValueError, match="host"):
-            await acquire_insider_filings(client, [q("2025q1")], InsiderFilingStore(tmp_path / "b"), pace=_noop)
+            await acquire_insider_filings(client, [q("2025q1")], InsiderFilingStore(tmp_path), pace=_noop)
     assert [str(r.url) for r in seen] == [INDEX_URL]
+
+
+def test_resolve_refuses_conflicting_duplicates_and_allows_identical_ones():
+    one = f'<a href="{PREFIX}2025q1_form345.zip">x</a>'
+    other = '<a href="/files/datastandardsinnovation/data/2025q1_form345.zip">y</a>'
+    assert resolve_archive_urls(one + one) == resolve_archive_urls(one)
+    with pytest.raises(ValueError, match="conflicting"):
+        resolve_archive_urls(one + other)
+
+
+def test_parse_quarter_refuses_a_trailing_newline():
+    with pytest.raises(ValueError, match="quarter must look like 2015q1"):
+        parse_quarter("2015q1\n")
+
+
+async def test_empty_quarters_are_refused(tmp_path):
+    client, seen = _world()
+    async with client:
+        with pytest.raises(ValueError, match="no quarters requested"):
+            await acquire_insider_filings(client, [], InsiderFilingStore(tmp_path), pace=_noop)
+    assert seen == []
+
+
+@pytest.mark.parametrize("status", [302, 500])
+async def test_non_200_archive_response_raises_and_saves_nothing(tmp_path, status):
+    def handler(request):
+        url = str(request.url)
+        if url == INDEX_URL:
+            return httpx.Response(200, content=f'<a href="{PREFIX}2025q1_form345.zip">x</a>'.encode())
+        if url == TICKERS_URL:
+            return httpx.Response(200, content=TICKERS)
+        return httpx.Response(status, headers={"location": "https://www.sec.gov/elsewhere"})
+
+    store = InsiderFilingStore(tmp_path)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await acquire_insider_filings(client, [q("2025q1")], store, pace=_noop)
+    assert store.meta(q("2025q1")) is None and not store.paths(q("2025q1"))[0].exists()
 
 
 async def test_transport_error_is_retried_once(tmp_path):
