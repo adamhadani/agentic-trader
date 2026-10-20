@@ -194,8 +194,8 @@ results doc.
   allow_absent) → manifest`, `files_sha256(directory, sessions)`, `parse_file(text, expected_date)
   → tuple[ShortVolumeRow, ...]` (`symbol` mapped to the Alpaca convention, decimals as floats).
 - `research/pooled/short_fields.py` (new): `SHORT_FIELDS = ("short_ratio", "short_ratio_z",
-  "short_volume_rel", "offex_share")`, `load_short_volume(directory, inputs) → LoadedShortVolume
-  (by_symbol, files_sha256, sessions, unmatched_rows)` (disk only, digest verified against
+  "short_volume_rel", "offex_share")`, `load_short_volume(directory, inputs, sessions, symbols) → LoadedShortVolume
+  (by_symbol, files_sha256, sessions, absent, rows, unscored_rows)` (disk only, digest verified against
   `.meta.json`), `build_short_frames(inputs, loaded, actions, raw, trading_days, symbols) →
   ShortFrames(frames, coverage)`; imports `identity_breaks` from `events.py` (formerly private
   `_identity_breaks`, the events module updated in the same change).
