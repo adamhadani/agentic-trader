@@ -54,7 +54,10 @@ study must declare/charge its own full matrix and exclude every inspected member
 and warmup interval **before** acquisition.
 
 The bounded official SDK response observer saves the full `/v2/assets` JSON before
-SDK parsing. Directory response bytes are base64-preserved with SHA256 before
+SDK parsing. Since 2026-10-20 the page is read as raw rows
+(`BoundedTradingClient.list_us_equity_assets`), because the SDK's typed parse rejects the whole
+page when one listing sits on an exchange its enum lacks (TXSE); a malformed asset identifier
+still fails the acquisition step on the source receipt. Directory response bytes are base64-preserved with SHA256 before
 parsing, including malformed input. Request/receipt timestamps, source hashes,
 protocol, environment and typed failures are immutable private artifacts. Raw bounded
 asset JSON is retained even when empty or malformed. Both the application acquisition
