@@ -44,8 +44,10 @@ from tests.research.pooled.mini_world import (
     mini_fixed_set_protocol,
     mini_intraday_protocol,
     mini_protocol,
+    mini_short_protocol,
     mini_v3_protocol,
     planted_cube,
+    short_cube_build,
 )
 from tests.research.pooled.test_campaign_protocol import _events_document
 
@@ -813,3 +815,44 @@ async def test_an_events_campaign_result_carries_its_event_inputs_and_coverage(t
     assert on_disk["event_coverage"]["identity_breaks"] == {}
     manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
     assert manifest["event_inputs"] == protocol.event_inputs.model_dump(mode="json")
+
+
+def test_frozen_document_binds_short_inputs():
+    short = mini_short_protocol()
+    plain = mini_protocol()
+    with_short = campaign_run.frozen_document("close / ts_mean(close, 20)", short)
+    without = campaign_run.frozen_document("close / ts_mean(close, 20)", plain)
+    assert with_short["formula"]["short_inputs"] == short.short_inputs.model_dump(mode="json")
+    assert with_short["formula"]["score_inputs"] == "daily"
+    assert "short_inputs" not in without["formula"]
+    assert with_short["identity"] != without["identity"]
+
+
+async def test_a_short_campaign_result_carries_its_short_inputs_and_coverage(tmp_path, repository):
+    protocol = mini_short_protocol()
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("short.json"))
+    cube = label_cube()
+    built = short_cube_build(cube)
+    gates = {name: {"status": "passed", "cube_sha256": cube.sha256} for name, _ in protocol.gates}
+
+    async def build():
+        return built
+
+    result = await execute_campaign(
+        loaded,
+        tmp_path / "out",
+        cohort=SimpleNamespace(sha256=COHORT),
+        build=build,
+        gates=gates,
+        repository=repository,
+        entries=[],
+        environment={"runtime": {"revision": "abc1234"}},
+    )
+    assert result["status"] != "failed", result
+    assert built.short is not None and result["short_coverage"] == asdict(built.short.coverage)
+    assert result["short_inputs"] == protocol.short_inputs.model_dump(mode="json")
+    assert result["event_inputs"] is None and result["event_coverage"] is None
+    on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
+    assert set(on_disk["short_coverage"]["first_finite"]) == set(built.cube.symbols)
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["short_inputs"] == protocol.short_inputs.model_dump(mode="json")

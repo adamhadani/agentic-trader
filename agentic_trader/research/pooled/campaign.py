@@ -62,6 +62,9 @@ __all__ = [
     "ScoreRead",
     "ScoredFormula",
     "Selection",
+    "ShortInputs",
+    "ShortVolumeCampaignProtocol",
+    "ShortVolumeInputs",
     "finish_discovery",
     "later_stages",
     "load_campaign_protocol",
@@ -458,6 +461,49 @@ class EventsCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
         return self
 
 
+class ShortVolumeInputs(BaseModel, frozen=True, extra="forbid"):
+    """The FINRA Reg SHO daily short-sale files a short-volume protocol reads, pinned by a digest over every file."""
+
+    source: Literal["finra-regsho-cnms"]
+    files_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    files_from: date
+    files_through: date
+    z_window: int = Field(ge=2)
+    min_total_volume: float = Field(ge=0)
+    max_offex_share: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _window(self) -> ShortVolumeInputs:
+        if self.files_from > self.files_through:
+            raise ValueError("files_from must not follow files_through")
+        return self
+
+
+class ShortInputs(BaseModel, frozen=True, extra="forbid"):
+    """The pinned inputs of a short-volume protocol: the fields version, the FINRA files and the actions."""
+
+    fields_version: Literal["short_fields_v1"]
+    short_volume: ShortVolumeInputs
+    corporate_actions: CorporateActionInputs
+
+
+class ShortVolumeCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
+    """A pooled protocol whose formulas read daily bars at D-1 plus the short-sale fields of
+    ``short_fields_v1`` (spec 2026-10-20, short volume): everything else is inherited."""
+
+    id: Literal["pooled-short-volume-campaign"]  # type: ignore[assignment]
+    score_inputs: Literal["daily"] = Field(default="daily", exclude=False)
+    short_inputs: ShortInputs
+
+    @model_validator(mode="after")
+    def _short_volume(self) -> ShortVolumeCampaignProtocol:
+        if self.search_mode != "fixed_set":
+            raise ValueError(
+                "a short-volume protocol is fixed_set in v1: a genetic search on short-volume fields needs check B and its own spec"
+            )
+        return self
+
+
 @dataclass(frozen=True)
 class LoadedProtocol:
     protocol: CampaignProtocol
@@ -469,6 +515,7 @@ _PROTOCOL_CLASSES: dict[str, type[CampaignProtocol]] = {
     "pooled-campaign": CampaignProtocol,
     "pooled-intraday-campaign": IntradayCampaignProtocol,
     "pooled-events-campaign": EventsCampaignProtocol,
+    "pooled-short-volume-campaign": ShortVolumeCampaignProtocol,
 }
 
 

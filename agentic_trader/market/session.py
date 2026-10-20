@@ -28,6 +28,9 @@ ET_TZ = ZoneInfo("America/New_York")
 EQUITY_RTH_OPEN = time(9, 30)
 EQUITY_RTH_CLOSE = time(16, 0)
 
+# NYSE and CME first observed Juneteenth National Independence Day in 2022.
+JUNETEENTH_FIRST_YEAR = 2022
+
 # CME Daily Maintenance Halt (ET)
 CME_HALT_START = time(17, 0)
 CME_HALT_END = time(18, 0)
@@ -68,7 +71,7 @@ class MarketHolidayCalendar:
        - Washington's Birthday / Presidents' Day (3rd Mon in Feb)
        - Good Friday (Friday before Easter Sunday, computed via Butcher's Algorithm)
        - Memorial Day (Last Mon in May)
-       - Juneteenth National Independence Day (June 19)
+       - Juneteenth National Independence Day (June 19; from 2022, the first year NYSE and CME observed it)
        - Independence Day (July 4)
        - Labor Day (1st Mon in Sep)
        - Thanksgiving Day (4th Thu in Nov)
@@ -146,12 +149,14 @@ class MarketHolidayCalendar:
             cls._nth_weekday(year, 2, 0, 3): "Presidents' Day",
             good_friday: "Good Friday",
             cls._last_weekday(year, 5, 0): "Memorial Day",
-            cls._observe_holiday(date(year, 6, 19)): "Juneteenth National Independence Day",
             cls._observe_holiday(date(year, 7, 4)): "Independence Day",
             cls._nth_weekday(year, 9, 0, 1): "Labor Day",
             cls._nth_weekday(year, 11, 3, 4): "Thanksgiving Day",
             cls._observe_holiday(date(year, 12, 25)): "Christmas Day",
         }
+        juneteenth = cls._observe_holiday(date(year, 6, 19)) if year >= JUNETEENTH_FIRST_YEAR else None
+        if juneteenth is not None:
+            statutory_holidays[juneteenth] = "Juneteenth National Independence Day"
 
         # Early Closes (Equity closes at 13:00 ET, CME Equity Indices close at 13:15 ET)
         thanksgiving = cls._nth_weekday(year, 11, 3, 4)
@@ -174,11 +179,12 @@ class MarketHolidayCalendar:
             cls._nth_weekday(year, 1, 0, 3),  # MLK Day
             cls._nth_weekday(year, 2, 0, 3),  # Presidents' Day
             cls._last_weekday(year, 5, 0),  # Memorial Day
-            cls._observe_holiday(date(year, 6, 19)),  # Juneteenth
             cls._observe_holiday(date(year, 7, 4)),  # Independence Day
             cls._nth_weekday(year, 9, 0, 1),  # Labor Day
             thanksgiving,  # Thanksgiving Day
         }
+        if juneteenth is not None:
+            cme_1300_halt_days.add(juneteenth)
 
         # Full day CME closure days (closed until 18:00 ET)
         cme_full_halt_days: set[date] = {

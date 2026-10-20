@@ -40,6 +40,7 @@ __all__ = [
     "EventFrames",
     "LoadedCalendar",
     "build_event_frames",
+    "identity_breaks",
     "load_actions",
     "load_calendar_pages",
     "pages_sha256",
@@ -183,7 +184,7 @@ def _earnings_columns(
     return age, surprise, reaction, skipped
 
 
-def _identity_breaks(actions: Sequence[CorporateAction], symbols: Sequence[str]) -> dict[str, date]:
+def identity_breaks(actions: Sequence[CorporateAction], symbols: Sequence[str]) -> dict[str, date]:
     """Per symbol, the latest name change whose old (``symbol``) or new (``related_symbol``) ticker it is.
 
     Before that date the ticker named another issuer or this issuer used another ticker, so rows keyed
@@ -265,7 +266,7 @@ def build_event_frames(
     actions_by_symbol: dict[str, list[CorporateAction]] = defaultdict(list)
     for action in actions:
         actions_by_symbol[action.symbol].append(action)
-    breaks = _identity_breaks(actions, symbols)
+    breaks = identity_breaks(actions, symbols)
     frames: dict[str, pd.DataFrame] = {}
     first_finite: dict[str, dict[str, str | None]] = {}
     no_reports: list[str] = []

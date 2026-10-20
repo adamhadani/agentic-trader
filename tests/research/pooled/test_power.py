@@ -30,6 +30,8 @@ from tests.research.pooled.mini_world import (
     mini_events_protocol,
     mini_fixed_set_protocol,
     mini_protocol,
+    mini_short_protocol,
+    short_cube_build,
 )
 
 
@@ -506,6 +508,7 @@ def test_check_a_runs_unchanged_on_a_fixed_set_protocol_and_records_no_search_po
     assert result["status"] == "passed"
     assert result["campaign_protocol_sha256"] == loaded.sha256 and result["cube_sha256"] == cube.sha256
     assert result["event_coverage"] is None  # a protocol without event fields
+    assert result["short_coverage"] is None
     out = tmp_path / "out"
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["check"] == "power_a" and manifest["campaign_protocol_sha256"] == loaded.sha256
@@ -538,3 +541,22 @@ def test_check_a_on_an_events_protocol_records_its_event_inputs_and_coverage(tmp
     assert set(on_disk["event_coverage"]["first_finite"]) == set(built.cube.symbols)
     manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
     assert manifest["event_inputs"] == protocol.event_inputs.model_dump(mode="json")
+
+
+def test_check_a_on_a_short_protocol_records_its_short_inputs_and_coverage(tmp_path):
+    protocol = mini_short_protocol(power=tiny_protocol().power)
+    loaded = LoadedProtocol(protocol=protocol, sha256="p" * 64, path=Path("short.json"))
+    cohort = SimpleNamespace(sha256=COHORT, cohort=SimpleNamespace(source_of=lambda symbol: ("config_groups",)))
+    built = short_cube_build(label_cube())
+
+    async def build():
+        return built
+
+    result = asyncio.run(execute_power_check(loaded, tmp_path / "out", cohort=cohort, build=build, environment={}))
+    assert result["status"] == "passed", result
+    assert built.short is not None and result["short_coverage"] == asdict(built.short.coverage)
+    on_disk = json.loads((tmp_path / "out" / "result.json").read_text(), parse_constant=pytest.fail)
+    assert set(on_disk["short_coverage"]["first_finite"]) == set(built.cube.symbols)
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["short_inputs"] == protocol.short_inputs.model_dump(mode="json")
+    assert result["event_coverage"] is None and manifest["event_inputs"] is None

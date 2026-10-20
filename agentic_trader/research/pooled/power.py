@@ -39,6 +39,8 @@ from agentic_trader.research.pooled.scoring import (
     event_coverage_document,
     event_inputs_document,
     score_read_document,
+    short_coverage_document,
+    short_inputs_document,
 )
 from agentic_trader.research.setups.study import _finite_json, _stationary_index_draws
 from agentic_trader.storage.artifacts import save_json_report
@@ -333,6 +335,7 @@ async def execute_power_check(
             "score_inputs": protocol.score_inputs,
             "score_read": score_read_document(protocol),
             "event_inputs": event_inputs_document(protocol),
+            "short_inputs": short_inputs_document(protocol),
             "environment": environment,
             "started_at": datetime.now(UTC).isoformat(),
             "authorizes_promotion": False,
@@ -364,6 +367,7 @@ async def execute_power_check(
             "static_used": list(built.static_used),
             "breadth": breadth(built.cube, cohort),
             "event_coverage": event_coverage_document(built),
+            "short_coverage": short_coverage_document(built),
         }
     except Exception as exc:
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", **base}

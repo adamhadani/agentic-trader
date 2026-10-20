@@ -1,3 +1,4 @@
+import hashlib
 import json
 from contextlib import asynccontextmanager, contextmanager
 from datetime import date
@@ -11,7 +12,8 @@ from agentic_trader.cli.commands import alpha as alpha_cli
 from agentic_trader.research.pooled.campaign import load_campaign_protocol
 from agentic_trader.research.pooled.entry import REPO_ROOT, load_pooled_entry
 from agentic_trader.research.pooled.events import pages_sha256
-from tests.research.pooled.mini_world import weekdays
+from agentic_trader.research.pooled.runner import ShortSources
+from tests.research.pooled.mini_world import mini_short_protocol, weekdays
 from tests.research.pooled.test_campaign_protocol import _events_document
 from tests.research.pooled.test_events import _dividend, _write_pages
 
@@ -698,4 +700,150 @@ def test_campaign_verifies_the_event_sources_before_opening_the_ledger(tmp_path,
     )
     assert result.exit_code == 1
     assert "corporate-actions digest does not match" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def _short_protocol(tmp_path) -> Path:
+    """A short-volume protocol on the real cohort-v3 daily fixed set (the cohort pin must hold)."""
+    document = json.loads((REPO_ROOT / "config/research/pooled/cohort3-daily-v1.json").read_text())
+    document.update(
+        id="pooled-short-volume-campaign",
+        score_inputs="daily",
+        short_inputs=mini_short_protocol().short_inputs.model_dump(mode="json"),
+    )
+    protocol = tmp_path / "short.json"
+    protocol.write_text(json.dumps(document))
+    return protocol
+
+
+def _short_dirs(tmp_path) -> tuple[Path, Path]:
+    short = tmp_path / "short-volume"
+    short.mkdir()
+    actions = tmp_path / "actions.json"
+    actions.write_text("[]")
+    return short, actions
+
+
+def _power_with(tmp_path, protocol, *extra):
+    return _invoke(
+        "power", str(protocol), "--output", str(tmp_path / "out"), "--cache", str(tmp_path / "cache"), *extra
+    )
+
+
+def test_a_short_protocol_requires_both_short_volume_and_corporate_actions(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    protocol = _short_protocol(tmp_path)
+    short, actions = _short_dirs(tmp_path)
+    for extra in ((), ("--short-volume", str(short)), ("--corporate-actions", str(actions))):
+        result = _power_with(tmp_path, protocol, *extra)
+        assert result.exit_code == 1
+        assert "--short-volume and --corporate-actions are required for a short-volume protocol" in result.output
+
+
+def test_a_short_protocol_refuses_earnings_pages(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    protocol = _short_protocol(tmp_path)
+    short, actions = _short_dirs(tmp_path)
+    result = _power_with(
+        tmp_path,
+        protocol,
+        "--short-volume",
+        str(short),
+        "--corporate-actions",
+        str(actions),
+        "--earnings-pages",
+        str(tmp_path),
+    )
+    assert result.exit_code == 1
+    assert "--earnings-pages applies only to an events protocol" in result.output
+
+
+def test_an_events_protocol_refuses_short_volume(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    protocol, pages, actions = _events_protocol(tmp_path, actions_sha256="b" * 64)
+    short, _ = _short_dirs(tmp_path)
+    result = _power_with(
+        tmp_path,
+        protocol,
+        "--earnings-pages",
+        str(pages),
+        "--corporate-actions",
+        str(actions),
+        "--short-volume",
+        str(short),
+    )
+    assert result.exit_code == 1
+    assert "--short-volume applies only to a short-volume protocol" in result.output
+
+
+def test_a_plain_protocol_refuses_short_volume(tmp_path, monkeypatch):
+    _forbid_clients(monkeypatch)
+    short, _ = _short_dirs(tmp_path)
+    result = _power(tmp_path, tmp_path / "out", "--short-volume", str(short))
+    assert result.exit_code == 1
+    assert "--short-volume applies only to a short-volume protocol" in result.output
+
+
+def test_a_short_protocol_passes_its_inputs_and_sources_into_the_build(tmp_path, monkeypatch):
+    protocol = _short_protocol(tmp_path)
+    short, actions = _short_dirs(tmp_path)
+    seen = {}
+
+    async def fake_build_cube_inputs(cohort, spec, **kwargs):
+        seen.update(kwargs)
+        return "built"
+
+    async def executor(loaded, directory, **kwargs):
+        seen["built"] = await kwargs["build"]()
+        return {"status": "passed", "curve": {}}
+
+    monkeypatch.setattr(alpha_cli, "build_cube_inputs", fake_build_cube_inputs)
+    monkeypatch.setattr(alpha_cli, "execute_power_check", executor)
+    monkeypatch.setattr(alpha_cli, "_apriori_clients", _dummy_clients())
+    result = _power_with(tmp_path, protocol, "--short-volume", str(short), "--corporate-actions", str(actions))
+    assert result.exit_code == 0, result.output
+    loaded = load_campaign_protocol(protocol)
+    assert seen["short"] == (loaded.protocol.short_inputs, ShortSources(short_volume_dir=short, actions_file=actions))
+    assert seen["events"] is None
+
+
+@pytest.mark.parametrize(
+    ("pin_files", "message"),
+    [
+        (False, "short_inputs.short_volume.files_sha256"),
+        (True, "short_inputs.corporate_actions.content_sha256"),
+    ],
+)
+def test_campaign_verifies_the_short_sources_before_opening_the_ledger(tmp_path, monkeypatch, pin_files, message):
+    _forbid_clients(monkeypatch)
+    _forbid_repository(monkeypatch)
+    _clean_tree(monkeypatch)
+    ran = []
+
+    async def recorder(*args, **kwargs):
+        ran.append(True)
+
+    monkeypatch.setattr(alpha_cli, "execute_campaign", recorder)
+    monkeypatch.setattr(alpha_cli, "execute_campaign_recovery", recorder)
+    monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
+    protocol = _short_protocol(tmp_path)
+    short, actions = _short_dirs(tmp_path)  # an empty store and an empty actions list
+    if pin_files:
+        # Pin the (empty) store's real digest so only the actions digest can mismatch.
+        document = json.loads(protocol.read_text())
+        document["short_inputs"]["short_volume"]["files_sha256"] = hashlib.sha256(b"").hexdigest()
+        protocol.write_text(json.dumps(document))
+    result = _campaign(
+        tmp_path,
+        _gates(tmp_path, protocol=str(protocol)),
+        "--short-volume",
+        str(short),
+        "--corporate-actions",
+        str(actions),
+        protocol=str(protocol),
+        search_power=False,
+    )
+    assert result.exit_code == 1
+    assert message in result.output
+    assert ran == []
     assert not (tmp_path / "out").exists()
