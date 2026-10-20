@@ -462,6 +462,38 @@ def test_insider_protocol_loads_dumps_its_inputs_and_refuses_genetic():
         InsiderFilingInputs.model_validate({**filings, "quarters_from": "2026q4", "quarters_through": "2026q3"})
 
 
+def test_insider_filing_inputs_refuse_an_unknown_owner_role():
+    filings = mini_insider_protocol().insider_inputs.insider_filings.model_dump(mode="json")
+    InsiderFilingInputs.model_validate({**filings, "owner_roles": ["TenPercentOwner", "Other"]})
+    with pytest.raises(ValueError, match="owner_roles"):
+        InsiderFilingInputs.model_validate({**filings, "owner_roles": ["Officer", "officer"]})
+    with pytest.raises(ValueError, match="owner_roles"):
+        InsiderFilingInputs.model_validate({**filings, "owner_roles": []})
+
+
+def _insider_document(**filings):
+    document = mini_insider_protocol().model_dump(mode="json")
+    document["insider_inputs"]["insider_filings"].update(filings)
+    return document
+
+
+def test_insider_protocol_quarters_must_span_the_bar_window():
+    # The mini protocol's bars start 2016-01-01 and its confirmation window ends 2026-07-31.
+    InsiderCampaignProtocol.model_validate(_insider_document(quarters_from="2016q1", quarters_through="2026q3"))
+    with pytest.raises(
+        ValueError, match=r"insider_filings\.quarters_from 2016q2 starts 2016-04-01, after bars_from 2016-01-01"
+    ):
+        InsiderCampaignProtocol.model_validate(_insider_document(quarters_from="2016q2"))
+    with pytest.raises(
+        ValueError,
+        match=r"insider_filings\.quarters_through 2026q2 ends 2026-06-30, before the confirmation window's end 2026-07-31",
+    ):
+        InsiderCampaignProtocol.model_validate(_insider_document(quarters_through="2026q2"))
+    on_the_bound = _insider_document(quarters_through="2026q2")
+    on_the_bound["windows"]["confirmation"][1] = "2026-06-30"
+    InsiderCampaignProtocol.model_validate(on_the_bound)
+
+
 def test_insider_protocol_leaves_other_protocol_hashes_unchanged():
     pinned = (
         (EVENTS_V1, EVENTS_SHA256),

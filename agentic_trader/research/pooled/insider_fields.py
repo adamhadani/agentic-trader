@@ -53,6 +53,7 @@ from agentic_trader.research.insider_filings import (
 )
 from agentic_trader.research.pooled.campaign import InsiderFilingInputs, InsiderInputs
 from agentic_trader.research.pooled.events import identity_breaks
+from agentic_trader.research.pooled.short_fields import first_finite
 
 
 __all__ = [
@@ -100,10 +101,15 @@ class LoadedInsiderFilings:
 class InsiderCoverage:
     """What the builder could not fill, for the results doc (over the symbols passed to the builder).
 
-    ``unscored_rows`` is the loader's count plus the loaded transactions of names the builder does not
-    score; ``drops`` is the reader's per-rule counts plus the builder's ``implausible_size`` count;
-    ``coverage_start`` maps a symbol to the ISO date of its first covered session (``None`` without
-    one); ``identity_breaks`` maps a symbol to the ISO date of its latest identity break.
+    ``symbols_without_rows`` lists the symbols never covered (``coverage_start`` ``None``): no loaded
+    transaction, or every one filed after the last session or dropped as implausible. ``unscored_rows``
+    is the loader's count plus the loaded transactions of names the builder does not score. ``drops``
+    merges two scopes: the reader's per-rule counts are over every issuer in the archives, while
+    ``implausible_size`` is over the scored cohort rows only (a row fanned out to two share classes
+    counts once per class). ``coverage_start`` maps a symbol to the ISO date of its first covered session
+    (``None`` without one); ``identity_breaks`` maps a symbol to the ISO date of its latest identity break.
+    Share classes of one issuer each divide the issuer's dollars by their own class's ``DV``: the insider
+    trades the issuer, the lane trades the class.
     """
 
     symbols_without_cik: tuple[str, ...]
@@ -131,15 +137,7 @@ def load_insider_filings(directory: Path, inputs: InsiderFilingInputs, symbols: 
     """
     store = InsiderFilingStore(directory)
     quarters = quarters_between(parse_quarter(inputs.quarters_from), parse_quarter(inputs.quarters_through))
-    tickers = store.load_tickers()
-    if tickers is None:
-        raise ValueError("insider ticker map (company_tickers.json) is missing")
-    archives: list[Path] = []
-    for quarter in quarters:
-        archive = store.load(quarter)
-        if archive is None:
-            raise ValueError(f"insider archive for {quarter} is missing")
-        archives.append(archive)
+    tickers, archives = store.load_window(quarters)
     cik_to_symbols, without_cik = symbol_ciks(tickers, symbols)
     by_symbol: dict[str, list[InsiderTransaction]] = {}
     drops = dict.fromkeys(DROP_RULES, 0)
@@ -317,14 +315,6 @@ def _symbol_fields(
     return columns, start, implausible
 
 
-def _first_finite(frame: pd.DataFrame, days: Sequence[date]) -> dict[str, str | None]:
-    out: dict[str, str | None] = {}
-    for name in INSIDER_FIELDS:
-        finite = np.isfinite(frame[name].to_numpy(float))
-        out[name] = days[int(np.argmax(finite))].isoformat() if finite.any() else None
-    return out
-
-
 def build_insider_frames(
     inputs: InsiderInputs,
     loaded: LoadedInsiderFilings,
@@ -347,16 +337,13 @@ def build_insider_frames(
         len(found) for symbol, found in loaded.by_symbol.items() if symbol not in scored
     )
     frames: dict[str, pd.DataFrame] = {}
-    first_finite: dict[str, dict[str, str | None]] = {}
+    finite_from: dict[str, dict[str, str | None]] = {}
     coverage_start: dict[str, str | None] = {}
     without_rows: list[str] = []
     implausible = 0
     for symbol in symbols:
-        transactions = loaded.by_symbol.get(symbol, ())
-        if not transactions:
-            without_rows.append(symbol)
         columns, start, dropped = _symbol_fields(
-            transactions,
+            loaded.by_symbol.get(symbol, ()),
             day_ordinals,
             _dollar_volume(raw.get(symbol), days),
             params.buy_window,
@@ -365,12 +352,14 @@ def build_insider_frames(
         )
         implausible += dropped
         coverage_start[symbol] = days[start].isoformat() if start is not None else None
+        if start is None:
+            without_rows.append(symbol)
         built = pd.DataFrame(columns, index=index)[list(INSIDER_FIELDS)]
         break_on = breaks.get(symbol)
         if break_on is not None:
             built.loc[index < pd.Timestamp(break_on)] = np.nan
         frames[symbol] = built
-        first_finite[symbol] = _first_finite(built, days)
+        finite_from[symbol] = first_finite(built, days, INSIDER_FIELDS)
     return InsiderFrames(
         frames=frames,
         coverage=InsiderCoverage(
@@ -380,6 +369,6 @@ def build_insider_frames(
             drops={**loaded.drops, IMPLAUSIBLE_SIZE: implausible},
             identity_breaks={symbol: breaks[symbol].isoformat() for symbol in symbols if symbol in breaks},
             coverage_start=coverage_start,
-            first_finite=first_finite,
+            first_finite=finite_from,
         ),
     )

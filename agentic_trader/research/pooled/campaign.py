@@ -508,6 +508,20 @@ class ShortVolumeCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid")
         return self
 
 
+# The relationships a Form 4 reporting owner may list (``RPTOWNER_RELATIONSHIP``).
+OwnerRole = Literal["Officer", "Director", "TenPercentOwner", "Other"]
+
+
+def _quarter_span(text: str) -> tuple[date, date]:
+    """The first and last calendar day of a ``YYYYqN`` quarter."""
+    quarter = parse_quarter(text)
+    last_month = 3 * quarter.index
+    return (
+        date(quarter.year, last_month - 2, 1),
+        date(quarter.year, last_month, calendar.monthrange(quarter.year, last_month)[1]),
+    )
+
+
 class InsiderFilingInputs(BaseModel, frozen=True, extra="forbid"):
     """The SEC Form 3/4/5 insider-transaction datasets an insider protocol reads, pinned by a digest over every archive."""
 
@@ -517,7 +531,7 @@ class InsiderFilingInputs(BaseModel, frozen=True, extra="forbid"):
     quarters_through: str = Field(pattern=r"^\d{4}q[1-4]$")
     buy_window: int = Field(ge=1)
     net_window: int = Field(ge=1)
-    owner_roles: tuple[str, ...] = Field(min_length=1)
+    owner_roles: tuple[OwnerRole, ...] = Field(min_length=1)
     exclude_10b5_1: bool
     # A trade above this multiple of its filing session's 20-session median raw dollar volume is
     # dropped as implausible (a share-count or price entry error); kept when that DV is missing.
@@ -551,6 +565,21 @@ class InsiderCampaignProtocol(CampaignProtocol, frozen=True, extra="forbid"):
         if self.search_mode != "fixed_set":
             raise ValueError(
                 "an insider protocol is fixed_set in v1: a genetic search on insider fields needs check B and its own spec"
+            )
+        # The loader takes no calendar: an unloaded month would read as a real zero, not as missing.
+        filings = self.insider_inputs.insider_filings
+        starts = _quarter_span(filings.quarters_from)[0]
+        if starts > self.bars_from:
+            raise ValueError(
+                f"insider_inputs.insider_filings.quarters_from {filings.quarters_from} starts {starts}, "
+                f"after bars_from {self.bars_from}: the filings must cover the bar window"
+            )
+        ends = _quarter_span(filings.quarters_through)[1]
+        if ends < self.windows.confirmation[1]:
+            raise ValueError(
+                f"insider_inputs.insider_filings.quarters_through {filings.quarters_through} ends {ends}, "
+                f"before the confirmation window's end {self.windows.confirmation[1]}: "
+                "the filings must cover the bar window"
             )
         return self
 

@@ -321,6 +321,22 @@ def test_reader_drops_plan_trades_only_when_asked_and_reads_archives_without_the
     assert len(txs) == 3 and drops["plan_10b5_1"] == 0
 
 
+def test_reader_reads_the_10b5_1_flag_as_1_or_true_and_fails_closed_on_any_other_value(tmp_path):
+    # The archives pass the XML boolean through both ways (2025q1 holds 0, false, 1, blank and true).
+    plans = ["1", "true", "True", " TRUE ", "0", "false", "False", ""]
+    txs, drops, _ = _read(tmp_path, [trade(plan=plan) for plan in plans])
+    assert len(txs) == 4 and drops["plan_10b5_1"] == 4
+    for exclude in (True, False):
+        with pytest.raises(ValueError, match=r"SUBMISSION\.tsv line 3: AFF10B5ONE 'maybe'"):
+            _read(tmp_path, [trade(), trade(plan="maybe")], exclude=exclude)
+
+
+def test_reader_keeps_true_flagged_plan_trades_when_the_parameter_is_off(tmp_path):
+    rows = [trade(plan="true"), trade(plan="TRUE", code="S", ad="D"), trade(plan="1")]
+    txs, drops, _ = _read(tmp_path, rows, exclude=False)
+    assert [t.code for t in txs] == ["P", "S", "P"] and drops["plan_10b5_1"] == 0
+
+
 def test_reader_fans_a_shared_cik_out_and_counts_unmapped_issuers(tmp_path):
     rows = [trade(cik=2000), trade(cik=3000), trade(cik=3000, code="M")]
     txs, drops, unscored = _read(tmp_path, rows, ciks={2000: ("GOOG", "GOOGL")})

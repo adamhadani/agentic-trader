@@ -16,7 +16,7 @@ from agentic_trader.research.insider_filings import (
     quarters_between,
 )
 from agentic_trader.research.pooled.campaign import InsiderInputs
-from agentic_trader.research.pooled.formula import evaluate_prepared, require_dimensionless
+from agentic_trader.research.pooled.formula import evaluate_prepared, prepare_daily, require_dimensionless
 from agentic_trader.research.pooled.insider_fields import (
     INSIDER_FIELDS,
     LoadedInsiderFilings,
@@ -24,6 +24,7 @@ from agentic_trader.research.pooled.insider_fields import (
     load_insider_filings,
     verify_insider_sources,
 )
+from agentic_trader.screeners.dynamic_universe import median_dollar_volume
 from tests.research.insider_fixtures import trade, trades_archive
 from tests.research.pooled.test_formula import daily, weekdays
 
@@ -96,12 +97,21 @@ def _rename(old: str, new: str, on: date) -> CorporateAction:
 
 
 def test_a_filing_counts_on_its_filing_session_and_not_before():
-    f = _frame([_tx("AAA", DAYS[30], "P", 50_000.0)])
+    # A sale covers AAA from index 19 (DV_T is finite from there); a purchase traded on index 20 is
+    # filed ten sessions later, on index 30: no field may see it before its filing session.
+    sale = _tx("AAA", DAYS[19], "S", 10_000.0, owner=9)
+    purchase = _tx("AAA", DAYS[30], "P", 50_000.0, owner=7, trans=DAYS[20])
+    f = _frame([sale, purchase])
     assert list(f.columns) == list(INSIDER_FIELDS)
-    assert f.iloc[:30].isna().all().all()  # before coverage
-    buy = f["insider_buy_rel"]
+    assert f.iloc[:19].isna().all().all()  # before coverage
+    buy, buyers, age = f["insider_buy_rel"], f["insider_buyers"], f["insider_buy_age"]
+    assert (buy.iloc[19:30] == 0.0).all() and (f["insider_opp_buy_rel"].iloc[19:30] == 0.0).all()
+    assert (buyers.iloc[19:30] == 0.0).all() and age.iloc[:30].isna().all()
+    assert (f["insider_net_ratio"].iloc[19:30] == -1.0).all()  # only the sale is visible
     assert buy.iloc[30] == pytest.approx(0.05) and buy.iloc[92] == pytest.approx(0.05)  # (T-63, T]
-    assert buy.iloc[93] == 0.0 and (buy.iloc[93:] == 0.0).all()
+    assert (buy.iloc[30:93] > 0).all() and buy.iloc[93] == 0.0 and (buy.iloc[93:] == 0.0).all()
+    assert buyers.iloc[30] == 1.0 and age.iloc[30] == 0.0 and age.iloc[31] == 1.0
+    assert f["insider_net_ratio"].iloc[30] == pytest.approx(2 / 3)  # (50k - 10k) / 60k
 
 
 def test_a_filing_dated_on_a_non_session_counts_from_the_next_session():
@@ -111,8 +121,9 @@ def test_a_filing_dated_on_a_non_session_counts_from_the_next_session():
     assert np.isnan(f["insider_buy_rel"].iloc[monday - 1])
     assert f["insider_buy_rel"].iloc[monday] == pytest.approx(0.05)
     assert f["insider_buy_age"].iloc[monday] == 0.0
-    late = _frame([_tx("AAA", DAYS[-1] + timedelta(days=1), "P", 50_000.0)])
-    assert late.isna().all().all()  # filed after the last session: never visible
+    late = _build([_tx("AAA", DAYS[-1] + timedelta(days=1), "P", 50_000.0)])
+    assert late.frames["AAA"].isna().all().all()  # filed after the last session: never visible
+    assert late.coverage.symbols_without_rows == ("AAA",) and late.coverage.coverage_start == {"AAA": None}
 
 
 def test_net_ratio_is_nan_without_activity_and_plus_or_minus_one_with_one_side():
@@ -233,6 +244,18 @@ def test_dollar_volume_denominator_is_the_20_session_median_and_nan_without_bars
     assert bare["insider_buyers"].iloc[5] == 1.0 and bare["insider_buy_age"].iloc[5] == 0.0
 
 
+def test_dollar_volume_denominator_equals_the_eligibility_rules_median_dollar_volume():
+    rng = np.random.default_rng(7)
+    raw = _raw(["AAA"], list(rng.uniform(5.0, 50.0, len(DAYS))))
+    raw["AAA"]["Volume"] = rng.uniform(1e5, 5e6, len(DAYS))
+    raw["AAA"].loc[raw["AAA"].index[45], "Close"] = np.nan  # a missing bar: later medians skip it
+    buy = _frame([_tx("AAA", DAYS[30], "P", 1_000.0)], raw=raw)["insider_buy_rel"]
+    for k in (30, 31, 44, 46, 50, 64, 80, 92):
+        expected = median_dollar_volume(raw["AAA"], as_of=DAYS[k])
+        assert expected is not None and 1_000.0 / buy.iloc[k] == pytest.approx(expected, rel=1e-12), k
+    assert np.isnan(buy.iloc[45])  # by design: no DV on a session without a bar
+
+
 def test_an_implausibly_large_trade_is_dropped_before_any_field_is_computed():
     txs = [
         _tx("AAA", DAYS[20], "S", 10_000.0, owner=9),  # covers AAA
@@ -257,6 +280,7 @@ def test_an_implausibly_large_trade_is_dropped_before_any_field_is_computed():
     alone = _build([_tx("AAA", DAYS[40], "P", 50_000_000.0)])
     assert alone.frames["AAA"].isna().all().all()  # nothing left to cover the symbol
     assert alone.coverage.coverage_start == {"AAA": None}
+    assert alone.coverage.symbols_without_rows == ("AAA",)  # rows were loaded, none survived
 
 
 def test_identity_break_blanks_fields_before_the_rename():
@@ -291,8 +315,7 @@ def test_coverage_reports_drops_unscored_rows_and_first_finite():
 
 def test_frames_align_with_prepare_daily_index():
     built = _build([_tx("AAA", DAYS[30], "P", 1000.0)])
-    expected = pd.DatetimeIndex([pd.Timestamp(day) for day in DAYS])
-    assert built.frames["AAA"].index.equals(expected)
+    assert built.frames["AAA"].index.equals(prepare_daily(_raw(["AAA"]))["AAA"].index)
 
 
 NOW = datetime(2026, 10, 20, tzinfo=UTC)

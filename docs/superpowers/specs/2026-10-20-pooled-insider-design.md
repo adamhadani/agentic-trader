@@ -44,8 +44,14 @@ Non-goals (rulings, recorded for the PR):
   withholding (`F`), gifts (`G`) and the rest are not open-market decisions and are excluded.
 - **Officers and directors.** A filing counts when at least one reporting owner's relationship contains
   `Officer` or `Director`; filings by ten-percent-owner-only or `Other` owners (funds, trusts) are
-  dropped. Trades flagged as made under a Rule 10b5-1 plan (`AFF10B5ONE = 1`, a column populated from
-  2023) are dropped: a pre-scheduled trade carries no decision. Both rules are protocol parameters.
+  dropped. **Rule 10b5-1 plan trades are kept in v1** (ruling amended 2026-10-20, final review). The
+  reader recognises the flag (`AFF10B5ONE` is `1` or `true` on a plan trade: the archives use both
+  encodings) and can drop flagged trades, but the Form 4 checkbox exists only for filings from April
+  2023. Excluding plan trades would change the fields' meaning mid-sample (every plan sale counts in
+  discovery, none in confirmation), so the frozen v1 protocols set `exclude_10b5_1: false` and keep them
+  in every window. Plan trades are mostly sales (2025q1, cohort v2: 3 of 145 purchases and about four in
+  five sales carry the flag), which the lane's priors treat as uninformative anyway. Both rules are
+  protocol parameters; a later second look may flip the 10b5-1 one.
 - **Issuer-level, by CIK.** A cohort symbol is matched to filings by its issuer CIK from
   `company_tickers.json` (the archives' `ISSUERTRADINGSYMBOL` is free text: `NYSE:FLG`, `(SIRI)`,
   lower case, `NONE`). Share classes that share a CIK (GOOG/GOOGL, FOX/FOXA, NWS/NWSA, LBTYA/LBTYK,
@@ -88,7 +94,8 @@ copilot alpha insider-filings --from 2015q1 --through 2026q3 --cache DIR --outpu
   (the same `DIR` the pooled commands take as `--insider-filings`); a cached archive is never
   refetched. Each archive is validated on acquisition: a well-formed zip holding `SUBMISSION.tsv`,
   `REPORTINGOWNER.tsv` and `NONDERIV_TRANS.tsv` whose header rows carry the columns §3 reads; an
-  archive failing validation is kept on disk for evidence and fails the acquisition. There is no
+  archive failing validation is kept on disk until a later run replaces it (the failed run's manifest
+  and the `invalid` meta are that run's evidence) and fails the acquisition. There is no
   `absent` state: every quarter since 2006q1 is posted.
 - `output/manifest.json`: window, quarters, per-archive digest lines, the **files digest** = SHA-256 of
   the newline-joined sorted lines `"<quarter>:<sha256>"` for every archive plus
@@ -117,8 +124,10 @@ the cohort's issuer CIKs only, one row per qualifying non-derivative transaction
 `dollars = TRANS_SHARES × TRANS_PRICEPERSHARE`, both finite and positive; `DOCUMENT_TYPE == "4"`;
 `TRANS_ACQUIRED_DISP_CD` is `A` for `P` and `D` for `S` (the 28 contrary rows in 2025q1 are dropped);
 the accession has a reporting owner whose `RPTOWNER_RELATIONSHIP` contains one of the protocol's
-`owner_roles` (`Officer`, `Director`); `AFF10B5ONE != "1"` when the protocol's `exclude_10b5_1` is
-set; `trans_date ≤ filing_date`. `owner_cik` is the `RPTOWNERCIK` of the first qualifying owner on the
+`owner_roles` (`Officer`, `Director`); not a 10b5-1 plan trade when the protocol's `exclude_10b5_1` is
+set (`AFF10B5ONE`, trimmed and in any case, is `1` or `true` on a plan trade and `0`, `false` or blank
+otherwise; any other value fails the read closed whatever the parameter; v1 sets it to `false`, §1);
+`trans_date ≤ filing_date`. `owner_cik` is the `RPTOWNERCIK` of the first qualifying owner on the
 accession (a joint filing by two officers counts once). Rows from accessions filed by the same owner
 on the same day for the same issuer are kept separately (they are separate trades). Symbol mapping:
 `company_tickers.json` ticker upper-cased with `-` → `.` equals the cohort symbol; a cohort symbol
@@ -147,13 +156,17 @@ once the issuer has **any** qualifying Form 4 transaction filed on or before `T`
 
 Rulings: windows are in sessions and inclusive of `T`, so a filing dated `T` counts on `T` (visible by
 17:30 ET, read at 10:35 ET the next session); the dollar-volume denominator is the eligibility rule's own statistic computed from the raw bars the build
-already loads for the events and short-volume lanes, so it is comparable across names and lanes; zeros (covered, no activity) are real
+already loads for the events and short-volume lanes, so it is comparable across names and lanes; share
+classes of one issuer (§1) each divide the issuer's dollars by their own class's `DV_T` (the insider
+trades the issuer, the lane trades the class), so a thin class reads a larger `*_rel` for the same
+filing and `max_trade_rel` is tested per class; zeros (covered, no activity) are real
 values, not missing, so a formula may rank "no selling" or condition on `insider_buy_rel > 0`;
 `NaN` before coverage keeps never-filing names (foreign private issuers) out of every decile, as the
 events lane keeps names without an earnings calendar out; the opportunistic rule uses filing months on
-both sides. Coverage (`InsiderCoverage`): symbols without a CIK, symbols without any qualifying
-transaction, rows dropped by each rule (document type, code, owner role, 10b5-1, contrary
-acquired/disposed code, non-positive price or shares, trade after filing), rows for CIKs outside the
+both sides. Coverage (`InsiderCoverage`): symbols without a CIK, symbols never covered (no qualifying
+transaction loaded, or every one filed after the last session or dropped as implausible), rows dropped by each rule (document type, code, owner role, 10b5-1, contrary
+acquired/disposed code, non-positive price or shares, trade after filing; counted over every issuer in
+the archives, while `implausible_size` below counts scored cohort rows only), rows for CIKs outside the
 cohort (`unscored_rows`), per-symbol coverage start and first finite session per field, identity breaks.
 
 Rulings (amended 2026-10-20 during execution): **filings before the calendar.** The calendar starts at
@@ -184,12 +197,20 @@ bars, a missing bar, a filing before the calendar) the transaction is kept.
     "files_sha256": "<the acquisition manifest's files digest>",
     "quarters_from": "2015q1", "quarters_through": "2026q3",
     "buy_window": 63, "net_window": 126,
-    "owner_roles": ["Officer", "Director"], "exclude_10b5_1": true,
+    "owner_roles": ["Officer", "Director"], "exclude_10b5_1": false,
     "max_trade_rel": 10
   },
   "corporate_actions": { "source": "alpaca", "content_sha256": "<cohort acquisition>", "window": [...], "trailing_sessions": 252 }
 }
 ```
+
+`exclude_10b5_1` is `false` in both frozen files (§1). `owner_roles` takes `Officer`, `Director`,
+`TenPercentOwner` and `Other` (the relationship names the archives use); any other value is refused. The
+quarters must span the bar window: the validator refuses a protocol whose `quarters_from` starts after
+`bars_from` or whose `quarters_through` ends before the confirmation window's last day, naming the field
+and the bound (the loader takes no calendar, so an unloaded month would read as a real zero, not as
+missing); 2015q1 → 2026q3 against `bars_from` 2016-01-01 and a confirmation window ending 2026-07-31
+passes.
 
 `search_mode: fixed_set` is required. `score_inputs` is `"daily"` and included in the dump for this
 subclass; base-class, intraday, events and short-volume hashes are unchanged. The frozen formula

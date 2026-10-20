@@ -174,18 +174,14 @@ def load_insider_sources(
 def verify_insider_digests(inputs: InsiderInputs, sources: InsiderSources) -> None:
     """Fail closed unless the archives, the ticker map and the actions carry the digests the protocol pins.
 
-    Reads every archive of ``[quarters_from, quarters_through]`` and the ticker map through the store (each
-    body is hashed against its meta file; a missing quarter or map fails), then compares the files digest
-    and the actions digest.
+    Reads the ticker map and every archive of ``[quarters_from, quarters_through]`` through the loader's
+    own check (``InsiderFilingStore.load_window``: each body is hashed against its meta file; a missing
+    quarter or map fails), then compares the files digest and the actions digest.
     """
     window = inputs.insider_filings
     store = InsiderFilingStore(sources.insider_filings_dir)
     quarters = quarters_between(parse_quarter(window.quarters_from), parse_quarter(window.quarters_through))
-    for quarter in quarters:
-        if store.load(quarter) is None:
-            raise ValueError(f"insider archive for {quarter} is missing")
-    if store.load_tickers() is None:
-        raise ValueError("insider ticker map (company_tickers.json) is missing")
+    store.load_window(quarters)
     if insider_files_sha256(store, quarters) != window.files_sha256:
         raise ValueError(
             "insider files digest does not match the protocol's insider_inputs.insider_filings.files_sha256"

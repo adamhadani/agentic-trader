@@ -986,7 +986,7 @@ def test_campaign_verifies_the_insider_sources_before_opening_the_ledger(tmp_pat
     monkeypatch.setattr(alpha_cli, "execute_campaign", recorder)
     monkeypatch.setattr(alpha_cli, "execute_campaign_recovery", recorder)
     monkeypatch.setattr(alpha_cli, "research_environment", lambda: {"runtime": {"revision": "abc1234"}})
-    inputs, sources = _insider_world(tmp_path, pinned=True)  # pins the digests of a two-quarter store
+    inputs, sources = _insider_world(tmp_path, pinned=True)  # pins the digests of the archive store
     protocol = _insider_protocol(tmp_path, inputs)
     # Replace one pinned archive with another well-formed one: the files digest no longer matches.
     store = InsiderFilingStore(sources.insider_filings_dir)

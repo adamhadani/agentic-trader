@@ -3,8 +3,9 @@
 One zip per calendar quarter (``{YYYY}q{N}_form345.zip``) resolved from the SEC index page,
 plus the ``company_tickers.json`` map, fetched paced from ``www.sec.gov`` with the operator's
 declared User-Agent and saved verbatim with SHA-256 and receipt times. An archive that fails
-validation is kept on disk with status ``invalid`` and the acquisition raises. The files digest
-binds every quarter's hash and the ticker map's. Research only: no database, broker or Telegram.
+validation is kept on disk with status ``invalid`` (until a later run replaces it) and the acquisition
+raises. The files digest binds every quarter's hash and the ticker map's. Research only: no database,
+broker or Telegram.
 
 ``read_transactions`` extracts the qualifying open-market Form 4 trades of one cached archive from
 disk (``SUBMISSION``, ``REPORTINGOWNER`` and ``NONDERIV_TRANS``; ``FOOTNOTES`` is never opened).
@@ -93,6 +94,9 @@ _MONTHS = {
         ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"), start=1
     )
 }
+
+# ``AFF10B5ONE`` passes the Form 4 XML boolean through: archives hold ``1``/``0`` and ``true``/``false``.
+_PLAN_FLAGS = {"1": True, "true": True, "0": False, "false": False, "": False}
 
 _QUARTER = re.compile(r"(\d{4})q([1-4])")
 _LINK = re.compile(r'href="((?:https?://[^"/]+)?/files/[^"]*?(\d{4}q[1-4])_form345\.zip)"')
@@ -216,6 +220,20 @@ class InsiderFilingStore:
         if not isinstance(loaded, dict):
             raise ValueError(f"{path}: not a JSON object")  # noqa: TRY004
         return loaded
+
+    def load_window(self, quarters: Sequence[Quarter]) -> tuple[dict[str, Any], tuple[Path, ...]]:
+        """The ticker map and every quarter's archive path, each body hashed against its meta file;
+        a missing map or quarter fails closed."""
+        tickers = self.load_tickers()
+        if tickers is None:
+            raise ValueError("insider ticker map (company_tickers.json) is missing")
+        archives: list[Path] = []
+        for quarter in quarters:
+            archive = self.load(quarter)
+            if archive is None:
+                raise ValueError(f"insider archive for {quarter} is missing")
+            archives.append(archive)
+        return tickers, tuple(archives)
 
     def _save(
         self,
@@ -412,8 +430,9 @@ def _positive(text: str) -> float | None:
 
 def _rows(
     archive: zipfile.ZipFile, table: str, columns: Sequence[str], optional: str | None = None
-) -> Iterator[list[str]]:
-    """The ``columns`` (then ``optional``, ``""`` when the header lacks it) of every non-blank row."""
+) -> Iterator[tuple[int, list[str]]]:
+    """The line number and the ``columns`` (then ``optional``, ``""`` when the header lacks it) of every
+    non-blank row."""
     with archive.open(table) as raw, io.TextIOWrapper(raw, encoding="utf-8-sig", errors="replace", newline="") as text:
         reader = csv.reader(text, delimiter="\t", quoting=csv.QUOTE_NONE)
         header = next(reader, None)
@@ -433,13 +452,13 @@ def _rows(
             picked = [row[i] for i in picks]
             if optional is not None:
                 picked.append(row[extra] if extra is not None else "")
-            yield picked
+            yield reader.line_num, picked
 
 
 def _owner_ciks(archive: zipfile.ZipFile, roles: frozenset[str]) -> dict[str, int]:
     """Per accession, the CIK of the first reporting owner whose relationship lists one of ``roles``."""
     owners: dict[str, int] = {}
-    for accession, owner, relationship in _rows(
+    for _, (accession, owner, relationship) in _rows(
         archive, "REPORTINGOWNER.tsv", ("ACCESSION_NUMBER", "RPTOWNERCIK", "RPTOWNER_RELATIONSHIP")
     ):
         if accession not in owners and roles.intersection(part.strip() for part in relationship.split(",")):
@@ -447,7 +466,16 @@ def _owner_ciks(archive: zipfile.ZipFile, roles: frozenset[str]) -> dict[str, in
     return owners
 
 
-def _listing_rule(document: str, code: str, side: str, has_owner: bool, plan: str, exclude_10b5_1: bool) -> str | None:
+def _plan_trade(flag: str, line: int) -> bool:
+    """Whether ``AFF10B5ONE`` marks a 10b5-1 plan trade: ``1`` or ``true`` (trimmed, any case) is one;
+    ``0``, ``false`` or blank is not; any other value fails closed."""
+    plan = _PLAN_FLAGS.get(flag.strip().lower())
+    if plan is None:
+        raise ValueError(f"SUBMISSION.tsv line {line}: AFF10B5ONE {flag!r} is not 1, true, 0, false or blank")
+    return plan
+
+
+def _listing_rule(document: str, code: str, side: str, has_owner: bool, plan: bool, exclude_10b5_1: bool) -> str | None:
     """The first of the filing-level rules (``DROP_RULES[:5]``) a row fails, or ``None``."""
     if document != "4":
         return "document_type"
@@ -457,7 +485,7 @@ def _listing_rule(document: str, code: str, side: str, has_owner: bool, plan: st
         return "acquired_disposed"
     if not has_owner:
         return "owner_role"
-    if exclude_10b5_1 and plan == "1":
+    if exclude_10b5_1 and plan:
         return "plan_10b5_1"
     return None
 
@@ -473,27 +501,28 @@ def read_transactions(
     count of qualifying rows whose issuer CIK is not mapped (``unscored_rows``).
 
     A row is tested against ``DROP_RULES`` in order and counted under the first it fails, whatever its
-    issuer: an original Form 4 (``DOCUMENT_TYPE == "4"``); code ``P`` acquired or ``S`` disposed; an
-    officer or director among the accession's reporting owners; not a 10b5-1 plan trade
-    (``AFF10B5ONE == "1"``) when ``exclude_10b5_1`` (an archive without the column has none);
-    positive shares and price; traded on or before its filing date. A row whose issuer maps to several
-    symbols yields one transaction per symbol.
+    issuer: an original Form 4 (``DOCUMENT_TYPE == "4"``); code ``P`` acquired or ``S`` disposed; a
+    reporting owner whose relationship lists one of ``owner_roles``; not a 10b5-1 plan trade
+    (``AFF10B5ONE`` ``1`` or ``true``, trimmed, any case) when ``exclude_10b5_1`` (an archive without the
+    column has none); positive shares and price; traded on or before its filing date. An ``AFF10B5ONE``
+    other than ``1``, ``true``, ``0``, ``false`` or blank fails closed whatever ``exclude_10b5_1``. A row
+    whose issuer maps to several symbols yields one transaction per symbol.
     """
     csv.field_size_limit(sys.maxsize)
     drops = dict.fromkeys(DROP_RULES, 0)
     out: list[InsiderTransaction] = []
     unscored = 0
     with zipfile.ZipFile(archive) as zipped:
-        submissions: dict[str, tuple[str, str, str, str]] = {}
-        for accession, filed, document, issuer, plan in _rows(
+        submissions: dict[str, tuple[str, str, str, bool]] = {}
+        for line, (accession, filed, document, issuer, flag) in _rows(
             zipped, "SUBMISSION.tsv", ("ACCESSION_NUMBER", "FILING_DATE", "DOCUMENT_TYPE", "ISSUERCIK"), "AFF10B5ONE"
         ):
             if accession in submissions:
                 raise ValueError(f"SUBMISSION.tsv repeats accession {accession}")
-            submissions[accession] = (filed, document.strip(), issuer, plan.strip())
+            submissions[accession] = (filed, document.strip(), issuer, _plan_trade(flag, line))
         owners = _owner_ciks(zipped, frozenset(owner_roles))
         filing_dates: dict[str, date] = {}
-        for accession, traded, code, shares, price, side in _rows(
+        for _, (accession, traded, code, shares, price, side) in _rows(
             zipped,
             "NONDERIV_TRANS.tsv",
             (

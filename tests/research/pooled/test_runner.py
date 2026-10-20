@@ -698,28 +698,40 @@ def test_verify_short_digests_refuses_a_wrong_actions_digest(tmp_path):
         verify_short_digests(wrong, sources)
 
 
+INSIDER_STAMP = datetime(2021, 5, 1, tzinfo=UTC)
+
+
 def _insider_world(tmp_path, *, pinned: bool):
-    """A two-quarter archive store (one purchase of AAA each quarter), a ticker map and actions on disk,
-    and the protocol inputs pinning their digests (or not)."""
-    stamp = datetime(2021, 5, 1, tzinfo=UTC)
+    """An archive store over the mini protocol's quarters (2015q1-2026q3, so the quarters span its bar
+    window: one purchase of AAA in each of 2021q1 and 2021q2, header-only archives elsewhere), a ticker
+    map and actions on disk, and the protocol inputs pinning their digests (or not)."""
+    protocol = mini_insider_protocol()
+    window = protocol.insider_inputs.insider_filings
+    quarters = quarters_between(parse_quarter(window.quarters_from), parse_quarter(window.quarters_through))
+    filings = {"2021q1": "10-FEB-2021", "2021q2": "10-APR-2021"}
     store = InsiderFilingStore(tmp_path / "insider")
-    for quarter, filing in (("2021q1", "10-FEB-2021"), ("2021q2", "10-APR-2021")):
-        body = trades_archive([trade(cik=1000, filing=filing, trans=filing, owner=7, shares=100, price=10.0)])
-        store.save(parse_quarter(quarter), body, url=f"https://x/{quarter}", requested_at=stamp, received_at=stamp)
+    for quarter in quarters:
+        filing = filings.get(str(quarter))
+        trades = (
+            [] if filing is None else [trade(cik=1000, filing=filing, trans=filing, owner=7, shares=100, price=10.0)]
+        )
+        store.save(
+            quarter,
+            trades_archive(trades),
+            url=f"https://x/{quarter}",
+            requested_at=INSIDER_STAMP,
+            received_at=INSIDER_STAMP,
+        )
     tickers = {"0": {"cik_str": 1000, "ticker": "AAA", "title": "Aaa"}, "1": {"cik_str": 2000, "ticker": "BBB"}}
-    store.save_tickers(json.dumps(tickers).encode(), url="https://x/t", requested_at=stamp, received_at=stamp)
+    store.save_tickers(
+        json.dumps(tickers).encode(), url="https://x/t", requested_at=INSIDER_STAMP, received_at=INSIDER_STAMP
+    )
     actions_file = tmp_path / "actions.json"
     actions_file.write_text(json.dumps([_dividend("AAA", date(2021, 3, 1)).model_dump(mode="json")]))
-    quarters = quarters_between(parse_quarter("2021q1"), parse_quarter("2021q2"))
-    protocol = mini_insider_protocol()
     inputs = protocol.insider_inputs.model_copy(
         update={
-            "insider_filings": protocol.insider_inputs.insider_filings.model_copy(
-                update={
-                    "quarters_from": "2021q1",
-                    "quarters_through": "2021q2",
-                    "files_sha256": insider_files_sha256(store, quarters) if pinned else "a" * 64,
-                }
+            "insider_filings": window.model_copy(
+                update={"files_sha256": insider_files_sha256(store, quarters) if pinned else "a" * 64}
             ),
             "corporate_actions": protocol.insider_inputs.corporate_actions.model_copy(
                 update={"content_sha256": load_actions(actions_file)[1] if pinned else "b" * 64}
@@ -733,6 +745,32 @@ def test_insider_build_fails_closed_on_digest_mismatch_before_any_bar_is_read(tm
     bars = FakeBars()
     with pytest.raises(ValueError, match="digest"):
         build(bars, tmp_path / "cache", insider=_insider_world(tmp_path, pinned=False))
+    assert bars.calls == []
+
+
+def test_insider_build_refuses_an_actions_only_mismatch_before_any_bar_is_read(tmp_path):
+    inputs, sources = _insider_world(tmp_path, pinned=True)
+    wrong = inputs.model_copy(
+        update={"corporate_actions": inputs.corporate_actions.model_copy(update={"content_sha256": "e" * 64})}
+    )
+    bars = FakeBars()
+    with pytest.raises(
+        ValueError, match=r"^corporate-actions digest .*insider_inputs\.corporate_actions\.content_sha256"
+    ):
+        build(bars, tmp_path / "cache", insider=(wrong, sources))
+    assert bars.calls == []
+
+
+def test_insider_build_refuses_a_ticker_map_only_mismatch_before_any_bar_is_read(tmp_path):
+    inputs, sources = _insider_world(tmp_path, pinned=True)
+    # Another well-formed ticker map: every archive is unchanged, the files digest is not.
+    tickers = {"0": {"cik_str": 1000, "ticker": "AAA", "title": "Aaa"}, "1": {"cik_str": 3000, "ticker": "BBB"}}
+    InsiderFilingStore(sources.insider_filings_dir).save_tickers(
+        json.dumps(tickers).encode(), url="https://x/t", requested_at=INSIDER_STAMP, received_at=INSIDER_STAMP
+    )
+    bars = FakeBars()
+    with pytest.raises(ValueError, match=r"^insider-filings digest .*insider_inputs\.insider_filings\.files_sha256"):
+        build(bars, tmp_path / "cache", insider=(inputs, sources))
     assert bars.calls == []
 
 
@@ -787,4 +825,35 @@ def test_verify_insider_digests_refuses_a_tampered_archive_body(tmp_path):
 def test_verify_insider_digests_refuses_an_unpinned_digest(tmp_path):
     inputs, sources = _insider_world(tmp_path, pinned=False)
     with pytest.raises(ValueError, match="insider files digest"):
+        verify_insider_digests(inputs, sources)
+
+
+def test_verify_insider_digests_refuses_a_wrong_actions_digest(tmp_path):
+    inputs, sources = _insider_world(tmp_path, pinned=True)
+    wrong = inputs.model_copy(
+        update={"corporate_actions": inputs.corporate_actions.model_copy(update={"content_sha256": "e" * 64})}
+    )
+    with pytest.raises(ValueError, match=r"insider_inputs\.corporate_actions\.content_sha256"):
+        verify_insider_digests(wrong, sources)
+
+
+def test_verify_insider_digests_refuses_a_changed_ticker_map(tmp_path):
+    inputs, sources = _insider_world(tmp_path, pinned=True)
+    tickers = {"0": {"cik_str": 1000, "ticker": "AAA", "title": "Aaa"}, "1": {"cik_str": 3000, "ticker": "BBB"}}
+    store = InsiderFilingStore(sources.insider_filings_dir)
+    store.save_tickers(
+        json.dumps(tickers).encode(), url="https://x/t", requested_at=INSIDER_STAMP, received_at=INSIDER_STAMP
+    )
+    with pytest.raises(ValueError, match=r"insider files digest .*insider_inputs\.insider_filings\.files_sha256"):
+        verify_insider_digests(inputs, sources)
+    store.tickers_paths()[0].unlink()
+    with pytest.raises(ValueError, match=r"insider ticker map \(company_tickers\.json\) is missing"):
+        verify_insider_digests(inputs, sources)
+
+
+def test_verify_insider_digests_refuses_a_missing_quarter(tmp_path):
+    inputs, sources = _insider_world(tmp_path, pinned=True)
+    archive, _ = InsiderFilingStore(sources.insider_filings_dir).paths(parse_quarter("2026q3"))
+    archive.unlink()
+    with pytest.raises(ValueError, match="insider archive for 2026q3 is missing"):
         verify_insider_digests(inputs, sources)
