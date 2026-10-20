@@ -122,7 +122,10 @@ name (see below). The design and the filter order are in
 
 - **Sources.** Alpaca's screener: most actives by trade count, plus market movers.
   These are read-only GETs, followed by the Alpaca asset list, which is cached per
-  New York date. Both clients are bounded (`BoundedScreenerClient` and
+  New York date and read as raw `/v2/assets` rows (`BoundedTradingClient.list_us_equity_assets`):
+  the SDK's typed `get_all_assets` rejects the whole page when one listing sits on an exchange
+  its `AssetExchange` enum has not learned, which happened on 2026-10-20 when five active names
+  appeared on TXSE. Both clients are bounded (`BoundedScreenerClient` and
   `BoundedTradingClient`, with a per-request socket timeout of
   `market_data.timeout_seconds`). All of it runs off the event loop under one
   60-second bound (`DYNAMIC_UNIVERSE_TIMEOUT_SECONDS`). Any failure, including missing credentials,

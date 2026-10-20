@@ -23,8 +23,7 @@ import pandas as pd
 from alpaca.data.historical.screener import ScreenerClient
 from alpaca.data.models.screener import MostActives, Movers
 from alpaca.data.requests import MarketMoversRequest, MostActivesBy, MostActivesRequest
-from alpaca.trading.enums import AssetClass as AlpacaAssetClass, AssetStatus
-from alpaca.trading.requests import GetAssetsRequest
+from alpaca.trading.enums import AssetStatus
 
 from agentic_trader.config import ContractConfig
 from agentic_trader.constants import CRYPTO_SYMBOL_PREFIXES, AssetClass
@@ -33,8 +32,6 @@ from agentic_trader.transport.alpaca import BoundedScreenerClient, BoundedTradin
 
 
 if TYPE_CHECKING:
-    from alpaca.trading.client import TradingClient
-
     from agentic_trader.config import AppConfig, DynamicUniverseConfig
 
 
@@ -292,7 +289,7 @@ class DynamicUniverseSource:
         config: AppConfig,
         *,
         screener_client: ScreenerClient | None = None,
-        trading_client: TradingClient | None = None,
+        trading_client: BoundedTradingClient | None = None,
         clock: Callable[[], datetime] | None = None,
     ):
         self.cfg = config.universe.dynamic
@@ -350,22 +347,19 @@ class DynamicUniverseSource:
         if self._assets_cache is not None and self._assets_cache_date == today:
             return self._assets_cache
 
-        raw_assets = await asyncio.to_thread(
-            self.trading_client.get_all_assets,
-            GetAssetsRequest(asset_class=AlpacaAssetClass.US_EQUITY, status=AssetStatus.ACTIVE),
-        )
-        # Only raw_data mode (never used here) returns a dict instead of a list of assets.
-        assert isinstance(raw_assets, list)
+        # Raw rows, not the SDK's typed ``Asset``: one listing on an exchange the SDK enum does
+        # not know (TXSE, 2026-10-20) fails the typed parse of the whole page.
+        raw_assets = await asyncio.to_thread(self.trading_client.list_us_equity_assets, AssetStatus.ACTIVE)
         assets = {
-            asset.symbol: AssetInfo(
-                symbol=asset.symbol,
-                name=asset.name or "",
-                asset_class=asset.asset_class.value,
-                exchange=asset.exchange.value,
-                status=asset.status.value,
-                tradable=asset.tradable,
+            str(row["symbol"]): AssetInfo(
+                symbol=str(row["symbol"]),
+                name=str(row.get("name") or ""),
+                asset_class=str(row.get("class") or "us_equity"),
+                exchange=str(row.get("exchange") or ""),
+                status=str(row["status"]),
+                tradable=bool(row.get("tradable", False)),
             )
-            for asset in raw_assets
+            for row in raw_assets
         }
         self._assets_cache = assets
         self._assets_cache_date = today
