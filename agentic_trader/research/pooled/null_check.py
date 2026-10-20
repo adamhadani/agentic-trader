@@ -54,6 +54,8 @@ from agentic_trader.research.pooled.scoring import (
     event_inputs_document,
     score_book,
     score_read_document,
+    short_coverage_document,
+    short_inputs_document,
 )
 from agentic_trader.research.pooled.study import check_power_gate
 from agentic_trader.research.setups.study import _finite_json
@@ -265,6 +267,7 @@ async def execute_null_check(
             "score_inputs": protocol.score_inputs,
             "score_read": score_read_document(protocol),
             "event_inputs": event_inputs_document(protocol),
+            "short_inputs": short_inputs_document(protocol),
             "environment": environment,
             "started_at": datetime.now(UTC).isoformat(),
             "authorizes_promotion": False,
@@ -303,6 +306,7 @@ async def execute_null_check(
             **base,
             "cube_sha256": built.cube.sha256,
             "event_coverage": event_coverage_document(built),
+            "short_coverage": short_coverage_document(built),
         }
     except Exception as exc:
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", **base}
