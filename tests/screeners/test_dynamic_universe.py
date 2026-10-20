@@ -333,24 +333,28 @@ def test_synthetic_contract_fields():
 # --------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeAsset:
-    symbol: str
-    name: str
-    asset_class: object
-    exchange: object
-    status: object
-    tradable: bool
+def _FakeAsset(symbol, name, asset_class, exchange, status, tradable):
+    """One raw asset row as Alpaca serves it (enums arrive as strings; the SDK's enum is not consulted)."""
+    value = lambda v: v.value if hasattr(v, "value") else v  # noqa: E731
+    return {
+        "id": f"id-{symbol}",
+        "symbol": symbol,
+        "name": name,
+        "class": value(asset_class),
+        "exchange": value(exchange),
+        "status": value(status),
+        "tradable": tradable,
+    }
 
 
 @dataclass
 class _FakeTradingClient:
-    pages: list[list[_FakeAsset]]
+    pages: list[list[dict]]
     calls: int = 0
     requests: list[object] = field(default_factory=list)
 
-    def get_all_assets(self, request):
-        self.requests.append(request)
+    def list_us_equity_assets(self, status):
+        self.requests.append(status)
         page = self.pages[min(self.calls, len(self.pages) - 1)]
         self.calls += 1
         return page
@@ -461,6 +465,34 @@ async def test_assets_maps_fields_from_the_alpaca_asset(app_config):
     assert info == AssetInfo(
         symbol="AAAA", name="Example Corp", asset_class="us_equity", exchange="NASDAQ", status="active", tradable=True
     )
+    assert trading.requests == [AssetStatus.ACTIVE]
+
+
+async def test_assets_keeps_a_listing_on_an_exchange_the_sdk_enum_does_not_know(app_config):
+    """2026-10-20: five active names moved to TXSE and the typed SDK parse of the whole page failed."""
+    page = [
+        _FakeAsset("IBOC", "International Bancshares", "us_equity", "TXSE", "active", True),
+        _FakeAsset("AAAA", "Example Corp", AlpacaAssetClass.US_EQUITY, AssetExchange.NASDAQ, AssetStatus.ACTIVE, True),
+        {
+            "id": "id-x",
+            "symbol": "NONM",
+            "class": "us_equity",
+            "exchange": "NYSE",
+            "status": "active",
+            "tradable": False,
+        },
+    ]
+    trading = _FakeTradingClient(pages=[page])
+    source = DynamicUniverseSource(
+        app_config,
+        screener_client=_FakeScreenerClient(),
+        trading_client=trading,
+        clock=_FakeClock(datetime(2026, 10, 20, 14, 0, tzinfo=UTC)),
+    )
+    assets = await source.assets()
+    assert set(assets) == {"IBOC", "AAAA", "NONM"}
+    assert assets["IBOC"].exchange == "TXSE" and assets["IBOC"].tradable is True
+    assert assets["NONM"].name == "" and assets["NONM"].tradable is False
 
 
 def _dated_daily(closes, volumes, end="2026-09-23"):

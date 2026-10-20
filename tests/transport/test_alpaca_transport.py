@@ -7,6 +7,7 @@ import logging
 import pytest
 import requests
 from alpaca.common.exceptions import APIError
+from alpaca.trading.enums import AssetStatus
 
 from agentic_trader.transport.alpaca import BoundedTradingClient
 
@@ -102,3 +103,48 @@ def test_get_non_connection_error_is_never_retried(monkeypatch, make_exc):
         client._one_request("GET", f"{FAKE_BASE_URL}/v2/calendar", {}, 3)
 
     assert calls == ["GET"]
+
+
+def test_list_us_equity_assets_keeps_exchanges_the_sdk_enum_does_not_know(monkeypatch):
+    """TXSE listings (2026-10-20) fail the typed ``get_all_assets`` parse; the raw listing keeps them."""
+    seen: list[tuple[str, str, dict]] = []
+
+    def fake_parent(self, method, url, opts, retry):
+        seen.append((method, url, dict(opts.get("params", {}))))
+        return [
+            {
+                "id": "a1",
+                "symbol": "IBOC",
+                "name": "International Bancshares",
+                "exchange": "TXSE",
+                "status": "active",
+                "tradable": True,
+                "class": "us_equity",
+            },
+            {
+                "id": "a2",
+                "symbol": "AAPL",
+                "name": "Apple",
+                "exchange": "NASDAQ",
+                "status": "active",
+                "tradable": True,
+                "class": "us_equity",
+            },
+        ]
+
+    monkeypatch.setattr("agentic_trader.transport.alpaca.TradingClient._one_request", fake_parent)
+    client = BoundedTradingClient("key", "secret", paper=True, request_timeout=5.0)
+    rows = client.list_us_equity_assets(AssetStatus.ACTIVE)
+    assert [row["symbol"] for row in rows] == ["IBOC", "AAPL"]
+    assert rows[0]["exchange"] == "TXSE"
+    assert len(seen) == 1 and seen[0][0] == "GET" and seen[0][1].endswith("/v2/assets")
+    assert seen[0][2] == {"asset_class": "us_equity", "status": "active"}
+    assert client.list_us_equity_assets(None) and seen[1][2] == {"asset_class": "us_equity"}
+
+
+@pytest.mark.parametrize("payload", [{"assets": []}, [{"symbol": "AAPL"}, "junk"], [{"id": "a1", "status": "active"}]])
+def test_list_us_equity_assets_rejects_unexpected_payloads(monkeypatch, payload):
+    monkeypatch.setattr("agentic_trader.transport.alpaca.TradingClient._one_request", lambda *a, **k: payload)
+    client = BoundedTradingClient("key", "secret", paper=True, request_timeout=5.0)
+    with pytest.raises(ValueError, match="asset listing"):
+        client.list_us_equity_assets(AssetStatus.ACTIVE)
