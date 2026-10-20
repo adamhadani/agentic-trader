@@ -87,14 +87,16 @@ symbol has no row that day), and `B_T` the **raw** (unadjusted) bar volume on T.
 | Field | Definition at T | Unit |
 | --- | --- | --- |
 | `short_ratio` | `S_T / V_T`; `NaN` when the row is missing or `V_T < min_total_volume` (protocol, 10,000 shares: thin days are noise) | dimensionless, in [0, 1] |
-| `short_ratio_z` | `(short_ratio_T − mean) / std` over the `z_window` (20) **prior** sessions `T-20 … T-1` with finite `short_ratio` (at least `z_window` finite values required, else `NaN`; `std = 0` ⇒ `NaN`) | dimensionless |
-| `short_volume_rel` | `S_T / mean(S_{T-20 … T-1})` over the same prior window (`NaN` with fewer than `z_window` finite prior values or a zero mean) | dimensionless |
+| `short_ratio_z` | `(short_ratio_T − mean) / std` over the baseline: the most recent `z_window` (20) **finite prior** values of `short_ratio` (strictly before T), all within the last `2 × z_window` (40) sessions `T-40 … T-1`; `NaN` when fewer than `z_window` finite values lie in that span, or when `std = 0` (sample std) | dimensionless |
+| `short_volume_rel` | `S_T / mean(S over the same kind of baseline of the short-volume series)` (`NaN` with fewer than `z_window` finite prior values in `T-40 … T-1`, or a zero mean) | dimensionless |
 | `offex_share` | `V_T / B_T`, `NaN` when either is missing or `B_T = 0`; values above 1.5 (a corrected file against a stale bar) set to `NaN` and counted | dimensionless |
 
 Rulings: the trailing statistics exclude T so a spike is measured against its own baseline;
-`z_window` is 20 sessions (one month, BJZ's horizon is days to weeks); fields are not carried
-forward across missing days (a missing row is `NaN`, not stale), unlike the sparse earnings fields,
-because the source is daily and dense. First finite session is 2018-08-01 for `short_ratio` and
+`z_window` is 20 sessions (one month, BJZ's horizon is days to weeks); a baseline is the last 20
+finite prior values within 40 sessions, so one missing or thin day is skipped rather than blanking
+the next 20 sessions, while a sparsely reported name stays `NaN` (amended 2026-10-20 during
+execution); fields are not carried forward across missing days (a missing row is `NaN`, not stale),
+unlike the sparse earnings fields, because the source is daily and dense. First finite session is 2018-08-01 for `short_ratio` and
 `offex_share` and about 2018-08-29 for the two windowed fields; the discovery window
 (2016-08-01 → 2021-12-31) therefore holds about 840 scored sessions, above the 400-session gate.
 Coverage (`ShortVolumeCoverage`): symbols without any row, rows unmatched to the cohort (count),
