@@ -405,6 +405,21 @@ class RiskConfig(BaseModel):
     lockout_pre_event_minutes: int = 60
     lockout_post_event_minutes: int = 30
     earnings_blackout_days: int = Field(default=7, ge=0)
+    # The static tier-1 calendar (docs/production.md, "Tier-1 calendar renewal"): an immutable file, pinned by
+    # SHA-256 when set. An expired or invalid calendar leaves the lockout unverified; `open` only labels that,
+    # `closed` refuses new entries.
+    macro_calendar_path: Path = Field(default=Path("config/calendar/us-tier1-v1.json"), validate_default=True)
+    macro_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    macro_calendar_unknown: Literal["open", "closed"] = "open"
+    macro_calendar_renewal_days: int = Field(default=30, ge=1)
+
+    @field_validator("macro_calendar_path", mode="after")
+    @classmethod
+    def _resolve_macro_calendar_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
 
 class TrendPullbackConfig(BaseModel):

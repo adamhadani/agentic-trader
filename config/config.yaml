@@ -277,6 +277,13 @@ risk:
   lockout_pre_event_minutes: 60
   lockout_post_event_minutes: 30
   earnings_blackout_days: 7
+  # Immutable calendar file, pinned by SHA-256; renew as us-tier1-v2 before macro_calendar readiness degrades.
+  macro_calendar_path: config/calendar/us-tier1-v1.json
+  macro_calendar_sha256: 984c83a8a2b7528d2390509e752f5d41b5e7031c02c3b2dd293ef3c6d856d370
+  # open = an expired or invalid calendar leaves the lockout labelled unverified and never refuses an entry.
+  macro_calendar_unknown: open
+  # Readiness degrades this many days before the calendar's valid_through.
+  macro_calendar_renewal_days: 30
 
 regime:
   vix_compressed_threshold: 15.0

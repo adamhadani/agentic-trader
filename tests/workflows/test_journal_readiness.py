@@ -226,3 +226,34 @@ async def test_corporate_actions_readiness_spans_a_long_weekend(store, app_confi
     else:
         assert checks["corporate_actions"]["ready"] == (mode in ("fresh", "long-weekend"))
         assert checks["corporate_actions"]["max_age_seconds"] == 345600
+
+
+async def test_macro_calendar_check_is_computed_and_type_named_on_failure(store, app_config):
+    reported = {"ready": False, "detail": "invalid: DigestMismatch"}
+    readiness = ReadinessService(
+        store, app_config, MetricsCollector(), run_id="current", macro_calendar=lambda now: reported
+    )
+    readiness.started = True
+    report = await readiness.report(now=datetime(2026, 10, 21, 16, tzinfo=UTC))
+    assert report["checks"]["macro_calendar"] == reported
+    assert report["ready"] is False
+
+    def boom(now):
+        raise RuntimeError("secret detail")
+
+    failing = ReadinessService(store, app_config, MetricsCollector(), run_id="current", macro_calendar=boom)
+    check = (await failing.report())["checks"]["macro_calendar"]
+    assert check == {"ready": False, "detail": "RuntimeError"}
+
+
+async def test_macro_calendar_check_receives_the_report_time_and_is_absent_when_unset(store, app_config):
+    seen: list[datetime] = []
+
+    def calendar(now):
+        seen.append(now)
+        return {"ready": True, "detail": "ok"}
+
+    at = datetime(2026, 10, 21, 16, tzinfo=UTC)
+    await ReadinessService(store, app_config, MetricsCollector(), macro_calendar=calendar).report(now=at)
+    assert seen == [at]
+    assert "macro_calendar" not in (await ReadinessService(store, app_config, MetricsCollector()).report())["checks"]

@@ -859,6 +859,29 @@ Do not restore old code against a newer schema without checking compatibility.
 Quarantined records can be reviewed/restored with an audited migration; they were
 not deleted. Keep broker-held protective orders in place during a daemon restart.
 
+## Tier-1 calendar renewal
+
+The macro lockout's authoritative schedule is a static file, `config/calendar/us-tier1-vN.json`
+(FOMC statement and press conference, CPI, PPI, Employment Situation), pinned in `config.yaml`
+by `risk.macro_calendar_path` and `risk.macro_calendar_sha256`. A merged version is immutable.
+`macro_calendar` readiness degrades 30 days before its `valid_through`
+(`risk.macro_calendar_renewal_days`), so the monitor's incident asks for the next version
+well before it expires. Renew it as follows.
+
+1. Build `us-tier1-vN+1.json` from the Fed's FOMC calendar and the BLS CPI, PPI and
+   Employment Situation schedule pages. Each event's `source_url` is the page its date came
+   from. Re-check every `tentative` FOMC date (the Fed confirms each meeting at the one
+   before it). `valid_through` is the shortest series' last listed date, and
+   `series_last_listed` records each series' last date. Do not invent dates or times.
+2. Run `uv run pre-commit run --files config/calendar/us-tier1-vN+1.json` so the file's
+   bytes settle, then `shasum -a 256` it. Pin the new path and digest in `config.yaml`.
+3. Deploy in the usual pause order (watchdog, then daemon) and confirm
+   `doctor --readiness` reports `macro_calendar` ready.
+
+A release that moves or is cancelled (as in the 2025 shutdown) also means a new version:
+never edit a merged file. An expired or invalid calendar leaves the lockout unverified;
+with `risk.macro_calendar_unknown: open` that is labelled, never refused.
+
 ## Logs, audit and monitoring
 
 - `data/copilot.err.log`: JSON application logs with UTC time and process run ID.

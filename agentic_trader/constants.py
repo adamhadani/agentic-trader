@@ -371,6 +371,17 @@ class CloseRequestStatus(StrEnum):
 
 
 ACTIVE_CLOSE_STATUSES = (CloseRequestStatus.CLAIMED, CloseRequestStatus.SUBMITTED, CloseRequestStatus.UNKNOWN)
+
+
+class CalendarStatus(StrEnum):
+    """Health of one tier-1 calendar source. `failed` is live-feed only; `expired` and `invalid` are static only."""
+
+    OK = "ok"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    INVALID = "invalid"
+
+
 ALPACA_MAX_ORDERS_PER_PAGE = 500
 ALPACA_MAX_REPLACEMENT_CHAIN = 100
 BROKER_QUANTITY_TOLERANCE = 1e-6

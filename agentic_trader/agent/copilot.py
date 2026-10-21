@@ -17,7 +17,12 @@ from uuid import uuid4
 import pandas as pd
 
 from agentic_trader.accounting.service import AccountLedgerService
-from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
+from agentic_trader.agent.calendar import (
+    BaseEconomicCalendar,
+    ForexFactoryCalendar,
+    StaticTier1Calendar,
+    macro_calendar_readiness,
+)
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
 from agentic_trader.agent.earnings import (
     EarningsCalendarProtocol,
@@ -341,6 +346,9 @@ class TradingCopilot:
                     extra={"event": "dynamic_universe_unavailable", "error": self._dynamic_universe_error},
                 )
         self.calendar: BaseEconomicCalendar = ForexFactoryCalendar()
+        self.static_calendar = StaticTier1Calendar.load(
+            config.risk.macro_calendar_path, config.risk.macro_calendar_sha256
+        )
         self.earnings_calendar: EarningsCalendarProtocol = NasdaqEarningsCalendar()
         self.regime_detector = RegimeDetector(config=config.regime)
         alpaca_client = getattr(self.broker, "client", None)
@@ -517,6 +525,11 @@ class TradingCopilot:
             alpha_registry_report=lambda: self.alpha_repository.status(run_id=RUN_ID),
             card_stats_enabled=True,  # the daemon always runs the card-statistics worker
             corporate_actions_enabled=corporate_actions_live(config),
+            macro_calendar=lambda now: macro_calendar_readiness(
+                self.static_calendar.state(now),
+                renewal_days=config.risk.macro_calendar_renewal_days,
+                unknown_policy=config.risk.macro_calendar_unknown,
+            ),
             stream_connected=(lambda: self.broker.trade_stream_connected)
             if self.broker.supports_trade_stream
             else None,

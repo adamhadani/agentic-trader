@@ -38,6 +38,24 @@ Readiness does not itself change the trading halt or certify entry eligibility.
 A deliberate `/panic` halt therefore appears as an operational incident until
 cleared. Each entry still performs its own session, quote, macro and risk checks.
 
+### `macro_calendar`
+
+A computed check, like `trading_halt` and `entry_cancellation`, not an observed
+component. It is ready iff the static tier-1 calendar (`config/calendar/us-tier1-vN.json`,
+see [renewal](production.md#tier-1-calendar-renewal)) is `ok` with at least
+`risk.macro_calendar_renewal_days` (default 30) New York days left. The detail is stable text:
+
+- `us-tier1-v1 valid through YYYY-MM-DD (N days)`
+- `us-tier1-v1 expires YYYY-MM-DD (N days); publish v2`
+- `us-tier1-v1 expired YYYY-MM-DD; lockout unverified (policy open)`
+- `us-tier1-v1 not valid until YYYY-MM-DD; lockout unverified (policy open)`
+- `invalid: DigestMismatch`, or another exception type name for a calendar that fails to load
+
+The live-feed status is deliberately not part of readiness: it is journaled per scan,
+and the static calendar stays authoritative through a feed outage. The monitor's existing
+debounced incident covers this check, so it needs no monitor change. A failed check does
+not change the trading halt.
+
 ## Incident lifecycle and delivery
 
 The pure state machine progresses through `healthy → pending → open → recovering

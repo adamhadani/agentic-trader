@@ -1,16 +1,24 @@
+import hashlib
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Protocol, runtime_checkable
+from datetime import UTC, date, datetime, timedelta
+from enum import StrEnum
+from pathlib import Path
+from typing import Any, Literal, Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
 import httpx
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from agentic_trader.constants import (
     DEFAULT_LOCKOUT_POST_EVENT_MINUTES,
     DEFAULT_LOCKOUT_PRE_EVENT_MINUTES,
     FOREX_FACTORY_JSON_FEED_URL,
+    CalendarStatus,
 )
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.risk import in_lockout_window
 
 
@@ -43,6 +51,28 @@ def _format_delta(delta: timedelta) -> str:
     return f"{total_minutes // 60}h {total_minutes % 60}m"
 
 
+class Tier1Kind(StrEnum):
+    """The scheduled releases the desk locks out around. An SEP release shares the statement's instant."""
+
+    FOMC_STATEMENT = "fomc_statement"
+    FOMC_PRESS_CONFERENCE = "fomc_press_conference"
+    CPI = "cpi"
+    PPI = "ppi"
+    EMPLOYMENT_SITUATION = "employment_situation"
+
+
+TIER1_TITLES: Mapping[Tier1Kind, str] = {
+    Tier1Kind.FOMC_STATEMENT: "FOMC Statement",
+    Tier1Kind.FOMC_PRESS_CONFERENCE: "FOMC Press Conference",
+    Tier1Kind.CPI: "CPI",
+    Tier1Kind.PPI: "PPI",
+    Tier1Kind.EMPLOYMENT_SITUATION: "Employment Situation",
+}
+# The only hosts a static calendar date may be sourced from.
+OFFICIAL_HOSTS = frozenset({"www.federalreserve.gov", "www.bls.gov"})
+FOREXFACTORY_SOURCE = "forexfactory"
+
+
 @dataclass
 class MacroEvent:
     title: str
@@ -51,6 +81,8 @@ class MacroEvent:
     timestamp: datetime  # UTC
     forecast: str | None = None
     previous: str | None = None
+    source: str = FOREXFACTORY_SOURCE  # "forexfactory" or f"static:{calendar_id}"
+    kind: Tier1Kind | None = None
 
 
 @runtime_checkable
@@ -221,10 +253,226 @@ class ForexFactoryCalendar(BaseEconomicCalendar):
         return events
 
 
+class Tier1EventRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Tier1Kind
+    at: AwareDatetime
+    source_url: str
+    # Evidence for the renewal runbook only: a tentative event locks out like any other.
+    tentative: bool = False
+
+
+class Tier1CalendarFile(BaseModel):
+    """`config/calendar/us-tier1-vN.json`: immutable once merged; a moved release or a new year is vN+1."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1]
+    calendar_id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*-v\d+$")
+    timezone: Literal["America/New_York"]
+    valid_from: date
+    valid_through: date
+    retrieved_on: date
+    # Each series' last listed release date in the source; `valid_through` may not pass the shortest.
+    series_last_listed: dict[Tier1Kind, date]
+    events: tuple[Tier1EventRecord, ...]
+
+    @field_validator("series_last_listed")
+    @classmethod
+    def _every_series_is_listed(cls, value: dict[Tier1Kind, date]) -> dict[Tier1Kind, date]:
+        if set(value) != set(Tier1Kind):
+            raise ValueError("series_last_listed must name every tier-1 kind")
+        return value
+
+
+class CalendarFileError(ValueError):
+    """A calendar file that parses but breaks a rule; the subclass name is the reported `error`."""
+
+
+class DigestMismatch(CalendarFileError):
+    """The file's SHA-256 is not the one `risk.macro_calendar_sha256` pins."""
+
+
+class CalendarIdMismatch(CalendarFileError):
+    """`calendar_id` is not the file stem."""
+
+
+class InvalidValidityRange(CalendarFileError):
+    """`valid_from` is after `valid_through`."""
+
+
+class ValidityBeyondSeries(CalendarFileError):
+    """`valid_through` is later than the shortest series' last listed date."""
+
+
+class WrongNewYorkOffset(CalendarFileError):
+    """An event's UTC offset is not the one New York had at that instant."""
+
+
+class EventOutsideValidity(CalendarFileError):
+    """An event's New York date is outside `[valid_from, valid_through]`."""
+
+
+class UnsortedEvents(CalendarFileError):
+    """Events are not ordered by `(at, kind)`."""
+
+
+class DuplicateEvent(CalendarFileError):
+    """Two events share a `(kind, at)`."""
+
+
+class UnofficialSource(CalendarFileError):
+    """A `source_url` is not https on an official schedule host."""
+
+
+def _check_header(doc: Tier1CalendarFile, stem: str) -> None:
+    if doc.calendar_id != stem:
+        raise CalendarIdMismatch
+    if doc.valid_from > doc.valid_through:
+        raise InvalidValidityRange
+    if doc.valid_through > min(doc.series_last_listed.values()):
+        raise ValidityBeyondSeries
+
+
+def _is_official(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme == "https" and parts.hostname in OFFICIAL_HOSTS
+
+
+def _check_events(doc: Tier1CalendarFile) -> None:
+    if any(r.at.utcoffset() != r.at.astimezone(ET_TZ).utcoffset() for r in doc.events):
+        raise WrongNewYorkOffset
+    if any(not doc.valid_from <= r.at.astimezone(ET_TZ).date() <= doc.valid_through for r in doc.events):
+        raise EventOutsideValidity
+    keys = [(r.at, r.kind) for r in doc.events]
+    if keys != sorted(keys):
+        raise UnsortedEvents
+    if len(set(keys)) != len(keys):
+        raise DuplicateEvent
+    if not all(_is_official(r.source_url) for r in doc.events):
+        raise UnofficialSource
+
+
+@dataclass(frozen=True)
+class StaticCalendarState:
+    calendar_id: str
+    sha256: str | None
+    pinned: bool
+    status: CalendarStatus
+    valid_from: date | None
+    valid_through: date | None
+    days_remaining: int | None
+    error: str | None
+
+
+@dataclass(frozen=True)
+class StaticTier1Calendar:
+    """The digest-pinned schedule of tier-1 releases. It is verified iff its `state` is `ok`.
+
+    `load` never raises: a file that cannot be trusted becomes an `invalid` calendar with no events.
+    """
+
+    calendar_id: str
+    sha256: str | None  # of the bytes read; None when the file was unreadable
+    pinned: bool
+    error: str | None  # exception type name; None when the file is valid
+    valid_from: date | None
+    valid_through: date | None
+    events: tuple[MacroEvent, ...]
+
+    @classmethod
+    def load(cls, path: Path, sha256: str | None) -> StaticTier1Calendar:
+        calendar_id = path.stem
+        digest: str | None = None
+        try:
+            raw = path.read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            if sha256 is not None and digest != sha256:
+                raise DigestMismatch
+            doc = Tier1CalendarFile.model_validate_json(raw)
+            _check_header(doc, calendar_id)
+            _check_events(doc)
+        except Exception as exc:
+            logger.error(
+                "Static tier-1 calendar is invalid", extra={"calendar_id": calendar_id, "error": type(exc).__name__}
+            )
+            return cls(calendar_id, digest, sha256 is not None, type(exc).__name__, None, None, ())
+        events = tuple(
+            MacroEvent(
+                title=TIER1_TITLES[record.kind],
+                country="USD",
+                impact="High",
+                timestamp=record.at.astimezone(UTC),
+                source=f"static:{calendar_id}",
+                kind=record.kind,
+            )
+            for record in doc.events
+        )
+        return cls(calendar_id, digest, sha256 is not None, None, doc.valid_from, doc.valid_through, events)
+
+    def state(self, now: datetime) -> StaticCalendarState:
+        """Status at `now`, judged on New York's date so it flips at New York midnight without a reload."""
+        if self.error is not None or self.valid_from is None or self.valid_through is None:
+            return StaticCalendarState(
+                self.calendar_id, self.sha256, self.pinned, CalendarStatus.INVALID, None, None, None, self.error
+            )
+        today = now.astimezone(ET_TZ).date()
+        status = CalendarStatus.OK if self.valid_from <= today <= self.valid_through else CalendarStatus.EXPIRED
+        return StaticCalendarState(
+            self.calendar_id,
+            self.sha256,
+            self.pinned,
+            status,
+            self.valid_from,
+            self.valid_through,
+            (self.valid_through - today).days,
+            None,
+        )
+
+
+def macro_calendar_readiness(state: StaticCalendarState, *, renewal_days: int, unknown_policy: str) -> dict[str, Any]:
+    """The `macro_calendar` readiness check: ready iff the static calendar is ok with `renewal_days` left."""
+    days = state.days_remaining
+    if state.status is CalendarStatus.INVALID or days is None:
+        detail = f"invalid: {state.error}"
+    elif state.status is CalendarStatus.EXPIRED:
+        unverified = f"lockout unverified (policy {unknown_policy})"
+        if days < 0:
+            detail = f"{state.calendar_id} expired {state.valid_through}; {unverified}"
+        else:
+            detail = f"{state.calendar_id} not valid until {state.valid_from}; {unverified}"
+    elif days < renewal_days:
+        detail = f"{state.calendar_id} expires {state.valid_through} ({days} days); publish v2"
+    else:
+        detail = f"{state.calendar_id} valid through {state.valid_through} ({days} days)"
+    ready = state.status is CalendarStatus.OK and days is not None and days >= renewal_days
+    return {"ready": ready, "detail": detail, "status": state.status.value, "days_remaining": days}
+
+
 __all__ = [
+    "FOREXFACTORY_SOURCE",
+    "OFFICIAL_HOSTS",
+    "TIER1_TITLES",
     "TIER_1_KEYWORDS",
     "BaseEconomicCalendar",
+    "CalendarFileError",
+    "CalendarIdMismatch",
+    "DigestMismatch",
+    "DuplicateEvent",
     "EconomicCalendarProtocol",
+    "EventOutsideValidity",
     "ForexFactoryCalendar",
+    "InvalidValidityRange",
     "MacroEvent",
+    "StaticCalendarState",
+    "StaticTier1Calendar",
+    "Tier1CalendarFile",
+    "Tier1EventRecord",
+    "Tier1Kind",
+    "UnofficialSource",
+    "UnsortedEvents",
+    "ValidityBeyondSeries",
+    "WrongNewYorkOffset",
+    "macro_calendar_readiness",
 ]
