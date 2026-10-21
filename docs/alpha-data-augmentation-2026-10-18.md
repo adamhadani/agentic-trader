@@ -87,6 +87,7 @@ each about the size of the events-v1 work (one SDD day each).
    research-only acquisition, digest-pinned cache, `NaN`-before-visible fields, checks A and C,
    campaign on operator approval. Stop the pack at the first finalist and run the probe contract.
    *Built 2026-10-20:* the FINRA lane ([pooled mining](alpha-pooled-mining.md#short-volume-lane-short_fields_v1)) has its acquisition (`alpha short-volume`), four `short_fields_v1` fields and two frozen fixed sets (`short-v1`, `cohort3-short-v1`); checks A and C passed and both approved campaigns ran 2026-10-20 with no finalist (cohort v3's `shorts_retreat` passed discovery and failed selection; [results](alpha-pooled-short-v1-2026-10-20.md)), so lane #1 is closed and #2 (EDGAR insider) is the next candidate, on operator decision.
+   *Built 2026-10-20/21:* lane #2 (EDGAR insider) has its acquisition (`alpha insider-filings`, SEC Form 3/4/5 data sets), six `insider_fields_v1` fields and two frozen fixed sets (`insider-v1`, `cohort3-insider-v1`; [pooled mining](alpha-pooled-mining.md#insider-lane-insider_fields_v1)); the acquisition ran 2026-10-21 and the files are digest-pinned, checks A and C and the campaigns are pending on operator approval.
 4. **Fundamentals conditioning** (#4): a predeclared test, recurrence-style, of whether a
    profitability or accruals filter changes the native setups' base rate.
 5. **Cross-sectional operators** alongside step 3, so each new field can also be ranked and
