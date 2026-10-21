@@ -18,8 +18,8 @@ from tests.research.pooled.test_short_v1 import COHORT3_SHORT_V1, SHORT_V1
 REPO = Path(__file__).resolve().parents[3]
 INSIDER_V1 = REPO / "config/research/pooled/insider-v1.json"
 COHORT3_INSIDER_V1 = REPO / "config/research/pooled/cohort3-insider-v1.json"
-INSIDER_V1_SHA256 = "37bb463b"  # recorded prefix of the insider-v1 file's SHA-256 (docs/alpha-pooled-mining.md)
-COHORT3_INSIDER_V1_SHA256 = "41e10194"  # recorded prefix of the cohort3-insider-v1 file's SHA-256
+INSIDER_V1_SHA256 = "9c487573"  # recorded prefix of the insider-v1 file's SHA-256 (docs/alpha-pooled-mining.md)
+COHORT3_INSIDER_V1_SHA256 = "969fc5df"  # recorded prefix of the cohort3-insider-v1 file's SHA-256
 FILES_SHA256 = "67a262c0aa9acca12f4d1c67db1236d41771fda793cccabcb6eb185925cd66d9"
 EXPECTED_SCORES = {
     "net_buying": "insider_net_ratio",

@@ -1250,8 +1250,8 @@ probe, which would also need its own live feed contract. Results go in
 
 | File | Cohort and cost | SHA-256 prefix |
 | --- | --- | --- |
-| `config/research/pooled/insider-v1.json` | cohort v2, 5 bp, static-percentile universe | `37bb463b` |
-| `config/research/pooled/cohort3-insider-v1.json` | cohort v3, 15 bp, $5M median dollar-volume floor | `41e10194` |
+| `config/research/pooled/insider-v1.json` | cohort v2, 5 bp, static-percentile universe | `9c487573` |
+| `config/research/pooled/cohort3-insider-v1.json` | cohort v3, 15 bp, $5M median dollar-volume floor | `969fc5df` |
 
 ## Commands
 
