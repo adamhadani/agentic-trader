@@ -67,7 +67,8 @@ Recorded as they are made. The roadmap pointer is in
 
 | Item | Decision (2026-10-21) | Status |
 | --- | --- | --- |
-| D1 PEAD probe | Renew for 180 days at unchanged risk; judge it on the counterfactual label over every eligible event, not on taps | Approved |
+| D1 PEAD probe | Renew for 180 days at unchanged risk; judge it on the counterfactual label over every eligible event, not on taps | Done 2026-10-21 14:46 ET: `apriori:pead:v2:long:fc8a5b3ec14845a2` renewed, registry generation 17 → 18, expires 2027-04-19, $100 per-trade cap unchanged |
 | Phase 0 (report §5): static tier-1 calendar and typed fetch status; `UNKNOWN` regime state instead of 1.0×; journal-only swing and intraday scans with no card on daemon start (D2); broad-index ETFs excluded from native cards (D4); journaling of zero-candidate scans and per-rule rejections | Approved | In progress on `feature/phase0-fail-safes`, due before the 2026-10-28 FOMC |
-| D6 confirmation-window rule | Keep the rule the insider protocols were frozen under: the first finalist spends the window | Agreed. C01's value review instead favours recasting insider as one a priori event leg (PEAD-shaped, event-matched control), which never touches the window; this was raised with the operator. The campaigns still need separate approval |
+| D6 confirmation-window rule | Keep the frozen rule: the first finalist spends the window | Default for any future pooled campaign |
+| Insider campaigns (C01) | The pooled `insider-v1` and `cohort3-insider-v1` campaigns are **not run**. Insider becomes one a priori event leg, shaped like PEAD: opportunistic or cluster officer/director purchases on cohort v3's band, entry once on the session after filing, an event-matched control and P1–P4. It does not touch the confirmation window | Decided. Next mining item after Phase 0; freeze its entry before reading any insider outcome |
 | D3, D5, D7, D8, D9 | Open | — |
