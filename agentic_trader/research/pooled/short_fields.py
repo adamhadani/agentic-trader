@@ -48,6 +48,7 @@ __all__ = [
     "ShortCoverage",
     "ShortFrames",
     "build_short_frames",
+    "first_finite",
     "load_short_volume",
     "verify_short_sources",
 ]
@@ -202,9 +203,10 @@ def _split_starts(actions: Sequence[CorporateAction], days: Sequence[date]) -> d
     return {symbol: sorted(found) for symbol, found in positions.items()}
 
 
-def _first_finite(frame: pd.DataFrame, days: Sequence[date]) -> dict[str, str | None]:
+def first_finite(frame: pd.DataFrame, days: Sequence[date], names: Sequence[str]) -> dict[str, str | None]:
+    """Per column in ``names``, the ISO date of its first finite value on ``days`` (``None`` without one)."""
     out: dict[str, str | None] = {}
-    for name in SHORT_FIELDS:
+    for name in names:
         finite = np.isfinite(frame[name].to_numpy(float))
         out[name] = days[int(np.argmax(finite))].isoformat() if finite.any() else None
     return out
@@ -234,7 +236,7 @@ def build_short_frames(
         len(rows) for symbol, rows in loaded.by_symbol.items() if symbol not in scored
     )
     frames: dict[str, pd.DataFrame] = {}
-    first_finite: dict[str, dict[str, str | None]] = {}
+    finite_from: dict[str, dict[str, str | None]] = {}
     without_rows: list[str] = []
     thin_days = clipped = 0
     for symbol in symbols:
@@ -275,7 +277,7 @@ def build_short_frames(
             {"short_ratio": ratio, "short_ratio_z": z, "short_volume_rel": rel, "offex_share": offex}, index=index
         )
         frames[symbol] = built
-        first_finite[symbol] = _first_finite(built, days)
+        finite_from[symbol] = first_finite(built, days, SHORT_FIELDS)
     return ShortFrames(
         frames=frames,
         coverage=ShortCoverage(
@@ -284,6 +286,6 @@ def build_short_frames(
             thin_days=thin_days,
             offex_clipped=clipped,
             identity_breaks={symbol: breaks[symbol].isoformat() for symbol in symbols if symbol in breaks},
-            first_finite=first_finite,
+            first_finite=finite_from,
         ),
     )

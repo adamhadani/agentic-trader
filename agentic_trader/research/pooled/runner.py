@@ -35,7 +35,13 @@ from pathlib import Path
 import pandas as pd
 
 from agentic_trader.data.corporate_actions import CorporateAction
-from agentic_trader.research.pooled.campaign import EventInputs, ShortInputs
+from agentic_trader.research.insider_filings import (
+    InsiderFilingStore,
+    files_sha256 as insider_files_sha256,
+    parse_quarter,
+    quarters_between,
+)
+from agentic_trader.research.pooled.campaign import EventInputs, InsiderInputs, ShortInputs
 from agentic_trader.research.pooled.cohort import LoadedCohort, point_in_time_eligibility
 from agentic_trader.research.pooled.cube import CubeSpec, LabelCube, build_cube, load_cube, save_cube
 from agentic_trader.research.pooled.events import (
@@ -45,6 +51,13 @@ from agentic_trader.research.pooled.events import (
     load_actions,
     load_calendar_pages,
     verify_event_sources,
+)
+from agentic_trader.research.pooled.insider_fields import (
+    InsiderFrames,
+    LoadedInsiderFilings,
+    build_insider_frames,
+    load_insider_filings,
+    verify_insider_sources,
 )
 from agentic_trader.research.pooled.short_fields import (
     LoadedShortVolume,
@@ -60,10 +73,13 @@ from agentic_trader.research.short_volume import ShortVolumeStore, files_sha256,
 __all__ = [
     "CubeBuild",
     "EventSources",
+    "InsiderSources",
     "ShortSources",
     "build_cube_inputs",
     "load_event_sources",
+    "load_insider_sources",
     "load_short_sources",
+    "verify_insider_digests",
     "verify_short_digests",
 ]
 
@@ -137,6 +153,47 @@ def verify_short_digests(inputs: ShortInputs, sources: ShortSources) -> None:
 
 
 @dataclass(frozen=True)
+class InsiderSources:
+    insider_filings_dir: Path  # the SEC Form 3/4/5 archive directory (an InsiderFilingStore)
+    actions_file: Path  # the corporate-actions acquisition's actions.json
+
+
+def load_insider_sources(
+    inputs: InsiderInputs, sources: InsiderSources, symbols: Sequence[str]
+) -> tuple[LoadedInsiderFilings, tuple[CorporateAction, ...]]:
+    """Read both insider sources from disk and fail closed unless their digests are the protocol's.
+
+    Only the transactions of ``symbols`` (the cohort) are kept; no calendar is needed.
+    """
+    loaded = load_insider_filings(sources.insider_filings_dir, inputs.insider_filings, symbols)
+    actions, actions_digest = load_actions(sources.actions_file)
+    verify_insider_sources(inputs, loaded, actions_digest)
+    return loaded, actions
+
+
+def verify_insider_digests(inputs: InsiderInputs, sources: InsiderSources) -> None:
+    """Fail closed unless the archives, the ticker map and the actions carry the digests the protocol pins.
+
+    Reads the ticker map and every archive of ``[quarters_from, quarters_through]`` through the loader's
+    own check (``InsiderFilingStore.load_window``: each body is hashed against its meta file; a missing
+    quarter or map fails), then compares the files digest and the actions digest.
+    """
+    window = inputs.insider_filings
+    store = InsiderFilingStore(sources.insider_filings_dir)
+    quarters = quarters_between(parse_quarter(window.quarters_from), parse_quarter(window.quarters_through))
+    store.load_window(quarters)
+    if insider_files_sha256(store, quarters) != window.files_sha256:
+        raise ValueError(
+            "insider files digest does not match the protocol's insider_inputs.insider_filings.files_sha256"
+        )
+    _, actions_digest = load_actions(sources.actions_file)
+    if actions_digest != inputs.corporate_actions.content_sha256:
+        raise ValueError(
+            "corporate-actions digest does not match the protocol's insider_inputs.corporate_actions.content_sha256"
+        )
+
+
+@dataclass(frozen=True)
 class CubeBuild:
     cube: LabelCube
     trading_days: tuple[date, ...]
@@ -145,10 +202,11 @@ class CubeBuild:
     static_used: tuple[str, ...]  # likewise
     # The cohort symbols' hourly bars the cube was built from; empty unless ``load_hourly`` was asked.
     hourly: Mapping[str, pd.DataFrame] = field(default_factory=dict)
-    # The cohort's raw (unadjusted) daily bars; filled only when event or short fields are built.
+    # The cohort's raw (unadjusted) daily bars; filled only when event, short or insider fields are built.
     raw: Mapping[str, pd.DataFrame] = field(default_factory=dict)
     events: EventFrames | None = None
     short: ShortFrames | None = None
+    insider: InsiderFrames | None = None
 
 
 def _record(target: dict[str, str], symbol: str, reason: str) -> None:
@@ -254,9 +312,10 @@ async def build_cube_inputs(
     load_hourly: bool = False,
     events: tuple[EventInputs, EventSources] | None = None,
     short: tuple[ShortInputs, ShortSources] | None = None,
+    insider: tuple[InsiderInputs, InsiderSources] | None = None,
 ) -> CubeBuild:
-    if events is not None and short is not None:
-        raise ValueError("a build carries either events or short fields, not both: pass events= or short=")
+    if sum(source is not None for source in (events, short, insider)) > 1:
+        raise ValueError("a build carries one field source, not several: pass one of events=, short= or insider=")
 
     def say(message: str) -> None:
         if progress is not None:
@@ -280,6 +339,18 @@ async def build_cube_inputs(
         calendar_pages, actions = await asyncio.to_thread(load_event_sources, inputs, sources)
         event_sources = (inputs, calendar_pages, actions)
         say(f"event fields: {calendar_pages.pages} calendar pages, {len(actions)} corporate actions")
+
+    insider_sources = None
+    if insider is not None:
+        insider_inputs, insider_where = insider
+        loaded_insider, insider_actions = await asyncio.to_thread(
+            load_insider_sources, insider_inputs, insider_where, tuple(cohort.cohort.symbols)
+        )
+        insider_sources = (insider_inputs, loaded_insider, insider_actions)
+        say(
+            f"insider fields: {loaded_insider.rows} transactions over {len(loaded_insider.quarters)} quarters, "
+            f"{len(insider_actions)} corporate actions"
+        )
 
     days = await calendar.get_calendar_range(spec.bars_from, spec.bars_through)
     trading_days = tuple(sorted(day.date for day in days if day.is_trading_day))
@@ -333,7 +404,7 @@ async def build_cube_inputs(
                 if frame is not None:
                     hourly[symbol] = frame
                 counted("hourly bars", count, len(wanted))
-        if event_sources is not None or short_sources is not None:
+        if event_sources is not None or short_sources is not None or insider_sources is not None:
             # Served from the raw bar cache the build filled; no provider access.
             for count, symbol in enumerate(symbols, start=1):
                 frame = await acquisition.fetch(symbol, "1d", raw_dir, start, end, adjustment="raw")
@@ -449,6 +520,26 @@ async def build_cube_inputs(
             f"{len(short_frames.coverage.symbols_without_rows)} without rows, "
             f"{len(short_frames.coverage.identity_breaks)} identity breaks"
         )
+    insider_frames = None
+    if insider_sources is not None:
+        insider_inputs, loaded_insider, insider_actions = insider_sources
+        # Only names with an eligible cell can be picked, so only they get frames and count in coverage.
+        eligible_any = cube.window(cube.sessions[0], cube.sessions[-1]).eligible.any(axis=0)
+        scored = [symbol for symbol, flag in zip(cube.symbols, eligible_any, strict=True) if flag]
+        insider_frames = await asyncio.to_thread(
+            build_insider_frames,
+            insider_inputs,
+            loaded_insider,
+            insider_actions,
+            {symbol: raw[symbol] for symbol in scored if symbol in raw},
+            trading_days,
+            scored,
+        )
+        say(
+            f"insider fields: {len(insider_frames.frames)} symbols with an eligible cell; "
+            f"{len(insider_frames.coverage.symbols_without_rows)} without rows, "
+            f"{len(insider_frames.coverage.identity_breaks)} identity breaks"
+        )
     coverage = cube.coverage
     return CubeBuild(
         cube=cube,
@@ -458,8 +549,9 @@ async def build_cube_inputs(
         static_used=tuple(coverage["static_used"]),
         hourly={symbol: hourly[symbol] for symbol in symbols if symbol in hourly} if load_hourly else {},
         raw={symbol: raw[symbol] for symbol in symbols if symbol in raw}
-        if event_sources is not None or short_sources is not None
+        if event_sources is not None or short_sources is not None or insider_sources is not None
         else {},
         events=event_frames,
         short=short_frames,
+        insider=insider_frames,
     )

@@ -13,6 +13,7 @@ from agentic_trader.research.pooled.formula import (
     expression_nodes,
     prepare_hourly,
 )
+from agentic_trader.research.pooled.insider_fields import INSIDER_FIELDS
 from agentic_trader.research.pooled.scoring import (
     FrozenPanels,
     ScoreBook,
@@ -25,15 +26,18 @@ from tests.research.pooled.mini_world import (
     ADJUSTED as MINI_ADJUSTED,
     BAR_DAYS as MINI_BAR_DAYS,
     EVENT_FRAMES,
+    INSIDER_FRAMES,
     NAMES as MINI_NAMES,
     SESSIONS as MINI_SESSIONS,
     SHORT_FRAMES,
     cube_build,
     events_cube_build,
+    insider_cube_build,
     intraday_cube_build,
     label_cube,
     mini_events_protocol,
     mini_fixed_set_protocol,
+    mini_insider_protocol,
     mini_intraday_protocol,
     mini_short_protocol,
     short_cube_build,
@@ -276,3 +280,41 @@ def test_short_coverage_document_is_the_coverage_or_none():
     document = scoring.short_coverage_document(short_cube_build(cube))
     assert document is not None and document["unscored_rows"] == 0
     assert scoring.short_coverage_document(cube_build(cube)) is None
+
+
+def test_with_fields_reads_insider_columns_at_d_minus_one():
+    book = ScoreBook.with_fields(
+        MINI_ADJUSTED, INSIDER_FRAMES, INSIDER_FIELDS, MINI_BAR_DAYS, MINI_SESSIONS, MINI_NAMES
+    )
+    panel = book.panel("insider_buy_rel")
+    position = {d: i for i, d in enumerate(MINI_BAR_DAYS)}
+    for row in (0, 500):
+        previous = MINI_BAR_DAYS[position[MINI_SESSIONS[row]] - 1]
+        for col, name in enumerate(MINI_NAMES):
+            assert panel[row, col] == INSIDER_FRAMES[name].loc[pd.Timestamp(previous), "insider_buy_rel"]
+    gated = book.panel("insider_buy_rel / (insider_buyers > 1)")
+    buy_rel = book.panel("insider_buy_rel")
+    buyers = book.panel("insider_buyers")
+    inside = np.isfinite(buy_rel) & (buyers > 1)
+    outside = np.isfinite(buy_rel) & np.isfinite(buyers) & (buyers <= 1)
+    assert inside.any() and outside.any()
+    assert np.isnan(gated[outside]).all()
+    assert np.allclose(gated[inside], buy_rel[inside])
+    positive = book.panel("insider_buy_rel / (insider_buy_rel > 0)")
+    assert np.isfinite(positive).any() and np.isnan(positive[np.isfinite(buy_rel) & (buy_rel == 0)]).all()
+
+
+def test_score_book_dispatches_insider_protocol_and_refuses_a_build_without_insider_frames():
+    cube = label_cube()
+    protocol = mini_insider_protocol()
+    book = score_book(protocol, insider_cube_build(cube))
+    assert book.score_inputs == "daily" and np.isfinite(book.panel("insider_buy_rel")[-1]).any()
+    with pytest.raises(ValueError, match="insider"):
+        score_book(protocol, cube_build(cube))
+
+
+def test_insider_coverage_document_is_the_coverage_or_none():
+    cube = label_cube()
+    document = scoring.insider_coverage_document(insider_cube_build(cube))
+    assert document is not None and document["unscored_rows"] == 0
+    assert scoring.insider_coverage_document(cube_build(cube)) is None

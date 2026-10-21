@@ -24,6 +24,7 @@ from agentic_trader.research.alpha.search import canonical_expression
 from agentic_trader.research.pooled.campaign import (
     CampaignProtocol,
     EventsCampaignProtocol,
+    InsiderCampaignProtocol,
     IntradayCampaignProtocol,
     ScoredFormula,
     ShortVolumeCampaignProtocol,
@@ -39,6 +40,7 @@ from agentic_trader.research.pooled.formula import (
     prepare_hourly,
     require_dimensionless,
 )
+from agentic_trader.research.pooled.insider_fields import INSIDER_FIELDS
 from agentic_trader.research.pooled.short_fields import SHORT_FIELDS
 
 
@@ -299,6 +301,11 @@ def short_inputs_document(protocol: CampaignProtocol) -> dict | None:
     return protocol.short_inputs.model_dump(mode="json") if isinstance(protocol, ShortVolumeCampaignProtocol) else None
 
 
+def insider_inputs_document(protocol: CampaignProtocol) -> dict | None:
+    """The protocol's insider inputs as recorded in manifests; None for a protocol without insider fields."""
+    return protocol.insider_inputs.model_dump(mode="json") if isinstance(protocol, InsiderCampaignProtocol) else None
+
+
 def event_coverage_document(built: CubeBuild) -> dict | None:
     """The build's event coverage as recorded in results; None for a build without event fields."""
     return asdict(built.events.coverage) if built.events is not None else None
@@ -307,6 +314,11 @@ def event_coverage_document(built: CubeBuild) -> dict | None:
 def short_coverage_document(built: CubeBuild) -> dict | None:
     """The build's short-volume coverage as recorded in results; None for a build without short fields."""
     return asdict(built.short.coverage) if built.short is not None else None
+
+
+def insider_coverage_document(built: CubeBuild) -> dict | None:
+    """The build's insider coverage as recorded in results; None for a build without insider fields."""
+    return asdict(built.insider.coverage) if built.insider is not None else None
 
 
 def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:
@@ -345,6 +357,19 @@ def score_book(protocol: CampaignProtocol, built: CubeBuild) -> ScoreBook:
             built.adjusted,
             built.short.frames,
             SHORT_FIELDS,
+            built.trading_days,
+            built.cube.sessions,
+            built.cube.symbols,
+        )
+    if isinstance(protocol, InsiderCampaignProtocol):
+        if built.insider is None:
+            raise ValueError(
+                "this protocol scores insider fields but the build carries no insider frames; build with insider=..."
+            )
+        return ScoreBook.with_fields(
+            built.adjusted,
+            built.insider.frames,
+            INSIDER_FIELDS,
             built.trading_days,
             built.cube.sessions,
             built.cube.symbols,
