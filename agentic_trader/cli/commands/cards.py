@@ -25,6 +25,7 @@ from agentic_trader.research.setups.outcomes import (
     DEFAULT_COST_BPS_PER_SIDE,
     DEFAULT_MAX_HOLD_SESSIONS,
     label_journaled,
+    scan_supply,
     summarize,
 )
 from agentic_trader.research.setups.sources import build_bar_source, scan_ranked_events
@@ -78,11 +79,12 @@ async def outcomes_cmd(days: int) -> None:
             max_requests_per_minute=config.market_data.max_requests_per_minute,
         )
         summary = summarize(frame)
+        summary["supply"] = scan_supply(events)
         execution = await collect_execution(db, frame)
         summary["execution"] = summarize_execution(execution)
         click.echo(json.dumps(summary, indent=2, default=str))
         if frame.empty:
-            click.echo(f"No scan_candidates_ranked events in the last {days} day(s).")
+            click.echo(f"No journaled candidates in {days} day(s) ({len(events)} scan events).")
         else:
             hidden = [c for c in frame.columns if c.startswith(CF_COLUMN_PREFIX)] + [
                 "decided_at",

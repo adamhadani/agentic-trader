@@ -412,6 +412,38 @@ def test_cli_outputs_table_with_fake_sources(runner: CliRunner):
     assert "telegram" not in result.output.lower()
 
 
+def test_cards_outcomes_prints_supply_and_the_empty_line(runner: CliRunner):
+    """A window whose only scan ranked nothing still reports it: `supply` counts scans, and the empty line says so."""
+    decided_at = datetime(2026, 3, 3, 15, 0, tzinfo=UTC)
+    event = {
+        "id": 1,
+        "stream": "scan/2026-03-03",
+        "kind": EventKind.SCAN_CANDIDATES_RANKED,
+        "payload": {
+            "scan_id": "empty-scan",
+            "decided_at": decided_at.isoformat(),
+            "scope": "universe",
+            "trigger": "suggestion_scan",
+            "status": "completed",
+            "candidates": [],
+            "funnel": {"selected": 100, "scanned": 100, "raw_setups": 0, "admitted": 0, "errors": {}},
+        },
+    }
+    fake_bars = _FakeBarSource(pd.DataFrame())
+
+    with (
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[event])),
+        patch.object(cards_module, "build_bar_source", return_value=fake_bars),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes"])
+
+    assert result.exit_code == 0, result.output
+    assert not fake_bars.calls
+    assert '"supply"' in result.output
+    assert '"suggestion_scan"' in result.output and '"zero_candidate": 1' in result.output
+    assert "No journaled candidates in 30 day(s) (1 scan events)." in result.output
+
+
 def test_db_queue_default_kind_is_a_valid_choice(runner: CliRunner):
     result = runner.invoke(cli, ["db", "queue"])
     assert "is not one of" not in result.output, result.output

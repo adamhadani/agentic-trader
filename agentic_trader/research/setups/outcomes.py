@@ -8,6 +8,8 @@ already recorded by the live scan (``agentic_trader/agent/copilot.py``:
 ``_journal_scan_ranking``). The summary also counts the candidates the configured card
 policy withheld (``card_policy_withheld``) or would have withheld (``would_withhold``), with
 their mean cost-adjusted R: a withheld candidate stays journaled and keeps being labelled.
+``scan_supply`` counts the scans themselves from the events, so a scan that ranked nothing or
+was gated by the lockout or an unavailable regime is counted too.
 This module never sends orders or notifications and never writes to the database; it only
 reads journaled events and fetches bars.
 """
@@ -21,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 
 from agentic_trader.data.pacing import RequestPacer
-from agentic_trader.execution.durable import EventKind, RankedOutcome
+from agentic_trader.execution.durable import EventKind, RankedOutcome, ScanStatus
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.setups.labels import (
     BracketArm,
@@ -35,6 +37,8 @@ from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS,
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
+
     # runner imports market_r from here, so the bar-source protocol is type-only.
     from agentic_trader.research.setups.runner import BarSource
 
@@ -50,6 +54,7 @@ __all__ = [
     "RESOLVED_HITS",
     "label_journaled",
     "market_r",
+    "scan_supply",
     "summarize",
     "with_recurrence",
 ]
@@ -145,9 +150,8 @@ def _parse_decided_at(value: str) -> datetime:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
-def _candidate_entries(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    """Every journaled candidate, grouped by symbol, tagged with its scan's decision time."""
-    by_symbol: dict[str, list[dict[str, Any]]] = {}
+def _universe_scan_payloads(events: Iterable[Mapping[str, Any]]) -> Iterator[Mapping[str, Any]]:
+    """The payload of every journaled full-universe scan among ``events``."""
     for event in events:
         if event.get("kind") != EventKind.SCAN_CANDIDATES_RANKED:
             continue
@@ -156,8 +160,14 @@ def _candidate_entries(events: list[dict[str, Any]]) -> dict[str, list[dict[str,
         # a symbol-restricted /scan or the intraday non-universe job never journals
         # this event at all, but an explicit check keeps this reader correct even if
         # that write-side guard ever changes.
-        if payload.get("scope") != "universe":
-            continue
+        if payload.get("scope") == "universe":
+            yield payload
+
+
+def _candidate_entries(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Every journaled candidate, grouped by symbol, tagged with its scan's decision time."""
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for payload in _universe_scan_payloads(events):
         candidates = payload.get("candidates")
         if not candidates:
             continue
@@ -854,11 +864,65 @@ def _counterfactual_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[s
     return {"caveat": "descriptive; not a gate", "arms": arms}
 
 
+def _add_counts(total: dict[str, Any], key: str, value: Any) -> None:
+    """Add one funnel field into ``total``: an integer sums, a ``{name: n}`` dict sums per name."""
+    if isinstance(value, bool):
+        return
+    if isinstance(value, int):
+        total[key] = total.get(key, 0) + value
+    elif isinstance(value, dict):
+        named = total.setdefault(key, {})
+        for name, count in value.items():
+            if isinstance(count, int) and not isinstance(count, bool):
+                named[name] = named.get(name, 0) + count
+
+
+def scan_supply(events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """What each calling path's journaled scans supplied, keyed by trigger (``unknown`` before the field).
+
+    Per trigger: ``scans``; ``by_status`` (an event without ``status`` is ``completed``);
+    ``zero_candidate``, the completed scans that ranked nothing; ``sent``, candidates with the
+    outcome ``sent`` whatever their scan's status; ``funnel``, every integer field summed and every
+    ``{name: n}`` field summed per name over the events that carry one; and ``funnel_unknown``, the
+    completed events whose funnel is missing or null. A gated scan has no funnel by design and is
+    counted in ``by_status``, not in ``funnel_unknown``.
+
+    It reads the events, not the labelled frame, so a scan with no candidates is counted. Descriptive
+    only: nothing in ``risk/``, ``card_policy``, ``card_stats`` or admission reads it.
+    """
+    supply: dict[str, dict[str, Any]] = {}
+    for payload in _universe_scan_payloads(events):
+        entry = supply.setdefault(
+            str(payload.get("trigger") or "unknown"),
+            {"scans": 0, "by_status": {}, "zero_candidate": 0, "sent": 0, "funnel": {}, "funnel_unknown": 0},
+        )
+        status = str(payload.get("status") or ScanStatus.COMPLETED)
+        completed = status == ScanStatus.COMPLETED
+        candidates = payload.get("candidates") or []
+        funnel = payload.get("funnel")
+        entry["scans"] += 1
+        entry["by_status"][status] = entry["by_status"].get(status, 0) + 1
+        entry["zero_candidate"] += int(completed and not candidates)
+        entry["sent"] += sum(1 for c in candidates if c.get("outcome") == RankedOutcome.SENT)
+        entry["funnel_unknown"] += int(completed and not isinstance(funnel, dict))
+        if isinstance(funnel, dict):
+            for key, value in funnel.items():
+                _add_counts(entry["funnel"], key, value)
+    for entry in supply.values():
+        entry["funnel"] = {
+            key: dict(sorted(value.items())) if isinstance(value, dict) else value
+            for key, value in entry["funnel"].items()
+        }
+    return dict(sorted(supply.items()))
+
+
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     """Descriptive summary of a labelled frame.
 
-    Counts by outcome and maturity, base rates, per-scan selection quality by scorer, card-policy
-    counts, book sizing, news, regime/tape and recurrence blocks.
+    Counts by outcome class (sent, runner-up, journal-only) and maturity, base rates, per-scan
+    selection quality by scorer, card-policy counts, book sizing, news, regime/tape and recurrence
+    blocks. A runner-up competed for a card and lost; a journal-only candidate (a swing scan's) never
+    competed for one.
     """
     if frame.empty:
         return {
@@ -870,8 +934,9 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
             "counts": {
                 "sent": {"mature": 0, "immature": 0, "fetch_failed": 0},
                 "runner_up": {"mature": 0, "immature": 0, "fetch_failed": 0},
+                "journal_only": {"mature": 0, "immature": 0, "fetch_failed": 0},
             },
-            "base_rates": {"sent": None, "runner_up": None},
+            "base_rates": {"sent": None, "runner_up": None, "journal_only": None},
             "selection": {"setup_quality": None, "shadow_score": None, "random": None, "scans_basis": "all"},
             "llm_gate": {
                 "ran": 0,
@@ -884,7 +949,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
                 "bracket_edit_mean_delta_r": None,
                 "vetoed_bracket_edit_mean_delta_r": None,
             },
-            "market_exposure": {"sent": None, "runner_up": None, "reason": None},
+            "market_exposure": {"sent": None, "runner_up": None, "journal_only": None, "reason": None},
             "card_policy": {
                 "withheld": 0,
                 "would_withhold": 0,
@@ -902,24 +967,19 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     is_fetch_failed = frame["hit"] == FETCH_FAILED_HIT
     is_unresolved = is_immature | is_fetch_failed
     is_sent = frame["sent"]
+    is_journal_only = frame["outcome"] == RankedOutcome.JOURNAL_ONLY
+    classes = {"sent": is_sent, "runner_up": ~is_sent & ~is_journal_only, "journal_only": is_journal_only}
     mature = frame.loc[~is_unresolved]
 
     counts = {
-        "sent": {
-            "mature": int((is_sent & ~is_unresolved).sum()),
-            "immature": int((is_sent & is_immature).sum()),
-            "fetch_failed": int((is_sent & is_fetch_failed).sum()),
-        },
-        "runner_up": {
-            "mature": int((~is_sent & ~is_unresolved).sum()),
-            "immature": int((~is_sent & is_immature).sum()),
-            "fetch_failed": int((~is_sent & is_fetch_failed).sum()),
-        },
+        name: {
+            "mature": int((mask & ~is_unresolved).sum()),
+            "immature": int((mask & is_immature).sum()),
+            "fetch_failed": int((mask & is_fetch_failed).sum()),
+        }
+        for name, mask in classes.items()
     }
-    base_rates = {
-        "sent": _base_rate(mature.loc[mature["sent"]]),
-        "runner_up": _base_rate(mature.loc[~mature["sent"]]),
-    }
+    base_rates = {name: _base_rate(mature.loc[mask.loc[mature.index]]) for name, mask in classes.items()}
     has_shadow_scores = mature["shadow_score"].notna().any()
     # Only scans that carry a shadow score can compare all three pickers on one population.
     if has_shadow_scores:
@@ -957,8 +1017,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     controlled = mature.dropna(subset=["market_r"])
     market_reasons = frame["market_reason"].dropna()
     market_exposure = {
-        "sent": _exposure(controlled.loc[controlled["sent"]]),
-        "runner_up": _exposure(controlled.loc[~controlled["sent"]]),
+        **{name: _exposure(controlled.loc[mask.loc[controlled.index]]) for name, mask in classes.items()},
         # Why the control is missing when the proxy fetch failed (one fetch, so one reason).
         "reason": str(market_reasons.iloc[0]) if len(market_reasons) else None,
     }

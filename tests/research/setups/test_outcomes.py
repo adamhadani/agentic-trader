@@ -9,6 +9,7 @@ import pytest
 
 import agentic_trader.research.setups.outcomes as outcomes_module
 from agentic_trader.config import WORKSPACE_ROOT
+from agentic_trader.execution.durable import RankedOutcome
 from agentic_trader.research.setups.bracket_counterfactual import BracketCounterfactualProtocol
 from agentic_trader.research.setups.labels import BracketHit
 from agentic_trader.research.setups.outcomes import (
@@ -272,6 +273,9 @@ def test_summary_empty_frame():
     assert summary["fetch_failed_reasons"] == {}
     assert summary["counts"]["sent"]["fetch_failed"] == 0
     assert summary["counts"]["runner_up"]["fetch_failed"] == 0
+    assert summary["counts"]["journal_only"] == {"mature": 0, "immature": 0, "fetch_failed": 0}
+    assert set(summary["base_rates"]) == set(summary["market_exposure"]) - {"reason"}
+    assert set(summary["base_rates"]) == {"sent", "runner_up", "journal_only"}
     assert "llm_gate" in summary and "market_exposure" in summary
     assert summary["card_policy"] == {
         "withheld": 0,
@@ -402,7 +406,12 @@ def test_spy_fetch_failure_leaves_market_r_null_with_a_reason():
     assert row["market_r"] is None and row["excess_r"] is None
     assert row["market_reason"] == "RuntimeError: no data for SPY"
     exposure = summarize(frame)["market_exposure"]
-    assert exposure == {"sent": None, "runner_up": None, "reason": "RuntimeError: no data for SPY"}
+    assert exposure == {
+        "sent": None,
+        "runner_up": None,
+        "journal_only": None,
+        "reason": "RuntimeError: no data for SPY",
+    }
 
 
 def test_market_symbol_none_skips_the_control_entirely():
@@ -492,7 +501,7 @@ def test_summary_blocks_on_an_empty_frame():
         "bracket_edit_mean_delta_r": None,
         "vetoed_bracket_edit_mean_delta_r": None,
     }
-    assert summary["market_exposure"] == {"sent": None, "runner_up": None, "reason": None}
+    assert summary["market_exposure"] == {"sent": None, "runner_up": None, "journal_only": None, "reason": None}
 
 
 def test_rows_carry_the_applied_llm_stop_for_execution_evidence():
@@ -665,6 +674,51 @@ def test_summarize_reports_scans_and_sent_cards_per_trigger():
         "unknown": {"scans": 1, "sent": 0},
     }
     assert summarize(label_journaled([], FakeBarSource({}), now=NOW))["triggers"] == {}
+
+
+def _classed_frame(outcomes):
+    """One labelled row per outcome, each on a distinct symbol with SPY as the market control."""
+    candidates = [_candidate(contract=f"S{i}", rank=i + 1, outcome=outcome) for i, outcome in enumerate(outcomes)]
+    frames = {candidate["contract"]: AAPL_BARS for candidate in candidates}
+    bars = FakeBarSource({**frames, MARKET_PROXY_SYMBOL: SPY_BARS})
+    return label_journaled([_event("scan-1", DECIDED_AT, candidates)], bars, now=NOW)
+
+
+def test_summarize_separates_journal_only_from_runners_up():
+    outcomes = ["sent", "journal_only", "journal_only", "broad_index_excluded", "per-scan budget spent"]
+    s = summarize(_classed_frame(outcomes))
+    assert (
+        s["counts"]["sent"]["mature"],
+        s["counts"]["journal_only"]["mature"],
+        s["counts"]["runner_up"]["mature"],
+    ) == (1, 2, 2)
+    assert set(s["base_rates"]) == set(s["market_exposure"]) - {"reason"} == {"sent", "runner_up", "journal_only"}
+    assert [s["base_rates"][name]["n"] for name in ("sent", "runner_up", "journal_only")] == [1, 2, 2]
+    assert [s["market_exposure"][name]["n"] for name in ("sent", "runner_up", "journal_only")] == [1, 2, 2]
+    assert s["total"] == 5
+
+
+def test_summarize_counts_journal_only_by_maturity_and_keeps_broad_index_a_runner_up():
+    candidates = [
+        _candidate(contract="OK", rank=1, outcome=RankedOutcome.JOURNAL_ONLY),
+        _candidate(contract="ZZZZ", rank=2, outcome=RankedOutcome.JOURNAL_ONLY),
+        _candidate(contract="IDX", rank=3, outcome=RankedOutcome.BROAD_INDEX_EXCLUDED),
+        _candidate(contract="BAD", rank=4, outcome=RankedOutcome.BROAD_INDEX_EXCLUDED),
+    ]
+    prior_session = _bars([("2026-03-01T14:00:00+00:00", 100.0, 100.0, 100.0, 100.0)])
+    bars = FakeBarSource({"OK": AAPL_BARS, "IDX": AAPL_BARS, "BAD": prior_session}, raise_for={"ZZZZ"})
+    counts = summarize(label_journaled([_event("scan-1", DECIDED_AT, candidates)], bars, now=NOW, market_symbol=None))[
+        "counts"
+    ]
+    assert counts["journal_only"] == {"mature": 1, "immature": 0, "fetch_failed": 1}
+    assert counts["runner_up"] == {"mature": 1, "immature": 1, "fetch_failed": 0}
+    assert counts["sent"] == {"mature": 0, "immature": 0, "fetch_failed": 0}
+
+
+def test_summarize_without_journal_only_rows_reports_an_empty_class():
+    s = summarize(_classed_frame(["sent", "per-scan budget spent"]))
+    assert s["counts"]["journal_only"] == {"mature": 0, "immature": 0, "fetch_failed": 0}
+    assert s["base_rates"]["journal_only"] is None and s["market_exposure"]["journal_only"] is None
 
 
 def test_selection_compares_all_scorers_over_the_shadow_scored_scans():

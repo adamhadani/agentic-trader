@@ -140,6 +140,9 @@ with its `trigger` (`suggestion_scan` | `swing_scan` | `operator_scan`); symbol-
 scans (intraday job, `/scan SYMBOL`, Re-evaluate) are not journaled, and all but the journal-only
 intraday job show evidence and obey the policy. `cards outcomes`
 reports a `trigger` column and a `triggers` summary block; events without a trigger report under `"unknown"`.
+The `triggers` block counts scans from labelled rows only; the `supply` block
+([below](#outcome-classes-and-scan-supply)) counts scans from the events, so scans that ranked nothing
+appear there.
 
 Outside the policy: PEAD drift and catalog cards (no evidence block), and policy-locked native cards
 (a versioned alpha with `alpha_version` or `alpha_policy`, or a paper probe). A policy-locked card
@@ -399,6 +402,58 @@ Descriptive only: never a gate, and not read by `risk/`, `card_policy`, `card_st
 decisive test is the frozen study (`alpha bracket-counterfactual`,
 [spec](superpowers/specs/2026-10-18-bracket-counterfactual-design.md)).
 
+## Outcome classes and scan supply
+
+`cards outcomes` splits the labelled candidates into three classes, in `counts`, `base_rates` and
+`market_exposure` alike:
+
+- `sent`: the outcome `sent`.
+- `journal_only`: the outcome `journal_only` (`RankedOutcome.JOURNAL_ONLY`), every native candidate a
+  swing scan ranked. It never competed for a card, so it is not a runner-up.
+- `runner_up`: every other candidate, which competed for a card and lost: a free-text refusal such as
+  `per-scan budget spent`, `llm_vetoed`, `card_policy_withheld`, and `broad_index_excluded` (refused by a
+  selection rule like a budget refusal).
+
+`counts` holds `mature`, `immature` and `fetch_failed` per class; `base_rates` and `market_exposure` hold
+the mature statistics, null for an empty class. The empty report carries the same three keys. The split
+changes nothing else: the labelled rows, `selection`, `triggers`, `card_stats` and `card_policy` read the
+same candidates as before.
+
+The `supply` block counts the scans themselves, per trigger (`suggestion_scan`, `swing_scan`,
+`operator_scan`, or `unknown` for an event without one). It reads the `scan_candidates_ranked` events, not
+the labelled rows, so a completed scan that ranked nothing and a gated scan are counted:
+
+- `scans`, and `by_status`: `completed`, `macro_lockout` or `regime_unavailable`. An event without `status`
+  counts as `completed`.
+- `zero_candidate`: completed scans with no candidates.
+- `sent`: candidates with the outcome `sent`, whatever their scan's status.
+- `funnel`: each integer field of the scans' funnels summed, and each `{name: n}` field
+  (`raw_setups_by_strategy`, `rejected_by_rule`, `errors`) summed per name. Gated scans carry no funnel and
+  add nothing.
+- `funnel_unknown`: completed events whose `funnel` is missing or null, which is every event journaled
+  before the funnel existed. A gated event is not unknown: `by_status` counts it.
+
+```json
+"supply": {
+  "suggestion_scan": {
+    "scans": 3,
+    "by_status": {"completed": 2, "macro_lockout": 1},
+    "zero_candidate": 1,
+    "sent": 1,
+    "funnel": {"selected": 200, "scanned": 189, "raw_setups": 8, "admitted": 3,
+               "rejected_by_rule": {"concurrent_positions": 3, "unclassified": 1}},
+    "funnel_unknown": 0
+  },
+  "unknown": {"scans": 1, "by_status": {"completed": 1}, "zero_candidate": 0, "sent": 1,
+              "funnel": {}, "funnel_unknown": 1}
+}
+```
+
+(The funnel is abbreviated here; the report prints every field.) When no candidate was journaled in the
+window the report prints `No journaled candidates in N day(s) (M scan events).`, so a window of
+zero-candidate or gated scans reads differently from an empty journal. Descriptive only: not read by
+`risk/`, `card_policy`, `card_stats` or admission.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket
@@ -454,9 +509,11 @@ decisive test is the frozen study (`alpha bracket-counterfactual`,
   native candidate with the fixed outcome `journal_only` (`RankedOutcome.JOURNAL_ONLY`). They read no
   shadow ranker, book, `card_stats` snapshot, card policy, news or card budget, and call no LLM, so a
   `journal_only` candidate has `signal_id`, `llm`, `news`, `shadow` and a decision-free `card_policy`
-  and `book_sizing` all null, and was never sent or withheld. It is labelled and counted like any other
-  journaled candidate: **swing candidates stay in the `card_stats` denominator until `card_stats` v2**
-  separates them, as the repeated-setups note below says. No PEAD drift runs in such a scan.
+  and `book_sizing` all null, and was never sent or withheld. It is labelled like any other journaled
+  candidate and `cards outcomes` reports it as its own `journal_only` class
+  ([below](#outcome-classes-and-scan-supply)), but **swing candidates stay in the `card_stats` denominator
+  until `card_stats` v2** separates them, as the repeated-setups note below says. No PEAD drift runs in
+  such a scan.
   `ScanBudget.NONE` is unchanged: no limits, and it still sends (dry runs, `--no-budget`, Re-evaluate).
 - **Repeated setups.** The same `(contract, strategy, direction)` setup can now be journaled several
   times per session (swing runs, each in-session daemon start, back-to-back scans). Each journaled
