@@ -732,9 +732,10 @@ class TradingCopilot:
 
         The order: scan lock, registry snapshot, halt, session gate, idle check, macro lockout, regime
         read, dynamic universe, drift preparation, selection, fetch, collect, rank, send or journal. The
-        idle check ends a scan whose configured contracts select nothing (dynamic and drift names count
-        only while the equity session is open) before any calendar, macro or bar read, and journals
-        nothing. A lockout-gated scan makes no regime read. A regime read that raises ends the scan:
+        idle check ends an unrestricted scan whose configured contracts select nothing (dynamic and drift
+        names count only while the equity session is open) before any calendar, macro or bar read, and
+        journals nothing; a restricted scan keeps its selection and its reply's skip reason. A
+        lockout-gated scan makes no regime read. A regime read that raises ends the scan:
         a non-dry unrestricted budgeted scan journals ``status: regime_unavailable`` with the New York
         date's one ``regime-unavailable`` notice, SCAN readiness goes not ready, and the gated summary
         (``gate_reason``) feeds the digest and the Telegram ``/scan`` reply.
@@ -829,9 +830,12 @@ class TradingCopilot:
                 )
                 return None
 
-            # IDLE: a scan that would select nothing ends before any calendar, macro or bar read. The
-            # configured contracts face the selection rules below; dynamic and drift names are equities, so
-            # they count only while the equity session is open. Overnight swing scans under Alpaca end here.
+            # IDLE: an unrestricted scan that would select nothing ends before any calendar, macro or bar
+            # read. The configured contracts face the selection rules below; dynamic and drift names are
+            # equities, so they count only while the equity session is open. Overnight swing scans under
+            # Alpaca end here. A restricted scan (named symbols or a timeframe: /scan SYMBOL, Re-evaluate,
+            # the intraday job) skips the check: its selection names the reason a contract was skipped
+            # ("not executable by this broker", "session closed") in the operator's reply.
             target_syms = [s.strip().upper() for s in symbols] if symbols else None
             unrestricted = not symbols and timeframe is None
             dynamic_cfg = self.config.universe.dynamic
@@ -841,26 +845,32 @@ class TradingCopilot:
             equity_open = True
             if not dry_run and not bypass_session_filter:
                 equity_open, _ = await self.session_provider.is_session_active(instrument_type="equity")
-            configured, not_executable, closed_session = self._select_contracts(
-                self.config.contracts.items(), asset_class=asset_class, target_syms=target_syms, equity_open=equity_open
-            )
-            if not configured and not (equity_open and (attempt_dynamic or drift_scan or operator_dynamic is not None)):
-                idle_detail = (
-                    f"Idle: nothing eligible ({len(not_executable)} not executable, "
-                    f"{len(closed_session)} equity session closed)"
+            if unrestricted:
+                configured, not_executable, closed_session = self._select_contracts(
+                    self.config.contracts.items(),
+                    asset_class=asset_class,
+                    target_syms=target_syms,
+                    equity_open=equity_open,
                 )
-                if not dry_run:
-                    await self.readiness.observe(HealthComponent.SCAN, True, idle_detail)
-                logger.info(
-                    "Scan idle: %s",
-                    idle_detail,
-                    extra={
-                        "event": "scan_idle",
-                        "not_executable": len(not_executable),
-                        "closed_session": len(closed_session),
-                    },
-                )
-                return None
+                if not configured and not (
+                    equity_open and (attempt_dynamic or drift_scan or operator_dynamic is not None)
+                ):
+                    idle_detail = (
+                        f"Idle: nothing eligible ({len(not_executable)} not executable, "
+                        f"{len(closed_session)} equity session closed)"
+                    )
+                    if not dry_run:
+                        await self.readiness.observe(HealthComponent.SCAN, True, idle_detail)
+                    logger.info(
+                        "Scan idle: %s",
+                        idle_detail,
+                        extra={
+                            "event": "scan_idle",
+                            "not_executable": len(not_executable),
+                            "closed_session": len(closed_session),
+                        },
+                    )
+                    return None
 
             scope = {"asset_class": asset_class, "timeframe": timeframe, "restricted": bool(symbols)}
             # The whole-scan lockout: the same rule (risk.macro_lockout) the evaluator, the tap and the
