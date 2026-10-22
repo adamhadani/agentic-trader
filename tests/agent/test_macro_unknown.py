@@ -12,7 +12,7 @@ import pickle
 import random
 from collections import Counter
 from datetime import UTC, date, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pandas as pd
 import pytest
@@ -122,7 +122,7 @@ def test_input_tuples_and_sources_are_the_declared_ten():
 
 
 def test_unknown_macro_stress_is_the_configured_policy():
-    stress = unknown_macro_stress(RegimeConfig(), ["2y", "hy_oas"])
+    stress = unknown_macro_stress(RegimeConfig(), ["2y", "hy_oas"], vix=17.2, hy_oas=None)
     assert stress == MacroStressAssessment(
         level=MacroStressLevel.UNKNOWN,
         risk_multiplier=0.5,
@@ -130,8 +130,15 @@ def test_unknown_macro_stress_is_the_configured_policy():
         min_rr_threshold=2.0,
         key_drivers=["Missing decision inputs: 2y, hy_oas"],
     )
-    configured = unknown_macro_stress(RegimeConfig(unknown_risk_multiplier=0.3, unknown_breakout_allowed=True), ["3m"])
+    configured = unknown_macro_stress(
+        RegimeConfig(unknown_risk_multiplier=0.3, unknown_breakout_allowed=True), ["3m"], vix=17.2, hy_oas=3.7
+    )
     assert (configured.risk_multiplier, configured.squeeze_breakout_allowed) == (0.3, True)
+
+
+def test_the_present_vix_and_hy_oas_are_required_so_no_caller_skips_the_extreme_cap():
+    with pytest.raises(TypeError, match="vix"):
+        unknown_macro_stress(RegimeConfig(), ["2y"])
 
 
 async def test_complete_evaluation_has_every_input_and_a_report():
@@ -331,8 +338,24 @@ def flaky_vix_detector(vix_reads: list, config: RegimeConfig | None = None) -> R
     return RegimeDetector(config, macro_engine=engine)
 
 
-def test_a_failed_vix_read_waits_two_seconds_before_its_one_retry():
-    assert MacroIntelligenceEngine(config=RegimeConfig()).vix_retry_delay_seconds == 2.0
+@pytest.mark.parametrize(
+    ("vix_reads", "sleeps"),
+    [([TimeoutError("slow"), 18.4], [call(2.0)]), ([18.4], [])],
+    ids=["first-read-fails", "first-read-succeeds"],
+)
+async def test_only_a_failed_vix_read_waits_two_seconds_before_its_one_retry(monkeypatch, vix_reads, sleeps):
+    sleep = AsyncMock()
+    monkeypatch.setattr("agentic_trader.agent.macro.asyncio.sleep", sleep)
+    values = {**DECISION_OK, **CONTEXT_OK}
+    config = RegimeConfig()
+    engine = MacroIntelligenceEngine(  # the default delay
+        config=config, fred_client=FakeFred(values), yahoo_fetch=FlakyVix(values, vix_reads)
+    )
+
+    snapshot = await RegimeDetector(config, macro_engine=engine).get_regime(force_refresh=True)
+
+    assert snapshot.vix == 18.4
+    assert sleep.await_args_list == sleeps
 
 
 async def test_a_failed_vix_read_is_retried_once_and_the_fresh_second_read_is_measured(caplog):
@@ -474,7 +497,7 @@ def _snapshot(timestamp: datetime, **overrides) -> RegimeSnapshot:
         "timestamp": timestamp,
         "summary_text": "test",
         "risk_multiplier": 0.5,
-        "macro_stress": unknown_macro_stress(RegimeConfig(), ["2y"]),
+        "macro_stress": unknown_macro_stress(RegimeConfig(), ["2y"], vix=17.2, hy_oas=3.7),
         "macro_inputs": inputs,
     }
     return RegimeSnapshot(**{**fields, **overrides})

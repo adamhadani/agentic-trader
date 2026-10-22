@@ -133,19 +133,43 @@ async def swing(desk):
     )
 
 
-async def test_a_journal_only_swing_scan_journals_regime_unavailable_and_queues_no_notice(desk, temp_db):
+async def operator_scan(desk):
+    """An unrestricted operator /scan (the chat tool and the CLI scan share its trigger)."""
+    return await desk.run_scan(use_llm=False, dry_run=False)
+
+
+@pytest.mark.parametrize(
+    ("run", "trigger", "budget"),
+    [(swing, "swing_scan", "journal_only"), (operator_scan, "operator_scan", "session")],
+    ids=["swing", "operator"],
+)
+async def test_only_a_suggestion_scan_queues_the_regime_notice(desk, temp_db, run, trigger, budget):
     desk.regime_detector.get_regime.side_effect = VIX_DOWN
 
-    assert await swing(desk) is None
+    assert await run(desk) is None
 
     [event] = await ranked_events(temp_db)
     p = event["payload"]
-    assert (p["status"], p["trigger"], p["budget"]) == ("regime_unavailable", "swing_scan", "journal_only")
+    assert (p["status"], p["trigger"], p["budget"]) == ("regime_unavailable", trigger, budget)
     assert p["gate"]["errors"] == {"vix": "ReadTimeout"}
-    assert await notices(temp_db) == {}  # the date's one notice is left to a scan that could send cards
+    assert await notices(temp_db) == {}  # the date's one notice is left to a scheduled suggestion scan
     desk.readiness.observe.assert_any_await(
         HealthComponent.SCAN, False, "Regime unavailable (vix: ReadTimeout); scan skipped"
     )
+
+
+async def test_an_operator_scan_failure_leaves_the_date_s_notice_to_the_10_35_suggestion_scan(desk, temp_db):
+    desk.regime_detector.get_regime.side_effect = VIX_DOWN
+
+    await operator_scan(desk)
+    await suggestion(desk, scheduled_time_et="10:35")
+
+    operator_event, suggestion_event = await ranked_events(temp_db)
+    assert [e["payload"]["trigger"] for e in (operator_event, suggestion_event)] == ["operator_scan", "suggestion_scan"]
+    assert scan_date(operator_event) == scan_date(suggestion_event)
+    [(key, notice)] = (await notices(temp_db)).items()
+    assert key == f"regime-unavailable/{scan_date(suggestion_event)}"
+    assert notice["text"].endswith(f" NY: the suggestion scan was skipped — no cards. {NOTICE_TAIL}")
 
 
 async def test_a_swing_failure_leaves_the_date_s_notice_to_the_suggestion_scan_and_its_lost_pead_decision(
@@ -425,15 +449,27 @@ async def test_a_restricted_scan_with_vix_missing_gets_readiness_and_reply_only(
     assert desk._session_scan_stats == {}
 
 
-async def test_an_unrestricted_no_budget_scan_sends_the_notice_without_a_journal_event(desk, temp_db):
+async def test_an_unrestricted_no_budget_operator_scan_journals_and_notifies_nothing(desk, temp_db):
     desk.regime_detector.get_regime.side_effect = VIX_DOWN
 
     assert await desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.NONE) is None
 
     assert await ranked_events(temp_db) == []
+    assert await notices(temp_db) == {}
+    assert desk.last_scan_summary["gate_reason"] == "market regime unavailable"
+    desk.readiness.observe.assert_any_await(
+        HealthComponent.SCAN, False, "Regime unavailable (vix: ReadTimeout); scan skipped"
+    )
+
+
+async def test_a_suggestion_scan_without_a_budget_sends_the_notice_without_a_journal_event(desk, temp_db):
+    desk.regime_detector.get_regime.side_effect = VIX_DOWN
+
+    await desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.NONE, trigger=ScanTrigger.SUGGESTION_SCAN)
+
+    assert await ranked_events(temp_db) == []
     [key] = await notices(temp_db)
     assert key.startswith("regime-unavailable/")
-    assert desk.last_scan_summary["gate_reason"] == "market regime unavailable"
 
 
 def test_the_scan_result_text_names_a_regime_outage():

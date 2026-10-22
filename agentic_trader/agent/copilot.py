@@ -742,9 +742,9 @@ class TradingCopilot:
         journals nothing; a restricted scan keeps its selection and its reply's skip reason. A
         lockout-gated scan makes no regime read. A regime read that raises ends the scan:
         a non-dry unrestricted budgeted scan journals ``status: regime_unavailable`` with the New York
-        date's one ``regime-unavailable`` notice (a journal-only scan queues none), SCAN readiness goes
-        not ready, and the gated summary (``gate_reason``) feeds the digest and the Telegram ``/scan``
-        reply.
+        date's one ``regime-unavailable`` notice (queued only by a scheduled suggestion scan), SCAN
+        readiness goes not ready, and the gated summary (``gate_reason``) feeds the digest and the
+        Telegram ``/scan`` reply.
 
         ``shadow_evidence`` is set only by the scheduled suggestion-scan job
         (``make_suggestion_scan``): it gates the shadow ranker block, PEAD drift preparation and
@@ -1983,13 +1983,13 @@ class TradingCopilot:
     ) -> None:
         """End a scan whose regime read raised.
 
-        A non-dry unrestricted scan journals ``regime_unavailable`` (when budgeted) with the New York
-        date's one notice in the same transaction, journals the skipped PEAD decision of a drift scan
-        and records a gated summary for the digest. A journal-only scan queues no notice: it could send
-        no card, and the date's one notice belongs to a scan that loses cards (and a PEAD decision).
-        Every non-dry scan observes SCAN not ready, even when journaling raises: a lost scan is a scan
-        failure. A restricted scan's operator reply is its caller's. A dry run only logs and prints.
-        Only type names leave here, never the exception's text.
+        A non-dry unrestricted scan journals ``regime_unavailable`` (when budgeted), journals the skipped
+        PEAD decision of a drift scan and records a gated summary for the digest. Only a scheduled
+        suggestion scan queues the New York date's one notice, in the same transaction: it exists to say
+        a card slot (and the PEAD decision) was lost, so a swing, operator, chat or CLI scan, whose caller
+        gets its own reply or none, never spends it. Every non-dry scan observes SCAN not ready, even
+        when journaling raises: a lost scan is a scan failure. A restricted scan's operator reply is its
+        caller's. A dry run only logs and prints. Only type names leave here, never the exception's text.
         """
         gate = regime_unavailable_gate(exc)
         errors_text = regime_errors_text(gate["errors"])
@@ -2023,9 +2023,9 @@ class TradingCopilot:
                     regime_block=unavailable_regime_block(
                         exc, at=at, macro_enabled=self.config.regime.yield_curve_enabled
                     ),
-                    notice=None
-                    if budget == ScanBudget.JOURNAL_ONLY
-                    else regime_unavailable_notice(gate["errors"], at=at, trigger=trigger, pead_skipped=pead_skipped),
+                    notice=regime_unavailable_notice(gate["errors"], at=at, trigger=trigger, pead_skipped=pead_skipped)
+                    if trigger == ScanTrigger.SUGGESTION_SCAN
+                    else None,
                 )
                 if drift_scan:
                     await self._journal_skipped_drift(alpha_snapshot, scheduled_time_et, reason="regime unavailable")
@@ -4786,15 +4786,14 @@ class TradingCopilot:
                 f"🛑 <b>Scan Blocked:</b> Emergency trading halt active ({html.escape(str(self.halt_reason))}). "
                 "Use /resume to clear."
             )
-        count_before = len(await self.db.get_recent_signals(limit=100))
         summary = await self.run_scan(use_llm=True, dry_run=False)
         if summary is None:
             # A gated scan leaves its reason in the summary; a closed session or an idle universe leaves none.
             reason = self.last_scan_summary.get("gate_reason")
             detail = html.escape(str(reason)) if reason else "no instrument is eligible in the current session"
             return f"⏸️ <b>Scan Did Not Run:</b> {detail}."
-        count_after = len(await self.db.get_recent_signals(limit=100))
-        new_alerts = count_after - count_before
+        # Every card this scan recorded, native and PEAD drift alike (charged as each is recorded).
+        new_alerts = summary["sent"]
         if new_alerts > 0:
             return (
                 f"✅ <b>Scan Complete:</b> {new_alerts} new trade setup(s) identified and alert cards dispatched above."

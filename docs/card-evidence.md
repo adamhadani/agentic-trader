@@ -341,8 +341,9 @@ rebuilt from bars later. Since the Phase 0 fail-safes it also carries the raw in
 - `clock_regime`: `EDT` or `EST`, New York's clock at `observed_at`.
 
 `UNKNOWN` sizes at `regime.unknown_risk_multiplier` (0.5) with breakouts per
-`regime.unknown_breakout_allowed` (off); `cards outcomes` buckets it like any other `macro_stress`
-value. Every card's `decision_provenance["regime"]` carries the same block. Events before 2026-10-14
+`regime.unknown_breakout_allowed` (off), capped at `EXTREME`'s limits (0.25, `regime.extreme_min_rr`,
+breakouts off) when the present VIX or HY OAS already forces `EXTREME`; `cards outcomes` buckets it
+like any other `macro_stress` value. Every card's `decision_provenance["regime"]` carries the same block. Events before 2026-10-14
 have none, and events before the Phase 0 fail-safes have only the first seven keys.
 
 **Derived tape.** The report fetches SPY daily bars once (raw, 400 calendar days before the earliest

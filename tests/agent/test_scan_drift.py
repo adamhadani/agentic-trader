@@ -23,7 +23,7 @@ from agentic_trader.agent.macro import MacroInput
 from agentic_trader.agent.regime import RegimeUnavailable
 from agentic_trader.config import AprioriConfig, ScanBudget
 from agentic_trader.constants import SignalStatus, SystemStateKey
-from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
+from agentic_trader.execution.durable import EventKind, NotificationKind, ScanTrigger, WorkKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.research.alpha.models import RegistrySnapshot
@@ -45,6 +45,7 @@ from tests.agent.test_scan_budget import (  # noqa: F401  (budget_desk is a fixt
     budget_desk,
     candidate,
     evaluation,
+    plant_history,
 )
 from tests.calendar_doubles import lockout_check, unverified_check
 
@@ -135,6 +136,7 @@ async def suggestion_scan(desk, **kwargs):
         "dry_run": False,
         "budget": ScanBudget.FULL,
         "shadow_evidence": True,
+        "trigger": ScanTrigger.SUGGESTION_SCAN,
         "scheduled_time_et": "10:35",
         **kwargs,
     }
@@ -253,6 +255,30 @@ async def test_drift_runs_only_at_the_decision_time(drift_desk, temp_db, kwargs)
     assert [s for s in await _signals(temp_db) if s["strategy"] == PEAD_STRATEGY_ID] == []
     assert await _drift_events(temp_db) == []
     assert "drift" not in drift_desk.last_scan_summary
+
+
+async def test_the_scan_reply_counts_a_drift_card_as_sent(drift_desk, temp_db, app_config, monkeypatch):
+    """The /scan reply reads the scan's own card count, which includes a drift card (its own budget). Only the
+    scheduled 10:35 suggestion scan runs drift, so the reply is driven through one."""
+    app_config.scan.max_cards_per_session = 0  # every native setup is refused; only the drift card is sent
+    await plant_history(temp_db)
+    scan = drift_desk.run_scan
+
+    async def as_the_decision_time_suggestion_scan(**kwargs):
+        return await scan(
+            **kwargs,
+            budget=ScanBudget.FULL,
+            shadow_evidence=True,
+            trigger=ScanTrigger.SUGGESTION_SCAN,
+            scheduled_time_et="10:35",
+        )
+
+    monkeypatch.setattr(drift_desk, "run_scan", as_the_decision_time_suggestion_scan)
+
+    text = await drift_desk.run_scan_summary_html()
+
+    assert text == "✅ <b>Scan Complete:</b> 1 new trade setup(s) identified and alert cards dispatched above."
+    assert [s["contract"] for s in await temp_db.signals_since(drift_desk.session_start_et())] == ["WINR"]
 
 
 async def test_drift_budget_is_derived_after_a_restart(drift_desk, temp_db):

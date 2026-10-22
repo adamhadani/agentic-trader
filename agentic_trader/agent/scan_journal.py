@@ -1,8 +1,9 @@
 """The scan journal's one writer: a ``scan_candidates_ranked`` event and its notice intent in one transaction.
 
-A scan that loses its regime read journals ``status: regime_unavailable`` and queues the New York
-date's one ``regime-unavailable/{et_date}`` notice beside it, so the event and the notice commit
-or roll back together. Errors here carry exception type names only, never provider text.
+A scan that loses its regime read journals ``status: regime_unavailable``; a scheduled suggestion
+scan also queues the New York date's one ``regime-unavailable/{et_date}`` notice beside it, so the
+event and the notice commit or roll back together. Errors here carry exception type names only,
+never provider text.
 
 A completed scan's event carries its collect ``funnel`` (``ScanFunnel.journal_block``): what the
 scan selected and scanned, and where each native setup went. Admission refusals are typed

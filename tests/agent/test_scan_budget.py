@@ -17,7 +17,7 @@ import pytest
 from agentic_trader.agent.copilot import BROAD_INDEX_REASON
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import ScanBudget
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import AssetClass, SignalStatus
 from agentic_trader.execution.durable import ScanTrigger
 from agentic_trader.screeners.base import ScreenerCandidate
 from agentic_trader.storage.models import SignalRecord
@@ -90,6 +90,28 @@ async def _plant_signal(db, contract, when):
                 environment=db.environment,
                 execution_mode=db.execution_mode,
             )
+        )
+
+
+async def plant_history(db, count: int = 100) -> None:
+    """``count`` expired signals a week old: a long history that spends no budget of this session."""
+    when = datetime.now(UTC) - timedelta(days=7)
+    async with db.session_factory() as session, session.begin():
+        session.add_all(
+            SignalRecord(
+                timestamp=when,
+                contract="ZZZ",
+                strategy="TREND_PULLBACK",
+                direction="LONG",
+                entry_price=100.0,
+                stop_loss=98.0,
+                take_profit=104.0,
+                risk_dollars=2.0,
+                status=SignalStatus.EXPIRED,
+                environment=db.environment,
+                execution_mode=db.execution_mode,
+            )
+            for _ in range(count)
         )
 
 
@@ -363,6 +385,19 @@ async def test_telegram_scan_refuses_while_a_scan_is_running(scan_desk):
         text = await scan_desk.run_scan_summary_html()
     assert "running" in text.lower()
     scan_desk.run_scan.assert_not_awaited()
+
+
+async def test_telegram_scan_counts_the_card_it_sent_beside_a_long_signal_history(budget_desk, temp_db, app_config):
+    """The reply counts the cards this scan recorded, not a capped window of recent signals: with 100 older
+    signals, a newest-100 window holds 100 rows before and after the scan."""
+    app_config.scan.max_cards_per_session = 1  # one card, then "per-session budget spent" for the rest
+    await plant_history(temp_db)
+
+    text = await budget_desk.run_scan_summary_html()
+
+    assert text == "✅ <b>Scan Complete:</b> 1 new trade setup(s) identified and alert cards dispatched above."
+    assert [s["contract"] for s in await temp_db.signals_since(budget_desk.session_start_et())] == ["DDD"]
+    assert budget_desk.last_scan_summary["runners_up"]  # the refused rest never reads as "No card sent"
 
 
 async def test_session_scan_stats_keep_only_the_current_new_york_date(budget_desk):

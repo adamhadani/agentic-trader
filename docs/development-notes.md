@@ -174,9 +174,10 @@ on unverifiable macro timing. Tier-1 lockout events are USD CPI, PPI, payrolls a
 unemployment, and the FOMC rate decision (statement, projections, press conference);
 individual Fed speakers and the minutes are not tier-1. They come from the digest-pinned static calendar
 `config/calendar/us-tier1-vN.json` unioned with the live ForexFactory feed, so a feed outage no longer reads as
-an empty, clear calendar. Missing VIX fails regime evaluation (`RegimeUnavailable`: the scan is skipped and
-noticed once per New York date); a missing macro decision input is `UNKNOWN` stress at 0.5× with breakouts
-off. Daily-feed admission age remains a gap.
+an empty, clear calendar. Missing VIX (after one fresh re-read) fails regime evaluation (`RegimeUnavailable`:
+the scan is skipped, and a scheduled suggestion scan queues the New York date's one notice); a missing macro
+decision input is `UNKNOWN` stress at 0.5× with breakouts off, or at `EXTREME`'s limits when the present VIX or
+HY OAS already forces `EXTREME`. Daily-feed admission age remains a gap.
 GEX is an option-chain/model estimate with quality notes and a required real spot. Replay evidence: [LLM prompt evaluation, 2026-09-22](llm-prompt-eval-2026-09-22.md) (old prompt 0/10 approvals on the traced candidates, new prompt 10/10, lockout control 6/6 rejected).
 A separate deterministic gate right after the macro lockout (step 2b, `agent/earnings.py`) rejects equity
 candidates with an ahead earnings report inside `risk.earnings_blackout_days` (default 7); a failed/unparseable

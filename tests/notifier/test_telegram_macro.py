@@ -163,7 +163,7 @@ def _unknown_snapshot(missing=("2y", "hy_oas")) -> RegimeSnapshot:
         summary_text="VIX: 17.00 (NORMAL) | Macro: UNKNOWN (missing 2y, hy_oas; ×0.50, breakouts suppressed)",
         risk_multiplier=0.5,
         macro_unavailable_reason="Missing decision inputs: 2y, hy_oas",
-        macro_stress=unknown_macro_stress(RegimeConfig(), list(missing)),
+        macro_stress=unknown_macro_stress(RegimeConfig(), list(missing), vix=17.0, hy_oas=inputs["hy_oas"].value),
         macro_inputs=inputs,
     )
 
@@ -373,7 +373,7 @@ async def test_explain_macro_without_a_report_names_the_missing_decision_inputs(
         missing=("2y", "hy_oas", "dxy"),
         missing_decision=("2y", "hy_oas"),
         report=None,
-        stress=unknown_macro_stress(RegimeConfig(), ["2y", "hy_oas"]),
+        stress=unknown_macro_stress(RegimeConfig(), ["2y", "hy_oas"], vix=17.2, hy_oas=None),
     )
     desk = SimpleNamespace(
         config=app_config,

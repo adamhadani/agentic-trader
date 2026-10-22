@@ -352,13 +352,14 @@ def compute_compound_macro_stress(
 
 
 def unknown_macro_stress(
-    config: RegimeConfig, missing: Sequence[str], *, vix: float | None = None, hy_oas: float | None = None
+    config: RegimeConfig, missing: Sequence[str], *, vix: float | None, hy_oas: float | None
 ) -> MacroStressAssessment:
     """The ``UNKNOWN`` stress policy for missing decision inputs: the configured multiplier and breakout flag.
 
     Its reward/risk is the default, so the VIX-derived ratio governs. When the present ``vix`` or
-    ``hy_oas`` (None when missing) already forces EXTREME, it keeps its level and drivers but never
-    sizes above EXTREME: the smaller multiplier, the larger reward/risk and breakouts off.
+    ``hy_oas`` (None when missing; both required, so no caller skips this cap) already forces EXTREME,
+    it keeps its level and drivers but never sizes above EXTREME: the smaller multiplier, the larger
+    reward/risk and breakouts off.
     """
     multiplier = config.unknown_risk_multiplier
     breakout_allowed = config.unknown_breakout_allowed

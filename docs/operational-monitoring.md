@@ -65,19 +65,21 @@ each deduplicated by its outbox key, so a repeat adds no second message:
 | --- | --- | --- |
 | `pead-unavailable/{et_date}` | The 10:35 PEAD drift decision could not be prepared (`pead_decision` `status: unavailable`) | New York date |
 | `suggestion-scan-missed/{et_date}/{HH:MM}` | APScheduler dropped a suggestion-scan slot past its misfire grace ([production](production.md)) | slot and New York date |
-| `regime-unavailable/{et_date}` | A scan's regime read raised (a missing VIX, or any other error by type name), so the scan was skipped | New York date |
+| `regime-unavailable/{et_date}` | A scheduled suggestion scan's regime read raised (a missing VIX, or any other error by type name), so the scan was skipped | New York date |
 
 `regime-unavailable` reads, for example, "⚠️ Market regime unavailable (vix: ReadTimeout)
 at 10:35 NY: the suggestion scan was skipped — no cards, no PEAD decision. Later scans
 retry; this notice is sent once per New York date." It names inputs and exception type
 names only. It is written in the same transaction as the scan's `scan_candidates_ranked`
 event (`status: regime_unavailable`, `gate.missing`, `gate.errors`), so the event and the
-notice commit or roll back together; an unrestricted operator scan without a budget sends
-the notice alone, a journal-only scan (the swing job) journals the event without a notice, so
-the date's one notice names a scan that lost cards, and a restricted or dry scan sends none.
-A dry run prints the reason. A failed VIX read is read once more, fresh, after 2 seconds
-(a `vix_read_retry` warning); only a second failure is a missing VIX. No other input is
-retried, and `/macro` and the macro button answer "Market regime unavailable (vix:
+notice commit or roll back together. The notice is queued only by a scheduled suggestion
+scan, because it exists to say a card slot (and the 10:35 PEAD decision) was lost: the swing
+job, an operator `/scan`, the chat tool and the CLI journal the event (when budgeted) and
+observe `scan` not ready, but never spend the date's notice, and an operator gets the scan's
+own reply. A restricted or dry scan journals nothing and sends nothing; a dry run prints the
+reason. A failed VIX read is read once more, fresh, after 2 seconds (a `vix_read_retry`
+warning); only a second failure is a missing VIX. No other input is retried. `/macro`, the
+macro button and the morning macro briefing answer "Market regime unavailable (vix:
 ReadTimeout); scans skip until VIX is readable."
 
 The health signal is the existing `scan` readiness component, observed not ready with
