@@ -137,7 +137,8 @@ own approval, so float noise never refuses a card approved at "2.00".
 Most layers show the rule's text unchanged. Some layers wrap it:
 
 - **Scan.** A send-phase refusal is a runner-up, `rejected: {text}`. A collect-phase
-  refusal is logged only (see below).
+  refusal is logged and counted per rule in the scan journal's `funnel` (see below); it is
+  not a runner-up.
 - **Tap.** A gate refusal turns the card `MISSED` with the rule's text, for example
   "⌛ Reward/risk 2.00 is below the required 2.20.". A session refusal turns it `EXPIRED`
   with "Card expired: its session has ended." plus the next regular open. Re-pricing's
@@ -184,8 +185,10 @@ LLM veto carry no rule id, and the evaluator ignores any rule id in the LLM's an
 against the book at the start of the scan. The **send** phase re-evaluates the winners,
 with the LLM when enabled, against that book plus the cards already sent in this scan.
 A collect-phase refusal is logged as `candidate_rejected` with `phase: collect`, the
-reason and `rejection_rule`. It does not appear in the runner-up list or the digest. A
-send-phase refusal is a runner-up and is logged with the same fields and `phase: send`.
+reason and `rejection_rule`. The scan journal's `funnel` counts it under
+`rejected_by_rule` by that rule id (`unclassified` when no shared rule refused), beside the
+duplicate, account-risk and error counts ([card evidence](card-evidence.md#limits)). It does
+not appear in the runner-up list or the digest. A send-phase refusal is a runner-up and is logged with the same fields and `phase: send`.
 Separately, the whole-scan check applies `macro_lockout` at scan start from one check of
 the union calendar (the static calendar's union with the live feed). A refusal (a lockout
 window, or an unverified static calendar under `closed`) skips the scan as a whole, records
@@ -327,8 +330,9 @@ came with them. Everything else that decides an entry is unchanged.
 5. **Scan-time book checks (decision 5, 2026-10-06).** The scan runs
    `concurrent_positions` and `aggregate_stop_risk` against its book before sending a
    card, so a full book or an exhausted stop-risk budget stops the card at scan time. A
-   refusal in the collect phase is in the log and in the evaluation's `rejection_rule`,
-   not in the Telegram runner-up list (backlog below).
+   refusal in the collect phase is in the log, in the evaluation's `rejection_rule` and
+   counted by that rule in the scan journal's `funnel`, not in the Telegram runner-up list
+   (backlog below).
    *Extension (2026-10-06):* the scan also runs `same_symbol` (after
    `concurrent_positions`), so a card on a symbol the book already holds is refused at
    scan time instead of at Execute. The scan's book includes the cards this scan already
@@ -471,7 +475,8 @@ These decide or bound entries, but they are not entry-risk rules and stay where 
 ## Not done here
 
 - Surface collect-phase book refusals in the scan summary and the end-of-session digest.
-  They are only logged today, because changing the runner-up counts was not approved.
+  They are logged and counted per rule in the scan journal's `funnel` today, but not shown
+  there, because changing the runner-up counts was not approved.
 - Some test fixtures still carry their own per-desk regime stubs instead of the shared
   `calm_regime`/`calm_macro` fixtures: `tests/agent/conftest.py`,
   `test_account_risk.py`, `test_timeframe_dedup.py`, `test_async_responsiveness.py`, and

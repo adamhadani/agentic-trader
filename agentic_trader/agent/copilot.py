@@ -40,6 +40,9 @@ from agentic_trader.agent.regime import (
     unavailable_regime_block,
 )
 from agentic_trader.agent.scan_journal import (
+    AdmissionRefusal,
+    RefusalKind,
+    ScanFunnel,
     ScanNotice,
     append_scan_journal,
     regime_errors_text,
@@ -747,8 +750,9 @@ class TradingCopilot:
         otherwise share this scan's shape (no symbols, no timeframe).
 
         ``trigger`` names the caller in the ranked-candidate journal. Every unrestricted
-        non-dry scan with a budget journals ``scan_candidates_ranked`` (suggestion, swing
-        and operator scans alike); only the shadow block is suggestion-only. It never
+        non-dry scan with a budget that passes the idle check journals ``scan_candidates_ranked``
+        once (suggestion, swing and operator scans alike), a zero-candidate scan included, with
+        its collect ``funnel`` (``ScanFunnel``); only the shadow block is suggestion-only. It never
         changes ranking, budgets, sending or the card policy.
 
         ``dedup_exempt_setups`` skips the recent-duplicate rule for exactly those
@@ -992,6 +996,8 @@ class TradingCopilot:
             # sequential per-contract phase so the whole universe competes for the few
             # cards this session may still spend.
             approved_candidates: list[tuple[Any, Any, Any]] = []
+            # The completed scan's journal funnel: contracts by gate, native setups by where they went.
+            funnel = ScanFunnel()
             # One corporate-action read per scan: the deterministic COLLECT pass and the send phase
             # judge every equity candidate against the same capture (None when the feature is off).
             corporate_lookup = await self._corporate_actions_lookup(datetime.now(UTC))
@@ -1146,13 +1152,16 @@ class TradingCopilot:
                         scan_id=scan_id, selection=dynamic_selection, dynamic=summary["dynamic"], summary=summary
                     )
 
+            funnel.selected = len(scan_selected)
             for contract, info in scan_selected:
                 if contract in dynamic_excluded:
                     # Fetch failures, coverage and liquidity exclusions of dynamic names are
                     # recorded in summary["dynamic"]; they never reach strategy scanning.
+                    funnel.dynamic_excluded += 1
                     continue
                 data = datasets.get(contract)
                 if isinstance(data, BaseException) or data is None:
+                    funnel.fetch_failed += 1
                     summary["fetch_failed"].append(contract)
                     logger.warning(
                         "Fetch failed for %s: %r",
@@ -1164,6 +1173,8 @@ class TradingCopilot:
 
                 inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
                 logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
+                # This contract's setups iterated and classified: the guard counts the difference as lost.
+                contract_setups = contract_classified = 0
                 try:
                     # Alpha shadow evidence keeps its static population: a dynamic name is
                     # selected by today's screener, not by any alpha's declared universe.
@@ -1171,6 +1182,7 @@ class TradingCopilot:
                         await self.alpha_shadow.observe(alpha_snapshot, data, as_of=receipts.get(contract))
 
                     if data.daily.empty or data.four_hour.empty:
+                        funnel.insufficient += 1
                         summary["insufficient"].append(contract)
                         logger.warning(f"Insufficient data for {contract}, skipping.")
                         continue
@@ -1181,8 +1193,10 @@ class TradingCopilot:
                             contract,
                             extra={"event": "coverage_excluded", "contract": contract},
                         )
+                        funnel.coverage_excluded += 1
                         continue
 
+                    funnel.scanned += 1
                     summary["scanned"] += 1
 
                     candidates = await asyncio.to_thread(
@@ -1201,6 +1215,9 @@ class TradingCopilot:
 
                     for candidate in candidates:
                         total_candidates += 1
+                        contract_setups += 1
+                        funnel.raw_setups += 1
+                        funnel.raw_setups_by_strategy[candidate.strategy] += 1
                         logger.info(
                             "Found setup: %s %s via %s at %.2f",
                             candidate.contract,
@@ -1216,7 +1233,7 @@ class TradingCopilot:
                             },
                         )
 
-                        admitted, reason = await self._admit_candidate(
+                        admitted, refusal = await self._admit_candidate(
                             candidate,
                             dedup_exempt_setups=dedup_exempt_setups,
                             current_exposure=current_exposure,
@@ -1224,16 +1241,21 @@ class TradingCopilot:
                             dry_run=dry_run,
                             corporate_actions=corporate_lookup,
                         )
-                        if reason == "duplicate":
-                            if candidate.contract not in summary["duplicates"]:
-                                summary["duplicates"].append(candidate.contract)
-                        elif reason is not None and reason.startswith("account risk unavailable"):
-                            scan_errors += 1
+                        contract_classified += 1
+                        if refusal is not None:
+                            funnel.record_refusal(refusal)
+                            if refusal.kind is RefusalKind.DUPLICATE:
+                                if candidate.contract not in summary["duplicates"]:
+                                    summary["duplicates"].append(candidate.contract)
+                            elif refusal.kind is RefusalKind.ACCOUNT_RISK_UNAVAILABLE:
+                                scan_errors += 1
                         elif admitted is not None:
                             approved_candidates.append(admitted)
 
-                except Exception:
+                except Exception as exc:
                     scan_errors += 1
+                    funnel.errors[type(exc).__name__] += 1
+                    funnel.setups_lost_to_errors += contract_setups - contract_classified
                     logger.exception(f"Error scanning {contract}")
 
             # DRIFT COLLECT: the prepared events, already in the study's order (reaction z
@@ -1252,7 +1274,7 @@ class TradingCopilot:
                         if isinstance(cand, str):
                             drift_outcomes[symbol] = cand
                             continue
-                        admitted, reason = await self._admit_candidate(
+                        admitted, refusal = await self._admit_candidate(
                             cand,
                             dedup_exempt_setups=dedup_exempt_setups,
                             current_exposure=current_exposure,
@@ -1260,11 +1282,12 @@ class TradingCopilot:
                             dry_run=dry_run,
                             corporate_actions=corporate_lookup,
                         )
-                        if admitted is None:
-                            drift_outcomes[symbol] = reason or "rejected"
-                            if reason and reason.startswith("account risk unavailable"):
+                        if refusal is not None:
+                            # The PEAD decision journals the refusal's text; the funnel counts natives only.
+                            drift_outcomes[symbol] = str(refusal)
+                            if refusal.kind is RefusalKind.ACCOUNT_RISK_UNAVAILABLE:
                                 scan_errors += 1
-                        else:
+                        elif admitted is not None:
                             drift_ranked.append(admitted)
                     except Exception as exc:
                         scan_errors += 1
@@ -1282,6 +1305,7 @@ class TradingCopilot:
                 key=lambda item: (-self._setup_quality(item[0]), item[0].contract, item[0].strategy),
             )
             native_count = len(ranked)
+            funnel.admitted = native_count
             # Deterministic approvals eligible for ranking, not cards sent: the budget,
             # the send-phase evaluation and send failures all thin this number down.
             summary["approved"] = native_count
@@ -1694,7 +1718,9 @@ class TradingCopilot:
                     logger.exception(f"Error scanning {candidate.contract}")
                     continue
 
-            if not dry_run and budget != ScanBudget.NONE and native_count and not symbols and timeframe is None:
+            # Every eligible scan journals once, a zero-candidate one included (the idle check above
+            # already ended a scan with nothing to select).
+            if not dry_run and budget != ScanBudget.NONE and not symbols and timeframe is None:
                 await self._journal_scan_ranking(
                     scan_id=scan_id,
                     decided_at=decided_at,
@@ -1705,6 +1731,7 @@ class TradingCopilot:
                     scheduled_time_et=scheduled_time_et,
                     calendar_block=calendar_block,
                     regime_block=regime_block,
+                    funnel=funnel.journal_block(),
                     ranked=ranked[:native_count],
                     outcomes=outcomes[:native_count],
                     shadow_by_rank=shadow_by_rank[:native_count],
@@ -1868,6 +1895,7 @@ class TradingCopilot:
                 scheduled_time_et=scheduled_time_et,
                 calendar_block=calendar_block,
                 regime_block=regime_block,
+                funnel=None,
                 notice=notice,
                 ranked=[],
                 outcomes=[],
@@ -1954,11 +1982,12 @@ class TradingCopilot:
         active_positions: list[dict[str, Any]],
         dry_run: bool,
         corporate_actions: CorporateActionsLookup | None,
-    ) -> tuple[tuple[Any, Any, Any] | None, str | None]:
+    ) -> tuple[tuple[Any, Any, Any] | None, AdmissionRefusal | None]:
         """Dedup, account risk and the deterministic evaluation shared by native and drift candidates.
 
-        Returns ``((candidate, det_res, account_risk), None)`` or ``(None, reason)``, where
-        reason is ``"duplicate"``, ``"account risk unavailable: …"`` or ``"rejected: …"``.
+        Returns ``((candidate, det_res, account_risk), None)`` or ``(None, refusal)``. The refusal is
+        typed (duplicate, account risk unavailable, or rejected with ``det_res.rejection_rule``) and
+        reads as its reason, ``"duplicate"``, ``"account risk unavailable: …"`` or ``"rejected: …"``.
         Any other exception propagates to the caller's own guard.
         """
         # Deduplication check
@@ -1989,7 +2018,7 @@ class TradingCopilot:
                     "strategy": candidate.strategy,
                 },
             )
-            return None, "duplicate"
+            return None, AdmissionRefusal(RefusalKind.DUPLICATE, None, "duplicate")
 
         # Risk evaluation
         account_risk = None
@@ -2006,7 +2035,9 @@ class TradingCopilot:
                     exc,
                     extra={"event": "candidate_risk_unavailable", "contract": candidate.contract},
                 )
-                return None, f"account risk unavailable: {exc}"
+                return None, AdmissionRefusal(
+                    RefusalKind.ACCOUNT_RISK_UNAVAILABLE, None, f"account risk unavailable: {exc}"
+                )
         # Deterministic pass: it decides which candidates may compete for a card. The
         # winners are re-evaluated in the send phase with the caller's use_llm, and that
         # second result is the one recorded.
@@ -2032,7 +2063,9 @@ class TradingCopilot:
                     "rejection_rule": det_res.rejection_rule,
                 },
             )
-            return None, f"rejected: {det_res.rejection_reason}"
+            return None, AdmissionRefusal(
+                RefusalKind.REJECTED, det_res.rejection_rule, f"rejected: {det_res.rejection_reason}"
+            )
 
         return (candidate, det_res, account_risk), None
 
@@ -2129,6 +2162,7 @@ class TradingCopilot:
         scheduled_time_et: str | None,
         calendar_block: Mapping[str, Any],
         regime_block: Mapping[str, Any] | None,
+        funnel: Mapping[str, Any] | None,
         notice: ScanNotice | None = None,
         ranked: list[tuple[Any, Any, Any]],
         outcomes: list[str | None],
@@ -2189,6 +2223,9 @@ class TradingCopilot:
                 # outcomes report copies it onto each candidate and buckets by it. Never a gate.
                 # Null when the lockout gated the scan before the read.
                 "regime": None if regime_block is None else dict(regime_block),
+                # The completed scan's collect funnel (``ScanFunnel.journal_block``); null when gated. A
+                # reader treats an event without ``funnel`` as unknown.
+                "funnel": None if funnel is None else dict(funnel),
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
                 "card_policy": {

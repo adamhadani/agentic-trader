@@ -3,13 +3,19 @@
 A scan that loses its regime read journals ``status: regime_unavailable`` and queues the New York
 date's one ``regime-unavailable/{et_date}`` notice beside it, so the event and the notice commit
 or roll back together. Errors here carry exception type names only, never provider text.
+
+A completed scan's event carries its collect ``funnel`` (``ScanFunnel.journal_block``): what the
+scan selected and scanned, and where each native setup went. Admission refusals are typed
+(``AdmissionRefusal``), so the funnel counts them by rule id, never by parsing reason text.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from agentic_trader.agent.macro import DECISION_INPUTS, missing_input_names
@@ -17,6 +23,93 @@ from agentic_trader.agent.regime import RegimeUnavailable
 from agentic_trader.execution.durable import EventKind, NotificationKind, ScanStatus, ScanTrigger
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.db import SignalDatabase
+
+
+class RefusalKind(StrEnum):
+    """Why the collect phase's admission refused a setup."""
+
+    DUPLICATE = "duplicate"
+    ACCOUNT_RISK_UNAVAILABLE = "account_risk_unavailable"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class AdmissionRefusal:
+    """A setup the collect phase's admission refused.
+
+    ``rule`` is the deterministic evaluation's ``rejection_rule`` (a ``RiskRule`` value), or None: a
+    duplicate, unavailable account risk, or a rejection no shared rule made. ``reason`` is the
+    operator text (``"duplicate"``, ``"account risk unavailable: …"`` or ``"rejected: …"``), which a
+    PEAD decision journals as its outcome; the funnel never reads it.
+    """
+
+    kind: RefusalKind
+    rule: str | None
+    reason: str
+
+    def __str__(self) -> str:
+        return self.reason
+
+
+@dataclass
+class ScanFunnel:
+    """A completed scan's collect funnel: contracts by gate, then native setups by where they went.
+
+    Each ``selected`` contract is dynamic-excluded, fetch-failed, insufficient, coverage-excluded or
+    ``scanned``, unless its guard fires first; ``errors`` counts the guard's exception type names, so a
+    contract that raises after scanning counts in both. Every native setup iterated (``raw_setups``) is
+    a duplicate, lacks account risk, is rejected (by rule, ``unclassified`` without one), is admitted
+    (``admitted`` equals the ranked native count), or is lost when its contract's guard fires before it
+    is classified (``setups_lost_to_errors``). PEAD drift candidates are not counted here.
+    """
+
+    selected: int = 0
+    scanned: int = 0
+    fetch_failed: int = 0
+    insufficient: int = 0
+    coverage_excluded: int = 0
+    dynamic_excluded: int = 0
+    raw_setups: int = 0
+    duplicates: int = 0
+    account_risk_unavailable: int = 0
+    setups_lost_to_errors: int = 0
+    admitted: int = 0
+    raw_setups_by_strategy: Counter[str] = field(default_factory=Counter)
+    rejected_by_rule: Counter[str] = field(default_factory=Counter)
+    errors: Counter[str] = field(default_factory=Counter)
+
+    def record_refusal(self, refusal: AdmissionRefusal) -> None:
+        """Count one refused native setup under its kind; a rejection under its rule id."""
+        match refusal.kind:
+            case RefusalKind.DUPLICATE:
+                self.duplicates += 1
+            case RefusalKind.ACCOUNT_RISK_UNAVAILABLE:
+                self.account_risk_unavailable += 1
+            case RefusalKind.REJECTED:
+                self.rejected_by_rule[refusal.rule or "unclassified"] += 1
+
+    def journal_block(self) -> dict[str, Any]:
+        """The journal's ``funnel``: integers and plain ``{name: n}`` dicts with sorted keys."""
+
+        def counts(counter: Counter[str]) -> dict[str, int]:
+            return {name: counter[name] for name in sorted(counter)}
+
+        return {
+            "selected": self.selected,
+            "scanned": self.scanned,
+            "fetch_failed": self.fetch_failed,
+            "insufficient": self.insufficient,
+            "coverage_excluded": self.coverage_excluded,
+            "dynamic_excluded": self.dynamic_excluded,
+            "raw_setups": self.raw_setups,
+            "raw_setups_by_strategy": counts(self.raw_setups_by_strategy),
+            "duplicates": self.duplicates,
+            "account_risk_unavailable": self.account_risk_unavailable,
+            "rejected_by_rule": counts(self.rejected_by_rule),
+            "errors": counts(self.errors),
+            "setups_lost_to_errors": self.setups_lost_to_errors,
+            "admitted": self.admitted,
+        }
 
 
 @dataclass(frozen=True)

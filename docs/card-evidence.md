@@ -48,7 +48,7 @@ Payload (`CardStatsSnapshot`, `agentic_trader/research/setups/card_stats.py`):
 
 - provenance: `computed_at`, `window_start`, `window_end` (ET dates), `feed`, `cost_bps_per_side`,
   `max_hold_sessions`, `labeller_protocol` (`setup-outcomes-v1`), `code_revision`,
-  `events_considered`, `rows_labelled`;
+  `events_considered` (scan events read, zero-candidate and gated events included), `rows_labelled`;
 - `keys`: one row per `(strategy, direction)` plus the aggregate `("*", "*")`, each with `n_mature`,
   `n_immature`, `n_fetch_failed`, `target_rate`, `stop_rate`, `timeout_rate`, `mean_r_cost`,
   `mean_timeout_r`, `median_holding_sessions`, `first_decided_at`, `last_decided_at`. Rates are over
@@ -385,15 +385,41 @@ decisive test is the frozen study (`alpha bracket-counterfactual`,
   `would_withhold`).
 - **Censoring bias.** A label stays immature until the stop or target hits or 20 regular sessions pass,
   so early samples over-represent fast resolutions. The sample floor does not remove this.
-- **Coverage.** Every full-universe scan (suggestion, swing, unrestricted `/scan`) journals
-  `scan_candidates_ranked` with its `trigger`. The journal condition is: no symbols, no timeframe, a
-  budget, not a dry run; a CLI `copilot scan` with `--strategy`, `--strategy-mode`, `--asset-class`
-  or `--bypass-session-filter` (no `--symbols`, no `--timeframe`) therefore still journals with
-  `"scope": "universe"`. Intraday, `/scan SYMBOL`, Re-evaluate cards and an unrestricted
-  `copilot scan --no-budget` (budget NONE; it sends cards) show evidence and obey the policy but are
-  not journaled. Cards sent by swing or operator scans before 2026-10-09 (PR A.1) were
-  never journaled and stay unlabelled; the record under-covers sent cards before that date (18 of the 22
-  cards sent since 2026-09-24 were in that position on 2026-10-08).
+- **Coverage.** Every eligible scan journals exactly one `scan_candidates_ranked` event (key
+  `scan_candidates_ranked/{scan_id}`) with its `trigger`: suggestion, swing and unrestricted `/scan`
+  alike. A scan is eligible when it has no symbols, no timeframe, a budget (not `NONE`), is not a dry
+  run and passed the idle check. A zero-candidate scan journals (`candidates: []`), and so do a
+  lockout-gated scan and a scan whose regime read failed. Halted, closed-session and idle scans never
+  journal: they evaluated no slot, and the halt and the lockout keep their own skipped `pead_decision`.
+  Dry runs, intraday, `/scan SYMBOL`, Re-evaluate cards and an unrestricted `copilot scan --no-budget`
+  (budget `NONE`; it sends cards) never journal either; they show evidence and obey the policy. A CLI
+  `copilot scan` with `--strategy`, `--strategy-mode`, `--asset-class` or `--bypass-session-filter`
+  (no `--symbols`, no `--timeframe`) still journals with `"scope": "universe"`. Each event carries:
+  - `status`: `completed`, `macro_lockout` or `regime_unavailable`. A reader treats an event without
+    `status` (one written before this field existed) as `completed`.
+  - `gate`: null when completed; `{rule: "macro_lockout", reason}` with the rule's text; or
+    `{rule: "regime_unavailable", missing, errors}` with input names and exception type names.
+  - `calendar` on every status; `regime` null when the lockout gated the scan before the read;
+    `scheduled_time_et` for a scheduled slot, null otherwise.
+  - `funnel`: a completed scan's collect funnel, null when gated; an event without it has an unknown
+    funnel. Contract counts: `selected`, `scanned`, `fetch_failed`, `insufficient`,
+    `coverage_excluded`, `dynamic_excluded`. Native setup counts: `raw_setups` (and
+    `raw_setups_by_strategy`), `duplicates`, `account_risk_unavailable`, `rejected_by_rule` (by
+    `RiskRule` id; `unclassified` when no shared rule refused: sizing, the bracket check or the
+    statistical correlation check),
+    `errors` (by exception type name, from the per-contract guard), `setups_lost_to_errors` (the
+    setups a contract had iterated but not yet classified when its guard fired) and `admitted` (the
+    ranked native count, so `len(candidates)`). They satisfy `raw_setups = duplicates +
+    account_risk_unavailable + Σ rejected_by_rule + admitted + setups_lost_to_errors`. The funnel holds
+    rule ids and type names only, never reason text; PEAD drift candidates are counted in their own
+    `pead_decision`, not here.
+
+  `card_stats`' `events_considered` counts the scan events it considered, zero-candidate and gated
+  events included; it is not a count of scans with candidates. The labelled rows are unchanged, because
+  an empty `candidates` list labels nothing. Cards sent by swing or operator scans before 2026-10-09
+  (PR A.1) were never journaled and stay unlabelled. Of the 22 cards sent from 2026-09-24 to 2026-10-08,
+  11 were never journaled and 7 more were journaled before the candidate's `signal_id` existed (#106,
+  2026-10-05), so those 7 match their card only by contract and time.
 - **Repeated setups.** The same `(contract, strategy, direction)` setup can now be journaled several
   times per session (swing runs, each in-session daemon start, back-to-back scans). Each journaled
   candidate counts once in `n_mature`, so correlated repeats inflate the sample and the
