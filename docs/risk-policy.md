@@ -61,12 +61,15 @@ only place this product is computed.
   multiplier (`LOW` 1.0, `MODERATE` 0.8, `HIGH` 0.5, `EXTREME` 0.25), or `UNKNOWN` when a
   decision input (3m, 2y, 10y, HY OAS) is missing: `regime.unknown_risk_multiplier` (0.5,
   validated `0.10 ≤ m < 1.0`), with squeeze breakouts per `regime.unknown_breakout_allowed`
-  (false) and the VIX-derived reward/risk. Missing context inputs (5y, 30y, DXY,
-  breakevens) never move it. Only an explicit VIX-only policy
+  (false) and the VIX-derived reward/risk. When the inputs that are present already force
+  `EXTREME` (VIX above `regime.vix_extreme_threshold`, or HY OAS `CRITICAL`), `UNKNOWN`
+  keeps its label but applies `EXTREME`'s limits: the smaller of the two multipliers, the
+  larger reward/risk (`regime.extreme_min_rr`) and breakouts off. Missing context inputs
+  (5y, 30y, DXY, breakevens) never move it. Only an explicit VIX-only policy
   (`regime.yield_curve_enabled: false`) makes no stress assessment, so the multiplier is
   1.0 whatever the macro inputs.
 - A non-finite multiplier, equity or drawdown raises `ValueError`. It is never read as 1.0,
-  and a missing decision input is `UNKNOWN` at 0.5×, never 1.0.
+  and a missing decision input is `UNKNOWN` at 0.5× or less, never 1.0.
 
 Each layer passes what it observed:
 

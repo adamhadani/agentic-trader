@@ -130,6 +130,9 @@ def write_calendar(tmp_path: Path, events: list[dict], *, valid_through: str = "
         (respond(429, text="slow"), "UnexpectedStatus", 429),
         (respond(200, text="<html>maintenance</html>"), "JSONDecodeError", None),
         (respond(200, json={"events": []}), "UnexpectedPayload", None),
+        # The weekly feed always lists dozens of items: an empty week, or one where no item parses, is broken.
+        (respond(200, json=[]), "UnexpectedPayload", None),
+        (respond(200, json=[{"date": "garbage"}, "x", {"title": "CPI m/m"}]), "UnexpectedPayload", None),
     ],
 )
 async def test_a_failed_fetch_is_typed_never_cached_as_ok_and_retried_after_backoff(handler, error, http_status):

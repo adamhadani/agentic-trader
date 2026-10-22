@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import math
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -28,7 +29,7 @@ from agentic_trader.agent.macro import (
     unknown_macro_stress,
 )
 from agentic_trader.agent.macro_explainer import MacroExplainer
-from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot, regime_journal_block
+from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot, RegimeUnavailable, regime_journal_block
 from agentic_trader.config import RegimeConfig
 from agentic_trader.constants import VolatilityRegime
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
@@ -319,6 +320,51 @@ def test_prompt_context_renders_a_missing_breakeven_as_na():
     assert "• 10Y Breakeven Inflation: N/A" in context
     assert "• US Dollar Index (DXY): N/A" in context
     assert "• Compound Macro Stress: LOW (Risk Multiplier: 1.00x)" in context
+
+
+REGIME_DOWN_TEXT = "Market regime unavailable (vix: ReadTimeout); scans skip until VIX is readable."
+
+
+def _vix_down_desk(app_config) -> SimpleNamespace:
+    vix = MacroInput("vix", None, MACRO_INPUT_SOURCES["vix"], None, True, "ReadTimeout")
+    dxy = MacroInput("dxy", None, MACRO_INPUT_SOURCES["dxy"], None, False, "ConnectError")
+    return SimpleNamespace(
+        config=app_config,
+        regime_detector=SimpleNamespace(get_regime=AsyncMock(side_effect=RegimeUnavailable({"vix": vix, "dxy": dxy}))),
+        db=SimpleNamespace(record_audit=AsyncMock()),
+    )
+
+
+async def test_macro_summary_names_an_unavailable_regime_by_type_name(app_config):
+    desk = _vix_down_desk(app_config)
+
+    assert await TradingCopilot.get_macro_summary_html(desk) == REGIME_DOWN_TEXT
+
+    desk.db.record_audit.assert_not_awaited()  # no regime was read, so no MACRO_REPORT
+
+
+@pytest.mark.parametrize("path", ["/macro", "macro button"])
+async def test_macro_command_and_button_reply_that_the_regime_is_unavailable(app_config, path):
+    desk = _vix_down_desk(app_config)
+    notifier = TelegramNotifier(
+        bot_token="test_token",
+        chat_id="12345",
+        macro_provider=functools.partial(TradingCopilot.get_macro_summary_html, desk),
+    )
+    update = MagicMock()
+    update.effective_chat.id = 12345
+    if path == "/macro":
+        update.message = AsyncMock()
+        await notifier.handle_macro_command(update, MagicMock())
+        reply = update.message.reply_text
+    else:
+        update.callback_query.data = "cmd_macro"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.message.reply_text = AsyncMock()
+        await notifier.handle_button_callback(update, MagicMock())
+        reply = update.callback_query.message.reply_text
+
+    reply.assert_awaited_once_with(REGIME_DOWN_TEXT, parse_mode="HTML")
 
 
 async def test_explain_macro_without_a_report_names_the_missing_decision_inputs(app_config):

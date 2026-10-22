@@ -314,28 +314,36 @@ async def test_digest_reports_how_many_instruments_were_scanned(budget_desk, app
 
 
 async def test_digest_counts_universe_scans_only(scan_desk):
-    """F6: the 15-minute intraday job and symbol-restricted scans are not suggestion
-    scans; a session in which only those ran reports no suggestion scans."""
+    """F6: only suggestion scans count. The swing job and an unrestricted operator /scan share the
+    suggestion scan's shape (no symbols, no timeframe), and the 15-minute intraday job is an operator-
+    triggered restricted scan; a session in which only those ran reports no suggestion scans."""
     scan_desk.outbox = AsyncMock()
     et_today = scan_desk.session_start_et().date().isoformat()
+
+    def completed(trigger: ScanTrigger, timeframe: str | None) -> dict:
+        return {
+            "scope": {"asset_class": "all", "timeframe": timeframe, "restricted": timeframe is not None},
+            "trigger": str(trigger),
+            "status": "completed",
+            "scanned": 1,
+            "insufficient": [],
+            "candidates": 99,
+            "sent": 3,
+            "runners_up": [],
+            "fetch_failed": [],
+            "coverage_excluded": [],
+            "duration_seconds": 1.0,
+        }
+
     scan_desk._session_scan_stats = {
         et_today: [
-            {
-                "scope": {"asset_class": "all", "timeframe": "15m", "restricted": True},
-                "scanned": 1,
-                "insufficient": [],
-                "candidates": 99,
-                "sent": 3,
-                "runners_up": [],
-                "fetch_failed": [],
-                "coverage_excluded": [],
-                "duration_seconds": 1.0,
-            }
+            completed(ScanTrigger.SWING_SCAN, None),
+            completed(ScanTrigger.OPERATOR_SCAN, None),
+            completed(ScanTrigger.OPERATOR_SCAN, "15m"),
         ]
     }
     text = await scan_desk.publish_scan_digest()
-    assert "no suggestion scans" in text.lower()
-    assert "99" not in text
+    assert text == f"📋 Scan digest {et_today}: no suggestion scans ran this session."
 
 
 async def test_scan_summary_records_its_scope(scan_desk, app_config):

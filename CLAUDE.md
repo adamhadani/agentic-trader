@@ -126,8 +126,10 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    the digest counts it apart from its "top:" list. Never widen the intraday job to the universe or
    store the budget in a counter.
    A missing macro decision input is `MacroStressLevel.UNKNOWN` at `regime.unknown_risk_multiplier`
-   (0.5×, breakouts off), never 1.0×; a missing VIX raises `RegimeUnavailable`, which skips the scan
-   visibly and queues one `regime-unavailable/{et_date}` notice per New York date. The computed
+   (0.5×, breakouts off), never 1.0×, and capped at EXTREME's limits when the present inputs already
+   force EXTREME; a missing VIX (read twice) raises `RegimeUnavailable`, which skips the scan visibly
+   and queues one `regime-unavailable/{et_date}` notice per New York date, never spent by a
+   journal-only scan. The computed
    `macro_calendar` readiness check is ready iff the static calendar is `ok` with at least
    `risk.macro_calendar_renewal_days` (30) left before `valid_through`; publishing
    `us-tier1-vN+1.json` and pinning its digest before the check degrades is a standing operator duty

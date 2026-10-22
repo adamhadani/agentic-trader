@@ -355,6 +355,11 @@ class TelegramHtmlFormatter:
         )
 
     @staticmethod
+    def format_regime_unavailable_html(errors_text: str) -> str:
+        """The ``/macro`` reply when no regime can be read: ``errors_text`` is ``"vix: ReadTimeout"`` (type names)."""
+        return html.escape(f"Market regime unavailable ({errors_text}); scans skip until VIX is readable.")
+
+    @staticmethod
     def format_macro_dashboard_html(regime: RegimeSnapshot, *, required_rr: float) -> str:
         """The ``/macro`` dashboard. ``required_rr`` is the caller's
         ``agentic_trader.risk.required_reward_risk`` for this regime, printed as the minimum R:R."""

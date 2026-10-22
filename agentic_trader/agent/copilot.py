@@ -742,8 +742,9 @@ class TradingCopilot:
         journals nothing; a restricted scan keeps its selection and its reply's skip reason. A
         lockout-gated scan makes no regime read. A regime read that raises ends the scan:
         a non-dry unrestricted budgeted scan journals ``status: regime_unavailable`` with the New York
-        date's one ``regime-unavailable`` notice, SCAN readiness goes not ready, and the gated summary
-        (``gate_reason``) feeds the digest and the Telegram ``/scan`` reply.
+        date's one ``regime-unavailable`` notice (a journal-only scan queues none), SCAN readiness goes
+        not ready, and the gated summary (``gate_reason``) feeds the digest and the Telegram ``/scan``
+        reply.
 
         ``shadow_evidence`` is set only by the scheduled suggestion-scan job
         (``make_suggestion_scan``): it gates the shadow ranker block, PEAD drift preparation and
@@ -1984,9 +1985,11 @@ class TradingCopilot:
 
         A non-dry unrestricted scan journals ``regime_unavailable`` (when budgeted) with the New York
         date's one notice in the same transaction, journals the skipped PEAD decision of a drift scan
-        and records a gated summary for the digest. Every non-dry scan observes SCAN not ready: a lost
-        scan is a scan failure. A restricted scan's operator reply is its caller's. A dry run only logs
-        and prints. Only type names leave here, never the exception's text.
+        and records a gated summary for the digest. A journal-only scan queues no notice: it could send
+        no card, and the date's one notice belongs to a scan that loses cards (and a PEAD decision).
+        Every non-dry scan observes SCAN not ready, even when journaling raises: a lost scan is a scan
+        failure. A restricted scan's operator reply is its caller's. A dry run only logs and prints.
+        Only type names leave here, never the exception's text.
         """
         gate = regime_unavailable_gate(exc)
         errors_text = regime_errors_text(gate["errors"])
@@ -1999,29 +2002,37 @@ class TradingCopilot:
         if dry_run:
             print(f"[DRY RUN] Market regime unavailable ({errors_text}); scan skipped.")
             return
-        if not scope["restricted"] and scope["timeframe"] is None:
-            at = datetime.now(UTC)
-            # The notice says whether the 10:35 PEAD decision was lost too, so ask before journaling it.
-            pead_skipped = (
-                drift_scan
-                and self._skipped_drift(alpha_snapshot, scheduled_time_et, reason="regime unavailable") is not None
+        try:
+            if not scope["restricted"] and scope["timeframe"] is None:
+                at = datetime.now(UTC)
+                # The notice says whether the 10:35 PEAD decision was lost too, so ask before journaling it.
+                pead_skipped = (
+                    drift_scan
+                    and self._skipped_drift(alpha_snapshot, scheduled_time_et, reason="regime unavailable") is not None
+                )
+                await self._record_gated_scan(
+                    decided_at=at,
+                    scope=scope,
+                    trigger=trigger,
+                    budget=budget,
+                    status=ScanStatus.REGIME_UNAVAILABLE,
+                    gate=gate,
+                    gate_reason="market regime unavailable",
+                    scheduled_time_et=scheduled_time_et,
+                    calendar_block=calendar_block,
+                    regime_block=unavailable_regime_block(
+                        exc, at=at, macro_enabled=self.config.regime.yield_curve_enabled
+                    ),
+                    notice=None
+                    if budget == ScanBudget.JOURNAL_ONLY
+                    else regime_unavailable_notice(gate["errors"], at=at, trigger=trigger, pead_skipped=pead_skipped),
+                )
+                if drift_scan:
+                    await self._journal_skipped_drift(alpha_snapshot, scheduled_time_et, reason="regime unavailable")
+        finally:
+            await self.readiness.observe(
+                HealthComponent.SCAN, False, f"Regime unavailable ({errors_text}); scan skipped"
             )
-            await self._record_gated_scan(
-                decided_at=at,
-                scope=scope,
-                trigger=trigger,
-                budget=budget,
-                status=ScanStatus.REGIME_UNAVAILABLE,
-                gate=gate,
-                gate_reason="market regime unavailable",
-                scheduled_time_et=scheduled_time_et,
-                calendar_block=calendar_block,
-                regime_block=unavailable_regime_block(exc, at=at, macro_enabled=self.config.regime.yield_curve_enabled),
-                notice=regime_unavailable_notice(gate["errors"], at=at, trigger=trigger, pead_skipped=pead_skipped),
-            )
-            if drift_scan:
-                await self._journal_skipped_drift(alpha_snapshot, scheduled_time_et, reason="regime unavailable")
-        await self.readiness.observe(HealthComponent.SCAN, False, f"Regime unavailable ({errors_text}); scan skipped")
 
     async def _admit_candidate(
         self,
@@ -4776,7 +4787,8 @@ class TradingCopilot:
                 "Use /resume to clear."
             )
         count_before = len(await self.db.get_recent_signals(limit=100))
-        if await self.run_scan(use_llm=True, dry_run=False) is None:
+        summary = await self.run_scan(use_llm=True, dry_run=False)
+        if summary is None:
             # A gated scan leaves its reason in the summary; a closed session or an idle universe leaves none.
             reason = self.last_scan_summary.get("gate_reason")
             detail = html.escape(str(reason)) if reason else "no instrument is eligible in the current session"
@@ -4786,6 +4798,13 @@ class TradingCopilot:
         if new_alerts > 0:
             return (
                 f"✅ <b>Scan Complete:</b> {new_alerts} new trade setup(s) identified and alert cards dispatched above."
+            )
+        if runners_up := summary.get("runners_up"):
+            # Setups were ranked but every one was refused (a broad-index exclusion, a spent budget, a veto).
+            top_reason = html.escape(str(runners_up[0].get("reason")))
+            return (
+                f"✅ <b>Scan Complete:</b> No card sent: {len(runners_up)} setup(s) ranked, none carded "
+                f"(top reason: {top_reason})."
             )
         return (
             "✅ <b>Scan Complete:</b> Evaluated all universe contracts. "
@@ -4843,9 +4862,16 @@ class TradingCopilot:
         """One macro dashboard using the same combined snapshot as trade evaluation.
 
         The minimum reward/risk it records and prints is ``agentic_trader.risk.required_reward_risk``,
-        the ratio every entry gate applies under this regime.
+        the ratio every entry gate applies under this regime. Without VIX (``RegimeUnavailable``) it is
+        one plain line naming the missing decision inputs' error types; both ``/macro`` and the macro
+        button reply with it.
         """
-        regime = await self.regime_detector.get_regime()
+        try:
+            regime = await self.regime_detector.get_regime()
+        except RegimeUnavailable as exc:
+            return TelegramHtmlFormatter.format_regime_unavailable_html(
+                regime_errors_text(regime_unavailable_gate(exc)["errors"])
+            )
         required_rr = required_reward_risk(RiskLimits.from_config(self.config), regime.min_rr_threshold)
         await self.db.record_audit(
             AuditEventType.MACRO_REPORT,

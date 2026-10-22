@@ -263,6 +263,18 @@ def classify_inflation_expectations(
     )
 
 
+# EXTREME's risk multiplier: the smallest size the compound stress sets.
+EXTREME_RISK_MULTIPLIER = 0.25
+
+
+def _escalates_to_extreme(config: RegimeConfig, *, vix: float | None, credit: CreditStressRegime | None) -> bool:
+    """The fast escalation to EXTREME, whatever the other inputs: VIX above its extreme threshold or credit CRITICAL.
+
+    An absent input (None) never escalates.
+    """
+    return (vix is not None and vix > config.vix_extreme_threshold) or credit is CreditStressRegime.CRITICAL
+
+
 def compute_compound_macro_stress(
     vix: float,
     yield_spreads: YieldCurveSpreads,
@@ -306,9 +318,9 @@ def compute_compound_macro_stress(
 
     # 4. Determine Level and Invariants
     # Fast escalation override for extreme panic
-    if vix > cfg.vix_extreme_threshold or credit.regime == CreditStressRegime.CRITICAL or score >= 7:
+    if _escalates_to_extreme(cfg, vix=vix, credit=credit.regime) or score >= 7:
         level = MacroStressLevel.EXTREME
-        multiplier = 0.25
+        multiplier = EXTREME_RISK_MULTIPLIER
         breakout_allowed = False
         min_rr = cfg.extreme_min_rr
     elif yield_spreads.regime == YieldCurveRegime.INVERTED or score >= 4:
@@ -339,16 +351,36 @@ def compute_compound_macro_stress(
     )
 
 
-def unknown_macro_stress(config: RegimeConfig, missing: Sequence[str]) -> MacroStressAssessment:
+def unknown_macro_stress(
+    config: RegimeConfig, missing: Sequence[str], *, vix: float | None = None, hy_oas: float | None = None
+) -> MacroStressAssessment:
     """The ``UNKNOWN`` stress policy for missing decision inputs: the configured multiplier and breakout flag.
 
-    Its reward/risk is the default, so the VIX-derived ratio governs.
+    Its reward/risk is the default, so the VIX-derived ratio governs. When the present ``vix`` or
+    ``hy_oas`` (None when missing) already forces EXTREME, it keeps its level and drivers but never
+    sizes above EXTREME: the smaller multiplier, the larger reward/risk and breakouts off.
     """
+    multiplier = config.unknown_risk_multiplier
+    breakout_allowed = config.unknown_breakout_allowed
+    min_rr = DEFAULT_MIN_RISK_REWARD_RATIO
+    credit = (
+        classify_credit_stress(
+            hy_oas,
+            elevated_threshold=config.hy_oas_elevated_threshold,
+            critical_threshold=config.hy_oas_critical_threshold,
+        ).regime
+        if hy_oas is not None
+        else None
+    )
+    if _escalates_to_extreme(config, vix=vix, credit=credit):
+        multiplier = min(multiplier, EXTREME_RISK_MULTIPLIER)
+        breakout_allowed = False
+        min_rr = max(min_rr, config.extreme_min_rr)
     return MacroStressAssessment(
         level=MacroStressLevel.UNKNOWN,
-        risk_multiplier=config.unknown_risk_multiplier,
-        squeeze_breakout_allowed=config.unknown_breakout_allowed,
-        min_rr_threshold=DEFAULT_MIN_RISK_REWARD_RATIO,
+        risk_multiplier=multiplier,
+        squeeze_breakout_allowed=breakout_allowed,
+        min_rr_threshold=min_rr,
         key_drivers=[f"Missing decision inputs: {', '.join(missing)}"],
     )
 
@@ -488,6 +520,10 @@ def _decision_value(inputs: Mapping[str, MacroInput], name: str) -> float:
     return value
 
 
+# The pause before the one re-read of a failed VIX read.
+VIX_RETRY_DELAY_SECONDS = 2.0
+
+
 class MacroIntelligenceEngine:
     """
     Institutional Multi-Asset Macro Intelligence Engine.
@@ -502,14 +538,32 @@ class MacroIntelligenceEngine:
         config: RegimeConfig | None = None,
         fred_client: FredDataClient | None = None,
         yahoo_fetch: Callable[..., MacroInput] = fetch_yahoo_input,
+        vix_retry_delay_seconds: float = VIX_RETRY_DELAY_SECONDS,
     ):
         self.config = config or RegimeConfig()
         self.fred_client = fred_client or FredDataClient(cache_ttl_seconds=self.config.cache_ttl_seconds)
         self.yahoo_fetch = yahoo_fetch
+        self.vix_retry_delay_seconds = vix_retry_delay_seconds
         self._cached_evaluation: MacroEvaluation | None = None
         self._last_fetch_time: datetime | None = None
 
     async def _read_input(self, name: str, *, force_refresh: bool) -> MacroInput:
+        """One input's read; a failed VIX read (VIX alone decides whether there is a regime) is read once more.
+
+        The retry is a fresh read after ``vix_retry_delay_seconds``, never a cached or carried-forward value.
+        """
+        result = await self._read_once(name, force_refresh=force_refresh)
+        if name != "vix" or result.value is not None:
+            return result
+        logger.warning(
+            "VIX read failed (%s); reading it once more",
+            result.error,
+            extra={"event": "vix_read_retry", "input": name, "error": result.error, "attempt": 1},
+        )
+        await asyncio.sleep(self.vix_retry_delay_seconds)
+        return await self._read_once(name, force_refresh=force_refresh)
+
+    async def _read_once(self, name: str, *, force_refresh: bool) -> MacroInput:
         source = MACRO_INPUT_SOURCES[name]
         provider, _, symbol = source.partition(":")
         decision = name in DECISION_INPUTS
@@ -576,7 +630,9 @@ class MacroIntelligenceEngine:
                 missing=missing,
                 missing_decision=missing_decision,
                 report=None,
-                stress=unknown_macro_stress(self.config, missing_decision),
+                stress=unknown_macro_stress(
+                    self.config, missing_decision, vix=inputs["vix"].value, hy_oas=inputs["hy_oas"].value
+                ),
             )
 
         report = self._build_report(inputs, now)

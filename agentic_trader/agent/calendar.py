@@ -131,7 +131,10 @@ class UnexpectedStatus(LiveFeedError):
 
 
 class UnexpectedPayload(LiveFeedError):
-    """The feed's JSON body is not a list of items."""
+    """The feed's JSON body is not a non-empty list of items, or none of its items has a readable instant.
+
+    The weekly feed always lists dozens of items across countries, so an empty week is a broken feed.
+    """
 
 
 class ForexFactoryCalendar(BaseEconomicCalendar):
@@ -177,9 +180,12 @@ class ForexFactoryCalendar(BaseEconomicCalendar):
                     http_status = resp.status_code
                     raise UnexpectedStatus
                 payload = resp.json()
-            if not isinstance(payload, list):
+            if not isinstance(payload, list) or not payload:
                 raise UnexpectedPayload
-            return _parse_items(payload, now)
+            fetch = _parse_items(payload, now)
+            if fetch.coverage is None:  # no item parsed
+                raise UnexpectedPayload
+            return fetch
         except Exception as exc:
             logger.warning(
                 "Failed to fetch economic calendar from ForexFactory",

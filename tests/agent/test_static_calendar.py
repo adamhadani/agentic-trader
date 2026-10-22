@@ -95,6 +95,12 @@ def _broken(tmp_path: Path, case: str) -> tuple[Path, str | None]:
             kwargs = {"valid_from": "2027-12-04", "valid_through": "2027-12-03"}
         case "through_beyond_series":
             kwargs = {"series_last_listed": {kind.value: "2027-12-02" for kind in Tier1Kind}}
+        case "through_beyond_shortest_series":
+            # Only one series ends before `valid_through`: the rule is the shortest series, not the longest.
+            kwargs = {
+                "series_last_listed": {kind.value: "2027-12-31" for kind in Tier1Kind}
+                | {Tier1Kind.EMPLOYMENT_SITUATION.value: "2027-12-02"}
+            }
         case "missing_series_key":
             kwargs = {"series_last_listed": {kind.value: "2027-12-03" for kind in Tier1Kind if kind != Tier1Kind.CPI}}
         case "schema_version":
@@ -178,6 +184,7 @@ def test_an_unpinned_load_records_the_digest(tmp_path):
         ("id_not_stem", "CalendarIdMismatch"),
         ("from_after_through", "InvalidValidityRange"),
         ("through_beyond_series", "ValidityBeyondSeries"),
+        ("through_beyond_shortest_series", "ValidityBeyondSeries"),
     ],
 )
 def test_an_invalid_file_loads_as_invalid_with_its_type_name(tmp_path, caplog, case, error):

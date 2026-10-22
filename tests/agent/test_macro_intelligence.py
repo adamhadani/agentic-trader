@@ -341,7 +341,7 @@ async def test_macro_missing_data_does_not_invent_baselines(bad_value):
     values = dict.fromkeys(("^IRX", "^FVX", "^TNX", "^TYX", "^VIX", "DX-Y.NYB"), bad_value)
     values |= {"DGS2": 2.5, "BAMLH0A0HYM2": 2.5, "T10YIE": 2.5, "T5YIE": 2.5}
     yahoo_fetch, fred_client = _fake_sources(values)
-    engine = MacroIntelligenceEngine(fred_client=fred_client, yahoo_fetch=yahoo_fetch)
+    engine = MacroIntelligenceEngine(fred_client=fred_client, yahoo_fetch=yahoo_fetch, vix_retry_delay_seconds=0)
     evaluation = await engine.evaluate()
     assert evaluation.report is None
     assert evaluation.stress.level is MacroStressLevel.UNKNOWN

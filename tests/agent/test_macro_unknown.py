@@ -7,8 +7,10 @@ from one ``{name: value | None | exception}`` map, with no module globals and no
 from __future__ import annotations
 
 import copy
+import logging
 import pickle
 import random
+from collections import Counter
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, patch
 
@@ -90,7 +92,10 @@ class FakeFred(FredDataClient):
 
 def engine_with(values: dict, config: RegimeConfig | None = None) -> MacroIntelligenceEngine:
     return MacroIntelligenceEngine(
-        config=config or RegimeConfig(), fred_client=FakeFred(values), yahoo_fetch=FakeYahoo(values)
+        config=config or RegimeConfig(),
+        fred_client=FakeFred(values),
+        yahoo_fetch=FakeYahoo(values),
+        vix_retry_delay_seconds=0,
     )
 
 
@@ -183,6 +188,48 @@ async def test_each_missing_decision_input_gives_unknown_at_half_with_breakouts_
     assert (block["macro_stress"], block["missing"], block["missing_decision"]) == ("UNKNOWN", [name], [name])
 
 
+async def _measured_extreme(values: dict) -> MacroStressAssessment:
+    """EXTREME's limits as the full measurement of ``values`` sets them."""
+    stress = (await engine_with({**DECISION_OK, **CONTEXT_OK, **values}).evaluate()).stress
+    assert stress.level is MacroStressLevel.EXTREME
+    return stress
+
+
+@pytest.mark.parametrize(
+    ("present", "missing"),
+    [({"vix": 45.0}, "hy_oas"), ({"hy_oas": 5.6}, "2y")],
+    ids=["vix-above-extreme", "hy-oas-critical"],
+)
+async def test_unknown_never_sizes_above_extreme_when_the_present_inputs_force_extreme(present, missing):
+    extreme = await _measured_extreme(present)
+    snapshot = await detector_with({**DECISION_OK, **CONTEXT_OK, **present, missing: None}).get_regime()
+    stress = snapshot.macro_stress
+    assert stress.level is MacroStressLevel.UNKNOWN and snapshot.macro_report is None
+    assert stress.key_drivers == [f"Missing decision inputs: {missing}"]
+    assert stress.risk_multiplier == snapshot.risk_multiplier == extreme.risk_multiplier < 0.5
+    assert stress.min_rr_threshold == snapshot.min_rr_threshold == extreme.min_rr_threshold
+    assert (stress.squeeze_breakout_allowed, snapshot.breakout_allowed) == (False, False)
+
+
+async def test_unknown_at_a_normal_vix_with_hy_oas_missing_keeps_the_configured_policy():
+    snapshot = await detector_with({**DECISION_OK, **CONTEXT_OK, "hy_oas": None}).get_regime()
+    assert snapshot.macro_stress.level is MacroStressLevel.UNKNOWN
+    assert (snapshot.risk_multiplier, snapshot.breakout_allowed, snapshot.min_rr_threshold) == (0.5, False, 2.0)
+
+
+def test_the_extreme_cap_keeps_a_smaller_configured_multiplier_and_turns_breakouts_off():
+    config = RegimeConfig(unknown_risk_multiplier=0.1, unknown_breakout_allowed=True)
+    stress = unknown_macro_stress(config, ["hy_oas"], vix=45.0, hy_oas=None)
+    assert (stress.level, stress.risk_multiplier, stress.squeeze_breakout_allowed, stress.min_rr_threshold) == (
+        MacroStressLevel.UNKNOWN,
+        0.1,
+        False,
+        config.extreme_min_rr,
+    )
+    calm = unknown_macro_stress(config, ["2y"], vix=17.2, hy_oas=3.7)
+    assert (calm.risk_multiplier, calm.squeeze_breakout_allowed, calm.min_rr_threshold) == (0.1, True, 2.0)
+
+
 async def test_two_missing_decision_inputs_are_named_in_canonical_order():
     snapshot = await detector_with({**DECISION_OK, **CONTEXT_OK, "hy_oas": None, "2y": None}).get_regime()
     assert "Macro: UNKNOWN (missing 2y, hy_oas; ×0.50, breakouts suppressed)" in snapshot.summary_text
@@ -260,6 +307,60 @@ async def test_unknown_snapshot_is_cached_and_force_refresh_refetches():
     assert len(yahoo.calls) == reads
     refreshed = await detector.get_regime(force_refresh=True)
     assert refreshed is not first and len(yahoo.calls) == 2 * reads
+
+
+class FlakyVix(FakeYahoo):
+    """``yahoo_fetch`` whose VIX reads return ``vix_reads`` in order (a value, None or an exception to raise)."""
+
+    def __init__(self, values: dict, vix_reads: list):
+        super().__init__(values)
+        self.vix_reads = list(vix_reads)
+
+    def __call__(self, name: str, ticker: str, *, decision: bool) -> MacroInput:
+        if name == "vix":
+            self.values = {**self.values, "vix": self.vix_reads.pop(0)}
+        return super().__call__(name, ticker, decision=decision)
+
+
+def flaky_vix_detector(vix_reads: list, config: RegimeConfig | None = None) -> RegimeDetector:
+    config = config or RegimeConfig()
+    values = {**DECISION_OK, **CONTEXT_OK}
+    engine = MacroIntelligenceEngine(
+        config=config, fred_client=FakeFred(values), yahoo_fetch=FlakyVix(values, vix_reads), vix_retry_delay_seconds=0
+    )
+    return RegimeDetector(config, macro_engine=engine)
+
+
+def test_a_failed_vix_read_waits_two_seconds_before_its_one_retry():
+    assert MacroIntelligenceEngine(config=RegimeConfig()).vix_retry_delay_seconds == 2.0
+
+
+async def test_a_failed_vix_read_is_retried_once_and_the_fresh_second_read_is_measured(caplog):
+    detector = flaky_vix_detector([TimeoutError("slow"), 18.4])
+
+    with caplog.at_level(logging.WARNING, logger="agentic_trader.agent.macro"):
+        snapshot = await detector.get_regime(force_refresh=True)
+
+    assert snapshot.vix == 18.4 and snapshot.macro_report is not None
+    assert snapshot.macro_inputs["vix"].error is None
+    [record] = [r for r in caplog.records if getattr(r, "event", None) == "vix_read_retry"]
+    assert (record.levelno, record.error, record.attempt) == (logging.WARNING, "TimeoutError", 1)
+    assert "slow" not in record.getMessage()
+
+
+@pytest.mark.parametrize("yield_curve_enabled", [True, False], ids=["macro", "vix-only"])
+async def test_two_failed_vix_reads_raise_regime_unavailable_and_no_other_input_is_retried(yield_curve_enabled):
+    detector = flaky_vix_detector([None, TimeoutError("slow")], RegimeConfig(yield_curve_enabled=yield_curve_enabled))
+
+    with pytest.raises(RegimeUnavailable) as caught:
+        await detector.get_regime(force_refresh=True)
+
+    assert caught.value.inputs["vix"].error == "TimeoutError"  # the second, fresh read's outcome
+    engine = detector.macro_engine
+    reads = Counter([*engine.yahoo_fetch.calls, *engine.fred_client.calls])
+    assert reads.pop("vix") == 2
+    assert set(reads.values()) == {1}
+    assert set(reads) == ({*MACRO_INPUT_SOURCES} if yield_curve_enabled else {"10y", "dxy"}) - {"vix"}
 
 
 async def test_a_partial_evaluation_is_not_cached_and_recovery_is_measured():

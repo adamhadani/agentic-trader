@@ -28,7 +28,8 @@ def _vix_only_detector(quote, config: RegimeConfig | None = None) -> RegimeDetec
             error=None if value is not None else "no_observation",
         )
 
-    return RegimeDetector(config, macro_engine=MacroIntelligenceEngine(config=config, yahoo_fetch=yahoo_fetch))
+    engine = MacroIntelligenceEngine(config=config, yahoo_fetch=yahoo_fetch, vix_retry_delay_seconds=0)
+    return RegimeDetector(config, macro_engine=engine)
 
 
 def test_classify_vix_level():

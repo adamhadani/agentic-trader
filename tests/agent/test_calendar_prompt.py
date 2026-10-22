@@ -41,6 +41,12 @@ def usd(title: str, when: datetime) -> dict:
     return {"title": title, "country": "USD", "date": iso(when), "impact": "High"}
 
 
+# An ok live week with no USD release (an empty or unparseable payload is a failed feed).
+QUIET = [
+    {"title": "ECB Main Refinancing Rate", "country": "EUR", "date": iso(NOW + timedelta(days=1)), "impact": "High"}
+]
+
+
 def verified() -> StaticTier1Calendar:
     return StaticTier1Calendar.load(FIXTURE, None)
 
@@ -70,7 +76,7 @@ async def check(
 
 
 async def test_verified_clear_names_the_source_and_says_no_releases():
-    text = (await check(verified(), [])).prompt_text()
+    text = (await check(verified(), QUIET)).prompt_text()
     assert text == (f"{CLEAR} No tier-1 US releases (FOMC, CPI, PPI, Employment Situation) in the next 24 hours.")
 
 
@@ -133,17 +139,17 @@ async def test_unverified_lists_live_releases_but_never_claims_there_are_none():
         "treat scheduled-release timing as unknown. Next tier-1 release in 2h 5m."
     )
     assert "- CPI at 2026-09-22 21:23 UTC (in 2h 5m)" in upcoming
-    assert "No tier-1" not in (await check(invalid(), [])).prompt_text()
+    assert "No tier-1" not in (await check(invalid(), QUIET)).prompt_text()
 
 
 BRANCHES: dict[str, Callable[[], Awaitable[CalendarCheck]]] = {
-    "verified clear": lambda: check(verified(), []),
+    "verified clear": lambda: check(verified(), QUIET),
     "verified clear, live failed": lambda: check(verified(), httpx.ReadTimeout("t")),
     "verified upcoming": lambda: check(verified(), [usd("CPI", NOW + timedelta(hours=3))]),
     "verified lockout": lambda: check(verified(), [usd("CPI", NOW + timedelta(minutes=10))]),
-    "expired, live ok": lambda: check(expired(), []),
+    "expired, live ok": lambda: check(expired(), QUIET),
     "expired, live failed": lambda: check(expired(), httpx.ReadTimeout("t")),
-    "invalid, live ok": lambda: check(invalid(), []),
+    "invalid, live ok": lambda: check(invalid(), QUIET),
     "invalid, live failed": lambda: check(invalid(), httpx.ConnectError("x")),
     "expired, live upcoming": lambda: check(expired(), [usd("PPI", NOW + timedelta(hours=3))]),
     "invalid, live lockout": lambda: check(invalid(), [usd("PPI", NOW + timedelta(minutes=10))]),

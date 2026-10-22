@@ -25,6 +25,7 @@ from agentic_trader.execution.durable import EventKind, ScanStatus, ScanTrigger,
 from agentic_trader.market.session import ET_TZ
 from tests.agent.test_dynamic_universe_scan import ranked_events
 from tests.agent.test_scan_budget import budget_desk, instrument  # noqa: F401  (budget_desk is a fixture)
+from tests.agent.test_scan_drift import _catalog_snapshot, drift_desk  # noqa: F401  (drift_desk is a fixture)
 from tests.calendar_doubles import lockout_check
 
 
@@ -124,6 +125,60 @@ async def test_a_second_failure_the_same_new_york_date_adds_no_notice(desk, temp
     assert scan_date(first) == scan_date(second)
     assert list(await notices(temp_db)) == [f"regime-unavailable/{scan_date(first)}"]
     assert [s["scheduled_time_et"] for s in desk._session_scan_stats[scan_date(first)]] == ["10:35", "14:35"]
+
+
+async def swing(desk):
+    return await desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.JOURNAL_ONLY, trigger=ScanTrigger.SWING_SCAN
+    )
+
+
+async def test_a_journal_only_swing_scan_journals_regime_unavailable_and_queues_no_notice(desk, temp_db):
+    desk.regime_detector.get_regime.side_effect = VIX_DOWN
+
+    assert await swing(desk) is None
+
+    [event] = await ranked_events(temp_db)
+    p = event["payload"]
+    assert (p["status"], p["trigger"], p["budget"]) == ("regime_unavailable", "swing_scan", "journal_only")
+    assert p["gate"]["errors"] == {"vix": "ReadTimeout"}
+    assert await notices(temp_db) == {}  # the date's one notice is left to a scan that could send cards
+    desk.readiness.observe.assert_any_await(
+        HealthComponent.SCAN, False, "Regime unavailable (vix: ReadTimeout); scan skipped"
+    )
+
+
+async def test_a_swing_failure_leaves_the_date_s_notice_to_the_suggestion_scan_and_its_lost_pead_decision(
+    drift_desk,  # noqa: F811
+    temp_db,
+):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+    drift_desk.regime_detector.get_regime.side_effect = VIX_DOWN
+
+    await swing(drift_desk)
+    await suggestion(drift_desk, scheduled_time_et="10:35")
+
+    swing_event, suggestion_event = await ranked_events(temp_db)
+    assert [e["payload"]["trigger"] for e in (swing_event, suggestion_event)] == ["swing_scan", "suggestion_scan"]
+    assert scan_date(swing_event) == scan_date(suggestion_event)
+    [(key, notice)] = (await notices(temp_db)).items()
+    assert key == f"regime-unavailable/{scan_date(suggestion_event)}"
+    assert notice["text"].endswith(f" NY: the suggestion scan was skipped — no cards, no PEAD decision. {NOTICE_TAIL}")
+
+
+async def test_scan_readiness_goes_not_ready_even_when_journaling_the_regime_skip_raises(desk, monkeypatch):
+    async def refuse(**kwargs):
+        raise RuntimeError("journal down")
+
+    monkeypatch.setattr(desk, "_record_gated_scan", refuse)
+    desk.regime_detector.get_regime.side_effect = VIX_DOWN
+
+    with pytest.raises(RuntimeError):
+        await suggestion(desk)
+
+    desk.readiness.observe.assert_any_await(
+        HealthComponent.SCAN, False, "Regime unavailable (vix: ReadTimeout); scan skipped"
+    )
 
 
 async def test_the_notice_dedups_per_new_york_date(temp_db):

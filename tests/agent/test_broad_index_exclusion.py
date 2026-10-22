@@ -186,3 +186,22 @@ async def test_a_journal_only_scan_keeps_every_native_candidate_journal_only(ind
     assert await journaled_outcomes(temp_db) == {"SPY": "journal_only", "AAA": "journal_only"}
     assert index_desk.last_scan_summary["runners_up"] == []
     assert await temp_db.get_recent_signals(limit=10) == []
+
+
+async def test_an_operator_scan_whose_only_setup_is_excluded_says_no_card_was_sent(index_desk, temp_db):
+    index_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: (
+        [candidate("SPY", QUALITIES["SPY"])] if data.contract == "SPY" else []
+    )
+
+    text = await index_desk.run_scan_summary_html()
+
+    assert text == (
+        f"✅ <b>Scan Complete:</b> No card sent: 1 setup(s) ranked, none carded (top reason: {BROAD_INDEX_REASON})."
+    )
+    assert await temp_db.get_recent_signals(limit=10) == []
+
+
+async def test_an_operator_scan_with_no_setup_still_says_none_met_the_triggers(index_desk):
+    index_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: []
+
+    assert "No setups met quantitative triggers" in await index_desk.run_scan_summary_html()

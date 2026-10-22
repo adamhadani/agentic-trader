@@ -887,6 +887,8 @@ well before it expires. Renew it as follows.
    from. Re-check every `tentative` FOMC date (the Fed confirms each meeting at the one
    before it). `valid_through` is the shortest series' last listed date, and
    `series_last_listed` records each series' last date. Do not invent dates or times.
+   `valid_from` must be on or before the deploy date: before it the static status reads
+   `expired`, so the lockout is unverified until then.
 2. Run `uv run pre-commit run --files config/calendar/us-tier1-vN+1.json` so the file's
    bytes settle, then `shasum -a 256` it. Pin the new path and digest in `config.yaml`.
 3. Deploy in the usual pause order (watchdog, then daemon) and confirm

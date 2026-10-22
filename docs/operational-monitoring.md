@@ -73,7 +73,12 @@ retry; this notice is sent once per New York date." It names inputs and exceptio
 names only. It is written in the same transaction as the scan's `scan_candidates_ranked`
 event (`status: regime_unavailable`, `gate.missing`, `gate.errors`), so the event and the
 notice commit or roll back together; an unrestricted operator scan without a budget sends
-the notice alone, and a restricted or dry scan sends none. A dry run prints the reason.
+the notice alone, a journal-only scan (the swing job) journals the event without a notice, so
+the date's one notice names a scan that lost cards, and a restricted or dry scan sends none.
+A dry run prints the reason. A failed VIX read is read once more, fresh, after 2 seconds
+(a `vix_read_retry` warning); only a second failure is a missing VIX. No other input is
+retried, and `/macro` and the macro button answer "Market regime unavailable (vix:
+ReadTimeout); scans skip until VIX is readable."
 
 The health signal is the existing `scan` readiness component, observed not ready with
 "Regime unavailable (vix: ReadTimeout); scan skipped": a lost scan is a scan failure, and
