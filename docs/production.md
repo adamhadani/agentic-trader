@@ -27,10 +27,12 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
   slot (the defect behind 61 restarts in 33 days). That run is kept, deliberately: it gives the `scan`
   readiness component an observation in each daemon run (`scan_max_age_seconds` is not
   session-aware). The suggestion scans own the cards.
-  The job has no session gate of its own. Contract selection (`_select_contracts`) drops equities
-  while the equity session is closed and keeps futures only where the execution mode can trade
-  them, which Alpaca cannot, so a swing scan outside the equity session selects nothing and ends as
-  `Idle: nothing eligible` (SCAN observed ready, nothing journaled).
+  The job has no session gate of its own, but `run_scan` applies its shared `all` gate: open whenever
+  futures or equities trade. When both are closed (weekends, holidays, the daily futures halt) the scan
+  ends there with `Session gate checked: Primary markets closed …`. In futures-only hours it reaches
+  contract selection (`_select_contracts`), which drops closed-session equities and the futures Alpaca
+  cannot execute, and ends as `Idle: nothing eligible`. Either way SCAN is observed ready and nothing
+  is journaled.
 - Suggestion scans: cron on the New York clock, weekdays, at
   `scheduler.suggestion_scan_times_et` (see below). They also add the dynamic
   suggestion universe.

@@ -76,10 +76,11 @@ uv run copilot scan --no-budget
 evaluation, ranks them by `setup_quality` (ties broken by symbol, then strategy), and
 only then sends. `copilot scan` and Telegram `/scan` bypass `scan.max_cards_per_scan`
 but respect `scan.max_cards_per_session` and `scan.max_cards_per_group_per_session`;
-the scheduled suggestion scans apply all three (the journal-only swing and intraday scans spend
-no budget). The per-session count is derived from the signals table since New York midnight,
-so a restart cannot reset it. `--no-budget` and `--dry-run` apply no budget at all — a dry run is always
-unbudgeted because it neither reads nor spends the live session's allowance.
+the scheduled suggestion scans apply all three (the journal-only swing and intraday
+scans spend no budget). The per-session count is derived from the signals table since
+New York midnight, so a restart cannot reset it. `--no-budget` and `--dry-run` apply no
+budget at all — a dry run is always unbudgeted because it neither reads nor spends the
+live session's allowance.
 `setup_quality`, the candidate's rank and the number of candidates it beat are stored
 in `decision_provenance`; `setup_quality` is a transparent prioritisation heuristic,
 not validated alpha.

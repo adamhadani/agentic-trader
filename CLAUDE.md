@@ -65,9 +65,8 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    ([risk policy](docs/risk-policy.md); admission's Alpaca book is broker-marked).
    `macro_lockout` reads the verified union calendar: the static `config/calendar/us-tier1-vN.json`
    (digest-pinned by `risk.macro_calendar_sha256`) plus the live ForexFactory feed, so a feed outage
-   never reads as an empty calendar. `risk.macro_calendar_unknown` (default `open`) labels a static
-   calendar that is expired, not yet valid or invalid unverified; `closed` refuses all entries while
-   it is.
+   never reads as an empty calendar. A static calendar that is expired, not yet valid or invalid is
+   unverified: `risk.macro_calendar_unknown` `open` (default) labels it, `closed` refuses all entries.
    Book-aware sizing (`book_sizing`, code default `preview`, config ships `enforce` since 2026-10-20) scales native equity cards by a
    closed-form factor ≤ 1 against a daily dollar-vol budget at card construction only; the
    shadow optimiser cross-check never reaches size or orders.
