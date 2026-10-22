@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
+from agentic_trader.agent.calendar import UnionTier1Calendar
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.config import AppConfig
 from agentic_trader.market.session import ET_TZ
@@ -102,7 +103,9 @@ async def test_a_live_drift_event_becomes_an_admissible_capped_card(tmp_path):
         assert isinstance(candidate, ScreenerCandidate)
         assert (candidate.strategy, candidate.probe, candidate.catalog_event) == ("pead_long", True, event)
         config = AppConfig(execution_mode="alpaca", alpaca_paper=True)  # paper_database's own settings
-        levels = RiskEvaluator(config).calculate_levels_deterministic(candidate, current_equity=100_000)
+        # ``calculate_levels_deterministic`` never reads the calendar; an offline union reads no file.
+        evaluator = RiskEvaluator(config, calendar=UnionTier1Calendar.offline())
+        levels = evaluator.calculate_levels_deterministic(candidate, current_equity=100_000)
         entry_price = entry_limit(candidate.current_price, execution_policy_from_dict(candidate.alpha_policy))
         assert entry_price == 50.12
         frozen = levels_for("LONG", entry_price, event["atr"], load_pead_entry(ENTRY).entry)
