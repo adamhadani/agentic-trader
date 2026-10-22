@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import litellm
 from pydantic import BaseModel, Field
 
-from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
+from agentic_trader.agent.calendar import UnionTier1Calendar
 from agentic_trader.agent.earnings import (
     EarningsCalendarProtocol,
     EarningsLookup,
@@ -44,7 +44,6 @@ from agentic_trader.risk import (
     book_gates,
     corporate_action_block,
     entry_session_open,
-    macro_lockout,
     per_trade_risk,
     per_trade_risk_budget,
     regime_breakout,
@@ -116,6 +115,9 @@ class LLMTradeEvaluation(BaseModel):
     gating_reasons: list[str] | None = None
     session_type: str = "RTH"
     earnings_note: str | None = None
+    # Set when the static tier-1 calendar is unverified (CalendarCheck.macro_note): the card then shows
+    # "Unverified — {note}" instead of "Cleared". Never taken from the LLM; ``macro_clearance`` is unchanged.
+    macro_note: str | None = None
     corporate_actions: dict[str, Any] | None = None  # the scan's corporate-action block (docs/corporate-actions.md)
     # The scan's news block (docs/news-context.md): labelled context on the card and in the journal, never read as a gate.
     news_context: dict[str, Any] | None = None
@@ -128,14 +130,14 @@ class RiskEvaluator:
     def __init__(
         self,
         config: AppConfig,
-        calendar: BaseEconomicCalendar | None = None,
+        calendar: UnionTier1Calendar | None = None,
         regime_detector: RegimeDetector | None = None,
         data_fetcher: MarketDataFetcher | None = None,
         session_provider: MarketSessionProtocol | None = None,
         earnings_calendar: EarningsCalendarProtocol | None = None,
     ):
         self.config = config
-        self.calendar: BaseEconomicCalendar = calendar or ForexFactoryCalendar()
+        self.calendar: UnionTier1Calendar = calendar if calendar is not None else UnionTier1Calendar.from_config(config)
         self.regime_detector: RegimeDetector = regime_detector or RegimeDetector(config=config.regime)
         self.data_fetcher = data_fetcher
         self.session_provider = session_provider
@@ -382,8 +384,8 @@ class RiskEvaluator:
         ``current_open_notional`` bounds the sizing notional ceiling; the book's own notional is what
         the caps judge.
         """
-        # One clock for the deterministic lockout gate and the prompt's macro block,
-        # so the LLM never sees a verdict that differs from the gate's.
+        # One clock and one calendar check for the deterministic lockout gate, the prompt's macro
+        # block and the card's macro note, so the LLM never sees a verdict that differs from the gate's.
         evaluated_at = datetime.now(UTC)
         # Fetch current volatility and macro regime
         regime = await self.regime_detector.get_regime()
@@ -520,25 +522,25 @@ class RiskEvaluator:
                         thesis=f"Rejected by risk manager: High return correlation with {pos_contract}.",
                     )
 
-        # 2. Macro lockout (agentic_trader.risk.macro_lockout): the calendar finds the tier-1 event
-        #    whose window contains ``evaluated_at``; its timestamp is aware, and the rule's reason
-        #    prints the event's UTC clock time.
-        in_lockout, lock_event = await self.calendar.is_in_lockout_window(
-            pre_minutes=limits.lockout_pre_minutes,
-            post_minutes=limits.lockout_post_minutes,
-            now=evaluated_at,
+        # 2. Macro lockout (agentic_trader.risk.macro_lockout through CalendarCheck.lockout_rejection): the
+        #    union calendar's one check at ``evaluated_at`` finds the tier-1 event whose window contains it
+        #    (static first), and under ``risk.macro_calendar_unknown: closed`` an unverified static calendar
+        #    refuses before the window test. The same check renders the prompt block and the macro note.
+        calendar_check = await self.calendar.check(
+            evaluated_at, limits.lockout_pre_minutes, limits.lockout_post_minutes
         )
-        if (
-            in_lockout
-            and lock_event
-            and (rejection := macro_lockout(lock_event.title, lock_event.timestamp, evaluated_at, limits))
-        ):
+        if (rejection := calendar_check.lockout_rejection(limits)) is not None:
+            unverified_refusal = not calendar_check.verified and limits.macro_calendar_unknown == "closed"
+            lock_event = calendar_check.lockout
             return _rejected(
                 rejection.reason,
                 rejection.rule,
-                thesis=f"Rejected: macro lockout active for '{lock_event.title}'.",
+                thesis="Rejected: macro calendar unverified (policy closed)."
+                if unverified_refusal or lock_event is None
+                else f"Rejected: macro lockout active for '{lock_event.title}'.",
                 macro_clearance=False,
             )
+        macro_note = calendar_check.macro_note()
 
         # 2b. Earnings blackout (agentic_trader.agent.earnings.earnings_blackout_reason over
         # agentic_trader.risk.earnings_days_out; equities only; None calendar or a 0-day config
@@ -679,11 +681,7 @@ class RiskEvaluator:
                     corporate_actions=corporate_block,
                 )
 
-        macro_summary = await self.calendar.get_macro_summary_for_prompt(
-            now=evaluated_at,
-            pre_minutes=limits.lockout_pre_minutes,
-            post_minutes=limits.lockout_post_minutes,
-        )
+        macro_summary = calendar_check.prompt_text()
         regime_summary = self.regime_detector.get_prompt_context(regime)
 
         # If LLM evaluation is disabled or no LLM keys provided, return deterministic evaluation
@@ -708,11 +706,13 @@ class RiskEvaluator:
                 macro_clearance=True,
                 thesis_summary=(
                     f"Quantitative trigger verified: {candidate.trigger_detail} "
-                    f"Macro cleared (Regime: {regime.vix_regime.value}, VIX {regime.vix:.1f})."
+                    f"{'Macro lockout unverified' if macro_note else 'Macro cleared'} "
+                    f"(Regime: {regime.vix_regime.value}, VIX {regime.vix:.1f})."
                 ),
                 quantity=quantity,
                 asset_class=asset_class,
                 earnings_note=earnings_note_value,
+                macro_note=macro_note,
                 corporate_actions=corporate_block,
                 news_context=news_block,
             )
@@ -855,6 +855,7 @@ class RiskEvaluator:
             # fail validation and turn an LLM veto into the fallback approval.
             data.pop("corporate_actions", None)
             data.pop("news_context", None)  # attached below from the scan's block; never taken from the reply
+            data.pop("macro_note", None)  # attached below from the calendar check; never taken from the reply
             applied = candidate.catalog_event is None
             data["llm_verdict"] = {
                 "approved": _explicit_true(data.get("approved")),
@@ -874,6 +875,7 @@ class RiskEvaluator:
             evaluation = LLMTradeEvaluation(**data).model_copy(
                 update={
                     "earnings_note": earnings_note_value,
+                    "macro_note": macro_note,
                     "corporate_actions": corporate_block,
                     "news_context": news_block,
                 }
@@ -912,6 +914,7 @@ class RiskEvaluator:
                 gating_reasons=gating_reasons,
                 session_type=current_session_type,
                 earnings_note=earnings_note_value,
+                macro_note=macro_note,
                 corporate_actions=corporate_block,
                 news_context=news_block,
             )

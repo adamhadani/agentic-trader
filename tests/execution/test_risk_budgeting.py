@@ -9,6 +9,7 @@ from agentic_trader.constants import AssetClass, Direction
 from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.risk import RiskRule
 from agentic_trader.screeners.base import ScreenerCandidate
+from tests.calendar_doubles import clear_check, union_double
 
 
 @pytest.fixture
@@ -114,8 +115,7 @@ def create_mock_regime():
 
 @pytest.mark.asyncio
 async def test_futures_allocation_cap_rejection(risk_config):
-    mock_calendar = AsyncMock()
-    mock_calendar.is_in_lockout_window.return_value = (False, None)
+    mock_calendar = union_double(clear_check())
     mock_regime = create_mock_regime()
 
     evaluator = RiskEvaluator(
@@ -149,8 +149,7 @@ async def test_futures_allocation_cap_rejection(risk_config):
 
 @pytest.mark.asyncio
 async def test_different_asset_class_allowed_under_cap(risk_config):
-    mock_calendar = AsyncMock()
-    mock_calendar.is_in_lockout_window.return_value = (False, None)
+    mock_calendar = union_double(clear_check())
     mock_regime = create_mock_regime()
 
     evaluator = RiskEvaluator(
@@ -191,8 +190,7 @@ async def test_different_asset_class_allowed_under_cap(risk_config):
 
 @pytest.mark.asyncio
 async def test_correlation_group_filtering_same_direction(risk_config):
-    mock_calendar = AsyncMock()
-    mock_calendar.is_in_lockout_window.return_value = (False, None)
+    mock_calendar = union_double(clear_check())
     mock_regime = create_mock_regime()
 
     evaluator = RiskEvaluator(
@@ -225,8 +223,7 @@ async def test_correlation_group_filtering_same_direction(risk_config):
 
 @pytest.mark.asyncio
 async def test_correlation_group_opposite_direction_allowed(risk_config):
-    mock_calendar = AsyncMock()
-    mock_calendar.is_in_lockout_window.return_value = (False, None)
+    mock_calendar = union_double(clear_check())
     mock_regime = create_mock_regime()
 
     evaluator = RiskEvaluator(
@@ -257,8 +254,7 @@ async def test_correlation_group_opposite_direction_allowed(risk_config):
 
 @pytest.mark.asyncio
 async def test_dynamic_statistical_correlation(risk_config):
-    mock_calendar = AsyncMock()
-    mock_calendar.is_in_lockout_window.return_value = (False, None)
+    mock_calendar = union_double(clear_check())
     mock_regime = create_mock_regime()
 
     # Enable dynamic correlation in config and provide ample futures cap

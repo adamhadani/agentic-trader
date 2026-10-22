@@ -18,9 +18,9 @@ import pandas as pd
 
 from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.calendar import (
-    BaseEconomicCalendar,
     ForexFactoryCalendar,
     StaticTier1Calendar,
+    UnionTier1Calendar,
     macro_calendar_readiness,
 )
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
@@ -125,7 +125,6 @@ from agentic_trader.risk import (
     RiskLimits,
     corporate_action_block,
     entry_session_open,
-    macro_lockout,
     per_trade_risk,
     per_trade_risk_budget,
     regime_breakout,
@@ -345,9 +344,13 @@ class TradingCopilot:
                     self._dynamic_universe_error,
                     extra={"event": "dynamic_universe_unavailable", "error": self._dynamic_universe_error},
                 )
-        self.calendar: BaseEconomicCalendar = ForexFactoryCalendar()
         self.static_calendar = StaticTier1Calendar.load(
             config.risk.macro_calendar_path, config.risk.macro_calendar_sha256
+        )
+        # The one tier-1 calendar every lockout site reads: the static schedule is authoritative and the
+        # ForexFactory feed adds unscheduled releases (agentic_trader.agent.calendar.UnionTier1Calendar).
+        self.calendar: UnionTier1Calendar = UnionTier1Calendar(
+            self.static_calendar, ForexFactoryCalendar(), unknown_policy=config.risk.macro_calendar_unknown
         )
         self.earnings_calendar: EarningsCalendarProtocol = NasdaqEarningsCalendar()
         self.regime_detector = RegimeDetector(config=config.regime)
@@ -819,28 +822,33 @@ class TradingCopilot:
                 )
                 return None
 
-            in_lockout, lock_event = await self.calendar.is_in_lockout_window(
-                pre_minutes=self.config.risk.lockout_pre_event_minutes,
-                post_minutes=self.config.risk.lockout_post_event_minutes,
+            # The whole-scan lockout: the same rule (risk.macro_lockout) the evaluator, the tap and the
+            # preflight apply, from one union-calendar check.
+            scan_limits = RiskLimits.from_config(self.config)
+            calendar_check = await self.calendar.check(
+                datetime.now(UTC), scan_limits.lockout_pre_minutes, scan_limits.lockout_post_minutes
             )
-            if in_lockout and lock_event:
+            if (macro_rejection := calendar_check.lockout_rejection(scan_limits)) is not None:
+                lock_event = calendar_check.lockout
                 if not dry_run:
                     await self.readiness.observe(
-                        HealthComponent.SCAN, True, f"Macro gate checked: {lock_event.title}; entry alerts paused"
+                        HealthComponent.SCAN, True, f"Macro gate checked: {macro_rejection.reason}; entry alerts paused"
                     )
                 logger.warning(
-                    f"Macro Lockout Active: '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}. "
-                    "No entry alerts will be emitted during this window.",
+                    "Macro lockout active: %s No entry alerts will be emitted during this window.",
+                    macro_rejection.reason,
                     extra={
                         "event": "macro_lockout_active",
-                        "lock_event": lock_event.title,
-                        "event_time": str(lock_event.timestamp),
+                        "lock_event": lock_event.title if lock_event is not None else None,
+                        "event_time": str(lock_event.at) if lock_event is not None else None,
+                        "reason": macro_rejection.reason,
                     },
                 )
                 if drift_scan:
-                    await self._journal_skipped_drift(
-                        alpha_snapshot, scheduled_time_et, reason=f"macro lockout: {lock_event.title}"
+                    skip_reason = (
+                        f"macro lockout: {lock_event.title}" if lock_event is not None else "macro calendar unverified"
                     )
+                    await self._journal_skipped_drift(alpha_snapshot, scheduled_time_et, reason=skip_reason)
                 return None
 
             started = time.monotonic()
@@ -3264,7 +3272,7 @@ class TradingCopilot:
         assert request.entry_price is not None and request.stop_loss is not None
         # Degenerate levels are MISSED by the assessment itself; the macro gate divides by the risk.
         if abs(request.entry_price - request.stop_loss) > 0:
-            reason = await self._macro_gate(request, sig, regime)
+            reason = await self._macro_gate(request, sig, regime, now=now)
             if reason:
                 return reason
         if asset_class.upper() == AssetClass.EQUITY:
@@ -3974,30 +3982,29 @@ class TradingCopilot:
 
     async def _entry_macro_check(self, request: OrderRequest, signal: dict[str, Any]) -> str | None:
         """Admission's macro check: force-refreshes the regime before any submission."""
-        if reason := await self._macro_lockout_reason():
+        if reason := await self._macro_lockout_reason(now=datetime.now(UTC)):
             return reason
         regime = await self.regime_detector.get_regime(force_refresh=True)
         return self._regime_gate(request, signal, regime)
 
-    async def _macro_gate(self, request: OrderRequest, signal: dict[str, Any], regime: Any) -> str | None:
-        """The same macro check against a regime the caller already holds (tap time: cached)."""
-        return await self._macro_lockout_reason() or self._regime_gate(request, signal, regime)
+    async def _macro_gate(
+        self, request: OrderRequest, signal: dict[str, Any], regime: Any, *, now: datetime
+    ) -> str | None:
+        """The same macro check at the caller's instant against a regime it already holds (tap time: cached)."""
+        return await self._macro_lockout_reason(now=now) or self._regime_gate(request, signal, regime)
 
-    async def _macro_lockout_reason(self) -> str | None:
+    async def _macro_lockout_reason(self, *, now: datetime) -> str | None:
         """The ``agentic_trader.risk.macro_lockout`` reason, or None.
 
-        One clock: the calendar finds the tier-1 event whose window contains ``now`` (its
-        timestamp is aware) and the rule judges the same instant and formats the text, so
-        the tap, the preflight and the scan show one lockout text.
+        One clock: the union calendar's check at ``now`` finds the tier-1 event whose window
+        contains it and the rule judges the same instant and formats the text, so the tap, the
+        preflight, the evaluator and the scan show one lockout text, including the closed-policy
+        refusal of an unverified static calendar.
         """
         limits = RiskLimits.from_config(self.config)
-        now = datetime.now(UTC)
-        in_lockout, event = await self.calendar.is_in_lockout_window(
-            pre_minutes=limits.lockout_pre_minutes, post_minutes=limits.lockout_post_minutes, now=now
-        )
-        if in_lockout and event is not None and (rejection := macro_lockout(event.title, event.timestamp, now, limits)):
-            return rejection.reason
-        return None
+        check = await self.calendar.check(now, limits.lockout_pre_minutes, limits.lockout_post_minutes)
+        rejection = check.lockout_rejection(limits)
+        return rejection.reason if rejection is not None else None
 
     def _regime_gate(self, request: OrderRequest, signal: dict[str, Any], regime: Any) -> str | None:
         """Tap/admission-time regime gate: the shared breakout, reward/risk and per-trade budget rules.
@@ -4262,10 +4269,13 @@ class TradingCopilot:
         current_exposure = await self.db.get_active_notional_exposure()
         active_count = await self.db.get_active_contract_count()
         eff_leverage = current_exposure / self.config.portfolio.cash if self.config.portfolio.cash > 0 else 0.0
-        macro_summary = await self.calendar.get_macro_summary_for_prompt(
-            pre_minutes=self.config.risk.lockout_pre_event_minutes,
-            post_minutes=self.config.risk.lockout_post_event_minutes,
-        )
+        macro_summary = (
+            await self.calendar.check(
+                datetime.now(UTC),
+                self.config.risk.lockout_pre_event_minutes,
+                self.config.risk.lockout_post_event_minutes,
+            )
+        ).prompt_text()
         regime = await self.regime_detector.get_regime()
         signals = await self.db.get_recent_signals(limit=10)
 

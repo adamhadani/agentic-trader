@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
-from agentic_trader.constants import AssetClass, Direction, StrategyType
+from agentic_trader.constants import AssetClass, CalendarStatus, Direction, StrategyType
 from agentic_trader.risk.book import Book
 from agentic_trader.risk.capital import RiskBudget
 from agentic_trader.risk.limits import RiskLimits, normalize_symbol
@@ -350,19 +350,34 @@ def correlation_group(intent: EntryIntent, book: Book, limits: RiskLimits) -> Re
 
 def in_lockout_window(now: datetime, event_at: datetime, pre_minutes: int, post_minutes: int) -> bool:
     """Whether ``now`` lies in ``[event_at - pre_minutes, event_at + post_minutes]``, inclusive at both ends. The one
-    lockout-window predicate: ``macro_lockout`` uses it, and so do the economic calendar and the scan-start check.
+    lockout-window predicate: ``macro_lockout`` uses it, and so does the union tier-1 calendar's ``check``.
     """
     return event_at - timedelta(minutes=pre_minutes) <= now <= event_at + timedelta(minutes=post_minutes)
 
 
 def macro_lockout(
-    event_title: str | None, event_at: datetime | None, now: datetime, limits: RiskLimits
+    event_title: str | None,
+    event_at: datetime | None,
+    now: datetime,
+    limits: RiskLimits,
+    *,
+    calendar_verified: bool,
+    static_status: CalendarStatus,
 ) -> Rejection | None:
     """Rule ``macro_lockout``: refuses an entry while ``now`` is inside the lockout window
     (``limits.lockout_pre_minutes`` / ``limits.lockout_post_minutes``) around the tier-1 event the caller found;
     no event means no lockout. The reason prints the event's UTC clock time, and an untitled event as
-    "scheduled release". Called by the scan (evaluator) and by entry admission on both broker branches.
+    "scheduled release". Before the window test, an unverified static tier-1 calendar refuses every entry when
+    ``limits.macro_calendar_unknown`` is ``closed`` (``static_status`` names why in the text); under ``open`` it
+    changes nothing. Called through ``CalendarCheck.lockout_rejection`` by the whole-scan check, the evaluator, the
+    tap gate and entry admission on both broker branches.
     """
+    if not calendar_verified and limits.macro_calendar_unknown == "closed":
+        return Rejection(
+            RiskRule.MACRO_LOCKOUT,
+            f"Macro calendar unverified: the static tier-1 calendar is {static_status}; new entries refused "
+            "(risk.macro_calendar_unknown: closed).",
+        )
     if event_at is None or not in_lockout_window(
         now, event_at, limits.lockout_pre_minutes, limits.lockout_post_minutes
     ):

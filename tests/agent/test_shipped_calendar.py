@@ -12,14 +12,18 @@ import yaml
 
 from agentic_trader.agent.calendar import (
     OFFICIAL_HOSTS,
+    BaseEconomicCalendar,
+    CalendarFetch,
     StaticTier1Calendar,
     Tier1CalendarFile,
     Tier1EventRecord,
     Tier1Kind,
+    UnionTier1Calendar,
 )
-from agentic_trader.config import WORKSPACE_ROOT
+from agentic_trader.config import WORKSPACE_ROOT, load_config
 from agentic_trader.constants import CalendarStatus
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.risk import RiskLimits
 
 
 SHIPPED = WORKSPACE_ROOT / "config/calendar/us-tier1-v1.json"
@@ -100,3 +104,35 @@ def test_every_source_is_an_official_schedule_page_for_its_series():
             assert record.source_url == f"https://www.bls.gov/schedule/news_release/{page}.htm"
         else:
             assert url.hostname == "www.federalreserve.gov"
+
+
+class OkEmptyFeed(BaseEconomicCalendar):
+    """A live feed that answers ok with no events: the static calendar alone decides."""
+
+    source = "ok-empty"
+    label = "OkEmpty"
+
+    async def fetch_events(self, force_refresh: bool = False) -> CalendarFetch:
+        return CalendarFetch(CalendarStatus.OK)
+
+
+async def test_fomc_2026_10_28_acceptance():
+    calendar = UnionTier1Calendar(
+        StaticTier1Calendar.load(SHIPPED, hashlib.sha256(SHIPPED.read_bytes()).hexdigest()),
+        OkEmptyFeed(),
+        unknown_policy="open",
+    )
+    limits = RiskLimits.from_config(load_config())
+
+    async def check(hour: int, minute: int):
+        now = datetime(2026, 10, 28, hour, minute, tzinfo=ET_TZ).astimezone(UTC)
+        return await calendar.check(now, limits.lockout_pre_minutes, limits.lockout_post_minutes)
+
+    afternoon = await check(14, 35)
+    assert afternoon.now == datetime(2026, 10, 28, 18, 35, tzinfo=UTC)
+    assert afternoon.verified and afternoon.lockout is not None
+    assert afternoon.lockout.title == "FOMC Press Conference"
+    morning = await check(10, 35)
+    assert morning.lockout is None and morning.lockout_rejection(limits) is None
+    tap = (await check(14, 50)).lockout_rejection(limits)
+    assert tap is not None and tap.reason == "Macro event lockout: FOMC Press Conference at 18:30 UTC."

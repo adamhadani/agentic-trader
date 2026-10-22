@@ -10,7 +10,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from agentic_trader.agent.calendar import MacroEvent
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import AssetClass, OrderSide
@@ -31,6 +30,7 @@ from tests.agent.test_evaluator import (
     create_equity_candidate,
     evaluator_factory,  # noqa: F401  (fixture)
 )
+from tests.calendar_doubles import lockout_check, union_double
 
 
 def book_row(symbol, direction="LONG", notional=1000.0, risk=50.0, asset_class="EQUITY"):
@@ -280,14 +280,12 @@ async def test_closed_session_reason_carries_the_provider_detail(evaluator_facto
 
 
 async def test_macro_lockout_reason_is_the_rule_text_on_the_utc_clock(evaluator_factory):  # noqa: F811
-    evaluator = evaluator_factory()
     # An aware, non-UTC event time: the reason prints its UTC clock.
-    event_at = datetime.now(UTC).replace(second=0, microsecond=0).astimezone(ZoneInfo("America/New_York"))
-    event = MacroEvent(title="CPI", country="USD", impact="High", timestamp=event_at)
-    evaluator.calendar.is_in_lockout_window.return_value = (True, event)
+    event_at = datetime(2026, 10, 14, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    evaluator = evaluator_factory(calendar=union_double(lockout_check("CPI", event_at)))
     result = await evaluator.evaluate_candidate(make_candidate(), use_llm=False)
     assert result.approved is False and result.rejection_rule == RiskRule.MACRO_LOCKOUT
-    assert result.rejection_reason == f"Macro event lockout: CPI at {event_at.astimezone(UTC):%H:%M} UTC."
+    assert result.rejection_reason == "Macro event lockout: CPI at 12:30 UTC."
     assert result.macro_clearance is False
 
 

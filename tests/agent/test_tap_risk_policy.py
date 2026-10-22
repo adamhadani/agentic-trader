@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from agentic_trader.agent.calendar import MacroEvent
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import AssetClass, SignalStatus, StrategyType
@@ -27,6 +26,7 @@ from tests.agent.test_card_freshness_tap import (  # noqa: F401  (tap_desk is a 
     tap_desk,
     tap_events,
 )
+from tests.calendar_doubles import lockout_check
 
 
 CHECKS_UNAVAILABLE = ExecutionReply(False, "⚠️ Checks unavailable; try again shortly.", retryable=True)
@@ -248,12 +248,9 @@ async def test_tap_refuses_a_size_beyond_the_regime_scaled_budget(tap_desk, temp
 
 async def test_one_macro_lockout_text_at_tap_and_at_admission(tap_desk, temp_db):  # noqa: F811
     # An aware, non-UTC event time: the rule prints its UTC clock.
-    event_at = datetime.now(UTC).replace(second=0, microsecond=0).astimezone(ZoneInfo("America/New_York"))
-    tap_desk.calendar.is_in_lockout_window.return_value = (
-        True,
-        MacroEvent(title="CPI", country="USD", impact="High", timestamp=event_at),
-    )
-    text = f"Macro event lockout: CPI at {event_at.astimezone(UTC):%H:%M} UTC."
+    event_at = datetime(2026, 10, 14, 8, 30, tzinfo=ZoneInfo("America/New_York"))
+    tap_desk.calendar.check.return_value = lockout_check("CPI", event_at)
+    text = "Macro event lockout: CPI at 12:30 UTC."
     sid = await record_card(temp_db)
 
     reply = await tap_desk.execute_signal_by_id(sid)
@@ -271,21 +268,20 @@ async def test_one_macro_lockout_text_at_tap_and_at_admission(tap_desk, temp_db)
         take_profit=120.0,
     )
     assert await tap_desk._entry_macro_check(request, signal) == text
-    # One clock: the calendar is asked about the same instant the rule judges.
+    # One clock: the calendar is asked about an aware instant, which the rule judges.
     assert all(
-        isinstance(call.kwargs["now"], datetime) and call.kwargs["now"].utcoffset() is not None
-        for call in tap_desk.calendar.is_in_lockout_window.await_args_list
+        isinstance(call.args[0], datetime) and call.args[0].utcoffset() is not None
+        for call in tap_desk.calendar.check.await_args_list
     )
 
 
 async def test_the_rule_not_the_caller_judges_the_lockout_window(tap_desk):  # noqa: F811
     # ``macro_lockout`` re-judges the window at the instant the calendar was asked about:
-    # an event a day past is no lockout, whatever the calendar's flag says.
-    tap_desk.calendar.is_in_lockout_window.return_value = (
-        True,
-        MacroEvent(title="CPI", country="USD", impact="High", timestamp=datetime.now(UTC) - timedelta(days=1)),
-    )
-    assert await tap_desk._macro_lockout_reason() is None
+    # an event a day past is no lockout, whatever the check's lockout field says.
+    event_at = datetime(2026, 10, 14, 12, 30, tzinfo=UTC)
+    a_day_later = event_at + timedelta(days=1)
+    tap_desk.calendar.check.return_value = lockout_check("CPI", event_at, now=a_day_later)
+    assert await tap_desk._macro_lockout_reason(now=a_day_later) is None
 
 
 @pytest.mark.parametrize("enforce_rth", [True, False])

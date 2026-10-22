@@ -253,7 +253,11 @@ def format_alert_card(
     right after the target line; None renders none.
     """
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
-    macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+    macro_status = (
+        f"Unverified — {html.escape(eval_res.macro_note)}"
+        if eval_res.macro_note
+        else ("Cleared" if eval_res.macro_clearance else "Event Alert Active")
+    )
     earnings_line = f"• <b>Earnings:</b> {html.escape(eval_res.earnings_note)}\n" if eval_res.earnings_note else ""
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
     valid_until_text = _valid_until_text(valid_until, issued_at)
@@ -419,7 +423,11 @@ def format_terminal_card(
     same helper, right after the target line; None renders none.
     """
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
-    macro_status = "Cleared" if eval_res.macro_clearance else "Event Alert Active"
+    macro_status = (
+        f"Unverified — {eval_res.macro_note}"
+        if eval_res.macro_note
+        else ("Cleared" if eval_res.macro_clearance else "Event Alert Active")
+    )
     earnings_line = f"• Earnings:         {eval_res.earnings_note}\n" if eval_res.earnings_note else ""
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
     valid_until_text = _valid_until_text(valid_until, issued_at)

@@ -32,7 +32,7 @@ in what they observed.
 
 | Type | Module | What it is |
 | --- | --- | --- |
-| `RiskLimits` | `limits.py` | A frozen snapshot of every limit the rules read, built by `RiskLimits.from_config(config)`. It holds cash, the four drawdown-policy fields (`drawdown_policy` returns them as a frozen `DrawdownPolicy`), the per-trade risk/notional/quantity caps, the aggregate stop-risk percentage, the portfolio and asset-class notional caps, the concurrent and correlated position limits, the normalised correlation groups, the minimum reward/risk, the lockout minutes, the earnings blackout days and `enforce_rth`. A class without a configured cap (FX, or a cap set to `None`) has no entry in `asset_class_caps` and is uncapped. `from_config` raises `ValueError`, naming the config field, when a cap is not finite and non-negative or a ratio (the minimum reward/risk, a drawdown-policy value) is not finite. |
+| `RiskLimits` | `limits.py` | A frozen snapshot of every limit the rules read, built by `RiskLimits.from_config(config)`. It holds cash, the four drawdown-policy fields (`drawdown_policy` returns them as a frozen `DrawdownPolicy`), the per-trade risk/notional/quantity caps, the aggregate stop-risk percentage, the portfolio and asset-class notional caps, the concurrent and correlated position limits, the normalised correlation groups, the minimum reward/risk, the lockout minutes, the unknown-calendar policy (`macro_calendar_unknown`, from `risk.macro_calendar_unknown`), the earnings blackout days and `enforce_rth`. A class without a configured cap (FX, or a cap set to `None`) has no entry in `asset_class_caps` and is uncapped. `from_config` raises `ValueError`, naming the config field, when a cap is not finite and non-negative or a ratio (the minimum reward/risk, a drawdown-policy value) is not finite. |
 | `BookPosition`, `Book` | `book.py` | What the desk already holds. `Book.from_signal_rows(rows, reservations=…)` reads `signals` rows (`contract` or `symbol`, `direction`, `asset_class`, `notional_value`, `risk_dollars`, `status`). With `reservations=True`, a `SUBMITTING` row is a reservation. A missing, non-numeric, non-finite or negative `notional_value` or `risk_dollars` makes the position invalid (`Book.invalid`); it is never coerced to zero. |
 | `EntryIntent` | `rules.py` | What is about to be risked: symbol, direction, asset class, quantity, entry, stop, target, multiplier, and an optional current price (the strategy is not part of it: `regime_breakout` takes the strategy separately). The constructor is the validation boundary. Direction must be LONG or SHORT (any case). Quantity, prices, multiplier and a known current price must be finite and positive, otherwise `ValueError`. An inverted bracket is a valid intent; `reward_risk` refuses it. Derived values: the normalised `key`, `risk_distance`, `reward_distance`, `risk_dollars`, `exposure_price` (`max(entry, current_price)`, or the entry when no current price is known) and `notional`. |
 | `RiskBudget` | `capital.py` | The per-trade budget: `capital`, `drawdown_pct`, `drawdown_factor`, `macro_factor` and `dollars`. |
@@ -102,7 +102,7 @@ paths are under `tests/`.
 | `portfolio_notional` | book notional plus the intent's, `max_notional_exposure` | `book_gates` | — | yes | `Portfolio notional would reach ${total:,.0f}, above the ${cap:,.0f} ceiling.` | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `workflows/test_entries.py` |
 | `asset_class_notional` | the class's book notional plus the intent's, the class cap | `book_gates` | — | yes | `{ASSET_CLASS} notional would reach ${total:,.0f}, above the ${cap:,.0f} ceiling.` | `risk/test_rules.py`, `execution/test_risk_budgeting.py`, `execution/test_entry_capacity.py` |
 | `correlation_group` | normalised groups, same-direction book positions, `max_correlated_positions` | `book_gates` | — | yes | `Correlation group '{group}' already has {n} {DIRECTION} position(s) ({symbols}); max {max}.` | `risk/test_rules.py`, `risk/test_limits.py`, `risk/test_consistency.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_risk_policy_integration.py` |
-| `macro_lockout` | the calendar's tier-1 event (title, timezone-aware time), now, `risk.lockout_pre_event_minutes` / `lockout_post_event_minutes` | evaluator gate | tap gate | preflight macro check, on both broker branches | `Macro event lockout: {title} at {HH:MM} UTC.` An untitled event prints `scheduled release`. | `risk/test_rules.py`, `agent/test_tap_risk_policy.py`, `workflows/test_entries_macro.py`, `agent/test_risk_policy_integration.py` |
+| `macro_lockout` | one `CalendarCheck` from the union tier-1 calendar (`agent/calendar.py:UnionTier1Calendar.check`: the digest-pinned static calendar's events when it is verified, plus live ForexFactory tier-1 events with no static match) giving the tier-1 event (title, timezone-aware time), now, `calendar_verified` (the static calendar's status is `ok`) and that status; `risk.lockout_pre_event_minutes` / `lockout_post_event_minutes`; `risk.macro_calendar_unknown` | whole-scan check and evaluator gate | tap gate | preflight macro check, on both broker branches | `Macro event lockout: {title} at {HH:MM} UTC.` An untitled event prints `scheduled release`. Under `risk.macro_calendar_unknown: closed`, an unverified static calendar refuses before the window test: `Macro calendar unverified: the static tier-1 calendar is {expired \| invalid}; new entries refused (risk.macro_calendar_unknown: closed).` Under `open` (the default) it never refuses; the prompt says `Lockout UNVERIFIED` and the card `Macro Check: Unverified — {note}`. | `risk/test_rules.py`, `agent/test_calendar.py`, `agent/test_macro_lockout_sites.py`, `agent/test_tap_risk_policy.py`, `workflows/test_entries_macro.py`, `agent/test_risk_policy_integration.py`, `agent/test_shipped_calendar.py` |
 | `earnings_blackout` | next earnings date, the New York date, `risk.earnings_blackout_days` (predicate `earnings_days_out`) | evaluator gate, equities | tap gate, equities | — | `Earnings Blackout: {SYMBOL} reports {YYYY-MM-DD} {before open \| after close \| timing unspecified} (in {n} day(s)) — within {days}-day blackout` (the prefix `Earnings Blackout: ` is added by the caller) | `risk/test_rules.py`, `agent/test_earnings.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
 | `corporate_action` | the latest fresh corporate-action capture and the symbols it covers, the New York date, `corporate_actions.pre_days` / `post_days` (predicate `blocking_corporate_action`) | evaluator gate, equities; preview annotates, enforce refuses; stale, missing or uncovered evidence never refuses | tap gate, equities, enforce only | — | `Corporate action: {SYMBOL} {describe} effective {YYYY-MM-DD} ({in n day(s) \| n day(s) ago \| today}) — within the {pre}/{post}-day blackout.` | `risk/test_rules.py`, `agent/test_evaluator.py`, `agent/test_card_freshness_tap.py` |
 | `session_closed` | the session's `is_open`, the provider's detail | evaluator gate | tap, re-evaluate, `/scan`, card validity, expired-card reply | — | `Market session closed: {detail}.` (`Market session closed.` without detail) | `risk/test_rules.py`, `agent/test_evaluator_risk_policy.py`, `agent/test_tap_risk_policy.py` |
@@ -157,8 +157,10 @@ Most layers show the rule's text unchanged. Some layers wrap it:
    `portfolio_notional`, `asset_class_notional`, `correlation_group`. The first
    rejection decides.
 4. The statistical return-correlation check, which is not a shared rule (see below).
-5. `macro_lockout`. The calendar finds the event on the evaluator's own clock, and the
-   rule judges the same instant.
+5. `macro_lockout`. One check of the union tier-1 calendar (the static calendar's union
+   with the live feed) on the evaluator's own clock finds the event, and the rule judges
+   the same instant. The same check renders the prompt's Economic Calendar Status and,
+   when the static calendar is unverified, the card's macro note.
 6. The earnings blackout (equities).
 7. The corporate-action rule (equities; `corporate_actions.entry_block`: `off` skips it, `preview` annotates, `enforce` refuses; stale, missing or uncovered evidence never refuses).
 8. The regime rules: `regime_breakout`, then `reward_risk` on the bracket at the
@@ -177,8 +179,11 @@ with the LLM when enabled, against that book plus the cards already sent in this
 A collect-phase refusal is logged as `candidate_rejected` with `phase: collect`, the
 reason and `rejection_rule`. It does not appear in the runner-up list or the digest. A
 send-phase refusal is a runner-up and is logged with the same fields and `phase: send`.
-Separately, a scan that starts inside a lockout window is skipped as a whole
-and logged as `macro_lockout_active`.
+Separately, the whole-scan check applies `macro_lockout` at scan start from one check of
+the union calendar (the static calendar's union with the live feed). A refusal (a lockout
+window, or an unverified static calendar under `closed`) skips the scan as a whole, records
+the scan observation `Macro gate checked: {reason}; entry alerts paused` and logs
+`macro_lockout_active`.
 
 ### Tap and re-pricing
 
@@ -329,8 +334,10 @@ came with them. Everything else that decides an entry is unchanged.
    - simulator entries can be refused by the regime rules (breakout suppression, the
      regime's reward/risk, the macro-scaled budget);
    - the regime half fails closed when VIX or macro data is unavailable ("Admission
-     evidence unavailable (…)"), while the lockout half fails open when the economic
-     calendar is down;
+     evidence unavailable (…)"). The lockout half reads the union calendar, whose static
+     tier-1 calendar is authoritative: a live-feed failure loses only unscheduled releases.
+     An unverified (expired or invalid) static calendar is labelled under
+     `risk.macro_calendar_unknown: open` and refuses every entry under `closed`;
    - the preflight makes provider calls (calendar, regime) inside the 60 s preflight
      lease (`execution.entry_preflight_lease_seconds`);
    - `get_regime(force_refresh=True)` refreshes the shared regime cache on every

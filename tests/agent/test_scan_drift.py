@@ -44,6 +44,7 @@ from tests.agent.test_scan_budget import (  # noqa: F401  (budget_desk is a fixt
     candidate,
     evaluation,
 )
+from tests.calendar_doubles import lockout_check, unverified_check
 
 
 VERSION = "apriori:pead:v2:long:abc"
@@ -519,14 +520,15 @@ async def _gate(desk, db, gate: str) -> str:
         await db.set_state(SystemStateKey.TRADING_HALTED, "true")
         await db.set_state(SystemStateKey.TRADING_HALT_REASON, "operator kill")
         return "trading halted: operator kill"
-    desk.calendar.is_in_lockout_window.return_value = (
-        True,
-        SimpleNamespace(title="CPI release", timestamp=datetime(2026, 10, 28, 12, 30, tzinfo=UTC)),
-    )
+    if gate == "unverified":
+        desk.config.risk.macro_calendar_unknown = "closed"
+        desk.calendar.check.return_value = unverified_check()
+        return "macro calendar unverified"
+    desk.calendar.check.return_value = lockout_check("CPI release", datetime(2026, 10, 28, 12, 30, tzinfo=UTC))
     return "macro lockout: CPI release"
 
 
-@pytest.mark.parametrize("gate", ["halt", "lockout"])
+@pytest.mark.parametrize("gate", ["halt", "lockout", "unverified"])
 async def test_a_gated_decision_scan_journals_a_skipped_pead_decision(drift_desk, temp_db, gate):
     drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
     reason = await _gate(drift_desk, temp_db, gate)

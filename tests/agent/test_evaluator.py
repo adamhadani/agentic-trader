@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agentic_trader.agent.calendar import ForexFactoryCalendar, MacroEvent
+from agentic_trader.agent.calendar import Tier1Kind
 from agentic_trader.agent.earnings import EarningsEvent, EarningsLookup, EarningsTiming
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
@@ -16,6 +16,7 @@ from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessio
 from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
 from agentic_trader.risk import RiskRule
 from agentic_trader.screeners.base import ScreenerCandidate
+from tests.calendar_doubles import clear_check, lockout_check, union_double, unverified_check
 
 
 @pytest.fixture
@@ -36,8 +37,7 @@ def evaluator_factory(config):
                 summary_text="Test context",
             )
         )
-        calendar = AsyncMock(spec=ForexFactoryCalendar)
-        calendar.is_in_lockout_window.return_value = (False, None)
+        calendar = union_double(clear_check())
         return RiskEvaluator(config, **{"regime_detector": detector, "calendar": calendar, **overrides})
 
     return build
@@ -113,23 +113,17 @@ async def test_notional_limit_rejection(evaluator_factory):
 
 @pytest.mark.asyncio
 async def test_macro_lockout_rejection(evaluator_factory):
-    class MockCalendar(ForexFactoryCalendar):
-        async def is_in_lockout_window(self, pre_minutes=60, post_minutes=30, now=None):
-            return True, MacroEvent(
-                title="FOMC Rate Decision",
-                country="USD",
-                impact="High",
-                timestamp=datetime.now(UTC),
-            )
-
-    evaluator = evaluator_factory(calendar=MockCalendar())
+    decision = datetime(2026, 10, 28, 18, tzinfo=UTC)
+    calendar = union_double(lockout_check("FOMC Rate Decision", decision, kind=Tier1Kind.FOMC_STATEMENT))
+    evaluator = evaluator_factory(calendar=calendar)
     candidate = create_candidate(price=5800.0)
     eval_res = await evaluator.evaluate_candidate(candidate, current_open_notional=0.0, use_llm=False)
 
     assert eval_res.approved is False
-    assert "Macro event lockout: FOMC Rate Decision at " in eval_res.rejection_reason
+    assert eval_res.rejection_reason == "Macro event lockout: FOMC Rate Decision at 18:00 UTC."
     assert eval_res.rejection_rule == RiskRule.MACRO_LOCKOUT
     assert eval_res.macro_clearance is False
+    assert eval_res.thesis_summary == "Rejected: macro lockout active for 'FOMC Rate Decision'."
 
 
 @pytest.mark.asyncio
@@ -414,16 +408,55 @@ async def test_blocked_sizing_cannot_reach_llm_approval(evaluator_factory, monke
     completion.assert_not_called()
 
 
-async def test_lockout_gate_and_prompt_summary_share_one_clock_and_window(evaluator_factory, config):
-    """The prompt's macro block restates the gate's verdict, so both must see the same clock and window."""
-    evaluator = evaluator_factory()
-    await evaluator.evaluate_candidate(create_candidate(), use_llm=False)
-    gate = evaluator.calendar.is_in_lockout_window.call_args.kwargs
-    summary = evaluator.calendar.get_macro_summary_for_prompt.call_args.kwargs
-    assert gate["now"] == summary["now"] and gate["now"].tzinfo is UTC
-    for kwargs in (gate, summary):
-        assert kwargs["pre_minutes"] == config.risk.lockout_pre_event_minutes
-        assert kwargs["post_minutes"] == config.risk.lockout_post_event_minutes
+def llm_answer(monkeypatch, **answer) -> AsyncMock:
+    content = json.dumps({"approved": True, "macro_clearance": True, "thesis_summary": "fixture", **answer})
+    completion = AsyncMock(
+        return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+    )
+    monkeypatch.setattr("agentic_trader.agent.evaluator.litellm.acompletion", completion)
+    return completion
+
+
+async def test_one_calendar_check_per_evaluation_feeds_the_gate_and_the_prompt(evaluator_factory, config, monkeypatch):
+    """The prompt's macro block restates the gate's verdict, so both read one check on one clock and window."""
+    check = clear_check()
+    evaluator = evaluator_factory(calendar=union_double(check))
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    completion = llm_answer(monkeypatch)
+    result = await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
+    assert result.approved is True and result.macro_note is None
+    assert evaluator.calendar.check.await_count == 1
+    now, pre, post = evaluator.calendar.check.await_args.args
+    assert now.tzinfo is UTC
+    assert (pre, post) == (config.risk.lockout_pre_event_minutes, config.risk.lockout_post_event_minutes)
+    [_, user] = completion.await_args.kwargs["messages"]
+    assert check.prompt_text() in user["content"]
+
+
+async def test_an_unverified_calendar_sets_macro_note_and_never_says_cleared(evaluator_factory, monkeypatch):
+    evaluator = evaluator_factory(calendar=union_double(unverified_check()))
+    result = await evaluator.evaluate_candidate(create_candidate(), use_llm=False)
+    assert result.approved is True and result.macro_clearance is True  # the LLM JSON contract is unchanged
+    assert result.macro_note == "static tier-1 calendar expired; live feed ok"
+    assert "Macro cleared" not in result.thesis_summary
+    assert "Macro lockout unverified (Regime: NORMAL, VIX 18.0)." in result.thesis_summary
+
+    evaluator.config.openai_api_key = "isolated-test-placeholder"
+    llm_answer(monkeypatch, macro_note="LLM-supplied note")
+    assert (await evaluator.evaluate_candidate(create_candidate(), use_llm=True)).macro_note == (
+        "static tier-1 calendar expired; live feed ok"
+    )
+    monkeypatch.setattr(
+        "agentic_trader.agent.evaluator.litellm.acompletion", AsyncMock(side_effect=RuntimeError("provider down"))
+    )
+    fallback = await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
+    assert fallback.approved is True and fallback.macro_note == "static tier-1 calendar expired; live feed ok"
+
+
+async def test_a_verified_calendar_still_says_macro_cleared(evaluator_factory):
+    result = await (evaluator_factory()).evaluate_candidate(create_candidate(), use_llm=False)
+    assert result.macro_note is None
+    assert "Macro cleared (Regime: NORMAL, VIX 18.0)." in result.thesis_summary
 
 
 def create_equity_candidate(contract="AAPL", price=150.0, atr=2.0, swing_low=146.0, swing_high=155.0):
