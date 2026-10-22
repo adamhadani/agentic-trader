@@ -147,6 +147,7 @@ def test_telegram_html_formatter():
         min_rr_threshold=2.0,
         timestamp=datetime.now(UTC),
         summary_text="Market conditions normal.",
+        risk_multiplier=1.0,
     )
     regime_html = TelegramHtmlFormatter.format_macro_dashboard_html(regime, required_rr=2.0)
     assert "NORMAL" in regime_html

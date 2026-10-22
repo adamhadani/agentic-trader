@@ -35,6 +35,7 @@ def evaluator_factory(config):
                 min_rr_threshold=2.0,
                 timestamp=datetime.now(UTC),
                 summary_text="Test context",
+                risk_multiplier=1.0,
             )
         )
         calendar = union_double(clear_check())
@@ -180,6 +181,7 @@ async def test_squeeze_breakout_suppression_in_extreme_regime(evaluator_factory)
         min_rr_threshold=2.5,
         timestamp=datetime.now(UTC),
         summary_text="VIX: 35.00 (EXTREME) | Breakouts: Suppressed",
+        risk_multiplier=1.0,
     )
     mock_regime.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=extreme_snapshot)  # type: ignore
 
@@ -222,6 +224,7 @@ async def test_squeeze_breakout_allowed_in_normal_regime(evaluator_factory):
         min_rr_threshold=2.0,
         timestamp=datetime.now(UTC),
         summary_text="VIX: 17.50 (NORMAL) | Breakouts: Allowed",
+        risk_multiplier=1.0,
     )
     mock_regime.get_regime = lambda force_refresh=False: asyncio.sleep(0, result=normal_snapshot)  # type: ignore
 

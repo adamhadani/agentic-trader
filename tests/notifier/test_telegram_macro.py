@@ -9,18 +9,27 @@ from telegram.error import BadRequest
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.macro import (
+    MACRO_INPUT_SOURCES,
     CreditSpreads,
     CreditStressRegime,
     InflationExpectations,
     InflationRegime,
+    MacroEvaluation,
+    MacroInput,
     MacroIntelligenceReport,
     MacroStressAssessment,
     MacroStressLevel,
     TreasuryYields,
     YieldCurveRegime,
     YieldCurveSpreads,
+    calculate_yield_curve_spreads,
+    classify_credit_stress,
+    compute_compound_macro_stress,
+    unknown_macro_stress,
 )
-from agentic_trader.agent.regime import RegimeSnapshot
+from agentic_trader.agent.macro_explainer import MacroExplainer
+from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot, regime_journal_block
+from agentic_trader.config import RegimeConfig
 from agentic_trader.constants import VolatilityRegime
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
@@ -40,6 +49,7 @@ async def test_macro_dashboard_and_audit_show_the_shared_required_ratio(app_conf
         min_rr_threshold=2.0,
         timestamp=datetime.now(UTC),
         summary_text="Normal",
+        risk_multiplier=1.0,
     )
     desk = SimpleNamespace(
         config=app_config,
@@ -50,7 +60,9 @@ async def test_macro_dashboard_and_audit_show_the_shared_required_ratio(app_conf
     )
     html = await TradingCopilot.get_macro_summary_html(desk)
     assert f"Minimum Required R:R:</b> <code>{shown:.1f}:1</code>" in html
-    assert desk.db.record_audit.await_args.kwargs["payload"]["minimum_rr"] == shown
+    payload = desk.db.record_audit.await_args.kwargs["payload"]
+    assert payload["minimum_rr"] == shown
+    assert payload["regime"] == regime_journal_block(desk.regime_detector.get_regime.return_value)
 
 
 def test_format_macro_dashboard_html():
@@ -125,6 +137,137 @@ def test_format_macro_dashboard_html():
     assert "103.40" in formatted
     assert "Suppressed ⚠️" in formatted
     assert "Allowed ✅" not in formatted
+
+
+def _unknown_snapshot(missing=("2y", "hy_oas")) -> RegimeSnapshot:
+    inputs = {
+        name: MacroInput(
+            name=name,
+            value=None if name in missing else 4.0,
+            source=source,
+            observed_on=None,
+            decision=name in {"vix", "3m", "2y", "10y", "hy_oas"},
+            error="no_observation" if name in missing else None,
+        )
+        for name, source in MACRO_INPUT_SOURCES.items()
+    }
+    return RegimeSnapshot(
+        vix=17.0,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=4.0,
+        dxy=4.0,
+        breakout_allowed=False,
+        min_rr_threshold=2.0,
+        timestamp=datetime(2026, 10, 21, 15, 5, tzinfo=UTC),
+        summary_text="VIX: 17.00 (NORMAL) | Macro: UNKNOWN (missing 2y, hy_oas; ×0.50, breakouts suppressed)",
+        risk_multiplier=0.5,
+        macro_unavailable_reason="Missing decision inputs: 2y, hy_oas",
+        macro_stress=unknown_macro_stress(RegimeConfig(), list(missing)),
+        macro_inputs=inputs,
+    )
+
+
+def test_macro_dashboard_names_the_unknown_policy():
+    formatted = TelegramHtmlFormatter.format_macro_dashboard_html(_unknown_snapshot(), required_rr=2.0)
+    assert "UNKNOWN" in formatted
+    assert "missing 2y, hy_oas" in formatted
+    assert "×0.50" in formatted
+    assert "uses volatility only" not in formatted
+    assert "Suppressed ⚠️" in formatted
+
+
+def test_macro_dashboard_with_the_yield_curve_disabled_still_says_volatility_only():
+    regime = RegimeSnapshot(
+        vix=17.0,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=4.2,
+        dxy=103.0,
+        breakout_allowed=True,
+        min_rr_threshold=2.0,
+        timestamp=datetime.now(UTC),
+        summary_text="VIX only",
+        risk_multiplier=1.0,
+        macro_unavailable_reason="Yield-curve enrichment is disabled in configuration",
+    )
+    formatted = TelegramHtmlFormatter.format_macro_dashboard_html(regime, required_rr=2.0)
+    assert "Yield-curve enrichment is disabled in configuration" in formatted
+    assert "uses volatility only" in formatted and "UNKNOWN" not in formatted
+
+
+def _report_without_context() -> MacroIntelligenceReport:
+    yields = TreasuryYields(yield_3m=3.95, yield_2y=4.35, yield_5y=None, yield_10y=4.95, yield_30y=None)
+    spreads = calculate_yield_curve_spreads(yields)
+    credit = classify_credit_stress(2.65)
+    return MacroIntelligenceReport(
+        yields=yields,
+        spreads=spreads,
+        credit=credit,
+        inflation=None,
+        vix=17.2,
+        dxy=None,
+        stress=compute_compound_macro_stress(17.2, spreads, credit),
+        timestamp=datetime(2026, 10, 21, 15, 5, tzinfo=UTC),
+        summary_text="test",
+    )
+
+
+def test_indicators_and_explainer_render_missing_context_as_na():
+    report = _report_without_context()
+    assert report.spreads.curvature_butterfly_bps is None
+    indicators = TelegramHtmlFormatter._format_macro_indicators_html(report)
+    assert "<b>5Y:</b> <code>N/A</code>" in indicators
+    assert "<b>30Y:</b> <code>N/A</code>" in indicators
+    assert "<b>Butterfly Curvature:</b> <code>N/A</code>" in indicators
+    assert "<b>10Y Breakeven Inflation:</b> <code>N/A</code>" in indicators
+    assert "<b>5Y Breakeven Inflation:</b> <code>N/A</code>" in indicators
+
+    text = MacroExplainer(config=None).explain_deterministic(report, format_mode="text")
+    assert "VIX: 17.20 | DXY: N/A" in text
+    html_text = MacroExplainer(config=None).explain_deterministic(report, format_mode="html")
+    assert "<i>DXY:</i> <code>N/A</code>" in html_text
+
+
+def test_prompt_context_names_the_unknown_stress():
+    context = RegimeDetector(RegimeConfig()).get_prompt_context(_unknown_snapshot())
+    assert "Compound Macro Stress: UNKNOWN (missing 2y, hy_oas; Risk Multiplier: 0.50x)" in context
+    assert "US Treasury Yield Curve" not in context
+
+
+def test_prompt_context_renders_a_missing_breakeven_as_na():
+    report = _report_without_context()
+    regime = RegimeSnapshot(
+        vix=17.2,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=4.95,
+        dxy=None,
+        breakout_allowed=True,
+        min_rr_threshold=2.0,
+        timestamp=report.timestamp,
+        summary_text="test",
+        risk_multiplier=1.0,
+        macro_report=report,
+        macro_stress=report.stress,
+    )
+    context = RegimeDetector(RegimeConfig()).get_prompt_context(regime)
+    assert "• 10Y Breakeven Inflation: N/A" in context
+    assert "• US Dollar Index (DXY): N/A" in context
+    assert "• Compound Macro Stress: LOW (Risk Multiplier: 1.00x)" in context
+
+
+async def test_explain_macro_without_a_report_names_the_missing_decision_inputs(app_config):
+    evaluation = MacroEvaluation(
+        inputs={},
+        missing=("2y", "hy_oas", "dxy"),
+        missing_decision=("2y", "hy_oas"),
+        report=None,
+        stress=unknown_macro_stress(RegimeConfig(), ["2y", "hy_oas"]),
+    )
+    desk = SimpleNamespace(
+        config=app_config,
+        regime_detector=SimpleNamespace(macro_engine=SimpleNamespace(evaluate=AsyncMock(return_value=evaluation))),
+    )
+    text = await TradingCopilot.get_explain_macro_html(desk)
+    assert text == "Macro report unavailable: missing decision inputs: 2y, hy_oas"
 
 
 @pytest.mark.asyncio

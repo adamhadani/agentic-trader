@@ -640,8 +640,8 @@ class RiskEvaluator:
         #    stays in the thesis.
         if rejection := regime_breakout(candidate.strategy, regime.breakout_allowed):
             macro_detail = ""
-            if regime.macro_report and not regime.macro_report.stress.squeeze_breakout_allowed:
-                macro_detail = f" & Macro Stress ({regime.macro_report.stress.level.value})"
+            if regime.macro_stress and not regime.macro_stress.squeeze_breakout_allowed:
+                macro_detail = f" & Macro Stress ({regime.macro_stress.level.value})"
             return _rejected(
                 rejection.reason,
                 rejection.rule,

@@ -293,10 +293,26 @@ ranking; there is no card line.
 **Journaled regime.** Every `scan_candidates_ranked` event carries one top-level `regime` block
 (`agent/regime.py:regime_journal_block`; keys `REGIME_BLOCK_KEYS`): `vix`, `vix_regime`
 (`COMPRESSED`/`NORMAL`/`ELEVATED`/`EXTREME`), `breakout_allowed`, `risk_multiplier`,
-`min_rr_threshold`, `macro_stress` (`LOW`/`MODERATE`/`HIGH`/`EXTREME`, null without a macro report) and
-`observed_at` — the snapshot observed at the start of the scan (the evaluator may refresh it during a long scan),
-which cannot be rebuilt from bars later. Every card's
-`decision_provenance["regime"]` carries the same block. Events before 2026-10-14 have none.
+`min_rr_threshold`, `macro_stress` (`LOW`/`MODERATE`/`HIGH`/`EXTREME`, or `UNKNOWN` when a decision
+input is missing; null when yield-curve enrichment is disabled) and `observed_at` — the snapshot
+observed at the start of the scan (the evaluator may refresh it during a long scan), which cannot be
+rebuilt from bars later. Since the Phase 0 fail-safes it also carries the raw inputs:
+
+- `macro_enabled`: `macro_stress` is not null (false under `regime.yield_curve_enabled: false`);
+- `inputs`: every input read, `{name: {value, source, observed_on, decision, error}}`. With the
+  yield curve enabled that is all ten: the decision inputs `vix`, `3m`, `2y`, `10y`, `hy_oas`
+  (`decision: true`) and the context inputs `5y`, `30y`, `dxy`, `t10yie`, `t5yie` (`decision: false`);
+  VIX-only reads `vix`, `10y` and `dxy`. `source` is `yfinance:^VIX` or `fred:DGS2` style,
+  `observed_on` the last bar's or observation's date, and `error` a type name, `no_observation` or
+  `unexpected_payload`;
+- `missing` (every missing input) and `missing_decision` (those with `decision: true`; with
+  `macro_enabled` they are what forced `UNKNOWN`), in canonical order;
+- `clock_regime`: `EDT` or `EST`, New York's clock at `observed_at`.
+
+`UNKNOWN` sizes at `regime.unknown_risk_multiplier` (0.5) with breakouts per
+`regime.unknown_breakout_allowed` (off); `cards outcomes` buckets it like any other `macro_stress`
+value. Every card's `decision_provenance["regime"]` carries the same block. Events before 2026-10-14
+have none, and events before the Phase 0 fail-safes have only the first seven keys.
 
 **Derived tape.** The report fetches SPY daily bars once (raw, 400 calendar days before the earliest
 decision, after the hourly fetches) and computes, per decision session, from completed sessions

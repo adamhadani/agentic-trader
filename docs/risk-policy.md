@@ -57,8 +57,15 @@ only place this product is computed.
   `sizing.drawdown_min_risk_multiplier` and is 0 at `sizing.max_drawdown_stop_pct`. It
   is always 1 when `sizing.drawdown_gating_enabled` is false.
 - The macro factor (`macro_risk_factor`) is the regime's `risk_multiplier` clamped to
-  `[0.10, 1.0]`, so it only ever scales risk down.
-- A non-finite multiplier, equity or drawdown raises `ValueError`. It is never read as 1.0.
+  `[0.10, 1.0]`, so it only ever scales risk down. It is the measured macro stress's
+  multiplier (`LOW` 1.0, `MODERATE` 0.8, `HIGH` 0.5, `EXTREME` 0.25), or `UNKNOWN` when a
+  decision input (3m, 2y, 10y, HY OAS) is missing: `regime.unknown_risk_multiplier` (0.5,
+  validated `0.10 ≤ m < 1.0`), with squeeze breakouts per `regime.unknown_breakout_allowed`
+  (false) and the VIX-derived reward/risk. Missing context inputs (5y, 30y, DXY,
+  breakevens) never move it. Only `regime.yield_curve_enabled: false`, an explicit
+  VIX-only policy, is 1.0.
+- A non-finite multiplier, equity or drawdown raises `ValueError`. It is never read as 1.0,
+  and a missing decision input is `UNKNOWN` at 0.5×, never 1.0.
 
 Each layer passes what it observed:
 
@@ -333,8 +340,10 @@ came with them. Everything else that decides an entry is unchanged.
    and the refusal of unsupported broker evidence. Consequences:
    - simulator entries can be refused by the regime rules (breakout suppression, the
      regime's reward/risk, the macro-scaled budget);
-   - the regime half fails closed when VIX or macro data is unavailable ("Admission
-     evidence unavailable (…)"). The lockout half reads the union calendar, whose static
+   - the regime half fails closed only when VIX is unavailable (`RegimeUnavailable`,
+     "Admission evidence unavailable (…)"). A missing decision input is `UNKNOWN`: the
+     halved budget refuses a max-tier tap sized under a measured `LOW` with the existing
+     "request a fresh scan for smaller sizing" text, and breakouts are off. The lockout half reads the union calendar, whose static
      tier-1 calendar is authoritative: a live-feed failure loses only unscheduled releases.
      An unverified (expired or invalid) static calendar is labelled under
      `risk.macro_calendar_unknown: open` and refuses every entry under `closed`;

@@ -4465,15 +4465,20 @@ class TradingCopilot:
                 "risk_multiplier": regime.risk_multiplier,
                 "macro_unavailable_reason": regime.macro_unavailable_reason,
                 "observation_dates": regime.macro_report.observation_dates if regime.macro_report else {},
+                "regime": regime_journal_block(regime),
             },
         )
         return TelegramHtmlFormatter.format_macro_dashboard_html(regime, required_rr=required_rr)
 
     async def get_explain_macro_html(self) -> str:
         """Format educational macro tutorial and indicator breakdown for Telegram /explain_macro."""
-        report = await self.regime_detector.macro_engine.get_macro_report()
+        evaluation = await self.regime_detector.macro_engine.evaluate()
+        if evaluation.report is None:
+            return html.escape(
+                f"Macro report unavailable: missing decision inputs: {', '.join(evaluation.missing_decision)}"
+            )
         explainer = MacroExplainer(config=self.config)
-        return await explainer.explain(report, format_mode="html")
+        return await explainer.explain(evaluation.report, format_mode="html")
 
     async def get_alphas_summary_html(self) -> str:
         """Format the compact registry and forward-evidence summary for Telegram /alphas."""

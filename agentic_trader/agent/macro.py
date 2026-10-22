@@ -1,13 +1,16 @@
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import math
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Any
+from types import MappingProxyType
 
 import httpx
+import pandas as pd
 import yfinance as yf
 
 from agentic_trader.config import RegimeConfig
@@ -62,17 +65,71 @@ class MacroStressLevel(StrEnum):
     MODERATE = "MODERATE"
     HIGH = "HIGH"
     EXTREME = "EXTREME"
+    # A decision input is missing: the configured regime.unknown_* policy, never a measured level.
+    UNKNOWN = "UNKNOWN"
+
+
+# Decision inputs are exactly what the stress score and the curve regime read; context inputs
+# (butterfly curvature, inflation regime, display) never move the stress assessment.
+DECISION_INPUTS: tuple[str, ...] = ("vix", "3m", "2y", "10y", "hy_oas")
+CONTEXT_INPUTS: tuple[str, ...] = ("5y", "30y", "dxy", "t10yie", "t5yie")
+# Every input's provider and symbol, in canonical order (decision inputs first).
+MACRO_INPUT_SOURCES: Mapping[str, str] = MappingProxyType(
+    {
+        "vix": f"yfinance:{VIX_TICKER}",
+        "3m": f"yfinance:{IRX_TICKER}",
+        "2y": f"fred:{FRED_TWO_YEAR_SERIES}",
+        "10y": f"yfinance:{TNX_TICKER}",
+        "hy_oas": f"fred:{FRED_HY_OAS_SERIES}",
+        "5y": f"yfinance:{FVX_TICKER}",
+        "30y": f"yfinance:{TYX_TICKER}",
+        "dxy": f"yfinance:{DXY_TICKER}",
+        "t10yie": f"fred:{FRED_T10YIE_SERIES}",
+        "t5yie": f"fred:{FRED_T5YIE_SERIES}",
+    }
+)
+
+
+@dataclass(frozen=True)
+class MacroInput:
+    """One macro observation as read: its value or why it is missing, its source and observation date.
+
+    ``error`` is None exactly when ``value`` is present. Otherwise it is an exception type name,
+    ``"no_observation"`` (the source answered without a usable value) or ``"unexpected_payload"``
+    (the body was not the expected format, or the value was not finite). ``decision`` marks the
+    names in ``DECISION_INPUTS``.
+    """
+
+    name: str
+    value: float | None
+    source: str
+    observed_on: date | None
+    decision: bool
+    error: str | None
+
+
+def _missing_input(name: str, source: str, *, decision: bool, error: str) -> MacroInput:
+    return MacroInput(name=name, value=None, source=source, observed_on=None, decision=decision, error=error)
+
+
+def missing_input_names(inputs: Mapping[str, MacroInput], *, decision_only: bool = False) -> tuple[str, ...]:
+    """The names without a value, in canonical order (decision inputs first); optionally only decision inputs."""
+    order = [
+        *(name for name in MACRO_INPUT_SOURCES if name in inputs),
+        *(n for n in inputs if n not in MACRO_INPUT_SOURCES),
+    ]
+    return tuple(name for name in order if inputs[name].value is None and (inputs[name].decision or not decision_only))
 
 
 @dataclass
 class TreasuryYields:
-    """Benchmark US Treasury constant maturity yields in percentage points."""
+    """Benchmark US Treasury constant maturity yields in percentage points (5Y and 30Y are context, None when missing)."""
 
     yield_3m: float
     yield_2y: float
-    yield_5y: float
+    yield_5y: float | None
     yield_10y: float
-    yield_30y: float
+    yield_30y: float | None
 
 
 @dataclass
@@ -82,7 +139,7 @@ class YieldCurveSpreads:
     slope_10y_2y_pct: float
     slope_10y_2y_bps: float
     slope_10y_3m_bps: float
-    curvature_butterfly_bps: float
+    curvature_butterfly_bps: float | None  # None without a 5Y observation
     regime: YieldCurveRegime
 
 
@@ -122,9 +179,9 @@ class MacroIntelligenceReport:
     yields: TreasuryYields
     spreads: YieldCurveSpreads
     credit: CreditSpreads
-    inflation: InflationExpectations
+    inflation: InflationExpectations | None  # None when either breakeven is missing
     vix: float
-    dxy: float
+    dxy: float | None
     stress: MacroStressAssessment
     timestamp: datetime
     summary_text: str
@@ -134,7 +191,8 @@ class MacroIntelligenceReport:
 def calculate_yield_curve_spreads(yields: TreasuryYields) -> YieldCurveSpreads:
     """
     Compute 10Y-2Y slope, 10Y-3M slope, butterfly curvature, and curve regime.
-    Curvature butterfly: 2 * 5Y - (2Y + 10Y) in basis points.
+    Curvature butterfly: 2 * 5Y - (2Y + 10Y) in basis points; None without a 5Y observation.
+    The regime reads only the 3M, 2Y and 10Y.
     """
     slope_10y_2y_pct = yields.yield_10y - yields.yield_2y
     slope_10y_2y_bps = slope_10y_2y_pct * 100.0
@@ -142,8 +200,9 @@ def calculate_yield_curve_spreads(yields: TreasuryYields) -> YieldCurveSpreads:
     slope_10y_3m_pct = yields.yield_10y - yields.yield_3m
     slope_10y_3m_bps = slope_10y_3m_pct * 100.0
 
-    curvature_pct = (2.0 * yields.yield_5y) - (yields.yield_2y + yields.yield_10y)
-    curvature_bps = curvature_pct * 100.0
+    curvature_bps: float | None = None
+    if yields.yield_5y is not None:
+        curvature_bps = round(((2.0 * yields.yield_5y) - (yields.yield_2y + yields.yield_10y)) * 100.0, 2)
 
     # Classify regime based on 10Y-2Y and 10Y-3M slopes
     if slope_10y_2y_bps < 0.0 or slope_10y_3m_bps < 0.0:
@@ -159,7 +218,7 @@ def calculate_yield_curve_spreads(yields: TreasuryYields) -> YieldCurveSpreads:
         slope_10y_2y_pct=round(slope_10y_2y_pct, 4),
         slope_10y_2y_bps=round(slope_10y_2y_bps, 2),
         slope_10y_3m_bps=round(slope_10y_3m_bps, 2),
-        curvature_butterfly_bps=round(curvature_bps, 2),
+        curvature_butterfly_bps=curvature_bps,
         regime=regime,
     )
 
@@ -208,12 +267,12 @@ def compute_compound_macro_stress(
     vix: float,
     yield_spreads: YieldCurveSpreads,
     credit: CreditSpreads,
-    inflation: InflationExpectations,
     config: RegimeConfig | None = None,
 ) -> MacroStressAssessment:
     """
     Synthesize VIX, yield curve inversion, and credit spreads into a compound macro stress index.
     Determines risk multiplier (1.0x to 0.25x), breakout suppression, and required R:R.
+    Reads only the decision inputs: VIX, the curve regime (3M, 2Y, 10Y) and HY OAS.
     """
     cfg = config or RegimeConfig()
     drivers: list[str] = []
@@ -280,30 +339,88 @@ def compute_compound_macro_stress(
     )
 
 
-def _fetch_ticker_sync(ticker: str) -> float | None:
-    """Synchronously fetch the most recent closing price for a macro ticker."""
+def unknown_macro_stress(config: RegimeConfig, missing: Sequence[str]) -> MacroStressAssessment:
+    """The ``UNKNOWN`` stress policy for missing decision inputs: the configured multiplier and breakout flag.
+
+    Its reward/risk is the default, so the VIX-derived ratio governs.
+    """
+    return MacroStressAssessment(
+        level=MacroStressLevel.UNKNOWN,
+        risk_multiplier=config.unknown_risk_multiplier,
+        squeeze_breakout_allowed=config.unknown_breakout_allowed,
+        min_rr_threshold=DEFAULT_MIN_RISK_REWARD_RATIO,
+        key_drivers=[f"Missing decision inputs: {', '.join(missing)}"],
+    )
+
+
+def _yahoo_input_from_history(name: str, ticker: str, history: pd.DataFrame, *, decision: bool) -> MacroInput:
+    """The last non-null Close of a yfinance history frame, rounded to 3 dp, dated by its bar."""
+    source = f"yfinance:{ticker}"
+    closes = history["Close"].dropna() if "Close" in history else None
+    if closes is None or closes.empty:
+        return _missing_input(name, source, decision=decision, error="no_observation")
+    value = float(closes.iloc[-1])
+    stamp = closes.index[-1]
+    if not math.isfinite(value) or not isinstance(stamp, datetime):
+        return _missing_input(name, source, decision=decision, error="unexpected_payload")
+    return MacroInput(
+        name=name, value=round(value, 3), source=source, observed_on=stamp.date(), decision=decision, error=None
+    )
+
+
+def fetch_yahoo_input(name: str, ticker: str, *, decision: bool) -> MacroInput:
+    """Blocking read of a Yahoo Finance ticker's latest close; call it through ``asyncio.to_thread``."""
     try:
-        data = yf.Ticker(ticker)
-        hist = data.history(period="5d")
-        if not hist.empty and "Close" in hist:
-            val = float(hist["Close"].dropna().iloc[-1])
-            return round(val, 3)
-    except Exception as e:
-        logger.debug("Failed to fetch macro ticker %s: %s", ticker, e)
-    return None
+        return _yahoo_input_from_history(name, ticker, yf.Ticker(ticker).history(period="5d"), decision=decision)
+    except Exception as exc:
+        logger.warning(
+            "Macro ticker %s unavailable",
+            ticker,
+            extra={"event": "macro_input_unavailable", "input": name, "error": type(exc).__name__},
+        )
+        return _missing_input(name, f"yfinance:{ticker}", decision=decision, error=type(exc).__name__)
+
+
+_FRED_DATE_HEADERS = frozenset({"date", "observation_date"})
+
+
+def _fred_input_from_csv(name: str, series_id: str, text: str, *, decision: bool) -> MacroInput:
+    """The most recent finite observation of a fredgraph.csv body.
+
+    A body whose first non-empty line is not a two-field ``date``/``observation_date`` header (for
+    example an HTML maintenance page served with HTTP 200) is ``unexpected_payload``; a CSV without
+    a finite dated value (only ``.`` missing marks) is ``no_observation``.
+    """
+    source = f"fred:{series_id}"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    header = lines[0].split(",") if lines else []
+    if len(header) != 2 or header[0].strip().lower() not in _FRED_DATE_HEADERS:
+        return _missing_input(name, source, decision=decision, error="unexpected_payload")
+    for line in reversed(lines[1:]):
+        parts = line.split(",")
+        if len(parts) != 2:
+            continue
+        with contextlib.suppress(ValueError):
+            value = float(parts[1])
+            observed_on = date.fromisoformat(parts[0].strip())
+            if math.isfinite(value):
+                return MacroInput(
+                    name=name, value=value, source=source, observed_on=observed_on, decision=decision, error=None
+                )
+    return _missing_input(name, source, decision=decision, error="no_observation")
 
 
 class FredDataClient:
     """
     Lightweight, zero-auth HTTP client fetching economic time series from FRED.
-    Uses public fredgraph.csv endpoints with in-memory TTL caching; missing/expired observations remain unavailable.
+    Uses public fredgraph.csv endpoints with in-memory TTL caching of successful observations;
+    missing/expired observations remain unavailable.
     """
 
     def __init__(self, cache_ttl_seconds: int = 900, timeout_seconds: float = 5.0):
         self.cache_ttl_seconds = cache_ttl_seconds
         self.timeout_seconds = timeout_seconds
-        self._cache: dict[str, tuple[float, datetime]] = {}
-        self.observation_dates: dict[str, str] = {}
+        self._cache: dict[str, tuple[float, date, datetime]] = {}
 
     async def _fetch_csv_text(self, series_id: str) -> str:
         """Fetch raw CSV text from FRED."""
@@ -313,42 +430,62 @@ class FredDataClient:
             resp.raise_for_status()
             return resp.text
 
-    async def fetch_latest_value(
+    async def fetch_input(
         self,
+        name: str,
         series_id: str,
+        *,
+        decision: bool,
         force_refresh: bool = False,
-    ) -> float | None:
-        """Fetch the most recent valid observation for a given FRED series."""
+    ) -> MacroInput:
+        """The most recent valid observation of a FRED series as a typed input; never raises for a failed read."""
+        source = f"fred:{series_id}"
         now = datetime.now(UTC)
-        if not force_refresh and series_id in self._cache:
-            cached_val, cached_time = self._cache[series_id]
-            if (now - cached_time).total_seconds() < self.cache_ttl_seconds:
-                return cached_val
+        cached = self._cache.get(series_id)
+        if not force_refresh and cached is not None and (now - cached[2]).total_seconds() < self.cache_ttl_seconds:
+            value, observed_on, _ = cached
+            return MacroInput(
+                name=name, value=value, source=source, observed_on=observed_on, decision=decision, error=None
+            )
 
         try:
-            csv_text = await self._fetch_csv_text(series_id)
-            lines = [line.strip() for line in csv_text.splitlines() if line.strip()]
-            # Find the most recent line with valid numeric value (skipping '.' missing marks)
-            latest_val: float | None = None
-            for line in reversed(lines):
-                parts = line.split(",")
-                if len(parts) == 2 and parts[1] != "." and parts[0] != "DATE":
-                    with contextlib.suppress(ValueError):
-                        value = float(parts[1])
-                        observation_date = date.fromisoformat(parts[0])
-                        if math.isfinite(value):
-                            latest_val = value
-                            self.observation_dates[series_id] = observation_date.isoformat()
-                            break
+            text = await self._fetch_csv_text(series_id)
+        except Exception as exc:
+            result = _missing_input(name, source, decision=decision, error=type(exc).__name__)
+        else:
+            result = _fred_input_from_csv(name, series_id, text, decision=decision)
 
-            if latest_val is not None:
-                self._cache[series_id] = (latest_val, now)
-                return latest_val
+        if result.value is not None and result.observed_on is not None:
+            self._cache[series_id] = (result.value, result.observed_on, now)
+        else:
+            logger.warning(
+                "FRED series %s unavailable",
+                series_id,
+                extra={"event": "macro_input_unavailable", "input": name, "error": result.error},
+            )
+        return result
 
-        except Exception as e:
-            logger.warning("FRED series %s unavailable: %s", series_id, e)
 
-        return None
+@dataclass(frozen=True)
+class MacroEvaluation:
+    """Every input read, the missing names (canonical order) and either a measured report or ``UNKNOWN`` stress.
+
+    ``report`` is None exactly when a decision input is missing (``missing_decision``); ``stress`` is
+    then ``unknown_macro_stress``. Missing context inputs leave the report's optional fields None.
+    """
+
+    inputs: Mapping[str, MacroInput]
+    missing: tuple[str, ...]
+    missing_decision: tuple[str, ...]
+    report: MacroIntelligenceReport | None
+    stress: MacroStressAssessment
+
+
+def _decision_value(inputs: Mapping[str, MacroInput], name: str) -> float:
+    value = inputs[name].value
+    if value is None:  # evaluate() builds a report only when every decision input is present
+        raise ValueError(f"Decision input {name} is missing")
+    return value
 
 
 class MacroIntelligenceEngine:
@@ -356,121 +493,153 @@ class MacroIntelligenceEngine:
     Institutional Multi-Asset Macro Intelligence Engine.
     Ingests US Treasury curve (3M, 2Y, 5Y, 10Y, 30Y), Credit OAS, and TIPS Breakevens,
     calculating term structure spreads, macro stress index, and dynamic risk budget multipliers.
+    Yahoo reads use the injected blocking ``yahoo_fetch`` through ``asyncio.to_thread``; FRED reads
+    use ``fred_client``.
     """
 
     def __init__(
         self,
         config: RegimeConfig | None = None,
         fred_client: FredDataClient | None = None,
+        yahoo_fetch: Callable[..., MacroInput] = fetch_yahoo_input,
     ):
         self.config = config or RegimeConfig()
         self.fred_client = fred_client or FredDataClient(cache_ttl_seconds=self.config.cache_ttl_seconds)
-        self._cached_report: MacroIntelligenceReport | None = None
+        self.yahoo_fetch = yahoo_fetch
+        self._cached_evaluation: MacroEvaluation | None = None
         self._last_fetch_time: datetime | None = None
 
-    async def get_macro_report(self, force_refresh: bool = False) -> MacroIntelligenceReport:
-        """Fetch all macro feeds concurrently and build a comprehensive MacroIntelligenceReport."""
+    async def _read_input(self, name: str, *, force_refresh: bool) -> MacroInput:
+        source = MACRO_INPUT_SOURCES[name]
+        provider, _, symbol = source.partition(":")
+        decision = name in DECISION_INPUTS
+        try:
+            if provider == "fred":
+                result = await self.fred_client.fetch_input(
+                    name, symbol, decision=decision, force_refresh=force_refresh
+                )
+            else:
+                result = await asyncio.to_thread(self.yahoo_fetch, name, symbol, decision=decision)
+        except Exception as exc:
+            logger.warning(
+                "Macro input %s unavailable",
+                name,
+                extra={"event": "macro_input_unavailable", "input": name, "error": type(exc).__name__},
+            )
+            return _missing_input(name, source, decision=decision, error=type(exc).__name__)
+        if result.value is None:
+            return result if result.error else dataclasses.replace(result, error="no_observation")
+        # A non-finite value, or a non-positive VIX, is not an observation.
+        if not math.isfinite(result.value) or (name == "vix" and result.value <= 0):
+            return _missing_input(name, source, decision=decision, error="unexpected_payload")
+        return result
+
+    async def read_inputs(self, names: Collection[str], *, force_refresh: bool = False) -> dict[str, MacroInput]:
+        """Read the named inputs concurrently, in canonical order; a failed read is a missing input, never raised."""
+        unknown = sorted(set(names) - set(MACRO_INPUT_SOURCES))
+        if unknown:
+            raise ValueError(f"Unknown macro inputs: {', '.join(unknown)}")
+        ordered = [name for name in MACRO_INPUT_SOURCES if name in names]
+        results = await asyncio.gather(*(self._read_input(name, force_refresh=force_refresh) for name in ordered))
+        return dict(zip(ordered, results, strict=True))
+
+    async def evaluate(self, force_refresh: bool = False) -> MacroEvaluation:
+        """Read all ten inputs and evaluate the compound stress; never raises for missing data.
+
+        A missing decision input gives ``UNKNOWN`` stress and no report. Only a complete evaluation
+        (all ten inputs present) is cached, so a recovered feed is measured on the next call.
+        """
         now = datetime.now(UTC)
         if (
             not force_refresh
-            and self._cached_report is not None
+            and self._cached_evaluation is not None
             and self._last_fetch_time is not None
             and (now - self._last_fetch_time).total_seconds() < self.config.cache_ttl_seconds
         ):
-            return self._cached_report
+            return self._cached_evaluation
 
-        # 1. Concurrently fetch tickers via threadpool
-        ticker_tasks = {
-            "3m": asyncio.to_thread(_fetch_ticker_sync, IRX_TICKER),
-            "5y": asyncio.to_thread(_fetch_ticker_sync, FVX_TICKER),
-            "10y": asyncio.to_thread(_fetch_ticker_sync, TNX_TICKER),
-            "30y": asyncio.to_thread(_fetch_ticker_sync, TYX_TICKER),
-            "vix": asyncio.to_thread(_fetch_ticker_sync, VIX_TICKER),
-            "dxy": asyncio.to_thread(_fetch_ticker_sync, DXY_TICKER),
-        }
+        inputs = await self.read_inputs(MACRO_INPUT_SOURCES.keys(), force_refresh=force_refresh)
+        missing = missing_input_names(inputs)
+        missing_decision = missing_input_names(inputs, decision_only=True)
+        if missing_decision:
+            logger.warning(
+                "Macro stress UNKNOWN: missing decision inputs %s",
+                ", ".join(missing_decision),
+                extra={
+                    "event": "macro_stress_unknown",
+                    "missing": list(missing),
+                    "missing_decision": list(missing_decision),
+                },
+            )
+            return MacroEvaluation(
+                inputs=inputs,
+                missing=missing,
+                missing_decision=missing_decision,
+                report=None,
+                stress=unknown_macro_stress(self.config, missing_decision),
+            )
 
-        # 2. Concurrently fetch FRED series
-        fred_tasks = {
-            "2y": self.fred_client.fetch_latest_value(FRED_TWO_YEAR_SERIES, force_refresh=force_refresh),
-            "hy_oas": self.fred_client.fetch_latest_value(FRED_HY_OAS_SERIES, force_refresh=force_refresh),
-            "t10yie": self.fred_client.fetch_latest_value(FRED_T10YIE_SERIES, force_refresh=force_refresh),
-            "t5yie": self.fred_client.fetch_latest_value(FRED_T5YIE_SERIES, force_refresh=force_refresh),
-        }
-
-        all_keys = list(ticker_tasks.keys()) + list(fred_tasks.keys())
-        all_coroutines = list(ticker_tasks.values()) + list(fred_tasks.values())
-
-        raw_results = await asyncio.gather(*all_coroutines, return_exceptions=True)
-        res_map: dict[str, Any] = {}
-        for key, res in zip(all_keys, raw_results, strict=False):
-            if isinstance(res, BaseException) or res is None or not math.isfinite(float(res)):
-                res_map[key] = None
-            else:
-                res_map[key] = float(res)
-
-        missing = [key for key, value in res_map.items() if value is None]
-        if missing:
-            raise ValueError(f"Macro data unavailable: {', '.join(missing)}; no baseline values substituted")
-
-        yields = TreasuryYields(
-            yield_3m=res_map["3m"],
-            yield_2y=res_map["2y"],
-            yield_5y=res_map["5y"],
-            yield_10y=res_map["10y"],
-            yield_30y=res_map["30y"],
+        report = self._build_report(inputs, now)
+        evaluation = MacroEvaluation(
+            inputs=inputs,
+            missing=missing,
+            missing_decision=(),
+            report=report,
+            stress=report.stress,
         )
+        if not missing:
+            self._cached_evaluation = evaluation
+            self._last_fetch_time = now
 
+        logger.info(
+            "Evaluated multi-asset macro intelligence: Stress=%s, Curve=%s (10Y-2Y=%.1f bps), OAS=%.0f bps",
+            report.stress.level.value,
+            report.spreads.regime.value,
+            report.spreads.slope_10y_2y_bps,
+            report.credit.high_yield_oas_bps,
+            extra={"event": "macro_evaluated", "missing": list(missing)},
+        )
+        return evaluation
+
+    def _build_report(self, inputs: Mapping[str, MacroInput], now: datetime) -> MacroIntelligenceReport:
+        yields = TreasuryYields(
+            yield_3m=_decision_value(inputs, "3m"),
+            yield_2y=_decision_value(inputs, "2y"),
+            yield_5y=inputs["5y"].value,
+            yield_10y=_decision_value(inputs, "10y"),
+            yield_30y=inputs["30y"].value,
+        )
         spreads = calculate_yield_curve_spreads(yields)
-
-        # 4. Credit OAS Resolution
-        hy_oas = res_map["hy_oas"]
         credit = classify_credit_stress(
-            hy_oas,
+            _decision_value(inputs, "hy_oas"),
             elevated_threshold=self.config.hy_oas_elevated_threshold,
             critical_threshold=self.config.hy_oas_critical_threshold,
         )
+        t10yie, t5yie = inputs["t10yie"].value, inputs["t5yie"].value
+        inflation = classify_inflation_expectations(t10yie, t5yie) if t10yie is not None and t5yie is not None else None
+        vix = _decision_value(inputs, "vix")
+        stress = compute_compound_macro_stress(vix, spreads, credit, self.config)
 
-        # 5. Inflation Breakeven Resolution
-        t10yie = res_map["t10yie"]
-        t5yie = res_map["t5yie"]
-        inflation = classify_inflation_expectations(t10yie, t5yie)
-
-        # 6. Volatility & Dollar
-        vix = res_map["vix"]
-        dxy = res_map["dxy"]
-
-        # 7. Compound Macro Stress Assessment
-        stress = compute_compound_macro_stress(vix, spreads, credit, inflation, self.config)
-
-        # 8. Summary Text
+        inflation_text = f"{inflation.breakeven_10y:.2f}%" if inflation is not None else "N/A"
         summary = (
             f"Macro Stress: {stress.level.value} (Risk Multiplier: {stress.risk_multiplier:.2f}x) | "
             f"Curve: {spreads.regime.value} (10Y-2Y: {spreads.slope_10y_2y_bps:+.1f} bps) | "
             f"Credit OAS: {credit.high_yield_oas_bps:.0f} bps ({credit.regime.value}) | "
-            f"10Y Inflation: {inflation.breakeven_10y:.2f}% | VIX: {vix:.2f}"
+            f"10Y Inflation: {inflation_text} | VIX: {vix:.2f}"
         )
-
-        report = MacroIntelligenceReport(
+        return MacroIntelligenceReport(
             yields=yields,
             spreads=spreads,
             credit=credit,
             inflation=inflation,
             vix=vix,
-            dxy=dxy,
+            dxy=inputs["dxy"].value,
             stress=stress,
             timestamp=now,
             summary_text=summary,
-            observation_dates=dict(self.fred_client.observation_dates),
+            observation_dates={
+                item.source.removeprefix("fred:"): item.observed_on.isoformat()
+                for item in inputs.values()
+                if item.source.startswith("fred:") and item.observed_on is not None
+            },
         )
-
-        self._cached_report = report
-        self._last_fetch_time = now
-
-        logger.info(
-            "Evaluated multi-asset macro intelligence: Stress=%s, Curve=%s (10Y-2Y=%.1f bps), OAS=%.0f bps",
-            stress.level.value,
-            spreads.regime.value,
-            spreads.slope_10y_2y_bps,
-            credit.high_yield_oas_bps,
-        )
-        return report

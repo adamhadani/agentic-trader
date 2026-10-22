@@ -143,6 +143,7 @@ async def test_copilot_performance_and_regime_html(temp_db):
             min_rr_threshold=2,
             timestamp=datetime.now(UTC),
             summary_text="Normal",
+            risk_multiplier=1.0,
         )
     )
     # Test get_macro_summary_html

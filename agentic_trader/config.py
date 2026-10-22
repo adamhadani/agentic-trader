@@ -500,10 +500,12 @@ class RegimeConfig(BaseModel):
     extreme_min_rr: float = Field(default=2.5, ge=2)
     cache_ttl_seconds: int = 900
     yield_curve_enabled: bool = True
-    credit_oas_enabled: bool = True
-    inflation_breakeven_enabled: bool = True
     hy_oas_elevated_threshold: float = 3.50  # 350 bps
     hy_oas_critical_threshold: float = 5.00  # 500 bps
+    # The UNKNOWN macro stress policy, applied when a decision input (3m, 2y, 10y, HY OAS) is missing.
+    # Below 1.0 by validation: a missing feed never sizes at full risk.
+    unknown_risk_multiplier: float = Field(default=0.5, ge=0.10, lt=1.0)
+    unknown_breakout_allowed: bool = False
 
 
 class FrictionConfig(BaseModel):

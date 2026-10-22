@@ -291,10 +291,13 @@ regime:
   vix_extreme_threshold: 30.0
   cache_ttl_seconds: 900
   yield_curve_enabled: true
-  credit_oas_enabled: true
-  inflation_breakeven_enabled: true
   hy_oas_elevated_threshold: 3.50 # 350 bps
   hy_oas_critical_threshold: 5.00 # 500 bps
+  # Applies when a decision input (3m, 2y, 10y, HY OAS) is missing: macro stress UNKNOWN. Validated
+  # 0.10 <= m < 1.0, so never 1.0: a missing feed never sizes at full risk.
+  unknown_risk_multiplier: 0.5
+  # Applies when a decision input is missing: squeeze breakouts stay suppressed under UNKNOWN.
+  unknown_breakout_allowed: false
 
 strategies:
   mode: "parallel" # "single" or "parallel"

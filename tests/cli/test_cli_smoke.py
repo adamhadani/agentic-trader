@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -264,11 +265,13 @@ def test_cli_resume_smoke(runner: CliRunner):
 
 
 def test_cli_explain_macro_smoke(runner: CliRunner):
-    """Verify copilot explain-macro invokes macro_engine.get_macro_report and formats explanation."""
+    """Verify copilot explain-macro invokes macro_engine.evaluate and formats explanation."""
     with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
         mock_copilot = MagicMock()
         mock_report = MagicMock()
-        mock_copilot.regime_detector.macro_engine.get_macro_report = AsyncMock(return_value=mock_report)
+        mock_copilot.regime_detector.macro_engine.evaluate = AsyncMock(
+            return_value=SimpleNamespace(report=mock_report, missing_decision=())
+        )
         mock_get.return_value = (mock_copilot, MagicMock())
 
         with patch(
@@ -279,6 +282,24 @@ def test_cli_explain_macro_smoke(runner: CliRunner):
             assert result.exit_code == 0
             assert "Evaluating institutional macro indicators" in result.output
             assert "Tutorial: Yield curve is NORMAL_STEEP." in result.output
+            assert mock_explain.await_args.args[0] is mock_report
+
+
+def test_cli_explain_macro_without_a_report_names_the_missing_decision_inputs(runner: CliRunner):
+    with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
+        mock_copilot = MagicMock()
+        mock_copilot.regime_detector.macro_engine.evaluate = AsyncMock(
+            return_value=SimpleNamespace(report=None, missing_decision=("2y", "hy_oas"))
+        )
+        mock_get.return_value = (mock_copilot, MagicMock())
+
+        with patch(
+            "agentic_trader.agent.macro_explainer.MacroExplainer.explain", new_callable=AsyncMock
+        ) as mock_explain:
+            result = runner.invoke(cli, ["explain-macro"])
+            assert result.exit_code == 0
+            assert "Macro report unavailable: missing decision inputs: 2y, hy_oas" in result.output
+            mock_explain.assert_not_awaited()
 
 
 class _FakeBarSource:
