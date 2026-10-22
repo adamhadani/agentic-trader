@@ -458,6 +458,35 @@ scan:
   min_bar_coverage: 0.8
   coverage_sessions: 10
   coverage_reference_symbol: "SPY"
+  # Broad US equity index ETFs (unlevered, long-only, headline benchmarks): an unrestricted scan never sends a
+  # native card on them. A card-selection rule in run_scan, not an entry-risk rule; they are still collected,
+  # ranked and journaled (outcome broad_index_excluded). A restricted scan (/scan SPY) and Re-evaluate still
+  # card them, and an alpha, probe or catalog card is unaffected. [] turns the rule off. SPYM replaced SPLG
+  # (not in the 2026-10-15 Alpaca asset snapshot).
+  broad_index_etfs:
+    - SPY    # S&P 500, cap and equal weight
+    - VOO
+    - IVV
+    - SPYM
+    - RSP
+    - VTI    # total market
+    - ITOT
+    - SCHB
+    - IWV
+    - IWB    # large cap, S&P 100
+    - VV
+    - SCHX
+    - OEF
+    - QQQ    # Nasdaq-100, Dow 30
+    - QQQM
+    - DIA
+    - MDY    # mid cap
+    - IJH
+    - IWR
+    - VO
+    - IWM    # small cap
+    - IJR
+    - VB
 
 # Honest cards (docs/card-evidence.md): measured-evidence send policy, statistics worker, card validity.
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").

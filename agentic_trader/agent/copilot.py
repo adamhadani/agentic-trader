@@ -141,6 +141,7 @@ from agentic_trader.risk import (
     RiskLimits,
     corporate_action_block,
     entry_session_open,
+    normalize_symbol,
     per_trade_risk,
     per_trade_risk_budget,
     regime_breakout,
@@ -196,6 +197,7 @@ DRIFT_POSITION_CAP_REACHED = "drift position cap reached"
 # A native candidate skipped because its (contract, strategy) already has a live PENDING card; only
 # under card_policy.validity == "next_session_close", where a card can outlive the duplicate window.
 LIVE_CARD_PENDING = "live card pending"
+BROAD_INDEX_REASON = "broad index ETF: excluded from native cards (scan.broad_index_etfs)"
 # `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
@@ -1348,6 +1350,24 @@ class TradingCopilot:
             outcomes: list[str | None] = [RankedOutcome.JOURNAL_ONLY if journal_only else None] * len(ranked)
             llm_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             signal_ids_by_rank: list[int | None] = [None] * len(ranked)
+            # BROAD-INDEX EXCLUSION (a card-selection rule, not an entry-risk rule): an unrestricted scan
+            # sends no native card on a broad US equity index ETF. The 1-based ranks excluded here are
+            # refused first in the send loop and dropped from news and book sizing, which would otherwise
+            # spend fetches and the news scoring budget on a name that cannot be carded. A restricted scan
+            # (`/scan SPY`), a drift card and a policy-locked card (alpha, probe, catalog) are unaffected, and
+            # a journal-only scan keeps every native candidate `journal_only` (its send loop never runs).
+            broad_index: frozenset[str] = (
+                frozenset()
+                if symbols or journal_only
+                else frozenset(normalize_symbol(symbol) for symbol in self.config.scan.broad_index_etfs)
+            )
+            broad_excluded = frozenset(
+                rank
+                for rank, (c, _, _) in enumerate(ranked[:native_count], 1)
+                if normalize_symbol(c.contract) in broad_index
+                and getattr(c, "catalog_event", None) is None
+                and not self._policy_locked(c, probe=True)
+            )
             # BOOK SIZING (L3): one covariance/book build per scan, from the scan's own daily bars plus
             # at most one bounded fetch for book names outside it. A dry run's simulated book is empty,
             # so it never prepares (and never fetches); `prepare` itself never raises.
@@ -1355,8 +1375,9 @@ class TradingCopilot:
             equity_class = normalize_asset_class(AssetClass.EQUITY)
             book_candidates = [
                 c.contract
-                for c, _, _ in ranked[:native_count]
-                if normalize_asset_class(str(getattr(c, "asset_class", ""))) == equity_class
+                for rank, (c, _, _) in enumerate(ranked[:native_count], 1)
+                if rank not in broad_excluded
+                and normalize_asset_class(str(getattr(c, "asset_class", ""))) == equity_class
             ]
             book_context = (
                 None
@@ -1400,7 +1421,7 @@ class TradingCopilot:
             # a scan without the LLM keeps counts and headlines and scores nothing. A journal-only scan
             # sends no card for news to decorate, so it fetches and scores nothing.
             news_by_rank: list[dict[str, Any] | None] = (
-                await self._news_blocks(ranked, use_llm=use_llm)
+                await self._news_blocks(ranked, use_llm=use_llm, excluded_ranks=broad_excluded)
                 if timeframe is None and not journal_only
                 else [None] * len(ranked)
             )
@@ -1464,7 +1485,10 @@ class TradingCopilot:
                 try:
                     reason = None
                     fixed_outcome: str | None = None
-                    if is_drift and remaining_drift <= 0:
+                    if rank in broad_excluded:
+                        # First, so the outcome never depends on how much budget is left.
+                        reason, fixed_outcome = BROAD_INDEX_REASON, RankedOutcome.BROAD_INDEX_EXCLUDED
+                    elif is_drift and remaining_drift <= 0:
                         reason = "drift budget spent"
                     elif not is_drift and remaining_scan <= 0:
                         reason = "per-scan budget spent"
@@ -3515,12 +3539,20 @@ class TradingCopilot:
         rounded = round_to_tick(price, tick_size)
         return rounded if rounded > 0 else None
 
-    async def _news_blocks(self, ranked: list[tuple[Any, Any, Any]], *, use_llm: bool) -> list[dict[str, Any] | None]:
+    async def _news_blocks(
+        self,
+        ranked: list[tuple[Any, Any, Any]],
+        *,
+        use_llm: bool,
+        excluded_ranks: frozenset[int] = frozenset(),
+    ) -> list[dict[str, Any] | None]:
         """One news block per ranked native equity candidate (drift and futures candidates get None); never raises.
 
         One fetch per scan; scoring follows rank order up to ``news.max_scored_per_scan``, and a scan without
         the LLM (``use_llm=False``) scores nothing, so its blocks keep counts and headlines only. Any failure
-        of the step yields ``unavailable`` blocks carrying the exception type name only.
+        of the step yields ``unavailable`` blocks carrying the exception type name only. A candidate whose
+        1-based rank is in ``excluded_ranks`` (a broad-index ETF that cannot be carded) gets None and is not
+        fetched or scored, even when another card on the same symbol is.
         """
         blocks: list[dict[str, Any] | None] = [None] * len(ranked)
         service = self.news_context
@@ -3528,8 +3560,10 @@ class TradingCopilot:
             return blocks
         wanted = [
             candidate.contract
-            for candidate, _det, _risk in ranked
-            if "/" not in candidate.contract and getattr(candidate, "catalog_event", None) is None
+            for rank, (candidate, _det, _risk) in enumerate(ranked, 1)
+            if rank not in excluded_ranks
+            and "/" not in candidate.contract
+            and getattr(candidate, "catalog_event", None) is None
         ]
         if not wanted:
             return blocks
@@ -3545,8 +3579,12 @@ class TradingCopilot:
                 symbol.strip().upper(): unavailable_block(self.config.news, type(exc).__name__) for symbol in wanted
             }
         for index, (candidate, _det, _risk) in enumerate(ranked):
-            # A drift card sharing a native candidate's symbol still gets no block.
-            if candidate.contract in wanted and getattr(candidate, "catalog_event", None) is None:
+            # A drift card sharing a native candidate's symbol still gets no block, nor an excluded rank.
+            if (
+                index + 1 not in excluded_ranks
+                and candidate.contract in wanted
+                and getattr(candidate, "catalog_event", None) is None
+            ):
                 blocks[index] = found.get(candidate.contract.strip().upper())
         return blocks
 

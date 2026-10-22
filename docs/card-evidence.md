@@ -169,6 +169,30 @@ Evidence recorded:
 Operate it in order: `off` until a snapshot exists; `preview` with a threshold, reading `would_withhold`
 for several sessions; then `enforce`. Each change is a config edit and the controlled restart.
 
+## Broad-index exclusion
+
+An unrestricted scan (no `symbols`, any budget, a dry run included) never sends a native card on a broad US
+equity index ETF. `scan.broad_index_etfs` lists them, 23 names by default: SPY, VOO, IVV, SPYM, RSP; VTI,
+ITOT, SCHB, IWV; IWB, VV, SCHX, OEF; QQQ, QQQM, DIA; MDY, IJH, IWR, VO; IWM, IJR, VB (SPYM replaced SPLG,
+which the 2026-10-15 Alpaca asset snapshot does not list). A native card on a segment benchmark is a
+market-timing bet, and the desk's yardstick is SPY at beta 1, so such a card's excess return is zero by
+construction or a known size or growth spread, never a setup-specific edge. Sector, style, factor, dividend,
+thematic, international, bond and commodity ETFs stay eligible. An empty list turns the rule off.
+
+This is a card-selection rule in `run_scan`, not an entry-risk rule: it lives outside
+`agentic_trader/risk`, and admission never sees it. It is the first check in the send loop, before every
+budget refusal, so the outcome never depends on how much budget is left. The candidate gets the fixed
+outcome `broad_index_excluded` (`RankedOutcome.BROAD_INDEX_EXCLUDED`) and becomes a runner-up with reason
+`broad index ETF: excluded from native cards (scan.broad_index_etfs)`. It spends no LLM, card or group
+budget, is dropped from news fetching and scoring and from the book-sizing candidates, and the next rank is
+considered. Such a name is still collected, ranked, given a dynamic slot when the screener supplies it, and
+journaled in `scan_candidates_ranked`, so it is a runner-up refused by a selection rule and `cards outcomes`
+keeps labelling it like any other.
+
+Unaffected: a restricted scan (`/scan SPY`, `copilot scan --symbols SPY`) and Re-evaluate, which still card
+these names so operator trades stay possible; PEAD drift and catalog cards; and policy-locked alpha and probe
+cards. A journal-only scan never reaches the send loop, so its candidates keep the outcome `journal_only`.
+
 ## Card validity
 
 `card_policy.validity` is `session_close` by default: a card is valid until the close of the session it

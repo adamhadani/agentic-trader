@@ -191,6 +191,20 @@ class ScanBudget(StrEnum):
     JOURNAL_ONLY = "journal_only"  # the daemon's swing and intraday jobs: collect, rank and journal, send nothing
 
 
+# Unlevered, long-only ETFs on a headline US equity benchmark (a total-market, large-, mid- or small-cap segment
+# index in cap or equal weight, the Dow 30, the Nasdaq-100). Sector, style, factor, dividend, thematic,
+# international, bond and commodity ETFs stay eligible. SPYM replaced SPLG: the 2026-10-15 Alpaca asset
+# snapshot lists no SPLG.
+DEFAULT_BROAD_INDEX_ETFS: tuple[str, ...] = (
+    *("SPY", "VOO", "IVV", "SPYM", "RSP"),  # S&P 500, cap and equal weight
+    *("VTI", "ITOT", "SCHB", "IWV"),  # total market
+    *("IWB", "VV", "SCHX", "OEF"),  # large cap, S&P 100
+    *("QQQ", "QQQM", "DIA"),  # Nasdaq-100, Dow 30
+    *("MDY", "IJH", "IWR", "VO"),  # mid cap
+    *("IWM", "IJR", "VB"),  # small cap
+)
+
+
 class ScanConfig(BaseModel):
     max_cards_per_scan: int = Field(default=1, ge=0)
     max_cards_per_session: int = Field(default=2, ge=0)
@@ -202,6 +216,17 @@ class ScanConfig(BaseModel):
     # Frozen setup-study ranker (ranker.json) scored in shadow at RANK. Evidence only:
     # it never changes ranking, the card budget or any card. None records features only.
     shadow_ranker_artifact: Path | None = None
+    # An unrestricted scan never sends a native card on these names (a card-selection rule in run_scan, not an
+    # entry-risk rule): they are still collected, ranked and journaled. A restricted scan still cards them.
+    # An empty tuple turns the rule off.
+    broad_index_etfs: tuple[str, ...] = DEFAULT_BROAD_INDEX_ETFS
+
+    @field_validator("broad_index_etfs", mode="after")
+    @classmethod
+    def _broad_index_symbols(cls, symbols: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(symbols)) != len(symbols) or any(not re.fullmatch(r"[A-Z][A-Z.]{0,5}", s) for s in symbols):
+            raise ValueError("scan.broad_index_etfs must be distinct upper-case symbols")
+        return symbols
 
     @field_validator("shadow_ranker_artifact", mode="after")
     @classmethod

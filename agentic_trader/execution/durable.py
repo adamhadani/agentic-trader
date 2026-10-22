@@ -100,6 +100,7 @@ class RankedOutcome(StrEnum):
     CARD_POLICY_WITHHELD = "card_policy_withheld"
     BOOK_SIZING_BLOCKED = "book_sizing_blocked"  # enforce: the scaled default tier fell below the minimum size
     JOURNAL_ONLY = "journal_only"  # a journal-only scan ranks and journals; it sends no card
+    BROAD_INDEX_EXCLUDED = "broad_index_excluded"  # a card-selection rule: no native card on a broad index ETF
 
 
 class NotificationKind(StrEnum):
