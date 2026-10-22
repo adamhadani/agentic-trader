@@ -233,6 +233,73 @@ def test_prompt_context_names_the_unknown_stress():
     assert "US Treasury Yield Curve" not in context
 
 
+def _strategy_line(context: str) -> str:
+    (line,) = [line for line in context.splitlines() if line.startswith("• Strategy Adaptation:")]
+    return line
+
+
+def test_prompt_breakout_reason_names_unknown_macro_stress_at_a_normal_vix():
+    context = RegimeDetector(RegimeConfig()).get_prompt_context(_unknown_snapshot())
+    assert _strategy_line(context) == (
+        "• Strategy Adaptation: Squeeze Breakouts SUPPRESSED (Macro Stress UNKNOWN: missing 2y, hy_oas); "
+        "Minimum required Reward-to-Risk: 2.0:1."
+    )
+    assert "Extreme Volatility Chop" not in context
+
+
+def test_prompt_breakout_reason_names_measured_macro_stress_at_a_normal_vix():
+    high = MacroStressAssessment(
+        level=MacroStressLevel.HIGH,
+        risk_multiplier=0.5,
+        squeeze_breakout_allowed=False,
+        min_rr_threshold=2.2,
+        key_drivers=["Yield Curve Inverted (10Y-2Y: -35 bps)"],
+    )
+    report = dataclasses.replace(_report_without_context(), stress=high)
+    regime = RegimeSnapshot(
+        vix=17.2,
+        vix_regime=VolatilityRegime.NORMAL,
+        tnx=4.95,
+        dxy=None,
+        breakout_allowed=False,
+        min_rr_threshold=2.2,
+        timestamp=report.timestamp,
+        summary_text="test",
+        risk_multiplier=0.5,
+        macro_report=report,
+        macro_stress=high,
+    )
+    context = RegimeDetector(RegimeConfig()).get_prompt_context(regime)
+    assert _strategy_line(context) == (
+        "• Strategy Adaptation: Squeeze Breakouts SUPPRESSED (Macro Stress HIGH); "
+        "Minimum required Reward-to-Risk: 2.2:1."
+    )
+
+
+@pytest.mark.parametrize("stress", [None, "unknown"])
+def test_prompt_breakout_reason_keeps_volatility_chop_only_for_an_extreme_vix(stress):
+    regime = dataclasses.replace(
+        _unknown_snapshot(),
+        vix=34.8,
+        vix_regime=VolatilityRegime.EXTREME,
+        min_rr_threshold=2.5,
+        macro_stress=_unknown_snapshot().macro_stress if stress else None,
+    )
+    context = RegimeDetector(RegimeConfig()).get_prompt_context(regime)
+    assert _strategy_line(context) == (
+        "• Strategy Adaptation: Squeeze Breakouts SUPPRESSED (Extreme Volatility Chop / High False Breakout Risk); "
+        "Minimum required Reward-to-Risk: 2.5:1."
+    )
+
+
+def test_prompt_breakouts_allowed_is_unchanged():
+    regime = dataclasses.replace(_unknown_snapshot(), breakout_allowed=True, macro_stress=None, macro_inputs={})
+    context = RegimeDetector(RegimeConfig()).get_prompt_context(regime)
+    assert _strategy_line(context) == (
+        "• Strategy Adaptation: Squeeze Breakouts ALLOWED; Minimum required Reward-to-Risk: 2.0:1."
+    )
+
+
 def test_prompt_context_renders_a_missing_breakeven_as_na():
     report = _report_without_context()
     regime = RegimeSnapshot(

@@ -7,6 +7,7 @@ from one ``{name: value | None | exception}`` map, with no module globals and no
 from __future__ import annotations
 
 import copy
+import pickle
 import random
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, patch
@@ -240,8 +241,13 @@ async def test_snapshot_and_unavailable_error_are_plain_copyable_values():
     snapshot = await detector_with({**DECISION_OK, **CONTEXT_OK, "2y": None}).get_regime()
     assert copy.deepcopy(snapshot) == snapshot
     with pytest.raises(RegimeUnavailable) as caught:
-        await detector_with({**DECISION_OK, **CONTEXT_OK, "vix": None}).get_regime()
-    assert copy.deepcopy(dict(caught.value.inputs)) == dict(caught.value.inputs)
+        await detector_with({**DECISION_OK, **CONTEXT_OK, "vix": None, "hy_oas": None}).get_regime()
+    original = caught.value
+    for restored in (copy.copy(original), copy.deepcopy(original), pickle.loads(pickle.dumps(original))):
+        assert type(restored) is RegimeUnavailable and restored is not original
+        assert restored.missing == original.missing == ("vix", "hy_oas")
+        assert str(restored) == str(original) == "Market regime unavailable: missing vix, hy_oas"
+        assert dict(restored.inputs) == dict(original.inputs)
 
 
 async def test_unknown_snapshot_is_cached_and_force_refresh_refetches():

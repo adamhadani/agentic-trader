@@ -40,6 +40,11 @@ class RegimeUnavailable(Exception):
         self.missing: tuple[str, ...] = missing_input_names(inputs)
         super().__init__(f"Market regime unavailable: missing {', '.join(self.missing)}")
 
+    def __reduce__(self) -> tuple[type[RegimeUnavailable], tuple[dict[str, MacroInput]]]:
+        # ``args`` is the message, so the default reduction would rebuild ``cls(message)``; copy,
+        # deepcopy and pickle rebuild from the inputs instead.
+        return (type(self), (dict(self.inputs),))
+
 
 @dataclass
 class RegimeSnapshot:
@@ -63,6 +68,26 @@ class RegimeSnapshot:
     macro_unavailable_reason: str | None = None
     macro_stress: MacroStressAssessment | None = None
     macro_inputs: Mapping[str, MacroInput] = field(default_factory=dict)
+
+
+def _breakout_status(reg: RegimeSnapshot) -> str:
+    """The prompt's breakout status, naming the cause of a suppression.
+
+    Only an EXTREME VIX is volatility chop; a suppression by macro stress names the stress level
+    (and, for ``UNKNOWN``, the missing decision inputs). A suppression with no recorded cause says so
+    without inventing one.
+    """
+    if reg.breakout_allowed:
+        return "ALLOWED"
+    if reg.vix_regime is VolatilityRegime.EXTREME:
+        return "SUPPRESSED (Extreme Volatility Chop / High False Breakout Risk)"
+    stress = reg.macro_stress or (reg.macro_report.stress if reg.macro_report is not None else None)
+    if stress is not None and not stress.squeeze_breakout_allowed:
+        if stress.level is MacroStressLevel.UNKNOWN:
+            missing = ", ".join(missing_input_names(reg.macro_inputs, decision_only=True))
+            return f"SUPPRESSED (Macro Stress UNKNOWN: missing {missing})"
+        return f"SUPPRESSED (Macro Stress {stress.level.value})"
+    return "SUPPRESSED"
 
 
 def _unknown_macro_text(stress: MacroStressAssessment, inputs: Mapping[str, MacroInput]) -> str:
@@ -315,9 +340,7 @@ class RegimeDetector:
         if reg is None:
             return "Market Volatility & Macro Regime: unavailable; no observation has been loaded."
 
-        status = (
-            "ALLOWED" if reg.breakout_allowed else "SUPPRESSED (Extreme Volatility Chop / High False Breakout Risk)"
-        )
+        status = _breakout_status(reg)
         tnx_str = f"{reg.tnx:.2f}%" if reg.tnx is not None else "N/A"
         dxy_str = f"{reg.dxy:.2f}" if reg.dxy is not None else "N/A"
 
