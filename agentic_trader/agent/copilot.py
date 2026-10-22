@@ -755,6 +755,12 @@ class TradingCopilot:
         its collect ``funnel`` (``ScanFunnel``); only the shadow block is suggestion-only. It never
         changes ranking, budgets, sending or the card policy.
 
+        ``budget=ScanBudget.JOURNAL_ONLY`` (the daemon's swing and intraday jobs) collects and ranks as any
+        budgeted scan does, then journals every native candidate with outcome ``journal_only`` and sends
+        nothing: no shadow ranker, book preparation, ``card_stats`` read, card policy, news, budget read,
+        LLM, ``record_signal`` or outbox item, and no PEAD drift. It still observes SCAN readiness and
+        monitors positions. ``ScanBudget.NONE`` still means no limits and still sends.
+
         ``dedup_exempt_setups`` skips the recent-duplicate rule for exactly those
         ``(contract, strategy, timeframe, alpha_version)`` setups: an operator's explicit
         re-evaluation of the one expired card, never its contract's other setups.
@@ -801,9 +807,17 @@ class TradingCopilot:
             self.strategy_engine.registry.install_alphas(alpha_snapshot.active, alpha_snapshot.probe)
             if not dry_run:
                 await self.alpha_repository.acknowledge(alpha_snapshot, run_id=RUN_ID)
-            # Only the scheduled full-universe suggestion scan may run PEAD drift (see below).
+            # A journal-only scan (the daemon's swing and intraday jobs) collects, ranks and journals; it
+            # sends no card, so everything that exists to choose or decorate a card is bypassed below.
+            journal_only = budget == ScanBudget.JOURNAL_ONLY
+            # Only the scheduled full-universe suggestion scan may run PEAD drift (see below). Defensive for
+            # JOURNAL_ONLY: no job sets `shadow_evidence` with it, but a drift card could not be sent anyway.
             drift_scan = (
-                not dry_run and budget != ScanBudget.NONE and shadow_evidence and not symbols and timeframe is None
+                not dry_run
+                and budget not in (ScanBudget.NONE, ScanBudget.JOURNAL_ONLY)
+                and shadow_evidence
+                and not symbols
+                and timeframe is None
             )
             await self.check_halt_state()
             if self.is_halted:
@@ -1321,7 +1335,7 @@ class TradingCopilot:
             # the unrestricted population matches the setup study's own. The ranked
             # journal further below is independent of this flag.
             decided_at = datetime.now(UTC)
-            compute_shadow_evidence = shadow_evidence and not symbols and timeframe is None
+            compute_shadow_evidence = shadow_evidence and not symbols and timeframe is None and not journal_only
             shadow_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             if not dry_run and ranked and compute_shadow_evidence:
                 shadow_by_rank = await self._shadow_blocks(ranked, datasets, decided_at, summary)
@@ -1329,7 +1343,9 @@ class TradingCopilot:
             # they have no shadow block and are never journaled as ranked candidates.
             ranked = [*ranked, *drift_ranked]
             shadow_by_rank = [*shadow_by_rank, *([None] * len(drift_ranked))]
-            outcomes: list[str | None] = [None] * len(ranked)
+            # A journal-only scan sends nothing: every native candidate (no drift candidate exists) is journaled
+            # as such, and the send loop below has nothing to send.
+            outcomes: list[str | None] = [RankedOutcome.JOURNAL_ONLY if journal_only else None] * len(ranked)
             llm_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             signal_ids_by_rank: list[int | None] = [None] * len(ranked)
             # BOOK SIZING (L3): one covariance/book build per scan, from the scan's own daily bars plus
@@ -1344,7 +1360,7 @@ class TradingCopilot:
             ]
             book_context = (
                 None
-                if dry_run or not book_candidates
+                if dry_run or journal_only or not book_candidates
                 else await self.book_sizer.prepare(
                     active_positions,
                     datasets,
@@ -1354,12 +1370,13 @@ class TradingCopilot:
             )
             book_by_rank: list[BookSizingDecision | None] = [None] * len(ranked)
             # EVIDENCE: one snapshot read per scan; every native card states its own (strategy,
-            # direction) record. Drift cards keep their PEAD block and carry none.
+            # direction) record. Drift cards keep their PEAD block and carry none. A journal-only scan
+            # reads no snapshot and states no evidence, so the card policy below has nothing to judge.
             card_policy = self.config.card_policy
-            snapshot = await self._card_stats_snapshot(summary)
+            snapshot = None if journal_only else await self._card_stats_snapshot(summary)
             evidence_by_rank: list[CardEvidence | None] = [
                 None
-                if getattr(candidate, "catalog_event", None) is not None
+                if journal_only or getattr(candidate, "catalog_event", None) is not None
                 else lookup(
                     snapshot,
                     candidate.strategy,
@@ -1380,13 +1397,20 @@ class TradingCopilot:
             ]
             # NEWS CONTEXT: one fetch per scan without a timeframe, before the send loop, for every ranked
             # native equity candidate. The intraday job (it passes a timeframe) never fetches or scores news;
-            # a scan without the LLM keeps counts and headlines and scores nothing.
+            # a scan without the LLM keeps counts and headlines and scores nothing. A journal-only scan
+            # sends no card for news to decorate, so it fetches and scores nothing.
             news_by_rank: list[dict[str, Any] | None] = (
-                await self._news_blocks(ranked, use_llm=use_llm) if timeframe is None else [None] * len(ranked)
+                await self._news_blocks(ranked, use_llm=use_llm)
+                if timeframe is None and not journal_only
+                else [None] * len(ranked)
             )
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
-            if budget == ScanBudget.NONE:
+            if journal_only:
+                # No budget read: a journal-only scan spends no card, so there is nothing to derive from
+                # today's signals. All-zero allowances also refuse every send, were the loop below ever reached.
+                remaining_scan = remaining_session = remaining_drift = 0
+            elif budget == ScanBudget.NONE:
                 remaining_scan = remaining_session = len(ranked)
                 remaining_drift = 0  # drift never runs without a budget
                 if operator_dynamic is not None and not dry_run:
@@ -1431,7 +1455,9 @@ class TradingCopilot:
 
             # One session-clock read per (contract, extended validity) that actually records a card.
             session_closes: dict[tuple[str, bool], str | None] = {}
-            for rank, (candidate, _det_res, account_risk) in enumerate(ranked, 1):
+            # SEND: a journal-only scan has no send phase (no LLM, no `record_signal`, no outbox); its
+            # outcomes were set to `journal_only` above, so the loop is given nothing to send.
+            for rank, (candidate, _det_res, account_risk) in enumerate([] if journal_only else ranked, 1):
                 # One failed send must not abandon the rest of the ranking or the scan's
                 # own bookkeeping, exactly as the per-contract guard protects COLLECT.
                 is_drift = getattr(candidate, "catalog_event", None) is not None

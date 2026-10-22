@@ -337,7 +337,8 @@ strategies:
     volume_sma_period: 20
 
 scheduler:
-  cron_hour_interval: 4 # Scan every 4 hours aligned with 4h candle closes
+  cron_hour_interval: 4 # every 4 h from daemon start; journal-only (sends no cards)
+  intraday_scan_enabled: false # idle by construction (spec 2026-10-21 §4 item 4); JOURNAL_ONLY when enabled
   suggestion_scan_times_et: ["10:35", "14:35"]
 
 sizing:

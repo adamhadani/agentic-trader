@@ -19,17 +19,27 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 60 seconds; the weekly `com.agentictrader.alphaminer` job is retired (see below). Do not start a second daemon,
 `listen`, or Compose service while the installed poller owns the bot.
 
-- Swing scans: every four hours from startup, immediate first run, all timeframes,
-  the whole `universe:` when the equity session is open. The first run at daemon start is
-  deliberate (the `scan` readiness component needs an observation in each run). A run that
-  passes the session gate and ranks at least one native candidate journals its ranking as
-  `scan_candidates_ranked` with `trigger=swing_scan`.
+- Swing scans: every four hours from startup, immediate first run, all timeframes, the whole
+  `universe:`. They are **journal-only** (`ScanBudget.JOURNAL_ONLY`): they collect and rank as any
+  budgeted scan does, then journal each native candidate as `scan_candidates_ranked` with
+  `trigger=swing_scan`, `budget=journal_only` and outcome `journal_only`. They send no card, call no
+  LLM, record no signal and spend no card budget, so the run at daemon start cannot take a session
+  slot (the defect behind 61 restarts in 33 days). That run is kept, deliberately: it gives the `scan`
+  readiness component an observation in each daemon run (`scan_max_age_seconds` is not
+  session-aware). The suggestion scans own the cards.
+  The session gate is `asset_class="all"`: it is open whenever futures trade, not only when the
+  equity session is. Under Alpaca execution futures are not executable, so a swing scan outside the
+  equity session selects nothing and ends as `Idle: nothing eligible` (SCAN observed ready, nothing
+  journaled).
 - Suggestion scans: cron on the New York clock, weekdays, at
   `scheduler.suggestion_scan_times_et` (see below). They also add the dynamic
   suggestion universe.
-- Intraday scans: every 15 minutes from startup, session gated, `15m` filter,
-  restricted to the contracts configured explicitly under `contracts:`
-  (`AppConfig.non_universe_contracts`) — never the universe.
+- Intraday scans: **disabled in the shipped config** (`scheduler.intraday_scan_enabled: false`): with
+  Alpaca execution the explicit `contracts:` are idle by construction and each run still costs bar
+  requests and the scan lock. When enabled: every 15 minutes from startup, session gated, `15m`
+  filter, restricted to the contracts configured explicitly under `contracts:`
+  (`AppConfig.non_universe_contracts`) — never the universe — and journal-only
+  (`ScanBudget.JOURNAL_ONLY`), so it can send no card. A restricted scan journals nothing.
 - Position monitor: every minute, with additional broker stream wakeups.
 - Macro briefing: weekdays 12:30. Automatic legacy retuning is removed. Cron schedules
   inherit scheduler/system timezone. Intervals are not candle-close aligned.

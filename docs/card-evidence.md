@@ -133,10 +133,12 @@ reason `card policy: measured EV -0.39R over 30 < +0.00R` (three decimals when t
 and the threshold as equal, such as `-0.004R … < +0.000R`), and the next rank is considered, like an
 LLM veto. Insufficient, stale, unavailable or partial (`n_fetch_failed > 0`) evidence never withholds:
 the policy is a switch on complete measured evidence, not a fail-closed rule. Every scan applies it
-(suggestion, swing, intraday, `/scan`, Re-evaluate). Every full-universe scan (suggestion, swing
-including its run at daemon start, unrestricted `/scan`) is journaled and labelled with its `trigger`
-(`suggestion_scan` | `swing_scan` | `operator_scan`); symbol- or timeframe-scoped scans (intraday job,
-`/scan SYMBOL`, Re-evaluate) show evidence and obey the policy but are not journaled. `cards outcomes`
+(suggestion, `/scan`, Re-evaluate); the daemon's swing and intraday jobs are journal-only
+(`ScanBudget.JOURNAL_ONLY`) and read neither the snapshot nor the policy. Every full-universe scan
+(suggestion, swing including its run at daemon start, unrestricted `/scan`) is journaled and labelled
+with its `trigger` (`suggestion_scan` | `swing_scan` | `operator_scan`); symbol- or timeframe-scoped
+scans (intraday job, `/scan SYMBOL`, Re-evaluate) are not journaled, and all but the journal-only
+intraday job show evidence and obey the policy. `cards outcomes`
 reports a `trigger` column and a `triggers` summary block; events without a trigger report under `"unknown"`.
 
 Outside the policy: PEAD drift and catalog cards (no evidence block), and policy-locked native cards
@@ -420,6 +422,16 @@ decisive test is the frozen study (`alpha bracket-counterfactual`,
   (PR A.1) were never journaled and stay unlabelled. Of the 22 cards sent from 2026-09-24 to 2026-10-08,
   11 were never journaled and 7 more were journaled before the candidate's `signal_id` existed (#106,
   2026-10-05), so those 7 match their card only by contract and time.
+- **Journal-only scans.** The daemon's swing job (`trigger=swing_scan`, including its run at daemon
+  start) and, when enabled, the intraday job run with `ScanBudget.JOURNAL_ONLY` (`budget: "journal_only"`
+  in the event). They collect and rank like any budgeted scan, with `use_llm=False`, then journal every
+  native candidate with the fixed outcome `journal_only` (`RankedOutcome.JOURNAL_ONLY`). They read no
+  shadow ranker, book, `card_stats` snapshot, card policy, news or card budget, and call no LLM, so a
+  `journal_only` candidate has `signal_id`, `llm`, `news`, `shadow` and a decision-free `card_policy`
+  and `book_sizing` all null, and was never sent or withheld. It is labelled and counted like any other
+  journaled candidate: **swing candidates stay in the `card_stats` denominator until `card_stats` v2**
+  separates them, as the repeated-setups note below says. No PEAD drift runs in such a scan.
+  `ScanBudget.NONE` is unchanged: no limits, and it still sends (dry runs, `--no-budget`, Re-evaluate).
 - **Repeated setups.** The same `(contract, strategy, direction)` setup can now be journaled several
   times per session (swing runs, each in-session daemon start, back-to-back scans). Each journaled
   candidate counts once in `n_mature`, so correlated repeats inflate the sample and the

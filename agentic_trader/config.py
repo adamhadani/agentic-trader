@@ -188,6 +188,7 @@ class ScanBudget(StrEnum):
     FULL = "full"  # scheduled scans: per-scan, per-session and per-group limits
     SESSION = "session"  # operator scans: per-session and per-group limits only
     NONE = "none"  # explicit --no-budget or dry runs
+    JOURNAL_ONLY = "journal_only"  # the daemon's swing and intraday jobs: collect, rank and journal, send nothing
 
 
 class ScanConfig(BaseModel):

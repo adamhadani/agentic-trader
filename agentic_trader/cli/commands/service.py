@@ -587,22 +587,30 @@ class MissedSuggestionScanNotice:
 
 
 def register_swing_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
-    """Register the daemon's interval full-universe scan, journaled as ``ScanTrigger.SWING_SCAN``."""
+    """Register the daemon's interval full-universe scan, journaled as ``ScanTrigger.SWING_SCAN``.
+
+    It is journal-only (``ScanBudget.JOURNAL_ONLY``): it ranks and journals, and sends no card, so a
+    daemon restart cannot spend a session slot. The suggestion scans own the cards.
+    """
     scheduler.add_job(
         copilot.run_scan,
         "interval",
         hours=config.scheduler.cron_hour_interval,
         args=[use_llm, False],
-        kwargs={"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN},
+        kwargs={"budget": ScanBudget.JOURNAL_ONLY, "trigger": ScanTrigger.SWING_SCAN},
         id="swing_scan",
-        # Runs once at start so the `scan` readiness component observes this run; its
-        # cards are journaled like any other.
+        # Runs once at start so the `scan` readiness component observes this run; it only journals,
+        # so the start run can no longer record a signal.
         next_run_time=datetime.now(UTC),
     )
 
 
 def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
-    """Register the 15-minute intraday scan, scoped to the explicitly configured contracts."""
+    """Register the 15-minute intraday scan, scoped to the explicitly configured contracts.
+
+    It is journal-only (``ScanBudget.JOURNAL_ONLY``) and restricted, so it never journals either:
+    it can no longer send a card.
+    """
 
     async def run_intraday_scan(*, symbols: list[str]) -> None:
         session_active, reason = await copilot.session_provider.is_session_active(instrument_type="all")
@@ -613,7 +621,7 @@ def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, u
                 asset_class="all",
                 timeframe="15m",
                 symbols=symbols,
-                budget=ScanBudget.FULL,
+                budget=ScanBudget.JOURNAL_ONLY,
             )
         else:
             logger.debug("Intraday scan skipped outside market session: %s", reason)

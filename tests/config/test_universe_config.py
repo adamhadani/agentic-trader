@@ -65,7 +65,7 @@ def test_scan_config_defaults_match_the_spec():
         "coverage_reference_symbol": "SPY",
         "shadow_ranker_artifact": None,
     }
-    assert [b.value for b in ScanBudget] == ["full", "session", "none"]
+    assert [b.value for b in ScanBudget] == ["full", "session", "none", "journal_only"]
 
 
 def test_market_data_and_universe_defaults_match_the_spec():

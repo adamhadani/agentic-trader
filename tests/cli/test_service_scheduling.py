@@ -411,7 +411,7 @@ async def test_intraday_scan_runs_only_inside_a_session_and_keeps_its_symbols(co
         asset_class="all",
         timeframe="15m",
         symbols=["SPY"],
-        budget=ScanBudget.FULL,
+        budget=ScanBudget.JOURNAL_ONLY,
     )
     copilot.run_scan.reset_mock()
     copilot.session_provider.is_session_active = AsyncMock(return_value=(False, "closed"))
@@ -432,8 +432,9 @@ async def test_suggestion_job_requests_shadow_evidence_and_names_its_trigger(con
 
 
 def test_swing_scan_job_names_its_trigger_and_still_runs_at_startup(config):
-    """The interval job passes FULL budget + SWING_SCAN and keeps its immediate first run
-    (the ``scan`` readiness component needs an observation in every daemon run)."""
+    """The interval job passes JOURNAL_ONLY budget + SWING_SCAN and keeps its immediate first run
+    (the ``scan`` readiness component needs an observation in every daemon run; a journal-only
+    run cannot spend a card slot)."""
     scheduler = MagicMock()
     copilot = MagicMock()
     before = datetime.now(UTC)
@@ -447,5 +448,5 @@ def test_swing_scan_job_names_its_trigger_and_still_runs_at_startup(config):
     assert call.kwargs["id"] == "swing_scan"
     assert call.kwargs["hours"] == config.scheduler.cron_hour_interval
     assert call.kwargs["args"] == [True, False]
-    assert call.kwargs["kwargs"] == {"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN}
+    assert call.kwargs["kwargs"] == {"budget": ScanBudget.JOURNAL_ONLY, "trigger": ScanTrigger.SWING_SCAN}
     assert before <= call.kwargs["next_run_time"] <= after
