@@ -31,7 +31,9 @@ against the north star, a steady stream of high-quality Telegram cards. Its repo
 competing orderings in this file with one queue:
 
 - **Phase 0, before the 2026-10-28 FOMC.** Make the risk inputs fail safe, and make the cards that
-  are sent the cards that are measured.
+  are sent the cards that are measured. Status: built on `feature/phase0-fail-safes` (static
+  tier-1 calendar, `UNKNOWN` regime, journal-only swing scans, broad-index exclusion, complete scan
+  journal); merge and deploy are recorded in the review README. The PEAD probe renewal (D1) is done.
 - **Phase 1.** Honest measurement, and a paper book that actually fills.
 - **Phase 2.** New evidence on session-correct bars against a beta-matched yardstick.
 - **Phase 3.** Architecture and longer-horizon work.

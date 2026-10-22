@@ -31,7 +31,7 @@ the entry queue. Alpaca crypto brackets and broker-backed slicing are unsupporte
 
 One daemon owns:
 
-- Four-hour swing scans and session-gated 15-minute intraday scans, relative to startup.
+- Four-hour swing scans, relative to startup, which only rank and journal (they send no card), and an optional session-gated 15-minute intraday scan (disabled in the shipped config, also journal-only).
 - Minute position reconciliation plus Alpaca trade-stream wakeups.
 - Independent entry, notification and 60-second account-activity workers.
 - Telegram commands, approval buttons and command-menu registration.

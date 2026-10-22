@@ -32,7 +32,7 @@ starting map; the linked domain guides own detailed contracts.
 | --- | --- |
 | CLI composition and lifecycle | `cli/main.py`, `cli/utils.py`, `cli/commands/` |
 | Application orchestration | `agent/copilot.py:TradingCopilot` |
-| Signal evaluation and risk | `agent/evaluator.py`, `position_sizing.py`, `regime.py`, `macro.py`, `calendar.py`, `risk/` |
+| Signal evaluation and risk | `agent/evaluator.py`, `position_sizing.py`, `regime.py`, `macro.py`, `calendar.py` with `config/calendar/`, `risk/` |
 | Market data and sessions | `data/`, `data/corporate_actions.py`, `market/session.py`, `market/bars.py`, `resilience/fallback.py` |
 | Strategies | `screeners/base.py`, `strategies.py`, `registry.py`, `formulaic.py` |
 | Entry/close application services | `execution/entries.py`, `admission.py`, `capacity.py`, `closing.py` |
@@ -63,6 +63,11 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    regime) has one implementation in `agentic_trader/risk`; the evaluator, tap gate,
    re-pricing and admission differ only in the book they pass and the observed budget inputs
    ([risk policy](docs/risk-policy.md); admission's Alpaca book is broker-marked).
+   `macro_lockout` reads the verified union calendar: the static `config/calendar/us-tier1-vN.json`
+   (digest-pinned by `risk.macro_calendar_sha256`) plus the live ForexFactory feed, so a feed outage
+   never reads as an empty calendar. `risk.macro_calendar_unknown` (default `open`) labels a static
+   calendar that is expired, not yet valid or invalid unverified; `closed` refuses all entries while
+   it is.
    Book-aware sizing (`book_sizing`, code default `preview`, config ships `enforce` since 2026-10-20) scales native equity cards by a
    closed-form factor ≤ 1 against a daily dollar-vol budget at card construction only; the
    shadow optimiser cross-check never reaches size or orders.
@@ -107,16 +112,34 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Suggestion scans run at configured New York times and spend a derived per-session
    card budget (signals table, ET trading day); `PENDING` cards reserve no capacity;
    the intraday job scans only `non_universe_contracts`; `setup_quality` orders cards
-   and is stored in provenance — it is not validated alpha. Every unrestricted non-dry scan
-   with a budget journals `scan_candidates_ranked` with its `ScanTrigger`; shadow evidence
-   stays suggestion-scan only. Never widen the intraday job to the universe or store the
-   budget in a counter.
+   and is stored in provenance — it is not validated alpha. Every eligible scan (unrestricted,
+   non-dry, with a budget, past the halt, session and idle checks) journals exactly one
+   `scan_candidates_ranked` with its `ScanTrigger`, `status` (`ScanStatus`: `completed`,
+   `macro_lockout`, `regime_unavailable`), `gate`, `calendar` and `funnel`, zero-candidate,
+   lockout-gated and regime-unavailable scans included; halted, closed-session, idle, dry and
+   restricted scans never do ([card evidence](docs/card-evidence.md#limits)). Shadow evidence stays
+   suggestion-scan only. The daemon's swing job, and the intraday job (`scheduler.intraday_scan_enabled`,
+   shipped `false`), run `ScanBudget.JOURNAL_ONLY`: they rank and journal
+   (`RankedOutcome.JOURNAL_ONLY`) but call no LLM, record no signal and send no card, so a daemon
+   start cannot spend a session slot. An unrestricted scan never sends a native card on a broad US
+   equity index ETF (`scan.broad_index_etfs`, 23 names; `RankedOutcome.BROAD_INDEX_EXCLUDED`): a
+   card-selection rule in `run_scan`, not a risk rule; the candidate is still ranked and journaled, and
+   the digest counts it apart from its "top:" list. Never widen the intraday job to the universe or
+   store the budget in a counter.
+   A missing macro decision input is `MacroStressLevel.UNKNOWN` at `regime.unknown_risk_multiplier`
+   (0.5×, breakouts off), never 1.0×; a missing VIX raises `RegimeUnavailable`, which skips the scan
+   visibly and queues one `regime-unavailable/{et_date}` notice per New York date. The computed
+   `macro_calendar` readiness check is ready iff the static calendar is `ok` with at least
+   `risk.macro_calendar_renewal_days` (30) left before `valid_through`; publishing
+   `us-tier1-vN+1.json` and pinning its digest before the check degrades is a standing operator duty
+   ([runbook](docs/production.md#tier-1-calendar-renewal)).
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
    catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure,
    fill slippage, news, the journaled regime with the derived SPY tape, and setup recurrence
    (`regime_context`, `recurrence`; [card evidence](docs/card-evidence.md#regime-and-recurrence-context));
    these are descriptive, never gates. Every journaled universe scan carries a top-level `regime` block
-   (`regime_journal_block`), and every card from any scan carries it in `decision_provenance["regime"]`.
+   (`regime_journal_block`), except a lockout-gated one (`regime: null`: it stops before the regime read),
+   and every card from any scan carries it in `decision_provenance["regime"]`.
    `alpha setup-recurrence` is the predeclared, research-only test of the recurrence split (R1–R4 on
    replayed history; a pass only makes a construction rule eligible); v1 ran 2026-10-14 and did not fire (`no_change`: repeats −0.067R vs firsts on 2021–2026, [result](docs/setup-recurrence-2026-10-14.md)).
    `alpha bracket-counterfactual` is the predeclared, research-only exit-policy test (five bracket arms paired by setup on replayed history, rules B1–B5, one-shot confirmation read declared in `confirmation.json` before the read; a pass only makes a card-construction PR eligible), and `cards outcomes` reports the same arms descriptively under `counterfactual`, never as a gate. v1 ran 2026-10-18 and did not fire (`no_change`: no arm beats the live 2R bracket net of SPY; the live ratchet arm is worse by 0.013R; every arm trails SPY by 0.10–0.15R, [result](docs/bracket-counterfactual-2026-10-18.md)); the bracket is closed as an explanation and the next alpha work is on the entry side.

@@ -17,7 +17,7 @@ Runs the continuous steady-state trading service.
 uv run copilot daemon
 ```
 - **Components Executed**:
-  - APScheduler 4-hour swing scans and session-gated 15-minute intraday scans, relative to startup. The intraday scan covers only the explicitly configured `contracts:`, never the `universe:`.
+  - APScheduler 4-hour swing scans, relative to startup. They are journal-only: they rank and journal the `universe:` but send no card. The session-gated 15-minute intraday scan ships disabled (`scheduler.intraday_scan_enabled: false`); when enabled it is journal-only too and covers only the explicitly configured `contracts:`, never the `universe:`.
   - Cron suggestion scans on the New York clock (`scheduler.suggestion_scan_times_et`, default 10:35 and 14:35, weekdays); the last one publishes the end-of-session scan digest through the outbox.
   - 1-minute position reconciliation and bracket take-profit / stop-loss reconciler.
   - Alpaca WebSocket `TradingStream` wakeups (no latency guarantee).
@@ -76,9 +76,9 @@ uv run copilot scan --no-budget
 evaluation, ranks them by `setup_quality` (ties broken by symbol, then strategy), and
 only then sends. `copilot scan` and Telegram `/scan` bypass `scan.max_cards_per_scan`
 but respect `scan.max_cards_per_session` and `scan.max_cards_per_group_per_session`;
-the scheduled suggestion, swing and intraday scans apply all three. The per-session
-count is derived from the signals table since New York midnight, so a restart cannot
-reset it. `--no-budget` and `--dry-run` apply no budget at all — a dry run is always
+the scheduled suggestion scans apply all three (the journal-only swing and intraday scans spend
+no budget). The per-session count is derived from the signals table since New York midnight,
+so a restart cannot reset it. `--no-budget` and `--dry-run` apply no budget at all — a dry run is always
 unbudgeted because it neither reads nor spends the live session's allowance.
 `setup_quality`, the candidate's rank and the number of candidates it beat are stored
 in `decision_provenance`; `setup_quality` is a transparent prioritisation heuristic,

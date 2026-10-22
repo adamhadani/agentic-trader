@@ -472,8 +472,9 @@ zero-candidate or gated scans reads differently from an empty journal. Descripti
   `scan_candidates_ranked/{scan_id}`) with its `trigger`: suggestion, swing and unrestricted `/scan`
   alike. A scan is eligible when it has no symbols, no timeframe, a budget (not `NONE`), is not a dry
   run and passed the idle check. A zero-candidate scan journals (`candidates: []`), and so do a
-  lockout-gated scan and a scan whose regime read failed. Halted, closed-session and idle scans never
-  journal: they evaluated no slot, and the halt and the lockout keep their own skipped `pead_decision`.
+  lockout-gated scan (`status: macro_lockout`) and a scan whose regime read failed. Halted,
+  closed-session and idle scans never journal: they evaluated no slot, and a halt keeps its own skipped
+  `pead_decision`, as a lockout-gated scan does beside its journaled event.
   Dry runs, intraday, `/scan SYMBOL`, Re-evaluate cards and an unrestricted `copilot scan --no-budget`
   (budget `NONE`; it sends cards) never journal either; they show evidence and obey the policy. A CLI
   `copilot scan` with `--strategy`, `--strategy-mode`, `--asset-class` or `--bypass-session-filter`
@@ -486,7 +487,8 @@ zero-candidate or gated scans reads differently from an empty journal. Descripti
     `scheduled_time_et` for a scheduled slot, null otherwise.
   - `funnel`: a completed scan's collect funnel, null when gated; an event without it has an unknown
     funnel. Contract counts: `selected`, `scanned`, `fetch_failed`, `insufficient`,
-    `coverage_excluded`, `dynamic_excluded`. Native setup counts: `raw_setups` (and
+    `coverage_excluded`, `dynamic_excluded`. These do not partition `selected`: a contract that
+    raises after scanning counts in both `scanned` and `errors`. Native setup counts: `raw_setups` (and
     `raw_setups_by_strategy`), `duplicates`, `account_risk_unavailable`, `rejected_by_rule` (by
     `RiskRule` id; `unclassified` when no shared rule refused: sizing, the bracket check or the
     statistical correlation check),

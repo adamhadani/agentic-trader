@@ -42,8 +42,8 @@ version does not establish the installed local server version.
 
 | Task | Schedule |
 | --- | --- |
-| Swing scan | Every 4 hours from startup, immediate first run, no timeframe filter |
-| Intraday scan | Every 15 minutes, session gated, `15m` filter |
+| Swing scan | Every 4 hours from startup, immediate first run, no timeframe filter; journal-only (no card, LLM, signal or budget) |
+| Intraday scan | Disabled in the shipped config (`scheduler.intraday_scan_enabled`); when enabled every 15 minutes, session gated, `15m` filter, journal-only |
 | Position reconciliation | Every minute plus broker-stream wakeups |
 | Account activity reconciliation | Independent worker, default 60 seconds |
 | Entry / notification workers | Independent loops, default 2 seconds |
@@ -167,12 +167,16 @@ Telegram has shared transport retries, command/update correlation, polling
 observations and persistent delivery audits. Retry HTTP delivery, never handlers.
 `/macro` is the single combined market context; published feed dates and missing
 enrichment are explicit. The evaluator's LLM macro block now carries the evaluation
-time and the deterministic lockout verdict recomputed on the same captured clock as the gate (CLEAR or LOCKOUT ACTIVE)
+time and the deterministic lockout verdict recomputed on the same captured clock as the gate (`LOCKOUT ACTIVE`,
+`Lockout CLEAR` per the static calendar, or `Lockout UNVERIFIED` when that calendar is expired or invalid)
 with full event dates, because an event time alone made the model refuse candidates
 on unverifiable macro timing. Tier-1 lockout events are USD CPI, PPI, payrolls and
 unemployment, and the FOMC rate decision (statement, projections, press conference);
-individual Fed speakers and the minutes are not tier-1. Missing VIX fails regime evaluation; missing enrichment
-can leave volatility-only policy. Daily-feed admission age remains a gap.
+individual Fed speakers and the minutes are not tier-1. They come from the digest-pinned static calendar
+`config/calendar/us-tier1-vN.json` unioned with the live ForexFactory feed, so a feed outage no longer reads as
+an empty, clear calendar. Missing VIX fails regime evaluation (`RegimeUnavailable`: the scan is skipped and
+noticed once per New York date); a missing macro decision input is `UNKNOWN` stress at 0.5× with breakouts
+off. Daily-feed admission age remains a gap.
 GEX is an option-chain/model estimate with quality notes and a required real spot. Replay evidence: [LLM prompt evaluation, 2026-09-22](llm-prompt-eval-2026-09-22.md) (old prompt 0/10 approvals on the traced candidates, new prompt 10/10, lockout control 6/6 rejected).
 A separate deterministic gate right after the macro lockout (step 2b, `agent/earnings.py`) rejects equity
 candidates with an ahead earnings report inside `risk.earnings_blackout_days` (default 7); a failed/unparseable

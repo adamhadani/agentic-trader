@@ -62,8 +62,9 @@ only place this product is computed.
   decision input (3m, 2y, 10y, HY OAS) is missing: `regime.unknown_risk_multiplier` (0.5,
   validated `0.10 ≤ m < 1.0`), with squeeze breakouts per `regime.unknown_breakout_allowed`
   (false) and the VIX-derived reward/risk. Missing context inputs (5y, 30y, DXY,
-  breakevens) never move it. Only `regime.yield_curve_enabled: false`, an explicit
-  VIX-only policy, is 1.0.
+  breakevens) never move it. Only an explicit VIX-only policy
+  (`regime.yield_curve_enabled: false`) makes no stress assessment, so the multiplier is
+  1.0 whatever the macro inputs.
 - A non-finite multiplier, equity or drawdown raises `ValueError`. It is never read as 1.0,
   and a missing decision input is `UNKNOWN` at 0.5×, never 1.0.
 
@@ -188,7 +189,8 @@ A collect-phase refusal is logged as `candidate_rejected` with `phase: collect`,
 reason and `rejection_rule`. The scan journal's `funnel` counts it under
 `rejected_by_rule` by that rule id (`unclassified` when no shared rule refused), beside the
 duplicate, account-risk and error counts ([card evidence](card-evidence.md#limits)). It does
-not appear in the runner-up list or the digest. A send-phase refusal is a runner-up and is logged with the same fields and `phase: send`.
+not appear in the runner-up list or the digest. A send-phase refusal is a runner-up and is
+logged with the same fields and `phase: send`.
 Separately, the whole-scan check applies `macro_lockout` at scan start from one check of
 the union calendar (the static calendar's union with the live feed). A refusal (a lockout
 window, or an unverified static calendar under `closed`) skips the scan as a whole, records

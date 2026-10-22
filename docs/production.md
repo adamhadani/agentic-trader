@@ -27,10 +27,10 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
   slot (the defect behind 61 restarts in 33 days). That run is kept, deliberately: it gives the `scan`
   readiness component an observation in each daemon run (`scan_max_age_seconds` is not
   session-aware). The suggestion scans own the cards.
-  The session gate is `asset_class="all"`: it is open whenever futures trade, not only when the
-  equity session is. Under Alpaca execution futures are not executable, so a swing scan outside the
-  equity session selects nothing and ends as `Idle: nothing eligible` (SCAN observed ready, nothing
-  journaled).
+  The job has no session gate of its own. Contract selection (`_select_contracts`) drops equities
+  while the equity session is closed and keeps futures only where the execution mode can trade
+  them, which Alpaca cannot, so a swing scan outside the equity session selects nothing and ends as
+  `Idle: nothing eligible` (SCAN observed ready, nothing journaled).
 - Suggestion scans: cron on the New York clock, weekdays, at
   `scheduler.suggestion_scan_times_et` (see below). They also add the dynamic
   suggestion universe.
@@ -622,7 +622,9 @@ In the summary, `llm_gate` compares vetoed and approved mean R and counts bracke
 `bracket_edited` (at any maturity), `bracket_edit_mature`, and the mean `llm_r_cost −
 r_cost` over approved edits (`bracket_edit_mean_delta_r`, the brackets that were sent),
 reported apart from vetoed ones (`vetoed_bracket_edit_mean_delta_r`). `market_exposure`
-gives sent and runner-up means with and without the control. `execution` covers every sent
+gives sent, runner-up and `journal_only` means with and without the control (`journal_only` is
+the swing-scan candidates, which never competed for a card and so are not runners-up;
+`counts` and `base_rates` carry the same third class). `execution` covers every sent
 card. A re-priced card is followed to its replacement (`final_signal_id`, `repriced`),
 whose status, entry order, fill and tap are the ones that count. A card is **entered** when
 its signal is `EXECUTED` or any `CLOSED_*`, and **filled** when the broker's
