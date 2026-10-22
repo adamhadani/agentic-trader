@@ -226,6 +226,38 @@ async def test_funnel_identity_holds_across_every_refusal_kind(budget_desk, temp
     assert all(secret not in text for secret in ("stale observation", "dedup boom", "strategy boom"))
 
 
+async def test_a_guard_after_a_classified_setup_loses_only_the_unclassified_one(budget_desk, temp_db, app_config):  # noqa: F811
+    """AAA's first setup is a duplicate (classified); the dedup read of its second raises.
+
+    The guard loses one setup, not two: the duplicate already counted keeps its place, so the
+    classified setup is never counted twice.
+    """
+    app_config.contracts = {s: instrument(s) for s in ("AAA", "BBB")}
+
+    def scan(data, **kwargs):
+        if data.contract == "AAA":
+            return [candidate("AAA", 0.6), candidate("AAA", 0.5, strategy="BREAKOUT")]
+        return [candidate(data.contract, 0.5)]
+
+    async def is_duplicate_recent(contract, strategy, **kwargs):
+        if (contract, strategy) == ("AAA", "BREAKOUT"):
+            raise RuntimeError("dedup boom")
+        return contract == "AAA"
+
+    budget_desk.strategy_engine.scan_contract.side_effect = scan
+    budget_desk.db.is_duplicate_recent = AsyncMock(side_effect=is_duplicate_recent)
+
+    await suggestion(budget_desk)
+
+    [event] = await ranked_events(temp_db)
+    f = event["payload"]["funnel"]
+    assert (f["duplicates"], f["setups_lost_to_errors"], f["admitted"]) == (1, 1, 1)
+    assert f["errors"] == {"RuntimeError": 1}
+    assert f["raw_setups_by_strategy"] == {"BREAKOUT": 1, "TREND_PULLBACK": 2}
+    assert f["raw_setups"] == identity(f) == 3
+    assert [c["contract"] for c in event["payload"]["candidates"]] == ["BBB"]
+
+
 async def test_the_funnel_counts_each_contract_gate_once(dynamic_desk, temp_db, dailies, monkeypatch):  # noqa: F811
     """A static fetch failure, an empty frame, a coverage exclusion and a thin dynamic name."""
     dailies["NEWB"] = daily_frame(volume=1_000.0)  # below the liquidity reference: a dynamic exclusion
