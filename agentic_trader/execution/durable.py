@@ -77,6 +77,17 @@ class ScanTrigger(StrEnum):
     OPERATOR_SCAN = "operator_scan"  # ``copilot scan`` / Telegram ``/scan`` with no symbols or timeframe
 
 
+class ScanStatus(StrEnum):
+    """How a journaled full-universe scan ended (``scan_candidates_ranked``'s ``status``).
+
+    A reader treats an event without ``status`` (journaled before this field) as ``completed``.
+    """
+
+    COMPLETED = "completed"  # ranked its candidates (possibly none) and sent or journaled them
+    MACRO_LOCKOUT = "macro_lockout"  # the whole-scan lockout gated it before any regime read
+    REGIME_UNAVAILABLE = "regime_unavailable"  # the regime read raised (a missing VIX, or any error)
+
+
 class RankedOutcome(StrEnum):
     """Fixed outcomes of a ranked full-universe-scan candidate (``scan_candidates_ranked``).
 

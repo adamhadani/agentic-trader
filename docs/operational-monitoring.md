@@ -56,6 +56,37 @@ and the static calendar stays authoritative through a feed outage. The monitor's
 debounced incident covers this check, so it needs no monitor change. A failed check does
 not change the trading halt.
 
+### Scan notices
+
+Three scan-path conditions queue a plain Telegram message through the existing outbox,
+each deduplicated by its outbox key, so a repeat adds no second message:
+
+| Outbox key | Sent when | Once per |
+| --- | --- | --- |
+| `pead-unavailable/{et_date}` | The 10:35 PEAD drift decision could not be prepared (`pead_decision` `status: unavailable`) | New York date |
+| `suggestion-scan-missed/{et_date}/{HH:MM}` | APScheduler dropped a suggestion-scan slot past its misfire grace ([production](production.md)) | slot and New York date |
+| `regime-unavailable/{et_date}` | A scan's regime read raised (a missing VIX, or any other error by type name), so the scan was skipped | New York date |
+
+`regime-unavailable` reads, for example, "⚠️ Market regime unavailable (vix: ReadTimeout)
+at 10:35 NY: the suggestion scan was skipped — no cards, no PEAD decision. Later scans
+retry; this notice is sent once per New York date." It names inputs and exception type
+names only. It is written in the same transaction as the scan's `scan_candidates_ranked`
+event (`status: regime_unavailable`, `gate.missing`, `gate.errors`), so the event and the
+notice commit or roll back together; an unrestricted operator scan without a budget sends
+the notice alone, and a restricted or dry scan sends none. A dry run prints the reason.
+
+The health signal is the existing `scan` readiness component, observed not ready with
+"Regime unavailable (vix: ReadTimeout); scan skipped": a lost scan is a scan failure, and
+the monitor's debounced `scan` incident pages on it. There is deliberately no
+`macro_inputs` readiness component. Macro inputs are read only inside scans, taps and
+`/macro` (and a scan that is idle or locked out reads none), so an observed component
+would go stale every night and weekend; a missing non-VIX decision input is already
+handled conservatively (the `UNKNOWN` stress policy) and journaled with names, sources and
+observation dates on every scan; and the case that must page, a missing VIX, already does
+so through `scan` readiness and this notice. A `macro_inputs` component with per-input age
+contracts belongs with the macro source upgrade, once observation dates have an agreed
+staleness rule.
+
 ## Incident lifecycle and delivery
 
 The pure state machine progresses through `healthy → pending → open → recovering

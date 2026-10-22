@@ -435,31 +435,39 @@ def _slot_due_at(slot_et: str) -> datetime:
 
 
 def make_suggestion_scan(copilot: Any, *, use_llm: bool):
-    """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest."""
+    """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest.
+
+    The digest runs in a ``finally``: a closed session, a gated scan and a scan that raised are all
+    reportable sessions. A digest failure is logged and never masks the scan's own exception.
+    """
 
     async def run_suggestion_scan(digest: bool = False, scheduled_time_et: str | None = None) -> None:
-        active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
-        if active:
-            await copilot.run_scan(
-                use_llm=use_llm,
-                dry_run=False,
-                asset_class="equity",
-                budget=ScanBudget.FULL,
-                shadow_evidence=True,
-                trigger=ScanTrigger.SUGGESTION_SCAN,
-                # The configured New York time of this job: only the PEAD decision time
-                # (10:35) may produce a drift card.
-                scheduled_time_et=scheduled_time_et,
-                # When that slot was due: a drift decision reached too late is skipped.
-                scheduled_at=_slot_due_at(scheduled_time_et) if scheduled_time_et else None,
-            )
-        else:
-            logger.info(
-                "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}
-            )
-        # A closed session is still a reportable session: the digest always runs.
-        if digest:
-            await copilot.publish_scan_digest()
+        try:
+            active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
+            if active:
+                await copilot.run_scan(
+                    use_llm=use_llm,
+                    dry_run=False,
+                    asset_class="equity",
+                    budget=ScanBudget.FULL,
+                    shadow_evidence=True,
+                    trigger=ScanTrigger.SUGGESTION_SCAN,
+                    # The configured New York time of this job: only the PEAD decision time
+                    # (10:35) may produce a drift card.
+                    scheduled_time_et=scheduled_time_et,
+                    # When that slot was due: a drift decision reached too late is skipped.
+                    scheduled_at=_slot_due_at(scheduled_time_et) if scheduled_time_et else None,
+                )
+            else:
+                logger.info(
+                    "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}
+                )
+        finally:
+            if digest:
+                try:
+                    await copilot.publish_scan_digest()
+                except Exception:
+                    logger.exception("Scan digest could not be published", extra={"event": "scan_digest_failed"})
 
     return run_suggestion_scan
 

@@ -19,6 +19,8 @@ import pytest
 
 import agentic_trader.agent.copilot as copilot_module
 from agentic_trader.agent.copilot import TradingCopilot
+from agentic_trader.agent.macro import MacroInput
+from agentic_trader.agent.regime import RegimeUnavailable
 from agentic_trader.config import AprioriConfig, ScanBudget
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
@@ -562,6 +564,40 @@ async def test_a_gated_scan_journals_no_pead_decision_otherwise(drift_desk, temp
     await suggestion_scan(drift_desk, **kwargs)
 
     assert await _drift_events(temp_db) == []
+
+
+async def test_a_regime_unavailable_decision_scan_journals_a_skipped_pead_decision(drift_desk, temp_db):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+    drift_desk.regime_detector.get_regime.side_effect = RegimeUnavailable(
+        {"vix": MacroInput("vix", None, "yfinance:^VIX", None, True, "ReadTimeout")}
+    )
+
+    assert await suggestion_scan(drift_desk) is None
+
+    [event] = await _drift_events(temp_db)
+    payload = event["payload"]
+    assert (payload["status"], payload["reason"]) == ("skipped", "regime unavailable")
+    assert payload["version_id"] == VERSION and payload["events"] == []
+    assert drift_desk.earnings_drift.prepare_calls == 0
+    [ranked] = [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.SCAN_CANDIDATES_RANKED]
+    assert ranked["payload"]["status"] == "regime_unavailable"
+    assert ranked["stream"] == event["stream"]
+    [notice] = await _message_notices(temp_db)
+    assert notice.payload["arguments"]["text"].endswith(
+        "— no cards, no PEAD decision. Later scans retry; this notice is sent once per New York date."
+    )
+    assert await _unavailable_notices(temp_db) == []  # the regime notice, not a PEAD-unavailable one
+
+
+async def test_a_regime_unavailable_scan_at_another_slot_says_nothing_of_pead(drift_desk, temp_db):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+    drift_desk.regime_detector.get_regime.side_effect = RuntimeError("down")
+
+    assert await suggestion_scan(drift_desk, scheduled_time_et="14:35") is None
+
+    assert await _drift_events(temp_db) == []
+    [notice] = await _message_notices(temp_db)
+    assert "— no cards. Later scans retry" in notice.payload["arguments"]["text"]
 
 
 async def test_drift_is_absent_from_the_shadow_ranking_journal(drift_desk, temp_db):

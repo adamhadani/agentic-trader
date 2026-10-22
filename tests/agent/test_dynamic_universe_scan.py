@@ -29,7 +29,7 @@ from agentic_trader.broker.base import (
 )
 from agentic_trader.config import ScanBudget, UniverseConfig, UniverseEntry
 from agentic_trader.constants import AssetClass, SignalStatus
-from agentic_trader.execution.durable import EventKind, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, ScanTrigger, WorkKind, WorkStatus
 from agentic_trader.execution.entries import EntryExecutionService
 from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessionType
 from agentic_trader.research.alpha.models import AlphaDefinition
@@ -155,7 +155,13 @@ async def ranked_events(db):
 
 async def suggestion_scan(desk, **kwargs):
     return await desk.run_scan(
-        use_llm=False, dry_run=False, asset_class="equity", budget=ScanBudget.FULL, shadow_evidence=True, **kwargs
+        use_llm=False,
+        dry_run=False,
+        asset_class="equity",
+        budget=ScanBudget.FULL,
+        shadow_evidence=True,
+        trigger=ScanTrigger.SUGGESTION_SCAN,
+        **kwargs,
     )
 
 

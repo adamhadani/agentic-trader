@@ -17,6 +17,7 @@ import pytest
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import ScanBudget
 from agentic_trader.constants import AssetClass
+from agentic_trader.execution.durable import ScanTrigger
 from agentic_trader.screeners.base import ScreenerCandidate
 from agentic_trader.storage.models import SignalRecord
 
@@ -243,7 +244,9 @@ def test_correlation_groups_match_root_and_slashed_symbols(scan_desk, app_config
 
 async def test_digest_summarises_the_session_and_is_published_once(budget_desk, app_config):
     budget_desk.outbox = AsyncMock()
-    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await budget_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
     text = await budget_desk.publish_scan_digest()
     assert "1 card" in text and "4 runners-up" in text and "BBB" in text
     budget_desk.outbox.publish_message.assert_awaited_once()
@@ -260,7 +263,9 @@ async def test_digest_reports_how_many_instruments_were_scanned(budget_desk, app
     """F1: candidates alone cannot distinguish a quiet universe from a universe that
     was never scanned, so the digest carries the scanned and insufficient totals."""
     budget_desk.outbox = AsyncMock()
-    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await budget_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
     text = await budget_desk.publish_scan_digest()
     assert "5 scanned" in text and "0 insufficient" in text
 

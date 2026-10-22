@@ -11,10 +11,12 @@ import psycopg2
 import pytest
 from sqlalchemy import update
 
+from agentic_trader.agent.scan_journal import append_scan_journal, regime_unavailable_notice
 from agentic_trader.broker.base import OrderRequest
 from agentic_trader.constants import CloseRequestStatus
 from agentic_trader.diagnostics.incidents import IncidentPhase
-from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EventKind, NotificationKind, ScanTrigger, WorkKind, WorkStatus
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.maintenance import RetentionService
@@ -550,5 +552,36 @@ async def test_postgres_recent_events_reads_one_kind_from_named_streams_in_scope
 
         assert [e["payload"]["n"] for e in events] == [3, 1]
         assert await db.workflows.recent_events(EventKind.DYNAMIC_UNIVERSE_BUILT, streams=[]) == []
+    finally:
+        await db.engine.dispose()
+
+
+async def test_postgres_scan_journal_event_and_notice_commit_together(postgres_test_db, monkeypatch):
+    """A regime-unavailable scan event and its once-per-date notice are one asyncpg transaction."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    at = datetime(2026, 10, 28, 14, 35, tzinfo=ET_TZ)
+    notice = regime_unavailable_notice(
+        {"vix": "ReadTimeout"}, at=at, trigger=ScanTrigger.SUGGESTION_SCAN, pead_skipped=False
+    )
+    try:
+        await db.init_db()
+        await append_scan_journal(
+            db, et_date="2026-10-28", scan_id="first", payload={"status": "regime_unavailable"}, notice=notice
+        )
+
+        async def refuse(*args, **kwargs):
+            raise RuntimeError("outbox down")
+
+        monkeypatch.setattr(db.workflows, "add_notification", refuse)
+        with pytest.raises(RuntimeError):
+            await append_scan_journal(
+                db, et_date="2026-10-29", scan_id="second", payload={"status": "regime_unavailable"}, notice=notice
+            )
+
+        ranked = [e for e in await db.workflows.events() if e["kind"] == EventKind.SCAN_CANDIDATES_RANKED]
+        assert [(e["stream"], e["payload"]["status"]) for e in ranked] == [("scan/2026-10-28", "regime_unavailable")]
+        [item] = await db.workflows.list_work(WorkKind.NOTIFICATION)
+        assert item.payload["kind"] == NotificationKind.MESSAGE
+        assert item.payload["arguments"] == {"text": notice.text, "formatted": False}
     finally:
         await db.engine.dispose()

@@ -214,7 +214,7 @@ async def test_journal_failure_does_not_block_card(shadow_desk, temp_db, caplog)
 
     assert [s["contract"] for s in await temp_db.get_recent_signals(limit=10)] == ["DDD"]
     assert shadow_desk.last_scan_summary["sent"] == 1
-    assert "journal boom" in shadow_desk.last_scan_summary["scan_journal_error"]
+    assert shadow_desk.last_scan_summary["scan_journal_error"] == "RuntimeError"  # type name only
     assert any(getattr(r, "event", None) == "scan_journal_failed" for r in caplog.records)
     assert await _ranked_events(temp_db) == []
     shadow_desk.readiness.observe.assert_awaited()
