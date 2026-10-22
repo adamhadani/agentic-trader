@@ -187,7 +187,9 @@ outcome `broad_index_excluded` (`RankedOutcome.BROAD_INDEX_EXCLUDED`) and become
 budget, is dropped from news fetching and scoring and from the book-sizing candidates, and the next rank is
 considered. Such a name is still collected, ranked, given a dynamic slot when the screener supplies it, and
 journaled in `scan_candidates_ranked`, so it is a runner-up refused by a selection rule and `cards outcomes`
-keeps labelling it like any other.
+keeps labelling it like any other. The end-of-session digest counts it among the runners-up but keeps it out
+of the "top:" list (a listed index is scanned every session and would fill it) and reports them as
+"N broad-index ETF(s) excluded".
 
 Unaffected: a restricted scan (`/scan SPY`, `copilot scan --symbols SPY`) and Re-evaluate, which still card
 these names so operator trades stay possible; PEAD drift and catalog cards; and policy-locked alpha and probe

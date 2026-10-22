@@ -4732,11 +4732,17 @@ class TradingCopilot:
                 }
             )
             durations = ", ".join(f"{s.get('duration_seconds', 0):.0f}s" for s in scans)
-            top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in runners[:5])
+            # A listed index is scanned every session: counted apart, so it never fills the "top:" slots.
+            actionable = [r for r in runners if r.get("reason") != BROAD_INDEX_REASON]
+            index_excluded = len(runners) - len(actionable)
+            top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in actionable[:5])
             text = (
                 f"📋 Scan digest {et_date}: {len(scans)} scan(s), {scanned} scanned, "
                 f"{insufficient} insufficient, {candidates} candidates, {sent} card(s) sent, "
-                f"{len(runners)} runners-up" + (f" — top: {top}" if top else "") + ". "
+                f"{len(runners)} runners-up"
+                + (f" — top: {top}" if top else "")
+                + (f"; {index_excluded} broad-index ETF(s) excluded" if index_excluded else "")
+                + ". "
                 f"Fetch failures: {len(failed)}" + (f" ({', '.join(failed[:8])})" if failed else "") + "; "
                 f"coverage excluded: {len(excluded)}; scan durations: {durations}."
             )

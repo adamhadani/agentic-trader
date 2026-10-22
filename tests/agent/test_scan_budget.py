@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
+from agentic_trader.agent.copilot import BROAD_INDEX_REASON
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import ScanBudget
 from agentic_trader.constants import AssetClass
@@ -251,6 +252,48 @@ async def test_digest_summarises_the_session_and_is_published_once(budget_desk, 
     assert "1 card" in text and "4 runners-up" in text and "BBB" in text
     budget_desk.outbox.publish_message.assert_awaited_once()
     assert budget_desk.outbox.publish_message.call_args.kwargs["key"].startswith("scan-digest/")
+
+
+async def test_digest_keeps_broad_index_runners_up_out_of_the_top_list_and_counts_them(scan_desk):
+    """A listed index is scanned every day; its runner-up must not fill the "top:" slots an operator can act on."""
+    scan_desk.outbox = AsyncMock()
+    et_today = scan_desk.session_start_et().date().isoformat()
+
+    def runner(contract, quality, reason=None):
+        row = {"contract": contract, "strategy": "TREND_PULLBACK", "direction": "LONG", "setup_quality": quality}
+        return {**row, "reason": reason} if reason is not None else row
+
+    def summary(*runners_up):
+        return {
+            "trigger": ScanTrigger.SUGGESTION_SCAN,
+            "scanned": 6,
+            "insufficient": [],
+            "candidates": len(runners_up),
+            "sent": 0,
+            "runners_up": list(runners_up),
+            "fetch_failed": [],
+            "coverage_excluded": [],
+            "duration_seconds": 1.0,
+        }
+
+    scan_desk._session_scan_stats = {
+        et_today: [summary(runner("SPY", 0.95, BROAD_INDEX_REASON), runner("AAA", 0.8, "per-scan budget spent"))]
+    }
+    text = await scan_desk.publish_scan_digest()
+    assert "2 runners-up — top: AAA LONG (0.80); 1 broad-index ETF(s) excluded. Fetch failures" in text
+    assert "SPY" not in text
+
+    # Only index names: nothing to list, and the sentence still reads cleanly.
+    scan_desk._session_scan_stats = {et_today: [summary(runner("SPY", 0.95, BROAD_INDEX_REASON))]}
+    assert "1 runners-up; 1 broad-index ETF(s) excluded. Fetch failures" in await scan_desk.publish_scan_digest()
+
+    # No excluded index (and a runner-up without a reason): no clause, no mention.
+    scan_desk._session_scan_stats = {
+        et_today: [summary(runner("AAA", 0.8, "per-scan budget spent"), runner("BBB", 0.7))]
+    }
+    text = await scan_desk.publish_scan_digest()
+    assert "top: AAA LONG (0.80), BBB LONG (0.70). Fetch failures" in text
+    assert "broad-index" not in text
 
 
 async def test_digest_without_scans_says_so(scan_desk):
