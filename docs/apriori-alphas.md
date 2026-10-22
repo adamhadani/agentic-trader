@@ -184,6 +184,16 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   cumulative from first enrolment). Demote with `copilot alpha demote
   VERSION_ID --generation N`. Run `copilot alpha apriori-probe --help` for the
   exact CLI options.
+
+  **Renewal (operator decision, 2026-10-21).** The PEAD probe is renewed for 180
+  days at unchanged risk, judged on the counterfactual label over every eligible
+  event (`probe_outcomes`, below), not on taps. Renewal is a separate operator
+  action, never a deploy step: the command above with `--renew --days 180` and
+  the registry generation observed at the time (`--days` accepts up to
+  `MAX_PROBE_TERM_DAYS = 180`, `agentic_trader/research/alpha/probe.py`). It extends
+  a current, unkilled probe from now. Done 2026-10-21 14:46 ET:
+  `apriori:pead:v2:long:fc8a5b3ec14845a2`, registry generation 17 → 18, expires
+  2027-04-19, the $100 per-trade cap unchanged.
 - **Measurement.** `copilot cards outcomes` reports the probe alongside the
   native scan-outcome report: every journaled `pead_decision` event in the
   window (`agentic_trader/research/apriori/probe_outcomes.py`), including events
@@ -199,7 +209,9 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   `bar_failures` and never aborts the rest of the report. Realized and
   counterfactual results are not comparable until the probe has at least 10
   closed trades. `/alphas` shows the probe's forward record
-  (`AlphaRepository.probe_report()`, `kind == "apriori"`) between scans.
+  (`AlphaRepository.probe_report()`, `kind == "apriori"`) between scans. The
+  renewal decision above reads the counterfactual mean over every eligible
+  event, because carded and tapped events are a selected subset.
 - **Known limits.** The counterfactual label assumes a fill at the study's own
   decision price (the last regular-session hourly close at or before 10:35), not
   an actual broker fill — real slippage/timing is not measured. The live cohort

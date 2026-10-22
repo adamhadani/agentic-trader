@@ -27,6 +27,7 @@ from tests.research.setups.test_outcomes import (
     _candidate,
     _event,
 )
+from tests.research.setups.test_scan_supply import MIXED
 
 
 COMPUTED_AT = datetime(2026, 10, 8, 12, 31, tzinfo=UTC)
@@ -243,3 +244,19 @@ def test_card_stats_ignores_cf_columns():
         if column.startswith(outcomes_module.CF_COLUMN_PREFIX):
             filled[column] = 0.7 if column.endswith(("r_cost", "market_r")) else "target"
     assert _compute(filled)["keys"] == _compute(plain)["keys"]
+
+
+def test_label_journaled_and_card_stats_see_the_same_rows_on_mixed_events():
+    """Zero-candidate and gated events, and events from before status/funnel existed, add no rows."""
+    nonempty = [event for event in MIXED if event["payload"]["candidates"]]
+    assert len(nonempty) == 3 and len(MIXED) == 5
+    contracts = {c["contract"] for event in nonempty for c in event["payload"]["candidates"]}
+    frames = {contract: AAPL_BARS for contract in contracts} | {"SPY": SPY_BARS}
+    mixed = label_journaled(MIXED, FakeBarSource(frames), now=NOW)
+    only = label_journaled(nonempty, FakeBarSource(frames), now=NOW)
+    pd.testing.assert_frame_equal(mixed, only)
+    assert len(mixed) == 6
+    assert (
+        _compute(mixed, events_considered=len(MIXED))["keys"] == _compute(only, events_considered=len(nonempty))["keys"]
+    )
+    assert _compute(mixed, events_considered=len(MIXED))["events_considered"] == 5

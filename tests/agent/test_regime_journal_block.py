@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
-from agentic_trader.agent.macro import MacroStressLevel
+from agentic_trader.agent.macro import MacroInput, MacroStressLevel
 from agentic_trader.agent.regime import REGIME_BLOCK_KEYS, RegimeSnapshot, regime_journal_block
 from agentic_trader.constants import VolatilityRegime
 
@@ -27,8 +27,9 @@ def _snapshot(**overrides):
 
 
 def test_block_has_exactly_the_declared_keys_and_json_safe_values():
-    report = SimpleNamespace(stress=SimpleNamespace(level=MacroStressLevel.MODERATE))
-    block = regime_journal_block(_snapshot(macro_report=report))
+    stress = SimpleNamespace(level=MacroStressLevel.MODERATE)
+    vix = MacroInput("vix", 17.25, "yfinance:^VIX", date(2026, 10, 13), True, None)
+    block = regime_journal_block(_snapshot(macro_stress=stress, macro_inputs={"vix": vix}))
     assert tuple(block) == REGIME_BLOCK_KEYS
     assert block == {
         "vix": 17.25,
@@ -38,13 +39,27 @@ def test_block_has_exactly_the_declared_keys_and_json_safe_values():
         "min_rr_threshold": 1.5,
         "macro_stress": "MODERATE",
         "observed_at": "2026-10-14T14:35:00+00:00",
+        "macro_enabled": True,
+        "inputs": {
+            "vix": {
+                "value": 17.25,
+                "source": "yfinance:^VIX",
+                "observed_on": "2026-10-13",
+                "decision": True,
+                "error": None,
+            }
+        },
+        "missing": [],
+        "missing_decision": [],
+        "clock_regime": "EDT",
     }
 
 
-def test_block_without_a_macro_report_has_no_stress():
+def test_block_without_macro_stress_has_no_stress():
     block = regime_journal_block(_snapshot())
-    assert block["macro_stress"] is None
+    assert block["macro_stress"] is None and block["macro_enabled"] is False
     assert block["vix_regime"] == "NORMAL" and block["breakout_allowed"] is True
+    assert (block["inputs"], block["missing"], block["missing_decision"]) == ({}, [], [])
 
 
 def test_block_from_a_stub_is_all_none():

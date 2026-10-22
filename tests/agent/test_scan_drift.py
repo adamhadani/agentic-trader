@@ -19,9 +19,11 @@ import pytest
 
 import agentic_trader.agent.copilot as copilot_module
 from agentic_trader.agent.copilot import TradingCopilot
+from agentic_trader.agent.macro import MacroInput
+from agentic_trader.agent.regime import RegimeUnavailable
 from agentic_trader.config import AprioriConfig, ScanBudget
 from agentic_trader.constants import SignalStatus, SystemStateKey
-from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
+from agentic_trader.execution.durable import EventKind, NotificationKind, ScanTrigger, WorkKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.research.alpha.models import RegistrySnapshot
@@ -43,7 +45,9 @@ from tests.agent.test_scan_budget import (  # noqa: F401  (budget_desk is a fixt
     budget_desk,
     candidate,
     evaluation,
+    plant_history,
 )
+from tests.calendar_doubles import lockout_check, unverified_check
 
 
 VERSION = "apriori:pead:v2:long:abc"
@@ -132,6 +136,7 @@ async def suggestion_scan(desk, **kwargs):
         "dry_run": False,
         "budget": ScanBudget.FULL,
         "shadow_evidence": True,
+        "trigger": ScanTrigger.SUGGESTION_SCAN,
         "scheduled_time_et": "10:35",
         **kwargs,
     }
@@ -250,6 +255,30 @@ async def test_drift_runs_only_at_the_decision_time(drift_desk, temp_db, kwargs)
     assert [s for s in await _signals(temp_db) if s["strategy"] == PEAD_STRATEGY_ID] == []
     assert await _drift_events(temp_db) == []
     assert "drift" not in drift_desk.last_scan_summary
+
+
+async def test_the_scan_reply_counts_a_drift_card_as_sent(drift_desk, temp_db, app_config, monkeypatch):
+    """The /scan reply reads the scan's own card count, which includes a drift card (its own budget). Only the
+    scheduled 10:35 suggestion scan runs drift, so the reply is driven through one."""
+    app_config.scan.max_cards_per_session = 0  # every native setup is refused; only the drift card is sent
+    await plant_history(temp_db)
+    scan = drift_desk.run_scan
+
+    async def as_the_decision_time_suggestion_scan(**kwargs):
+        return await scan(
+            **kwargs,
+            budget=ScanBudget.FULL,
+            shadow_evidence=True,
+            trigger=ScanTrigger.SUGGESTION_SCAN,
+            scheduled_time_et="10:35",
+        )
+
+    monkeypatch.setattr(drift_desk, "run_scan", as_the_decision_time_suggestion_scan)
+
+    text = await drift_desk.run_scan_summary_html()
+
+    assert text == "✅ <b>Scan Complete:</b> 1 new trade setup(s) identified and alert cards dispatched above."
+    assert [s["contract"] for s in await temp_db.signals_since(drift_desk.session_start_et())] == ["WINR"]
 
 
 async def test_drift_budget_is_derived_after_a_restart(drift_desk, temp_db):
@@ -519,14 +548,15 @@ async def _gate(desk, db, gate: str) -> str:
         await db.set_state(SystemStateKey.TRADING_HALTED, "true")
         await db.set_state(SystemStateKey.TRADING_HALT_REASON, "operator kill")
         return "trading halted: operator kill"
-    desk.calendar.is_in_lockout_window.return_value = (
-        True,
-        SimpleNamespace(title="CPI release", timestamp=datetime(2026, 10, 28, 12, 30, tzinfo=UTC)),
-    )
+    if gate == "unverified":
+        desk.config.risk.macro_calendar_unknown = "closed"
+        desk.calendar.check.return_value = unverified_check()
+        return "macro calendar unverified"
+    desk.calendar.check.return_value = lockout_check("CPI release", datetime(2026, 10, 28, 12, 30, tzinfo=UTC))
     return "macro lockout: CPI release"
 
 
-@pytest.mark.parametrize("gate", ["halt", "lockout"])
+@pytest.mark.parametrize("gate", ["halt", "lockout", "unverified"])
 async def test_a_gated_decision_scan_journals_a_skipped_pead_decision(drift_desk, temp_db, gate):
     drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
     reason = await _gate(drift_desk, temp_db, gate)
@@ -560,6 +590,40 @@ async def test_a_gated_scan_journals_no_pead_decision_otherwise(drift_desk, temp
     await suggestion_scan(drift_desk, **kwargs)
 
     assert await _drift_events(temp_db) == []
+
+
+async def test_a_regime_unavailable_decision_scan_journals_a_skipped_pead_decision(drift_desk, temp_db):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+    drift_desk.regime_detector.get_regime.side_effect = RegimeUnavailable(
+        {"vix": MacroInput("vix", None, "yfinance:^VIX", None, True, "ReadTimeout")}
+    )
+
+    assert await suggestion_scan(drift_desk) is None
+
+    [event] = await _drift_events(temp_db)
+    payload = event["payload"]
+    assert (payload["status"], payload["reason"]) == ("skipped", "regime unavailable")
+    assert payload["version_id"] == VERSION and payload["events"] == []
+    assert drift_desk.earnings_drift.prepare_calls == 0
+    [ranked] = [e for e in await temp_db.workflows.events() if e["kind"] == EventKind.SCAN_CANDIDATES_RANKED]
+    assert ranked["payload"]["status"] == "regime_unavailable"
+    assert ranked["stream"] == event["stream"]
+    [notice] = await _message_notices(temp_db)
+    assert notice.payload["arguments"]["text"].endswith(
+        "— no cards, no PEAD decision. Later scans retry; this notice is sent once per New York date."
+    )
+    assert await _unavailable_notices(temp_db) == []  # the regime notice, not a PEAD-unavailable one
+
+
+async def test_a_regime_unavailable_scan_at_another_slot_says_nothing_of_pead(drift_desk, temp_db):
+    drift_desk.alpha_repository.snapshot.return_value = _catalog_snapshot()
+    drift_desk.regime_detector.get_regime.side_effect = RuntimeError("down")
+
+    assert await suggestion_scan(drift_desk, scheduled_time_et="14:35") is None
+
+    assert await _drift_events(temp_db) == []
+    [notice] = await _message_notices(temp_db)
+    assert "— no cards. Later scans retry" in notice.payload["arguments"]["text"]
 
 
 async def test_drift_is_absent_from_the_shadow_ranking_journal(drift_desk, temp_db):

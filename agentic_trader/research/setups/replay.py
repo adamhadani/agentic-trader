@@ -79,7 +79,7 @@ from datetime import UTC, date, datetime, time, timedelta
 
 import pandas as pd
 
-from agentic_trader.agent.calendar import BaseEconomicCalendar, MacroEvent
+from agentic_trader.agent.calendar import UnionTier1Calendar
 from agentic_trader.agent.evaluator import RiskEvaluator
 from agentic_trader.agent.regime import RegimeDetector
 from agentic_trader.config import AppConfig
@@ -123,14 +123,6 @@ class SetupRecord:
     stop: float
     target: float
     atr: float
-
-
-class _NoIoCalendar(BaseEconomicCalendar):
-    """Stub calendar: ``calculate_levels_deterministic`` never reads it, but
-    construction must still never risk a network call."""
-
-    async def fetch_events(self, force_refresh: bool = False) -> list[MacroEvent]:
-        return []
 
 
 class _NoIoProvider:
@@ -287,7 +279,9 @@ def replay_symbol(
     engine = StrategyEngine(config)
     evaluator = RiskEvaluator(
         config,
-        calendar=_NoIoCalendar(),
+        # ``calculate_levels_deterministic`` never reads the calendar; an offline union reads no file and
+        # makes no request.
+        calendar=UnionTier1Calendar.offline(),
         regime_detector=RegimeDetector(config=config.regime),
     )
 

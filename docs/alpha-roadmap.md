@@ -24,6 +24,23 @@ also recognize controlled positive cases and quantify its statistical power.
 - Each change starts with behavioral tests; retain RED → GREEN evidence, then review,
   relevant integrations, pre-commit/CI and a controlled deployment if code changes.
 
+## Holistic review queue (October 21)
+
+The [October 21 holistic review](holistic-review-2026-10-21/README.md) re-examined the whole system
+against the north star, a steady stream of high-quality Telegram cards. Its report §5 replaces the
+competing orderings in this file with one queue:
+
+- **Phase 0, before the 2026-10-28 FOMC.** Make the risk inputs fail safe, and make the cards that
+  are sent the cards that are measured. Status: built on `feature/phase0-fail-safes` (static
+  tier-1 calendar, `UNKNOWN` regime, journal-only swing scans, broad-index exclusion, complete scan
+  journal); merge and deploy are recorded in the review README. The PEAD probe renewal (D1) is done.
+- **Phase 1.** Honest measurement, and a paper book that actually fills.
+- **Phase 2.** New evidence on session-correct bars against a beta-matched yardstick.
+- **Phase 3.** Architecture and longer-horizon work.
+
+The review's decisions D1–D9 and their status are recorded in its README. The sections below remain
+the historical record; where they disagree with the review's queue, the queue governs.
+
 ## Current priorities after the whole-stack survey
 
 The [September 18 survey](alpha-stack-survey-2026-09-18.md) distinguishes production

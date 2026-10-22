@@ -10,6 +10,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Literal
 
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import AssetClass
@@ -67,6 +68,7 @@ class RiskLimits:
     min_risk_reward_ratio: float
     lockout_pre_minutes: int
     lockout_post_minutes: int
+    macro_calendar_unknown: Literal["open", "closed"]  # closed: an unverified static tier-1 calendar refuses entries
     earnings_blackout_days: int
     enforce_rth: bool
 
@@ -115,6 +117,7 @@ class RiskLimits:
             min_risk_reward_ratio=_ratio("min_risk_reward_ratio", risk.min_risk_reward_ratio),
             lockout_pre_minutes=int(risk.lockout_pre_event_minutes),
             lockout_post_minutes=int(risk.lockout_post_event_minutes),
+            macro_calendar_unknown=risk.macro_calendar_unknown,
             earnings_blackout_days=int(risk.earnings_blackout_days),
             enforce_rth=bool(config.session.enforce_rth),
         )

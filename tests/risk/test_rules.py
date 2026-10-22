@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import StrategyType
+from agentic_trader.constants import CalendarStatus, StrategyType
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 from agentic_trader.risk import (
     Book,
@@ -251,19 +251,71 @@ def test_correlation_group_slash_prefix_and_empty_config():
     )
 
 
+VERIFIED = {"calendar_verified": True, "static_status": CalendarStatus.OK}
+
+
 def test_lockout_window_is_inclusive():
     event = datetime(2026, 10, 6, 12, 30, tzinfo=UTC)
     assert in_lockout_window(event - timedelta(minutes=60), event, 60, 30)
     assert in_lockout_window(event + timedelta(minutes=30), event, 60, 30)
     assert not in_lockout_window(event - timedelta(minutes=61), event, 60, 30)
     assert not in_lockout_window(event + timedelta(minutes=31), event, 60, 30)
-    inside = macro_lockout("CPI", event, event, limits())
+
+
+@pytest.mark.parametrize("policy", ["open", "closed"])
+def test_open_policy_or_verified_behaves_as_before(policy):
+    event = datetime(2026, 10, 6, 12, 30, tzinfo=UTC)
+    verified = limits(risk__macro_calendar_unknown=policy)
+    inside = macro_lockout("CPI", event, event, verified, **VERIFIED)
     assert inside.rule is RiskRule.MACRO_LOCKOUT and inside.reason == "Macro event lockout: CPI at 12:30 UTC."
     new_york = event.astimezone(ZoneInfo("America/New_York"))  # 08:30 EDT: the reason prints the UTC clock
-    assert macro_lockout("CPI", new_york, event, limits()).reason == "Macro event lockout: CPI at 12:30 UTC."
-    untitled = macro_lockout(None, event, event, limits())
+    assert (
+        macro_lockout("CPI", new_york, event, verified, **VERIFIED).reason == "Macro event lockout: CPI at 12:30 UTC."
+    )
+    untitled = macro_lockout(None, event, event, verified, **VERIFIED)
     assert untitled.reason == "Macro event lockout: scheduled release at 12:30 UTC."
-    assert macro_lockout(None, None, event, limits()) is None
+    assert macro_lockout(None, None, event, verified, **VERIFIED) is None
+    assert macro_lockout("CPI", event, event + timedelta(minutes=31), verified, **VERIFIED) is None
+    # Under the open policy an unverified calendar changes nothing: the window test alone decides.
+    unverified = {"calendar_verified": False, "static_status": CalendarStatus.EXPIRED}
+    open_limits = limits(risk__macro_calendar_unknown="open")
+    assert macro_lockout(None, None, event, open_limits, **unverified) is None
+    assert (
+        macro_lockout("CPI", event, event, open_limits, **unverified).reason == "Macro event lockout: CPI at 12:30 UTC."
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (
+            CalendarStatus.EXPIRED,
+            (
+                "Macro calendar unverified: the static tier-1 calendar is expired; new entries refused "
+                "(risk.macro_calendar_unknown: closed)."
+            ),
+        ),
+        (
+            CalendarStatus.INVALID,
+            (
+                "Macro calendar unverified: the static tier-1 calendar is invalid; new entries refused "
+                "(risk.macro_calendar_unknown: closed)."
+            ),
+        ),
+    ],
+)
+def test_closed_policy_refuses_unverified_before_the_window_test(status, expected):
+    event = datetime(2026, 10, 6, 12, 30, tzinfo=UTC)
+    closed = limits(risk__macro_calendar_unknown="closed")
+    # No event at all, an event far outside its window, and an event inside it: one refusal text.
+    for title, event_at in ((None, None), ("CPI", event + timedelta(days=3)), ("CPI", event)):
+        rejection = macro_lockout(title, event_at, event, closed, calendar_verified=False, static_status=status)
+        assert rejection == Rejection(RiskRule.MACRO_LOCKOUT, expected)
+
+
+def test_limits_snapshot_the_unknown_calendar_policy():
+    assert limits().macro_calendar_unknown == "open"
+    assert limits(risk__macro_calendar_unknown="closed").macro_calendar_unknown == "closed"
 
 
 @pytest.mark.parametrize(

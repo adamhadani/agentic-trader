@@ -77,6 +77,17 @@ class ScanTrigger(StrEnum):
     OPERATOR_SCAN = "operator_scan"  # ``copilot scan`` / Telegram ``/scan`` with no symbols or timeframe
 
 
+class ScanStatus(StrEnum):
+    """How a journaled full-universe scan ended (``scan_candidates_ranked``'s ``status``).
+
+    A reader treats an event without ``status`` (journaled before this field) as ``completed``.
+    """
+
+    COMPLETED = "completed"  # ranked its candidates (possibly none) and sent or journaled them
+    MACRO_LOCKOUT = "macro_lockout"  # the whole-scan lockout gated it before any regime read
+    REGIME_UNAVAILABLE = "regime_unavailable"  # the regime read raised (a missing VIX, or any error)
+
+
 class RankedOutcome(StrEnum):
     """Fixed outcomes of a ranked full-universe-scan candidate (``scan_candidates_ranked``).
 
@@ -88,6 +99,8 @@ class RankedOutcome(StrEnum):
     LLM_VETOED = "llm_vetoed"
     CARD_POLICY_WITHHELD = "card_policy_withheld"
     BOOK_SIZING_BLOCKED = "book_sizing_blocked"  # enforce: the scaled default tier fell below the minimum size
+    JOURNAL_ONLY = "journal_only"  # a journal-only scan ranks and journals; it sends no card
+    BROAD_INDEX_EXCLUDED = "broad_index_excluded"  # a card-selection rule: no native card on a broad index ETF
 
 
 class NotificationKind(StrEnum):

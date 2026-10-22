@@ -226,3 +226,46 @@ async def test_corporate_actions_readiness_spans_a_long_weekend(store, app_confi
     else:
         assert checks["corporate_actions"]["ready"] == (mode in ("fresh", "long-weekend"))
         assert checks["corporate_actions"]["max_age_seconds"] == 345600
+
+
+async def _fresh_readiness(store, app_config, macro_calendar):
+    """A service whose every other check is ready, so `report["ready"]` depends on `macro_calendar` alone."""
+    collector = MetricsCollector()
+    collector.set_gauge("trader_event_loop_lag_seconds", 0)
+    readiness = ReadinessService(store, app_config, collector, run_id="current", macro_calendar=macro_calendar)
+    readiness.started = True
+    for component in (HealthComponent.RECONCILIATION, HealthComponent.WORKER, HealthComponent.SCAN):
+        await store.record_health(component, True, run_id="current")
+    return readiness
+
+
+async def test_macro_calendar_check_is_computed_and_type_named_on_failure(store, app_config):
+    ok = {"ready": True, "detail": "us-tier1-v1 valid through 2027-12-03 (30 days)"}
+    report = await (await _fresh_readiness(store, app_config, lambda now: ok)).report()
+    assert report["checks"]["macro_calendar"] == ok
+    assert report["ready"] is True  # the baseline: nothing else degrades this service
+
+    reported = {"ready": False, "detail": "invalid: DigestMismatch"}
+    report = await (await _fresh_readiness(store, app_config, lambda now: reported)).report()
+    assert report["checks"]["macro_calendar"] == reported
+    assert report["ready"] is False
+
+    def boom(now):
+        raise RuntimeError("secret detail")
+
+    report = await (await _fresh_readiness(store, app_config, boom)).report()
+    assert report["checks"]["macro_calendar"] == {"ready": False, "detail": "RuntimeError"}
+    assert report["ready"] is False
+
+
+async def test_macro_calendar_check_receives_the_report_time_and_is_absent_when_unset(store, app_config):
+    seen: list[datetime] = []
+
+    def calendar(now):
+        seen.append(now)
+        return {"ready": True, "detail": "ok"}
+
+    at = datetime(2026, 10, 21, 16, tzinfo=UTC)
+    await ReadinessService(store, app_config, MetricsCollector(), macro_calendar=calendar).report(now=at)
+    assert seen == [at]
+    assert "macro_calendar" not in (await ReadinessService(store, app_config, MetricsCollector()).report())["checks"]

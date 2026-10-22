@@ -173,7 +173,10 @@ async def explain_macro() -> None:
     """Generate an educational macro tutorial and indicator breakdown."""
     copilot, config = get_copilot_and_config()
     click.echo("\n🔍 Evaluating institutional macro indicators and generating briefing...")
-    report = await copilot.regime_detector.macro_engine.get_macro_report()
+    evaluation = await copilot.regime_detector.macro_engine.evaluate()
+    if evaluation.report is None:
+        click.echo(f"\nMacro report unavailable: missing decision inputs: {', '.join(evaluation.missing_decision)}\n")
+        return
     explainer = MacroExplainer(config=config)
-    explanation = await explainer.explain(report, format_mode="text")
+    explanation = await explainer.explain(evaluation.report, format_mode="text")
     click.echo("\n" + explanation + "\n")

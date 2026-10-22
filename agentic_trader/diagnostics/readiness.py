@@ -1,7 +1,7 @@
 """Passive readiness of this daemon run, separate from active doctor probes."""
 
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -41,6 +41,7 @@ class ReadinessService:
         alpha_registry_report: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         card_stats_enabled: bool = False,
         corporate_actions_enabled: bool = False,
+        macro_calendar: Callable[[datetime], Mapping[str, Any]] | None = None,
     ):
         self.store, self.config, self.metrics, self.run_id = store, config, metrics, run_id
         self.started = False
@@ -49,6 +50,7 @@ class ReadinessService:
         self.alpha_registry_report = alpha_registry_report
         self.card_stats_enabled = card_stats_enabled
         self.corporate_actions_enabled = corporate_actions_enabled
+        self.macro_calendar = macro_calendar
         self.stream_connected = stream_connected
         self._last_observation: dict[str, tuple[float, bool, str]] = {}
 
@@ -170,6 +172,11 @@ class ReadinessService:
             self.metrics.set_gauge("trader_entries_unresolved", pending)
         except Exception as exc:
             checks["storage"] = {"ready": False, "detail": type(exc).__name__}
+        if self.macro_calendar is not None:
+            try:
+                checks["macro_calendar"] = dict(self.macro_calendar(now))
+            except Exception as exc:
+                checks["macro_calendar"] = {"ready": False, "detail": type(exc).__name__}
         lag = self.metrics.get_gauge("trader_event_loop_lag_seconds")
         checks["event_loop"] = {
             "ready": lag is not None and lag < self.config.telemetry.event_loop_warning_seconds,

@@ -88,6 +88,55 @@ async def test_suggestion_scan_runs_full_budget_only_when_the_equity_session_is_
     )
 
 
+def _digest_job(run_scan: AsyncMock, publish_scan_digest: AsyncMock):
+    copilot = MagicMock()
+    copilot.run_scan = run_scan
+    copilot.publish_scan_digest = publish_scan_digest
+    copilot.session_provider.is_session_active = AsyncMock(return_value=(True, "open"))
+    return service.make_suggestion_scan(copilot, use_llm=False)
+
+
+async def test_the_digest_runs_when_the_scan_raises():
+    digest = AsyncMock()
+    job = _digest_job(AsyncMock(side_effect=RuntimeError("scan")), digest)
+
+    with pytest.raises(RuntimeError, match="scan"):
+        await job(digest=True, scheduled_time_et="14:35")
+
+    digest.assert_awaited_once()
+
+
+async def test_a_digest_failure_does_not_mask_the_scan_exception(caplog):
+    job = _digest_job(AsyncMock(side_effect=RuntimeError("scan")), AsyncMock(side_effect=ValueError("digest")))
+
+    with caplog.at_level("ERROR", logger="copilot"), pytest.raises(RuntimeError, match="scan"):
+        await job(digest=True, scheduled_time_et="14:35")
+
+    [record] = [r for r in caplog.records if r.__dict__.get("event") == "scan_digest_failed"]
+    assert record.exc_info is not None and record.exc_info[0] is ValueError
+
+
+async def test_a_digest_failure_after_a_clean_scan_is_logged_not_raised(caplog):
+    run_scan = AsyncMock()
+    job = _digest_job(run_scan, AsyncMock(side_effect=ValueError("digest")))
+
+    with caplog.at_level("ERROR", logger="copilot"):
+        await job(digest=True, scheduled_time_et="14:35")
+
+    run_scan.assert_awaited_once()
+    assert [r for r in caplog.records if r.__dict__.get("event") == "scan_digest_failed"]
+
+
+async def test_no_digest_runs_for_a_slot_that_does_not_own_it():
+    digest = AsyncMock()
+    job = _digest_job(AsyncMock(side_effect=RuntimeError("scan")), digest)
+
+    with pytest.raises(RuntimeError):
+        await job(digest=False, scheduled_time_et="10:35")
+
+    digest.assert_not_awaited()
+
+
 def test_each_suggestion_scan_job_names_its_scheduled_time(config):
     config.scheduler.suggestion_scan_times_et = ["09:45", "10:35", "14:35"]
     scheduler = MagicMock()
@@ -362,7 +411,7 @@ async def test_intraday_scan_runs_only_inside_a_session_and_keeps_its_symbols(co
         asset_class="all",
         timeframe="15m",
         symbols=["SPY"],
-        budget=ScanBudget.FULL,
+        budget=ScanBudget.JOURNAL_ONLY,
     )
     copilot.run_scan.reset_mock()
     copilot.session_provider.is_session_active = AsyncMock(return_value=(False, "closed"))
@@ -383,8 +432,9 @@ async def test_suggestion_job_requests_shadow_evidence_and_names_its_trigger(con
 
 
 def test_swing_scan_job_names_its_trigger_and_still_runs_at_startup(config):
-    """The interval job passes FULL budget + SWING_SCAN and keeps its immediate first run
-    (the ``scan`` readiness component needs an observation in every daemon run)."""
+    """The interval job passes JOURNAL_ONLY budget + SWING_SCAN and keeps its immediate first run
+    (the ``scan`` readiness component needs an observation in every daemon run; a journal-only
+    run cannot spend a card slot)."""
     scheduler = MagicMock()
     copilot = MagicMock()
     before = datetime.now(UTC)
@@ -398,5 +448,5 @@ def test_swing_scan_job_names_its_trigger_and_still_runs_at_startup(config):
     assert call.kwargs["id"] == "swing_scan"
     assert call.kwargs["hours"] == config.scheduler.cron_hour_interval
     assert call.kwargs["args"] == [True, False]
-    assert call.kwargs["kwargs"] == {"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN}
+    assert call.kwargs["kwargs"] == {"budget": ScanBudget.JOURNAL_ONLY, "trigger": ScanTrigger.SWING_SCAN}
     assert before <= call.kwargs["next_run_time"] <= after

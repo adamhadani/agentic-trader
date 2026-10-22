@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -264,11 +265,13 @@ def test_cli_resume_smoke(runner: CliRunner):
 
 
 def test_cli_explain_macro_smoke(runner: CliRunner):
-    """Verify copilot explain-macro invokes macro_engine.get_macro_report and formats explanation."""
+    """Verify copilot explain-macro invokes macro_engine.evaluate and formats explanation."""
     with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
         mock_copilot = MagicMock()
         mock_report = MagicMock()
-        mock_copilot.regime_detector.macro_engine.get_macro_report = AsyncMock(return_value=mock_report)
+        mock_copilot.regime_detector.macro_engine.evaluate = AsyncMock(
+            return_value=SimpleNamespace(report=mock_report, missing_decision=())
+        )
         mock_get.return_value = (mock_copilot, MagicMock())
 
         with patch(
@@ -279,6 +282,24 @@ def test_cli_explain_macro_smoke(runner: CliRunner):
             assert result.exit_code == 0
             assert "Evaluating institutional macro indicators" in result.output
             assert "Tutorial: Yield curve is NORMAL_STEEP." in result.output
+            assert mock_explain.await_args.args[0] is mock_report
+
+
+def test_cli_explain_macro_without_a_report_names_the_missing_decision_inputs(runner: CliRunner):
+    with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
+        mock_copilot = MagicMock()
+        mock_copilot.regime_detector.macro_engine.evaluate = AsyncMock(
+            return_value=SimpleNamespace(report=None, missing_decision=("2y", "hy_oas"))
+        )
+        mock_get.return_value = (mock_copilot, MagicMock())
+
+        with patch(
+            "agentic_trader.agent.macro_explainer.MacroExplainer.explain", new_callable=AsyncMock
+        ) as mock_explain:
+            result = runner.invoke(cli, ["explain-macro"])
+            assert result.exit_code == 0
+            assert "Macro report unavailable: missing decision inputs: 2y, hy_oas" in result.output
+            mock_explain.assert_not_awaited()
 
 
 class _FakeBarSource:
@@ -389,6 +410,38 @@ def test_cli_outputs_table_with_fake_sources(runner: CliRunner):
     assert '"order_observed": 0' in result.output
     assert "order" not in result.output.lower().replace('"order_observed"', "")
     assert "telegram" not in result.output.lower()
+
+
+def test_cards_outcomes_prints_supply_and_the_empty_line(runner: CliRunner):
+    """A window whose only scan ranked nothing still reports it: `supply` counts scans, and the empty line says so."""
+    decided_at = datetime(2026, 3, 3, 15, 0, tzinfo=UTC)
+    event = {
+        "id": 1,
+        "stream": "scan/2026-03-03",
+        "kind": EventKind.SCAN_CANDIDATES_RANKED,
+        "payload": {
+            "scan_id": "empty-scan",
+            "decided_at": decided_at.isoformat(),
+            "scope": "universe",
+            "trigger": "suggestion_scan",
+            "status": "completed",
+            "candidates": [],
+            "funnel": {"selected": 100, "scanned": 100, "raw_setups": 0, "admitted": 0, "errors": {}},
+        },
+    }
+    fake_bars = _FakeBarSource(pd.DataFrame())
+
+    with (
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[event])),
+        patch.object(cards_module, "build_bar_source", return_value=fake_bars),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes"])
+
+    assert result.exit_code == 0, result.output
+    assert not fake_bars.calls
+    assert '"supply"' in result.output
+    assert '"suggestion_scan"' in result.output and '"zero_candidate": 1' in result.output
+    assert "No journaled candidates in 30 day(s) (1 scan events)." in result.output
 
 
 def test_db_queue_default_kind_is_a_valid_choice(runner: CliRunner):

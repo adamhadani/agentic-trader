@@ -9,13 +9,14 @@ with source ``operator``, still sharing the one-dynamic-card-per-session cap.
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from agentic_trader.agent import copilot as copilot_module
 from agentic_trader.config import ScanBudget
-from agentic_trader.constants import SignalStatus
+from agentic_trader.constants import ExecutionMode, SignalStatus
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.screeners.dynamic_universe import AssetInfo, ScreenerEntry, StaticReference
@@ -212,6 +213,45 @@ async def test_no_setup_is_reported_through_the_outbox(tap_desk, temp_db):  # no
     [text] = await message_texts(temp_db)
     assert "No valid setup for SPY right now" in text and "rejected: &lt;weak&gt;" in text
     tap_desk.notifier.send_message.assert_not_called()
+
+
+def _symbol_desk(scan_desk, app_config):
+    """The real run_scan behind ``/scan SYMBOL``: one futures and one equity contract, Alpaca execution."""
+    app_config.execution_mode = ExecutionMode.ALPACA
+    app_config.contracts = {
+        "/MES": SimpleNamespace(name="/MES", ticker="/MES", asset_class="FUTURES"),
+        "SPY": SimpleNamespace(name="SPY", ticker="SPY", asset_class="EQUITY"),
+    }
+    scan_desk.session_provider.get_session_info.return_value = session_info(
+        next_close=datetime.now(UTC) + timedelta(hours=2)
+    )
+    return scan_desk
+
+
+async def test_a_futures_symbol_scan_under_alpaca_says_the_broker_cannot_execute_it(scan_desk, app_config, temp_db):
+    """A restricted scan keeps its selection reply: it never ends at the unrestricted scans' idle check."""
+    desk = _symbol_desk(scan_desk, app_config)
+
+    await desk.request_symbol_scan("/MES")
+    await finish_background_scans(desk)
+
+    assert await message_texts(temp_db) == ["No valid setup for /MES right now: not executable by this broker."]
+    desk.data_fetcher.fetch_data.assert_not_called()
+
+
+async def test_an_equity_symbol_scan_meeting_a_closed_equity_session_says_so(scan_desk, app_config, temp_db):
+    desk = _symbol_desk(scan_desk, app_config)
+
+    async def equity_closed(instrument_type="all", timestamp=None):
+        # The handler's session read said open; inside run_scan the equity session has closed.
+        return (instrument_type != "equity", "test")
+
+    desk.session_provider.is_session_active.side_effect = equity_closed
+
+    await desk.request_symbol_scan("SPY")
+    await finish_background_scans(desk)
+
+    assert await message_texts(temp_db) == ["No valid setup for SPY right now: session closed."]
 
 
 async def test_a_busy_scanner_is_reported_through_the_outbox(tap_desk, temp_db, monkeypatch):  # noqa: F811

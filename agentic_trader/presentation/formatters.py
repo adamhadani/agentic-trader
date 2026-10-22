@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from agentic_trader.accounting.ledger import LedgerReport
-from agentic_trader.agent.macro import CreditStressRegime, MacroStressLevel, YieldCurveRegime
+from agentic_trader.agent.macro import CreditStressRegime, MacroStressLevel, YieldCurveRegime, missing_input_names
 from agentic_trader.constants import (
     APP_DISPLAY_NAME,
     DEFAULT_BACKTEST_LOOKBACK,
@@ -355,6 +355,11 @@ class TelegramHtmlFormatter:
         )
 
     @staticmethod
+    def format_regime_unavailable_html(errors_text: str) -> str:
+        """The ``/macro`` reply when no regime can be read: ``errors_text`` is ``"vix: ReadTimeout"`` (type names)."""
+        return html.escape(f"Market regime unavailable ({errors_text}); scans skip until VIX is readable.")
+
+    @staticmethod
     def format_macro_dashboard_html(regime: RegimeSnapshot, *, required_rr: float) -> str:
         """The ``/macro`` dashboard. ``required_rr`` is the caller's
         ``agentic_trader.risk.required_reward_risk`` for this regime, printed as the minimum R:R."""
@@ -381,6 +386,15 @@ class TelegramHtmlFormatter:
         )
         if regime.macro_report is not None:
             return text + TelegramHtmlFormatter._format_macro_indicators_html(regime.macro_report)
+        stress = regime.macro_stress
+        if stress is not None and stress.level is MacroStressLevel.UNKNOWN:
+            missing = ", ".join(missing_input_names(regime.macro_inputs, decision_only=True))
+            breakouts = "allowed" if stress.squeeze_breakout_allowed else "suppressed"
+            return text + (
+                f"⚪ <b>Macro Stress: UNKNOWN</b> (missing {html.escape(missing)})\n"
+                f"<i>Policy above applies the UNKNOWN macro policy: risk ×{stress.risk_multiplier:.2f}, "
+                f"squeeze breakouts {breakouts}, until every decision input is observed.</i>"
+            )
         reason = regime.macro_unavailable_reason or "No macro observations available"
         return (
             text
@@ -400,6 +414,7 @@ class TelegramHtmlFormatter:
             MacroStressLevel.MODERATE: "🟡 MODERATE STRESS",
             MacroStressLevel.HIGH: "🟠 HIGH STRESS",
             MacroStressLevel.EXTREME: "🔴 EXTREME STRESS",
+            MacroStressLevel.UNKNOWN: "⚪ UNKNOWN STRESS",
         }[s.level]
 
         curve_color = (
@@ -418,20 +433,27 @@ class TelegramHtmlFormatter:
             source_note += f" ({dates})"
 
         drivers_text = ", ".join(s.key_drivers) if s.key_drivers else "Benign conditions"
+        yield_5y = f"{y.yield_5y:.2f}%" if y.yield_5y is not None else "N/A"
+        yield_30y = f"{y.yield_30y:.2f}%" if y.yield_30y is not None else "N/A"
+        curvature = f"{sp.curvature_butterfly_bps:+.1f} bps" if sp.curvature_butterfly_bps is not None else "N/A"
+        breakeven_10y = (
+            f"<code>{inf.breakeven_10y:.2f}%</code> ({inf.regime.value})" if inf is not None else "<code>N/A</code>"
+        )
+        breakeven_5y = f"{inf.breakeven_5y:.2f}%" if inf is not None else "N/A"
 
         return (
             "🏛️ <b>MACRO INTELLIGENCE & YIELD CURVE</b>\n\n"
             f"<b>Macro Stress:</b> {stress_badge}\n<i>{html.escape(source_note)}</i>\n\n"
             f"📈 <b>US Treasury Term Structure:</b> {curve_color} <code>{sp.regime.value}</code>\n"
-            f"• <b>3M:</b> <code>{y.yield_3m:.2f}%</code> | <b>2Y:</b> <code>{y.yield_2y:.2f}%</code> | <b>5Y:</b> <code>{y.yield_5y:.2f}%</code>\n"
-            f"• <b>10Y:</b> <code>{y.yield_10y:.2f}%</code> | <b>30Y:</b> <code>{y.yield_30y:.2f}%</code>\n"
+            f"• <b>3M:</b> <code>{y.yield_3m:.2f}%</code> | <b>2Y:</b> <code>{y.yield_2y:.2f}%</code> | <b>5Y:</b> <code>{yield_5y}</code>\n"
+            f"• <b>10Y:</b> <code>{y.yield_10y:.2f}%</code> | <b>30Y:</b> <code>{yield_30y}</code>\n"
             f"• <b>10Y-2Y Slope:</b> <code>{sp.slope_10y_2y_bps:+.1f} bps</code>\n"
             f"• <b>10Y-3M Slope:</b> <code>{sp.slope_10y_3m_bps:+.1f} bps</code>\n"
-            f"• <b>Butterfly Curvature:</b> <code>{sp.curvature_butterfly_bps:+.1f} bps</code>\n\n"
+            f"• <b>Butterfly Curvature:</b> <code>{curvature}</code>\n\n"
             f"💳 <b>Credit Risk & Inflation Expectations:</b>\n"
             f"• <b>High Yield OAS:</b> {credit_color} <code>{c.high_yield_oas_bps:.0f} bps</code> ({c.high_yield_oas_pct:.2f}%) | <b>{c.regime.value}</b>\n"
-            f"• <b>10Y Breakeven Inflation:</b> <code>{inf.breakeven_10y:.2f}%</code> ({inf.regime.value})\n"
-            f"• <b>5Y Breakeven Inflation:</b> <code>{inf.breakeven_5y:.2f}%</code>\n\n"
+            f"• <b>10Y Breakeven Inflation:</b> {breakeven_10y}\n"
+            f"• <b>5Y Breakeven Inflation:</b> <code>{breakeven_5y}</code>\n\n"
             f"• <b>Key Drivers:</b> <i>{html.escape(drivers_text)}</i>"
         )
 

@@ -11,6 +11,7 @@ from agentic_trader.cli.commands import service
 from agentic_trader.config import DailyPanelWorkerConfig, load_config
 from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
+from tests.calendar_doubles import clear_check, union_double
 
 
 @pytest.mark.parametrize("operation", ["scan", "schema"])
@@ -36,8 +37,7 @@ async def test_blocking_dependencies_leave_event_loop_responsive(operation, monk
         copilot.regime_detector = AsyncMock()
         copilot.session_provider = AsyncMock()
         copilot.session_provider.is_session_active.return_value = (True, "open")
-        copilot.calendar = AsyncMock()
-        copilot.calendar.is_in_lockout_window.return_value = (False, None)
+        copilot.calendar = union_double(clear_check())
         pending = copilot.run_scan(use_llm=False, symbols=[next(iter(config.contracts))])
     task = asyncio.create_task(pending)
     try:

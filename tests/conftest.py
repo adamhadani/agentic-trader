@@ -18,13 +18,13 @@ from pytest_socket import SocketBlockedError
 from sqlalchemy import event
 from sqlalchemy.engine import Engine, make_url
 
-from agentic_trader.agent.calendar import BaseEconomicCalendar
 from agentic_trader.agent.regime import RegimeDetector, RegimeSnapshot
 from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import AssetClass, Direction, SignalStatus, StrategyType, VolatilityRegime
 from agentic_trader.data.market_data import ContractMarketData
 from agentic_trader.runtime import validate_test_database
 from agentic_trader.storage.db import SignalDatabase
+from tests.calendar_doubles import clear_check, union_double
 
 
 # No application imports read dotenv. Remove inherited credentials before collection,
@@ -185,16 +185,15 @@ def calm_macro(calm_regime: RegimeSnapshot) -> Callable[[Any], Any]:
     """Install a quiet macro context on a ``TradingCopilot``; returns the installer.
 
     The copilot's macro check (the tap gate and entry admission, on both broker branches)
-    reads the economic calendar and the regime detector, so a test of anything else must
+    reads the union tier-1 calendar and the regime detector, so a test of anything else must
     not reach the live calendar or VIX feed. The installer replaces both with mocks of their
-    classes: no tier-1 event in the lockout window, and ``calm_regime``. Set another return
-    value on them for another macro context. An evaluator the copilot already built keeps
-    its own references.
+    classes: a verified calendar check with no tier-1 event in the lockout window
+    (``tests.calendar_doubles``), and ``calm_regime``. Set another return value on them for
+    another macro context. An evaluator the copilot already built keeps its own references.
     """
 
     def install(copilot: Any) -> Any:
-        copilot.calendar = AsyncMock(spec=BaseEconomicCalendar)
-        copilot.calendar.is_in_lockout_window.return_value = (False, None)
+        copilot.calendar = union_double(clear_check())
         copilot.regime_detector = AsyncMock(spec=RegimeDetector)
         copilot.regime_detector.get_regime.return_value = calm_regime
         return copilot

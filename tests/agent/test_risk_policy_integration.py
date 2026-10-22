@@ -19,7 +19,6 @@ import pandas as pd
 import pytest
 from sqlalchemy import update
 
-from agentic_trader.agent.calendar import MacroEvent
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.broker.base import OrderRequest, OrderResult
@@ -32,6 +31,7 @@ from agentic_trader.research.alpha.models import RegistrySnapshot
 from agentic_trader.risk import RiskRule
 from agentic_trader.screeners.base import ScreenerCandidate
 from agentic_trader.storage.models import SignalRecord
+from tests.calendar_doubles import lockout_check
 
 
 def session(*, is_rth: bool = True) -> MarketSessionInfo:
@@ -314,17 +314,13 @@ async def test_simulated_admission_rejects_during_a_macro_lockout(desk, temp_db,
     item, reason = await temp_db.workflows.enqueue_entry(order_for(card), app_config)
     assert item is not None and item.status == WorkStatus.QUEUED, reason
     # A tier-1 release's lockout window opens while the card waits in the queue.
-    event_at = datetime.now(UTC).replace(second=0, microsecond=0)
-    desk.calendar.is_in_lockout_window.return_value = (
-        True,
-        MacroEvent(title="CPI", country="USD", impact="High", timestamp=event_at),
-    )
+    desk.calendar.check.return_value = lockout_check("CPI", datetime(2026, 10, 14, 12, 30, tzinfo=UTC))
 
     assert await desk.entry_service.dispatch_one()
 
     work = await temp_db.workflows.get_work(item.id)
     assert work.status == WorkStatus.REJECTED
-    assert work.result["error_message"] == f"Macro event lockout: CPI at {event_at:%H:%M} UTC."
+    assert work.result["error_message"] == "Macro event lockout: CPI at 12:30 UTC."
     assert (await temp_db.get_signal_by_id(card["id"]))["status"] == SignalStatus.FAILED
     desk.entry_service.executor.execute_order.assert_not_awaited()
 

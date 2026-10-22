@@ -38,6 +38,62 @@ Readiness does not itself change the trading halt or certify entry eligibility.
 A deliberate `/panic` halt therefore appears as an operational incident until
 cleared. Each entry still performs its own session, quote, macro and risk checks.
 
+### `macro_calendar`
+
+A computed check, like `trading_halt` and `entry_cancellation`, not an observed
+component. It is ready iff the static tier-1 calendar (`config/calendar/us-tier1-vN.json`,
+see [renewal](production.md#tier-1-calendar-renewal)) is `ok` with at least
+`risk.macro_calendar_renewal_days` (default 30) New York days left. The detail is stable text:
+
+- `us-tier1-v1 valid through YYYY-MM-DD (N days)`
+- `us-tier1-v1 expires YYYY-MM-DD (N days); publish v2`
+- `us-tier1-v1 expired YYYY-MM-DD; lockout unverified (policy open)`
+- `us-tier1-v1 not valid until YYYY-MM-DD; lockout unverified (policy open)`
+- `invalid: DigestMismatch`, or another exception type name for a calendar that fails to load
+
+The live-feed status is deliberately not part of readiness: it is journaled per scan,
+and the static calendar stays authoritative through a feed outage. The monitor's existing
+debounced incident covers this check, so it needs no monitor change. A failed check does
+not change the trading halt.
+
+### Scan notices
+
+Three scan-path conditions queue a plain Telegram message through the existing outbox,
+each deduplicated by its outbox key, so a repeat adds no second message:
+
+| Outbox key | Sent when | Once per |
+| --- | --- | --- |
+| `pead-unavailable/{et_date}` | The 10:35 PEAD drift decision could not be prepared (`pead_decision` `status: unavailable`) | New York date |
+| `suggestion-scan-missed/{et_date}/{HH:MM}` | APScheduler dropped a suggestion-scan slot past its misfire grace ([production](production.md)) | slot and New York date |
+| `regime-unavailable/{et_date}` | A scheduled suggestion scan's regime read raised (a missing VIX, or any other error by type name), so the scan was skipped | New York date |
+
+`regime-unavailable` reads, for example, "⚠️ Market regime unavailable (vix: ReadTimeout)
+at 10:35 NY: the suggestion scan was skipped — no cards, no PEAD decision. Later scans
+retry; this notice is sent once per New York date." It names inputs and exception type
+names only. It is written in the same transaction as the scan's `scan_candidates_ranked`
+event (`status: regime_unavailable`, `gate.missing`, `gate.errors`), so the event and the
+notice commit or roll back together. The notice is queued only by a scheduled suggestion
+scan, because it exists to say a card slot (and the 10:35 PEAD decision) was lost: the swing
+job, an operator `/scan`, the chat tool and the CLI journal the event (when budgeted) and
+observe `scan` not ready, but never spend the date's notice, and an operator gets the scan's
+own reply. A restricted or dry scan journals nothing and sends nothing; a dry run prints the
+reason. A failed VIX read is read once more, fresh, after 2 seconds (a `vix_read_retry`
+warning); only a second failure is a missing VIX. No other input is retried. `/macro`, the
+macro button and the morning macro briefing answer "Market regime unavailable (vix:
+ReadTimeout); scans skip until VIX is readable."
+
+The health signal is the existing `scan` readiness component, observed not ready with
+"Regime unavailable (vix: ReadTimeout); scan skipped": a lost scan is a scan failure, and
+the monitor's debounced `scan` incident pages on it. There is deliberately no
+`macro_inputs` readiness component. Macro inputs are read only inside scans, taps and
+`/macro` (and a scan that is idle or locked out reads none), so an observed component
+would go stale every night and weekend; a missing non-VIX decision input is already
+handled conservatively (the `UNKNOWN` stress policy) and journaled with names, sources and
+observation dates on every scan; and the case that must page, a missing VIX, already does
+so through `scan` readiness and this notice. A `macro_inputs` component with per-input age
+contracts belongs with the macro source upgrade, once observation dates have an agreed
+staleness rule.
+
 ## Incident lifecycle and delivery
 
 The pure state machine progresses through `healthy → pending → open → recovering

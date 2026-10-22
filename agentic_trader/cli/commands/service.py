@@ -435,31 +435,39 @@ def _slot_due_at(slot_et: str) -> datetime:
 
 
 def make_suggestion_scan(copilot: Any, *, use_llm: bool):
-    """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest."""
+    """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest.
+
+    The digest runs in a ``finally``: a closed session, a gated scan and a scan that raised are all
+    reportable sessions. A digest failure is logged and never masks the scan's own exception.
+    """
 
     async def run_suggestion_scan(digest: bool = False, scheduled_time_et: str | None = None) -> None:
-        active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
-        if active:
-            await copilot.run_scan(
-                use_llm=use_llm,
-                dry_run=False,
-                asset_class="equity",
-                budget=ScanBudget.FULL,
-                shadow_evidence=True,
-                trigger=ScanTrigger.SUGGESTION_SCAN,
-                # The configured New York time of this job: only the PEAD decision time
-                # (10:35) may produce a drift card.
-                scheduled_time_et=scheduled_time_et,
-                # When that slot was due: a drift decision reached too late is skipped.
-                scheduled_at=_slot_due_at(scheduled_time_et) if scheduled_time_et else None,
-            )
-        else:
-            logger.info(
-                "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}
-            )
-        # A closed session is still a reportable session: the digest always runs.
-        if digest:
-            await copilot.publish_scan_digest()
+        try:
+            active, reason = await copilot.session_provider.is_session_active(instrument_type="equity")
+            if active:
+                await copilot.run_scan(
+                    use_llm=use_llm,
+                    dry_run=False,
+                    asset_class="equity",
+                    budget=ScanBudget.FULL,
+                    shadow_evidence=True,
+                    trigger=ScanTrigger.SUGGESTION_SCAN,
+                    # The configured New York time of this job: only the PEAD decision time
+                    # (10:35) may produce a drift card.
+                    scheduled_time_et=scheduled_time_et,
+                    # When that slot was due: a drift decision reached too late is skipped.
+                    scheduled_at=_slot_due_at(scheduled_time_et) if scheduled_time_et else None,
+                )
+            else:
+                logger.info(
+                    "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}
+                )
+        finally:
+            if digest:
+                try:
+                    await copilot.publish_scan_digest()
+                except Exception:
+                    logger.exception("Scan digest could not be published", extra={"event": "scan_digest_failed"})
 
     return run_suggestion_scan
 
@@ -579,22 +587,30 @@ class MissedSuggestionScanNotice:
 
 
 def register_swing_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
-    """Register the daemon's interval full-universe scan, journaled as ``ScanTrigger.SWING_SCAN``."""
+    """Register the daemon's interval full-universe scan, journaled as ``ScanTrigger.SWING_SCAN``.
+
+    It is journal-only (``ScanBudget.JOURNAL_ONLY``): it ranks and journals, and sends no card, so a
+    daemon restart cannot spend a session slot. The suggestion scans own the cards.
+    """
     scheduler.add_job(
         copilot.run_scan,
         "interval",
         hours=config.scheduler.cron_hour_interval,
         args=[use_llm, False],
-        kwargs={"budget": ScanBudget.FULL, "trigger": ScanTrigger.SWING_SCAN},
+        kwargs={"budget": ScanBudget.JOURNAL_ONLY, "trigger": ScanTrigger.SWING_SCAN},
         id="swing_scan",
-        # Runs once at start so the `scan` readiness component observes this run; its
-        # cards are journaled like any other.
+        # Runs once at start so the `scan` readiness component observes this run; it only journals,
+        # so the start run can no longer record a signal.
         next_run_time=datetime.now(UTC),
     )
 
 
 def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, use_llm: bool) -> None:
-    """Register the 15-minute intraday scan, scoped to the explicitly configured contracts."""
+    """Register the 15-minute intraday scan, scoped to the explicitly configured contracts.
+
+    It is journal-only (``ScanBudget.JOURNAL_ONLY``) and restricted, so it never journals either:
+    it can no longer send a card.
+    """
 
     async def run_intraday_scan(*, symbols: list[str]) -> None:
         session_active, reason = await copilot.session_provider.is_session_active(instrument_type="all")
@@ -605,7 +621,7 @@ def register_intraday_scan(scheduler: Any, copilot: Any, config: AppConfig, *, u
                 asset_class="all",
                 timeframe="15m",
                 symbols=symbols,
-                budget=ScanBudget.FULL,
+                budget=ScanBudget.JOURNAL_ONLY,
             )
         else:
             logger.debug("Intraday scan skipped outside market session: %s", reason)

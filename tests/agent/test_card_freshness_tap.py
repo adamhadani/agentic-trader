@@ -30,6 +30,7 @@ from agentic_trader.market.session import ET_TZ, MarketSessionInfo, MarketSessio
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.storage.models import SignalRecord
 from tests.agent.test_scan_budget import budget_desk, evaluation  # noqa: F401  (pytest fixture + helper)
+from tests.calendar_doubles import clear_check, lockout_check, union_double
 
 
 NEXT_OPEN = datetime(2026, 9, 24, 13, 30, tzinfo=UTC)
@@ -91,8 +92,7 @@ def tap_desk(app_config, temp_db, mock_notifier):
     copilot.session_provider.get_session_info.return_value = session_info(
         next_close=datetime.now(UTC) + timedelta(hours=2)
     )
-    copilot.calendar = AsyncMock()
-    copilot.calendar.is_in_lockout_window.return_value = (False, None)
+    copilot.calendar = union_double(clear_check())
     copilot.regime_detector = AsyncMock()
     copilot.regime_detector.get_regime.return_value = SimpleNamespace(
         summary_text="calm", breakout_allowed=True, min_rr_threshold=2.0, risk_multiplier=1.0
@@ -499,10 +499,7 @@ async def test_corporate_action_evidence_that_does_not_cover_the_symbol_never_re
 
 async def test_macro_gate_turns_a_fresh_card_into_missed(tap_desk, temp_db):
     sid = await record_card(temp_db)
-    tap_desk.calendar.is_in_lockout_window.return_value = (
-        True,
-        SimpleNamespace(title="CPI", timestamp=datetime.now(UTC)),  # the rule re-judges the window: an aware time
-    )
+    tap_desk.calendar.check.return_value = lockout_check("CPI", datetime(2026, 10, 14, 12, 30, tzinfo=UTC))
 
     reply = await tap_desk.execute_signal_by_id(sid)
 

@@ -19,17 +19,29 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
 60 seconds; the weekly `com.agentictrader.alphaminer` job is retired (see below). Do not start a second daemon,
 `listen`, or Compose service while the installed poller owns the bot.
 
-- Swing scans: every four hours from startup, immediate first run, all timeframes,
-  the whole `universe:` when the equity session is open. The first run at daemon start is
-  deliberate (the `scan` readiness component needs an observation in each run). A run that
-  passes the session gate and ranks at least one native candidate journals its ranking as
-  `scan_candidates_ranked` with `trigger=swing_scan`.
+- Swing scans: every four hours from startup, immediate first run, all timeframes, the whole
+  `universe:`. They are **journal-only** (`ScanBudget.JOURNAL_ONLY`): they collect and rank as any
+  budgeted scan does, then journal each native candidate as `scan_candidates_ranked` with
+  `trigger=swing_scan`, `budget=journal_only` and outcome `journal_only`. They send no card, call no
+  LLM, record no signal and spend no card budget, so the run at daemon start cannot take a session
+  slot (the defect behind 61 restarts in 33 days). That run is kept, deliberately: it gives the `scan`
+  readiness component an observation in each daemon run (`scan_max_age_seconds` is not
+  session-aware). The suggestion scans own the cards.
+  The job has no session gate of its own, but `run_scan` applies its shared `all` gate: open whenever
+  futures or equities trade. When both are closed (weekends, holidays, the daily futures halt) the scan
+  ends there with `Session gate checked: Primary markets closed …`. In futures-only hours it reaches
+  contract selection (`_select_contracts`), which drops closed-session equities and the futures Alpaca
+  cannot execute, and ends as `Idle: nothing eligible`. Either way SCAN is observed ready and nothing
+  is journaled.
 - Suggestion scans: cron on the New York clock, weekdays, at
   `scheduler.suggestion_scan_times_et` (see below). They also add the dynamic
   suggestion universe.
-- Intraday scans: every 15 minutes from startup, session gated, `15m` filter,
-  restricted to the contracts configured explicitly under `contracts:`
-  (`AppConfig.non_universe_contracts`) — never the universe.
+- Intraday scans: **disabled in the shipped config** (`scheduler.intraday_scan_enabled: false`): with
+  Alpaca execution the explicit `contracts:` are idle by construction and each run still costs bar
+  requests and the scan lock. When enabled: every 15 minutes from startup, session gated, `15m`
+  filter, restricted to the contracts configured explicitly under `contracts:`
+  (`AppConfig.non_universe_contracts`) — never the universe — and journal-only
+  (`ScanBudget.JOURNAL_ONLY`), so it can send no card. A restricted scan journals nothing.
 - Position monitor: every minute, with additional broker stream wakeups.
 - Macro briefing: weekdays 12:30. Automatic legacy retuning is removed. Cron schedules
   inherit scheduler/system timezone. Intervals are not candle-close aligned.
@@ -612,7 +624,9 @@ In the summary, `llm_gate` compares vetoed and approved mean R and counts bracke
 `bracket_edited` (at any maturity), `bracket_edit_mature`, and the mean `llm_r_cost −
 r_cost` over approved edits (`bracket_edit_mean_delta_r`, the brackets that were sent),
 reported apart from vetoed ones (`vetoed_bracket_edit_mean_delta_r`). `market_exposure`
-gives sent and runner-up means with and without the control. `execution` covers every sent
+gives sent, runner-up and `journal_only` means with and without the control (`journal_only` is
+the swing-scan candidates, which never competed for a card and so are not runners-up;
+`counts` and `base_rates` carry the same third class). `execution` covers every sent
 card. A re-priced card is followed to its replacement (`final_signal_id`, `repriced`),
 whose status, entry order, fill and tap are the ones that count. A card is **entered** when
 its signal is `EXECUTED` or any `CLOSED_*`, and **filled** when the broker's
@@ -858,6 +872,31 @@ regenerating the miner plist; the scheduled miner is now retired, so the pinned
 Do not restore old code against a newer schema without checking compatibility.
 Quarantined records can be reviewed/restored with an audited migration; they were
 not deleted. Keep broker-held protective orders in place during a daemon restart.
+
+## Tier-1 calendar renewal
+
+The macro lockout's authoritative schedule is a static file, `config/calendar/us-tier1-vN.json`
+(FOMC statement and press conference, CPI, PPI, Employment Situation), pinned in `config.yaml`
+by `risk.macro_calendar_path` and `risk.macro_calendar_sha256`. A merged version is immutable.
+`macro_calendar` readiness degrades 30 days before its `valid_through`
+(`risk.macro_calendar_renewal_days`), so the monitor's incident asks for the next version
+well before it expires. Renew it as follows.
+
+1. Build `us-tier1-vN+1.json` from the Fed's FOMC calendar and the BLS CPI, PPI and
+   Employment Situation schedule pages. Each event's `source_url` is the page its date came
+   from. Re-check every `tentative` FOMC date (the Fed confirms each meeting at the one
+   before it). `valid_through` is the shortest series' last listed date, and
+   `series_last_listed` records each series' last date. Do not invent dates or times.
+   `valid_from` must be on or before the deploy date: before it the static status reads
+   `expired`, so the lockout is unverified until then.
+2. Run `uv run pre-commit run --files config/calendar/us-tier1-vN+1.json` so the file's
+   bytes settle, then `shasum -a 256` it. Pin the new path and digest in `config.yaml`.
+3. Deploy in the usual pause order (watchdog, then daemon) and confirm
+   `doctor --readiness` reports `macro_calendar` ready.
+
+A release that moves or is cancelled (as in the 2025 shutdown) also means a new version:
+never edit a merged file. An expired or invalid calendar leaves the lockout unverified;
+with `risk.macro_calendar_unknown: open` that is labelled, never refused.
 
 ## Logs, audit and monitoring
 

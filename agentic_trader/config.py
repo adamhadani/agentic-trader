@@ -188,6 +188,21 @@ class ScanBudget(StrEnum):
     FULL = "full"  # scheduled scans: per-scan, per-session and per-group limits
     SESSION = "session"  # operator scans: per-session and per-group limits only
     NONE = "none"  # explicit --no-budget or dry runs
+    JOURNAL_ONLY = "journal_only"  # the daemon's swing and intraday jobs: collect, rank and journal, send nothing
+
+
+# Unlevered, long-only ETFs on a headline US equity benchmark (a total-market, large-, mid- or small-cap segment
+# index in cap or equal weight, the Dow 30, the Nasdaq-100). Sector, style, factor, dividend, thematic,
+# international, bond and commodity ETFs stay eligible. SPYM replaced SPLG: the 2026-10-15 Alpaca asset
+# snapshot lists no SPLG.
+DEFAULT_BROAD_INDEX_ETFS: tuple[str, ...] = (
+    *("SPY", "VOO", "IVV", "SPYM", "RSP"),  # S&P 500, cap and equal weight
+    *("VTI", "ITOT", "SCHB", "IWV"),  # total market
+    *("IWB", "VV", "SCHX", "OEF"),  # large cap, S&P 100
+    *("QQQ", "QQQM", "DIA"),  # Nasdaq-100, Dow 30
+    *("MDY", "IJH", "IWR", "VO"),  # mid cap
+    *("IWM", "IJR", "VB"),  # small cap
+)
 
 
 class ScanConfig(BaseModel):
@@ -201,6 +216,17 @@ class ScanConfig(BaseModel):
     # Frozen setup-study ranker (ranker.json) scored in shadow at RANK. Evidence only:
     # it never changes ranking, the card budget or any card. None records features only.
     shadow_ranker_artifact: Path | None = None
+    # An unrestricted scan never sends a native card on these names (a card-selection rule in run_scan, not an
+    # entry-risk rule): they are still collected, ranked and journaled. A restricted scan still cards them.
+    # An empty tuple turns the rule off.
+    broad_index_etfs: tuple[str, ...] = DEFAULT_BROAD_INDEX_ETFS
+
+    @field_validator("broad_index_etfs", mode="after")
+    @classmethod
+    def _broad_index_symbols(cls, symbols: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(symbols)) != len(symbols) or any(not re.fullmatch(r"[A-Z][A-Z.]{0,5}", s) for s in symbols):
+            raise ValueError("scan.broad_index_etfs must be distinct upper-case symbols")
+        return symbols
 
     @field_validator("shadow_ranker_artifact", mode="after")
     @classmethod
@@ -405,6 +431,21 @@ class RiskConfig(BaseModel):
     lockout_pre_event_minutes: int = 60
     lockout_post_event_minutes: int = 30
     earnings_blackout_days: int = Field(default=7, ge=0)
+    # The static tier-1 calendar (docs/production.md, "Tier-1 calendar renewal"): an immutable file, pinned by
+    # SHA-256 when set. An expired or invalid calendar leaves the lockout unverified; `open` only labels that,
+    # `closed` refuses new entries.
+    macro_calendar_path: Path = Field(default=Path("config/calendar/us-tier1-v1.json"), validate_default=True)
+    macro_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    macro_calendar_unknown: Literal["open", "closed"] = "open"
+    macro_calendar_renewal_days: int = Field(default=30, ge=1)
+
+    @field_validator("macro_calendar_path", mode="after")
+    @classmethod
+    def _resolve_macro_calendar_path(cls, value: Path) -> Path:
+        """A relative path must mean the same file for the daemon, an operator CLI invocation and a test alike."""
+        if value.is_absolute():
+            return value
+        return (WORKSPACE_ROOT / value).resolve()
 
 
 class TrendPullbackConfig(BaseModel):
@@ -485,10 +526,12 @@ class RegimeConfig(BaseModel):
     extreme_min_rr: float = Field(default=2.5, ge=2)
     cache_ttl_seconds: int = 900
     yield_curve_enabled: bool = True
-    credit_oas_enabled: bool = True
-    inflation_breakeven_enabled: bool = True
     hy_oas_elevated_threshold: float = 3.50  # 350 bps
     hy_oas_critical_threshold: float = 5.00  # 500 bps
+    # The UNKNOWN macro stress policy, applied when a decision input (3m, 2y, 10y, HY OAS) is missing.
+    # Below 1.0 by validation: a missing feed never sizes at full risk.
+    unknown_risk_multiplier: float = Field(default=0.5, ge=0.10, lt=1.0)
+    unknown_breakout_allowed: bool = False
 
 
 class FrictionConfig(BaseModel):

@@ -144,8 +144,6 @@ DEFAULT_MAX_CONCURRENT_CONTRACTS = 2
 DEFAULT_MIN_RISK_REWARD_RATIO = 2.0
 DEFAULT_MIN_STOP_ATR_MULTIPLE = 1.5
 DEFAULT_DEDUPLICATION_HOURS = 12
-DEFAULT_LOCKOUT_PRE_EVENT_MINUTES = 60
-DEFAULT_LOCKOUT_POST_EVENT_MINUTES = 30
 
 
 class VolatilityRegime(StrEnum):
@@ -371,6 +369,17 @@ class CloseRequestStatus(StrEnum):
 
 
 ACTIVE_CLOSE_STATUSES = (CloseRequestStatus.CLAIMED, CloseRequestStatus.SUBMITTED, CloseRequestStatus.UNKNOWN)
+
+
+class CalendarStatus(StrEnum):
+    """Health of one tier-1 calendar source. `failed` is live-feed only; `expired` and `invalid` are static only."""
+
+    OK = "ok"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    INVALID = "invalid"
+
+
 ALPACA_MAX_ORDERS_PER_PAGE = 500
 ALPACA_MAX_REPLACEMENT_CHAIN = 100
 BROKER_QUANTITY_TOLERANCE = 1e-6

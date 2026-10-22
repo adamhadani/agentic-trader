@@ -14,9 +14,11 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
+from agentic_trader.agent.copilot import BROAD_INDEX_REASON
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.config import ScanBudget
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import AssetClass, SignalStatus
+from agentic_trader.execution.durable import ScanTrigger
 from agentic_trader.screeners.base import ScreenerCandidate
 from agentic_trader.storage.models import SignalRecord
 
@@ -88,6 +90,28 @@ async def _plant_signal(db, contract, when):
                 environment=db.environment,
                 execution_mode=db.execution_mode,
             )
+        )
+
+
+async def plant_history(db, count: int = 100) -> None:
+    """``count`` expired signals a week old: a long history that spends no budget of this session."""
+    when = datetime.now(UTC) - timedelta(days=7)
+    async with db.session_factory() as session, session.begin():
+        session.add_all(
+            SignalRecord(
+                timestamp=when,
+                contract="ZZZ",
+                strategy="TREND_PULLBACK",
+                direction="LONG",
+                entry_price=100.0,
+                stop_loss=98.0,
+                take_profit=104.0,
+                risk_dollars=2.0,
+                status=SignalStatus.EXPIRED,
+                environment=db.environment,
+                execution_mode=db.execution_mode,
+            )
+            for _ in range(count)
         )
 
 
@@ -243,11 +267,55 @@ def test_correlation_groups_match_root_and_slashed_symbols(scan_desk, app_config
 
 async def test_digest_summarises_the_session_and_is_published_once(budget_desk, app_config):
     budget_desk.outbox = AsyncMock()
-    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await budget_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
     text = await budget_desk.publish_scan_digest()
     assert "1 card" in text and "4 runners-up" in text and "BBB" in text
     budget_desk.outbox.publish_message.assert_awaited_once()
     assert budget_desk.outbox.publish_message.call_args.kwargs["key"].startswith("scan-digest/")
+
+
+async def test_digest_keeps_broad_index_runners_up_out_of_the_top_list_and_counts_them(scan_desk):
+    """A listed index is scanned every day; its runner-up must not fill the "top:" slots an operator can act on."""
+    scan_desk.outbox = AsyncMock()
+    et_today = scan_desk.session_start_et().date().isoformat()
+
+    def runner(contract, quality, reason=None):
+        row = {"contract": contract, "strategy": "TREND_PULLBACK", "direction": "LONG", "setup_quality": quality}
+        return {**row, "reason": reason} if reason is not None else row
+
+    def summary(*runners_up):
+        return {
+            "trigger": ScanTrigger.SUGGESTION_SCAN,
+            "scanned": 6,
+            "insufficient": [],
+            "candidates": len(runners_up),
+            "sent": 0,
+            "runners_up": list(runners_up),
+            "fetch_failed": [],
+            "coverage_excluded": [],
+            "duration_seconds": 1.0,
+        }
+
+    scan_desk._session_scan_stats = {
+        et_today: [summary(runner("SPY", 0.95, BROAD_INDEX_REASON), runner("AAA", 0.8, "per-scan budget spent"))]
+    }
+    text = await scan_desk.publish_scan_digest()
+    assert "2 runners-up — top: AAA LONG (0.80); 1 broad-index ETF(s) excluded. Fetch failures" in text
+    assert "SPY" not in text
+
+    # Only index names: nothing to list, and the sentence still reads cleanly.
+    scan_desk._session_scan_stats = {et_today: [summary(runner("SPY", 0.95, BROAD_INDEX_REASON))]}
+    assert "1 runners-up; 1 broad-index ETF(s) excluded. Fetch failures" in await scan_desk.publish_scan_digest()
+
+    # No excluded index (and a runner-up without a reason): no clause, no mention.
+    scan_desk._session_scan_stats = {
+        et_today: [summary(runner("AAA", 0.8, "per-scan budget spent"), runner("BBB", 0.7))]
+    }
+    text = await scan_desk.publish_scan_digest()
+    assert "top: AAA LONG (0.80), BBB LONG (0.70). Fetch failures" in text
+    assert "broad-index" not in text
 
 
 async def test_digest_without_scans_says_so(scan_desk):
@@ -260,34 +328,44 @@ async def test_digest_reports_how_many_instruments_were_scanned(budget_desk, app
     """F1: candidates alone cannot distinguish a quiet universe from a universe that
     was never scanned, so the digest carries the scanned and insufficient totals."""
     budget_desk.outbox = AsyncMock()
-    await budget_desk.run_scan(use_llm=False, dry_run=False, budget=ScanBudget.FULL)
+    await budget_desk.run_scan(
+        use_llm=False, dry_run=False, budget=ScanBudget.FULL, trigger=ScanTrigger.SUGGESTION_SCAN
+    )
     text = await budget_desk.publish_scan_digest()
     assert "5 scanned" in text and "0 insufficient" in text
 
 
 async def test_digest_counts_universe_scans_only(scan_desk):
-    """F6: the 15-minute intraday job and symbol-restricted scans are not suggestion
-    scans; a session in which only those ran reports no suggestion scans."""
+    """F6: only suggestion scans count. The swing job and an unrestricted operator /scan share the
+    suggestion scan's shape (no symbols, no timeframe), and the 15-minute intraday job is an operator-
+    triggered restricted scan; a session in which only those ran reports no suggestion scans."""
     scan_desk.outbox = AsyncMock()
     et_today = scan_desk.session_start_et().date().isoformat()
+
+    def completed(trigger: ScanTrigger, timeframe: str | None) -> dict:
+        return {
+            "scope": {"asset_class": "all", "timeframe": timeframe, "restricted": timeframe is not None},
+            "trigger": str(trigger),
+            "status": "completed",
+            "scanned": 1,
+            "insufficient": [],
+            "candidates": 99,
+            "sent": 3,
+            "runners_up": [],
+            "fetch_failed": [],
+            "coverage_excluded": [],
+            "duration_seconds": 1.0,
+        }
+
     scan_desk._session_scan_stats = {
         et_today: [
-            {
-                "scope": {"asset_class": "all", "timeframe": "15m", "restricted": True},
-                "scanned": 1,
-                "insufficient": [],
-                "candidates": 99,
-                "sent": 3,
-                "runners_up": [],
-                "fetch_failed": [],
-                "coverage_excluded": [],
-                "duration_seconds": 1.0,
-            }
+            completed(ScanTrigger.SWING_SCAN, None),
+            completed(ScanTrigger.OPERATOR_SCAN, None),
+            completed(ScanTrigger.OPERATOR_SCAN, "15m"),
         ]
     }
     text = await scan_desk.publish_scan_digest()
-    assert "no suggestion scans" in text.lower()
-    assert "99" not in text
+    assert text == f"📋 Scan digest {et_today}: no suggestion scans ran this session."
 
 
 async def test_scan_summary_records_its_scope(scan_desk, app_config):
@@ -307,6 +385,19 @@ async def test_telegram_scan_refuses_while_a_scan_is_running(scan_desk):
         text = await scan_desk.run_scan_summary_html()
     assert "running" in text.lower()
     scan_desk.run_scan.assert_not_awaited()
+
+
+async def test_telegram_scan_counts_the_card_it_sent_beside_a_long_signal_history(budget_desk, temp_db, app_config):
+    """The reply counts the cards this scan recorded, not a capped window of recent signals: with 100 older
+    signals, a newest-100 window holds 100 rows before and after the scan."""
+    app_config.scan.max_cards_per_session = 1  # one card, then "per-session budget spent" for the rest
+    await plant_history(temp_db)
+
+    text = await budget_desk.run_scan_summary_html()
+
+    assert text == "✅ <b>Scan Complete:</b> 1 new trade setup(s) identified and alert cards dispatched above."
+    assert [s["contract"] for s in await temp_db.signals_since(budget_desk.session_start_et())] == ["DDD"]
+    assert budget_desk.last_scan_summary["runners_up"]  # the refused rest never reads as "No card sent"
 
 
 async def test_session_scan_stats_keep_only_the_current_new_york_date(budget_desk):

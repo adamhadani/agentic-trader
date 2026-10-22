@@ -26,6 +26,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _percent(value: float | None) -> str:
+    return f"{value:.2f}%" if value is not None else "N/A"
+
+
+def _bps(value: float | None) -> str:
+    return f"{value:+.1f} bps" if value is not None else "N/A"
+
+
+def _level(value: float | None) -> str:
+    return f"{value:.2f}" if value is not None else "N/A"
+
+
 class MacroExplainer:
     """
     Translates institutional macroeconomic telemetry into intuitive, educational briefings.
@@ -56,13 +68,19 @@ class MacroExplainer:
         return self.explain_deterministic(report, format_mode)
 
     async def _explain_with_llm(self, report: MacroIntelligenceReport, format_mode: str) -> str:
+        yields, inflation = report.yields, report.inflation
+        inflation_text = (
+            f"10Y Breakeven = {inflation.breakeven_10y:.2f}%, 5Y = {inflation.breakeven_5y:.2f}% ({inflation.regime.value})"
+            if inflation is not None
+            else "10Y Breakeven = N/A, 5Y = N/A"
+        )
         prompt_context = f"""
 Current Quantitative Macro Telemetry:
-- Yields: 3M={report.yields.yield_3m:.2f}%, 2Y={report.yields.yield_2y:.2f}%, 5Y={report.yields.yield_5y:.2f}%, 10Y={report.yields.yield_10y:.2f}%, 30Y={report.yields.yield_30y:.2f}%
-- Term Structure: 10Y-2Y Slope = {report.spreads.slope_10y_2y_bps:+.1f} bps ({report.spreads.regime.value}), 10Y-3M = {report.spreads.slope_10y_3m_bps:+.1f} bps, Butterfly Curvature = {report.spreads.curvature_butterfly_bps:+.1f} bps
+- Yields: 3M={yields.yield_3m:.2f}%, 2Y={yields.yield_2y:.2f}%, 5Y={_percent(yields.yield_5y)}, 10Y={yields.yield_10y:.2f}%, 30Y={_percent(yields.yield_30y)}
+- Term Structure: 10Y-2Y Slope = {report.spreads.slope_10y_2y_bps:+.1f} bps ({report.spreads.regime.value}), 10Y-3M = {report.spreads.slope_10y_3m_bps:+.1f} bps, Butterfly Curvature = {_bps(report.spreads.curvature_butterfly_bps)}
 - Credit Spreads: High Yield OAS = {report.credit.high_yield_oas_bps:.0f} bps ({report.credit.regime.value})
-- Inflation Expectations: 10Y Breakeven = {report.inflation.breakeven_10y:.2f}%, 5Y = {report.inflation.breakeven_5y:.2f}% ({report.inflation.regime.value})
-- Volatility & FX: VIX = {report.vix:.2f}, US Dollar Index (DXY) = {report.dxy:.2f}
+- Inflation Expectations: {inflation_text}
+- Volatility & FX: VIX = {report.vix:.2f}, US Dollar Index (DXY) = {_level(report.dxy)}
 - Copilot Stress Assessment: Level = {report.stress.level.value}, Risk Multiplier = {report.stress.risk_multiplier:.2f}x, Squeeze Breakouts Allowed = {report.stress.squeeze_breakout_allowed}, Min R:R = {report.stress.min_rr_threshold:.1f}:1
 - Key Drivers: {", ".join(report.stress.key_drivers)}
 """
@@ -185,7 +203,7 @@ Current Quantitative Macro Telemetry:
                 f"• <i>Current Spread:</i> <code>{oas_bps:.0f} bps</code> (Regime: <code>{credit_regime}</code>)\n"
                 f"• <i>Explanation:</i> {html.escape(credit_desc)}\n\n"
                 "4️⃣ <b>Volatility &amp; Currency Context:</b>\n"
-                f"• <i>VIX:</i> <code>{vix:.2f}</code> | <i>DXY:</i> <code>{report.dxy:.2f}</code>\n"
+                f"• <i>VIX:</i> <code>{vix:.2f}</code> | <i>DXY:</i> <code>{_level(report.dxy)}</code>\n"
                 f"• <i>Context:</i> {html.escape(vix_desc)}\n\n"
                 "5️⃣ <b>Copilot Risk Engine Actions:</b>\n"
                 f"{html.escape(risk_desc)}\n"
@@ -206,7 +224,7 @@ Current Quantitative Macro Telemetry:
             f"   Spread: {oas_bps:.0f} bps (Regime: {credit_regime})\n"
             f"   Tutorial: {credit_desc}\n\n"
             f"4. VOLATILITY & CURRENCY (VIX & DXY):\n"
-            f"   VIX: {vix:.2f} | DXY: {report.dxy:.2f}\n"
+            f"   VIX: {vix:.2f} | DXY: {_level(report.dxy)}\n"
             f"   Context: {vix_desc}\n\n"
             f"5. COPILOT RISK ENGINE ACTIONS:\n"
             f"   {risk_desc}\n"

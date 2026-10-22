@@ -6,7 +6,7 @@ import html
 import logging
 import math
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import UTC, datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -17,7 +17,12 @@ from uuid import uuid4
 import pandas as pd
 
 from agentic_trader.accounting.service import AccountLedgerService
-from agentic_trader.agent.calendar import BaseEconomicCalendar, ForexFactoryCalendar
+from agentic_trader.agent.calendar import (
+    ForexFactoryCalendar,
+    StaticTier1Calendar,
+    UnionTier1Calendar,
+    macro_calendar_readiness,
+)
 from agentic_trader.agent.copilot_graph import ask_copilot, create_copilot_graph
 from agentic_trader.agent.earnings import (
     EarningsCalendarProtocol,
@@ -28,7 +33,22 @@ from agentic_trader.agent.earnings import (
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.news_context import NewsContextService, build_news_context_service, unavailable_block
-from agentic_trader.agent.regime import RegimeDetector, regime_journal_block
+from agentic_trader.agent.regime import (
+    RegimeDetector,
+    RegimeUnavailable,
+    regime_journal_block,
+    unavailable_regime_block,
+)
+from agentic_trader.agent.scan_journal import (
+    AdmissionRefusal,
+    RefusalKind,
+    ScanFunnel,
+    ScanNotice,
+    append_scan_journal,
+    regime_errors_text,
+    regime_unavailable_gate,
+    regime_unavailable_notice,
+)
 from agentic_trader.backtest import BacktestEngine, run_monte_carlo_simulation
 from agentic_trader.broker import BaseBroker, OrderRequest, ReconciliationEvent, create_broker
 from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live, news_live
@@ -60,6 +80,7 @@ from agentic_trader.execution.durable import (
     NotificationKind,
     OrderObservation,
     RankedOutcome,
+    ScanStatus,
     ScanTrigger,
     WorkKind,
     WorkStatus,
@@ -120,7 +141,7 @@ from agentic_trader.risk import (
     RiskLimits,
     corporate_action_block,
     entry_session_open,
-    macro_lockout,
+    normalize_symbol,
     per_trade_risk,
     per_trade_risk_budget,
     regime_breakout,
@@ -176,6 +197,7 @@ DRIFT_POSITION_CAP_REACHED = "drift position cap reached"
 # A native candidate skipped because its (contract, strategy) already has a live PENDING card; only
 # under card_policy.validity == "next_session_close", where a card can outlive the duplicate window.
 LIVE_CARD_PENDING = "live card pending"
+BROAD_INDEX_REASON = "broad index ETF: excluded from native cards (scan.broad_index_etfs)"
 # `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
@@ -340,7 +362,14 @@ class TradingCopilot:
                     self._dynamic_universe_error,
                     extra={"event": "dynamic_universe_unavailable", "error": self._dynamic_universe_error},
                 )
-        self.calendar: BaseEconomicCalendar = ForexFactoryCalendar()
+        self.static_calendar = StaticTier1Calendar.load(
+            config.risk.macro_calendar_path, config.risk.macro_calendar_sha256
+        )
+        # The one tier-1 calendar every lockout site reads: the static schedule is authoritative and the
+        # ForexFactory feed adds unscheduled releases (agentic_trader.agent.calendar.UnionTier1Calendar).
+        self.calendar: UnionTier1Calendar = UnionTier1Calendar(
+            self.static_calendar, ForexFactoryCalendar(), unknown_policy=config.risk.macro_calendar_unknown
+        )
         self.earnings_calendar: EarningsCalendarProtocol = NasdaqEarningsCalendar()
         self.regime_detector = RegimeDetector(config=config.regime)
         alpaca_client = getattr(self.broker, "client", None)
@@ -517,6 +546,11 @@ class TradingCopilot:
             alpha_registry_report=lambda: self.alpha_repository.status(run_id=RUN_ID),
             card_stats_enabled=True,  # the daemon always runs the card-statistics worker
             corporate_actions_enabled=corporate_actions_live(config),
+            macro_calendar=lambda now: macro_calendar_readiness(
+                self.static_calendar.state(now),
+                renewal_days=config.risk.macro_calendar_renewal_days,
+                unknown_policy=config.risk.macro_calendar_unknown,
+            ),
             stream_connected=(lambda: self.broker.trade_stream_connected)
             if self.broker.supports_trade_stream
             else None,
@@ -701,6 +735,17 @@ class TradingCopilot:
     ) -> dict[str, Any] | None:
         """Scan, rank and record cards; returns the scan summary, or None when the scan did not run.
 
+        The order: scan lock, registry snapshot, halt, session gate, idle check, macro lockout, regime
+        read, dynamic universe, drift preparation, selection, fetch, collect, rank, send or journal. The
+        idle check ends an unrestricted scan whose configured contracts select nothing (dynamic and drift
+        names count only while the equity session is open) before any calendar, macro or bar read, and
+        journals nothing; a restricted scan keeps its selection and its reply's skip reason. A
+        lockout-gated scan makes no regime read. A regime read that raises ends the scan:
+        a non-dry unrestricted budgeted scan journals ``status: regime_unavailable`` with the New York
+        date's one ``regime-unavailable`` notice (queued only by a scheduled suggestion scan), SCAN
+        readiness goes not ready, and the gated summary (``gate_reason``) feeds the digest and the
+        Telegram ``/scan`` reply.
+
         ``shadow_evidence`` is set only by the scheduled suggestion-scan job
         (``make_suggestion_scan``): it gates the shadow ranker block, PEAD drift preparation and
         the dynamic suggestion universe; the ranked-candidate journal is independent of it. The daemon's
@@ -708,9 +753,16 @@ class TradingCopilot:
         otherwise share this scan's shape (no symbols, no timeframe).
 
         ``trigger`` names the caller in the ranked-candidate journal. Every unrestricted
-        non-dry scan with a budget journals ``scan_candidates_ranked`` (suggestion, swing
-        and operator scans alike); only the shadow block is suggestion-only. It never
+        non-dry scan with a budget that passes the idle check journals ``scan_candidates_ranked``
+        once (suggestion, swing and operator scans alike), a zero-candidate scan included, with
+        its collect ``funnel`` (``ScanFunnel``); only the shadow block is suggestion-only. It never
         changes ranking, budgets, sending or the card policy.
+
+        ``budget=ScanBudget.JOURNAL_ONLY`` (the daemon's swing and intraday jobs) collects and ranks as any
+        budgeted scan does, then journals every native candidate with outcome ``journal_only`` and sends
+        nothing: no shadow ranker, book preparation, ``card_stats`` read, card policy, news, budget read,
+        LLM, ``record_signal`` or outbox item, and no PEAD drift. It still observes SCAN readiness and
+        monitors positions. ``ScanBudget.NONE`` still means no limits and still sends.
 
         ``dedup_exempt_setups`` skips the recent-duplicate rule for exactly those
         ``(contract, strategy, timeframe, alpha_version)`` setups: an operator's explicit
@@ -758,9 +810,17 @@ class TradingCopilot:
             self.strategy_engine.registry.install_alphas(alpha_snapshot.active, alpha_snapshot.probe)
             if not dry_run:
                 await self.alpha_repository.acknowledge(alpha_snapshot, run_id=RUN_ID)
-            # Only the scheduled full-universe suggestion scan may run PEAD drift (see below).
+            # A journal-only scan (the daemon's swing and intraday jobs) collects, ranks and journals; it
+            # sends no card, so everything that exists to choose or decorate a card is bypassed below.
+            journal_only = budget == ScanBudget.JOURNAL_ONLY
+            # Only the scheduled full-universe suggestion scan may run PEAD drift (see below). Defensive for
+            # JOURNAL_ONLY: no job sets `shadow_evidence` with it, but a drift card could not be sent anyway.
             drift_scan = (
-                not dry_run and budget != ScanBudget.NONE and shadow_evidence and not symbols and timeframe is None
+                not dry_run
+                and budget not in (ScanBudget.NONE, ScanBudget.JOURNAL_ONLY)
+                and shadow_evidence
+                and not symbols
+                and timeframe is None
             )
             await self.check_halt_state()
             if self.is_halted:
@@ -777,21 +837,6 @@ class TradingCopilot:
 
             scan_errors = 0
             logger.info("=== Starting Quantitative Scan ===")
-            regime = await self.regime_detector.get_regime()
-            logger.info("Current market volatility context: %s", regime.summary_text)
-            regime_block = regime_journal_block(regime)
-            current_exposure = await self.db.get_active_notional_exposure()
-            active_count = await self.db.get_active_position_count()
-            active_positions = await self.db.get_active_positions()
-            max_positions = getattr(
-                self.config.portfolio,
-                "max_concurrent_positions",
-                self.config.portfolio.max_concurrent_contracts,
-            )
-            logger.info(
-                f"Portfolio Status: {active_count}/{max_positions} active positions | "
-                f"Open Notional: ${current_exposure:,.2f} / ${self.config.portfolio.max_notional_exposure:,.2f} max"
-            )
             session_allowed, session_reason = await self.session_provider.is_session_active(
                 instrument_type=asset_class or "all"
             )
@@ -806,29 +851,129 @@ class TradingCopilot:
                 )
                 return None
 
-            in_lockout, lock_event = await self.calendar.is_in_lockout_window(
-                pre_minutes=self.config.risk.lockout_pre_event_minutes,
-                post_minutes=self.config.risk.lockout_post_event_minutes,
+            # IDLE: an unrestricted scan that would select nothing ends before any calendar, macro or bar
+            # read. The configured contracts face the selection rules below; dynamic and drift names are
+            # equities, so they count only while the equity session is open. Overnight swing scans under
+            # Alpaca end here. A restricted scan (named symbols or a timeframe: /scan SYMBOL, Re-evaluate,
+            # the intraday job) skips the check: its selection names the reason a contract was skipped
+            # ("not executable by this broker", "session closed") in the operator's reply.
+            target_syms = [s.strip().upper() for s in symbols] if symbols else None
+            unrestricted = not symbols and timeframe is None
+            dynamic_cfg = self.config.universe.dynamic
+            # DYNAMIC: only the scheduled suggestion scan (shadow_evidence) over the whole
+            # universe adds screener names; manual, intraday and restricted scans never do.
+            attempt_dynamic = shadow_evidence and dynamic_cfg.enabled and unrestricted
+            equity_open = True
+            if not dry_run and not bypass_session_filter:
+                equity_open, _ = await self.session_provider.is_session_active(instrument_type="equity")
+            if unrestricted:
+                configured, not_executable, closed_session = self._select_contracts(
+                    self.config.contracts.items(),
+                    asset_class=asset_class,
+                    target_syms=target_syms,
+                    equity_open=equity_open,
+                )
+                if not configured and not (
+                    equity_open and (attempt_dynamic or drift_scan or operator_dynamic is not None)
+                ):
+                    idle_detail = (
+                        f"Idle: nothing eligible ({len(not_executable)} not executable, "
+                        f"{len(closed_session)} equity session closed)"
+                    )
+                    if not dry_run:
+                        await self.readiness.observe(HealthComponent.SCAN, True, idle_detail)
+                    logger.info(
+                        "Scan idle: %s",
+                        idle_detail,
+                        extra={
+                            "event": "scan_idle",
+                            "not_executable": len(not_executable),
+                            "closed_session": len(closed_session),
+                        },
+                    )
+                    return None
+
+            scope = {"asset_class": asset_class, "timeframe": timeframe, "restricted": bool(symbols)}
+            # The whole-scan lockout: the same rule (risk.macro_lockout) the evaluator, the tap and the
+            # preflight apply, from one union-calendar check.
+            scan_limits = RiskLimits.from_config(self.config)
+            calendar_check = await self.calendar.check(
+                datetime.now(UTC), scan_limits.lockout_pre_minutes, scan_limits.lockout_post_minutes
             )
-            if in_lockout and lock_event:
+            calendar_block = calendar_check.journal_block()
+            if (macro_rejection := calendar_check.lockout_rejection(scan_limits)) is not None:
+                lock_event = calendar_check.lockout
                 if not dry_run:
                     await self.readiness.observe(
-                        HealthComponent.SCAN, True, f"Macro gate checked: {lock_event.title}; entry alerts paused"
+                        HealthComponent.SCAN, True, f"Macro gate checked: {macro_rejection.reason}; entry alerts paused"
                     )
                 logger.warning(
-                    f"Macro Lockout Active: '{lock_event.title}' at {lock_event.timestamp.strftime('%H:%M UTC')}. "
-                    "No entry alerts will be emitted during this window.",
+                    "Macro lockout active: %s No entry alerts will be emitted during this window.",
+                    macro_rejection.reason,
                     extra={
                         "event": "macro_lockout_active",
-                        "lock_event": lock_event.title,
-                        "event_time": str(lock_event.timestamp),
+                        "lock_event": lock_event.title if lock_event is not None else None,
+                        "event_time": str(lock_event.at) if lock_event is not None else None,
+                        "reason": macro_rejection.reason,
                     },
                 )
-                if drift_scan:
-                    await self._journal_skipped_drift(
-                        alpha_snapshot, scheduled_time_et, reason=f"macro lockout: {lock_event.title}"
+                if not dry_run and unrestricted:
+                    # No regime read: the journal's regime block is null for a lockout-gated scan.
+                    await self._record_gated_scan(
+                        decided_at=datetime.now(UTC),
+                        scope=scope,
+                        trigger=trigger,
+                        budget=budget,
+                        status=ScanStatus.MACRO_LOCKOUT,
+                        gate={"rule": str(macro_rejection.rule), "reason": macro_rejection.reason},
+                        gate_reason=(
+                            f"macro lockout: {lock_event.title} at {lock_event.at.astimezone(UTC):%H:%M} UTC"
+                            if lock_event is not None
+                            else "macro calendar unverified"
+                        ),
+                        scheduled_time_et=scheduled_time_et,
+                        calendar_block=calendar_block,
+                        regime_block=None,
+                        notice=None,
                     )
+                if drift_scan:
+                    skip_reason = (
+                        f"macro lockout: {lock_event.title}" if lock_event is not None else "macro calendar unverified"
+                    )
+                    await self._journal_skipped_drift(alpha_snapshot, scheduled_time_et, reason=skip_reason)
                 return None
+
+            # REGIME (guarded): read only by a scan with something to evaluate. A read that raises (a missing
+            # VIX, or any other failure, classified by type name) skips the scan visibly, never silently.
+            try:
+                regime = await self.regime_detector.get_regime()
+            except Exception as exc:
+                await self._skip_scan_for_regime(
+                    exc,
+                    dry_run=dry_run,
+                    scope=scope,
+                    trigger=trigger,
+                    budget=budget,
+                    scheduled_time_et=scheduled_time_et,
+                    drift_scan=drift_scan,
+                    alpha_snapshot=alpha_snapshot,
+                    calendar_block=calendar_block,
+                )
+                return None
+            logger.info("Current market volatility context: %s", regime.summary_text)
+            regime_block = regime_journal_block(regime)
+            current_exposure = await self.db.get_active_notional_exposure()
+            active_count = await self.db.get_active_position_count()
+            active_positions = await self.db.get_active_positions()
+            max_positions = getattr(
+                self.config.portfolio,
+                "max_concurrent_positions",
+                self.config.portfolio.max_concurrent_contracts,
+            )
+            logger.info(
+                f"Portfolio Status: {active_count}/{max_positions} active positions | "
+                f"Open Notional: ${current_exposure:,.2f} / ${self.config.portfolio.max_notional_exposure:,.2f} max"
+            )
 
             started = time.monotonic()
             if include_fifteen_min is None:
@@ -840,7 +985,11 @@ class TradingCopilot:
                 # What this run covered, so the digest can aggregate suggestion scans
                 # only: the 15-minute intraday job carries a timeframe, and an operator
                 # or Telegram scan of named symbols is restricted.
-                "scope": {"asset_class": asset_class, "timeframe": timeframe, "restricted": bool(symbols)},
+                "scope": scope,
+                "trigger": str(trigger),
+                "budget": str(budget),
+                "status": str(ScanStatus.COMPLETED),
+                "scheduled_time_et": scheduled_time_et,
                 "scanned": 0,
                 "fetch_failed": [],
                 "insufficient": [],
@@ -856,9 +1005,6 @@ class TradingCopilot:
             }
             scan_id = uuid4().hex
             summary["scan_id"] = scan_id
-            equity_open = True
-            if not dry_run and not bypass_session_filter:
-                equity_open, _ = await self.session_provider.is_session_active(instrument_type="equity")
 
             total_candidates = 0
             total_alerts = 0
@@ -867,17 +1013,13 @@ class TradingCopilot:
             # sequential per-contract phase so the whole universe competes for the few
             # cards this session may still spend.
             approved_candidates: list[tuple[Any, Any, Any]] = []
+            # The completed scan's journal funnel: contracts by gate, native setups by where they went.
+            funnel = ScanFunnel()
             # One corporate-action read per scan: the deterministic COLLECT pass and the send phase
             # judge every equity candidate against the same capture (None when the feature is off).
             corporate_lookup = await self._corporate_actions_lookup(datetime.now(UTC))
 
-            target_syms = [s.strip().upper() for s in symbols] if symbols else None
-
-            # DYNAMIC: only the scheduled suggestion scan (shadow_evidence) over the whole
-            # universe adds screener names; manual, intraday and restricted scans never do.
-            # Their synthetic contracts live for this scan only: config.contracts is never mutated.
-            dynamic_cfg = self.config.universe.dynamic
-            attempt_dynamic = shadow_evidence and dynamic_cfg.enabled and not symbols and timeframe is None
+            # Synthetic dynamic contracts live for this scan only: config.contracts is never mutated.
             dynamic_selection: DynamicSelection | None = None
             dynamic_assets: dict[str, AssetInfo] = {}
             dynamic_error: str | None = None
@@ -947,25 +1089,12 @@ class TradingCopilot:
                     reason=f"service unavailable: {self._earnings_drift_error}",
                 )
 
-            selected: list[tuple[str, Any]] = []
-            for contract, info in [*self.config.contracts.items(), *dynamic_contracts]:
-                clean_contract = contract.strip("/").upper()
-                if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
-                    continue
-
-                inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
-                inst_class_norm = normalize_asset_class(str(inst_class))
-                req_class_norm = normalize_asset_class(asset_class)
-                if asset_class and asset_class.lower() != "all" and inst_class_norm != req_class_norm:
-                    continue
-                if not executes_asset_class(self.config.execution_mode, inst_class_norm):
-                    # A card the broker's entry admission would refuse cannot be accepted.
-                    summary["skipped_not_executable"].append(contract)
-                    continue
-                if inst_class_norm == normalize_asset_class("equity") and not equity_open:
-                    summary["skipped_closed_session"].append(contract)
-                    continue
-                selected.append((contract, info))
+            selected, summary["skipped_not_executable"], summary["skipped_closed_session"] = self._select_contracts(
+                [*self.config.contracts.items(), *dynamic_contracts],
+                asset_class=asset_class,
+                target_syms=target_syms,
+                equity_open=equity_open,
+            )
 
             datasets, receipts = await self._fetch_universe(selected, include_fifteen_min=include_fifteen_min)
 
@@ -1040,13 +1169,16 @@ class TradingCopilot:
                         scan_id=scan_id, selection=dynamic_selection, dynamic=summary["dynamic"], summary=summary
                     )
 
+            funnel.selected = len(scan_selected)
             for contract, info in scan_selected:
                 if contract in dynamic_excluded:
                     # Fetch failures, coverage and liquidity exclusions of dynamic names are
                     # recorded in summary["dynamic"]; they never reach strategy scanning.
+                    funnel.dynamic_excluded += 1
                     continue
                 data = datasets.get(contract)
                 if isinstance(data, BaseException) or data is None:
+                    funnel.fetch_failed += 1
                     summary["fetch_failed"].append(contract)
                     logger.warning(
                         "Fetch failed for %s: %r",
@@ -1058,6 +1190,8 @@ class TradingCopilot:
 
                 inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
                 logger.info(f"Scanning contract {contract} ({info.name} - {info.ticker}) [{inst_class}]...")
+                # This contract's setups iterated and classified: the guard counts the difference as lost.
+                contract_setups = contract_classified = 0
                 try:
                     # Alpha shadow evidence keeps its static population: a dynamic name is
                     # selected by today's screener, not by any alpha's declared universe.
@@ -1065,6 +1199,7 @@ class TradingCopilot:
                         await self.alpha_shadow.observe(alpha_snapshot, data, as_of=receipts.get(contract))
 
                     if data.daily.empty or data.four_hour.empty:
+                        funnel.insufficient += 1
                         summary["insufficient"].append(contract)
                         logger.warning(f"Insufficient data for {contract}, skipping.")
                         continue
@@ -1075,8 +1210,10 @@ class TradingCopilot:
                             contract,
                             extra={"event": "coverage_excluded", "contract": contract},
                         )
+                        funnel.coverage_excluded += 1
                         continue
 
+                    funnel.scanned += 1
                     summary["scanned"] += 1
 
                     candidates = await asyncio.to_thread(
@@ -1095,6 +1232,9 @@ class TradingCopilot:
 
                     for candidate in candidates:
                         total_candidates += 1
+                        contract_setups += 1
+                        funnel.raw_setups += 1
+                        funnel.raw_setups_by_strategy[candidate.strategy] += 1
                         logger.info(
                             "Found setup: %s %s via %s at %.2f",
                             candidate.contract,
@@ -1110,7 +1250,7 @@ class TradingCopilot:
                             },
                         )
 
-                        admitted, reason = await self._admit_candidate(
+                        admitted, refusal = await self._admit_candidate(
                             candidate,
                             dedup_exempt_setups=dedup_exempt_setups,
                             current_exposure=current_exposure,
@@ -1118,16 +1258,21 @@ class TradingCopilot:
                             dry_run=dry_run,
                             corporate_actions=corporate_lookup,
                         )
-                        if reason == "duplicate":
-                            if candidate.contract not in summary["duplicates"]:
-                                summary["duplicates"].append(candidate.contract)
-                        elif reason is not None and reason.startswith("account risk unavailable"):
-                            scan_errors += 1
+                        contract_classified += 1
+                        if refusal is not None:
+                            funnel.record_refusal(refusal)
+                            if refusal.kind is RefusalKind.DUPLICATE:
+                                if candidate.contract not in summary["duplicates"]:
+                                    summary["duplicates"].append(candidate.contract)
+                            elif refusal.kind is RefusalKind.ACCOUNT_RISK_UNAVAILABLE:
+                                scan_errors += 1
                         elif admitted is not None:
                             approved_candidates.append(admitted)
 
-                except Exception:
+                except Exception as exc:
                     scan_errors += 1
+                    funnel.errors[type(exc).__name__] += 1
+                    funnel.setups_lost_to_errors += contract_setups - contract_classified
                     logger.exception(f"Error scanning {contract}")
 
             # DRIFT COLLECT: the prepared events, already in the study's order (reaction z
@@ -1146,7 +1291,7 @@ class TradingCopilot:
                         if isinstance(cand, str):
                             drift_outcomes[symbol] = cand
                             continue
-                        admitted, reason = await self._admit_candidate(
+                        admitted, refusal = await self._admit_candidate(
                             cand,
                             dedup_exempt_setups=dedup_exempt_setups,
                             current_exposure=current_exposure,
@@ -1154,11 +1299,12 @@ class TradingCopilot:
                             dry_run=dry_run,
                             corporate_actions=corporate_lookup,
                         )
-                        if admitted is None:
-                            drift_outcomes[symbol] = reason or "rejected"
-                            if reason and reason.startswith("account risk unavailable"):
+                        if refusal is not None:
+                            # The PEAD decision journals the refusal's text; the funnel counts natives only.
+                            drift_outcomes[symbol] = str(refusal)
+                            if refusal.kind is RefusalKind.ACCOUNT_RISK_UNAVAILABLE:
                                 scan_errors += 1
-                        else:
+                        elif admitted is not None:
                             drift_ranked.append(admitted)
                     except Exception as exc:
                         scan_errors += 1
@@ -1176,6 +1322,7 @@ class TradingCopilot:
                 key=lambda item: (-self._setup_quality(item[0]), item[0].contract, item[0].strategy),
             )
             native_count = len(ranked)
+            funnel.admitted = native_count
             # Deterministic approvals eligible for ranking, not cards sent: the budget,
             # the send-phase evaluation and send failures all thin this number down.
             summary["approved"] = native_count
@@ -1191,7 +1338,7 @@ class TradingCopilot:
             # the unrestricted population matches the setup study's own. The ranked
             # journal further below is independent of this flag.
             decided_at = datetime.now(UTC)
-            compute_shadow_evidence = shadow_evidence and not symbols and timeframe is None
+            compute_shadow_evidence = shadow_evidence and not symbols and timeframe is None and not journal_only
             shadow_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             if not dry_run and ranked and compute_shadow_evidence:
                 shadow_by_rank = await self._shadow_blocks(ranked, datasets, decided_at, summary)
@@ -1199,9 +1346,29 @@ class TradingCopilot:
             # they have no shadow block and are never journaled as ranked candidates.
             ranked = [*ranked, *drift_ranked]
             shadow_by_rank = [*shadow_by_rank, *([None] * len(drift_ranked))]
-            outcomes: list[str | None] = [None] * len(ranked)
+            # A journal-only scan sends nothing: every native candidate (no drift candidate exists) is journaled
+            # as such, and the send loop below has nothing to send.
+            outcomes: list[str | None] = [RankedOutcome.JOURNAL_ONLY if journal_only else None] * len(ranked)
             llm_by_rank: list[dict[str, Any] | None] = [None] * len(ranked)
             signal_ids_by_rank: list[int | None] = [None] * len(ranked)
+            # BROAD-INDEX EXCLUSION (a card-selection rule, not an entry-risk rule): an unrestricted scan
+            # sends no native card on a broad US equity index ETF. The 1-based ranks excluded here are
+            # refused first in the send loop and dropped from news and book sizing, which would otherwise
+            # spend fetches and the news scoring budget on a name that cannot be carded. A restricted scan
+            # (`/scan SPY`), a drift card and a policy-locked card (alpha, probe, catalog) are unaffected, and
+            # a journal-only scan keeps every native candidate `journal_only` (its send loop never runs).
+            broad_index: frozenset[str] = (
+                frozenset()
+                if symbols or journal_only
+                else frozenset(normalize_symbol(symbol) for symbol in self.config.scan.broad_index_etfs)
+            )
+            broad_excluded = frozenset(
+                rank
+                for rank, (c, _, _) in enumerate(ranked[:native_count], 1)
+                if normalize_symbol(c.contract) in broad_index
+                and getattr(c, "catalog_event", None) is None
+                and not self._policy_locked(c, probe=True)
+            )
             # BOOK SIZING (L3): one covariance/book build per scan, from the scan's own daily bars plus
             # at most one bounded fetch for book names outside it. A dry run's simulated book is empty,
             # so it never prepares (and never fetches); `prepare` itself never raises.
@@ -1209,12 +1376,13 @@ class TradingCopilot:
             equity_class = normalize_asset_class(AssetClass.EQUITY)
             book_candidates = [
                 c.contract
-                for c, _, _ in ranked[:native_count]
-                if normalize_asset_class(str(getattr(c, "asset_class", ""))) == equity_class
+                for rank, (c, _, _) in enumerate(ranked[:native_count], 1)
+                if rank not in broad_excluded
+                and normalize_asset_class(str(getattr(c, "asset_class", ""))) == equity_class
             ]
             book_context = (
                 None
-                if dry_run or not book_candidates
+                if dry_run or journal_only or not book_candidates
                 else await self.book_sizer.prepare(
                     active_positions,
                     datasets,
@@ -1224,12 +1392,13 @@ class TradingCopilot:
             )
             book_by_rank: list[BookSizingDecision | None] = [None] * len(ranked)
             # EVIDENCE: one snapshot read per scan; every native card states its own (strategy,
-            # direction) record. Drift cards keep their PEAD block and carry none.
+            # direction) record. Drift cards keep their PEAD block and carry none. A journal-only scan
+            # reads no snapshot and states no evidence, so the card policy below has nothing to judge.
             card_policy = self.config.card_policy
-            snapshot = await self._card_stats_snapshot(summary)
+            snapshot = None if journal_only else await self._card_stats_snapshot(summary)
             evidence_by_rank: list[CardEvidence | None] = [
                 None
-                if getattr(candidate, "catalog_event", None) is not None
+                if journal_only or getattr(candidate, "catalog_event", None) is not None
                 else lookup(
                     snapshot,
                     candidate.strategy,
@@ -1250,13 +1419,20 @@ class TradingCopilot:
             ]
             # NEWS CONTEXT: one fetch per scan without a timeframe, before the send loop, for every ranked
             # native equity candidate. The intraday job (it passes a timeframe) never fetches or scores news;
-            # a scan without the LLM keeps counts and headlines and scores nothing.
+            # a scan without the LLM keeps counts and headlines and scores nothing. A journal-only scan
+            # sends no card for news to decorate, so it fetches and scores nothing.
             news_by_rank: list[dict[str, Any] | None] = (
-                await self._news_blocks(ranked, use_llm=use_llm) if timeframe is None else [None] * len(ranked)
+                await self._news_blocks(ranked, use_llm=use_llm, excluded_ranks=broad_excluded)
+                if timeframe is None and not journal_only
+                else [None] * len(ranked)
             )
             cfg = self.config.scan
             groups_used: dict[str, int] = {}
-            if budget == ScanBudget.NONE:
+            if journal_only:
+                # No budget read: a journal-only scan spends no card, so there is nothing to derive from
+                # today's signals. All-zero allowances also refuse every send, were the loop below ever reached.
+                remaining_scan = remaining_session = remaining_drift = 0
+            elif budget == ScanBudget.NONE:
                 remaining_scan = remaining_session = len(ranked)
                 remaining_drift = 0  # drift never runs without a budget
                 if operator_dynamic is not None and not dry_run:
@@ -1301,14 +1477,19 @@ class TradingCopilot:
 
             # One session-clock read per (contract, extended validity) that actually records a card.
             session_closes: dict[tuple[str, bool], str | None] = {}
-            for rank, (candidate, _det_res, account_risk) in enumerate(ranked, 1):
+            # SEND: a journal-only scan has no send phase (no LLM, no `record_signal`, no outbox); its
+            # outcomes were set to `journal_only` above, so the loop is given nothing to send.
+            for rank, (candidate, _det_res, account_risk) in enumerate([] if journal_only else ranked, 1):
                 # One failed send must not abandon the rest of the ranking or the scan's
                 # own bookkeeping, exactly as the per-contract guard protects COLLECT.
                 is_drift = getattr(candidate, "catalog_event", None) is not None
                 try:
                     reason = None
                     fixed_outcome: str | None = None
-                    if is_drift and remaining_drift <= 0:
+                    if rank in broad_excluded:
+                        # First, so the outcome never depends on how much budget is left.
+                        reason, fixed_outcome = BROAD_INDEX_REASON, RankedOutcome.BROAD_INDEX_EXCLUDED
+                    elif is_drift and remaining_drift <= 0:
                         reason = "drift budget spent"
                     elif not is_drift and remaining_scan <= 0:
                         reason = "per-scan budget spent"
@@ -1588,13 +1769,20 @@ class TradingCopilot:
                     logger.exception(f"Error scanning {candidate.contract}")
                     continue
 
-            if not dry_run and budget != ScanBudget.NONE and native_count and not symbols and timeframe is None:
+            # Every eligible scan journals once, a zero-candidate one included (the idle check above
+            # already ended a scan with nothing to select).
+            if not dry_run and budget != ScanBudget.NONE and not symbols and timeframe is None:
                 await self._journal_scan_ranking(
                     scan_id=scan_id,
                     decided_at=decided_at,
                     budget=budget,
                     trigger=trigger,
+                    status=ScanStatus.COMPLETED,
+                    gate=None,
+                    scheduled_time_et=scheduled_time_et,
+                    calendar_block=calendar_block,
                     regime_block=regime_block,
+                    funnel=funnel.journal_block(),
                     ranked=ranked[:native_count],
                     outcomes=outcomes[:native_count],
                     shadow_by_rank=shadow_by_rank[:native_count],
@@ -1627,13 +1815,8 @@ class TradingCopilot:
 
             summary["candidates"] = total_candidates
             summary["sent"] = total_alerts
-            summary["budget"] = str(budget)
             summary["duration_seconds"] = round(time.monotonic() - started, 3)
-            self.last_scan_summary = summary
-            # Only the current New York session is retained, so a long-running daemon
-            # cannot accumulate one summary list per calendar day.
-            et_today = self.session_start_et().date().isoformat()
-            self._session_scan_stats = {et_today: [*self._session_scan_stats.get(et_today, []), summary]}
+            self._record_scan_summary(summary)
             self.metrics.observe_histogram(
                 "trader_scan_duration_seconds",
                 summary["duration_seconds"],
@@ -1676,6 +1859,181 @@ class TradingCopilot:
                 await self.monitor_positions()
             return summary
 
+    def _select_contracts(
+        self,
+        items: Iterable[tuple[str, Any]],
+        *,
+        asset_class: str,
+        target_syms: list[str] | None,
+        equity_open: bool,
+    ) -> tuple[list[tuple[str, Any]], list[str], list[str]]:
+        """The contracts a scan fetches, then those skipped as not executable and for a closed equity session.
+
+        One rule for the idle check (the configured contracts) and the selection (plus dynamic and
+        drift names): the symbol restriction and asset-class filter drop a contract silently.
+        """
+        selected: list[tuple[str, Any]] = []
+        not_executable: list[str] = []
+        closed_session: list[str] = []
+        for contract, info in items:
+            clean_contract = contract.strip("/").upper()
+            if target_syms and (contract.upper() not in target_syms and clean_contract not in target_syms):
+                continue
+
+            inst_class = getattr(info, "asset_class", AssetClass.FUTURES)
+            inst_class_norm = normalize_asset_class(str(inst_class))
+            req_class_norm = normalize_asset_class(asset_class)
+            if asset_class and asset_class.lower() != "all" and inst_class_norm != req_class_norm:
+                continue
+            if not executes_asset_class(self.config.execution_mode, inst_class_norm):
+                # A card the broker's entry admission would refuse cannot be accepted.
+                not_executable.append(contract)
+                continue
+            if inst_class_norm == normalize_asset_class("equity") and not equity_open:
+                closed_session.append(contract)
+                continue
+            selected.append((contract, info))
+        return selected, not_executable, closed_session
+
+    def _record_scan_summary(self, summary: dict[str, Any]) -> None:
+        """Keep a scan's summary as the last one and in this New York session's digest list.
+
+        Only the current New York session is retained, so a long-running daemon cannot
+        accumulate one summary list per calendar day.
+        """
+        self.last_scan_summary = summary
+        et_today = self.session_start_et().date().isoformat()
+        self._session_scan_stats = {et_today: [*self._session_scan_stats.get(et_today, []), summary]}
+
+    async def _record_gated_scan(
+        self,
+        *,
+        decided_at: datetime,
+        scope: dict[str, Any],
+        trigger: ScanTrigger,
+        budget: ScanBudget,
+        status: ScanStatus,
+        gate: Mapping[str, Any],
+        gate_reason: str,
+        scheduled_time_et: str | None,
+        calendar_block: Mapping[str, Any],
+        regime_block: Mapping[str, Any] | None,
+        notice: ScanNotice | None,
+    ) -> None:
+        """A non-dry unrestricted scan the lockout or the regime read gated: its digest summary, its journal
+        event with no candidates (a budgeted scan only) and its notice, in one transaction; never raises.
+
+        The summary is recorded first, so a journal failure is noted on it (``scan_journal_error``).
+        """
+        summary: dict[str, Any] = {
+            "scope": scope,
+            "trigger": str(trigger),
+            "budget": str(budget),
+            "status": str(status),
+            "scheduled_time_et": scheduled_time_et,
+            "gate_reason": gate_reason,
+        }
+        self._record_scan_summary(summary)
+        scan_id = uuid4().hex
+        if budget != ScanBudget.NONE:
+            await self._journal_scan_ranking(
+                scan_id=scan_id,
+                decided_at=decided_at,
+                budget=budget,
+                trigger=trigger,
+                status=status,
+                gate=gate,
+                scheduled_time_et=scheduled_time_et,
+                calendar_block=calendar_block,
+                regime_block=regime_block,
+                funnel=None,
+                notice=notice,
+                ranked=[],
+                outcomes=[],
+                shadow_by_rank=[],
+                llm_by_rank=[],
+                news_by_rank=[],
+                signal_ids_by_rank=[],
+                card_policy_by_rank=[],
+                book_by_rank=[],
+                snapshot_key=None,
+                dynamic_sources={},
+                summary=summary,
+            )
+        elif notice is not None:
+            # Outside the journal contract (no budget), the notice still goes out once per date.
+            try:
+                et_date = self.session_start_et(decided_at).date().isoformat()
+                await append_scan_journal(self.db, et_date=et_date, scan_id=scan_id, payload=None, notice=notice)
+            except Exception as exc:
+                self._scan_journal_failed(summary, exc)
+
+    async def _skip_scan_for_regime(
+        self,
+        exc: Exception,
+        *,
+        dry_run: bool,
+        scope: dict[str, Any],
+        trigger: ScanTrigger,
+        budget: ScanBudget,
+        scheduled_time_et: str | None,
+        drift_scan: bool,
+        alpha_snapshot: Any,
+        calendar_block: Mapping[str, Any],
+    ) -> None:
+        """End a scan whose regime read raised.
+
+        A non-dry unrestricted scan journals ``regime_unavailable`` (when budgeted), journals the skipped
+        PEAD decision of a drift scan and records a gated summary for the digest. Only a scheduled
+        suggestion scan queues the New York date's one notice, in the same transaction: it exists to say
+        a card slot (and the PEAD decision) was lost, so a swing, operator, chat or CLI scan, whose caller
+        gets its own reply or none, never spends it. Every non-dry scan observes SCAN not ready, even
+        when journaling raises: a lost scan is a scan failure. A restricted scan's operator reply is its
+        caller's. A dry run only logs and prints. Only type names leave here, never the exception's text.
+        """
+        gate = regime_unavailable_gate(exc)
+        errors_text = regime_errors_text(gate["errors"])
+        logger.warning(
+            "Market regime unavailable (%s); scan skipped",
+            errors_text,
+            exc_info=not isinstance(exc, RegimeUnavailable),
+            extra={"event": "regime_unavailable", "missing": gate["missing"], "errors": gate["errors"]},
+        )
+        if dry_run:
+            print(f"[DRY RUN] Market regime unavailable ({errors_text}); scan skipped.")
+            return
+        try:
+            if not scope["restricted"] and scope["timeframe"] is None:
+                at = datetime.now(UTC)
+                # The notice says whether the 10:35 PEAD decision was lost too, so ask before journaling it.
+                pead_skipped = (
+                    drift_scan
+                    and self._skipped_drift(alpha_snapshot, scheduled_time_et, reason="regime unavailable") is not None
+                )
+                await self._record_gated_scan(
+                    decided_at=at,
+                    scope=scope,
+                    trigger=trigger,
+                    budget=budget,
+                    status=ScanStatus.REGIME_UNAVAILABLE,
+                    gate=gate,
+                    gate_reason="market regime unavailable",
+                    scheduled_time_et=scheduled_time_et,
+                    calendar_block=calendar_block,
+                    regime_block=unavailable_regime_block(
+                        exc, at=at, macro_enabled=self.config.regime.yield_curve_enabled
+                    ),
+                    notice=regime_unavailable_notice(gate["errors"], at=at, trigger=trigger, pead_skipped=pead_skipped)
+                    if trigger == ScanTrigger.SUGGESTION_SCAN
+                    else None,
+                )
+                if drift_scan:
+                    await self._journal_skipped_drift(alpha_snapshot, scheduled_time_et, reason="regime unavailable")
+        finally:
+            await self.readiness.observe(
+                HealthComponent.SCAN, False, f"Regime unavailable ({errors_text}); scan skipped"
+            )
+
     async def _admit_candidate(
         self,
         candidate: Any,
@@ -1685,11 +2043,12 @@ class TradingCopilot:
         active_positions: list[dict[str, Any]],
         dry_run: bool,
         corporate_actions: CorporateActionsLookup | None,
-    ) -> tuple[tuple[Any, Any, Any] | None, str | None]:
+    ) -> tuple[tuple[Any, Any, Any] | None, AdmissionRefusal | None]:
         """Dedup, account risk and the deterministic evaluation shared by native and drift candidates.
 
-        Returns ``((candidate, det_res, account_risk), None)`` or ``(None, reason)``, where
-        reason is ``"duplicate"``, ``"account risk unavailable: …"`` or ``"rejected: …"``.
+        Returns ``((candidate, det_res, account_risk), None)`` or ``(None, refusal)``. The refusal is
+        typed (duplicate, account risk unavailable, or rejected with ``det_res.rejection_rule``) and
+        reads as its reason, ``"duplicate"``, ``"account risk unavailable: …"`` or ``"rejected: …"``.
         Any other exception propagates to the caller's own guard.
         """
         # Deduplication check
@@ -1720,7 +2079,7 @@ class TradingCopilot:
                     "strategy": candidate.strategy,
                 },
             )
-            return None, "duplicate"
+            return None, AdmissionRefusal(RefusalKind.DUPLICATE, None, "duplicate")
 
         # Risk evaluation
         account_risk = None
@@ -1737,7 +2096,9 @@ class TradingCopilot:
                     exc,
                     extra={"event": "candidate_risk_unavailable", "contract": candidate.contract},
                 )
-                return None, f"account risk unavailable: {exc}"
+                return None, AdmissionRefusal(
+                    RefusalKind.ACCOUNT_RISK_UNAVAILABLE, None, f"account risk unavailable: {exc}"
+                )
         # Deterministic pass: it decides which candidates may compete for a card. The
         # winners are re-evaluated in the send phase with the caller's use_llm, and that
         # second result is the one recorded.
@@ -1763,7 +2124,9 @@ class TradingCopilot:
                     "rejection_rule": det_res.rejection_rule,
                 },
             )
-            return None, f"rejected: {det_res.rejection_reason}"
+            return None, AdmissionRefusal(
+                RefusalKind.REJECTED, det_res.rejection_rule, f"rejected: {det_res.rejection_reason}"
+            )
 
         return (candidate, det_res, account_risk), None
 
@@ -1855,7 +2218,13 @@ class TradingCopilot:
         decided_at: datetime,
         budget: ScanBudget,
         trigger: ScanTrigger,
-        regime_block: dict[str, Any],
+        status: ScanStatus,
+        gate: Mapping[str, Any] | None,
+        scheduled_time_et: str | None,
+        calendar_block: Mapping[str, Any],
+        regime_block: Mapping[str, Any] | None,
+        funnel: Mapping[str, Any] | None,
+        notice: ScanNotice | None = None,
         ranked: list[tuple[Any, Any, Any]],
         outcomes: list[str | None],
         shadow_by_rank: list[dict[str, Any] | None],
@@ -1868,7 +2237,10 @@ class TradingCopilot:
         dynamic_sources: Mapping[str, str],
         summary: dict[str, Any],
     ) -> None:
-        """Append one ``scan_candidates_ranked`` event in its own transaction; never raises."""
+        """Append one ``scan_candidates_ranked`` event, plus ``notice``, in its own transaction; never raises.
+
+        A failure records only its type name as ``summary["scan_journal_error"]``.
+        """
         try:
             policy = self.config.card_policy
             candidates = [
@@ -1900,9 +2272,21 @@ class TradingCopilot:
                 "scope": "universe",
                 # Which caller ran this full-universe scan; never read by ranking or sending.
                 "trigger": str(trigger),
+                # How the scan ended; ``gate`` names the lockout or the regime failure that ended it early
+                # (null when completed). A reader treats an event without ``status`` as completed.
+                "status": str(status),
+                "gate": None if gate is None else dict(gate),
+                # The configured New York time of a scheduled suggestion scan (null otherwise).
+                "scheduled_time_et": scheduled_time_et,
+                # The union tier-1 calendar check the whole-scan lockout judged.
+                "calendar": dict(calendar_block),
                 # The regime the whole scan observed (scan-level, like trigger and budget); the
                 # outcomes report copies it onto each candidate and buckets by it. Never a gate.
-                "regime": regime_block,
+                # Null when the lockout gated the scan before the read.
+                "regime": None if regime_block is None else dict(regime_block),
+                # The completed scan's collect funnel (``ScanFunnel.journal_block``); null when gated. A
+                # reader treats an event without ``funnel`` as unknown.
+                "funnel": None if funnel is None else dict(funnel),
                 "budget": str(budget),
                 "ranking_key": "setup_quality",
                 "card_policy": {
@@ -1914,21 +2298,18 @@ class TradingCopilot:
                 "candidates": candidates,
             }
             et_date = self.session_start_et(decided_at).date().isoformat()
-            workflows = self.db.workflows
-            async with self.db.session_factory() as session, session.begin():
-                await workflows.lock(session)
-                await workflows.append(
-                    session,
-                    stream=f"scan/{et_date}",
-                    kind=EventKind.SCAN_CANDIDATES_RANKED,
-                    payload=payload,
-                    key=f"scan_candidates_ranked/{scan_id}",
-                )
+            await append_scan_journal(self.db, et_date=et_date, scan_id=scan_id, payload=payload, notice=notice)
         except Exception as exc:
-            summary["scan_journal_error"] = f"{type(exc).__name__}: {exc}"
-            logger.exception(
-                "Scan ranking journal failed; cards and budget are unaffected", extra={"event": "scan_journal_failed"}
-            )
+            self._scan_journal_failed(summary, exc)
+
+    @staticmethod
+    def _scan_journal_failed(summary: dict[str, Any], exc: Exception) -> None:
+        """Note a failed scan-journal write (event and notice rolled back together) by type name only."""
+        summary["scan_journal_error"] = type(exc).__name__
+        logger.exception(
+            "Scan ranking journal failed; cards and budget are unaffected",
+            extra={"event": "scan_journal_failed", "error": type(exc).__name__},
+        )
 
     async def _prepare_drift(self, alpha_snapshot: Any, active_positions: list[dict[str, Any]]) -> DriftPreparation:
         """This session's PEAD drift events, minus owned names; never raises.
@@ -1969,14 +2350,16 @@ class TradingCopilot:
             prep = DriftPreparation("unavailable", session, reason=f"error: {type(exc).__name__}")
         return dataclass_replace(prep, elapsed_seconds=round(time.monotonic() - started, 1))
 
-    async def _journal_skipped_drift(self, alpha_snapshot: Any, scheduled_time_et: str | None, *, reason: str) -> None:
-        """Journal the 10:35 PEAD decision a halted or macro-locked scan never reached; never raises.
+    async def _journal_skipped_drift(self, alpha_snapshot: Any, scheduled_time_et: str | None, *, reason: str) -> bool:
+        """Journal the 10:35 PEAD decision a halted, macro-locked or regime-gated scan never reached; never raises.
 
-        No notice: the halt or lockout already has its own.
+        Returns whether a decision was journaled. No PEAD notice: the halt and the lockout have their own,
+        and the regime notice already says no PEAD decision was made.
         """
         prep = self._skipped_drift(alpha_snapshot, scheduled_time_et, reason=reason)
-        if prep is not None:
-            await self._journal_drift(scan_id=uuid4().hex, prep=prep, outcomes={}, summary=self.last_scan_summary)
+        if prep is None:
+            return False
+        return await self._journal_drift(scan_id=uuid4().hex, prep=prep, outcomes={}, summary=self.last_scan_summary)
 
     def _skipped_drift(
         self, alpha_snapshot: Any, scheduled_time_et: str | None, *, reason: str
@@ -2016,8 +2399,10 @@ class TradingCopilot:
         outcomes: Mapping[str, str],
         summary: dict[str, Any],
         open_drift_positions: int | None = None,
-    ) -> None:
+    ) -> bool:
         """Append one ``pead_decision`` event, plus the session's one unavailable notice, in one transaction; never raises.
+
+        Returns whether the event was written.
 
         ``events`` holds every event the study would have traded: the considered ones with
         their card outcome, then the owner-skipped ones as ``skipped: <reason>``.
@@ -2073,6 +2458,8 @@ class TradingCopilot:
                 "PEAD decision journal failed; cards and budget are unaffected",
                 extra={"event": "pead_decision_journal_failed"},
             )
+            return False
+        return True
 
     async def _select_dynamic_universe(self) -> tuple[DynamicSelection | None, dict[str, AssetInfo], str | None]:
         """This suggestion scan's filtered screener names, or why they are unavailable; never raises.
@@ -3163,12 +3550,20 @@ class TradingCopilot:
         rounded = round_to_tick(price, tick_size)
         return rounded if rounded > 0 else None
 
-    async def _news_blocks(self, ranked: list[tuple[Any, Any, Any]], *, use_llm: bool) -> list[dict[str, Any] | None]:
+    async def _news_blocks(
+        self,
+        ranked: list[tuple[Any, Any, Any]],
+        *,
+        use_llm: bool,
+        excluded_ranks: frozenset[int] = frozenset(),
+    ) -> list[dict[str, Any] | None]:
         """One news block per ranked native equity candidate (drift and futures candidates get None); never raises.
 
         One fetch per scan; scoring follows rank order up to ``news.max_scored_per_scan``, and a scan without
         the LLM (``use_llm=False``) scores nothing, so its blocks keep counts and headlines only. Any failure
-        of the step yields ``unavailable`` blocks carrying the exception type name only.
+        of the step yields ``unavailable`` blocks carrying the exception type name only. A candidate whose
+        1-based rank is in ``excluded_ranks`` (a broad-index ETF that cannot be carded) gets None and is not
+        fetched or scored, even when another card on the same symbol is.
         """
         blocks: list[dict[str, Any] | None] = [None] * len(ranked)
         service = self.news_context
@@ -3176,8 +3571,10 @@ class TradingCopilot:
             return blocks
         wanted = [
             candidate.contract
-            for candidate, _det, _risk in ranked
-            if "/" not in candidate.contract and getattr(candidate, "catalog_event", None) is None
+            for rank, (candidate, _det, _risk) in enumerate(ranked, 1)
+            if rank not in excluded_ranks
+            and "/" not in candidate.contract
+            and getattr(candidate, "catalog_event", None) is None
         ]
         if not wanted:
             return blocks
@@ -3193,8 +3590,12 @@ class TradingCopilot:
                 symbol.strip().upper(): unavailable_block(self.config.news, type(exc).__name__) for symbol in wanted
             }
         for index, (candidate, _det, _risk) in enumerate(ranked):
-            # A drift card sharing a native candidate's symbol still gets no block.
-            if candidate.contract in wanted and getattr(candidate, "catalog_event", None) is None:
+            # A drift card sharing a native candidate's symbol still gets no block, nor an excluded rank.
+            if (
+                index + 1 not in excluded_ranks
+                and candidate.contract in wanted
+                and getattr(candidate, "catalog_event", None) is None
+            ):
                 blocks[index] = found.get(candidate.contract.strip().upper())
         return blocks
 
@@ -3251,7 +3652,7 @@ class TradingCopilot:
         assert request.entry_price is not None and request.stop_loss is not None
         # Degenerate levels are MISSED by the assessment itself; the macro gate divides by the risk.
         if abs(request.entry_price - request.stop_loss) > 0:
-            reason = await self._macro_gate(request, sig, regime)
+            reason = await self._macro_gate(request, sig, regime, now=now)
             if reason:
                 return reason
         if asset_class.upper() == AssetClass.EQUITY:
@@ -3932,7 +4333,10 @@ class TradingCopilot:
         """
         name = html.escape(contract)
         if summary is None:
-            return f"No fresh card for {name}: the scan did not run (trading halt, closed session or macro lockout)."
+            return (
+                f"No fresh card for {name}: the scan did not run "
+                "(trading halt, closed session, macro lockout or market regime unavailable)."
+            )
         if (code := ((summary.get("dynamic") or {}).get("excluded") or {}).get(contract)) is not None:
             # A gated dynamic name never reached strategy scanning.
             return f"{name} was not scanned: {html.escape(_DYNAMIC_EXCLUSION_PHRASES.get(code, code))}."
@@ -3961,30 +4365,29 @@ class TradingCopilot:
 
     async def _entry_macro_check(self, request: OrderRequest, signal: dict[str, Any]) -> str | None:
         """Admission's macro check: force-refreshes the regime before any submission."""
-        if reason := await self._macro_lockout_reason():
+        if reason := await self._macro_lockout_reason(now=datetime.now(UTC)):
             return reason
         regime = await self.regime_detector.get_regime(force_refresh=True)
         return self._regime_gate(request, signal, regime)
 
-    async def _macro_gate(self, request: OrderRequest, signal: dict[str, Any], regime: Any) -> str | None:
-        """The same macro check against a regime the caller already holds (tap time: cached)."""
-        return await self._macro_lockout_reason() or self._regime_gate(request, signal, regime)
+    async def _macro_gate(
+        self, request: OrderRequest, signal: dict[str, Any], regime: Any, *, now: datetime
+    ) -> str | None:
+        """The same macro check at the caller's instant against a regime it already holds (tap time: cached)."""
+        return await self._macro_lockout_reason(now=now) or self._regime_gate(request, signal, regime)
 
-    async def _macro_lockout_reason(self) -> str | None:
+    async def _macro_lockout_reason(self, *, now: datetime) -> str | None:
         """The ``agentic_trader.risk.macro_lockout`` reason, or None.
 
-        One clock: the calendar finds the tier-1 event whose window contains ``now`` (its
-        timestamp is aware) and the rule judges the same instant and formats the text, so
-        the tap, the preflight and the scan show one lockout text.
+        One clock: the union calendar's check at ``now`` finds the tier-1 event whose window
+        contains it and the rule judges the same instant and formats the text, so the tap, the
+        preflight, the evaluator and the scan show one lockout text, including the closed-policy
+        refusal of an unverified static calendar.
         """
         limits = RiskLimits.from_config(self.config)
-        now = datetime.now(UTC)
-        in_lockout, event = await self.calendar.is_in_lockout_window(
-            pre_minutes=limits.lockout_pre_minutes, post_minutes=limits.lockout_post_minutes, now=now
-        )
-        if in_lockout and event is not None and (rejection := macro_lockout(event.title, event.timestamp, now, limits)):
-            return rejection.reason
-        return None
+        check = await self.calendar.check(now, limits.lockout_pre_minutes, limits.lockout_post_minutes)
+        rejection = check.lockout_rejection(limits)
+        return rejection.reason if rejection is not None else None
 
     def _regime_gate(self, request: OrderRequest, signal: dict[str, Any], regime: Any) -> str | None:
         """Tap/admission-time regime gate: the shared breakout, reward/risk and per-trade budget rules.
@@ -4249,10 +4652,13 @@ class TradingCopilot:
         current_exposure = await self.db.get_active_notional_exposure()
         active_count = await self.db.get_active_contract_count()
         eff_leverage = current_exposure / self.config.portfolio.cash if self.config.portfolio.cash > 0 else 0.0
-        macro_summary = await self.calendar.get_macro_summary_for_prompt(
-            pre_minutes=self.config.risk.lockout_pre_event_minutes,
-            post_minutes=self.config.risk.lockout_post_event_minutes,
-        )
+        macro_summary = (
+            await self.calendar.check(
+                datetime.now(UTC),
+                self.config.risk.lockout_pre_event_minutes,
+                self.config.risk.lockout_post_event_minutes,
+            )
+        ).prompt_text()
         regime = await self.regime_detector.get_regime()
         signals = await self.db.get_recent_signals(limit=10)
 
@@ -4286,9 +4692,8 @@ class TradingCopilot:
 
     @staticmethod
     def _is_suggestion_scan(summary: dict[str, Any]) -> bool:
-        """A universe scan: no timeframe filter and no symbol restriction."""
-        scope = summary.get("scope") or {}
-        return scope.get("timeframe") is None and not scope.get("restricted")
+        """A scheduled suggestion scan's summary (``make_suggestion_scan``), completed or gated."""
+        return summary.get("trigger") == ScanTrigger.SUGGESTION_SCAN
 
     async def publish_scan_digest(self, et_date: str | None = None) -> str:
         """Publish exactly one end-of-session digest of this New York date's suggestion scans.
@@ -4298,19 +4703,29 @@ class TradingCopilot:
         how many scans found it unavailable); a coverage-excluded dynamic name is counted
         there, not again under "coverage excluded".
 
-        Only *universe* suggestion scans are aggregated: a summary with a timeframe (the
-        15-minute intraday job) or a symbol restriction (an operator or Telegram scan of
-        named contracts) is not a suggestion scan and is excluded. If only excluded scans
-        ran, the digest says no suggestion scans ran.
+        Only summaries with ``trigger == ScanTrigger.SUGGESTION_SCAN`` are aggregated: the swing,
+        intraday and operator scans never count. A suggestion scan the macro lockout or a regime
+        failure gated is never counted as a zero-count scan; it is listed as "Skipped: 14:35
+        (macro lockout: …)". If none ran, the digest says so; if all were skipped, it says no
+        suggestion scans completed and lists them.
 
         `publish_message` marks the text as formatted HTML. Every interpolated value is
-        either one of our own literals or a contract symbol matching ``^[A-Z][A-Z.]{0,5}$``
-        (plus an optional leading ``/`` for futures), so no escaping is needed here.
+        either one of our own literals, a contract symbol matching ``^[A-Z][A-Z.]{0,5}$``
+        (plus an optional leading ``/`` for futures) or an escaped gate reason (it can carry a
+        calendar event title).
         """
         et_date = et_date or self.session_start_et().date().isoformat()
-        scans = [s for s in self._session_scan_stats.get(et_date, []) if self._is_suggestion_scan(s)]
-        if not scans:
+        session = [s for s in self._session_scan_stats.get(et_date, []) if self._is_suggestion_scan(s)]
+        scans = [s for s in session if s.get("status", ScanStatus.COMPLETED) == ScanStatus.COMPLETED]
+        skipped = ", ".join(
+            f"{s.get('scheduled_time_et') or 'unscheduled'} ({html.escape(str(s.get('gate_reason')))})"
+            for s in session
+            if s.get("status", ScanStatus.COMPLETED) != ScanStatus.COMPLETED
+        )
+        if not session:
             text = f"📋 Scan digest {et_date}: no suggestion scans ran this session."
+        elif not scans:
+            text = f"📋 Scan digest {et_date}: no suggestion scans completed this session. Skipped: {skipped}."
         else:
             candidates = sum(s.get("candidates", 0) for s in scans)
             sent = sum(s.get("sent", 0) for s in scans)
@@ -4328,11 +4743,17 @@ class TradingCopilot:
                 }
             )
             durations = ", ".join(f"{s.get('duration_seconds', 0):.0f}s" for s in scans)
-            top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in runners[:5])
+            # A listed index is scanned every session: counted apart, so it never fills the "top:" slots.
+            actionable = [r for r in runners if r.get("reason") != BROAD_INDEX_REASON]
+            index_excluded = len(runners) - len(actionable)
+            top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in actionable[:5])
             text = (
                 f"📋 Scan digest {et_date}: {len(scans)} scan(s), {scanned} scanned, "
                 f"{insufficient} insufficient, {candidates} candidates, {sent} card(s) sent, "
-                f"{len(runners)} runners-up" + (f" — top: {top}" if top else "") + ". "
+                f"{len(runners)} runners-up"
+                + (f" — top: {top}" if top else "")
+                + (f"; {index_excluded} broad-index ETF(s) excluded" if index_excluded else "")
+                + ". "
                 f"Fetch failures: {len(failed)}" + (f" ({', '.join(failed[:8])})" if failed else "") + "; "
                 f"coverage excluded: {len(excluded)}; scan durations: {durations}."
             )
@@ -4346,6 +4767,8 @@ class TradingCopilot:
                 text += f" {len(names)} dynamic names scanned ({len(dropped)} excluded)" + (
                     f"; dynamic universe unavailable in {unavailable} scan(s)." if unavailable else "."
                 )
+            if skipped:
+                text += f" Skipped: {skipped}."
         await self.outbox.publish_message(text, key=f"scan-digest/{et_date}")
         return text
 
@@ -4363,13 +4786,24 @@ class TradingCopilot:
                 f"🛑 <b>Scan Blocked:</b> Emergency trading halt active ({html.escape(str(self.halt_reason))}). "
                 "Use /resume to clear."
             )
-        count_before = len(await self.db.get_recent_signals(limit=100))
-        await self.run_scan(use_llm=True, dry_run=False)
-        count_after = len(await self.db.get_recent_signals(limit=100))
-        new_alerts = count_after - count_before
+        summary = await self.run_scan(use_llm=True, dry_run=False)
+        if summary is None:
+            # A gated scan leaves its reason in the summary; a closed session or an idle universe leaves none.
+            reason = self.last_scan_summary.get("gate_reason")
+            detail = html.escape(str(reason)) if reason else "no instrument is eligible in the current session"
+            return f"⏸️ <b>Scan Did Not Run:</b> {detail}."
+        # Every card this scan recorded, native and PEAD drift alike (charged as each is recorded).
+        new_alerts = summary["sent"]
         if new_alerts > 0:
             return (
                 f"✅ <b>Scan Complete:</b> {new_alerts} new trade setup(s) identified and alert cards dispatched above."
+            )
+        if runners_up := summary.get("runners_up"):
+            # Setups were ranked but every one was refused (a broad-index exclusion, a spent budget, a veto).
+            top_reason = html.escape(str(runners_up[0].get("reason")))
+            return (
+                f"✅ <b>Scan Complete:</b> No card sent: {len(runners_up)} setup(s) ranked, none carded "
+                f"(top reason: {top_reason})."
             )
         return (
             "✅ <b>Scan Complete:</b> Evaluated all universe contracts. "
@@ -4427,9 +4861,16 @@ class TradingCopilot:
         """One macro dashboard using the same combined snapshot as trade evaluation.
 
         The minimum reward/risk it records and prints is ``agentic_trader.risk.required_reward_risk``,
-        the ratio every entry gate applies under this regime.
+        the ratio every entry gate applies under this regime. Without VIX (``RegimeUnavailable``) it is
+        one plain line naming the missing decision inputs' error types; both ``/macro`` and the macro
+        button reply with it.
         """
-        regime = await self.regime_detector.get_regime()
+        try:
+            regime = await self.regime_detector.get_regime()
+        except RegimeUnavailable as exc:
+            return TelegramHtmlFormatter.format_regime_unavailable_html(
+                regime_errors_text(regime_unavailable_gate(exc)["errors"])
+            )
         required_rr = required_reward_risk(RiskLimits.from_config(self.config), regime.min_rr_threshold)
         await self.db.record_audit(
             AuditEventType.MACRO_REPORT,
@@ -4442,15 +4883,20 @@ class TradingCopilot:
                 "risk_multiplier": regime.risk_multiplier,
                 "macro_unavailable_reason": regime.macro_unavailable_reason,
                 "observation_dates": regime.macro_report.observation_dates if regime.macro_report else {},
+                "regime": regime_journal_block(regime),
             },
         )
         return TelegramHtmlFormatter.format_macro_dashboard_html(regime, required_rr=required_rr)
 
     async def get_explain_macro_html(self) -> str:
         """Format educational macro tutorial and indicator breakdown for Telegram /explain_macro."""
-        report = await self.regime_detector.macro_engine.get_macro_report()
+        evaluation = await self.regime_detector.macro_engine.evaluate()
+        if evaluation.report is None:
+            return html.escape(
+                f"Macro report unavailable: missing decision inputs: {', '.join(evaluation.missing_decision)}"
+            )
         explainer = MacroExplainer(config=self.config)
-        return await explainer.explain(report, format_mode="html")
+        return await explainer.explain(evaluation.report, format_mode="html")
 
     async def get_alphas_summary_html(self) -> str:
         """Format the compact registry and forward-evidence summary for Telegram /alphas."""
