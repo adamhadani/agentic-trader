@@ -25,10 +25,23 @@ def opportunistic_flags(purchases: Sequence[InsiderTransaction]) -> list[bool]:
     return [not routine for routine in _routine(purchases)]
 
 
-def purchase_dates(transactions: Mapping[str, Sequence[InsiderTransaction]]) -> dict[str, np.ndarray]:
-    """Per symbol, the sorted filing-date ordinals of every purchase, routine or not."""
+def _visible(
+    transactions: Mapping[str, Sequence[InsiderTransaction]], last_session: date | None
+) -> dict[str, list[InsiderTransaction]]:
+    """The transactions filed on or before the last session (all of them when ``last_session`` is None)."""
+    return {
+        symbol: [t for t in rows if last_session is None or t.filing_date <= last_session]
+        for symbol, rows in transactions.items()
+    }
+
+
+def purchase_dates(
+    transactions: Mapping[str, Sequence[InsiderTransaction]], *, last_session: date | None = None
+) -> dict[str, np.ndarray]:
+    """Per symbol, the sorted filing-date ordinals of every purchase, routine or not, filed on or before
+    ``last_session`` when given."""
     out: dict[str, np.ndarray] = {}
-    for symbol, rows in transactions.items():
+    for symbol, rows in _visible(transactions, last_session).items():
         ordinals = sorted(t.filing_date.toordinal() for t in rows if t.code == "P")
         if ordinals:
             out[symbol] = np.array(ordinals, dtype=np.int64)
@@ -74,8 +87,15 @@ def build_insider_events(
     *,
     decision_time: time,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Triggers that pass placement, identity and the cooldown, with their counts by reason and year."""
+    """Triggers that pass placement, identity and the cooldown, with their counts by reason and year.
+
+    Filings after the last session are invisible and dropped first. Filings dated before the first
+    session roll to position 0; the runner passes a calendar starting 2016-01-01, more than 21
+    sessions before the first decision, so such early clusters can only produce ``outside_window``
+    triggers.
+    """
     days = list(trading_days)
+    transactions = _visible(transactions, days[-1])
     day_ordinals = np.array([d.toordinal() for d in days], dtype=np.int64)
     start, end = entry.window.decisions
     rows: list[dict[str, Any]] = []

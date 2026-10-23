@@ -61,7 +61,7 @@ def test_two_owners_within_window_fire():
     assert counts["accepted_by_year"] == {2020: 1}
 
 
-def test_owners_22_sessions_apart_do_not_fire():
+def test_owners_21_positions_apart_do_not_fire():
     frame, counts = _build([_tx(DAYS[2], 1), _tx(DAYS[23], 2)])
     assert frame.empty
     assert counts["triggers"] == 0
@@ -152,3 +152,23 @@ def test_purchase_dates_cover_every_purchase_only():
     out = purchase_dates({"AAA": [_tx(DAYS[5], 1), _tx(DAYS[2], 2), _tx(DAYS[3], 1, code="S")]})
     assert out["AAA"].tolist() == [DAYS[2].toordinal(), DAYS[5].toordinal()]
     assert isinstance(out["AAA"], np.ndarray)
+
+
+def test_filings_after_last_session_are_invisible():
+    late = date(2021, 3, 4)
+    txs = [_tx(DAYS[2], 1), _tx(late, 2)]
+    frame, counts = _build(txs)
+    assert frame.empty
+    assert counts["triggers"] == 0
+    assert counts["excluded"] == {}
+    # A late purchase one year after an earlier one cannot make it routine, nor does it enter the dates.
+    assert [t for t in opportunistic_flags([_tx(DAYS[2], 1)])] == [True]
+    assert purchase_dates({"AAA": txs}, last_session=DAYS[-1])["AAA"].tolist() == [DAYS[2].toordinal()]
+
+
+def test_suppressed_trigger_does_not_move_the_cooldown_anchor():
+    days = _calendar(80)
+    txs = [_tx(days[4], 1), _tx(days[5], 2), _tx(days[39], 3), _tx(days[40], 4), _tx(days[69], 5), _tx(days[70], 6)]
+    frame, counts = _build(txs, days)
+    assert list(frame.filing_date) == [days[5], days[70]]
+    assert counts["suppressed_by_cooldown"] == 1
