@@ -31,3 +31,26 @@ def test_the_shipped_calendar_regime_scan_and_scheduler_keys_reach_app_config():
     assert {"unknown_risk_multiplier", "unknown_breakout_allowed"} <= config.regime.model_fields_set
     assert "broad_index_etfs" in config.scan.model_fields_set
     assert "intraday_scan_enabled" in config.scheduler.model_fields_set
+
+
+def test_shipped_asset_classes():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+    classes = config.universe.asset_classes()
+
+    assert classes["XLK"] == "etf_equity" and classes["SPY"] == "etf_equity"
+    assert classes["TLT"] == "rates_credit"
+    assert classes["GLD"] == "metals"
+    assert classes["AAPL"] == "single_stock"
+    assert set(classes) == set(config.universe.symbols)
+    for removed in ("BIL", "SHY"):
+        assert removed not in classes and removed not in config.universe.symbols
+
+
+def test_outcome_asset_classes_fall_back_to_research_etf_cohorts():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+    classes = config.universe.outcome_asset_classes()
+
+    assert classes["BIL"] == "rates_credit" and classes["SHY"] == "rates_credit"
+    assert classes["TLT"] == "rates_credit" and classes["AAPL"] == "single_stock"
+    assert classes["GLD"] == "metals" and classes["EFA"] == "etf_equity"
+    assert "ZZZZ" not in classes

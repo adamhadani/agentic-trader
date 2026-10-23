@@ -17,6 +17,7 @@ reads journaled events and fetches bars.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,7 @@ import pandas as pd
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.execution.durable import EventKind, RankedOutcome, ScanStatus
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.setups.beta import trailing_beta
 from agentic_trader.research.setups.labels import (
     BracketArm,
     BracketHit,
@@ -61,6 +63,10 @@ __all__ = [
 
 _BAR_TIMEFRAME = "1h"
 
+# Calendar days of adjusted daily history fetched before a symbol's earliest decision: the
+# 120-session beta window plus holidays and a missing-day margin.
+BETA_HISTORY_DAYS = 200
+
 MARKET_PROXY_SYMBOL = "SPY"
 
 # Mirror config/research/setup-outcomes-v1.json's frozen protocol values, so the live
@@ -72,6 +78,7 @@ DEFAULT_COST_BPS_PER_SIDE = 5.0
 # A bar-fetch failure's own outcome, distinct from every ``BracketHit`` value: it means
 # "the labeler was never able to try", not "not enough elapsed bars yet" (IMMATURE).
 FETCH_FAILED_HIT = "fetch_failed"
+UNCLASSIFIED = "unclassified"
 
 # The four counterfactual exit arms of config/research/bracket-counterfactual-v1.json (the live
 # arm A0 is the journaled bracket itself). Hard-coded so the live report needs no file at import;
@@ -138,6 +145,12 @@ _COLUMNS = (
     "prior_outcome",
     "market_r",
     "excess_r",
+    "beta",
+    "beta_reason",
+    "beta_market_r",
+    "beta_excess_r",
+    "hold_r",
+    "timing_r",
     *_CF_COLUMNS,
     "market_reason",
     "decided_at",
@@ -227,6 +240,45 @@ def market_r(
         return None
     sign = 1.0 if direction == "LONG" else -1.0
     return sign * (close_price / open_price - 1.0) * float(entry) / risk_unit
+
+
+def buy_and_hold_r(
+    direction: str,
+    entry: float,
+    stop: float,
+    entry_time: datetime | pd.Timestamp,
+    hourly: pd.DataFrame,
+    max_hold_sessions: int,
+) -> float | None:
+    """The candidate's own buy-and-hold return over the bracket's full horizon, in its R units.
+
+    From the open of the first regular bar at or after ``entry_time`` (the labeler's entry) to the
+    close of the last regular bar of the ``max_hold_sessions``-th New York session counted from the
+    entry session -- the bracket's own timeout exit -- signed by direction, uncosted. None until
+    a bar of a later session exists (when the labeller's timeout would resolve), when the entry bar
+    is missing or the geometry has no risk unit.
+    """
+    risk_unit = abs(float(entry) - float(stop))
+    if not risk_unit or hourly is None or hourly.empty or max_hold_sessions < 1:
+        return None
+    regular = regular_session_bars(hourly)
+    walk = regular.loc[regular.index >= pd.Timestamp(entry_time)]
+    if walk.empty:
+        return None
+    local = pd.DatetimeIndex(walk.index).tz_convert(ET_TZ)
+    dates = list(dict.fromkeys(local.normalize()))
+    if len(dates) < max_hold_sessions:
+        return None
+    # Matured exactly when the labeller's timeout would be: a bar of a later session exists, so the
+    # horizon session's last bar is final (never a still-forming final-hour bar).
+    if len(dates) <= max_hold_sessions:
+        return None
+    horizon_bars = walk.loc[local.normalize() == dates[max_hold_sessions - 1]]
+    open_price = float(walk["Open"].iloc[0])
+    if not open_price:
+        return None
+    sign = 1.0 if direction == "LONG" else -1.0
+    return sign * (float(horizon_bars["Close"].iloc[-1]) / open_price - 1.0) * float(entry) / risk_unit
 
 
 def _immature_row(entry: dict[str, Any], symbol: str, market_reason: str | None = None) -> dict[str, Any]:
@@ -324,6 +376,9 @@ def _row(
     market_value: float | None = None,
     market_reason: str | None = None,
     counterfactual: dict[str, Any] | None = None,
+    beta: float | None = None,
+    beta_reason: str | None = None,
+    hold_value: float | None = None,
 ) -> dict[str, Any]:
     shadow = entry.get("shadow") or {}
     raw_book = entry.get("book_sizing")
@@ -337,6 +392,7 @@ def _row(
     regime: dict[str, Any] = raw_regime if isinstance(raw_regime, dict) else {}
     decided_at = entry["decided_at"]
     outcome = entry.get("outcome")
+    beta_market_value = beta * market_value if (beta is not None and market_value is not None) else None
     return {
         "scan_id": entry.get("scan_id"),
         "session": decided_at.astimezone(ET_TZ).date().isoformat(),
@@ -391,6 +447,14 @@ def _row(
         "prior_outcome": "none",
         "market_r": market_value,
         "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
+        "beta": beta,
+        "beta_reason": beta_reason,
+        "beta_market_r": beta_market_value,
+        "beta_excess_r": (r_cost - beta_market_value)
+        if (r_cost is not None and beta_market_value is not None)
+        else None,
+        "hold_r": hold_value,
+        "timing_r": (r_cost - hold_value) if (r_cost is not None and hold_value is not None) else None,
         **dict.fromkeys(_CF_COLUMNS),
         **(counterfactual or {}),
         "market_reason": market_reason,
@@ -407,6 +471,8 @@ def _label_one(
     cost_bps: float,
     market: pd.DataFrame | None,
     market_reason: str | None,
+    beta: float | None = None,
+    beta_reason: str | None = None,
 ) -> dict[str, Any]:
     direction = entry.get("direction")
     entry_price, stop_price, target_price = entry.get("entry"), entry.get("stop"), entry.get("target")
@@ -431,6 +497,9 @@ def _label_one(
         and outcome.exit_time is not None
     ):
         market_value = market_r(direction, levels.entry, levels.stop, outcome.entry_time, outcome.exit_time, market)
+    hold_value = None
+    if outcome.r_cost is not None and outcome.entry_time is not None:
+        hold_value = buy_and_hold_r(direction, levels.entry, levels.stop, outcome.entry_time, hourly, max_hold_sessions)
     counterfactual: dict[str, Any] = {}
     for arm in LIVE_COUNTERFACTUAL_ARMS:
         arm_outcome = label_bracket(
@@ -468,6 +537,9 @@ def _label_one(
         market_value=market_value,
         market_reason=market_reason,
         counterfactual=counterfactual,
+        beta=beta,
+        beta_reason=beta_reason,
+        hold_value=hold_value,
     )
 
 
@@ -546,6 +618,7 @@ def label_journaled(
     max_requests_per_minute: int = 150,
     market_symbol: str | None = MARKET_PROXY_SYMBOL,
     tape_symbol: str | None = MARKET_PROXY_SYMBOL,
+    with_beta: bool = True,
 ) -> pd.DataFrame:
     """One row per journaled ranked candidate, labelled with its realized bracket outcome.
 
@@ -565,6 +638,9 @@ def label_journaled(
     The tape (SPY daily, ``TAPE_HISTORY_DAYS`` calendar days before the earliest decision, raw,
     one request after the hourly ones) is computed per decision session with ``tape_state``; a
     failed fetch records ``tape_reason`` on every row.
+    The trailing beta (``with_beta``) adds one adjusted daily request per candidate symbol and one
+    for the market proxy after the tape; a failed one records ``beta_reason`` on the rows it
+    covers. Without it the beta columns are all None.
     """
     now = now or datetime.now(UTC)
     by_symbol = _candidate_entries(events)
@@ -573,11 +649,13 @@ def label_journaled(
     except Exception:
         pacer = None
 
-    def fetch(symbol: str, start: datetime, timeframe: str = _BAR_TIMEFRAME) -> pd.DataFrame | str:
+    def fetch(
+        symbol: str, start: datetime, timeframe: str = _BAR_TIMEFRAME, adjustment: str = "raw"
+    ) -> pd.DataFrame | str:
         if pacer is not None:
             pacer.acquire()
         try:
-            return bars.fetch_bars(symbol, timeframe, start, now, adjustment="raw")
+            return bars.fetch_bars(symbol, timeframe, start, now, adjustment=adjustment)
         except Exception as exc:
             return f"{type(exc).__name__}: {exc}"
 
@@ -609,15 +687,45 @@ def label_journaled(
         else:
             daily = tape
 
+    # Adjusted daily bars for the trailing beta: one request per candidate symbol (from 200
+    # calendar days before its earliest decision) and one for the market proxy.
+    beta_daily: dict[str, pd.DataFrame | str] = {}
+    beta_market: pd.DataFrame | str | None = None
+    if with_beta and market_symbol is not None and market_start is not None:
+        # Rows of a symbol whose hourly fetch failed never use its beta, so skip those requests.
+        # `starts` already widens the proxy's own window to the earliest decision of all.
+        beta_daily = {
+            symbol: fetch(symbol, start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all")
+            for symbol, start in starts.items()
+            if not isinstance(fetched[symbol], str)
+        }
+        beta_market = (
+            beta_daily[market_symbol]
+            if market_symbol in beta_daily
+            else fetch(market_symbol, market_start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all")
+        )
+
+    def beta_for(symbol: str, session: str) -> tuple[float | None, str | None]:
+        if beta_market is None:
+            return None, None
+        symbol_daily = beta_daily[symbol]
+        if isinstance(beta_market, str):
+            return None, f"fetch_failed: {beta_market.split(':', 1)[0]}"
+        if isinstance(symbol_daily, str):
+            return None, f"fetch_failed: {symbol_daily.split(':', 1)[0]}"
+        return trailing_beta(symbol_daily, beta_market, date.fromisoformat(session))
+
     rows: list[dict[str, Any]] = []
     for symbol, entries in by_symbol.items():
         hourly = fetched[symbol]
         if isinstance(hourly, str):
             rows.extend(_fetch_failed_row(entry, symbol, hourly, market_reason) for entry in entries)
             continue
-        rows.extend(
-            _label_one(entry, symbol, hourly, max_hold_sessions, cost_bps, market, market_reason) for entry in entries
-        )
+        for entry in entries:
+            beta, beta_reason = beta_for(symbol, entry["decided_at"].astimezone(ET_TZ).date().isoformat())
+            rows.append(
+                _label_one(entry, symbol, hourly, max_hold_sessions, cost_bps, market, market_reason, beta, beta_reason)
+            )
 
     states: dict[str, TapeState] = {}
     for row in rows:
@@ -697,14 +805,49 @@ def _base_rate(frame: pd.DataFrame) -> dict[str, Any] | None:
     }
 
 
-def _exposure(frame: pd.DataFrame) -> dict[str, Any] | None:
-    if frame.empty:
+def _finite_mean(frame: pd.DataFrame, column: str) -> float | None:
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    return float(values.mean()) if len(values) else None
+
+
+def _exposure(controlled: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any] | None:
+    """SPY-controlled means over ``controlled`` rows; hold/timing and beta coverage over every
+    ``mature`` row of the class (a row without a SPY ``market_r`` still has its own hold)."""
+    if mature.empty:
         return None
+    with_beta_excess = controlled.dropna(subset=["beta_excess_r"])
+    beta_reasons = mature["beta_reason"].dropna()
     return {
-        "n": len(frame),
-        "mean_r_cost": float(frame["r_cost"].mean()),
-        "mean_market_r": float(frame["market_r"].mean()),
-        "mean_excess_r": float(frame["excess_r"].mean()),
+        "n": len(controlled),
+        "mean_r_cost": _finite_mean(controlled, "r_cost"),
+        "mean_market_r": _finite_mean(controlled, "market_r"),
+        "mean_excess_r": _finite_mean(controlled, "excess_r"),
+        "n_beta": int(pd.to_numeric(controlled["beta"], errors="coerce").notna().sum()),
+        "mean_beta": _finite_mean(controlled, "beta"),
+        "mean_beta_market_r": _finite_mean(controlled, "beta_market_r"),
+        "mean_beta_excess_r": _finite_mean(controlled, "beta_excess_r"),
+        "mean_excess_r_same_rows": _finite_mean(with_beta_excess, "excess_r"),
+        "beta_reasons": {str(reason): int(count) for reason, count in beta_reasons.value_counts().items()},
+        "mean_hold_r": _finite_mean(mature, "hold_r"),
+        "mean_timing_r": _finite_mean(mature, "timing_r"),
+    }
+
+
+def _asset_class_summary(mature: pd.DataFrame, asset_classes: Mapping[str, str] | None) -> dict[str, Any]:
+    """Mean R, SPY excess and beta-matched excess of the mature rows per asset class (descriptive)."""
+    if mature.empty:
+        return {}
+    labelled = mature.assign(
+        asset_class=mature["contract"].map(lambda symbol: (asset_classes or {}).get(symbol, UNCLASSIFIED))
+    )
+    return {
+        str(name): {
+            "n": len(group),
+            "mean_r_cost": _finite_mean(group, "r_cost"),
+            "mean_excess_r": _finite_mean(group, "excess_r"),
+            "mean_beta_excess_r": _finite_mean(group, "beta_excess_r"),
+        }
+        for name, group in sorted(labelled.groupby("asset_class"))
     }
 
 
@@ -850,7 +993,9 @@ def _counterfactual_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[s
         paired = r_cost.notna()
         hits = mature.loc[paired, f"{prefix}hit"]
         n_pairs = int(paired.sum())
-        excess = r_cost - pd.to_numeric(mature[f"{prefix}market_r"], errors="coerce")
+        arm_market = pd.to_numeric(mature[f"{prefix}market_r"], errors="coerce")
+        excess = r_cost - arm_market
+        beta_excess = (r_cost - pd.to_numeric(mature["beta"], errors="coerce") * arm_market).dropna()
         advantage = (excess - live_excess).dropna()
         arms[arm.name] = {
             "n_pairs": n_pairs,
@@ -859,6 +1004,7 @@ def _counterfactual_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[s
             "timeout_rate": float((hits == BracketHit.TIMEOUT.value).mean()) if n_pairs else None,
             "mean_r_cost": float(r_cost[paired].mean()) if n_pairs else None,
             "mean_excess_r": float(excess.dropna().mean()) if excess.notna().any() else None,
+            "mean_beta_excess_r": float(beta_excess.mean()) if len(beta_excess) else None,
             "advantage_vs_live_excess": float(advantage.mean()) if len(advantage) else None,
         }
     return {"caveat": "descriptive; not a gate", "arms": arms}
@@ -916,12 +1062,13 @@ def scan_supply(events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]
     return dict(sorted(supply.items()))
 
 
-def summarize(frame: pd.DataFrame) -> dict[str, Any]:
+def summarize(frame: pd.DataFrame, *, asset_classes: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Descriptive summary of a labelled frame.
 
     Counts by outcome class (sent, runner-up, journal-only) and maturity, base rates, per-scan
     selection quality by scorer, card-policy counts, book sizing, news, regime/tape and recurrence
-    blocks. A runner-up competed for a card and lost; a journal-only candidate (a swing scan's) never
+    blocks. ``asset_classes`` maps a symbol to its class for ``by_asset_class``; unmapped symbols
+    are ``unclassified``. A runner-up competed for a card and lost; a journal-only candidate (a swing scan's) never
     competed for one.
     """
     if frame.empty:
@@ -961,6 +1108,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
             "regime_context": _regime_summary(frame, frame),
             "recurrence": _recurrence_summary(frame, frame),
             "counterfactual": _counterfactual_summary(frame, frame),
+            "by_asset_class": {},
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -1017,7 +1165,10 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
     controlled = mature.dropna(subset=["market_r"])
     market_reasons = frame["market_reason"].dropna()
     market_exposure = {
-        **{name: _exposure(controlled.loc[mask.loc[controlled.index]]) for name, mask in classes.items()},
+        **{
+            name: _exposure(controlled.loc[mask.loc[controlled.index]], mature.loc[mask.loc[mature.index]])
+            for name, mask in classes.items()
+        },
         # Why the control is missing when the proxy fetch failed (one fetch, so one reason).
         "reason": str(market_reasons.iloc[0]) if len(market_reasons) else None,
     }
@@ -1057,4 +1208,5 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "regime_context": _regime_summary(frame, mature),
         "recurrence": _recurrence_summary(frame, mature),
         "counterfactual": _counterfactual_summary(frame, mature),
+        "by_asset_class": _asset_class_summary(mature, asset_classes),
     }

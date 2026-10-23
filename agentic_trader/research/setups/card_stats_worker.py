@@ -102,6 +102,7 @@ class CardStatsWorker:
             now=now,
             max_requests_per_minute=self.config.market_data.max_requests_per_minute,
             tape_symbol=None,  # the daemon never reads the tape; the CLI report makes the one extra request
+            with_beta=False,  # nor the trailing beta: its adjusted daily requests belong to the CLI report
         )
         if len(frame) and bool((frame["hit"] == FETCH_FAILED_HIT).all()):
             # The labeller's reason is "Type: message"; only the type reaches readiness (and so a

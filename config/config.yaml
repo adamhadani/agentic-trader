@@ -94,6 +94,9 @@ contracts:
 
 universe:
   groups:
+    # BIL and SHY removed 2026-10-23 (holistic review RM-R2): a 1.5x ATR stop on a T-bill fund implies
+    # hundreds of times notional per unit of risk. Static-universe removal only: the dynamic universe and an
+    # operator /scan can still rank them.
     etf32:
       - {symbol: SPY, sector: etf_broad_equity}
       - {symbol: QQQ, sector: etf_broad_equity}
@@ -117,13 +120,11 @@ universe:
       - {symbol: EWG, sector: etf_international}
       - {symbol: EWU, sector: etf_international}
       - {symbol: EWC, sector: etf_international}
-      - {symbol: SHY, sector: etf_rates_credit}
       - {symbol: IEF, sector: etf_rates_credit}
       - {symbol: TLT, sector: etf_rates_credit}
       - {symbol: TIP, sector: etf_rates_credit}
       - {symbol: LQD, sector: etf_rates_credit}
       - {symbol: HYG, sector: etf_rates_credit}
-      - {symbol: BIL, sector: etf_rates_credit}
       - {symbol: AGG, sector: etf_rates_credit}
       - {symbol: GLD, sector: etf_metals}
       - {symbol: SLV, sector: etf_metals}

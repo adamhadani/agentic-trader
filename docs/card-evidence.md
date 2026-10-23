@@ -455,6 +455,34 @@ window the report prints `No journaled candidates in N day(s) (M scan events).`,
 zero-candidate or gated scans reads differently from an empty journal. Descriptive only: not read by
 `risk/`, `card_policy`, `card_stats` or admission.
 
+### Beta-matched and buy-and-hold controls
+
+Beside the SPY-matched `excess_r`, `cards outcomes` reports two further descriptive controls. Neither is a
+gate, and nothing in `risk/`, `card_policy`, `card_stats` or admission reads them. The daemon's `card_stats`
+labelling run skips the beta fetch entirely.
+
+- **Beta-matched excess.** `beta` is a past-only trailing beta of the candidate against SPY: 120 sessions
+  ending the session before the decision, on adjusted daily bars, with at least 100 paired returns. Rows
+  with fewer paired returns, or a failed daily fetch, carry `beta_reason` (`short_history`,
+  `fetch_failed: ...`) and no beta. `beta_market_r` is `beta` times `market_r`, and `beta_excess_r` is
+  `r_cost` minus `beta_market_r`. Each counterfactual arm also reports `mean_beta_excess_r`
+  (`r_cost - beta * arm_market_r`).
+- **Buy-and-hold.** `hold_r` is the candidate's own buy-and-hold return over the bracket's full horizon: from
+  the open of the entry bar to the close of the last regular bar of the `max_hold_sessions`-th session counted
+  from the entry session (the bracket's own timeout exit), signed by direction, in the bracket's R units,
+  uncosted. It is `None` until that session has closed and when bars are missing. A stop or target exit does
+  not shorten it, so `timing_r` is `r_cost - hold_r`: the value the bracket's stop and target added over simply
+  holding for the full horizon.
+- **Summaries.** Each `market_exposure` class adds `n_beta`, `mean_beta`, `mean_beta_market_r`,
+  `mean_beta_excess_r`, `mean_excess_r_same_rows` (the beta-one excess over exactly the rows that carry a
+  `beta_excess_r`), `beta_reasons` (a count per missing-beta reason) and `mean_hold_r` / `mean_timing_r`. The
+  hold and timing means, and `beta_reasons`, cover every mature row with a finite value, whether or not SPY
+  bars exist for it; the other means cover the SPY-controlled rows (`n`).
+- **`by_asset_class`.** Mature rows grouped by `etf_equity`, `rates_credit`, `metals`, `single_stock` (from
+  the configured universe groups and sectors) or `unclassified`, with `n`, `mean_r_cost`, `mean_excess_r`
+  and `mean_beta_excess_r`. A symbol outside the configured universe falls back to the research ETF cohorts (so a removed BIL or SHY is
+  `rates_credit`); any other dynamic name is `unclassified`.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket

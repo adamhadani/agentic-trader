@@ -78,7 +78,7 @@ async def outcomes_cmd(days: int) -> None:
             now=now,
             max_requests_per_minute=config.market_data.max_requests_per_minute,
         )
-        summary = summarize(frame)
+        summary = summarize(frame, asset_classes=config.universe.outcome_asset_classes())
         summary["supply"] = scan_supply(events)
         execution = await collect_execution(db, frame)
         summary["execution"] = summarize_execution(execution)
