@@ -359,6 +359,7 @@ sizing:
   suggest_tiers_enabled: true # suggest Half, Base, and Max tiers in Telegram
 
 execution:
+  native_entry_lifetime: session # an unfilled native entry cancels before the next open (Alpaca only)
   entry_evidence_max_age_seconds: 30.0 # age starts before the first account/book read
   broker_request_timeout_seconds: 10.0
   stop_replace_timeout_seconds: 10.0

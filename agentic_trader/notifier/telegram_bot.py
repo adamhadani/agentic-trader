@@ -230,6 +230,9 @@ def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | No
     return NEWS_LABEL + (html.escape(text, quote=False) if markup else text) + "\n"
 
 
+ENTRY_SESSION_BOUND_LINE = "Unfilled entry cancels before the next open."
+
+
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
@@ -244,6 +247,7 @@ def format_alert_card(
     card_evidence: dict[str, Any] | None = None,
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
+    entry_session_bound: bool = False,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
@@ -262,6 +266,7 @@ def format_alert_card(
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
     valid_until_text = _valid_until_text(valid_until, issued_at)
     valid_until_line = f"• <b>Valid until:</b> {valid_until_text}\n" if valid_until_text else ""
+    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -416,6 +421,7 @@ def format_terminal_card(
     card_evidence: dict[str, Any] | None = None,
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
+    entry_session_bound: bool = False,
 ) -> str:
     """ASCII/plain text formatted card for terminal display.
 
@@ -432,6 +438,7 @@ def format_terminal_card(
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
     valid_until_text = _valid_until_text(valid_until, issued_at)
     valid_until_line = f"• Valid until:      {valid_until_text}\n" if valid_until_text else ""
+    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -1379,6 +1386,7 @@ class TelegramNotifier:
         drift: dict[str, Any] | None = None,
         card_evidence: dict[str, Any] | None = None,
         book_sizing: dict[str, Any] | None = None,
+        entry_session_bound: bool = False,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
         # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
@@ -1402,6 +1410,7 @@ class TelegramNotifier:
                 first_issued_at=first_issued_at,
                 card_evidence=card_evidence,
                 book_sizing=book_sizing,
+                entry_session_bound=entry_session_bound,
                 issued_at=issued_at,
             )
         )
@@ -1426,6 +1435,7 @@ class TelegramNotifier:
             drift=drift,
             card_evidence=card_evidence,
             book_sizing=book_sizing,
+            entry_session_bound=entry_session_bound,
             issued_at=issued_at,
         )
 

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 
 if TYPE_CHECKING:
+    from agentic_trader.config import AppConfig
     from agentic_trader.market.session import MarketCalendarDay
 
 MAX_TRADE_LIFETIME_SECONDS = int(timedelta(days=31).total_seconds())
@@ -69,6 +70,18 @@ def daily_entry_lifetime() -> TradeLifetimePolicy:
         holding_seconds=None,
         version=TRADE_LIFETIME_VERSION_INDEPENDENT,
     )
+
+
+# Provenance key of a native card's entry lifetime. It is never `alpha_policy`, which also switches on
+# alpha-only trailing, re-pricing and sizing behaviour.
+NATIVE_ENTRY_LIFETIME_KEY = "entry_lifetime"
+
+
+def native_entry_lifetime_marker(config: AppConfig) -> dict[str, Any] | None:
+    """The marker a new native card records, or None (switch off, or a broker that cannot cancel)."""
+    if config.execution.native_entry_lifetime != "session" or config.execution_mode != "alpaca":
+        return None
+    return asdict(daily_entry_lifetime())
 
 
 SESSION_LIFETIME_VERSION = "session_count_v1"

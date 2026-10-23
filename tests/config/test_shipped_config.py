@@ -6,9 +6,11 @@ Guards the 2026-10-13 regression class: ``load_config`` once silently ignored a 
 
 from pathlib import Path
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
-from agentic_trader.config import load_config
+from agentic_trader.config import ExecutionConfig, load_config
 
 
 PRODUCTION = {"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""}
@@ -54,3 +56,20 @@ def test_outcome_asset_classes_fall_back_to_research_etf_cohorts():
     assert classes["TLT"] == "rates_credit" and classes["AAPL"] == "single_stock"
     assert classes["GLD"] == "metals" and classes["EFA"] == "etf_equity"
     assert "ZZZZ" not in classes
+
+
+def test_shipped_config_bounds_native_entries():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+
+    assert config.execution.native_entry_lifetime == "session"
+    assert "native_entry_lifetime" in config.execution.model_fields_set
+
+
+def test_native_entry_lifetime_defaults_off():
+    assert ExecutionConfig().native_entry_lifetime == "off"
+
+
+def test_invalid_native_entry_lifetime_refused():
+
+    with pytest.raises(ValidationError):
+        ExecutionConfig(native_entry_lifetime="day")
