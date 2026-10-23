@@ -89,7 +89,10 @@ def _positive(text: str) -> float | None:
         return None
     if not value.is_finite():
         return None
-    cents = float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    try:
+        cents = float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    except InvalidOperation as exc:
+        raise ValueError(f"Form 4 shares or price {text!r} is out of range ({type(exc).__name__})") from exc
     return cents if math.isfinite(cents) and cents > 0 else None
 
 
@@ -130,12 +133,20 @@ def _first_owner_cik(root: ET.Element, roles: Sequence[str], header_order: Mappi
     "First" follows the SEC header's owner order, which is the order the data sets list owners in (the
     XML order differs on multi-owner filings); owners absent from the header follow in XML order.
     """
-    flags = [_ROLE_FLAGS[key] for role in roles if (key := role.strip().lower().replace(" ", "")) in _ROLE_FLAGS]
+    flags = []
+    for role in roles:
+        key = role.strip().lower().replace(" ", "")
+        if key not in _ROLE_FLAGS:
+            raise ValueError(f"owner role {role!r} is not one of Director, Officer, TenPercentOwner, Other")
+        flags.append(_ROLE_FLAGS[key])
     qualifying: list[int] = []
     for owner in root.findall("reportingOwner"):
         relationship = owner.find("reportingOwnerRelationship")
         if any(_flag(_text(relationship, flag)) for flag in flags):
-            qualifying.append(int(_text(owner, "reportingOwnerId/rptOwnerCik")))
+            cik = _text(owner, "reportingOwnerId/rptOwnerCik")
+            if not cik.isdigit():
+                raise ValueError(f"Form 4 reportingOwnerId has a missing or non-numeric rptOwnerCik {cik!r}")
+            qualifying.append(int(cik))
     return min(qualifying, key=lambda cik: header_order.get(cik, len(header_order)), default=None)
 
 

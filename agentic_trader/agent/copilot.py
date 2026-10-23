@@ -542,6 +542,7 @@ class TradingCopilot:
             alpha_registry_report=lambda: self.alpha_repository.status(run_id=RUN_ID),
             card_stats_enabled=True,  # the daemon always runs the card-statistics worker
             corporate_actions_enabled=corporate_actions_live(config),
+            insider_capture_enabled=config.insider_watch.enabled,
             macro_calendar=lambda now: macro_calendar_readiness(
                 self.static_calendar.state(now),
                 renewal_days=config.risk.macro_calendar_renewal_days,

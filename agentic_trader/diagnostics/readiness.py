@@ -8,6 +8,7 @@ from typing import Any
 
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import CloseRequestStatus, SystemStateKey
+from agentic_trader.data.insider_capture import CAPTURE_MAX_AGE_SECONDS as INSIDER_CAPTURE_MAX_AGE_SECONDS
 from agentic_trader.execution.durable import WorkKind, WorkStatus
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.storage.workflow import WorkflowStore
@@ -26,6 +27,7 @@ class HealthComponent(StrEnum):
     ALPHA_DAILY_PANEL = "alpha_daily_panel"
     CARD_STATS = "card_stats"
     CORPORATE_ACTIONS = "corporate_actions"
+    INSIDER_CAPTURE = "insider_capture"
 
 
 class ReadinessService:
@@ -41,6 +43,7 @@ class ReadinessService:
         alpha_registry_report: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         card_stats_enabled: bool = False,
         corporate_actions_enabled: bool = False,
+        insider_capture_enabled: bool = False,
         macro_calendar: Callable[[datetime], Mapping[str, Any]] | None = None,
     ):
         self.store, self.config, self.metrics, self.run_id = store, config, metrics, run_id
@@ -50,6 +53,7 @@ class ReadinessService:
         self.alpha_registry_report = alpha_registry_report
         self.card_stats_enabled = card_stats_enabled
         self.corporate_actions_enabled = corporate_actions_enabled
+        self.insider_capture_enabled = insider_capture_enabled
         self.macro_calendar = macro_calendar
         self.stream_connected = stream_connected
         self._last_observation: dict[str, tuple[float, bool, str]] = {}
@@ -95,6 +99,10 @@ class ReadinessService:
         if self.corporate_actions_enabled:
             # Once-daily work: the limit spans weekends and holidays (corporate_actions.max_age_seconds).
             limits[HealthComponent.CORPORATE_ACTIONS] = self.config.corporate_actions.max_age_seconds
+        if self.insider_capture_enabled:
+            # The worker observes ready only while the latest captured filing date is within 4 days, so this
+            # limit catches a worker that stopped observing (data/insider_capture.py, CAPTURE_MAX_AGE_SECONDS).
+            limits[HealthComponent.INSIDER_CAPTURE] = INSIDER_CAPTURE_MAX_AGE_SECONDS
         if self.accounting_enabled:
             limits[HealthComponent.ACCOUNTING] = self.config.accounting.max_age_seconds
         checks: dict[str, Any] = {"daemon_started": {"ready": self.started}}

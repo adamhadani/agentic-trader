@@ -216,3 +216,25 @@ def test_amendment_document_type_dropped():
 def test_malformed_xml_raises_value_error(document):
     with pytest.raises(ValueError, match=re.compile("Form 4", re.IGNORECASE)):
         _parse(document)
+
+
+@pytest.mark.parametrize("value", ["1e30", "12345678901234567890123456789"])
+def test_out_of_range_numbers_raise_value_error(value):
+    with pytest.raises(ValueError, match="out of range"):
+        _parse(_doc(rows=_row(shares=value)))
+    with pytest.raises(ValueError, match="out of range"):
+        _parse(_doc(rows=_row(price=value)))
+
+
+def test_unknown_owner_role_raises():
+    with pytest.raises(ValueError, match="10% Owner"):
+        parse_form4(
+            _doc(rows=_row()), filing_date=date(2026, 9, 15), cik_to_symbols={5: ("AAA",)}, owner_roles=("10% Owner",)
+        )
+
+
+@pytest.mark.parametrize("cik", ["", "abc"])
+def test_bad_owner_cik_raises(cik):
+    owner = _owner(1, officer="1").replace("0000000001", cik)
+    with pytest.raises(ValueError, match="rptOwnerCik"):
+        _parse(_doc(owners=owner, rows=_row()))

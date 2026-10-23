@@ -73,3 +73,15 @@ def test_invalid_native_entry_lifetime_refused():
 
     with pytest.raises(ValidationError):
         ExecutionConfig(native_entry_lifetime="day")
+
+
+def test_the_shipped_insider_watch_block_reaches_app_config():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+    watch = config.insider_watch
+
+    assert watch.enabled is True  # the code default is False: the YAML block was read
+    assert watch.max_cards_per_session == 2 and watch.max_open_positions == 4
+    assert watch.max_risk_per_trade_usd == 100
+    assert watch.archive_dir == Path("~/agentic-trader-research/insider-filings-cache").expanduser()
+    assert watch.backfill_from.isoformat() == "2026-10-01"
+    assert {"enabled", "archive_dir", "backfill_from"} <= watch.model_fields_set

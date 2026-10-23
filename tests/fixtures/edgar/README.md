@@ -12,3 +12,7 @@ Public SEC filings fetched 2026-10-23 for the live Form 4 parser's parity test
   drop counts.
 - `form.20260915.idx` is the daily form index for 2026-09-15, trimmed to its header and a few `4`, `4/A`, `10-K` and
   `8-K` rows.
+
+Parser parity notes: the owner order follows the SEC header's `REPORTING-OWNER` blocks (evidence: one multi-owner
+filing, AMR 0000921895-26-002305; recheck as more multi-owner data arrives). Shares and price are rounded to cents to
+mirror the data sets (price evidenced by CROX 0001247154-26-000005; shares by analogy).

@@ -2,6 +2,7 @@ import io
 import os
 import re
 from collections.abc import Mapping
+from datetime import date
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -416,6 +417,31 @@ class NewsConfig(BaseModel):
     fetch_timeout_seconds: float = Field(default=15.0, gt=0, le=120, allow_inf_nan=False)
     score_timeout_seconds: float = Field(default=20.0, gt=0, le=120, allow_inf_nan=False)
     model: str | None = None
+
+
+class InsiderWatchConfig(BaseModel):
+    """Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md).
+
+    The daemon captures each SEC filing date's Form 4 filings for cohort v3 once per New York date
+    (from ``backfill_from`` on a first run); the 10:35 suggestion scan applies the frozen ``insider`` v1
+    cluster rule to the merged history (``archive_dir`` quarterly data sets, then the journaled captures)
+    and sends at most ``max_cards_per_session`` tap-only, unvalidated watch cards, none while
+    ``max_open_positions`` watch positions are open, each capped at ``max_risk_per_trade_usd``.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    max_cards_per_session: int = Field(default=2, ge=1, le=10)
+    max_open_positions: int = Field(default=4, ge=1, le=20)
+    max_risk_per_trade_usd: float = Field(default=100.0, gt=0, le=10000, allow_inf_nan=False)
+    archive_dir: Path = Field(default=Path("~/agentic-trader-research/insider-filings-cache"), validate_default=True)
+    backfill_from: date = date(2026, 10, 1)
+
+    @field_validator("archive_dir")
+    @classmethod
+    def expand_home(cls, value: Path) -> Path:
+        return value.expanduser()
 
 
 DEFAULT_CORRELATION_GROUPS: dict[str, list[str]] = {
@@ -912,6 +938,7 @@ class AppConfig(BaseModel):
     book_sizing: BookSizingConfig = Field(default_factory=BookSizingConfig)
     corporate_actions: CorporateActionsConfig = Field(default_factory=CorporateActionsConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
+    insider_watch: InsiderWatchConfig = Field(default_factory=InsiderWatchConfig)
     explicit_contracts: tuple[str, ...] | None = None
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -1186,6 +1213,7 @@ def load_config(
         book_sizing=BookSizingConfig(**(cfg_dict.get("book_sizing") or {})),
         corporate_actions=CorporateActionsConfig(**(cfg_dict.get("corporate_actions") or {})),
         news=NewsConfig(**(cfg_dict.get("news") or {})),
+        insider_watch=InsiderWatchConfig(**(cfg_dict.get("insider_watch") or {})),
         explicit_contracts=tuple(explicit_contracts),
         risk=RiskConfig(**cfg_dict.get("risk", {})),
         strategies=strategies_config,
