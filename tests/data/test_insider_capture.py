@@ -20,6 +20,7 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_trader.config import InsiderWatchConfig
+from agentic_trader.data import insider_capture
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind
 from agentic_trader.data.insider_capture import (
     CAPTURE_STREAM,
@@ -35,6 +36,7 @@ from agentic_trader.data.insider_capture import (
     load_watch_history,
     run_insider_capture_worker,
 )
+from agentic_trader.diagnostics.readiness import INSIDER_CAPTURE_MAX_AGE_SECONDS
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import load_insider_entry
@@ -74,10 +76,11 @@ def index_body(day: date, *filings: tuple[str, int, str], extra: tuple[str, ...]
 class FakeSec:
     """Daily indexes by date and documents by index path; anything else is a 404."""
 
-    def __init__(self, indexes=None, documents=None, failures=None):
+    def __init__(self, indexes=None, documents=None, failures=None, late=None):
         self.indexes: dict[date, bytes] = dict(indexes or {})
         self.documents: dict[str, bytes] = dict(documents or {})
         self.failures: dict[str, int] = dict(failures or {})
+        self.late: dict[date, int] = dict(late or {})  # an index answers 404 this many times first
         self.requests: list[tuple[str, str | None]] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -85,6 +88,10 @@ class FakeSec:
         self.requests.append((url, request.headers.get("user-agent")))
         if url in self.failures:
             return httpx.Response(self.failures[url])
+        for day, misses in self.late.items():
+            if url == daily_index_url(day) and misses > 0:
+                self.late[day] = misses - 1
+                return httpx.Response(404)
         for day, body in self.indexes.items():
             if url == daily_index_url(day):
                 return httpx.Response(200, content=body)
@@ -216,17 +223,43 @@ async def test_an_unpublished_business_day_is_pending_and_nothing_after_it_is_re
     assert result.recorded == (mon,) and result.pending == tue
 
 
-async def test_a_closed_business_day_is_confirmed_by_a_later_index(capture_store):
+async def test_a_closed_business_day_is_inferred_from_a_later_index_after_one_more_request(capture_store):
     wed, thu = date(2026, 10, 14), date(2026, 10, 15)
     sec = FakeSec(indexes={thu: index_body(thu, CROX)}, documents=documents(CROX))
     result = await _capture(sec, capture_store, [date(2026, 10, 12), date(2026, 10, 13), wed, thu])
     assert date(2026, 10, 12) not in sec.index_days()  # a federal holiday is never requested
+    assert sec.index_days().count(date(2026, 10, 13)) == 2 and sec.index_days().count(wed) == 2  # asked again
     assert result.pending is None and result.recorded == tuple(_days(date(2026, 10, 12), thu))
     captures = {c["filing_date"]: c for c in await capture_store.captures()}
     assert captures["2026-10-12"]["reason"] == "non_business_day"
-    assert captures["2026-10-13"]["reason"] == "closed" and captures["2026-10-14"]["reason"] == "closed"
+    assert captures["2026-10-13"]["reason"] == captures["2026-10-14"]["reason"] == "closed_inferred"
     assert captures["2026-10-15"]["status"] == CaptureStatus.CAPTURED
     assert await capture_store.latest_captured_date() == thu
+
+
+async def test_a_held_day_published_by_the_second_request_is_captured_in_order(capture_store):
+    tue, wed = date(2026, 10, 13), date(2026, 10, 14)
+    sec = FakeSec(indexes={tue: index_body(tue, CROX), wed: index_body(wed)}, documents=documents(CROX), late={tue: 1})
+    result = await _capture(sec, capture_store, [tue, wed])
+    assert result.captured == (tue, wed) and result.recorded == (tue, wed)
+    [first, second] = await capture_store.captures()
+    assert first["filing_date"] == "2026-10-13" and first["status"] == CaptureStatus.CAPTURED
+    assert [t["symbol"] for t in first["transactions"]] == ["CROX"] and second["filing_date"] == "2026-10-14"
+
+
+async def test_every_request_has_a_total_deadline(capture_store, monkeypatch):
+    monkeypatch.setattr(insider_capture, "REQUEST_DEADLINE_SECONDS", 0.05)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow)) as client:
+        with pytest.raises(TimeoutError):
+            await capture_filing_dates(
+                client, capture_store, [date(2026, 10, 1)], scope=SCOPE, user_agent=UA, pace=_no_pace
+            )
+    assert await capture_store.captures() == []
 
 
 async def test_a_failed_document_journals_nothing_for_its_date_and_keeps_earlier_dates(capture_store):
@@ -380,11 +413,18 @@ async def test_freshness_is_the_latest_captured_filing_date_within_four_days(cap
     worker = _worker(None, capture_store, _config(app_config))
     ready, detail = await worker.freshness(_et(date(2026, 10, 6), 7))
     assert not ready and "no capture" in detail
-    await capture_store.record({"filing_date": "2026-10-02", "status": "captured"}, {})
+    await capture_store.record({"filing_date": "2026-09-01", "status": "captured", "errors": {"ValueError": 5}}, {})
+    await capture_store.record({"filing_date": "2026-10-02", "status": "captured", "errors": {"ValueError": 2}}, {})
     await capture_store.record({"filing_date": "2026-10-03", "status": "no_index"}, {})
-    assert (await worker.freshness(_et(date(2026, 10, 6), 7)))[0] is True  # 4 days (a long weekend)
+    ready, detail = await worker.freshness(_et(date(2026, 10, 6), 7))
+    assert ready is True  # 4 days (a long weekend)
+    assert detail.endswith("document errors (30 days): 2")  # the September errors are outside the window
     ready, detail = await worker.freshness(_et(date(2026, 10, 7), 7))
     assert not ready and "2026-10-02" in detail  # a weekend no-index day does not refresh it
+
+
+def test_readiness_duplicates_the_capture_age_limit():
+    assert INSIDER_CAPTURE_MAX_AGE_SECONDS == insider_capture.CAPTURE_MAX_AGE_SECONDS == 4 * 86400
 
 
 # --- the daemon loop: the user agent never leaves the request header ----------------------------
@@ -514,8 +554,17 @@ def _cohort(inputs: InsiderFilingInputs) -> WatchCohort:
     )
 
 
-def _live(day: str, *transactions: dict, status: str = "captured") -> dict:
-    return {"filing_date": day, "status": status, "transactions": list(transactions)}
+LIVE_SCOPE = CaptureScope({CROX_CIK: ("CROX",), LPG_CIK: ("LPG",)}, ROLES, False).sha256
+
+
+def _live(day: str, *transactions: dict, status: str = "captured", scope: str = LIVE_SCOPE, documents=()) -> dict:
+    return {
+        "filing_date": day,
+        "status": status,
+        "scope_sha256": scope,
+        "transactions": list(transactions),
+        "documents": list(documents),
+    }
 
 
 def _tx(symbol: str, filed: str, dollars: float, owner: int, traded: str | None = None) -> dict:
@@ -653,6 +702,51 @@ async def test_only_the_quarters_the_routine_rule_needs_are_read(tmp_path, captu
     days = _weekdays(date(2026, 7, 1), date(2026, 10, 5))  # the routine rule reaches back to 2025-07
     history = await _seed(capture_store, archive, _cohort(inputs), days)
     assert history.provenance["quarters_read"] == ["2025q3", "2025q4", "2026q1", "2026q2", "2026q3"]
+
+
+async def test_document_errors_mark_the_symbol_and_date_incomplete(tmp_path, capture_store):
+    archive, inputs = _archive(tmp_path, {"2026q3": _trades()})
+    bad = {"path": "edgar/data/1334036/0000000001-26-000001.txt", "index_cik": CROX_CIK, "error": "ValueError"}
+    good = {"path": "edgar/data/1596993/0000000001-26-000002.txt", "index_cik": LPG_CIK, "error": None}
+    await capture_store.record(_live("2026-10-01", documents=[bad, good]), {})
+    await capture_store.record(_live("2026-10-02", documents=[bad]), {})
+    history = await _seed(capture_store, archive, _cohort(inputs), _weekdays(date(2026, 7, 1), date(2026, 10, 5)))
+    assert history.incomplete == {"CROX": (date(2026, 10, 1), date(2026, 10, 2))}
+    assert history.provenance["document_errors"] == 2
+
+
+async def test_a_capture_under_another_scope_ends_the_history(tmp_path, capture_store):
+    archive, inputs = _archive(tmp_path, {"2026q3": _trades()})
+    await capture_store.record(_live("2026-10-01"), {})
+    await capture_store.record(_live("2026-10-02", _tx("CROX", "2026-10-02", 9000.0, 15), scope="f" * 64), {})
+    await capture_store.record(_live("2026-10-03", status="no_index"), {})
+    history = await _seed(capture_store, archive, _cohort(inputs), _weekdays(date(2026, 7, 1), date(2026, 10, 5)))
+    assert history.latest_filing_date == date(2026, 10, 1) and history.transactions["CROX"] == ()
+    assert history.provenance["scope_mismatch"] == "2026-10-02"
+
+
+async def test_the_monday_after_good_friday_is_not_current_while_fridays_index_is_pending(tmp_path, capture_store):
+    archive, inputs = _archive(tmp_path, {"2026q1": _trades()})
+    good_friday = date(2026, 4, 3)  # EDGAR is open; NYSE is closed
+    sec = FakeSec(
+        indexes={date(2026, 4, 1): index_body(date(2026, 4, 1)), date(2026, 4, 2): index_body(date(2026, 4, 2))}
+    )
+    scope = CaptureScope({CROX_CIK: ("CROX",), LPG_CIK: ("LPG",)}, ROLES, False)
+    days = _days(date(2026, 4, 1), date(2026, 4, 5))
+    async with sec.client() as client:
+        result = await capture_filing_dates(client, capture_store, days, scope=scope, user_agent=UA, pace=_no_pace)
+    assert result.pending == good_friday
+    calendar = tuple(d for d in _weekdays(date(2026, 1, 2), date(2026, 4, 6)) if d != good_friday)
+    history = await _seed(capture_store, archive, _cohort(inputs), calendar)
+    monday = date(2026, 4, 6)
+    assert history.latest_filing_date == date(2026, 4, 2) and history.current_for(monday) is False
+    assert history.current_for(date(2026, 4, 3)) is True
+
+    sec.indexes[good_friday] = index_body(good_friday)
+    async with sec.client() as client:
+        await capture_filing_dates(client, capture_store, days[2:], scope=scope, user_agent=UA, pace=_no_pace)
+    history = await _seed(capture_store, archive, _cohort(inputs), calendar)
+    assert history.latest_filing_date == date(2026, 4, 5) and history.current_for(monday) is True
 
 
 async def test_the_watch_cohort_loads_the_frozen_entry_protocol_and_cohort(tmp_path):

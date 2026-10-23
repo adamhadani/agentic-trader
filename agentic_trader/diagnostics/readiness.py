@@ -8,11 +8,15 @@ from typing import Any
 
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import CloseRequestStatus, SystemStateKey
-from agentic_trader.data.insider_capture import CAPTURE_MAX_AGE_SECONDS as INSIDER_CAPTURE_MAX_AGE_SECONDS
 from agentic_trader.execution.durable import WorkKind, WorkStatus
 from agentic_trader.runtime import RUN_ID
 from agentic_trader.storage.workflow import WorkflowStore
 from agentic_trader.telemetry.collector import MetricsCollector
+
+
+# Duplicates agentic_trader/data/insider_capture.py:CAPTURE_MAX_AGE_SECONDS (4 days, the corporate-actions
+# limit) so readiness does not import the capture module; a test pins the two equal.
+INSIDER_CAPTURE_MAX_AGE_SECONDS = 4 * 86400
 
 
 class HealthComponent(StrEnum):

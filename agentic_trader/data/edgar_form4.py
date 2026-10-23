@@ -161,7 +161,8 @@ def parse_form4(
     """The qualifying trades of one Form 4 submission and its per-rule drop counts.
 
     Each non-derivative row is tested against ``DROP_RULES`` in order and counted under the first it
-    fails, as ``read_transactions`` does; a qualifying row whose issuer is unmapped yields nothing, and a
+    fails, as ``read_transactions`` does. A qualifying row whose issuer CIK maps to no symbol is skipped:
+    it yields nothing and is not counted in the drop counts (there is no ``unscored_rows`` equivalent). A
     mapped issuer with several symbols yields one transaction per symbol. ``filing_date`` is the index
     date. A malformed document raises ``ValueError``.
     """

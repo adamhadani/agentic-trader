@@ -12,8 +12,10 @@ for that date.
 
 Every calendar date is journaled in order, so the journal is contiguous: a weekend or a federal holiday
 is ``no_index`` (``non_business_day``) without a request; a business day whose index is a 404 is held
-as not yet published, and becomes ``no_index`` (``closed``) only once a later date's index exists.
-Nothing after a held date is journaled until then.
+as not yet published. Once a later date's index returns 200 in the same run, each held business day is
+requested once more: a 200 captures it, a second 404 records it ``no_index`` (``closed_inferred``, a
+closure inferred from the later index). Nothing after a held date is journaled until then. Every request
+has a total deadline (``REQUEST_DEADLINE_SECONDS``), and index and document parsing run in worker threads.
 
 The ``EDGAR_USER_AGENT`` contact is read from the environment by ``run_insider_capture_worker`` only,
 sent as the request's ``User-Agent`` header, and never logged, journaled or written: failures are
@@ -38,7 +40,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
@@ -124,9 +126,13 @@ USER_AGENT_ENV = "EDGAR_USER_AGENT"
 WATCH_ENTRY = Path("config/research/apriori/insider-v1.json")
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 _TIMEOUT_SECONDS = 60.0
+# The bounded total of one request attempt (connect, headers and the whole body).
+REQUEST_DEADLINE_SECONDS = 120.0
+# Document parse errors over this many trailing days are appended to the readiness detail.
+RECENT_ERROR_DAYS = 30
 _DOCUMENT_PATH = re.compile(r"edgar/data/\d{1,10}/(\d{10}-\d{2}-\d{6})\.txt")
 _NON_BUSINESS_DAY = "non_business_day"
-_CLOSED = "closed"
+_CLOSED_INFERRED = "closed_inferred"
 _UNPUBLISHED = "unpublished"
 
 
@@ -286,10 +292,12 @@ async def _fetch(
         raise ValueError(f"{url}: host is not https://{SEC_HOST}")
     await pace()
     try:
-        return await _stream(client, url, user_agent, missing_ok=missing_ok)
+        async with asyncio.timeout(REQUEST_DEADLINE_SECONDS):
+            return await _stream(client, url, user_agent, missing_ok=missing_ok)
     except httpx.TransportError:
         await pace()
-        return await _stream(client, url, user_agent, missing_ok=missing_ok)
+        async with asyncio.timeout(REQUEST_DEADLINE_SECONDS):
+            return await _stream(client, url, user_agent, missing_ok=missing_ok)
 
 
 def _no_index(day: date, reason: str) -> dict[str, Any]:
@@ -330,7 +338,7 @@ async def _capture_day(
     pace: Callable[[], Awaitable[None]],
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     """The journal payload and the private files of one published index; every document is read first."""
-    rows = parse_daily_index(index.decode("utf-8", errors="replace"))
+    rows = await asyncio.to_thread(parse_daily_index, index.decode("utf-8", errors="replace"))
     form4 = [row for row in rows if row.form == "4"]
     selected = select_form4(rows, scope.cik_to_symbols.keys())
     by_path: dict[str, IndexRow] = {}
@@ -349,12 +357,15 @@ async def _capture_day(
         error: str | None = None
         found: list[InsiderTransaction] = []
         try:
-            found, dropped = parse_form4(
-                body.decode("utf-8", errors="replace"),
-                filing_date=row.date_filed,
-                cik_to_symbols=scope.cik_to_symbols,
-                owner_roles=scope.owner_roles,
-                exclude_10b5_1=scope.exclude_10b5_1,
+            found, dropped = await asyncio.to_thread(
+                partial(
+                    parse_form4,
+                    body.decode("utf-8", errors="replace"),
+                    filing_date=row.date_filed,
+                    cik_to_symbols=scope.cik_to_symbols,
+                    owner_roles=scope.owner_roles,
+                    exclude_10b5_1=scope.exclude_10b5_1,
+                )
             )
         except ValueError as exc:  # recorded by type name; the rest of the date is still read
             error = type(exc).__name__
@@ -428,9 +439,19 @@ async def capture_filing_dates(
         if index is None:
             held.append((day, _UNPUBLISHED))
             continue
-        # A later index exists, so every held business day had none: EDGAR was closed.
+        # A later index exists: ask once more for each held business day; a second 404 infers a closure.
         for held_day, reason in held:
-            await store.record(_no_index(held_day, _CLOSED if reason == _UNPUBLISHED else reason), {})
+            again = None
+            if reason == _UNPUBLISHED:
+                again = await _fetch(client, daily_index_url(held_day), user_agent, pace, missing_ok=True)
+            if again is None:
+                await store.record(_no_index(held_day, _CLOSED_INFERRED if reason == _UNPUBLISHED else reason), {})
+            else:
+                payload, files = await _capture_day(
+                    client, held_day, again, scope=scope, user_agent=user_agent, pace=pace
+                )
+                await store.record(payload, files)
+                captured.append(held_day)
             recorded.append(held_day)
         held.clear()
         payload, files = await _capture_day(client, day, index, scope=scope, user_agent=user_agent, pace=pace)
@@ -507,13 +528,19 @@ class InsiderCaptureWorker:
 
     async def freshness(self, now: datetime) -> tuple[bool, str]:
         """Ready while the latest captured filing date is at most ``CAPTURE_MAX_AGE_DAYS`` before today (New York)."""
-        latest = await self.store.latest_captured_date()
-        if latest is None:
+        today = now.astimezone(ET_TZ).date()
+        captures = await self.store.captures()
+        captured = [c for c in captures if c.get("status") == CaptureStatus.CAPTURED]
+        if not captured:
             return False, "no capture yet"
-        age = (now.astimezone(ET_TZ).date() - latest).days
+        latest = date.fromisoformat(captured[-1]["filing_date"])
+        since = (today - timedelta(days=RECENT_ERROR_DAYS)).isoformat()
+        errors = sum(sum(c.get("errors", {}).values()) for c in captured if c["filing_date"] >= since)
+        suffix = f"; document errors ({RECENT_ERROR_DAYS} days): {errors}"
+        age = (today - latest).days
         if age <= CAPTURE_MAX_AGE_DAYS:
-            return True, f"latest filing date {latest.isoformat()}"
-        return False, f"stale: latest filing date {latest.isoformat()} ({age} days)"
+            return True, f"latest filing date {latest.isoformat()}{suffix}"
+        return False, f"stale: latest filing date {latest.isoformat()} ({age} days){suffix}"
 
 
 async def _wait(shutdown: asyncio.Event, seconds: float) -> None:
@@ -639,8 +666,13 @@ class WatchHistory:
     ``transactions`` holds every cohort symbol (empty when it has none): the plausible qualifying trades
     from the archive and the contiguous live captures, including those filed before the calendar (the
     routine rule's input). ``latest_filing_date`` is the last filing date the history covers completely:
-    the archive's end, extended day by day by the journaled captures until the first missing date; the
-    scan treats the history as current only when it reaches the previous session.
+    the archive's end, extended day by day by the journaled captures until the first missing date or the
+    first capture taken under another scope (``provenance["scope_mismatch"]``). Every calendar date is
+    journaled (weekends and closures as ``no_index``) and the worker runs from 06:00 New York, so on a
+    decision date D the history is current only when it reaches D - 1 (``current_for``); a pending
+    business day, such as Good Friday's index still unpublished on the Monday, keeps it short.
+    ``incomplete`` maps a symbol to the live filing dates with a document that did not parse: its trades on
+    those dates may be missing (``provenance["document_errors"]`` counts the documents).
     """
 
     transactions: Mapping[str, tuple[InsiderTransaction, ...]]
@@ -648,7 +680,12 @@ class WatchHistory:
     latest_filing_date: date
     archive_through: date
     live_dates: tuple[date, ...]
+    incomplete: Mapping[str, tuple[date, ...]]
     provenance: Mapping[str, Any]
+
+    def current_for(self, decision_date: date) -> bool:
+        """Whether every filing date through the calendar day before ``decision_date`` is in the history."""
+        return self.latest_filing_date >= decision_date - timedelta(days=1)
 
 
 def _quarter_of(day: date) -> Quarter:
@@ -696,8 +733,12 @@ def _build_history(
         archived = load_insider_filings(archive_dir, narrowed, cohort.symbols).by_symbol
 
     wanted = set(cohort.symbols)
+    scope_sha256 = cohort.scope().sha256
     live: dict[str, list[InsiderTransaction]] = {}
     live_dates: list[date] = []
+    incomplete: dict[str, list[date]] = {}
+    document_errors = 0
+    scope_mismatch: str | None = None
     in_archive = 0
     expected = archive_through + timedelta(days=1)
     for capture in captures:
@@ -707,6 +748,16 @@ def _build_history(
             continue
         if day != expected:  # a missing filing date: nothing after it is read
             break
+        if capture.get("status") == CaptureStatus.CAPTURED and capture.get("scope_sha256") != scope_sha256:
+            scope_mismatch = day.isoformat()  # read under another cohort or owner rule: not this history
+            break
+        for document in capture.get("documents", ()):
+            if document.get("error") is None:
+                continue
+            document_errors += 1
+            for symbol in cohort.cik_to_symbols.get(int(document["index_cik"]), ()):
+                if day not in incomplete.setdefault(symbol, []):
+                    incomplete[symbol].append(day)
         for row in capture.get("transactions", ()):
             transaction = _live_transaction(row)
             if transaction.symbol in wanted:
@@ -733,12 +784,15 @@ def _build_history(
         latest_filing_date=expected - timedelta(days=1),
         archive_through=archive_through,
         live_dates=tuple(live_dates),
+        incomplete={symbol: tuple(found) for symbol, found in incomplete.items()},
         provenance={
             "insider_files_sha256": filings.files_sha256,
             "quarters_read": [str(quarter) for quarter in read],
             "archive_through": archive_through.isoformat(),
             "live_dates": len(live_dates),
             "live_dates_in_archive": in_archive,
+            "scope_mismatch": scope_mismatch,
+            "document_errors": document_errors,
             "archive_transactions": sum(len(found) for found in archived.values()),
             "live_transactions": sum(len(found) for found in live.values()),
             "implausible_size": implausible,
