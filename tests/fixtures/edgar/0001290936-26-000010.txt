@@ -1,0 +1,180 @@
+<SEC-DOCUMENT>0001290936-26-000010.txt : 20260828
+<SEC-HEADER>0001290936-26-000010.hdr.sgml : 20260828
+<ACCEPTANCE-DATETIME>20260828162409
+ACCESSION NUMBER:		0001290936-26-000010
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		5
+CONFORMED PERIOD OF REPORT:	20260827
+FILED AS OF DATE:		20260828
+DATE AS OF CHANGE:		20260828
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			Barrenechea Mark J
+		CENTRAL INDEX KEY:			0001290936
+		ORGANIZATION NAME:
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-31463
+		FILM NUMBER:		261340584
+
+	MAIL ADDRESS:
+		STREET 1:		DICK'S SPORTING GOODS, INC.
+		STREET 2:		345 COURT STREET
+		CITY:			CORAOPOLIS
+		STATE:			PA
+		ZIP:			15108
+
+ISSUER:
+
+	COMPANY DATA:
+		COMPANY CONFORMED NAME:			DICK'S SPORTING GOODS, INC.
+		CENTRAL INDEX KEY:			0001089063
+		STANDARD INDUSTRIAL CLASSIFICATION:	RETAIL-MISCELLANEOUS SHOPPING GOODS STORES [5940]
+		ORGANIZATION NAME:           	07 Trade & Services
+		EIN:				161241537
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			0130
+
+	BUSINESS ADDRESS:
+		STREET 1:		345 COURT STREET
+		CITY:			CORAOPOLIS
+		STATE:			PA
+		ZIP:			15108
+		BUSINESS PHONE:		7242733400
+
+	MAIL ADDRESS:
+		STREET 1:		345 COURT STREET
+		CITY:			CORAOPOLIS
+		STATE:			PA
+		ZIP:			15108
+
+	FORMER COMPANY:
+		FORMER CONFORMED NAME:	DICKS SPORTING GOODS INC
+		DATE OF NAME CHANGE:	19990617
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>wk-form4_1787948645.xml
+<DESCRIPTION>FORM 4
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-08-27</periodOfReport>
+
+    <notSubjectToSection16>0</notSubjectToSection16>
+
+    <issuer>
+        <issuerCik>0001089063</issuerCik>
+        <issuerName>DICK'S SPORTING GOODS, INC.</issuerName>
+        <issuerTradingSymbol>DKS</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001290936</rptOwnerCik>
+            <rptOwnerName>Barrenechea Mark J</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>345 COURT STREET</rptOwnerStreet1>
+            <rptOwnerStreet2></rptOwnerStreet2>
+            <rptOwnerCity>CORAOPOLIS</rptOwnerCity>
+            <rptOwnerState>PA</rptOwnerState>
+            <rptOwnerZipCode>15108</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>0</isTenPercentOwner>
+            <isOther>0</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>0</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock, par value $0.01 per share</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-08-27</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>17000</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>130.72</value>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>25977</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>By Trust</value>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Common Stock, par value $0.01 per share</value>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>1813</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+    </nonDerivativeTable>
+
+    <derivativeTable></derivativeTable>
+
+    <footnotes>
+        <footnote id="F1">Represents the weighted average price of multiple transactions ranging from $130.00 to $130.78. The reporting person undertakes to provide full information regarding the number of shares sold at each separate price upon request by the SEC staff, the Company or any security holder of the Company.</footnote>
+    </footnotes>
+
+    <remarks>Exhibit 24.1 Power of Attorney</remarks>
+
+    <ownerSignature>
+        <signatureName>/s/ Carlos Clark by Power of Attorney</signatureName>
+        <signatureDate>2026-08-28</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
