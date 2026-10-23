@@ -70,7 +70,7 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    Book-aware sizing (`book_sizing`, code default `preview`, config ships `enforce` since 2026-10-20) scales native equity cards by a
    closed-form factor ≤ 1 against a daily dollar-vol budget at card construction only; the
    shadow optimiser cross-check never reaches size or orders.
-   New native entries carry a one-session lifetime marker (`execution.native_entry_lifetime`, shipped `session`) and are cancelled through the existing lifetime service; the operator `/cancel` uses the same durable `entry_cancel` path, and a full fill with protective exits found by exact read resolves without a halt.
+   New native entries carry a lifetime marker (`execution.native_entry_lifetime`, shipped `session`) and are cancelled through the existing lifetime service at their submission session's close + 5 min (outer bound 57,600 s); the operator `/cancel` uses the same durable `entry_cancel` path, and only a refused DELETE followed by an exact read of a full fill with protective exits resolves without a halt.
 
    **Paper probes:** `probe` is a third registry list, valid only in the `…/alpaca:paper`
    scope. `probe_block_reason` is the single liveness rule for snapshot, sweep and

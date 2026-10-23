@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -20,7 +21,7 @@ from agentic_trader.execution.durable import (
     WorkKind,
     WorkStatus,
 )
-from agentic_trader.execution.lifetime_policy import entry_lifetime_of, lifetime_from_dict
+from agentic_trader.execution.lifetime_policy import entry_lifetime_of
 from agentic_trader.execution.lifetimes import (
     FILLED_BEFORE_CANCEL,
     INCOMPLETE_OR_CHANGED_GROUP,
@@ -41,6 +42,10 @@ from agentic_trader.storage.models import (
 from agentic_trader.storage.workflow import WorkflowStore, encode, work_item
 
 
+if TYPE_CHECKING:
+    from agentic_trader.market.session import MarketCalendarDay
+
+
 class LifetimeRepository:
     """An application repository over existing workflow tables, with no second queue."""
 
@@ -59,6 +64,12 @@ class LifetimeRepository:
                 )
             )
             return work_item(row) if row else None
+
+    async def order(self, order_id: str) -> OrderObservation | None:
+        """The latest journaled observation of one order (its projection), or None."""
+        async with self.db.session_factory() as session:
+            row = await session.get(OrderProjectionRecord, (self.store.scope, order_id))
+            return OrderObservation.model_validate_json(row.payload) if row else None
 
     async def cancel_item(self, signal_id: int) -> WorkItem | None:
         """The signal's one entry_cancel work item, in any status (``dedup_key = signal_id``)."""
@@ -81,12 +92,14 @@ class LifetimeRepository:
         *,
         now: datetime,
         reason: CancelCause = "deadline",
+        sessions: Sequence[MarketCalendarDay] | None = None,
     ) -> WorkItem | str:
         """Claim the one entry_cancel for a signal, or return the refusal token.
 
         ``reason="operator"`` skips only the deadline assessment and the policy-equality fence
         (the operator may cancel an untimed or malformed-marker entry) and reports a changed
-        group as a refusal; the deadline path still raises for review.
+        group as a refusal; the deadline path still raises for review. ``sessions`` are the
+        calendar days the caller assessed the deadline with (a native entry's submission date).
         """
         operator = reason == "operator"
         async with self.db.session_factory() as session, session.begin():
@@ -108,6 +121,7 @@ class LifetimeRepository:
                 or signal.broker_order_id != identity.order_id
             ):
                 return "not_resting"
+            stored = None
             if not operator:
                 stored = entry_lifetime_of(
                     {"alpha_policy": signal.alpha_policy, "decision_provenance": signal.decision_provenance}
@@ -138,9 +152,8 @@ class LifetimeRepository:
                 if refusal := resting_entry_refusal(identity, parent):
                     return refusal
             elif (
-                lifetime is None
-                or assess_lifetime(lifetime_from_dict(lifetime), identity, parent, now).action
-                != LifetimeAction.CANCEL_ENTRY
+                stored is None
+                or assess_lifetime(stored, identity, parent, now, sessions).action != LifetimeAction.CANCEL_ENTRY
             ):
                 return "not_due"
             for observed in orders:
@@ -237,11 +250,17 @@ class LifetimeRepository:
                     for o in effective
                 )
             )
+            row = await session.get(WorkItemRecord, item.id)
+            # The DELETE's own error (this owner's, or one an earlier resolution recorded).
+            refused = transport_error or (json.loads(row.result).get("transport_error") if row else None)
             # The broker refused the DELETE because the entry already filled, cleanly and protected.
-            # Only a fresh, successful exact read decides it: a failed lookup (``reason``) stays UNKNOWN.
+            # Only a refused DELETE and a fresh, successful exact read decide it: a failed lookup
+            # (``reason``) stays UNKNOWN, and an accepted DELETE followed by a fill keeps polling
+            # within the owner's window, then halts as UNKNOWN.
             filled_first = (
                 not complete
                 and reason is None
+                and bool(refused)
                 and bool(orders)
                 and filled_before_cancel(identity, effective, item.payload["order_ids"])
             )
@@ -256,10 +275,7 @@ class LifetimeRepository:
                 else (reason or "unconfirmed_cancellation_or_fill_race")
             )
             payload: dict[str, Any] = {"reason": reason, "orders": [o.model_dump(mode="json") for o in effective]}
-            row = await session.get(WorkItemRecord, item.id)
-            payload["transport_error"] = transport_error or (
-                json.loads(row.result).get("transport_error") if row else None
-            )
+            payload["transport_error"] = refused
             if (
                 not row
                 or row.scope != self.store.scope
@@ -312,6 +328,32 @@ class LifetimeRepository:
             )
 
             return True
+
+    async def missed_bound(self, signal_id: int, symbol: str | None, evidence: dict[str, Any]) -> None:
+        """One journaled notice that a marked native entry filled at or after its resting deadline.
+
+        The position is open with its bracket, so nothing halts; the key keeps it to one event and one notice.
+        """
+        key = f"entry-lifetime-missed/{signal_id}"
+        async with self.db.session_factory() as session, session.begin():
+            await self.store.lock(session)
+            await self.store.append(
+                session,
+                stream=f"signal/{signal_id}/lifetime",
+                kind=EventKind.ENTRY_LIFETIME_MISSED,
+                payload=evidence,
+                key=key,
+            )
+            await self.store.add_notification(
+                session,
+                key,
+                NotificationKind.MESSAGE,
+                {
+                    "text": f"Entry #{signal_id} ({symbol or 'unknown symbol'}) filled after its session-close cancel "
+                    "deadline: the cancel was missed (reconciliation late or host asleep). The position is open "
+                    "with its bracket; no halt."
+                },
+            )
 
     async def review(self, signal_id: int, reason: str, evidence: dict[str, Any]) -> None:
         async with self.db.session_factory() as session, session.begin():

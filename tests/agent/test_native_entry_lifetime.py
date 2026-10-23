@@ -1,19 +1,23 @@
 """Native cards carry a separate one-session entry-lifetime marker; the order stays an explicit GTC."""
 
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 
+from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.base import TimeInForce
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import ExecutionMode
+from agentic_trader.constants import AssetClass, ExecutionMode
 from agentic_trader.execution.durable import WorkKind
 from agentic_trader.execution.lifetime_policy import (
     NATIVE_ENTRY_LIFETIME_KEY,
+    NativeEntryLifetimePolicy,
     daily_entry_lifetime,
-    lifetime_from_dict,
+    entry_lifetime_of,
     native_entry_lifetime_marker,
 )
+from agentic_trader.execution.lifetimes import RestingCancelResult
 from agentic_trader.notifier.telegram_bot import format_alert_card, format_terminal_card
 from tests.agent.test_card_freshness_tap import record_card, tap_desk  # noqa: F401  (fixture + helper)
 from tests.agent.test_scan_budget import budget_desk  # noqa: F401  (fixture)
@@ -21,7 +25,7 @@ from tests.agent.test_scan_drift import drift_desk, suggestion_scan  # noqa: F40
 from tests.notifier.test_telegram_interactive import eval_res  # noqa: F401  (fixture)
 
 
-CARD_LINE = "Unfilled entry cancels before the next open."
+CARD_LINE = "Unfilled entry is cancelled at the session close."
 
 
 def _config(mode: str, lifetime: str) -> AppConfig:
@@ -30,12 +34,14 @@ def _config(mode: str, lifetime: str) -> AppConfig:
     return config
 
 
-def test_marker_is_the_daily_policy_and_round_trips():
-    marker = native_entry_lifetime_marker(_config(ExecutionMode.ALPACA, "session"))
+def test_marker_is_the_native_session_close_policy_and_round_trips():
+    marker = native_entry_lifetime_marker(_config(ExecutionMode.ALPACA, "session"), "EQUITY")
 
-    assert marker == asdict(daily_entry_lifetime())
+    assert marker == asdict(NativeEntryLifetimePolicy())
     assert NATIVE_ENTRY_LIFETIME_KEY == "entry_lifetime"
-    assert lifetime_from_dict(marker) == daily_entry_lifetime()
+    assert (
+        entry_lifetime_of({"decision_provenance": {NATIVE_ENTRY_LIFETIME_KEY: marker}}) == NativeEntryLifetimePolicy()
+    )
 
 
 @pytest.mark.parametrize(
@@ -43,7 +49,7 @@ def test_marker_is_the_daily_policy_and_round_trips():
     [(ExecutionMode.ALPACA, "off"), (ExecutionMode.PAPER, "session"), (ExecutionMode.PAPER, "off")],
 )
 def test_no_marker_when_off_or_paper_mode(mode, lifetime):
-    assert native_entry_lifetime_marker(_config(mode, lifetime)) is None
+    assert native_entry_lifetime_marker(_config(mode, lifetime), "EQUITY") is None
 
 
 async def _provenance(db) -> dict[str, dict]:
@@ -58,7 +64,66 @@ async def test_native_card_records_entry_lifetime_marker(drift_desk, temp_db, ap
     await suggestion_scan(drift_desk)
 
     provenance = await _provenance(temp_db)
-    assert provenance["DDD"][NATIVE_ENTRY_LIFETIME_KEY] == asdict(daily_entry_lifetime())
+    assert provenance["DDD"][NATIVE_ENTRY_LIFETIME_KEY] == asdict(NativeEntryLifetimePolicy())
+    # The card the scan queues renders the session-close line for the marked card only.
+    contracts = {row["id"]: row["contract"] for row in await temp_db.get_recent_signals(limit=50)}
+    cards = {
+        contracts[item.payload["arguments"]["signal_id"]]: item.payload["arguments"]
+        for item in await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+        if "eval_res" in item.payload.get("arguments", {})
+    }
+    assert cards["DDD"]["entry_session_bound"] is True
+    assert "entry_session_bound" not in cards["WINR"]
+
+
+async def test_a_futures_card_under_alpaca_gets_no_marker_or_card_line(
+    drift_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    monkeypatch,
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    app_config.execution_mode = ExecutionMode.ALPACA
+    app_config.execution.native_entry_lifetime = "session"
+    scan = drift_desk.strategy_engine.scan_contract.side_effect
+    drift_desk.strategy_engine.scan_contract.side_effect = lambda data, **kw: [
+        c.model_copy(update={"asset_class": AssetClass.FUTURES}) for c in scan(data, **kw)
+    ]
+    evaluate = drift_desk.evaluator.evaluate_candidate.side_effect
+
+    async def as_futures(cand, **kwargs):
+        evaluated = await evaluate(cand, **kwargs)
+        evaluated.asset_class = cand.asset_class
+        return evaluated
+
+    drift_desk.evaluator.evaluate_candidate.side_effect = as_futures
+
+    await suggestion_scan(drift_desk)
+
+    provenance = await _provenance(temp_db)
+    assert "DDD" in provenance
+    assert NATIVE_ENTRY_LIFETIME_KEY not in provenance["DDD"]
+    cards = [
+        item.payload["arguments"]
+        for item in await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+        if "eval_res" in item.payload.get("arguments", {})
+    ]
+    assert cards and not any(card.get("entry_session_bound") for card in cards)
+
+
+async def test_the_notifier_cancel_handler_is_the_copilot_cancel_under_the_reconciliation_lock(app_config, temp_db):
+    copilot = TradingCopilot(app_config, db=temp_db)
+    assert copilot.notifier.cancel_handler == copilot.cancel_resting_entry
+    held: list[tuple[bool, bool]] = []
+
+    async def cancel(signal_id, *, confirm):
+        held.append((confirm, copilot._reconciliation_lock.locked()))
+        return RestingCancelResult("preview", None, signal_id, "SPY", None)
+
+    copilot.lifetime_service = SimpleNamespace(cancel_resting_entry=cancel)
+    await copilot.notifier.cancel_handler(42, True)
+    await copilot.notifier.cancel_handler(42, False)
+    assert held == [(True, True), (False, False)]
 
 
 async def test_alpha_and_catalog_cards_get_no_provenance_marker(drift_desk, temp_db, app_config, monkeypatch):  # noqa: F811

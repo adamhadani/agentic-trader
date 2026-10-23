@@ -12,6 +12,7 @@ from agentic_trader.constants import (
     DEFAULT_BACKTEST_LOOKBACK,
     DEFAULT_RESEARCH_SYMBOL,
     ExecutionMode,
+    SignalStatus,
     VolatilityRegime,
 )
 from agentic_trader.execution.durable import WorkStatus
@@ -370,6 +371,8 @@ class TelegramHtmlFormatter:
         if result.status == "refused":
             token = result.reason or "refused"
             detail = cls.RESTING_CANCEL_REFUSALS.get(token.split(":", 1)[0])
+            if token == "not_resting" and result.signal_status == SignalStatus.PENDING:
+                detail = "Signal #{id} is not submitted yet (an untapped card); there is no broker entry to cancel."
             explanation = f" {detail.format(id=sid, symbol=symbol)}" if detail else ""
             if token == "cancel_in_progress" and result.work_status:
                 explanation += f" ({html.escape(result.work_status)})"

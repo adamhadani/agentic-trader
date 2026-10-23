@@ -6,8 +6,10 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo
+
+from agentic_trader.constants import executes_asset_class
 
 
 if TYPE_CHECKING:
@@ -71,52 +73,6 @@ def daily_entry_lifetime() -> TradeLifetimePolicy:
         holding_seconds=None,
         version=TRADE_LIFETIME_VERSION_INDEPENDENT,
     )
-
-
-# Provenance key of a native card's entry lifetime. It is never `alpha_policy`, which also switches on
-# alpha-only trailing, re-pricing and sizing behaviour.
-NATIVE_ENTRY_LIFETIME_KEY = "entry_lifetime"
-
-
-def native_entry_lifetime_marker(config: AppConfig) -> dict[str, Any] | None:
-    """The marker a new native card records, or None (switch off, or a broker that cannot cancel)."""
-    if config.execution.native_entry_lifetime != "session" or config.execution_mode != "alpaca":
-        return None
-    return asdict(daily_entry_lifetime())
-
-
-def _document(value: Any) -> Mapping[str, Any]:
-    """A stored JSON column as an object: the ORM text, a parsed dict, or empty when absent."""
-    if isinstance(value, str | bytes):
-        value = json.loads(value) if value else None
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise ValueError("Stored policy document is not an object")  # noqa: TRY004
-    return value
-
-
-def entry_lifetime_of(signal: Mapping[str, Any]) -> LifetimePolicy | None:
-    """The one entry-lifetime resolver: `alpha_policy["lifetime"]`, else a native card's marker.
-
-    Raises ValueError for a malformed document, including a present but null alpha lifetime;
-    lifetime callers send that to review.
-    """
-    alpha = _document(signal.get("alpha_policy"))
-    if "lifetime" in alpha:
-        declared = alpha["lifetime"]
-        if declared is None:
-            raise ValueError("Alpha lifetime is declared but null")
-    else:
-        declared = _document(signal.get("decision_provenance")).get(NATIVE_ENTRY_LIFETIME_KEY)
-    if declared is None:
-        return None
-    if not isinstance(declared, Mapping):
-        raise ValueError("Entry lifetime is not an object")  # noqa: TRY004
-    try:
-        return lifetime_from_dict(declared)
-    except TypeError as exc:
-        raise ValueError(f"Malformed entry lifetime: {exc}") from exc
 
 
 SESSION_LIFETIME_VERSION = "session_count_v1"
@@ -189,11 +145,123 @@ class SessionLifetimePolicy:
         return min(target, close - SESSION_CLOSE_BUFFER).astimezone(UTC)
 
 
-LifetimePolicy = TradeLifetimePolicy | SessionLifetimePolicy
+# Provenance key of a native card's entry lifetime. It is never `alpha_policy`, which also switches on
+# alpha-only trailing, re-pricing and sizing behaviour.
+NATIVE_ENTRY_LIFETIME_KEY = "entry_lifetime"
+NATIVE_ENTRY_LIFETIME_VERSION = "session_close_v1"
+# Five minutes after the regular close (16:05, or 13:05 on an early close): the closing auction has
+# printed, and the host is still held awake (scripts/awake.sh holds 09:15-16:30 New York).
+NATIVE_ENTRY_CLOSE_BUFFER_SECONDS = 300
 
 
-def lifetime_from_dict(document: Mapping[str, Any]) -> LifetimePolicy:
-    """Deserialize a stored lifetime without rewriting historical documents."""
+@dataclass(frozen=True)
+class NativeEntryLifetimePolicy:
+    """A native card's resting bound: the earlier of its submission session's close + buffer and
+    ``submitted_at + resting_seconds`` (the one-session outer bound). No holding deadline.
+
+    Only the provenance marker resolves to this type; alpha, catalog and probe policies never do.
+    """
+
+    resting_seconds: int = DAILY_ENTRY_LIFETIME_SECONDS
+    close_buffer_seconds: int = NATIVE_ENTRY_CLOSE_BUFFER_SECONDS
+    version: str = NATIVE_ENTRY_LIFETIME_VERSION
+    holding_seconds: ClassVar[None] = None
+
+    def __post_init__(self):
+        if self.version != NATIVE_ENTRY_LIFETIME_VERSION:
+            raise ValueError("Unsupported native entry lifetime version")
+        if type(self.resting_seconds) is not int or not 1 <= self.resting_seconds <= MAX_TRADE_LIFETIME_SECONDS:
+            raise ValueError("Trade lifetimes require bounded positive integer seconds")
+        if type(self.close_buffer_seconds) is not int or not 0 <= self.close_buffer_seconds <= 3_600:
+            raise ValueError("The close buffer is an integer in 0..3600 seconds")
+
+    def entry_deadline(self, submitted_at: datetime, sessions: Sequence[MarketCalendarDay] | None = None) -> datetime:
+        """``sessions`` is the broker calendar for the submission date; ``None`` leaves the outer bound alone."""
+        outer = aware_utc(submitted_at) + timedelta(seconds=self.resting_seconds)
+        if sessions is None:
+            return outer
+        submitted = aware_utc(submitted_at).astimezone(_NEW_YORK)
+        day = next((d for d in sessions if d.date == submitted.date() and d.is_trading_day), None)
+        if day is None or day.close_time is None:
+            raise SessionEvidenceError("submission_outside_regular_session")
+        close = datetime.combine(day.date, day.close_time, tzinfo=_NEW_YORK) + timedelta(
+            seconds=self.close_buffer_seconds
+        )
+        if submitted > close:
+            raise SessionEvidenceError("submission_outside_regular_session")
+        return min(outer, close.astimezone(UTC))
+
+    def holding_deadline(self, filled_at: datetime) -> None:
+        return None
+
+
+LifetimePolicy = TradeLifetimePolicy | SessionLifetimePolicy | NativeEntryLifetimePolicy
+
+
+def has_holding_deadline(policy: LifetimePolicy) -> bool:
+    """Whether a filled position under ``policy`` still has a deadline the lifetime service must time."""
+    return isinstance(policy, SessionLifetimePolicy) or policy.holding_seconds is not None
+
+
+def lifetime_from_dict(document: Mapping[str, Any]) -> TradeLifetimePolicy | SessionLifetimePolicy:
+    """Deserialize a stored alpha or catalog lifetime without rewriting historical documents."""
     if document.get("version") == SESSION_LIFETIME_VERSION:
         return SessionLifetimePolicy(**document)
     return TradeLifetimePolicy(**document)
+
+
+def native_lifetime_from_dict(document: Mapping[str, Any]) -> NativeEntryLifetimePolicy:
+    """A native card's marker. Markers written before the session-close bound hold the daily
+    elapsed policy itself (``elapsed_utc_v2``, 57,600 s, no holding) and read as the same policy."""
+    if document.get("version") == NATIVE_ENTRY_LIFETIME_VERSION:
+        return NativeEntryLifetimePolicy(**document)
+    if dict(document) == asdict(daily_entry_lifetime()):
+        return NativeEntryLifetimePolicy()
+    raise ValueError("Unsupported native entry lifetime marker")
+
+
+def native_entry_lifetime_marker(config: AppConfig, asset_class: str) -> dict[str, Any] | None:
+    """The marker a new native card records, or None: switch off, a broker that cannot cancel, or a
+    card the broker cannot execute (a futures card under alpaca)."""
+    if (
+        config.execution.native_entry_lifetime != "session"
+        or config.execution_mode != "alpaca"
+        or not executes_asset_class(config.execution_mode, asset_class)
+    ):
+        return None
+    return asdict(NativeEntryLifetimePolicy())
+
+
+def _document(value: Any) -> Mapping[str, Any]:
+    """A stored JSON column as an object: the ORM text, a parsed dict, or empty when absent."""
+    if isinstance(value, str | bytes):
+        value = json.loads(value) if value else None
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("Stored policy document is not an object")  # noqa: TRY004
+    return value
+
+
+def entry_lifetime_of(signal: Mapping[str, Any]) -> LifetimePolicy | None:
+    """The one entry-lifetime resolver: `alpha_policy["lifetime"]`, else a native card's marker.
+
+    Raises ValueError for a malformed document, including a present but null alpha lifetime;
+    lifetime callers send that to review.
+    """
+    alpha = _document(signal.get("alpha_policy"))
+    native = "lifetime" not in alpha
+    if not native:
+        declared = alpha["lifetime"]
+        if declared is None:
+            raise ValueError("Alpha lifetime is declared but null")
+    else:
+        declared = _document(signal.get("decision_provenance")).get(NATIVE_ENTRY_LIFETIME_KEY)
+    if declared is None:
+        return None
+    if not isinstance(declared, Mapping):
+        raise ValueError("Entry lifetime is not an object")  # noqa: TRY004
+    try:
+        return native_lifetime_from_dict(declared) if native else lifetime_from_dict(declared)
+    except TypeError as exc:
+        raise ValueError(f"Malformed entry lifetime: {exc}") from exc

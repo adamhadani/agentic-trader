@@ -16,6 +16,7 @@ from agentic_trader.execution.lifetime_policy import (
     DAILY_ENTRY_LIFETIME_SECONDS,
     NATIVE_ENTRY_LIFETIME_KEY,
     TRADE_LIFETIME_VERSION_INDEPENDENT,
+    NativeEntryLifetimePolicy,
     SessionLifetimePolicy,
     TradeLifetimePolicy,
     daily_entry_lifetime,
@@ -210,10 +211,12 @@ def test_resolver_prefers_alpha_policy():
 
 
 @pytest.mark.parametrize("as_text", [False, True])
-def test_resolver_reads_native_marker(as_text):
-    provenance = {NATIVE_ENTRY_LIFETIME_KEY: asdict(daily_entry_lifetime())}
+@pytest.mark.parametrize("marker", [asdict(NativeEntryLifetimePolicy()), asdict(daily_entry_lifetime())])
+def test_resolver_reads_native_marker(as_text, marker):
+    """The current marker and the daily-policy marker written before the session-close bound."""
+    provenance = {NATIVE_ENTRY_LIFETIME_KEY: marker}
     signal = {"alpha_policy": None, "decision_provenance": json.dumps(provenance) if as_text else provenance}
-    assert entry_lifetime_of(signal) == daily_entry_lifetime()
+    assert entry_lifetime_of(signal) == NativeEntryLifetimePolicy()
 
 
 @pytest.mark.parametrize(

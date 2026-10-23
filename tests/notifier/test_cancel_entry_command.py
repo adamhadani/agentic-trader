@@ -198,3 +198,25 @@ def test_filled_before_cancel_refusal_renders_the_outcome():
     text = TelegramHtmlFormatter.format_resting_cancel_html(refused)
     assert "filled before" in text and "opened with its protective exits" in text
     assert "already exists" not in text and "(rejected)" not in text
+
+
+@pytest.mark.parametrize(
+    ("signal_status", "expected", "absent"),
+    [
+        ("PENDING", "is not submitted yet", "filled, closed or failed"),
+        ("EXECUTED", "filled, closed or failed", "not submitted yet"),
+        ("FAILED", "filled, closed or failed", "not submitted yet"),
+    ],
+)
+def test_not_resting_reply_tells_an_untapped_card_apart(signal_status, expected, absent):
+    refused = RestingCancelResult(
+        status="refused",
+        reason="not_resting",
+        signal_id=42,
+        symbol="SPY",
+        work_status=None,
+        signal_status=signal_status,
+    )
+    text = TelegramHtmlFormatter.format_resting_cancel_html(refused)
+    assert expected in text and absent not in text
+    assert "<code>not_resting</code>" in text

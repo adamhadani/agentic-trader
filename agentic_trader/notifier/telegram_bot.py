@@ -231,7 +231,7 @@ def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | No
     return NEWS_LABEL + (html.escape(text, quote=False) if markup else text) + "\n"
 
 
-ENTRY_SESSION_BOUND_LINE = "Unfilled entry cancels before the next open."
+ENTRY_SESSION_BOUND_LINE = "Unfilled entry is cancelled at the session close."
 
 
 def format_alert_card(
