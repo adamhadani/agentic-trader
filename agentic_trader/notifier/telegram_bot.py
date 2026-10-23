@@ -249,11 +249,14 @@ def format_alert_card(
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
     entry_session_bound: bool = False,
+    card_facts: dict[str, Any] | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
     ``drift`` (a PEAD catalog-probe card's ``drift_card_facts``) adds the event and
     holding facts between the probe header and the card; None leaves the card unchanged.
+    ``card_facts`` is the generic catalog-source facts keyword (a watch card's
+    ``CatalogCardSource.card_facts``); it is accepted and not yet rendered.
     ``card_evidence`` (the scan's ``CardEvidence`` dump) renders the measured-record block
     right after the target line; None renders none.
     """
@@ -1441,10 +1444,12 @@ class TelegramNotifier:
         card_evidence: dict[str, Any] | None = None,
         book_sizing: dict[str, Any] | None = None,
         entry_session_bound: bool = False,
+        card_facts: dict[str, Any] | None = None,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
         # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
-        # (a PEAD catalog-probe scan card only) is rendered on the Telegram card.
+        # (a PEAD catalog-probe scan card only) is rendered on the Telegram card;
+        # ``card_facts`` (a catalog source's generic facts) is passed through to it.
         # ``card_evidence`` (native scan cards and their replacements) renders the
         # measured-record block on both cards; payloads queued before it existed omit it.
         # The signal row is read once: its timestamp dates ``Valid until`` (a close after the
@@ -1491,6 +1496,7 @@ class TelegramNotifier:
             book_sizing=book_sizing,
             entry_session_bound=entry_session_bound,
             issued_at=issued_at,
+            card_facts=card_facts,
         )
 
         # A retried SIGNAL delivery can land after the card already left PENDING -- for
