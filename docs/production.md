@@ -293,7 +293,9 @@ early closes kept) instead of today's; the card shows `Valid until: Www DD HH:MM
 the New York issue date, for example a CME evening-session futures card, not only under this option). A tap while the
 market is closed then answers `WAITING` and the card stays live; the next session's tap re-prices or
 misses as usual, and a scan skips a setup that already has a live card (`live card pending`). The
-default `session_close` keeps every existing tap result. See
+default `session_close` keeps every existing tap result.
+A native card recorded with `execution.native_entry_lifetime: session` (alpaca mode) that is
+executed and not filled by the next open is cancelled overnight by the lifetime service (one session, 57,600 s from the broker `submitted_at`; see [native entries](alpha-trade-lifetimes.md#native-entries)); earlier cards are not bounded. See
 [card evidence](card-evidence.md#card-validity).
 
 **Session-close card sweep (September 24).** Correctness never depended on the buttons
@@ -1223,13 +1225,38 @@ is verified. All remain unqualified, and active-alpha count remains zero. Inspec
 [results and limits](alpha-session-campaign-2026-09-17.md); positive historical marks
 are not Alpaca paper-account P&L.
 
+### Operator entry cancel
+
+`/cancel <id>` previews one resting entry (signal id) with Cancel entry and Keep buttons;
+only the button sends the single, never-retried broker DELETE. CLI: `copilot cancel <id>`
+previews, `copilot cancel <id> --confirm` cancels. It works for timed and untimed entries
+and uses the durable `entry_cancel` path (cause `operator`). The reply is one of:
+cancelled (broker confirms no fills); filled before the cancel (position open and
+protected, no halt); or unconfirmed (new risk halts, inspect exact broker fills and
+protective orders; no retry). A partial fill racing the cancel therefore halts until
+reviewed. Refusal tokens (nothing was cancelled, no halt):
+
+| Token | Meaning |
+| --- | --- |
+| `unknown_signal` | no such signal |
+| `not_resting` | filled, closed or failed already |
+| `cancel_in_progress` | a cancel exists for this signal (cancelling or cancelled) |
+| `filled_before_cancel` | an earlier cancel found the entry filled and protected |
+| `close_active` | a close is active for the symbol |
+| `incomplete_or_changed_bracket_group` | broker group incomplete or changed; inspect broker orders |
+| `broker_cannot_cancel` | the broker has no exact-order cancel |
+| `no_durable_entry` | no durable desk entry for the broker order |
+| `entry_group_unavailable:<Type>` | the broker group could not be read |
+
+Inspect with `copilot db queue --kind entry_cancel`.
+
 ### Timed alpha lifecycle operations
 
-Only explicitly timed alpha positions participate in [trade lifetimes](alpha-trade-lifetimes.md); historical positions receive no inferred limits. Resting deadlines request one exact entry cancellation, then reconcile by GET. `entry_cancellation` readiness and `trader_entry_cancellations_unresolved` expose unresolved work. Entry admission remains blocked during cancellation even before an uncertainty halt. Partial fills, replacements or ambiguous outcomes require protection review and retain journal/outbox evidence; never manually replay the DELETE. `/resume` rechecks unresolved cancellation and timed-position evidence.
+Explicitly timed alpha positions and new native entries (marker `decision_provenance["entry_lifetime"]`, `execution.native_entry_lifetime: session`) participate in [trade lifetimes](alpha-trade-lifetimes.md); historical positions receive no inferred limits. A cancel that finds the entry fully filled with protective exits intact by exact read resolves as `filled_before_cancel` without a halt. Resting deadlines request one exact entry cancellation, then reconcile by GET. `entry_cancellation` readiness and `trader_entry_cancellations_unresolved` expose unresolved work. Entry admission remains blocked during cancellation even before an uncertainty halt. Partial fills, replacements or ambiguous outcomes require protection review and retain journal/outbox evidence; never manually replay the DELETE. `/resume` rechecks unresolved cancellation and timed-position evidence.
 
 Holding expiry waits for a current eligible broker session and uses the existing close service with a stable ID. A failed attempt is retained for operator review, not retried every monitor cycle. General close claims/results now also create durable journal/outbox notifications; confirmed financial accounting remains separate. Monitor cadence and host availability bound response time: an elapsed lifetime is not a guaranteed fill time. Session-alpha promotion remains disabled.
 
-Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation.
+Inspect durable cancellation evidence with `copilot db queue --kind entry_cancel` and `copilot db events --stream entry-cancel/COMMAND_ID`. These are read-only; unresolved intents have no resend operation. An `unknown` cancel still has no resolve operation (follow-up): it stays halted until reviewed.
 
 The [continuous timed ETF campaign](alpha-continuous-campaign.md) pairs the new lifetime contract with actual-data discovery: 48 frozen comparisons and a new trend/pullback hypothesis. Replay supports one continuous year with bounded acquisition chunks; trial/holdout accounting and session activation gates remain intact. Report research yield separately from deployment readiness.
 
