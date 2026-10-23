@@ -36,7 +36,6 @@ from agentic_trader.research.setups.labels import (
     regular_session_bars,
 )
 from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS, TapeState, tape_buckets, tape_state
-from agentic_trader.screeners.coverage import REGULAR_SESSION_HOURS_NY
 
 
 if TYPE_CHECKING:
@@ -256,8 +255,8 @@ def buy_and_hold_r(
     From the open of the first regular bar at or after ``entry_time`` (the labeler's entry) to the
     close of the last regular bar of the ``max_hold_sessions``-th New York session counted from the
     entry session -- the bracket's own timeout exit -- signed by direction, uncosted. None until
-    that session has closed (a later session's bar, or its final regular-hour bar, exists), when
-    the entry bar is missing or the geometry has no risk unit.
+    a bar of a later session exists (when the labeller's timeout would resolve), when the entry bar
+    is missing or the geometry has no risk unit.
     """
     risk_unit = abs(float(entry) - float(stop))
     if not risk_unit or hourly is None or hourly.empty or max_hold_sessions < 1:
@@ -270,10 +269,11 @@ def buy_and_hold_r(
     dates = list(dict.fromkeys(local.normalize()))
     if len(dates) < max_hold_sessions:
         return None
-    horizon_bars = walk.loc[local.normalize() == dates[max_hold_sessions - 1]]
-    last_hour = pd.DatetimeIndex(horizon_bars.index).tz_convert(ET_TZ)[-1].hour
-    if len(dates) == max_hold_sessions and last_hour != max(REGULAR_SESSION_HOURS_NY):
+    # Matured exactly when the labeller's timeout would be: a bar of a later session exists, so the
+    # horizon session's last bar is final (never a still-forming final-hour bar).
+    if len(dates) <= max_hold_sessions:
         return None
+    horizon_bars = walk.loc[local.normalize() == dates[max_hold_sessions - 1]]
     open_price = float(walk["Open"].iloc[0])
     if not open_price:
         return None

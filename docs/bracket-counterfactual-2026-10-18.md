@@ -129,9 +129,10 @@ units, at **beta one** (`research/setups/outcomes.py` `market_r`). The holistic 
 - **Beta mismatch.** Low-beta setups (Treasury, credit and gold ETFs) were charged for index moves
   they never carried.
 - **R-unit scale on the T-bill funds.** A 1.5× ATR stop on BIL or SHY is a few basis points wide,
-  so SPY's move over the window is tens of R (BIL's median |`market_r`| is about 24R). Excess pins
-  at the ±10 clip whatever the setup did. In 2017–2021 the 102 BIL/SHY setups (1.3% of rows)
-  account for about half of the beta-one gap (−0.103R → −0.053R without them).
+  so SPY's move over the window is tens of R. BIL's median |`market_r`| is about 24R in 2021–2026
+  and about 47R in 2017–2021. Excess pins at the ±10 clip whatever the setup did. In 2017–2021
+  the 88 BIL/SHY setups (1.1% of rows) account for about half of the beta-one gap
+  (−0.103R → −0.053R without them).
 
 The tables recompute the excess on the same frozen frames and caches, clipped at the protocol's
 `r_cap` (10) like the descriptives above. The control uses a **past-only** beta: the OLS slope of
@@ -188,7 +189,7 @@ What changes:
   T-bill fund implies hundreds of times notional per unit of risk. BIL's 30 primary setups averaged
   −20R of beta-one excess before clipping.
 
-Computed 2026-10-23 with `scripts/yardstick_erratum.py` as committed alongside this erratum (feature/yardstick-erratum).
+Computed 2026-10-23 with `scripts/yardstick_erratum.py` (git blob `3a1eb871edc9`) against `research/setups/beta.py` as of commit `71f697b`, which is unchanged since.
 Reproduce with `uv run python scripts/yardstick_erratum.py ~/agentic-trader-research/bracket-counterfactual-v1-20261018
 ~/agentic-trader-research/setup-cache-v1 ~/agentic-trader-research/setup-cache-2017` (local caches only).
 

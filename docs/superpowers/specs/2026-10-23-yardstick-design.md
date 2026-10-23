@@ -50,7 +50,9 @@ In:
   - in group `etf32`, sector `etf_rates_credit` is `rates_credit`, `etf_metals` is `metals`, and
     every other sector is `etf_equity`;
   - every other group is `single_stock`;
-  - a symbol outside the configured universe (dynamic universe, `/scan` names) is `unclassified`.
+  - a symbol outside the configured universe falls back to the research `ETF_RESEARCH_UNIVERSE` cohorts (so
+    journaled BIL/SHY rows stay `rates_credit`); anything else (dynamic universe, `/scan` names) is
+    `unclassified`.
 
   The CLI passes the map to `summarize`.
 - **Native universe.** Remove BIL and SHY from `universe.groups.etf32` in `config/config.yaml`. The

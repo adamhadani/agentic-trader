@@ -931,13 +931,15 @@ _SPY_HOURLY = _bars(
         ("2026-03-02T15:30:00Z", 500.5, 502.0, 500.0, 501.0),
     ]
 )
-# The same two bars followed by the rest of the regular session (to 15:30 ET), so a one-session horizon has closed.
+# The same two bars followed by the rest of the regular session (to 15:30 ET) and the next session's
+# first bar, so a one-session horizon has closed.
 _RESOLVING_FULL_DAY = _bars(
     [
         ("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2),
         ("2026-03-02T15:30:00Z", 100.2, 102.5, 100.0, 102.2),
     ]
     + [(f"2026-03-02T{hour}:30:00Z", 102.2, 103.5, 102.0, 103.0) for hour in (16, 17, 18, 19, 20)]
+    + [("2026-03-03T14:30:00Z", 103.0, 103.2, 102.8, 103.1)]
 )
 _SPY_FULL_DAY = _bars(
     [
@@ -945,6 +947,7 @@ _SPY_FULL_DAY = _bars(
         ("2026-03-02T15:30:00Z", 500.5, 502.0, 500.0, 501.0),
     ]
     + [(f"2026-03-02T{hour}:30:00Z", 501.0, 508.0, 500.5, 505.0) for hour in (16, 17, 18, 19, 20)]
+    + [("2026-03-03T14:30:00Z", 505.0, 505.5, 504.5, 505.2)]
 )
 # One bar that hits neither level and no later bars: the bracket is still open (IMMATURE).
 _OPEN_BARS = _bars([("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 100.2)])
@@ -1853,12 +1856,21 @@ def test_exposure_hold_timing_and_beta_reasons_cover_rows_without_a_market_r():
     frame = _synthetic_mature_frame(
         [("AAPL", 2.0, 1.0, 0.5, 1.5, 0.5), ("MSFT", 1.0, None, None, 2.5, -1.5), ("XLK", 0.0, 3.0, None, None, None)]
     )
-    frame["beta_reason"] = [None, "fetch_failed: RuntimeError", "insufficient_history"]
+    frame["beta_reason"] = [None, "fetch_failed: RuntimeError", "short_history"]
     sent = summarize(frame)["market_exposure"]["sent"]
     # hold/timing average every mature row with a finite value, SPY market_r or not.
     assert sent["n"] == 2 and sent["mean_hold_r"] == pytest.approx((1.5 + 2.5) / 2)
     assert sent["mean_timing_r"] == pytest.approx((0.5 - 1.5) / 2)
-    assert sent["beta_reasons"] == {"fetch_failed: RuntimeError": 1, "insufficient_history": 1}
+    assert sent["beta_reasons"] == {"fetch_failed: RuntimeError": 1, "short_history": 1}
     # the beta-one excess over exactly the rows that carry a beta excess.
     assert sent["mean_beta_excess_r"] == pytest.approx(2.0 - 0.5)
     assert sent["mean_excess_r_same_rows"] == pytest.approx(2.0 - 1.0)
+
+
+def test_buy_and_hold_r_waits_for_a_later_session_even_with_a_final_hour_bar():
+    # A complete-looking horizon session (through the 15:30 ET bar) may still be forming; it matures only once
+    # a later session's bar exists, as the labeller's timeout does.
+    same_day_only = _RESOLVING_FULL_DAY.loc[_RESOLVING_FULL_DAY.index < pd.Timestamp("2026-03-03", tz="UTC")]
+    entry = pd.Timestamp("2026-03-02T14:30:00Z")
+    assert buy_and_hold_r("LONG", 100.0, 99.0, entry, same_day_only, 1) is None
+    assert buy_and_hold_r("LONG", 100.0, 99.0, entry, _RESOLVING_FULL_DAY, 1) == pytest.approx(3.0)
