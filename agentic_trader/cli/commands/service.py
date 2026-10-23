@@ -756,6 +756,9 @@ async def daemon(no_llm: bool) -> None:
     insider_capture_task = (
         asyncio.create_task(run_insider_capture(copilot, config)) if config.insider_watch.enabled else None
     )
+    if copilot.insider_watch_source is not None:
+        # The pinned insider archive (about 16 s) is read once per process in a worker thread, from now.
+        copilot.insider_watch_source.warm()
 
     scheduler = AsyncIOScheduler(
         job_defaults={

@@ -7,13 +7,18 @@ card whose source ``kind`` is ``watch``; the card's ``decision_provenance["card_
 
 One decision per New York session (``CatalogCardSource``):
 
-1. Load the watch history (pinned archive + journaled Form 4 captures, ``load_watch_history``) once per
-   date. A history that does not reach the previous calendar day (``WatchHistory.current_for``) makes the
-   session ``unavailable``: never a decision on a partial history.
-2. Apply the study's plausibility filter (10 x the 20-session median raw dollar volume, SIP daily bars) to
-   every symbol with a purchase on the calendar, then run ``build_insider_events`` narrowed to D = today,
-   as ``pead_live`` narrows PEAD. Name changes of the event symbols (Alpaca corporate actions) are the
-   identity breaks; the rule is re-run with them.
+1. The trigger calendar is the study's: every session from the cube spec's ``bars_from`` (2016-01-01)
+   through D, so the 63-session cooldown chain is the frozen rule's, however far back it reaches. The
+   pinned quarterly archive (digest-checked, about 16 s) is read once per process in a worker thread
+   (``LiveWatchHistory``) and the journaled Form 4 captures are merged onto it per New York date. A cold
+   load that outlasts the scan's preparation deadline makes that decision ``unavailable`` (``timeout``)
+   without cancelling the load. A history that does not reach the previous calendar day
+   (``WatchHistory.current_for``) makes the session ``unavailable``: never a decision on a partial history.
+2. Apply the study's plausibility filter (a trade above 10 x the 20-session median raw dollar volume is
+   dropped) on SIP daily bars over the last ``PLAUSIBILITY_SESSIONS`` sessions, then run
+   ``build_insider_events`` narrowed to D = today, as ``pead_live`` narrows PEAD. Name changes of the
+   event symbols (Alpaca corporate actions, read live; digest and request time journaled) are the identity
+   breaks; the rule is re-run with them.
 3. Eligibility as of D-1 on SIP daily bars: the cube's own ``point_in_time_eligibility`` ($10 raw close,
    $5M 20-session median raw dollar volume, ATR14 on adjusted bars), per event symbol. A symbol whose
    captured documents failed to parse inside the cluster + cooldown span is not carded.
@@ -22,6 +27,15 @@ One decision per New York session (``CatalogCardSource``):
 The card is policy-locked (``alpha_policy`` = the cube bracket, ``session_close`` validity), its LLM pass
 is commentary, it carries news context like a native card, and it is exempt from ``card_policy``, book
 sizing and the broad-index rule. Its risk is capped at ``insider_watch.max_risk_per_trade_usd``.
+
+Residual differences from the study, both in the direction of keeping a trade:
+
+- Trades filed before the plausibility window have no dollar volume and are kept, which is the study's own
+  rule for a missing dollar volume; the study had bars back to 2016 and could drop an implausible old
+  trade. Such a trade only matters through the routine rule or an old link of the cooldown chain.
+- A filing dated on a day without a session (Good Friday, when EDGAR is open and NYSE closed) rolls
+  forward to D itself when D is the next session. D has no daily bar at 10:35, so that trade has no dollar
+  volume and is kept; the study read D's bar.
 """
 
 from __future__ import annotations
@@ -40,11 +54,13 @@ import pandas as pd
 
 from agentic_trader.data.insider_capture import (
     InsiderCaptureStore,
+    WatchArchive,
     WatchCohort,
     WatchHistory,
     default_capture_directory,
+    load_watch_archive,
     load_watch_cohort,
-    load_watch_history,
+    merge_watch_history,
 )
 from agentic_trader.execution.durable import EventKind, NotificationKind
 from agentic_trader.execution.lifetime_policy import SessionLifetimePolicy
@@ -75,9 +91,10 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "CALENDAR_LOOKBACK_DAYS",
     "INSIDER_WATCH_POSITION_CAP_REACHED",
+    "PLAUSIBILITY_SESSIONS",
     "InsiderWatchSource",
+    "LiveWatchHistory",
     "WatchPreparation",
     "build_insider_watch_source",
     "cluster_members",
@@ -86,11 +103,10 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# Calendar days of trading sessions the decision reads (about 137 sessions): the cooldown (63) plus the
-# cluster window (21) ending at D-1 with room for a prior trigger's own window. Older purchases still feed
-# the routine rule (they are in the history) but have no session position, exactly as before a study's
-# first session.
-CALENDAR_LOOKBACK_DAYS = 200
+# Sessions of raw SIP daily bars read for the plausibility filter: the routine rule's look-back (the same
+# month a year earlier, at most 13 months, about 275 sessions), the cluster window plus the cooldown (84)
+# and the 20-session dollar-volume warm-up. Older trades keep a missing dollar volume (kept, as in the study).
+PLAUSIBILITY_SESSIONS = 380
 INSIDER_WATCH_POSITION_CAP_REACHED = "insider watch position cap reached"
 # Calendar days looked ahead for the 20-session time exit shown on the card.
 _EXIT_CALENDAR_DAYS = 45
@@ -119,8 +135,50 @@ class WatchPreparation:
     latest_filing_date: str | None = None
     history: dict = field(default_factory=dict)
     incomplete: dict[str, list[str]] = field(default_factory=dict)
+    calendar: dict = field(default_factory=dict)  # the trigger calendar's first session and session count
     time_exit_at: str | None = None
     elapsed_seconds: float | None = None
+
+
+class LiveWatchHistory:
+    """The daemon's watch history: the pinned archive once per process, the captures merged per call.
+
+    ``archive()`` starts the blocking archive read in a worker thread on first use (or on ``warm()``) and
+    awaits it shielded, so a caller's timeout never cancels the read: the next decision finds it done. A
+    failed read is retried by the next call.
+    """
+
+    def __init__(
+        self,
+        store: InsiderCaptureStore | None,
+        *,
+        load_archive: Callable[[], tuple[Any, Any]],
+        merge: Callable[..., WatchHistory] = merge_watch_history,
+    ):
+        self.store = store
+        self.load_archive = load_archive
+        self.merge = merge
+        self._task: asyncio.Task[tuple[Any, Any]] | None = None
+
+    def warm(self) -> None:
+        """Start the archive read now (inside a running event loop); a no-op once started."""
+        self._start()
+
+    def _start(self) -> asyncio.Task[tuple[Any, Any]]:
+        task = self._task
+        if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
+            task = asyncio.get_running_loop().create_task(asyncio.to_thread(self.load_archive))
+            self._task = task
+        return task
+
+    async def archive(self) -> tuple[Any, Any]:
+        return await asyncio.shield(self._start())
+
+    async def __call__(self, trading: Sequence[date]) -> WatchHistory:
+        cohort, archive = await self.archive()
+        assert self.store is not None
+        captures = await self.store.captures()
+        return await asyncio.to_thread(self.merge, archive, cohort, tuple(trading), {}, (), captures)
 
 
 @dataclass(frozen=True)
@@ -250,6 +308,12 @@ class InsiderWatchSource:
         self.service_error = service_error
         self._cache: _SessionHistory | None = None
 
+    def warm(self) -> None:
+        """Start the once-per-process archive read early (daemon start), so the 10:35 decision finds it done."""
+        warm = getattr(self.history, "warm", None)
+        if self.config.insider_watch.enabled and callable(warm):
+            warm()
+
     # --- limits and gating ------------------------------------------------------------------------
 
     def max_cards_per_session(self, config: AppConfig) -> int:
@@ -303,13 +367,18 @@ class InsiderWatchSource:
     # --- preparation ------------------------------------------------------------------------------
 
     async def _trading_days(self, session: date) -> tuple[date, ...]:
-        days = await self.calendar.get_calendar_range(session - timedelta(days=CALENDAR_LOOKBACK_DAYS), session)
+        """Every session from the study's first (the cube spec's ``bars_from``) through ``session``."""
+        assert self.contract is not None
+        days = await self.calendar.get_calendar_range(self.contract.spec.bars_from, session)
         return tuple(sorted(day.date for day in days if day.is_trading_day))
 
-    async def _daily(self, symbols: Sequence[str], trading: tuple[date, ...], adjustment: str) -> dict:
+    async def _daily(
+        self, symbols: Sequence[str], trading: tuple[date, ...], adjustment: str, *, sessions: int
+    ) -> dict:
+        """Daily bars of ``symbols`` over the last ``sessions`` sessions through D-1."""
         if not symbols:
             return {}
-        start = datetime.combine(trading[0], time.min, tzinfo=UTC)
+        start = datetime.combine(trading[max(0, len(trading) - 1 - sessions)], time.min, tzinfo=UTC)
         end = datetime.combine(trading[-2], time(23, 59), tzinfo=UTC)  # through D-1: no bar of D is read
         return await asyncio.to_thread(self.bars.fetch_daily_many, list(symbols), start, end, adjustment=adjustment)
 
@@ -324,13 +393,14 @@ class InsiderWatchSource:
             raise ValueError("the watch history was seeded under another insider entry")
         if not history.current_for(session):
             return f"capture_not_current: latest filing date {history.latest_filing_date.isoformat()}"
-        first = trading[0]
+        # Only purchases feed the rule, and only those inside the bar window can be measured.
+        first = trading[max(0, len(trading) - 1 - PLAUSIBILITY_SESSIONS)]
         buyers = sorted(
             symbol
             for symbol, rows in history.transactions.items()
             if any(t.code == "P" and t.filing_date >= first for t in rows)
         )
-        raw = await self._daily(buyers, trading, "raw")
+        raw = await self._daily(buyers, trading, "raw", sessions=PLAUSIBILITY_SESSIONS)
         max_trade_rel = float(history.provenance["max_trade_rel"])  # the protocol's own threshold
         transactions, implausible = _plausible(history, trading, raw, max_trade_rel)
         result = _SessionHistory(session, trading, history, transactions, raw, implausible)
@@ -378,11 +448,20 @@ class InsiderWatchSource:
         history = seeded.history
         frame, counts = await asyncio.to_thread(self._events, seeded, {})
         breaks: dict[str, date] = {}
+        actions_read: dict[str, Any] | None = None
         if not frame.empty:
             symbols = sorted(set(frame["symbol"]))
             start = min(frame["filing_date"])
             assert self.actions is not None  # _built() checked it
             page = await asyncio.to_thread(self.actions.fetch, symbols, start, session)
+            actions_read = {
+                "requested_at": page.requested_at.isoformat(),
+                "received_at": page.received_at.isoformat(),
+                "window": [start.isoformat(), session.isoformat()],
+                "symbols": page.symbols,
+                "pages": page.pages,
+                "page_sha256": list(page.page_sha256),
+            }
             breaks = identity_breaks(page.actions, symbols)
             if breaks:
                 frame, counts = await asyncio.to_thread(self._events, seeded, breaks)
@@ -390,6 +469,7 @@ class InsiderWatchSource:
             **counts,
             "implausible_size": seeded.implausible,
             "identity_breaks": {s: d.isoformat() for s, d in sorted(breaks.items())},
+            "corporate_actions": actions_read,
         }
 
         # A document that failed to parse inside the cluster window plus the cooldown could hide a buyer
@@ -404,7 +484,8 @@ class InsiderWatchSource:
 
         rows = frame.to_dict("records")
         event_symbols = sorted({row["symbol"] for row in rows})
-        adjusted = await self._daily(event_symbols, trading, "all")
+        # ATR14 through D-1 plus its previous close, with margin for holidays.
+        adjusted = await self._daily(event_symbols, trading, "all", sessions=40)
         eligible: list[dict] = []
         excluded: list[dict] = []
         for row in rows:
@@ -418,6 +499,7 @@ class InsiderWatchSource:
             document = {
                 **event_document(row),
                 "entry_sha256": contract.entry_sha256,
+                "issuer_cik": history.issuer_ciks.get(symbol),
                 "owners": owners,
                 "filing_dates": sorted({t.filing_date.isoformat() for t in members}),
             }
@@ -453,6 +535,7 @@ class InsiderWatchSource:
             latest_filing_date=history.latest_filing_date.isoformat(),
             history={key: history.provenance.get(key) for key in sorted(history.provenance)},
             incomplete=incomplete,
+            calendar={"first_session": trading[0].isoformat(), "sessions": len(trading)},
             time_exit_at=await self._time_exit(now, contract.policy),
             **self._contract_fields(),
         )
@@ -487,7 +570,7 @@ class InsiderWatchSource:
         return {
             "kind": "insider_watch",
             "buyers": event["buyers"],
-            "owners": event["owners"],
+            "issuer_cik": event.get("issuer_cik"),
             "filing_dates": event["filing_dates"],
             "opp_dollars": event["opp_dollars"],
             "holding_sessions": self.contract.holding_sessions,
@@ -513,6 +596,7 @@ class InsiderWatchSource:
             "history": prep.history,
             "counts": prep.counts,
             "incomplete": prep.incomplete,
+            "calendar": prep.calendar,
             "skipped": prep.skipped,
             "time_exit_at": prep.time_exit_at,
             "elapsed_seconds": prep.elapsed_seconds,
@@ -577,13 +661,11 @@ def build_insider_watch_source(
         )
         return InsiderWatchSource(config, contract, service_error=error)
     store = InsiderCaptureStore(workflows, capture_directory or default_capture_directory())
-    cohorts: list[WatchCohort] = []
+    first_day = contract.spec.bars_from
 
-    async def history(trading: Sequence[date]) -> WatchHistory:
-        if not cohorts:
-            cohorts.append(await asyncio.to_thread(load_watch_cohort, repo_root, config.insider_watch.archive_dir))
-        return await load_watch_history(
-            config.insider_watch, store, cohort=cohorts[0], trading_days=trading, raw_bars={}, actions=()
-        )
+    def load_archive() -> tuple[WatchCohort, WatchArchive]:
+        cohort = load_watch_cohort(repo_root, config.insider_watch.archive_dir)
+        return cohort, load_watch_archive(config.insider_watch.archive_dir, cohort, first_day)
 
+    history = LiveWatchHistory(store, load_archive=load_archive)
     return InsiderWatchSource(config, contract, history=history, calendar=calendar, bars=bars, actions=actions)

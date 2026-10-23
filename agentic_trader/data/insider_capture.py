@@ -37,7 +37,7 @@ import os
 import re
 import time as monotonic_time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from functools import lru_cache, partial
@@ -101,6 +101,7 @@ __all__ = [
     "CaptureStatus",
     "InsiderCaptureStore",
     "InsiderCaptureWorker",
+    "WatchArchive",
     "WatchCohort",
     "WatchHistory",
     "capture_filing_dates",
@@ -108,8 +109,10 @@ __all__ = [
     "default_capture_directory",
     "edgar_business_day",
     "edgar_pacer",
+    "load_watch_archive",
     "load_watch_cohort",
     "load_watch_history",
+    "merge_watch_history",
     "run_insider_capture_worker",
 ]
 
@@ -682,6 +685,8 @@ class WatchHistory:
     live_dates: tuple[date, ...]
     incomplete: Mapping[str, tuple[date, ...]]
     provenance: Mapping[str, Any]
+    # Each cohort symbol's issuer CIK (from the archive's ticker map), for links to the issuer's filings.
+    issuer_ciks: Mapping[str, int] = field(default_factory=dict)
 
     def current_for(self, decision_date: date) -> bool:
         """Whether every filing date through the calendar day before ``decision_date`` is in the history."""
@@ -711,6 +716,34 @@ def _live_transaction(row: Mapping[str, Any]) -> InsiderTransaction:
     )
 
 
+@dataclass(frozen=True)
+class WatchArchive:
+    """The pinned quarterly archive's cohort transactions (digest-checked), read once and merged per date."""
+
+    by_symbol: Mapping[str, tuple[InsiderTransaction, ...]]
+    archive_through: date
+    quarters_read: tuple[str, ...]
+
+
+def load_watch_archive(archive_dir: Path, cohort: WatchCohort, first_day: date) -> WatchArchive:
+    """Check the pinned digest over every quarter and read the quarters a calendar starting at ``first_day``
+    needs: the routine rule looks one calendar year back from its first filing month. Blocking (seconds per
+    quarter archive): call it in a worker thread."""
+    filings = cohort.filings
+    pinned = quarters_between(parse_quarter(filings.quarters_from), parse_quarter(filings.quarters_through))
+    if files_sha256(InsiderFilingStore(archive_dir), pinned) != filings.files_sha256:
+        raise ValueError("the insider archive does not match the protocol's insider_filings.files_sha256")
+    first_needed = _quarter_of(date(first_day.year - 1, first_day.month, 1))
+    read = tuple(quarter for quarter in pinned if quarter >= first_needed)
+    archived: Mapping[str, tuple[InsiderTransaction, ...]] = {}
+    if read:
+        narrowed = filings.model_copy(update={"quarters_from": str(read[0])})
+        archived = load_insider_filings(archive_dir, narrowed, cohort.symbols).by_symbol
+    return WatchArchive(
+        by_symbol=archived, archive_through=_quarter_end(pinned[-1]), quarters_read=tuple(str(q) for q in read)
+    )
+
+
 def _build_history(
     archive_dir: Path,
     cohort: WatchCohort,
@@ -719,18 +752,23 @@ def _build_history(
     actions: Sequence[CorporateAction],
     captures: Sequence[Mapping[str, Any]],
 ) -> WatchHistory:
+    archive = load_watch_archive(archive_dir, cohort, days[0])
+    return merge_watch_history(archive, cohort, days, raw_bars, actions, captures)
+
+
+def merge_watch_history(
+    archive: WatchArchive,
+    cohort: WatchCohort,
+    days: tuple[date, ...],
+    raw_bars: Mapping[str, pd.DataFrame],
+    actions: Sequence[CorporateAction],
+    captures: Sequence[Mapping[str, Any]],
+) -> WatchHistory:
+    """Continue ``archive`` with the contiguous journaled ``captures`` on ``days`` and apply the plausibility
+    filter (``raw_bars``) and the identity breaks (``actions``). ``archive`` must cover ``days[0]``."""
     filings = cohort.filings
-    pinned = quarters_between(parse_quarter(filings.quarters_from), parse_quarter(filings.quarters_through))
-    if files_sha256(InsiderFilingStore(archive_dir), pinned) != filings.files_sha256:
-        raise ValueError("the insider archive does not match the protocol's insider_filings.files_sha256")
-    archive_through = _quarter_end(pinned[-1])
-    # The routine rule looks one calendar year back from the calendar's first filing month.
-    first_needed = _quarter_of(date(days[0].year - 1, days[0].month, 1))
-    read = tuple(quarter for quarter in pinned if quarter >= first_needed)
-    archived: Mapping[str, tuple[InsiderTransaction, ...]] = {}
-    if read:
-        narrowed = filings.model_copy(update={"quarters_from": str(read[0])})
-        archived = load_insider_filings(archive_dir, narrowed, cohort.symbols).by_symbol
+    archive_through = archive.archive_through
+    archived = archive.by_symbol
 
     wanted = set(cohort.symbols)
     scope_sha256 = cohort.scope().sha256
@@ -785,9 +823,10 @@ def _build_history(
         archive_through=archive_through,
         live_dates=tuple(live_dates),
         incomplete={symbol: tuple(found) for symbol, found in incomplete.items()},
+        issuer_ciks={symbol: cik for cik, symbols in cohort.cik_to_symbols.items() for symbol in symbols},
         provenance={
             "insider_files_sha256": filings.files_sha256,
-            "quarters_read": [str(quarter) for quarter in read],
+            "quarters_read": list(archive.quarters_read),
             "archive_through": archive_through.isoformat(),
             "live_dates": len(live_dates),
             "live_dates_in_archive": in_archive,

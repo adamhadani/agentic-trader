@@ -12,6 +12,7 @@ import asyncio
 import dataclasses
 import inspect
 import json
+import threading
 from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -26,7 +27,9 @@ from agentic_trader.agent.catalog_sources import CatalogCardSource, PeadDriftSou
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.agent.insider_watch import (
     INSIDER_WATCH_POSITION_CAP_REACHED,
+    PLAUSIBILITY_SESSIONS,
     InsiderWatchSource,
+    LiveWatchHistory,
     WatchPreparation,
     build_insider_watch_source,
     rank_events,
@@ -38,8 +41,13 @@ from agentic_trader.data.corporate_actions import CorporateAction, CorporateActi
 from agentic_trader.data.edgar_form4 import IndexRow, select_form4
 from agentic_trader.data.insider_capture import WatchHistory
 from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
-from agentic_trader.market.session import ET_TZ, DeterministicCalendarProvider
-from agentic_trader.notifier.telegram_bot import WATCH_STUDY_LINE, TelegramNotifier, format_alert_card
+from agentic_trader.market.session import ET_TZ, DeterministicCalendarProvider, MarketHolidayCalendar
+from agentic_trader.notifier.telegram_bot import (
+    WATCH_STUDY_LINE,
+    TelegramNotifier,
+    format_alert_card,
+    format_terminal_card,
+)
 from agentic_trader.research.alpha.strategy import AprioriBracketPolicy, execution_policy_from_dict
 from agentic_trader.research.apriori.watch_contract import (
     INSIDER_WATCH_STRATEGY_ID,
@@ -363,6 +371,7 @@ def watch_event(symbol: str = "WTCH", buyers: int = 2) -> dict[str, Any]:
         "opp_dollars": 250_000.0,
         "year": 2026,
         "entry_sha256": CONTRACT.entry_sha256,
+        "issuer_cik": 1334036,
         "owners": [101, 102],
         "filing_dates": ["2026-10-16", "2026-10-20"],
         "atr": 1.0,
@@ -471,7 +480,7 @@ async def test_rf4_a_watch_card_is_sent_beside_pead_and_native_with_independent_
     assert card["card_facts"] == {
         "kind": "insider_watch",
         "buyers": 2,
-        "owners": [101, 102],
+        "issuer_cik": 1334036,
         "filing_dates": ["2026-10-16", "2026-10-20"],
         "opp_dollars": 250_000.0,
         "holding_sessions": 20,
@@ -728,7 +737,7 @@ def test_the_card_carries_the_watch_header_the_cluster_and_the_study_line():
     facts = {
         "kind": "insider_watch",
         "buyers": 3,
-        "owners": [101, 102, 103],
+        "issuer_cik": 1334036,
         "filing_dates": ["2026-10-16", "2026-10-20"],
         "opp_dollars": 412_000.0,
         "holding_sessions": 20,
@@ -737,8 +746,11 @@ def test_the_card_carries_the_watch_header_the_cluster_and_the_study_line():
     }
     text = format_alert_card(_evaluation(), INSIDER_WATCH_STRATEGY_ID, card_facts=facts)
     assert text.startswith("👀 <b>INSIDER WATCH — unvalidated</b> — risk capped at $100;")
-    assert "3 officer/director buyers (owner CIKs 101, 102, 103)" in text
-    assert "$412,000 opportunistic open-market purchases · filed 2026-10-16, 2026-10-20" in text
+    assert (
+        "3 officer/director buyers · $412,000 opportunistic open-market purchases · filed 2026-10-16, 2026-10-20"
+        in text
+    )
+    assert '<a href="https://www.sec.gov/cgi-bin/own-disp?action=getissuer&amp;CIK=1334036">' in text
     assert "20-session hold · time exit 15:45 NY on 2026-11-18" in text
     assert STUDY_LINE == WATCH_STUDY_LINE and STUDY_LINE in text
     assert "📋 <b>SETUP:" in text and "PAPER PROBE" not in text  # then the standard levels and buttons
@@ -821,3 +833,174 @@ def test_an_enabled_copilot_builds_and_appends_the_watch_source(app_config, temp
     prep = source.unbuilt(app_config, None, "10:35", session=D)
     assert prep.reason == f"service unavailable: {source.service_error}" and prep.policy == CONTRACT.policy
     assert desk._catalog_strategy_ids() == frozenset({PEAD_STRATEGY_ID, INSIDER_WATCH_STRATEGY_ID})
+
+
+# --- fix round 1: the frozen calendar, the issuer link, notices, terminal card, actions evidence -----
+
+
+def _frozen_sessions() -> list[date]:
+    """The deterministic trading calendar from the cube spec's bars_from through D (the study's start)."""
+    days = pd.bdate_range(CONTRACT.spec.bars_from, D).date
+    return [day for day in days if not MarketHolidayCalendar.is_equity_holiday(day)[0]]
+
+
+def _back(k: int) -> date:
+    """The session ``k`` sessions before D (k=1 is D-1)."""
+    return _frozen_sessions()[-1 - k]
+
+
+def _pair(symbol: str, k: int, owners: tuple[int, int]) -> list[InsiderTransaction]:
+    return [buy(symbol, _back(k), owners[0]), buy(symbol, _back(k), owners[1])]
+
+
+async def test_i1_the_cooldown_chain_reads_the_frozen_calendar_so_todays_cluster_is_suppressed(app_config):
+    # Clusters at -141, -91, -41 and -1 sessions. On the study's calendar -141 fires, -91 is suppressed,
+    # -41 fires (100 after -141) and -1 is suppressed (40 after -41): no event today. A calendar that
+    # starts after -141 would fire -91 and then -1 (90 after it): a card the frozen rule never sends.
+    rows = [
+        *_pair("AAA", 141, (1, 2)),
+        *_pair("AAA", 91, (3, 4)),
+        *_pair("AAA", 41, (5, 6)),
+        *_pair("AAA", 1, (7, 8)),
+    ]
+    source, loads = source_with(history({"AAA": rows}), app_config, closes=CLOSES)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert prep.status == "ok" and prep.events == () and prep.excluded_events == ()
+    [trading] = loads
+    assert trading[0] == date(2016, 1, 4) and trading[-1] == D  # the first session on or after bars_from
+    assert prep.calendar == {"first_session": "2016-01-04", "sessions": len(trading)}
+
+
+async def test_i1_a_trigger_whose_window_starts_before_a_short_calendar_still_suppresses(app_config):
+    # The mirror: buyers at -140 and -124 make a -124 trigger on the study's calendar, which suppresses
+    # the -62 cluster (62 after it), so today's -1 cluster (123 after -124) fires. A calendar starting
+    # between -140 and -124 would lose the -124 trigger, fire -62 and suppress today's card.
+    rows = [
+        buy("AAA", _back(140), 1),
+        buy("AAA", _back(124), 2),
+        *_pair("AAA", 62, (3, 4)),
+        *_pair("AAA", 1, (5, 6)),
+    ]
+    source, _ = source_with(history({"AAA": rows}), app_config, closes=CLOSES)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert [(e["symbol"], e["buyers"]) for e in prep.events] == [("AAA", 2)]
+
+
+async def test_i1_plausibility_bars_cover_the_routine_look_back_and_the_cluster_span_only(app_config):
+    source, _ = source_with(history(clusters()), app_config, closes=CLOSES)
+    await source.prepare(now=NOW, snapshot=None, owned={})
+    raw = next(call for call in source.bars.calls if call[3] == "raw")
+    sessions = _frozen_sessions()
+    assert raw[1].date() == sessions[-1 - PLAUSIBILITY_SESSIONS] and raw[2].date() == D - timedelta(days=1)
+
+
+async def test_i1_the_archive_is_loaded_once_per_process_and_a_cold_load_never_blocks_the_decision():
+    loads: list[int] = []
+    gate = threading.Event()
+
+    def slow_load():
+        loads.append(1)
+        gate.wait(5)
+        return "cohort", "archive"
+
+    live = LiveWatchHistory(store=None, load_archive=slow_load)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.05):
+            await live.archive()
+    gate.set()  # the timed-out waiter did not cancel the load: it finishes in its thread
+    assert await live.archive() == ("cohort", "archive")
+    assert await live.archive() == ("cohort", "archive")
+    assert loads == [1]
+
+
+async def test_i1_a_failed_archive_load_is_retried_by_the_next_decision():
+    attempts: list[int] = []
+
+    def flaky():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("archive unreadable")
+        return "cohort", "archive"
+
+    live = LiveWatchHistory(store=None, load_archive=flaky)
+    with pytest.raises(OSError):
+        await live.archive()
+    assert await live.archive() == ("cohort", "archive") and len(attempts) == 2
+
+
+async def test_i2_the_card_links_the_issuer_s_edgar_insider_page_and_never_lists_owner_ciks(app_config):
+    seed = dataclasses.replace(history({"AAA": clusters()["AAA"]}), issuer_ciks={"AAA": 1334036})
+    source, _ = source_with(seed, app_config, closes=CLOSES)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    [event] = prep.events
+    assert event["issuer_cik"] == 1334036 and event["owners"] == [1, 2]  # owners stay in provenance
+    cand = watch_candidate("AAA").model_copy(update={"catalog_event": event})
+    facts = source.card_facts(cand, prep)
+    assert "owners" not in facts and facts["issuer_cik"] == 1334036
+    text = format_alert_card(_evaluation(), INSIDER_WATCH_STRATEGY_ID, card_facts=facts)
+    link = "https://www.sec.gov/cgi-bin/own-disp?action=getissuer&amp;CIK=1334036"
+    assert f'<a href="{link}">' in text and "2 officer/director buyers ·" in text
+    assert "owner CIK" not in text
+
+
+async def test_m2_a_completed_decision_with_no_event_queues_no_notice(watch_desk, temp_db):
+    watch_desk.insider_watch_source.prep = watch_prep()
+    await suggestion_scan(watch_desk)
+    [event] = await _watch_events(temp_db)
+    assert (event["payload"]["status"], event["payload"]["events"]) == ("completed", [])
+    assert not [
+        n
+        for n in await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+        if n.payload["kind"] == NotificationKind.MESSAGE
+    ]
+
+
+def test_m3_the_terminal_card_renders_the_watch_block_too():
+    facts = {
+        "kind": "insider_watch",
+        "buyers": 2,
+        "issuer_cik": 1334036,
+        "filing_dates": ["2026-10-16", "2026-10-20"],
+        "opp_dollars": 250_000.0,
+        "holding_sessions": 20,
+        "time_exit_at": None,
+        "risk_cap": 100.0,
+    }
+    text = format_terminal_card(_evaluation(), INSIDER_WATCH_STRATEGY_ID, card_facts=facts)
+    assert "INSIDER WATCH — unvalidated" in text and STUDY_LINE in text
+    assert "https://www.sec.gov/cgi-bin/own-disp?action=getissuer&CIK=1334036" in text
+    assert format_terminal_card(_evaluation(), INSIDER_WATCH_STRATEGY_ID) == format_terminal_card(
+        _evaluation(), INSIDER_WATCH_STRATEGY_ID, card_facts={"buyers": 2}
+    )
+
+
+async def test_m4_the_corporate_actions_read_is_journaled_with_its_digest_and_request_time(app_config):
+    source, _ = source_with(history({"AAA": clusters()["AAA"]}), app_config, closes=CLOSES)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    read = prep.counts["corporate_actions"]
+    assert read["page_sha256"] == ["p"] and read["symbols"] == 1
+    assert datetime.fromisoformat(read["requested_at"]).tzinfo is not None
+
+
+async def test_i1_each_decision_merges_fresh_captures_onto_the_one_archive(app_config):
+    loads: list[int] = []
+    merges: list[tuple] = []
+    store = SimpleNamespace(captures=AsyncMock(side_effect=[["day1"], ["day1", "day2"]]))
+
+    def load():
+        loads.append(1)
+        return "cohort", "archive"
+
+    def merge(archive, cohort, days, raw_bars, actions, captures):
+        merges.append((archive, cohort, days, dict(raw_bars), tuple(actions), tuple(captures)))
+        return "history"
+
+    live = LiveWatchHistory(store, load_archive=load, merge=merge)
+    app_config.insider_watch.enabled = True
+    source = InsiderWatchSource(app_config, CONTRACT, history=live, calendar=object(), bars=object(), actions=object())
+    source.warm()  # daemon start: the read begins before any decision
+    assert await live((D - timedelta(days=1), D)) == "history"
+    assert await live((D, D + timedelta(days=1))) == "history"
+    assert loads == [1]
+    assert [m[5] for m in merges] == [("day1",), ("day1", "day2")]
+    assert merges[0][:5] == ("archive", "cohort", (D - timedelta(days=1), D), {}, ())
