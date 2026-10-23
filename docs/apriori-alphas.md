@@ -22,7 +22,7 @@ Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output 
 | `pead` | 1 | Post-earnings drift when EPS surprise and price reaction agree | — | — | Failed closed on calendar coverage (Nasdaq gap 2016-06-06..07-08); no outcomes computed |
 | `pead` | 2 | Same, decisions from 2016-08-01 | **eligible** (+0.149R; +0.055R vs control) | failed (−0.064R) | [result](apriori-pead-2026-09-26.md), [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |
 | `exdiv` | 1 | Regular quarterly payers run up in the five sessions before the ex-date (Hartzmark & Solomon 2013); long from E−5 at 10:35 to the last cum-dividend close; same-name mid-quarter placebo | failed (+0.069R, ci90 [+0.035, +0.102]; but the same-name placebo earns +0.046R and the paired difference +0.025R has ci90 [−0.026, +0.072], so P2 fails) | — | failed on P2, 2026-10-12 ([result](apriori-exdiv-2026-10-12.md), [spec](superpowers/specs/2026-10-12-exdiv-leg-design.md)) |
-| `insider` | 1 | Opportunistic insider cluster purchases (two or more officers or directors within 21 sessions) drift up (Cohen, Malloy and Pomorski 2012; Alldredge and Blank 2019); long on the cohort-v3 cube cell after the filing; matched-control cell, same session and liquidity tercile | pending run 2026-10-23 | — | pending run 2026-10-23 ([spec](superpowers/specs/2026-10-23-apriori-insider-leg-design.md)) |
+| `insider` | 1 | Opportunistic insider cluster purchases (two or more officers or directors within 21 sessions) drift up (Cohen, Malloy and Pomorski 2012; Alldredge and Blank 2019); long on the cohort-v3 cube cell after the filing; matched-control cell, same session and liquidity tercile | failed (+0.087R, ci90 [−0.008, +0.189], so P1 fails; but +0.070R over same-session matched controls, ci90 [+0.009, +0.134], so P2 holds) | — | failed on P1, 2026-10-23 ([result](apriori-insider-2026-10-23.md), [spec](superpowers/specs/2026-10-23-apriori-insider-leg-design.md)) |
 
 ## Entry 2: pre-ex-dividend run-up
 
@@ -240,3 +240,6 @@ digest-pinned SEC Form 3/4/5 archives and corporate actions) as one a priori hyp
   100 from 2023-01-01); a pass only makes the leg eligible for a separately specified probe.
 - **Caveat.** Running it reads insider-conditioned outcomes over the pooled confirmation slice, so the pooled
   insider fixed sets stay retired.
+- **Result (2026-10-23): failed on P1.** +0.087R per trade (ci90 [−0.008, +0.189]) over 1,062 events; P2 holds
+  (+0.070R over the matched controls, ci90 [+0.009, +0.134]), P3 and P4 hold. No probe. See
+  [result](apriori-insider-2026-10-23.md).
