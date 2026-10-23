@@ -33,6 +33,7 @@ from agentic_trader.constants import (
 from agentic_trader.data.corporate_actions import CorporateActionKind, CorporateActionsLookup, between
 from agentic_trader.market.session import ET_TZ, MarketSessionProtocol
 from agentic_trader.research.alpha.strategy import bracket_prices, entry_limit, execution_policy_from_dict
+from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID
 from agentic_trader.risk import (
     Book,
     EntryIntent,
@@ -158,12 +159,17 @@ class RiskEvaluator:
             )
 
     def _probe_risk_cap(self, candidate: ScreenerCandidate) -> float | None:
-        """A paper probe's risk ceiling (``alpha_pipeline.probe_risk_dollars``), or None for any other card.
+        """A capped card's risk ceiling, or None for any other card: a paper probe's
+        ``alpha_pipeline.probe_risk_dollars``, an insider watch card's ``insider_watch.max_risk_per_trade_usd``.
 
-        Sizing caps a probe's tiers at it, including tiers re-sized at an LLM-widened stop, and
+        Sizing caps the card's tiers at it, including tiers re-sized at an LLM-widened stop, and
         the post-LLM final-bracket check re-checks the re-sized max tier against it.
         """
-        return self.config.alpha_pipeline.probe_risk_dollars if candidate.probe else None
+        if candidate.probe:
+            return self.config.alpha_pipeline.probe_risk_dollars
+        if candidate.strategy == INSIDER_WATCH_STRATEGY_ID:
+            return self.config.insider_watch.max_risk_per_trade_usd
+        return None
 
     def calculate_levels_deterministic(
         self,

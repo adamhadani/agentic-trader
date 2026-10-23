@@ -54,6 +54,7 @@ from agentic_trader.data.edgar_form4 import IndexRow, parse_daily_index, parse_f
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.apriori.catalog import load_insider_entry
+from agentic_trader.research.apriori.watch_contract import WATCH_ENTRY
 from agentic_trader.research.insider_filings import (
     DROP_RULES,
     REQUESTS_PER_SECOND,
@@ -123,7 +124,6 @@ RETRY_SECONDS = 1800
 CAPTURE_MAX_AGE_DAYS = 4
 CAPTURE_MAX_AGE_SECONDS = CAPTURE_MAX_AGE_DAYS * 86400
 USER_AGENT_ENV = "EDGAR_USER_AGENT"
-WATCH_ENTRY = Path("config/research/apriori/insider-v1.json")
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 _TIMEOUT_SECONDS = 60.0
 # The bounded total of one request attempt (connect, headers and the whole body).

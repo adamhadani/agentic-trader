@@ -65,6 +65,7 @@ class EventKind(StrEnum):
     CORPORATE_ACTIONS_CHECKED = "corporate_actions_checked"
     CARD_STATS_SNAPSHOT = "card_stats_snapshot"
     INSIDER_FORM4_CAPTURE = "insider_form4_capture"
+    INSIDER_WATCH_DECISION = "insider_watch_decision"
 
 
 class ScanTrigger(StrEnum):

@@ -8,8 +8,9 @@ every catalog source's) and stops carding while ``max_open_positions`` of its po
 Every decision, sent or not, is journaled as one ``journal_kind`` event on ``scan/<date>``.
 
 ``TradingCopilot.run_scan`` loops over ``TradingCopilot.catalog_sources``. ``PeadDriftSource``
-(the PEAD catalog paper probe, ``kind="probe"``) is the first implementation; a ``watch`` source
-is an unvalidated, operator-judged card with no probe credit.
+(the PEAD catalog paper probe, ``kind="probe"``) is the first implementation; ``InsiderWatchSource``
+(``agent/insider_watch.py``, ``kind="watch"``) is an unvalidated, operator-judged card with no probe
+credit that is never auto-entered.
 """
 
 from __future__ import annotations
@@ -92,7 +93,13 @@ class CatalogCardSource[P: CatalogPreparation](Protocol):
     provenance_key: str  # decision_provenance key holding the card's event document
     journal_kind: EventKind
     summary_key: str  # the scan summary's per-source block ("<key>", "<key>_journal_error")
-    notification_key: str  # the card payload keyword carrying card_facts (a send_signal_alert keyword)
+    # The card payload keyword carrying card_facts: a declared send_signal_alert keyword (the outbox calls
+    # it with **arguments), PEAD's historical "drift" or the generic "card_facts".
+    notification_key: Literal["drift", "card_facts"]
+    # Whether its cards carry the scan's news block like native cards (a watch card) or none (a probe,
+    # which tests the unfiltered study rule). Every catalog card is exempt from card_policy, book sizing
+    # and the broad-index rule; the scan keys these on the rank's source, never on the candidate.
+    news_context: bool
     display_name: str  # log wording
     card_label: str  # log wording: "<display_name> <card_label> preparation ..."
     budget_spent_reason: str  # the event outcome once max_cards_per_session is spent
@@ -172,7 +179,8 @@ class PeadDriftSource:
     provenance_key = "pead_event"
     journal_kind = EventKind.PEAD_DECISION
     summary_key = "drift"
-    notification_key = "drift"
+    notification_key: Literal["drift", "card_facts"] = "drift"
+    news_context = False
     display_name = "PEAD"
     card_label = "drift"
     budget_spent_reason = "drift budget spent"

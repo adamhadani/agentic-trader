@@ -146,7 +146,8 @@ async def test_futures_candidates_get_no_block_and_symbols_are_equities_only(sha
         (type("C", (), {"contract": "AAA", "catalog_event": None})(), None, None),
         (type("C", (), {"contract": "BBB", "catalog_event": {"x": 1}})(), None, None),
     ]
-    blocks = await shadow_desk._news_blocks(ranked, use_llm=True)
+    # Rank 3 is a catalog card whose source carries no news (PEAD): the scan excludes it by rank.
+    blocks = await shadow_desk._news_blocks(ranked, use_llm=True, excluded_ranks=frozenset({3}))
     assert source.calls[0][0] == ("AAA",)
     assert blocks[0] is None and blocks[2] is None and blocks[1]["status"] == "no_news"
 
@@ -158,7 +159,7 @@ async def test_drift_card_sharing_a_native_symbol_gets_no_block(shadow_desk):  #
         (SimpleNamespace(contract="AAA", catalog_event=None), None, None),
         (SimpleNamespace(contract="AAA", catalog_event={"x": 1}), None, None),
     ]
-    blocks = await shadow_desk._news_blocks(ranked, use_llm=True)
+    blocks = await shadow_desk._news_blocks(ranked, use_llm=True, excluded_ranks=frozenset({2}))
     assert source.calls[0][0] == ("AAA",)
     assert blocks[0] is not None and blocks[0]["status"] == "no_news"
     assert blocks[1] is None

@@ -32,6 +32,7 @@ from agentic_trader.agent.earnings import (
     earnings_blackout_reason,
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
+from agentic_trader.agent.insider_watch import InsiderWatchSource, build_insider_watch_source
 from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.news_context import NewsContextService, build_news_context_service, unavailable_block
 from agentic_trader.agent.regime import (
@@ -69,8 +70,14 @@ from agentic_trader.constants import (
     executes_asset_class,
     normalize_asset_class,
 )
-from agentic_trader.data.corporate_actions import CorporateActionsLookup, between, position_note
+from agentic_trader.data.corporate_actions import (
+    AlpacaCorporateActionsSource,
+    CorporateActionsLookup,
+    between,
+    position_note,
+)
 from agentic_trader.data.market_data import MarketDataFetcher
+from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
 from agentic_trader.execution.book_sizing import BookSizer, BookSizingDecision
@@ -127,6 +134,7 @@ from agentic_trader.research.alpha.evidence import load_forward_evidence
 from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
+from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats import CardStatsSnapshot
 from agentic_trader.research.setups.ranker import (
     cached_ranker,
@@ -174,7 +182,7 @@ from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.ledger import LedgerStore
 from agentic_trader.storage.lifetimes import LifetimeRepository
 from agentic_trader.telemetry import MetricsServer, global_metrics
-from agentic_trader.transport.alpaca import BoundedTradingClient
+from agentic_trader.transport.alpaca import BoundedCorporateActionsClient, BoundedTradingClient
 
 
 logger = logging.getLogger("copilot")
@@ -447,6 +455,38 @@ class TradingCopilot:
                         "decision_time_et": self.earnings_drift.decision_time_et,
                     },
                 )
+        # Insider watch cards (unvalidated, tap-only) at the same 10:35 decision. Construction reads the
+        # frozen entry and protocol files only; the archive and every provider read happen inside a scan.
+        self.insider_watch_source: InsiderWatchSource | None = None
+        if config.insider_watch.enabled:
+
+            def watch_clients() -> tuple[AlpacaDataProvider, AlpacaCorporateActionsSource]:
+                bars = AlpacaDataProvider(
+                    api_key=config.alpaca_api_key,
+                    api_secret=config.alpaca_api_secret,
+                    feed="sip",
+                    request_timeout=config.market_data.timeout_seconds,
+                )
+                actions = AlpacaCorporateActionsSource(
+                    BoundedCorporateActionsClient(
+                        config.alpaca_api_key,
+                        config.alpaca_api_secret,
+                        request_timeout=config.market_data.timeout_seconds,
+                        raw_data=True,
+                    ),
+                    pacer=RequestPacer(config.corporate_actions.max_requests_per_minute),
+                    chunk_size=config.corporate_actions.chunk_size,
+                )
+                return bars, actions
+
+            self.insider_watch_source = build_insider_watch_source(
+                config,
+                self.db.workflows,
+                repo_root=REPO_ROOT,
+                calendar=self.session_provider.calendar,
+                clients=watch_clients,
+            )
+            self.catalog_sources.append(self.insider_watch_source)
         self.evaluator = RiskEvaluator(
             config,
             calendar=self.calendar,
@@ -1065,6 +1105,9 @@ class TradingCopilot:
             catalog_runs = [CatalogRun.begin(source, active_positions, self.config) for source in self.catalog_sources]
             catalog_only: set[str] = set()
             late_by = datetime.now(UTC) - scheduled_at if catalog_scan and scheduled_at is not None else None
+            # One bound on every source's preparation together (they run in turn under the scan lock), set
+            # when the first one starts: a slow source leaves the later ones only what remains.
+            prepare_deadline: float | None = None
             for run in catalog_runs:
                 source = run.source
                 max_lateness = timedelta(seconds=source.max_lateness_seconds(self.config))
@@ -1090,7 +1133,11 @@ class TradingCopilot:
                             },
                         )
                 elif catalog_scan and source.applies(scheduled_time_et):
-                    run.preparation = await self._prepare_catalog(source, alpha_snapshot, active_positions)
+                    if prepare_deadline is None:
+                        prepare_deadline = asyncio.get_running_loop().time() + DRIFT_PREPARE_TIMEOUT_SECONDS
+                    run.preparation = await self._prepare_catalog(
+                        source, alpha_snapshot, active_positions, deadline=prepare_deadline
+                    )
                     if not run.capped:
                         known = {c.strip("/").upper() for c in self.config.contracts} | {
                             s for s, _ in dynamic_contracts
@@ -1392,9 +1439,7 @@ class TradingCopilot:
             broad_excluded = frozenset(
                 rank
                 for rank, (c, _, _) in enumerate(ranked[:native_count], 1)
-                if normalize_symbol(c.contract) in broad_index
-                and getattr(c, "catalog_event", None) is None
-                and not self._policy_locked(c, probe=True)
+                if normalize_symbol(c.contract) in broad_index and not self._policy_locked(c, probe=True)
             )
             # BOOK SIZING (L3): one covariance/book build per scan, from the scan's own daily bars plus
             # at most one bounded fetch for book names outside it. A dry run's simulated book is empty,
@@ -1419,13 +1464,14 @@ class TradingCopilot:
             )
             book_by_rank: list[BookSizingDecision | None] = [None] * len(ranked)
             # EVIDENCE: one snapshot read per scan; every native card states its own (strategy,
-            # direction) record. Drift cards keep their PEAD block and carry none. A journal-only scan
-            # reads no snapshot and states no evidence, so the card policy below has nothing to judge.
+            # direction) record. Catalog cards (PEAD drift, insider watch) carry none, so card_policy never
+            # judges them. A journal-only scan reads no snapshot and states no evidence, so the card policy
+            # below has nothing to judge.
             card_policy = self.config.card_policy
             snapshot = None if journal_only else await self._card_stats_snapshot(summary)
             evidence_by_rank: list[CardEvidence | None] = [
                 None
-                if journal_only or getattr(candidate, "catalog_event", None) is not None
+                if journal_only or catalog_by_rank[index] is not None
                 else lookup(
                     snapshot,
                     candidate.strategy,
@@ -1434,7 +1480,7 @@ class TradingCopilot:
                     max_age=timedelta(seconds=card_policy.stats_max_age_seconds),
                     min_mature=card_policy.min_mature_cards,
                 )
-                for candidate, _det_res, _account_risk in ranked
+                for index, (candidate, _det_res, _account_risk) in enumerate(ranked)
             ]
             # A policy-locked card (versioned alpha or paper probe) shows its evidence but is outside
             # the send policy: no decision, so no withhold and an all-null `card_policy` block.
@@ -1445,11 +1491,15 @@ class TradingCopilot:
                 for (candidate, _det_res, _account_risk), evidence in zip(ranked, evidence_by_rank, strict=True)
             ]
             # NEWS CONTEXT: one fetch per scan without a timeframe, before the send loop, for every ranked
-            # native equity candidate. The intraday job (it passes a timeframe) never fetches or scores news;
-            # a scan without the LLM keeps counts and headlines and scores nothing. A journal-only scan
-            # sends no card for news to decorate, so it fetches and scores nothing.
+            # native equity candidate and every catalog candidate whose source carries news (an insider watch
+            # card; a PEAD probe carries none). The intraday job (it passes a timeframe) never fetches or
+            # scores news; a scan without the LLM keeps counts and headlines and scores nothing. A
+            # journal-only scan sends no card for news to decorate, so it fetches and scores nothing.
+            no_news = broad_excluded | frozenset(
+                rank for rank, run in enumerate(catalog_by_rank, 1) if run is not None and not run.source.news_context
+            )
             news_by_rank: list[dict[str, Any] | None] = (
-                await self._news_blocks(ranked, use_llm=use_llm, excluded_ranks=broad_excluded)
+                await self._news_blocks(ranked, use_llm=use_llm, excluded_ranks=no_news)
                 if timeframe is None and not journal_only
                 else [None] * len(ranked)
             )
@@ -1704,6 +1754,10 @@ class TradingCopilot:
                                 {catalog.source.provenance_key: candidate.catalog_event}
                                 if catalog is not None
                                 else self._dynamic_tag(candidate.contract, dynamic_sources)
+                            ),
+                            # A watch card is tap-only: auto-entry (item 1.4) must exclude card_kind "watch".
+                            **(
+                                {"card_kind": "watch"} if catalog is not None and catalog.source.kind == "watch" else {}
                             ),
                             **validity,
                             **lifetime,
@@ -2045,8 +2099,11 @@ class TradingCopilot:
             if not scope["restricted"] and scope["timeframe"] is None:
                 at = datetime.now(UTC)
                 # The notice says whether the 10:35 PEAD decision was lost too, so ask before journaling it.
-                pead_skipped = catalog_scan and any(
-                    source.skipped(
+                # Only the PEAD source's: the wording names PEAD (an insider watch decision is journaled
+                # skipped all the same).
+                pead_skipped = (
+                    catalog_scan
+                    and self.pead_source.skipped(
                         self.config,
                         alpha_snapshot,
                         scheduled_time_et,
@@ -2054,7 +2111,6 @@ class TradingCopilot:
                         reason="regime unavailable",
                     )
                     is not None
-                    for source in self.catalog_sources
                 )
                 await self._record_gated_scan(
                     decided_at=at,
@@ -2358,15 +2414,21 @@ class TradingCopilot:
         )
 
     async def _prepare_catalog(
-        self, source: CatalogCardSource[Any], alpha_snapshot: Any, active_positions: list[dict[str, Any]]
+        self,
+        source: CatalogCardSource[Any],
+        alpha_snapshot: Any,
+        active_positions: list[dict[str, Any]],
+        *,
+        deadline: float,
     ) -> Any:
         """This session's events from one catalog source, minus owned names; never raises.
 
         A name is owned by an open position or by a live registry alpha (active or probe)
         whose eligible symbols include it; the source skips it with that reason. Any
         failure (the calendar, the bars, the entry) makes the whole session unavailable,
-        as does exceeding ``DRIFT_PREPARE_TIMEOUT_SECONDS``: the reads run under the scan
-        lock before the native fetch, so a slow provider must not hold the native cards.
+        as does reaching ``deadline`` (event-loop time): the scan's sources share one
+        ``DRIFT_PREPARE_TIMEOUT_SECONDS`` bound, since the reads run under the scan lock
+        before the native fetch and a slow provider must not hold the native cards.
         """
         now = datetime.now(UTC)
         session = now.astimezone(ET_TZ).date()
@@ -2378,7 +2440,7 @@ class TradingCopilot:
             for definition in (*alpha_snapshot.active, *alpha_snapshot.probe):
                 for symbol in definition.eligible_symbols or ():
                     owned.setdefault(symbol.strip("/").upper(), f"owned by {definition.alpha_id}")
-            async with asyncio.timeout(DRIFT_PREPARE_TIMEOUT_SECONDS):
+            async with asyncio.timeout_at(deadline):
                 prep = await source.prepare(now=now, snapshot=alpha_snapshot, owned=owned)
         except TimeoutError:
             logger.warning(
@@ -3552,13 +3614,14 @@ class TradingCopilot:
         use_llm: bool,
         excluded_ranks: frozenset[int] = frozenset(),
     ) -> list[dict[str, Any] | None]:
-        """One news block per ranked native equity candidate (drift and futures candidates get None); never raises.
+        """One news block per ranked equity candidate (futures candidates get None); never raises.
 
         One fetch per scan; scoring follows rank order up to ``news.max_scored_per_scan``, and a scan without
         the LLM (``use_llm=False``) scores nothing, so its blocks keep counts and headlines only. Any failure
         of the step yields ``unavailable`` blocks carrying the exception type name only. A candidate whose
-        1-based rank is in ``excluded_ranks`` (a broad-index ETF that cannot be carded) gets None and is not
-        fetched or scored, even when another card on the same symbol is.
+        1-based rank is in ``excluded_ranks`` (a broad-index ETF that cannot be carded, a catalog card whose
+        source carries no news) gets None and is not fetched or scored, even when another card on the same
+        symbol is.
         """
         blocks: list[dict[str, Any] | None] = [None] * len(ranked)
         service = self.news_context
@@ -3567,9 +3630,7 @@ class TradingCopilot:
         wanted = [
             candidate.contract
             for rank, (candidate, _det, _risk) in enumerate(ranked, 1)
-            if rank not in excluded_ranks
-            and "/" not in candidate.contract
-            and getattr(candidate, "catalog_event", None) is None
+            if rank not in excluded_ranks and "/" not in candidate.contract
         ]
         if not wanted:
             return blocks
@@ -3585,12 +3646,8 @@ class TradingCopilot:
                 symbol.strip().upper(): unavailable_block(self.config.news, type(exc).__name__) for symbol in wanted
             }
         for index, (candidate, _det, _risk) in enumerate(ranked):
-            # A drift card sharing a native candidate's symbol still gets no block, nor an excluded rank.
-            if (
-                index + 1 not in excluded_ranks
-                and candidate.contract in wanted
-                and getattr(candidate, "catalog_event", None) is None
-            ):
+            # An excluded rank gets no block, even when it shares a fetched candidate's symbol.
+            if index + 1 not in excluded_ranks and candidate.contract in wanted:
                 blocks[index] = found.get(candidate.contract.strip().upper())
         return blocks
 

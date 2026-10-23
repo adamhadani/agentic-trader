@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -35,6 +35,7 @@ __all__ = [
     "STALE_INTRADAY_PRICE",
     "DriftPreparation",
     "EarningsDriftService",
+    "catalog_candidate",
     "drift_card_facts",
     "unscheduled_decision_time",
 ]
@@ -169,51 +170,85 @@ class EarningsDriftService:
 
     def candidate(self, event: dict, data: Any, prep: DriftPreparation) -> ScreenerCandidate | str:
         """The locked drift candidate, or the reason there is none (journaled as the event's outcome)."""
-        if isinstance(data, BaseException):
-            return f"fetch failed: {type(data).__name__}"
-        if data is None:
-            return NO_INTRADAY_PRICE
-        intraday = getattr(data, "hourly", None)
-        if intraday is None or intraday.empty:
-            intraday = getattr(data, "four_hour", None)
-        daily = getattr(data, "daily", None)
-        if intraday is None or intraday.empty or daily is None or len(daily) < 20:
-            return NO_INTRADAY_PRICE
-        stamp = pd.Timestamp(intraday.index[-1])
-        stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
-        if stamp.tz_convert(NEW_YORK).date() != prep.session:
-            return STALE_INTRADAY_PRICE
-        price = float(intraday["Close"].iloc[-1])
-        if not math.isfinite(price) or price <= 0:
-            return NO_INTRADAY_PRICE
-        close = daily["Close"]
-        exit_text = f"time exit {prep.time_exit_at[:10]} 15:45 NY" if prep.time_exit_at else "20-session time exit"
-        return ScreenerCandidate(
-            contract=event["symbol"],
-            symbol=event["symbol"],
-            asset_class=AssetClass.EQUITY,
-            timeframe="1d",
-            strategy=PEAD_STRATEGY_ID,
-            direction="LONG",
-            current_price=price,
-            ema_20=_finite(calculate_ema(close, 20).iloc[-1], price),
-            ema_50=_finite(calculate_ema(close, 50).iloc[-1], price),
-            ema_200=_finite(calculate_ema(close, 200).iloc[-1], price),
-            rsi_14=_finite(calculate_rsi(close, 14).iloc[-1], 50.0),
-            atr_14=float(event["atr"]),
-            candle_timestamp=str(intraday.index[-1]),
-            recent_swing_low=float(daily["Low"].tail(10).min()),
-            recent_swing_high=float(daily["High"].tail(10).max()),
-            trigger_detail=(
+
+        def trigger_detail() -> str:
+            exit_text = f"time exit {prep.time_exit_at[:10]} 15:45 NY" if prep.time_exit_at else "20-session time exit"
+            return (
                 f"PEAD probe: EPS beat {event['surprise_pct']:+.1f}%, reaction {event['z']:+.1f}σ vs SPY "
                 f"(report {event['report_date']}); 20-session hold, {exit_text}."
-            ),
+            )
+
+        return catalog_candidate(
+            event,
+            data,
+            prep.session,
+            strategy=PEAD_STRATEGY_ID,
+            trigger_detail=trigger_detail,
             alpha_version=prep.version_id,
             alpha_policy=prep.policy,
             probe=True,
-            setup_quality=0.0,
-            catalog_event=event,
         )
+
+
+def catalog_candidate(
+    event: dict,
+    data: Any,
+    session: date,
+    *,
+    strategy: str,
+    trigger_detail: Callable[[], str],
+    alpha_version: str | None,
+    alpha_policy: dict | None,
+    probe: bool,
+) -> ScreenerCandidate | str:
+    """A catalog event's locked daily LONG candidate priced at this session's last intraday close, or the
+    reason there is none (``fetch failed: <type>``, ``no intraday price``, ``stale intraday price``).
+
+    ``event`` carries the frozen ``atr`` and becomes the candidate's ``catalog_event``; ``data`` is the
+    scan's dataset for the symbol (or the exception its fetch raised). ``trigger_detail`` is called only
+    once the price is known.
+    """
+    if isinstance(data, BaseException):
+        return f"fetch failed: {type(data).__name__}"
+    if data is None:
+        return NO_INTRADAY_PRICE
+    intraday = getattr(data, "hourly", None)
+    if intraday is None or intraday.empty:
+        intraday = getattr(data, "four_hour", None)
+    daily = getattr(data, "daily", None)
+    if intraday is None or intraday.empty or daily is None or len(daily) < 20:
+        return NO_INTRADAY_PRICE
+    stamp = pd.Timestamp(intraday.index[-1])
+    stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
+    if stamp.tz_convert(NEW_YORK).date() != session:
+        return STALE_INTRADAY_PRICE
+    price = float(intraday["Close"].iloc[-1])
+    if not math.isfinite(price) or price <= 0:
+        return NO_INTRADAY_PRICE
+    close = daily["Close"]
+    return ScreenerCandidate(
+        contract=event["symbol"],
+        symbol=event["symbol"],
+        asset_class=AssetClass.EQUITY,
+        timeframe="1d",
+        strategy=strategy,
+        direction="LONG",
+        current_price=price,
+        ema_20=_finite(calculate_ema(close, 20).iloc[-1], price),
+        ema_50=_finite(calculate_ema(close, 50).iloc[-1], price),
+        ema_200=_finite(calculate_ema(close, 200).iloc[-1], price),
+        rsi_14=_finite(calculate_rsi(close, 14).iloc[-1], 50.0),
+        atr_14=float(event["atr"]),
+        candle_timestamp=str(intraday.index[-1]),
+        recent_swing_low=float(daily["Low"].tail(10).min()),
+        recent_swing_high=float(daily["High"].tail(10).max()),
+        trigger_detail=trigger_detail(),
+        alpha_version=alpha_version,
+        alpha_policy=alpha_policy,
+        probe=probe,
+        setup_quality=0.0,
+        catalog_event=event,
+    )
 
 
 def drift_card_facts(event: dict, prep: DriftPreparation, holding_sessions: int) -> dict:

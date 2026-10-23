@@ -6,6 +6,7 @@ Fake HTTP only (``httpx.MockTransport``): documents come from ``tests/fixtures/e
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -713,6 +714,17 @@ async def test_document_errors_mark_the_symbol_and_date_incomplete(tmp_path, cap
     history = await _seed(capture_store, archive, _cohort(inputs), _weekdays(date(2026, 7, 1), date(2026, 10, 5)))
     assert history.incomplete == {"CROX": (date(2026, 10, 1), date(2026, 10, 2))}
     assert history.provenance["document_errors"] == 2
+
+
+async def test_a_document_error_marks_every_share_class_of_its_issuer_incomplete(tmp_path, capture_store):
+    archive, inputs = _archive(tmp_path, {"2026q3": _trades()})
+    classes = {CROX_CIK: ("CROX", "CROXB"), LPG_CIK: ("LPG",)}
+    cohort = dataclasses.replace(_cohort(inputs), symbols=("CROX", "CROXB", "LPG"), cik_to_symbols=classes)
+    bad = {"path": "edgar/data/1334036/0000000001-26-000001.txt", "index_cik": CROX_CIK, "error": "ValueError"}
+    scope = CaptureScope(classes, ROLES, False).sha256
+    await capture_store.record(_live("2026-10-01", documents=[bad], scope=scope), {})
+    history = await _seed(capture_store, archive, cohort, _weekdays(date(2026, 7, 1), date(2026, 10, 5)))
+    assert history.incomplete == {"CROX": (date(2026, 10, 1),), "CROXB": (date(2026, 10, 1),)}
 
 
 async def test_a_capture_under_another_scope_ends_the_history(tmp_path, capture_store):
