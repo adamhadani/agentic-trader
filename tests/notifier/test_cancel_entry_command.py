@@ -180,8 +180,10 @@ def test_cli_cancel_rejects_non_ascii_ids(raw):
     copilot.cancel_resting_entry.assert_not_awaited()
 
 
-def test_parse_signal_id_bounds_length():
-    assert parse_signal_id("9" * 18) == int("9" * 18)
+def test_parse_signal_id_bounds_to_the_id_column():
+    assert parse_signal_id("2147483647") == 2_147_483_647
+    assert parse_signal_id("2147483648") is None
+    assert parse_signal_id("3000000000") is None
     assert parse_signal_id("9" * 19) is None
 
 
@@ -194,5 +196,5 @@ def test_filled_before_cancel_refusal_renders_the_outcome():
         work_status=WorkStatus.REJECTED,
     )
     text = TelegramHtmlFormatter.format_resting_cancel_html(refused)
-    assert "filled before" in text and "open and protected" in text
+    assert "filled before" in text and "opened with its protective exits" in text
     assert "already exists" not in text and "(rejected)" not in text

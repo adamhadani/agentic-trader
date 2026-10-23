@@ -48,7 +48,8 @@ UNFILLED_TERMINAL = frozenset({"canceled", "expired", "rejected"})
 WORKING_ENTRY = frozenset({"new", "accepted", "pending_new", "accepted_for_bidding", "done_for_day"})
 # The only statuses a filled bracket's live exits show: Alpaca holds the stop while the take-profit works.
 PROTECTED_EXIT = frozenset({"new", "held"})
-MAX_SIGNAL_ID_DIGITS = 18
+# signals.id is a 32-bit Integer column: a larger id can never exist and would fail the lookup.
+MAX_SIGNAL_ID = 2_147_483_647
 
 
 # Why an entry_cancel work item exists: the resting deadline passed, or the operator asked.
@@ -70,9 +71,12 @@ class RestingCancelResult:
 
 
 def parse_signal_id(text: str) -> int | None:
-    """An operator-typed signal id: at most 18 ASCII decimal digits (``int`` also takes "４２" or "٤٢")."""
-    valid = text.isascii() and text.isdecimal() and len(text) <= MAX_SIGNAL_ID_DIGITS
-    return int(text) if valid else None
+    """An operator-typed signal id: ASCII decimal digits (``int`` also takes "４２" or "٤٢") within the
+    ``signals.id`` column's range."""
+    if not (text.isascii() and text.isdecimal()) or len(text) > len(str(MAX_SIGNAL_ID)):
+        return None
+    value = int(text)
+    return value if value <= MAX_SIGNAL_ID else None
 
 
 def holding_calendar_span_days(holding_sessions: int) -> int:

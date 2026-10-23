@@ -346,7 +346,7 @@ class TelegramHtmlFormatter:
     # Operator-cancel refusal tokens; anything else renders its token alone.
     RESTING_CANCEL_REFUSALS: ClassVar[dict[str, str]] = {
         "unknown_signal": "No signal #{id} exists.",
-        "filled_before_cancel": "Entry {symbol} (signal #{id}) filled before the cancel; the position is open and protected.",
+        "filled_before_cancel": "Entry {symbol} (signal #{id}) filled before the cancel and opened with its protective exits.",
         "not_resting": "Signal #{id} is not a resting entry (filled, closed or failed).",
         "cancel_in_progress": "An entry cancel for signal #{id} already exists (cancelling or cancelled).",
         "close_active": "A close is active for {symbol}.",
