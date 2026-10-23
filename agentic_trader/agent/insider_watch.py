@@ -247,6 +247,9 @@ async def read_study_raw_bars(
     end = datetime.combine(spec.bars_through, time.max, tzinfo=UTC)
     out: dict[str, pd.DataFrame] = {}
     for symbol in symbols:
+        folder = raw_dir / f"{symbol}_1d"
+        if not (folder.is_dir() and any(folder.glob("*.npz"))):
+            raise PlausibilityCacheMissing(folder)  # fail fast: never the provider path with its retries
         frame = await _fetch_cached(symbol, "1d", _CacheOnly(), raw_dir, start, end, "raw", _no_pace)
         if not frame.empty:
             out[symbol] = frame
@@ -322,11 +325,18 @@ def _log_failure(task: asyncio.Task[Any]) -> None:
     if task.cancelled():
         return
     error = task.exception()
-    if error is not None:
-        logger.warning(
-            "Insider watch archive read failed; the next decision retries",
-            extra={"event": "insider_watch_archive_failed", "error": type(error).__name__},
-        )
+    if error is None or getattr(error, "_insider_watch_logged", False):
+        return  # a warm-up awaiting the archive read re-raises the same error: log it once
+    error._insider_watch_logged = True  # type: ignore[attr-defined]
+    logger.warning(
+        "Insider watch archive read failed; the next decision retries",
+        extra={
+            "event": "insider_watch_archive_failed",
+            "error": type(error).__name__,
+            # A fixed token (never paths or provider text).
+            "reason": error.reason if isinstance(error, WatchUnavailable) else None,
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -339,6 +349,7 @@ class _SessionHistory:
     transactions: Mapping[str, tuple[InsiderTransaction, ...]]
     raw: Mapping[str, pd.DataFrame]  # live raw bars (symbols with a captured purchase since the archive)
     implausible: int  # live trades dropped; the archive's drops are in the process state's provenance
+    plausibility_archive: Mapping[str, Any]  # the process state's provenance (study_bars, counts)
 
 
 class WatchHistorySource(Protocol):
@@ -535,8 +546,8 @@ class InsiderWatchSource:
             **self._contract_fields(),
         )
 
-    def unavailable(self, session: date, reason: str) -> WatchPreparation:
-        return WatchPreparation("unavailable", session, reason=reason, **self._contract_fields())
+    def unavailable(self, session: date, reason: str, *, counts: dict | None = None) -> WatchPreparation:
+        return WatchPreparation("unavailable", session, reason=reason, counts=counts or {}, **self._contract_fields())
 
     # --- preparation ------------------------------------------------------------------------------
 
@@ -618,9 +629,13 @@ class InsiderWatchSource:
             return cached
         assert self.history is not None and self.contract is not None  # applies() checked both
         started = monotonic()
-        state = await self.history.archive(trading[: len(self._prefix or ())])
-        history = await self.history(trading)
-        phases["archive"] += monotonic() - started
+        try:
+            state = await self.history.archive(trading[: len(self._prefix or ())])
+            if state.provenance.get("plausibility") != "study_bars":
+                raise WatchUnavailable("plausibility_not_checked")  # never a silent pass without the study's bars
+            history = await self.history(trading)
+        finally:
+            phases["archive"] += monotonic() - started  # journaled on an unavailable decision too
         if history.provenance.get("entry_sha256") != self.contract.entry_sha256:
             raise ValueError("the watch history was seeded under another insider entry")
         if not history.current_for(session):
@@ -635,7 +650,7 @@ class InsiderWatchSource:
         phases["bars"] += monotonic() - started
         max_trade_rel = float(history.provenance["max_trade_rel"])  # the protocol's own threshold
         transactions, implausible = _apply_plausibility(history, trading, state.implausible, raw, max_trade_rel)
-        result = _SessionHistory(session, trading, history, transactions, raw, implausible)
+        result = _SessionHistory(session, trading, history, transactions, raw, implausible, dict(state.provenance))
         self._cache = result
         return result
 
@@ -671,18 +686,22 @@ class InsiderWatchSource:
             return self.unavailable(session, "insider watch source unavailable")
         contract = self.contract
         assert contract is not None
-        phases = dict.fromkeys(("archive", "calendar", "bars", "rule"), 0.0)
+        phases = dict.fromkeys(("archive", "calendar", "bars", "actions", "rule"), 0.0)
+
+        def timings() -> dict[str, dict[str, float]]:
+            return {"elapsed_seconds": {phase: round(seconds, 3) for phase, seconds in phases.items()}}
+
         try:
             started = monotonic()
             trading = await self._trading_days(session)
             phases["calendar"] += monotonic() - started
             if len(trading) < 2 or trading[-1] != session:
-                return self.unavailable(session, "not_a_trading_session")
+                return self.unavailable(session, "not_a_trading_session", counts=timings())
             seeded = await self._session_history(session, trading, phases)
         except WatchUnavailable as exc:
-            return self.unavailable(session, exc.reason)
+            return self.unavailable(session, exc.reason, counts=timings())
         if isinstance(seeded, str):
-            return self.unavailable(session, seeded)
+            return self.unavailable(session, seeded, counts=timings())
         history = seeded.history
         started = monotonic()
         frame, counts = await asyncio.to_thread(self._events, seeded, {})
@@ -695,7 +714,7 @@ class InsiderWatchSource:
             assert self.actions is not None  # _built() checked it
             started = monotonic()
             page = await asyncio.to_thread(self.actions.fetch, symbols, start, session)
-            phases["bars"] += monotonic() - started
+            phases["actions"] += monotonic() - started
             actions_read = {
                 "requested_at": page.requested_at.isoformat(),
                 "received_at": page.received_at.isoformat(),
@@ -711,7 +730,8 @@ class InsiderWatchSource:
                 phases["rule"] += monotonic() - started
         counts = {
             **counts,
-            "implausible_size": seeded.implausible,
+            "implausible_live": seeded.implausible,
+            "plausibility_archive": seeded.plausibility_archive,
             "identity_breaks": {s: d.isoformat() for s, d in sorted(breaks.items())},
             "corporate_actions": actions_read,
         }
@@ -767,7 +787,7 @@ class InsiderWatchSource:
             )
 
         phases["rule"] += monotonic() - started
-        counts["elapsed_seconds"] = {phase: round(seconds, 3) for phase, seconds in phases.items()}
+        counts.update(timings())
 
         events, skipped, skipped_events = [], {}, []
         for event in rank_events(eligible):
@@ -786,7 +806,10 @@ class InsiderWatchSource:
             excluded_events=tuple(sorted(excluded, key=lambda e: e["symbol"])),
             counts=counts,
             latest_filing_date=history.latest_filing_date.isoformat(),
-            history={key: history.provenance.get(key) for key in sorted(history.provenance)},
+            # The merge's implausible_size is never measured here (the merge gets no bars); counts carry both.
+            history={
+                key: history.provenance.get(key) for key in sorted(history.provenance) if key != "implausible_size"
+            },
             incomplete=incomplete,
             calendar={"first_session": trading[0].isoformat(), "sessions": len(trading)},
             time_exit_at=await self._time_exit(now, contract.policy),

@@ -23,6 +23,7 @@ import pytest
 from sqlalchemy import select, update
 
 import agentic_trader.agent.copilot as copilot_module
+import agentic_trader.agent.insider_watch as insider_watch_module
 from agentic_trader.agent.catalog_sources import CatalogCardSource, PeadDriftSource
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.agent.insider_watch import (
@@ -148,8 +149,10 @@ class FakeActions:
 class FakeHistory:
     """The per-process archive state (the study's plausibility drops) and the per-date merged history."""
 
-    def __init__(self, seed: WatchHistory, *, implausible=frozenset(), error: Exception | None = None):
-        self.seed, self.implausible, self.error = seed, frozenset(implausible), error
+    def __init__(
+        self, seed: WatchHistory, *, implausible=frozenset(), error: Exception | None = None, checked: bool = True
+    ):
+        self.seed, self.implausible, self.error, self.checked = seed, frozenset(implausible), error, checked
         self.loads: list[tuple[date, ...]] = []
         self.archive_calls: list[tuple[date, ...]] = []
 
@@ -157,7 +160,10 @@ class FakeHistory:
         self.archive_calls.append(tuple(prefix))
         if self.error is not None:
             raise self.error
-        return WatchArchiveState(implausible=self.implausible, provenance={"fake": True})
+        if not self.checked:
+            return WatchArchiveState(implausible=frozenset(), provenance={"plausibility": "not_checked"})
+        provenance = {"plausibility": "study_bars", "symbols_checked": 3, "implausible": len(self.implausible)}
+        return WatchArchiveState(implausible=self.implausible, provenance=provenance)
 
     async def __call__(self, trading):
         self.loads.append(tuple(trading))
@@ -255,7 +261,7 @@ async def test_the_plausibility_filter_drops_an_implausible_purchase(app_config)
     rows[1] = dataclasses.replace(rows[1], dollars=600_000_000.0)  # above 10 x $50M dollar volume
     source, _ = source_with(history({"AAA": rows}), app_config, closes=CLOSES)
     prep = await source.prepare(now=NOW, snapshot=None, owned={})
-    assert prep.events == () and prep.counts["implausible_size"] == 1
+    assert prep.events == () and prep.counts["implausible_live"] == 1
 
 
 async def test_a_name_change_after_the_filing_is_an_identity_break(app_config):
@@ -1158,7 +1164,7 @@ async def test_r2_the_decision_journals_each_phase_s_elapsed_time(app_config):
     source, _ = source_with(history(clusters()), app_config, closes=CLOSES)
     prep = await source.prepare(now=NOW, snapshot=None, owned={})
     phases = prep.counts["elapsed_seconds"]
-    assert set(phases) == {"archive", "calendar", "bars", "rule"}
+    assert set(phases) == {"archive", "calendar", "bars", "actions", "rule"}
     assert all(isinstance(value, float) and value >= 0 for value in phases.values())
 
 
@@ -1185,3 +1191,82 @@ async def test_r2_a_watch_card_is_sent_without_a_link_preview():
     sent.reset_mock()
     await notifier.send_signal_alert(_evaluation(), "TREND_PULLBACK", 2)
     assert "link_preview_options" not in sent.await_args.kwargs
+
+
+# --- fix round 3: plausibility evidence, timings on every decision, fast cache misses, one log line ---
+
+
+async def test_r3_the_archive_plausibility_evidence_is_journaled_beside_the_live_count(app_config):
+    rows = [buy("AAA", _back(5), 1), buy("AAA", _back(1), 2)]
+    seed = dataclasses.replace(history({"AAA": rows}), archive_through=D)
+    source, _ = source_with(seed, app_config, closes=CLOSES, implausible=frozenset({rows[1]}))
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert prep.counts["plausibility_archive"] == {"plausibility": "study_bars", "symbols_checked": 3, "implausible": 1}
+    assert prep.counts["implausible_live"] == 0 and "implausible_size" not in prep.counts
+    assert "implausible_size" not in prep.history  # the merge never measures it: not journaled as if it did
+
+
+async def test_r3_an_unchecked_archive_is_unavailable_never_a_silent_pass(app_config):
+    source, _ = source_with(history(clusters()), app_config, closes=CLOSES)
+    source.history.checked = False
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert (prep.status, prep.reason) == ("unavailable", "plausibility_not_checked")
+
+
+async def test_r3_an_unavailable_decision_journals_the_phases_that_ran(app_config):
+    source, _ = source_with(history(clusters(), latest=D - timedelta(days=2)), app_config, closes=CLOSES)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert prep.status == "unavailable"
+    phases = prep.counts["elapsed_seconds"]
+    assert set(phases) == {"archive", "calendar", "bars", "actions", "rule"} and phases["calendar"] >= 0
+
+
+async def test_r3_the_corporate_actions_read_is_its_own_phase(app_config):
+    class SlowActions(FakeActions):
+        def fetch(self, symbols, start, end):
+            threading.Event().wait(0.05)
+            return super().fetch(symbols, start, end)
+
+    source, _ = source_with(history({"AAA": clusters()["AAA"]}), app_config, closes=CLOSES)
+    source.actions = SlowActions()
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    phases = prep.counts["elapsed_seconds"]
+    assert phases["actions"] >= 0.05 > phases["bars"]
+
+
+async def test_r3_a_missing_symbol_file_in_the_pooled_cache_fails_fast(tmp_path, monkeypatch):
+    cube = SimpleNamespace(
+        spec_identity=CONTRACT.spec.identity, cohort_sha256="c" * 64, coverage={}, sha256=CONTRACT.entry.cube_sha256
+    )
+    (tmp_path / f"cube-{'c' * 16}-{CONTRACT.spec.identity[:16]}.npz").write_bytes(b"")
+    monkeypatch.setattr(insider_watch_module, "load_cube", lambda path: cube)
+    monkeypatch.setattr(insider_watch_module, "_verify_bar_files", lambda coverage, bars, raw: "ok")
+
+    async def never(*args, **kwargs):
+        raise AssertionError("a cache miss must not reach the provider path")
+
+    monkeypatch.setattr(insider_watch_module, "_fetch_cached", never)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(PlausibilityCacheMissing):
+        await read_study_raw_bars(tmp_path, cohort_sha256="c" * 64, contract=CONTRACT, symbols=("AAA",))
+    assert asyncio.get_running_loop().time() - started < 1.0
+
+
+async def test_r3_a_failed_warm_read_logs_its_reason_token_once(app_config, caplog):
+    def broken():
+        raise PlausibilityCacheMissing("/private/path/that/must/not/be/logged")
+
+    live = LiveWatchHistory(store=None, load_archive=broken)
+    app_config.insider_watch.enabled = True
+    source = InsiderWatchSource(
+        app_config, CONTRACT, history=live, calendar=AlpacaLikeCalendar(), bars=object(), actions=object()
+    )
+    source.warm()
+    await asyncio.sleep(0.2)
+    failures = [r for r in caplog.records if r.__dict__.get("event") == "insider_watch_archive_failed"]
+    assert len(failures) == 1
+    assert (failures[0].__dict__["error"], failures[0].__dict__["reason"]) == (
+        "PlausibilityCacheMissing",
+        "plausibility_cache_missing",
+    )
+    assert "/private/path" not in caplog.text
