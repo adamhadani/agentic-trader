@@ -87,3 +87,14 @@ def test_plausible_transactions_drops_oversized_and_later_filings_in_order():
     kept, implausible = plausible_transactions([first, huge, second, late], ordinals, dv, 10.0)
     assert kept == [first, second]
     assert implausible == 1
+
+
+def test_control_requires_insider_coverage_flag(tmp_path):
+    assert load_insider_entry(ENTRY).entry.control.require_insider_coverage is True
+    document = json.loads(ENTRY.read_text())
+    assert list(document["control"])[-1] == "require_insider_coverage"
+    del document["control"]["require_insider_coverage"]
+    path = tmp_path / "entry.json"
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValidationError, match="require_insider_coverage"):
+        load_insider_entry(path)

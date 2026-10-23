@@ -234,8 +234,9 @@ digest-pinned SEC Form 3/4/5 archives and corporate actions) as one a priori hyp
   per 63 sessions. Decisions 2016-08-01..2026-07-31.
 - **Trade.** The cube cell for (D, symbol), D the first session after F: 10:35 New York, 2 x ATR14 stop, 3R
   target, 20-session time exit, 15 bp decisive cost. The entry pins the pooled protocol and cube by SHA-256.
-- **Control and rule.** The mean of the 5 cube cells on D in the event's dollar-volume tercile with no
-  qualifying purchase in the prior 126 sessions, nearest in 20-session return. P1-P4 as for PEAD (300 events,
+- **Control and rule.** The mean of the 5 cube cells on D in the event's dollar-volume tercile, covered by
+  Form 4 reporting (a qualifying transaction filed before D) but with no qualifying purchase in the prior
+  126 sessions, nearest in 20-session return. P1-P4 as for PEAD (300 events,
   100 from 2023-01-01); a pass only makes the leg eligible for a separately specified probe.
 - **Caveat.** Running it reads insider-conditioned outcomes over the pooled confirmation slice, so the pooled
   insider fixed sets stay retired.

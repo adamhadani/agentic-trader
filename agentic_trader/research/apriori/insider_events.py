@@ -35,25 +35,50 @@ def _visible(
     }
 
 
-def purchase_dates(
-    transactions: Mapping[str, Sequence[InsiderTransaction]], *, last_session: date | None = None
+def _filing_ordinals(
+    transactions: Mapping[str, Sequence[InsiderTransaction]], last_session: date | None, codes: frozenset[str] | None
 ) -> dict[str, np.ndarray]:
-    """Per symbol, the sorted filing-date ordinals of every purchase, routine or not, filed on or before
-    ``last_session`` when given."""
     out: dict[str, np.ndarray] = {}
     for symbol, rows in _visible(transactions, last_session).items():
-        ordinals = sorted(t.filing_date.toordinal() for t in rows if t.code == "P")
+        ordinals = sorted(t.filing_date.toordinal() for t in rows if codes is None or t.code in codes)
         if ordinals:
             out[symbol] = np.array(ordinals, dtype=np.int64)
     return out
 
 
+def purchase_dates(
+    transactions: Mapping[str, Sequence[InsiderTransaction]], *, last_session: date | None = None
+) -> dict[str, np.ndarray]:
+    """Per symbol, the sorted filing-date ordinals of every purchase, routine or not, filed on or before
+    ``last_session`` when given."""
+    return _filing_ordinals(transactions, last_session, frozenset({"P"}))
+
+
+def filing_dates(
+    transactions: Mapping[str, Sequence[InsiderTransaction]], *, last_session: date | None = None
+) -> dict[str, np.ndarray]:
+    """Per symbol, the sorted filing-date ordinals of every qualifying transaction (any code), filed on or
+    before ``last_session`` when given: the evidence that the name is covered by Form 4 reporting."""
+    return _filing_ordinals(transactions, last_session, None)
+
+
 def _triggers(
     rows: Sequence[InsiderTransaction], day_ordinals: np.ndarray, entry: InsiderEntry
 ) -> tuple[list[tuple[date, int, float]], int]:
-    """The symbol's triggers as ``(F, buyers, opp_dollars)`` and the count suppressed by the cooldown."""
+    """The symbol's triggers as ``(F, buyers, opp_dollars)`` and the count suppressed by the cooldown.
+
+    Every purchase feeds the routine rule, but one filed before the calendar's first session has no
+    position: it neither triggers nor counts in a window. A window holds only purchases filed on or
+    before ``F``: when ``F`` is a weekday without a session, ``pos(F)`` is the next session, and that
+    session's own filings share the position but are not yet visible on ``F``.
+    """
     purchases = sorted((t for t in rows if t.code == "P"), key=lambda t: t.filing_date)
-    opportunistic = [t for t, flag in zip(purchases, opportunistic_flags(purchases), strict=True) if flag]
+    first = int(day_ordinals[0])
+    opportunistic = [
+        t
+        for t, flag in zip(purchases, opportunistic_flags(purchases), strict=True)
+        if flag and t.filing_date.toordinal() >= first
+    ]
     if not opportunistic:
         return [], 0
     positions = np.searchsorted(day_ordinals, [t.filing_date.toordinal() for t in opportunistic], side="left")
@@ -66,7 +91,7 @@ def _triggers(
         in_window = [
             t
             for t, p in zip(opportunistic, positions, strict=True)
-            if position - (event.cluster_window_sessions - 1) <= p <= position
+            if position - (event.cluster_window_sessions - 1) <= p <= position and t.filing_date <= filing
         ]
         buyers = len({t.owner_cik for t in in_window})
         if buyers < event.min_buyers:
@@ -89,10 +114,8 @@ def build_insider_events(
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Triggers that pass placement, identity and the cooldown, with their counts by reason and year.
 
-    Filings after the last session are invisible and dropped first. Filings dated before the first
-    session roll to position 0; the runner passes a calendar starting 2016-01-01, more than 21
-    sessions before the first decision, so such early clusters can only produce ``outside_window``
-    triggers.
+    Filings after the last session are invisible and dropped first. Purchases filed before the first
+    session only feed the routine rule: they never trigger and never count toward a cluster window.
     """
     days = list(trading_days)
     transactions = _visible(transactions, days[-1])

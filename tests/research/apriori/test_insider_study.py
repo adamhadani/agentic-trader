@@ -6,8 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from agentic_trader.research.apriori import insider_study
 from agentic_trader.research.apriori.catalog import InsiderEntry, LoadedInsiderEntry, load_insider_entry
-from agentic_trader.research.apriori.insider_events import INSIDER_EVENT_COLUMNS, opportunistic_flags
+from agentic_trader.research.apriori.insider_events import (
+    INSIDER_EVENT_COLUMNS,
+    build_insider_events,
+    opportunistic_flags,
+)
 from agentic_trader.research.apriori.insider_study import (
     InsiderLegInputs,
     evaluate_insider,
@@ -67,8 +72,18 @@ def _geometric(r):
 
 
 def _world(
-    *, ret=None, eligible=None, labelled=None, tiebreak=None, hit=None, adjusted=None, transactions=None, issuer_of=None
+    *,
+    ret=None,
+    eligible=None,
+    labelled=None,
+    tiebreak=None,
+    hit=None,
+    adjusted=None,
+    transactions=None,
+    issuer_of=None,
+    uncovered=(),
 ):
+    """Every symbol not in ``uncovered`` is covered by Form 4 reporting: an old sale filed on ``DAYS[0]``."""
     shape = (len(SESSIONS), len(SYMS))
     elig = np.ones(shape, bool) if eligible is None else eligible
     lab = (np.ones(shape, bool) if labelled is None else labelled) & elig
@@ -92,7 +107,9 @@ def _world(
         cube=cube,
         trading_days=DAYS,
         adjusted=bars,
-        transactions=transactions or {},
+        transactions={
+            s: (() if s in uncovered else (_sale(s, DAYS[0]),)) + (transactions or {}).get(s, ()) for s in SYMS
+        },
         identity_breaks={},
         issuer_of=issuer_of or {s: 1000 + i for i, s in enumerate(SYMS)},
         decision_time=CLOCK,
@@ -122,6 +139,10 @@ def _events(*pairs, buyers=2, dollars=1e6):
 
 def _tx(symbol, day, owner=1):
     return InsiderTransaction(symbol, day, day, "P", 1000.0, owner)
+
+
+def _sale(symbol, day, owner=99):
+    return InsiderTransaction(symbol, day, day, "S", 1000.0, owner)
 
 
 def _controls_of(controls, event_id):
@@ -173,6 +194,13 @@ def test_hold60_close_to_close_and_nan_when_immature():
     short = {s: _bars(_geometric(RET[s]), drop=range(FIRST_ROW + 65, len(DAYS))) for s in SYMS}
     legs, controls, _ = label_insider_events(_events(("S11", 5)), _world(adjusted=short), ENTRY)
     assert np.isnan(legs.iloc[0].hold60) and np.isnan(controls.iloc[0].hold60)
+
+
+def test_control_hold60_nan_unless_every_member_is_finite():
+    one_short = {"S09": _bars(_geometric(RET["S09"]), drop=range(FIRST_ROW + 65, len(DAYS)))}
+    legs, controls, _ = label_insider_events(_events(("S11", 5)), _world(adjusted=one_short), ENTRY)
+    assert "S09" in _controls_of(controls, legs.iloc[0].event_id)
+    assert np.isfinite(legs.iloc[0].hold60) and np.isnan(controls.iloc[0].hold60)
 
 
 def test_bucket_is_dollar_volume_tercile_among_labelled_cells():
@@ -234,6 +262,40 @@ def test_five_nearest_by_ret20_tie_broken_by_tiebreak(descending, winner):
     assert _controls_of(controls, legs.iloc[0].event_id) == {"S10", "S12", "S09", "S13", winner}
 
 
+NEAREST = {"S10", "S12", "S09", "S13", "S15"}  # S11's five nearest by ret20 in the default world
+
+
+def _uncovered_entry():
+    return _entry(control={**ENTRY.control.model_dump(), "require_insider_coverage": False})
+
+
+def test_control_requires_insider_coverage():
+    legs, controls, counts = label_insider_events(_events(("S11", 5)), _world(uncovered=("S10",)), ENTRY)
+    assert _controls_of(controls, legs.iloc[0].event_id) == {"S12", "S09", "S13", "S14", "S15"}
+    assert counts["control_candidates_uncovered"] == 1
+    world = _world(uncovered=("S10",))
+    legs, controls, counts = label_insider_events(_events(("S11", 5)), world, _uncovered_entry())
+    assert _controls_of(controls, legs.iloc[0].event_id) == NEAREST
+    assert counts["control_candidates_uncovered"] == 0
+
+
+def test_a_sale_filed_before_d_is_coverage():
+    p = FIRST_ROW + 5
+    world = _world(uncovered=("S10",), transactions={"S10": (_sale("S10", DAYS[p - 1]),)})
+    legs, controls, counts = label_insider_events(_events(("S11", 5)), world, ENTRY)
+    assert _controls_of(controls, legs.iloc[0].event_id) == NEAREST
+    assert counts["control_candidates_uncovered"] == 0
+
+
+def test_first_transaction_on_or_after_d_is_uncovered():
+    p = FIRST_ROW + 5
+    late = (_sale("S10", DAYS[p]), _tx("S10", DAYS[p + 2]))
+    world = _world(uncovered=("S10",), transactions={"S10": late})
+    legs, controls, counts = label_insider_events(_events(("S11", 5)), world, ENTRY)
+    assert "S10" not in _controls_of(controls, legs.iloc[0].event_id)
+    assert counts["control_candidates_uncovered"] == 1
+
+
 def test_unpaired_below_five_candidates():
     p = FIRST_ROW + 5
     transactions = {s: (_tx(s, DAYS[p - 10]),) for s in ("S08", "S09", "S10")}
@@ -248,6 +310,20 @@ def test_share_class_sibling_keeps_larger_dv():
     legs, _, counts = label_insider_events(events, _world(issuer_of=issuer_of), ENTRY)
     assert sorted(zip(legs["symbol"], legs["session"], strict=True)) == [("S11", SESSIONS[20]), ("S12", SESSIONS[5])]
     assert counts["excluded"] == {"share_class_sibling": {2021: 1}}
+
+
+def test_share_class_end_to_end_from_transactions():
+    p = FIRST_ROW + 5
+    trade = ((DAYS[p - 3], 1), (DAYS[p - 1], 2))  # one issuer's cluster, fanned out to both classes
+    transactions = {s: tuple(InsiderTransaction(s, d, d, "P", 5e4, o) for d, o in trade) for s in ("S11", "S12")}
+    issuer_of = {s: 1000 + i for i, s in enumerate(SYMS)} | {"S12": 1011}
+    world = _world(transactions=transactions, issuer_of=issuer_of)
+    events, _ = build_insider_events(world.transactions, DAYS, {}, ENTRY, decision_time=CLOCK)
+    assert sorted(events["symbol"]) == ["S11", "S12"] and set(events["session"]) == {SESSIONS[5]}
+    legs, controls, counts = label_insider_events(events, world, ENTRY)
+    assert list(legs["symbol"]) == ["S12"]  # the larger dollar volume at D
+    assert counts["excluded"] == {"share_class_sibling": {2021: 1}}
+    assert len(controls) == 1 and "S11" not in _controls_of(controls, legs.iloc[0].event_id)
 
 
 def _frames(n, recent, leg_mean, control_mean, seed=3, noise=0.3):
@@ -331,6 +407,38 @@ def test_p4_fails_below_floor():
     assert evaluate_insider(legs, controls, ENTRY)["criteria"]["P4"]["holds"] is False
 
 
+def test_leg_no_better_than_control_fails_p2_only():
+    legs, controls = _frames(400, 150, 0.5, 0.5)
+    result = evaluate_insider(legs, controls, ENTRY)
+    criteria = result["criteria"]
+    assert criteria["P1"]["holds"] and criteria["P3"]["holds"] and criteria["P4"]["holds"]
+    assert not criteria["P2"]["holds"] and result["decision"] == "failed"
+
+
+def test_negative_recent_mean_fails_p3_only():
+    legs, controls = _frames(400, 150, 0.5, 0.0)
+    recent = (legs["session"] >= ENTRY.window.recent_from).to_numpy()
+    legs.loc[recent, "r_cost"] -= 0.7
+    controls.loc[recent, "r_cost"] -= 1.0
+    result = evaluate_insider(legs, controls, ENTRY)
+    criteria = result["criteria"]
+    assert legs["r_cost"].mean() > 0 and criteria["P3"]["recent_mean"] <= 0
+    assert criteria["P1"]["holds"] and criteria["P2"]["holds"] and criteria["P4"]["holds"]
+    assert not criteria["P3"]["holds"] and result["decision"] == "failed"
+
+
+def test_a_session_on_recent_from_counts_as_recent():
+    legs, controls = _frames(400, 100, 0.5, 0.0)
+    first_recent = min(d for d in legs["session"] if d.year == 2023)
+    window = {
+        "decisions": ["2016-01-01", "2026-07-31"],
+        "bars_through": "2026-09-01",
+        "recent_from": first_recent.isoformat(),
+    }
+    result = evaluate_insider(legs, controls, _entry(window=window))
+    assert result["criteria"]["P4"]["n_recent"] == 100 and result["criteria"]["P4"]["holds"]
+
+
 def test_p2_uses_paired_legs_only():
     legs, controls = _frames(400, 150, 0.5, 0.0)
     extra = legs.iloc[:5].assign(event_id=[f"U{i}" for i in range(5)], r_cost=50.0)
@@ -396,3 +504,16 @@ async def test_results_never_authorize_promotion(tmp_path):
     saved = json.loads((directory / "result.json").read_text())
     assert saved["authorizes_promotion"] is False and saved["status"] == "completed"
     assert json.loads((directory / "manifest.json").read_text())["authorizes_promotion"] is False
+
+
+def test_buckets_computed_once_per_session(monkeypatch):
+    calls = []
+    real = insider_study._buckets
+
+    def counting(view, row, buckets):
+        calls.append(row)
+        return real(view, row, buckets)
+
+    monkeypatch.setattr(insider_study, "_buckets", counting)
+    label_insider_events(_events(("S11", 5), ("S12", 5), ("S13", 6)), _world(), ENTRY)
+    assert calls == [5, 6]

@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,7 +42,7 @@ class _Store:
         return {"0": {"ticker": SYMBOL, "cik_str": 320193}}
 
 
-def _install(monkeypatch, *, cube_sha=None, calls=None):
+def _install(monkeypatch, *, cube_sha=None, calls=None, symbols=(SYMBOL,)):
     async def fake_build(cohort, spec, **kwargs):
         if calls is not None:
             calls.append(kwargs)
@@ -60,7 +61,7 @@ def _install(monkeypatch, *, cube_sha=None, calls=None):
     monkeypatch.setattr(
         insider_runner,
         "load_cohort",
-        lambda path: SimpleNamespace(sha256=insider_runner_cohort_sha(), cohort=SimpleNamespace(symbols=(SYMBOL,))),
+        lambda path: SimpleNamespace(sha256=insider_runner_cohort_sha(), cohort=SimpleNamespace(symbols=symbols)),
     )
 
 
@@ -115,3 +116,14 @@ async def test_implausible_dropped_before_events(monkeypatch):
     assert inputs.decision_time == time(10, 35)
     assert inputs.issuer_of == {SYMBOL: 320193}
     assert calls[0]["static_symbols"] == ()
+
+
+async def test_provenance_records_coverage_and_calendar(monkeypatch):
+    _install(monkeypatch, symbols=(SYMBOL, "ZZZZ"))
+    inputs = await _build()
+    provenance = inputs.provenance
+    assert provenance["symbols_without_cik"] == ["ZZZZ"]
+    assert provenance["symbols_without_transactions"] == ["ZZZZ"]
+    assert provenance["calendar_sessions"] == len(DAYS)
+    expected = hashlib.sha256("\n".join(d.isoformat() for d in DAYS).encode()).hexdigest()
+    assert provenance["calendar_sha256"] == expected

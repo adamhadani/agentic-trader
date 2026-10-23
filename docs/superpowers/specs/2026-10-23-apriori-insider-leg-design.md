@@ -91,7 +91,11 @@ goes into the run manifest, and a change is a new version, never an edit. It has
   - `matched_controls: 5`;
   - `match_return_sessions: 20`;
   - `liquidity_buckets: 3`;
-  - `exclusion_sessions: 126`.
+  - `exclusion_sessions: 126`;
+  - `require_insider_coverage: true`: a control must be a name covered by Form 4 reporting, with at
+    least one qualifying transaction (any code, after the implausible rule) filed strictly before `D`.
+    Foreign private issuers never file Section 16 reports, so without this rule they would always pass
+    the purchase exclusion. When `false` the rule is skipped.
 - `descriptive_hold_sessions: 60`.
 - `bootstrap`: `block_mean: 10`, `draws: 2000`, `seed: 20261023`.
 - `pass_rule`: `min_events: 300`, `min_recent_events: 100`, `trim_fraction: 0.01`.
@@ -129,7 +133,9 @@ opportunistic. A filing date `F` has position `pos(F)`, the first session on or 
 
 1. **Trigger.** On each filing date `F` with at least one opportunistic purchase of `s`, count
    `buyers(F)`: the distinct owners of the opportunistic purchases of `s` with
-   `pos(F) − 20 ≤ pos(F') ≤ pos(F)`. `F` triggers when `buyers(F) ≥ min_buyers` and no earlier
+   `pos(F) − 20 ≤ pos(F') ≤ pos(F)` and `F' ≤ F`. A purchase filed before the calendar's first
+   session has no position: it feeds the routine rule only, never triggers and never counts in a
+   window. `F` triggers when `buyers(F) ≥ min_buyers` and no earlier
    trigger of `s` lies within `cooldown_sessions` positions (`suppressed_by_cooldown`, an
    informational count). The cooldown runs from the trigger, whatever the later gates decide, so
    one episode counts once.
@@ -158,7 +164,10 @@ opportunistic. A filing date `F` has position `pos(F)`, the first session on or 
    - in the same `bucket`;
    - finite `ret20`;
    - no qualifying purchase (routine or opportunistic, after the implausible rule) filed in
-     `[date(D − 126 sessions), D)`.
+     `[date(D − 126 sessions), D)`;
+   - when `require_insider_coverage`, at least one qualifying transaction (purchase or sale, after
+     the implausible rule) filed strictly before `D`. Candidates dropped by this rule are counted
+     (`control_candidates_uncovered`, summed over events).
 
    Take the 5 candidates with the smallest `|ret20 − ret20_event|`, breaking ties by the cube's
    `tiebreak` key. The control row is their mean `r_cost` (and mean `r_gross`), with
@@ -223,7 +232,8 @@ There is no new config, no database, no migration and no daemon change.
 
 | Condition | Behaviour |
 | --- | --- |
-| Entry invalid (min_buyers < 2, cooldown ≤ hold, window outside the cube's decisions) | `load_insider_entry` raises before any I/O. |
+| Entry invalid (min_buyers < 2, a missing field) | `load_insider_entry` raises before any I/O. |
+| Cooldown ≤ the cube bracket's hold, or window outside the cube spec's decisions | `check_against` raises inside the run, after the manifest: `status: failed`. |
 | Output directory exists | The CLI refuses. |
 | Protocol file digest ≠ `pooled_protocol_sha256` | `status: failed` after the manifest, before the calendar call. |
 | No cached cube, or cube sha ≠ `cube_sha256` | `status: failed`. |

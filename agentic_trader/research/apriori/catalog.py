@@ -292,6 +292,7 @@ class InsiderControl(BaseModel, frozen=True, extra="forbid"):
     match_return_sessions: int = Field(ge=1)
     liquidity_buckets: int = Field(ge=2)
     exclusion_sessions: int = Field(ge=1)
+    require_insider_coverage: bool  # a control must have a qualifying transaction filed before D
 
 
 class InsiderEntry(BaseModel, frozen=True, extra="forbid"):

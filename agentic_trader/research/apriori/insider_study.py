@@ -2,7 +2,8 @@
 
 Spec sections 5 (steps 4-7), 6 and 8. One direction (LONG): every accepted event takes its cube cell
 ``(D, s)``; its control is the mean of the ``matched_controls`` cube cells on the same session ``D``,
-in the same dollar-volume bucket, nearest in 20-session return. Sessions and positions are the
+in the same dollar-volume bucket, nearest in 20-session return, among names without a recent purchase
+and (``require_insider_coverage``) with a qualifying filing before ``D``. Sessions and positions are the
 observed trading days, never frame rows: a missing adjusted bar gives ``NaN``.
 
 ``execute_insider_study`` writes ``protocol.json`` and ``manifest.json`` before ``build`` (the only
@@ -25,7 +26,12 @@ import pandas as pd
 
 from agentic_trader.research.apriori.catalog import InsiderEntry, LoadedInsiderEntry
 from agentic_trader.research.apriori.exdiv_study import _mean_n, _terciles
-from agentic_trader.research.apriori.insider_events import INSIDER_EVENT_COLUMNS, build_insider_events, purchase_dates
+from agentic_trader.research.apriori.insider_events import (
+    INSIDER_EVENT_COLUMNS,
+    build_insider_events,
+    filing_dates,
+    purchase_dates,
+)
 from agentic_trader.research.apriori.pead_events import by_session
 from agentic_trader.research.apriori.pead_study import save_frame
 from agentic_trader.research.apriori.statistics import mean_test, paired_test, trimmed_mean
@@ -106,24 +112,31 @@ def _buckets(view: CubeView, row: int, buckets: int) -> np.ndarray:
     return out
 
 
-class _Purchases:
-    """Whether a symbol has a qualifying purchase (routine or not) filed in ``[days[p - n], days[p])``.
+class _InsiderHistory:
+    """Each symbol's qualifying filings as seen from session position ``p``.
 
-    When ``p < n`` the window opens at the start of time, so a short calendar never admits a buyer.
+    ``recent``: a qualifying purchase (routine or not) filed in ``[days[p - n], days[p])``; when
+    ``p < n`` the window opens at the start of time, so a short calendar never admits a buyer.
+    ``covered``: any qualifying transaction (purchase or sale) filed strictly before ``days[p]``.
     """
 
     def __init__(self, inputs: InsiderLegInputs, sessions: int):
         self._days = inputs.trading_days
         self._sessions = sessions
-        self._dates = purchase_dates(inputs.transactions, last_session=inputs.trading_days[-1])
+        self._purchases = purchase_dates(inputs.transactions, last_session=inputs.trading_days[-1])
+        self._filings = filing_dates(inputs.transactions, last_session=inputs.trading_days[-1])
 
     def recent(self, symbol: str, p: int) -> bool:
-        ordinals = self._dates.get(symbol)
+        ordinals = self._purchases.get(symbol)
         if ordinals is None:
             return False
         lo = self._days[p - self._sessions].toordinal() if p >= self._sessions else np.iinfo(np.int64).min
         i = int(np.searchsorted(ordinals, lo, side="left"))
         return i < len(ordinals) and ordinals[i] < self._days[p].toordinal()
+
+    def covered(self, symbol: str, p: int) -> bool:
+        ordinals = self._filings.get(symbol)
+        return ordinals is not None and int(ordinals[0]) < self._days[p].toordinal()
 
 
 def label_insider_events(
@@ -142,7 +155,8 @@ def label_insider_events(
     closes = _closes(inputs.adjusted, view.symbols, days)
     ret20 = _trailing(closes, entry.control.match_return_sessions)
     hold = _forward(closes, entry.descriptive_hold_sessions)
-    purchases = _Purchases(inputs, entry.control.exclusion_sessions)
+    history = _InsiderHistory(inputs, entry.control.exclusion_sessions)
+    uncovered = 0
     k = entry.control.matched_controls
     excluded: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     unpaired: dict[int, int] = defaultdict(int)
@@ -186,7 +200,9 @@ def label_insider_events(
         if reason is not None:
             excluded[reason][year] += 1
             continue
-        bucket = bucket_cache.setdefault(row, _buckets(view, row, entry.control.liquidity_buckets))
+        if row not in bucket_cache:
+            bucket_cache[row] = _buckets(view, row, entry.control.liquidity_buckets)
+        bucket = bucket_cache[row]
         dv = float(view.dollar_volume[row, col])
         legs.append(
             {
@@ -207,8 +223,12 @@ def label_insider_events(
         candidates = [
             c
             for c in np.flatnonzero(view.labelled[row] & (bucket == bucket[col]) & np.isfinite(ret20[p]))
-            if c not in barred and not purchases.recent(view.symbols[c], p)
+            if c not in barred and not history.recent(view.symbols[c], p)
         ]
+        if entry.control.require_insider_coverage:
+            covered = [c for c in candidates if history.covered(view.symbols[c], p)]
+            uncovered += len(candidates) - len(covered)
+            candidates = covered
         if len(candidates) < k:
             unpaired[year] += 1
             continue
@@ -222,7 +242,7 @@ def label_insider_events(
                 "session": session,
                 "r_cost": float(view.r_cost[row, chosen].mean()),
                 "r_gross": float(view.r_gross[row, chosen].mean()),
-                "hold60": float(held[np.isfinite(held)].mean()) if np.isfinite(held).any() else float("nan"),
+                "hold60": float(held.mean()) if np.isfinite(held).all() else float("nan"),
                 "control_symbols": ",".join(view.symbols[c] for c in chosen),
             }
         )
@@ -232,6 +252,7 @@ def label_insider_events(
         "paired": len(controls),
         "unpaired": sum(unpaired.values()),
         "unpaired_by_year": dict(sorted(unpaired.items())),
+        "control_candidates_uncovered": uncovered,
     }
     return pd.DataFrame(legs, columns=list(LEG_COLUMNS)), pd.DataFrame(controls, columns=list(CONTROL_COLUMNS)), counts
 

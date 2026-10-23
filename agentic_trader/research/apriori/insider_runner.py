@@ -97,7 +97,7 @@ async def build_insider_leg_inputs(
     tickers = await asyncio.to_thread(InsiderFilingStore(insider_filings_dir).load_tickers)
     if tickers is None:
         raise ValueError(f"no verified ticker map under {insider_filings_dir}")
-    ciks, _without = symbol_ciks(tickers, symbols)
+    ciks, without_cik = symbol_ciks(tickers, symbols)
     issuer_of = {symbol: cik for cik, group in ciks.items() for symbol in group}
     return InsiderLegInputs(
         cube=build.cube,
@@ -118,5 +118,9 @@ async def build_insider_leg_inputs(
             "transactions": sum(len(v) for v in transactions.values()),
             "implausible_size": implausible,
             "max_trade_rel": max_trade_rel,
+            "symbols_without_cik": sorted(without_cik),
+            "symbols_without_transactions": sorted(symbol for symbol in symbols if not transactions[symbol]),
+            "calendar_sessions": len(days),
+            "calendar_sha256": hashlib.sha256("\n".join(day.isoformat() for day in days).encode()).hexdigest(),
         },
     )

@@ -7,6 +7,7 @@ from agentic_trader.research.apriori.catalog import InsiderEntry, load_insider_e
 from agentic_trader.research.apriori.insider_events import (
     INSIDER_EVENT_COLUMNS,
     build_insider_events,
+    filing_dates,
     opportunistic_flags,
     purchase_dates,
 )
@@ -172,3 +173,39 @@ def test_suppressed_trigger_does_not_move_the_cooldown_anchor():
     frame, counts = _build(txs, days)
     assert list(frame.filing_date) == [days[5], days[70]]
     assert counts["suppressed_by_cooldown"] == 1
+
+
+def test_window_never_counts_a_purchase_filed_after_f():
+    good_friday = date(2020, 4, 10)  # a weekday on which EDGAR is open but the market is closed
+    days = _calendar(40, first=date(2020, 3, 16), skip=(good_friday,))
+    assert good_friday not in days and good_friday.weekday() < 5
+    frame, counts = _build([_tx(good_friday, 1), _tx(date(2020, 4, 13), 2)], days)
+    assert list(frame.filing_date) == [date(2020, 4, 13)]
+    assert list(frame.session) == [date(2020, 4, 14)]
+    assert frame.iloc[0].buyers == 2 and counts["triggers"] == 1
+
+
+def test_purchases_before_the_calendar_never_trigger_or_count():
+    days = _calendar(60, first=date(2016, 1, 4))
+    entry = _entry(decisions=(date(2016, 1, 1), date(2016, 12, 31)))
+    frame, counts = _build([_tx(date(2015, 12, 15), 1), _tx(date(2015, 12, 16), 2)], days, entry=entry)
+    assert frame.empty and counts["triggers"] == 0 and counts["excluded"] == {}
+    frame, counts = _build([_tx(date(2015, 12, 15), 1), _tx(days[1], 2)], days, entry=entry)
+    assert frame.empty and counts["triggers"] == 0
+
+
+def test_purchases_before_the_calendar_still_make_later_ones_routine():
+    days = _calendar(60, first=date(2016, 1, 4))
+    entry = _entry(decisions=(date(2016, 1, 1), date(2016, 12, 31)))
+    cluster = [_tx(date(2016, 1, 20), 1), _tx(date(2016, 1, 21), 2)]
+    frame, _ = _build(cluster, days, entry=entry)
+    assert list(frame.filing_date) == [date(2016, 1, 21)]
+    frame, counts = _build([_tx(date(2015, 1, 20), 1), *cluster], days, entry=entry)
+    assert frame.empty and counts["triggers"] == 0
+
+
+def test_filing_dates_cover_every_code_and_respect_last_session():
+    txs = [_tx(DAYS[5], 1), _tx(DAYS[3], 2, code="S"), _tx(DAYS[3], 3), _tx(date(2021, 3, 4), 4, code="S")]
+    out = filing_dates({"AAA": txs, "BBB": []}, last_session=DAYS[-1])
+    assert out["AAA"].tolist() == [DAYS[3].toordinal(), DAYS[3].toordinal(), DAYS[5].toordinal()]
+    assert "BBB" not in out and isinstance(out["AAA"], np.ndarray)
