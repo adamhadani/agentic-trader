@@ -135,15 +135,16 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `us-tier1-vN+1.json` and pinning its digest before the check degrades is a standing operator duty
    ([runbook](docs/production.md#tier-1-calendar-renewal)).
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
-   catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure,
-   fill slippage, news, the journaled regime with the derived SPY tape, and setup recurrence
+   catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure (a beta-one SPY
+   control beside a past-only 120-session beta-matched one and an own-asset buy-and-hold control, with
+   excess by asset class; [card evidence](docs/card-evidence.md)), fill slippage, news, the journaled regime with the derived SPY tape, and setup recurrence
    (`regime_context`, `recurrence`; [card evidence](docs/card-evidence.md#regime-and-recurrence-context));
    these are descriptive, never gates. Every journaled universe scan carries a top-level `regime` block
    (`regime_journal_block`), except a lockout-gated one (`regime: null`: it stops before the regime read),
    and every card from any scan carries it in `decision_provenance["regime"]`.
    `alpha setup-recurrence` is the predeclared, research-only test of the recurrence split (R1–R4 on
    replayed history; a pass only makes a construction rule eligible); v1 ran 2026-10-14 and did not fire (`no_change`: repeats −0.067R vs firsts on 2021–2026, [result](docs/setup-recurrence-2026-10-14.md)).
-   `alpha bracket-counterfactual` is the predeclared, research-only exit-policy test (five bracket arms paired by setup on replayed history, rules B1–B5, one-shot confirmation read declared in `confirmation.json` before the read; a pass only makes a card-construction PR eligible), and `cards outcomes` reports the same arms descriptively under `counterfactual`, never as a gate. v1 ran 2026-10-18 and did not fire (`no_change`: no arm beats the live 2R bracket net of SPY; the live ratchet arm is worse by 0.013R; every arm trails SPY by 0.10–0.15R, [result](docs/bracket-counterfactual-2026-10-18.md)); the bracket is closed as an explanation and the next alpha work is on the entry side.
+   `alpha bracket-counterfactual` is the predeclared, research-only exit-policy test (five bracket arms paired by setup on replayed history, rules B1–B5, one-shot confirmation read declared in `confirmation.json` before the read; a pass only makes a card-construction PR eligible), and `cards outcomes` reports the same arms descriptively under `counterfactual`, never as a gate. v1 ran 2026-10-18 and did not fire (`no_change`: no arm beats the live 2R bracket net of SPY; the live ratchet arm is worse by 0.013R; every arm trails a beta-one SPY control by 0.10–0.15R, which the 2026-10-23 erratum corrects to −0.03 to −0.05R in 2021–2026 and about −0.01R in 2017–2021 against a past-only 120-session beta-matched control, [result](docs/bracket-counterfactual-2026-10-18.md)); the bracket is closed as an explanation and the next alpha work is on the entry side.
    The one gate derived from measured outcomes is `card_policy` ([card evidence](docs/card-evidence.md)):
    operator-configured, default `off`, `preview` before `enforce`, withholding native cards only on
    complete measured evidence above a sample floor (`card_policy_withheld`; partial, stale or missing

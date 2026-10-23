@@ -8,6 +8,11 @@ both the 2021–2026 and the 2017–2021 windows. The bracket is closed as an ex
 native funnel's base rate: the entries lag the index, and no exit rule changes that. The
 confirmation window was not read.
 
+> **Erratum (2026-10-23, descriptive).** The 0.10–0.15R gap is measured against a beta-one SPY
+> control. Against a past-only beta-matched control it is −0.03 to −0.05R in 2021–2026 and about
+> −0.01R in 2017–2021 (see [Erratum](#erratum-beta-matched-control-2026-10-23)). The `no_change`
+> decision is unchanged.
+
 ## Protocol and run
 
 - Frozen protocol `config/research/bracket-counterfactual-v1.json`, identity `a667acd2d7de662f…`,
@@ -109,6 +114,46 @@ control on the native funnel; the next alpha work is on the entry side — the f
 event sources ranked in [the data-augmentation assessment](alpha-data-augmentation-2026-10-18.md)
 (short-sale volume, insider filings, EDGAR earnings timestamps), each as a frozen fixed set on the
 pooled lane.
+
+## Erratum: beta-matched control (2026-10-23)
+
+The excess columns above subtract SPY's return over each setup's own window, in the setup's R
+units, at **beta one** (`research/setups/outcomes.py` `market_r`). Low-beta setups (Treasury,
+credit and gold ETFs) were therefore charged for index moves they never carried. The holistic review
+(2026-10-21, item RM-R2) found the gap overstated. The table below recomputes it on the same frozen
+frames and caches, clipped at the protocol's `r_cap` (10) like the descriptives above, with a
+**past-only** beta: the OLS slope of the symbol's daily adjusted returns on SPY's over the 120
+sessions before the decision (`research/setups/beta.py`, ≥ 100 paired returns; every row has
+one). The median beta is 0.87 in the primary window and 1.02 in the robustness window. The
+"ex rates/metals" rows drop the research universe's `rates_credit` and `metals` cohorts.
+
+| Arm | Primary: beta-one | Primary: beta-matched | Primary ex rates/metals: beta-one / matched | Robustness: beta-one | Robustness: beta-matched | Robustness ex rates/metals: beta-one / matched |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `A0_live` | −0.110 | **−0.048** | −0.081 / −0.058 | −0.103 | **−0.014** | −0.008 / −0.010 |
+| `A1_3r` | −0.101 | −0.031 | −0.068 / −0.047 | −0.101 | −0.008 | −0.001 / −0.006 |
+| `A2_2r_trail` | −0.122 | −0.054 | −0.086 / −0.064 | −0.098 | −0.016 | −0.007 / −0.010 |
+| `A3_3r_trail` | −0.121 | −0.042 | −0.076 / −0.055 | −0.102 | −0.013 | −0.003 / −0.010 |
+| `A4_trail_only` | −0.147 | −0.041 | −0.077 / −0.069 | −0.116 | −0.016 | −0.009 / −0.017 |
+
+Primary n = 8,768 setups (8,223 ex rates/metals); robustness n = 8,121 (7,682). Means per setup,
+in R. No confidence intervals: this is descriptive and was not predeclared.
+
+What changes:
+
+- **"Every arm trails SPY by 0.10–0.15R" overstates the deficit.** Beta-matched, the native long
+  setups trail the index by about 0.03–0.05R per setup in 2021–2026 and about 0.01R in 2017–2021.
+  Most of the beta-one gap was beta mismatch, much of it on bond and gold ETFs. Without those, the
+  beta-one gap in the earlier window is already ≈ 0.
+- **The conclusion does not reverse.** No arm shows a positive beta-matched excess in either
+  window, so the native entries still add nothing over the index exposure they carry. The frozen
+  `no_change` (B1–B5 on beta-one excess) stays the decision of record. `card_stats` v2 and any
+  future gate use the beta-matched unit (operator decision D3, 2026-10-23).
+- BIL and SHY are no longer in the native scan universe (2026-10-23). A 1.5× ATR stop on a T-bill
+  fund implies hundreds of times notional per unit of risk; BIL's 30 primary setups averaged
+  −20R of beta-one excess before clipping.
+
+Reproduce: `uv run python scripts/yardstick_erratum.py ~/agentic-trader-research/bracket-counterfactual-v1-20261018
+~/agentic-trader-research/setup-cache-v1 ~/agentic-trader-research/setup-cache-2017` (local caches only).
 
 ## Caveats
 
