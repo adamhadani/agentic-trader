@@ -1565,8 +1565,8 @@ class TradingCopilot:
 
             # One session-clock read per (contract, extended validity) that actually records a card.
             session_closes: dict[tuple[str, bool], str | None] = {}
-            # Contracts carded by this scan so far: a watch event never cards a symbol a native or PEAD card of
-            # the same scan already did (natives and earlier sources send first).
+            # Contracts carded by this scan so far (``normalize_symbol``, admission's same-symbol notion): a watch
+            # event never cards a symbol a native or PEAD card of the same scan already did (they send first).
             carded_contracts: set[str] = set()
             # SEND: a journal-only scan has no send phase (no LLM, no `record_signal`, no outbox); its
             # outcomes were set to `journal_only` above, so the loop is given nothing to send.
@@ -1584,7 +1584,7 @@ class TradingCopilot:
                     elif (
                         catalog is not None
                         and catalog.source.kind == "watch"
-                        and candidate.contract in carded_contracts
+                        and normalize_symbol(candidate.contract) in carded_contracts
                     ):
                         reason = CARDED_THIS_SCAN
                     elif catalog is not None and catalog.remaining <= 0:
@@ -1819,7 +1819,7 @@ class TradingCopilot:
                     total_alerts += 1
                     outcomes[rank - 1] = RankedOutcome.SENT
                     signal_ids_by_rank[rank - 1] = sig_id
-                    carded_contracts.add(candidate.contract)
+                    carded_contracts.add(normalize_symbol(candidate.contract))
                     if catalog is not None:
                         catalog.remaining -= 1
                     else:

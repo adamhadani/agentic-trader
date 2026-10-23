@@ -7,12 +7,15 @@ cohort-v3 issuers, fetches each filing's full-submission ``.txt``, parses it wit
 ``edgar_form4.parse_form4`` (the data-set reader's rules) and journals one ``insider/form4/<F>`` event:
 every qualifying transaction, the index and row counts, the per-rule drops and one record per
 document. Raw bytes go to private files under ``<directory>/<F>/``. A date is journaled only once every
-one of its documents was read, so the journal is never partial. A document that answers 404
-(``document_not_found``), whose body exceeds ``MAX_DOCUMENT_BYTES`` (``document_too_large``) or that does
-not parse (its exception type name) is recorded as that document's ``error``: the date is journaled and the
-document's issuer is incomplete there (``WatchHistory.incomplete``), so one bad document never holds the
-capture forever. Any other failed request (a transport error after its one retry, a 429 or a 5xx, an
-index over the budget) raises and records nothing for that date, which the next poll retries.
+one of its documents was read, so the journal is never partial. A document whose body exceeds
+``MAX_DOCUMENT_BYTES`` (``document_too_large``) or that does not parse (its exception type name) is recorded
+as that document's ``error`` at once. A document 404 may be EDGAR still publishing it: the first 404 of a
+(date, path) holds the date (nothing recorded, the time kept in the worker's memory) and only a 404 again
+on a pass at least ``DOCUMENT_404_CONFIRM`` (30 minutes) later records ``document_not_found``, as a held
+index becomes ``closed_inferred``; a 200 meanwhile captures it normally. A recorded error leaves the date
+journaled and the document's issuer incomplete there (``WatchHistory.incomplete``), so one bad document
+never holds the capture forever. Any other failed request (a transport error after its one retry, a 429
+or a 5xx, an index over the budget) raises and records nothing for that date, which the next poll retries.
 
 Every calendar date is journaled in order, so the journal is contiguous: a weekend or a federal holiday
 is ``no_index`` (``non_business_day``) without a request; a business day whose index is a 404 is held
@@ -40,7 +43,7 @@ import math
 import os
 import re
 import time as monotonic_time
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
@@ -146,10 +149,18 @@ _UNPUBLISHED = "unpublished"
 # Fixed per-document error tokens (a parse failure records its exception type name instead).
 DOCUMENT_NOT_FOUND = "document_not_found"
 DOCUMENT_TOO_LARGE = "document_too_large"
+# A document 404 is recorded only when a pass at least this long after the first 404 sees it again.
+DOCUMENT_404_CONFIRM = timedelta(minutes=30)
+# The first 404 time of each (filing date, document path) still held (the worker keeps it between passes).
+HeldDocuments = MutableMapping[tuple[date, str], datetime]
 
 
 class BodyTooLarge(ValueError):
     """A response body exceeded ``MAX_DOCUMENT_BYTES``."""
+
+
+class _DateHeld(Exception):
+    """A document of the date answered a first (unconfirmed) 404: record nothing for it this pass."""
 
 
 class InsiderArchiveMismatch(ValueError):
@@ -224,8 +235,8 @@ class CaptureScope:
 @dataclass(frozen=True)
 class CaptureResult:
     """``recorded`` dates were journaled (``captured`` the ones with an index); ``pending`` is the first
-    business day whose index is not yet published (nothing from it on was journaled); ``stopped`` means
-    ``stop`` ended the run between dates."""
+    business day whose index is not yet published, or that holds an unconfirmed document 404 (nothing from
+    it on was journaled); ``stopped`` means ``stop`` ended the run between dates."""
 
     recorded: tuple[date, ...]
     captured: tuple[date, ...]
@@ -356,8 +367,14 @@ async def _capture_day(
     scope: CaptureScope,
     user_agent: str,
     pace: Callable[[], Awaitable[None]],
+    held_documents: HeldDocuments,
+    now: datetime,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
-    """The journal payload and the private files of one published index; every document is read first."""
+    """The journal payload and the private files of one published index; every document is read first.
+
+    Raises ``_DateHeld`` after reading every document when any of them answered a 404 not yet confirmed
+    by a pass ``DOCUMENT_404_CONFIRM`` after its first (``held_documents`` keeps the first 404's time).
+    """
     rows = await asyncio.to_thread(parse_daily_index, index.decode("utf-8", errors="replace"))
     form4 = [row for row in rows if row.form == "4"]
     selected = select_form4(rows, scope.cik_to_symbols.keys())
@@ -371,17 +388,25 @@ async def _capture_day(
     transactions: list[InsiderTransaction] = []
     drops = dict.fromkeys(DROP_RULES, 0)
     errors: dict[str, int] = {}
+    unconfirmed = False
     for path, row in by_path.items():
         error: str | None = None
         found: list[InsiderTransaction] = []
+        key = (day, path)
         try:
-            # An indexed document that is missing or over the budget is this document's error, not the date's.
+            # An indexed document that is over the budget, or confirmed missing, is its own error, not the date's.
             body = await _fetch(client, ARCHIVES_URL + path, user_agent, pace, missing_ok=True)
         except BodyTooLarge:
             body, error = None, DOCUMENT_TOO_LARGE
         else:
             if body is None:
+                first = held_documents.setdefault(key, now)
+                if now - first < DOCUMENT_404_CONFIRM:
+                    unconfirmed = True  # possibly not yet published: the date is held
+                    continue
                 error = DOCUMENT_NOT_FOUND
+            else:
+                held_documents.pop(key, None)
         if body is not None:
             try:
                 found, dropped = await asyncio.to_thread(
@@ -416,6 +441,8 @@ async def _capture_day(
                 "error": error,
             }
         )
+    if unconfirmed:
+        raise _DateHeld(day)
     payload = {
         "filing_date": day.isoformat(),
         "status": CaptureStatus.CAPTURED.value,
@@ -444,14 +471,31 @@ async def capture_filing_dates(
     user_agent: str,
     pace: Callable[[], Awaitable[None]],
     stop: Callable[[], bool] | None = None,
+    held_documents: HeldDocuments | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> CaptureResult:
-    """Capture and journal ``dates`` in order (see the module docstring); raises on a failed request."""
+    """Capture and journal ``dates`` in order (see the module docstring); raises on a failed request.
+
+    ``held_documents`` carries the first-404 times between passes (the worker's memory; a fresh mapping
+    when omitted, so a first 404 always holds); a date with an unconfirmed document 404 is ``pending``.
+    """
     recorded: list[date] = []
     captured: list[date] = []
     held: list[tuple[date, str]] = []
+    documents = {} if held_documents is None else held_documents
+    now = clock or (lambda: datetime.now(UTC))
 
-    def result(*, stopped: bool) -> CaptureResult:
-        return CaptureResult(tuple(recorded), tuple(captured), held[0][0] if held else None, stopped)
+    def result(*, stopped: bool, pending: date | None = None) -> CaptureResult:
+        first_held = pending if pending is not None else (held[0][0] if held else None)
+        return CaptureResult(tuple(recorded), tuple(captured), first_held, stopped)
+
+    async def capture(day: date, index: bytes) -> None:
+        payload, files = await _capture_day(
+            client, day, index, scope=scope, user_agent=user_agent, pace=pace, held_documents=documents, now=now()
+        )
+        await store.record(payload, files)
+        for key in [key for key in documents if key[0] == day]:
+            del documents[key]  # recorded: its confirmed 404s are in the journal
 
     for day in sorted(dates):
         if stop is not None and stop():
@@ -475,15 +519,17 @@ async def capture_filing_dates(
             if again is None:
                 await store.record(_no_index(held_day, _CLOSED_INFERRED if reason == _UNPUBLISHED else reason), {})
             else:
-                payload, files = await _capture_day(
-                    client, held_day, again, scope=scope, user_agent=user_agent, pace=pace
-                )
-                await store.record(payload, files)
+                try:
+                    await capture(held_day, again)
+                except _DateHeld:
+                    return result(stopped=False, pending=held_day)
                 captured.append(held_day)
             recorded.append(held_day)
         held.clear()
-        payload, files = await _capture_day(client, day, index, scope=scope, user_agent=user_agent, pace=pace)
-        await store.record(payload, files)
+        try:
+            await capture(day, index)
+        except _DateHeld:
+            return result(stopped=False, pending=day)
         recorded.append(day)
         captured.append(day)
     return result(stopped=False)
@@ -516,6 +562,7 @@ class InsiderCaptureWorker:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._scope: CaptureScope | None = None
         self._done: date | None = None
+        self._held_documents: dict[tuple[date, str], datetime] = {}  # first-404 times, kept between passes
 
     def _in_scan_window(self, now: datetime) -> bool:
         return in_scan_window(now.astimezone(ET_TZ), self.config.scheduler.suggestion_scan_times_et)
@@ -546,6 +593,8 @@ class InsiderCaptureWorker:
             user_agent=self._user_agent,
             pace=self._pace,
             stop=lambda: self._in_scan_window(self._clock()),
+            held_documents=self._held_documents,
+            clock=self._clock,
         )
         if result.stopped:
             return "scan_window"

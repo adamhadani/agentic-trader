@@ -496,7 +496,9 @@ nothing in `risk/`, `card_policy`, `card_stats` or admission reads it, and a wat
 - **Labels.** The frozen cube bracket (decision-bar close, 2 x ATR14 stop, 3R target, 20-session time exit, 15 bp
   decisive cost) walked on hourly bars with `label_bracket` from the 10:35 decision, the way the PEAD forward
   record is labelled, on SIP with adjusted prices (the feed the study, the card's +0.087R line and the PEAD
-  record use; never the configured feed). `n` counts mature rows only; the rest are in
+  record use; never the configured feed). Without the SIP subscription a read must end at least 15 minutes
+  ago, so every SIP read of the PEAD and watch blocks ends 16 minutes before now, and an hourly bar that had
+  not closed by then never matures a label. `n` counts mature rows only; the rest are in
   `unlabelled` by reason (`no_hourly_bars`, `no_decision_price`, `degenerate_levels`, `immature`).
 - **Blocks.** `all`, `sent_events` and `unsent_events`, each with `n`, `mean_r_cost` and `mean_beta_excess_r`:
   `r_cost` minus the past-only trailing beta (the controls above) times SPY's return over the same holding

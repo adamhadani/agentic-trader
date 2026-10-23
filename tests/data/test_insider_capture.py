@@ -278,14 +278,45 @@ async def test_a_failed_document_journals_nothing_for_its_date_and_keeps_earlier
     assert not (capture_store.directory / "2026-10-02").exists()
 
 
-async def test_a_missing_document_is_recorded_per_document_and_the_date_is_still_journaled(capture_store):
+T0 = datetime(2026, 10, 6, 11, 0, tzinfo=UTC)  # 07:00 New York
+
+
+async def test_a_first_document_404_holds_its_date_and_records_nothing(capture_store):
     oct1, oct2 = date(2026, 10, 1), date(2026, 10, 2)
-    sec = FakeSec(
-        indexes={oct1: index_body(oct1, CROX, LPG), oct2: index_body(oct2)},
-        documents=documents(LPG),  # CROX's document answers 404
-    )
-    result = await _capture(sec, capture_store, [oct1, oct2])
-    assert result.recorded == (oct1, oct2) and result.pending is None
+    sec = FakeSec(indexes={oct1: index_body(oct1, CROX, LPG), oct2: index_body(oct2)}, documents=documents(LPG))
+    held: dict = {}
+    result = await _capture(sec, capture_store, [oct1, oct2], held_documents=held, clock=lambda: T0)
+    assert result.pending == oct1 and result.recorded == () and result.captured == ()
+    assert await capture_store.captures() == [] and held == {(oct1, _path(CROX)): T0}
+    assert not (capture_store.directory / "2026-10-01").exists()
+
+
+async def test_a_held_document_answering_200_on_the_next_pass_is_captured(capture_store):
+    oct1 = date(2026, 10, 1)
+    sec = FakeSec(indexes={oct1: index_body(oct1, CROX, LPG)}, documents=documents(LPG))
+    held: dict = {}
+    await _capture(sec, capture_store, [oct1], held_documents=held, clock=lambda: T0)
+    sec.documents.update(documents(CROX))  # EDGAR finished publishing it
+    later = T0 + timedelta(minutes=30)
+    result = await _capture(sec, capture_store, [oct1], held_documents=held, clock=lambda: later)
+    assert result.recorded == (oct1,) and held == {}
+    [capture] = await capture_store.captures()
+    assert capture["errors"] == {} and sorted(t["symbol"] for t in capture["transactions"]) == ["CROX", "LPG"]
+
+
+async def test_a_second_document_404_thirty_minutes_later_records_document_not_found(capture_store):
+    oct1, oct2 = date(2026, 10, 1), date(2026, 10, 2)
+    sec = FakeSec(indexes={oct1: index_body(oct1, CROX, LPG), oct2: index_body(oct2)}, documents=documents(LPG))
+    held: dict = {}
+    await _capture(sec, capture_store, [oct1, oct2], held_documents=held, clock=lambda: T0)
+    too_soon = T0 + timedelta(minutes=29)
+    result = await _capture(sec, capture_store, [oct1, oct2], held_documents=held, clock=lambda: too_soon)
+    assert result.pending == oct1 and await capture_store.captures() == []
+    assert held == {(oct1, _path(CROX)): T0}  # the first 404's time is kept, not reset
+
+    confirmed = T0 + timedelta(minutes=30)
+    result = await _capture(sec, capture_store, [oct1, oct2], held_documents=held, clock=lambda: confirmed)
+    assert result.recorded == (oct1, oct2) and result.pending is None and held == {}
     first = (await capture_store.captures())[0]
     assert first["errors"] == {"document_not_found": 1}
     by_path = {d["path"]: d for d in first["documents"]}
@@ -293,6 +324,21 @@ async def test_a_missing_document_is_recorded_per_document_and_the_date_is_still
     assert by_path[_path(LPG)]["error"] is None
     assert [t["symbol"] for t in first["transactions"]] == ["LPG"]
     assert not (capture_store.directory / "2026-10-01" / f"{CROX[0]}.txt").exists()
+
+
+async def test_the_worker_remembers_a_held_document_between_passes(capture_store, app_config):
+    oct5 = date(2026, 10, 5)
+    sec = FakeSec(indexes={oct5: index_body(oct5, CROX)})
+    now = [_et(date(2026, 10, 6), 7)]
+    config = _config(app_config, backfill=oct5)
+    async with sec.client() as client:
+        worker = _worker(client, capture_store, config, clock=lambda: now[0])
+        assert await worker.run_once(now[0]) == "pending"
+        assert await capture_store.captures() == []
+        now[0] += timedelta(seconds=insider_capture.RETRY_SECONDS)
+        assert await worker.run_once(now[0]) == "captured"
+    [capture] = await capture_store.captures()
+    assert capture["errors"] == {"document_not_found": 1}
 
 
 async def test_an_oversized_document_is_recorded_per_document_and_the_date_is_still_journaled(
@@ -351,8 +397,13 @@ async def test_a_missing_document_marks_its_issuer_incomplete_in_the_history(tmp
     oct1 = date(2026, 10, 1)
     sec = FakeSec(indexes={oct1: index_body(oct1, (CROX[0], CROX_CIK, CROX[2]))}, documents={})
     scope = CaptureScope({CROX_CIK: ("CROX",), LPG_CIK: ("LPG",)}, ROLES, False)
+    held: dict = {}
     async with sec.client() as client:
-        await capture_filing_dates(client, capture_store, [oct1], scope=scope, user_agent=UA, pace=_no_pace)
+        for at in (T0, T0 + timedelta(minutes=30)):  # the second 404, 30 minutes on, confirms it
+            await capture_filing_dates(
+                client, capture_store, [oct1], scope=scope, user_agent=UA, pace=_no_pace, held_documents=held,
+                clock=lambda at=at: at,
+            )  # fmt: skip
     history = await _seed(capture_store, archive, _cohort(inputs), _weekdays(date(2026, 7, 1), date(2026, 10, 5)))
     assert history.incomplete == {"CROX": (oct1,)} and history.latest_filing_date == oct1
 

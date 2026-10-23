@@ -32,12 +32,21 @@ from agentic_trader.storage.models import SignalRecord
 if TYPE_CHECKING:
     from agentic_trader.storage.db import SignalDatabase
 
-__all__ = ["WatchBars", "decision_frame", "label_watch_events", "summarize_watch", "watch_bars", "watch_signals"]
+__all__ = [
+    "WatchBars",
+    "completed_bars",
+    "decision_frame",
+    "label_watch_events",
+    "summarize_watch",
+    "watch_bars",
+    "watch_signals",
+]
 
 WATCH_STRATEGY = INSIDER_WATCH_STRATEGY_ID
 _HOURLY_LOOKBACK_DAYS = 7
 _DAILY_LOOKBACK_DAYS = 200  # the beta window's 120 sessions, with holiday margin
 _LABEL_SPAN = timedelta(days=45)  # 20 sessions of holding, with holiday margin
+_HOUR = timedelta(hours=1)
 _COLUMNS = (
     "scan_id",
     "event_id",
@@ -85,6 +94,16 @@ def decision_frame(payloads: list[dict[str, Any]]) -> pd.DataFrame:
             if kept is None or (row["sent"] and not kept["sent"]):
                 by_event[key] = row
     return pd.DataFrame(list(by_event.values()), columns=list(_COLUMNS))
+
+
+def completed_bars(bars: pd.DataFrame, as_of: datetime | None, width: timedelta = _HOUR) -> pd.DataFrame:
+    """The bars (indexed by their start) that had closed by ``as_of``; all of them when ``as_of`` is None.
+
+    A bar still forming at the read's bound is not evidence: a label matures only on closed bars.
+    """
+    if as_of is None or bars.empty:
+        return bars
+    return bars.loc[utc_index(bars) + width <= as_of]
 
 
 @dataclass
@@ -156,8 +175,13 @@ def label_watch_events(
     market_daily: pd.DataFrame | None,
     bracket: BracketSpec,
     cost_bps_per_side: float,
+    *,
+    as_of: datetime | None = None,
 ) -> pd.DataFrame:
     """One row per journaled event: the frozen bracket's outcome and its beta-matched excess.
+
+    ``as_of`` is the maturity cutoff (the bars' read bound): an hourly bar that had not closed by then is
+    dropped before the walk, so a label never matures on a bar still forming.
 
     The levels are the study's (decision-bar close, ``stop_atr_multiple`` x ATR, ``target_r`` x risk) and the
     walk is ``label_bracket`` over the event's hourly bars at the decision time. ``reason`` names why a row
@@ -171,6 +195,10 @@ def label_watch_events(
             rows.append(_row(event, reason="no_hourly_bars"))
             continue
         when = event["decision_at"]
+        if as_of is not None and as_of <= when:
+            rows.append(_row(event, reason="immature"))  # decided after the read's bound
+            continue
+        bars = completed_bars(bars, as_of)
         index = utc_index(bars)
         window = bars.loc[(index >= when - timedelta(days=1)) & (index <= when + _LABEL_SPAN)]
         price = decision_price(window, when)

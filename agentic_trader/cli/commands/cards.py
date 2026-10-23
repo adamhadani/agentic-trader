@@ -21,6 +21,7 @@ from agentic_trader.research.apriori.pead_study import label_events
 from agentic_trader.research.apriori.probe_outcomes import decision_frame, probe_signals, summarize_probe
 from agentic_trader.research.apriori.watch_contract import frozen_watch_contract
 from agentic_trader.research.apriori.watch_outcomes import (
+    completed_bars,
     decision_frame as decision_frame_watch,
     label_watch_events,
     summarize_watch,
@@ -41,7 +42,21 @@ from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 
 
-__all__ = ["cards_group"]
+__all__ = ["SIP_HISTORY_DELAY", "cards_group"]
+
+# Without the SIP subscription, historical SIP bars must end at least 15 minutes ago (an end of now is HTTP 403:
+# docs/research-data-sources.md); one minute of margin.
+SIP_HISTORY_DELAY = timedelta(minutes=16)
+
+
+class _DelayedBars:
+    """A bar source whose every read ends no later than ``through`` (the delayed-SIP bound)."""
+
+    def __init__(self, provider: Any, through: datetime):
+        self.provider, self.through = provider, through
+
+    def fetch_bars(self, symbol: str, timeframe: str, start: datetime, end: datetime, *, adjustment: str) -> Any:
+        return self.provider.fetch_bars(symbol, timeframe, start, min(end, self.through), adjustment=adjustment)
 
 
 @click.group("cards", help="Suggestion-card evidence: read-only reports over journaled scans")
@@ -103,18 +118,21 @@ async def outcomes_cmd(days: int) -> None:
             click.echo(execution.to_string(index=False))
 
         # The PEAD and insider watch records are labelled on SIP, the feed their studies (and the watch card's
-        # +0.087R line) were measured on, never the configured feed: one provider, built on first use.
-        sip_provider: AlpacaDataProvider | None = None
+        # +0.087R line) were measured on, never the configured feed: one provider, built on first use. Every
+        # read ends at ``sip_through`` (delayed SIP), which is also both blocks' maturity cutoff.
+        sip_through = now - SIP_HISTORY_DELAY
+        sip_provider: _DelayedBars | None = None
 
-        def sip() -> AlpacaDataProvider:
+        def sip() -> _DelayedBars:
             nonlocal sip_provider
             if sip_provider is None:
-                sip_provider = AlpacaDataProvider(
+                provider = AlpacaDataProvider(
                     api_key=config.alpaca_api_key,
                     api_secret=config.alpaca_api_secret,
                     feed="sip",
                     request_timeout=config.market_data.timeout_seconds,
                 )
+                sip_provider = _DelayedBars(provider, sip_through)
             return sip_provider
 
         payloads = await _decision_events(db, days, now=now, kind=EventKind.PEAD_DECISION)
@@ -130,9 +148,10 @@ async def outcomes_cmd(days: int) -> None:
                     start = datetime.combine(min(group["session"]) - timedelta(days=7), time.min, tzinfo=UTC)
                     await asyncio.to_thread(pacer.acquire)
                     try:
-                        hourly[symbol] = await asyncio.to_thread(
-                            pead_source.fetch_bars, symbol, "1h", start, now, adjustment="all"
+                        read = await asyncio.to_thread(
+                            pead_source.fetch_bars, symbol, "1h", start, sip_through, adjustment="all"
                         )
+                        hourly[symbol] = completed_bars(read, sip_through)
                     except Exception as exc:
                         bar_failures[symbol] = f"{type(exc).__name__}: {exc}"
             labels, _ = await asyncio.to_thread(label_events, decisions[list(EVENT_COLUMNS)], hourly, entry)
@@ -162,7 +181,7 @@ async def outcomes_cmd(days: int) -> None:
                 pacer.acquire()
                 return watch_source.fetch_bars(symbol, timeframe, start, end, adjustment="all")
 
-            watch_data = await asyncio.to_thread(watch_bars, fetch, watch, now)
+            watch_data = await asyncio.to_thread(watch_bars, fetch, watch, sip_through)
             watch_labels = label_watch_events(
                 watch,
                 watch_data.hourly,
@@ -171,6 +190,7 @@ async def outcomes_cmd(days: int) -> None:
                 watch_data.market_daily,
                 contract.spec.bracket,
                 contract.spec.decision_cost_bps,
+                as_of=sip_through,
             )
             watch_summary = summarize_watch(watch, watch_labels, await watch_signals(db, now - timedelta(days=days)))
             watch_summary["bar_failures"] = watch_data.failures

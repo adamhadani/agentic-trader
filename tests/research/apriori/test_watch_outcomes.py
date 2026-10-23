@@ -133,3 +133,14 @@ def test_decision_frame_dedupes_by_event_id_across_scans_and_keeps_the_sent_row(
     # Two events of one scan are two rows.
     two = decision_frame([_payload("s1", [_event("AAA", "sent"), _event("BBB", "not sent")])])
     assert sorted(two["event_id"]) == ["AAA-1", "BBB-1"]
+
+
+def test_bars_completing_after_the_as_of_bound_never_mature_a_label():
+    frame = decision_frame([_payload("s1", [_event("AAA", "sent")])])
+    hourly = {"AAA": _hourly([100.0, 100.0, 100.0, 112.0, 112.0])}  # the target bar starts 12:00 New York
+    as_of = datetime.combine(SESSION, time(12, 30), tzinfo=ET_TZ)  # that bar is still forming
+    labels = label_watch_events(frame, hourly, {}, None, None, BRACKET, COST_BPS, as_of=as_of)
+    assert labels.iloc[0]["reason"] == "immature"
+    later = datetime.combine(SESSION, time(13, 0), tzinfo=ET_TZ)
+    labels = label_watch_events(frame, hourly, {}, None, None, BRACKET, COST_BPS, as_of=later)
+    assert labels.iloc[0]["hit"] == "target"

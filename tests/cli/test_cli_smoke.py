@@ -505,3 +505,78 @@ def test_cards_outcomes_reports_the_insider_watch_block(runner: CliRunner):
     assert [p["feed"] for p in providers] == ["sip"]
     assert {call[0] for call in sip.calls} >= {"AAA", "SPY"} and configured.calls == []
     assert all(call[4] == "all" for call in sip.calls if call[0] == "AAA")
+
+
+def test_cards_outcomes_reads_sip_only_through_its_delayed_bound(runner: CliRunner):
+    """SIP history ending later than 15 minutes ago is a 403 for this account: every SIP read of the PEAD and
+    watch blocks ends at least 15 minutes before now, and the bars after that bound never mature a label."""
+    fixed_now = datetime(2026, 10, 5, 17, 30, tzinfo=UTC)  # 13:30 New York, mid-session
+    bound = fixed_now - pd.Timedelta(minutes=16)
+    session = "2026-10-05"
+    decision = datetime(2026, 10, 5, 14, 35, tzinfo=UTC)
+    hours = [datetime(2026, 10, 5, h, tzinfo=UTC) for h in (13, 14, 15, 16, 17)]  # 17:00 UTC is still forming
+    prices = [100.0, 100.0, 100.0, 100.0, 112.0]
+    hourly = pd.DataFrame(
+        {"Open": prices, "High": prices, "Low": prices, "Close": prices, "Volume": 1.0},
+        index=pd.DatetimeIndex(hours),
+    )
+    watch_event = {
+        "event_id": "AAA-1",
+        "symbol": "AAA",
+        "session": session,
+        "decision_at": decision.isoformat(),
+        "atr": 2.0,
+        "buyers": 3,
+        "opp_dollars": 900_000.0,
+        "outcome": "sent",
+    }
+    pead_event = {
+        "symbol": "PPP",
+        "report_date": "2026-10-02",
+        "session": session,
+        "decision_at": decision.isoformat(),
+        "atr": 2.0,
+        "leg": "LONG",
+        "outcome": "sent",
+    }
+    payloads = {
+        EventKind.INSIDER_WATCH_DECISION: [
+            {"scan_id": "w", "session": session, "status": "completed", "events": [watch_event]}
+        ],
+        EventKind.PEAD_DECISION: [{"scan_id": "p", "session": session, "status": "ok", "events": [pead_event]}],
+    }
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    async def decision_events(db, days, *, now, kind):
+        return payloads.get(kind, [])
+
+    sip = _FakeBarSource(hourly)
+    pead_hourly: list[dict] = []
+
+    def label_events(events, frames, entry):
+        pead_hourly.append(dict(frames))
+        return pd.DataFrame(), {}
+
+    with (
+        patch.object(cards_module, "datetime", _FrozenDateTime),
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
+        patch.object(cards_module, "AlpacaDataProvider", lambda **kwargs: sip),
+        patch.object(cards_module, "label_events", label_events),
+        patch.object(cards_module, "probe_signals", AsyncMock(return_value=[])),
+        patch.object(cards_module, "watch_signals", AsyncMock(return_value=[])),
+        patch.object(cards_module, "_decision_events", decision_events),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes", "--days", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert {call[0] for call in sip.calls} >= {"AAA", "PPP", "SPY"}
+    assert all(call[3] <= fixed_now - pd.Timedelta(minutes=15) for call in sip.calls)
+    # The bar still forming at the bound (17:00 UTC, the +12 jump) is not part of either label.
+    [frames] = pead_hourly
+    assert frames["PPP"].index.max() < bound - pd.Timedelta(hours=1) + pd.Timedelta(seconds=1)
+    assert '"immature": 1' in result.output and '"sent_events"' in result.output

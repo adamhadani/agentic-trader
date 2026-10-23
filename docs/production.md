@@ -1336,11 +1336,14 @@ The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a 
   the first run and from the last journaled date afterwards. A weekend or federal holiday is journaled
   `no_index` without a request; a business-day index that is a 404 is held, requested once more when a later
   index returns, and then recorded `no_index` (`closed_inferred`). A date is journaled once every one of its
-  cohort-v3 Form 4 documents was read. A document that does not parse (its exception type name), answers 404
-  (`document_not_found`) or exceeds the 16 MiB body budget (`document_too_large`) is recorded as that
-  document's `error`: the date is still journaled, and the issuer's symbols are blocked from watch cards while
-  that date is inside the cluster window plus cooldown. A transport error (after one retry), a 429 or a 5xx
-  records nothing for the date, which the next pass retries.
+  cohort-v3 Form 4 documents was read. A document that does not parse (its exception type name) or exceeds
+  the 16 MiB body budget (`document_too_large`) is recorded as that document's `error` at once. A document
+  404 may be EDGAR still publishing it: the first one holds the date (nothing recorded, `pending`; the time is
+  kept in the worker's memory, so a restart starts over), and only a 404 again on a pass at least 30 minutes
+  later records `document_not_found`; a 200 meanwhile captures it normally. A recorded error leaves the date
+  journaled, and the issuer's symbols are blocked from watch cards while that date is inside the cluster
+  window plus cooldown. A transport error (after one retry), a 429 or a 5xx records nothing for the date,
+  which the next pass retries.
 - **First deploy.** The first backfill from 2026-10-01 is about 1,900 SEC requests (about 16 minutes at 2 per
   second). Deploy before about 10:00 New York or after the 10:35 decision, so it finishes outside the scan
   window it yields to. `insider_capture` readiness is not ready until that first pass finishes, and a 10:35

@@ -1390,3 +1390,14 @@ def test_f4_a_scheduled_watch_decision_time_is_not_warned(app_config, temp_db, m
             alpha_repository=AsyncMock(),
         )
     assert not [r for r in caplog.records if r.__dict__.get("event") == "insider_watch_decision_time_unscheduled"]
+
+
+async def test_f4_round2_the_same_scan_check_normalizes_the_symbol(watch_desk, temp_db):
+    source = watch_desk.insider_watch_source
+    source.prep = watch_prep("DDD", "WTCH")
+    source.candidates["DDD"] = watch_candidate("DDD").model_copy(update={"contract": "/ddd"})  # same instrument
+
+    await suggestion_scan(watch_desk)
+
+    contracts = [s["contract"].strip("/").upper() for s in await _signals(temp_db)]
+    assert sorted(contracts) == ["DDD", "WINR", "WTCH"]
