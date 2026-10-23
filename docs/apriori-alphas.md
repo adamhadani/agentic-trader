@@ -15,13 +15,14 @@ Rules:
 - A leg that passes becomes eligible for a live, capped paper probe, which needs its own
   spec (Part 2). A failed leg stays off.
 
-Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output NEW_DIR [--cache DIR]` — the command reads the entry's `id` (`pead`, `exdiv`) to choose the study.
+Run: `copilot alpha apriori-study config/research/apriori/<entry>.json --output NEW_DIR [--cache DIR]` — the command reads the entry's `id` (`pead`, `exdiv`, `insider`) to choose the study. The `insider` entry also needs `--insider-filings DIR`, `--corporate-actions actions.json` and the pooled `--cache` holding its cube (refused for the other entries).
 
 | Entry | Version | Hypothesis | Long | Short | Result |
 | --- | --- | --- | --- | --- | --- |
 | `pead` | 1 | Post-earnings drift when EPS surprise and price reaction agree | — | — | Failed closed on calendar coverage (Nasdaq gap 2016-06-06..07-08); no outcomes computed |
 | `pead` | 2 | Same, decisions from 2016-08-01 | **eligible** (+0.149R; +0.055R vs control) | failed (−0.064R) | [result](apriori-pead-2026-09-26.md), [spec](superpowers/specs/2026-09-25-apriori-pead-study-design.md) |
 | `exdiv` | 1 | Regular quarterly payers run up in the five sessions before the ex-date (Hartzmark & Solomon 2013); long from E−5 at 10:35 to the last cum-dividend close; same-name mid-quarter placebo | failed (+0.069R, ci90 [+0.035, +0.102]; but the same-name placebo earns +0.046R and the paired difference +0.025R has ci90 [−0.026, +0.072], so P2 fails) | — | failed on P2, 2026-10-12 ([result](apriori-exdiv-2026-10-12.md), [spec](superpowers/specs/2026-10-12-exdiv-leg-design.md)) |
+| `insider` | 1 | Opportunistic insider cluster purchases (two or more officers or directors within 21 sessions) drift up (Cohen, Malloy and Pomorski 2012; Alldredge and Blank 2019); long on the cohort-v3 cube cell after the filing; matched-control cell, same session and liquidity tercile | pending run 2026-10-23 | — | pending run 2026-10-23 ([spec](superpowers/specs/2026-10-23-apriori-insider-leg-design.md)) |
 
 ## Entry 2: pre-ex-dividend run-up
 
@@ -219,3 +220,22 @@ is `pead_long`, the study's LONG leg; the failed SHORT leg cannot be enrolled
   survivorship control, unlike the study's static universe). The event source
   depends entirely on Nasdaq's earnings calendar; an outage there fails the
   session closed rather than falling back to another source.
+
+## Entry 3: opportunistic insider cluster purchases
+
+`insider` version 1 (`config/research/apriori/insider-v1.json`, [spec](superpowers/specs/2026-10-23-apriori-insider-leg-design.md))
+is a research-only, long-only leg that reads the pooled insider lane's frozen inputs (cohort v3, the
+digest-pinned SEC Form 3/4/5 archives and corporate actions) as one a priori hypothesis.
+
+- **Event.** On an SEC Form 4 filing date F, at least two distinct officers or directors have
+  opportunistic open-market purchases of the issuer filed within the 21 sessions ending at F. A purchase is
+  routine (ignored) when the same owner bought the same issuer in the same calendar month a year earlier;
+  trades above 10x the 20-session median raw dollar volume are dropped first. At most one event per name
+  per 63 sessions. Decisions 2016-08-01..2026-07-31.
+- **Trade.** The cube cell for (D, symbol), D the first session after F: 10:35 New York, 2 x ATR14 stop, 3R
+  target, 20-session time exit, 15 bp decisive cost. The entry pins the pooled protocol and cube by SHA-256.
+- **Control and rule.** The mean of the 5 cube cells on D in the event's dollar-volume tercile with no
+  qualifying purchase in the prior 126 sessions, nearest in 20-session return. P1-P4 as for PEAD (300 events,
+  100 from 2023-01-01); a pass only makes the leg eligible for a separately specified probe.
+- **Caveat.** Running it reads insider-conditioned outcomes over the pooled confirmation slice, so the pooled
+  insider fixed sets stay retired.

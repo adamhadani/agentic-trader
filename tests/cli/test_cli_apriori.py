@@ -168,3 +168,53 @@ def test_apriori_study_rejects_an_unknown_entry_id(tmp_path):
     entry.write_text(json.dumps({"id": "other"}))
     result = CliRunner().invoke(cli, ["alpha", "apriori-study", str(entry), "--output", str(tmp_path / "run")])
     assert result.exit_code != 0 and "Unknown catalog entry id" in result.output
+
+
+INSIDER = REPO / "config/research/apriori/insider-v1.json"
+
+
+def test_insider_requires_filings_and_actions(tmp_path):
+    result = CliRunner().invoke(
+        cli, ["alpha", "apriori-study", str(INSIDER), "--output", str(tmp_path / "run"), "--cache", str(tmp_path)]
+    )
+    assert result.exit_code != 0 and "--insider-filings and --corporate-actions are required" in result.output
+
+
+def test_insider_requires_the_pooled_cache(tmp_path):
+    args = ["--insider-filings", str(tmp_path), "--corporate-actions", str(tmp_path / "a.json")]
+    result = CliRunner().invoke(cli, ["alpha", "apriori-study", str(INSIDER), "--output", str(tmp_path / "run"), *args])
+    assert result.exit_code != 0 and "--cache is required" in result.output
+
+
+def test_filings_flag_refused_for_pead(tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        ["alpha", "apriori-study", str(ENTRY), "--output", str(tmp_path / "run"), "--insider-filings", str(tmp_path)],
+    )
+    assert result.exit_code != 0 and "apply only to the insider entry" in result.output
+
+
+def test_insider_existing_output_refused(tmp_path):
+    output = tmp_path / "run"
+    output.mkdir()
+    result = CliRunner().invoke(cli, ["alpha", "apriori-study", str(INSIDER), "--output", str(output)])
+    assert result.exit_code != 0 and "refusing to overwrite" in result.output
+
+
+def test_apriori_study_dispatches_insider(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_build(entry, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha.build_insider_leg_inputs", fake_build)
+    monkeypatch.setattr("agentic_trader.cli.commands.alpha._apriori_clients", _fake_clients)
+    args = ["--insider-filings", str(tmp_path / "f"), "--corporate-actions", str(tmp_path / "a.json")]
+    out = tmp_path / "run"
+    CliRunner().invoke(
+        cli, ["alpha", "apriori-study", str(INSIDER), "--output", str(out), "--cache", str(tmp_path), *args]
+    )
+    assert seen["repo_root"] == REPO and seen["cache_dir"] == tmp_path
+    assert seen["insider_filings_dir"] == tmp_path / "f" and seen["static_symbols"] == ["S00"]
+    assert json.loads((out / "result.json").read_text())["status"] == "failed"

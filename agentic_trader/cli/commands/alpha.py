@@ -83,9 +83,16 @@ from agentic_trader.research.alpha.study_artifacts import execute_study
 from agentic_trader.research.alpha.targets import MAX_FORECAST_HORIZON, ForecastLabel, ForecastTarget
 from agentic_trader.research.alpha.validation import DatasetManifest
 from agentic_trader.research.alpha.volume_study import VolumeStudyPlan, compute_volume_study
-from agentic_trader.research.apriori.catalog import catalog_entry_id, load_exdiv_entry, load_pead_entry
+from agentic_trader.research.apriori.catalog import (
+    catalog_entry_id,
+    load_exdiv_entry,
+    load_insider_entry,
+    load_pead_entry,
+)
 from agentic_trader.research.apriori.exdiv_runner import build_exdiv_inputs
 from agentic_trader.research.apriori.exdiv_study import execute_exdiv_study
+from agentic_trader.research.apriori.insider_runner import build_insider_leg_inputs
+from agentic_trader.research.apriori.insider_study import execute_insider_study
 from agentic_trader.research.apriori.pead_runner import build_pead_inputs
 from agentic_trader.research.apriori.pead_study import execute_pead_study
 from agentic_trader.research.apriori.probe import is_catalog_definition, load_catalog_probe
@@ -1595,12 +1602,31 @@ def _apriori_clients() -> _AprioriClients:
 @click.option(
     "--cache", type=click.Path(path_type=Path), default=None, help="Page/bar cache directory; defaults to OUTPUT/raw"
 )
+@click.option(
+    "--insider-filings",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="SEC Form 3/4/5 archive directory (insider entry only)",
+)
+@click.option(
+    "--corporate-actions",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Corporate-actions acquisition actions.json (insider entry only)",
+)
 @coro
-async def alpha_apriori_study_cmd(protocol_path, output, cache):
-    """Run a frozen a priori catalog study (`pead` or `exdiv` by the entry's id; research only; grants no credit)."""
+async def alpha_apriori_study_cmd(protocol_path, output, cache, insider_filings, corporate_actions):
+    """Run a frozen a priori catalog study (`pead`, `exdiv` or `insider` by the entry's id; research only; grants no credit)."""
     if output.exists():
         raise click.ClickException(f"Output directory already exists; refusing to overwrite: {output}")
     entry_id = await asyncio.to_thread(catalog_entry_id, protocol_path)
+    if entry_id == "insider":
+        if insider_filings is None or corporate_actions is None:
+            raise click.ClickException("--insider-filings and --corporate-actions are required for the insider entry")
+        if cache is None:
+            raise click.ClickException("--cache is required for the insider entry: the pooled cache holding its cube")
+    elif insider_filings is not None or corporate_actions is not None:
+        raise click.ClickException("--insider-filings and --corporate-actions apply only to the insider entry")
     cache_dir = cache if cache is not None else output / "raw"
     environment = await asyncio.to_thread(research_environment)
 
@@ -1640,6 +1666,25 @@ async def alpha_apriori_study_cmd(protocol_path, output, cache):
             result = await execute_exdiv_study(
                 loaded_exdiv, output, build=build_exdiv, environment=environment, cohort_path=cohort_path
             )
+    elif entry_id == "insider":
+        loaded_insider = await asyncio.to_thread(load_insider_entry, protocol_path)
+        with _apriori_clients() as clients:
+
+            async def build_insider():
+                return await build_insider_leg_inputs(
+                    loaded_insider.entry,
+                    repo_root=REPO_ROOT,
+                    bars=clients.bars,
+                    calendar=clients.calendar,
+                    cache_dir=cache_dir,
+                    insider_filings_dir=insider_filings,
+                    actions_file=corporate_actions,
+                    static_symbols=clients.static_symbols,
+                    pace=clients.pace,
+                    progress=lambda message: click.echo(message, err=True),
+                )
+
+            result = await execute_insider_study(loaded_insider, output, build=build_insider, environment=environment)
     else:
         raise click.ClickException(f"Unknown catalog entry id: {entry_id}")
     summary = ("status", "decision", "decisions", "error")  # exdiv has one leg (`decision`); pead has two

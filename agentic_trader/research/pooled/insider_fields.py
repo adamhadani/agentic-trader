@@ -62,6 +62,7 @@ __all__ = [
     "InsiderFrames",
     "LoadedInsiderFilings",
     "build_insider_frames",
+    "dollar_volume_series",
     "load_insider_filings",
     "plausible_transactions",
     "verify_insider_sources",
@@ -215,7 +216,7 @@ def _distinct_owners(positions: np.ndarray, owners: np.ndarray, n: int, window: 
     return np.where(step >= 0, values[np.maximum(step, 0)], 0.0)
 
 
-def _dollar_volume(raw: pd.DataFrame | None, days: Sequence[date]) -> np.ndarray:
+def dollar_volume_series(raw: pd.DataFrame | None, days: Sequence[date]) -> np.ndarray:
     """``DV_T``: the median raw ``Close x Volume`` over the last 20 finite sessions through T."""
     if raw is None or raw.empty:
         return np.full(len(days), np.nan)
@@ -359,7 +360,7 @@ def build_insider_frames(
         columns, start, dropped = _symbol_fields(
             loaded.by_symbol.get(symbol, ()),
             day_ordinals,
-            _dollar_volume(raw.get(symbol), days),
+            dollar_volume_series(raw.get(symbol), days),
             params.buy_window,
             params.net_window,
             params.max_trade_rel,
