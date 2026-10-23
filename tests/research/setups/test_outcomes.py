@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -394,8 +395,9 @@ def test_label_journaled_adds_market_control_and_excess():
     assert row["excess_r"] == pytest.approx(row["r_cost"] - 1.0)
     assert row["market_reason"] is None
     # SPY is fetched once, with the same adjustment as the candidates, after them.
-    assert [call[0] for call in bars.calls] == ["AAPL", MARKET_PROXY_SYMBOL]
-    assert bars.calls[1][4] == "raw"
+    hourly_calls = [call for call in bars.calls if call[1] == "1h"]
+    assert [call[0] for call in hourly_calls] == ["AAPL", MARKET_PROXY_SYMBOL]
+    assert hourly_calls[1][4] == "raw"
 
 
 def test_spy_fetch_failure_leaves_market_r_null_with_a_reason():
@@ -595,9 +597,10 @@ def test_a_market_proxy_candidate_is_fetched_once():
     frame = label_journaled(
         [_event("s1", DECIDED_AT, [_candidate()]), _event("s2", later, [spy])], bars, now=NOW, tape_symbol=None
     )
-    assert [call[0] for call in bars.calls] == ["AAPL", MARKET_PROXY_SYMBOL]
+    hourly_calls = [call for call in bars.calls if call[1] == "1h"]
+    assert [call[0] for call in hourly_calls] == ["AAPL", MARKET_PROXY_SYMBOL]
     # One fetch covers every candidate's window: it starts at the earliest decision of all.
-    assert bars.calls[1][2] == DECIDED_AT
+    assert hourly_calls[1][2] == DECIDED_AT
     aapl = frame.loc[frame["contract"] == "AAPL"].iloc[0]
     assert aapl["market_r"] == pytest.approx(1.0)
 
@@ -989,12 +992,12 @@ def test_tape_fetch_is_one_raw_daily_request_after_the_hourly_ones():
     daily = _spy_daily([100.0] * 20 + [105.0], end="2026-02-27")  # last completed session before 2026-03-02
     source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": daily})
     frame = label_journaled(events, source, now=NOW)
-    daily_calls = [call for call in source.calls if call[1] == "1d"]
+    daily_calls = [call for call in source.calls if call[1] == "1d" and call[4] == "raw"]
     assert len(daily_calls) == 1
     symbol, _, start, end, adjustment = daily_calls[0]
     assert (symbol, adjustment, end) == ("SPY", "raw", NOW)
     assert start == DECIDED_AT - timedelta(days=TAPE_HISTORY_DAYS)
-    assert source.calls[-1] == daily_calls[0]
+    assert [call for call in source.calls if call[1] == "1h"] == source.calls[:2]
     assert frame["spy_ret_20"].tolist() == [pytest.approx(0.05)]
     assert frame["spy_above_200"].tolist() == [None]
     assert frame["tape_reason"].tolist() == [None]
@@ -1004,7 +1007,7 @@ def test_tape_symbol_none_skips_the_daily_fetch():
     events = [_event("s1", DECIDED_AT, [_candidate()])]
     source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"SPY": pd.DataFrame()})
     frame = label_journaled(events, source, now=NOW, tape_symbol=None)
-    assert not [call for call in source.calls if call[1] == "1d"]
+    assert not [call for call in source.calls if call[1] == "1d" and call[4] == "raw"]
     assert frame["spy_ret_20"].tolist() == [None] and frame["tape_reason"].tolist() == [None]
 
 
@@ -1408,7 +1411,15 @@ def test_columns_include_target_atr_and_cf_columns():
     columns = list(_COLUMNS)
     assert columns[columns.index("stop") + 1 : columns.index("stop") + 3] == ["target", "atr_14"]
     expected = [f"cf_{arm.name}_{kind}" for arm in LIVE_COUNTERFACTUAL_ARMS for kind in ("hit", "r_cost", "market_r")]
-    start = columns.index("excess_r") + 1
+    assert columns[columns.index("excess_r") + 1 : columns.index("excess_r") + 7] == [
+        "beta",
+        "beta_reason",
+        "beta_market_r",
+        "beta_excess_r",
+        "hold_r",
+        "timing_r",
+    ]
+    start = columns.index("timing_r") + 1
     assert columns[start : start + 12] == expected
     assert columns[start + 12] == "market_reason"
     assert all(name.startswith(CF_COLUMN_PREFIX) for name in expected)
@@ -1511,3 +1522,91 @@ def test_summarize_empty_frame_has_counterfactual_block():
     assert set(block["arms"]) == {arm.name for arm in LIVE_COUNTERFACTUAL_ARMS}
     for arm in block["arms"].values():
         assert arm["n_pairs"] == 0 and arm["mean_r_cost"] is None and arm["advantage_vs_live_excess"] is None
+
+
+def _adjusted_daily(closes, *, end="2026-02-27"):
+    index = pd.bdate_range(end=end, periods=len(closes)) + pd.Timedelta(hours=20)
+    return pd.DataFrame({"Close": list(closes)}, index=pd.DatetimeIndex(index, tz="UTC"))
+
+
+def _half_beta_dailies(n=150):
+    rng = np.random.default_rng(3)
+    market_ret = rng.normal(0.0, 0.01, n - 1)
+    market = 100.0 * np.cumprod(np.concatenate([[1.0], 1.0 + market_ret]))
+    symbol = 50.0 * np.cumprod(np.concatenate([[1.0], 1.0 + 0.5 * market_ret]))
+    return _adjusted_daily(symbol), _adjusted_daily(market)
+
+
+def test_rows_carry_beta_and_hold_columns():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily})
+    frame = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None)
+    [row] = frame.to_dict("records")
+    assert row["hit"] == BracketHit.TARGET.value
+    assert row["beta"] == pytest.approx(0.5, abs=1e-9) and row["beta_reason"] is None
+    assert row["beta_market_r"] == pytest.approx(0.5 * row["market_r"])
+    assert row["beta_excess_r"] == pytest.approx(row["r_cost"] - row["beta_market_r"])
+    # AAPL's own open-to-close over the holding window: 100.0 -> 102.2 on a 1.0 risk unit.
+    assert row["hold_r"] == pytest.approx((102.2 / 100.0 - 1.0) * 100.0 / 1.0)
+    assert row["timing_r"] == pytest.approx(row["r_cost"] - row["hold_r"])
+
+
+def test_daily_beta_fetch_uses_adjusted_bars():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource({"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily})
+    label_journaled([_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None)
+    recorded = [(call[0], call[1], call[4]) for call in source.calls]
+    assert recorded == [
+        ("AAPL", "1h", "raw"),
+        ("SPY", "1h", "raw"),
+        ("AAPL", "1d", "all"),
+        ("SPY", "1d", "all"),
+    ]
+    adjusted = [call for call in source.calls if call[4] == "all"]
+    assert all(call[2] == DECIDED_AT - timedelta(days=200) for call in adjusted)
+
+
+def test_daily_fetch_failure_sets_beta_reason_only():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY},
+        {"AAPL": aapl_daily, "SPY": spy_daily},
+        raise_daily_for={"AAPL"},
+    )
+    [row] = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None).to_dict(
+        "records"
+    )
+    assert row["beta_reason"] == "fetch_failed: RuntimeError"
+    assert row["beta"] is None and row["beta_market_r"] is None and row["beta_excess_r"] is None
+    assert row["hit"] == BracketHit.TARGET.value
+    assert row["market_r"] is not None and row["hold_r"] is not None and row["timing_r"] is not None
+    spy_failed = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY},
+        {"AAPL": aapl_daily, "SPY": spy_daily},
+        raise_daily_for={"SPY"},
+    )
+    [row] = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], spy_failed, now=NOW, tape_symbol=None).to_dict(
+        "records"
+    )
+    assert row["beta_reason"] == "fetch_failed: RuntimeError" and row["beta"] is None
+
+
+def test_immature_rows_carry_no_beta_columns():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource({"AAPL": _OPEN_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily})
+    [row] = label_journaled([_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None).to_dict(
+        "records"
+    )
+    assert row["hit"] == BracketHit.IMMATURE.value
+    assert [row[name] for name in ("beta_market_r", "beta_excess_r", "hold_r", "timing_r")] == [None] * 4
+
+
+def test_spy_candidate_beta_one_and_hold_equals_market():
+    _, spy_daily = _half_beta_dailies()
+    spy = _candidate(contract=MARKET_PROXY_SYMBOL, entry=500.0, stop=499.0, target=501.0)
+    source = DailyAwareBarSource({"SPY": _SPY_HOURLY}, {"SPY": spy_daily})
+    [row] = label_journaled([_event("s1", DECIDED_AT, [spy])], source, now=NOW, tape_symbol=None).to_dict("records")
+    assert row["beta"] == pytest.approx(1.0, abs=1e-9)
+    assert row["hold_r"] == pytest.approx(row["market_r"])
+    assert row["beta_market_r"] == pytest.approx(row["market_r"])
+    assert len([call for call in source.calls if call[1] == "1d"]) == 1

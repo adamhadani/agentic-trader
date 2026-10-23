@@ -25,6 +25,7 @@ import pandas as pd
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.execution.durable import EventKind, RankedOutcome, ScanStatus
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.setups.beta import trailing_beta
 from agentic_trader.research.setups.labels import (
     BracketArm,
     BracketHit,
@@ -60,6 +61,10 @@ __all__ = [
 ]
 
 _BAR_TIMEFRAME = "1h"
+
+# Calendar days of adjusted daily history fetched before a symbol's earliest decision: the
+# 120-session beta window plus holidays and a missing-day margin.
+BETA_HISTORY_DAYS = 200
 
 MARKET_PROXY_SYMBOL = "SPY"
 
@@ -138,6 +143,12 @@ _COLUMNS = (
     "prior_outcome",
     "market_r",
     "excess_r",
+    "beta",
+    "beta_reason",
+    "beta_market_r",
+    "beta_excess_r",
+    "hold_r",
+    "timing_r",
     *_CF_COLUMNS,
     "market_reason",
     "decided_at",
@@ -324,6 +335,9 @@ def _row(
     market_value: float | None = None,
     market_reason: str | None = None,
     counterfactual: dict[str, Any] | None = None,
+    beta: float | None = None,
+    beta_reason: str | None = None,
+    hold_value: float | None = None,
 ) -> dict[str, Any]:
     shadow = entry.get("shadow") or {}
     raw_book = entry.get("book_sizing")
@@ -337,6 +351,7 @@ def _row(
     regime: dict[str, Any] = raw_regime if isinstance(raw_regime, dict) else {}
     decided_at = entry["decided_at"]
     outcome = entry.get("outcome")
+    beta_market_value = beta * market_value if (beta is not None and market_value is not None) else None
     return {
         "scan_id": entry.get("scan_id"),
         "session": decided_at.astimezone(ET_TZ).date().isoformat(),
@@ -391,6 +406,14 @@ def _row(
         "prior_outcome": "none",
         "market_r": market_value,
         "excess_r": (r_cost - market_value) if (r_cost is not None and market_value is not None) else None,
+        "beta": beta,
+        "beta_reason": beta_reason,
+        "beta_market_r": beta_market_value,
+        "beta_excess_r": (r_cost - beta_market_value)
+        if (r_cost is not None and beta_market_value is not None)
+        else None,
+        "hold_r": hold_value,
+        "timing_r": (r_cost - hold_value) if (r_cost is not None and hold_value is not None) else None,
         **dict.fromkeys(_CF_COLUMNS),
         **(counterfactual or {}),
         "market_reason": market_reason,
@@ -407,6 +430,8 @@ def _label_one(
     cost_bps: float,
     market: pd.DataFrame | None,
     market_reason: str | None,
+    beta: float | None = None,
+    beta_reason: str | None = None,
 ) -> dict[str, Any]:
     direction = entry.get("direction")
     entry_price, stop_price, target_price = entry.get("entry"), entry.get("stop"), entry.get("target")
@@ -431,6 +456,9 @@ def _label_one(
         and outcome.exit_time is not None
     ):
         market_value = market_r(direction, levels.entry, levels.stop, outcome.entry_time, outcome.exit_time, market)
+    hold_value = None
+    if outcome.r_cost is not None and outcome.entry_time is not None and outcome.exit_time is not None:
+        hold_value = market_r(direction, levels.entry, levels.stop, outcome.entry_time, outcome.exit_time, hourly)
     counterfactual: dict[str, Any] = {}
     for arm in LIVE_COUNTERFACTUAL_ARMS:
         arm_outcome = label_bracket(
@@ -468,6 +496,9 @@ def _label_one(
         market_value=market_value,
         market_reason=market_reason,
         counterfactual=counterfactual,
+        beta=beta,
+        beta_reason=beta_reason,
+        hold_value=hold_value,
     )
 
 
@@ -546,6 +577,7 @@ def label_journaled(
     max_requests_per_minute: int = 150,
     market_symbol: str | None = MARKET_PROXY_SYMBOL,
     tape_symbol: str | None = MARKET_PROXY_SYMBOL,
+    with_beta: bool = True,
 ) -> pd.DataFrame:
     """One row per journaled ranked candidate, labelled with its realized bracket outcome.
 
@@ -565,6 +597,9 @@ def label_journaled(
     The tape (SPY daily, ``TAPE_HISTORY_DAYS`` calendar days before the earliest decision, raw,
     one request after the hourly ones) is computed per decision session with ``tape_state``; a
     failed fetch records ``tape_reason`` on every row.
+    The trailing beta (``with_beta``) adds one adjusted daily request per candidate symbol and one
+    for the market proxy after the tape; a failed one records ``beta_reason`` on the rows it
+    covers. Without it the beta columns are all None.
     """
     now = now or datetime.now(UTC)
     by_symbol = _candidate_entries(events)
@@ -573,11 +608,13 @@ def label_journaled(
     except Exception:
         pacer = None
 
-    def fetch(symbol: str, start: datetime, timeframe: str = _BAR_TIMEFRAME) -> pd.DataFrame | str:
+    def fetch(
+        symbol: str, start: datetime, timeframe: str = _BAR_TIMEFRAME, adjustment: str = "raw"
+    ) -> pd.DataFrame | str:
         if pacer is not None:
             pacer.acquire()
         try:
-            return bars.fetch_bars(symbol, timeframe, start, now, adjustment="raw")
+            return bars.fetch_bars(symbol, timeframe, start, now, adjustment=adjustment)
         except Exception as exc:
             return f"{type(exc).__name__}: {exc}"
 
@@ -609,15 +646,42 @@ def label_journaled(
         else:
             daily = tape
 
+    # Adjusted daily bars for the trailing beta: one request per candidate symbol (from 200
+    # calendar days before its earliest decision) and one for the market proxy.
+    beta_daily: dict[str, pd.DataFrame | str] = {}
+    beta_market: pd.DataFrame | str | None = None
+    if with_beta and market_symbol is not None and market_start is not None:
+        beta_daily = {
+            symbol: fetch(symbol, start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all")
+            for symbol, start in starts.items()
+        }
+        beta_market = (
+            beta_daily[market_symbol]
+            if market_symbol in beta_daily
+            else fetch(market_symbol, market_start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all")
+        )
+
+    def beta_for(symbol: str, session: str) -> tuple[float | None, str | None]:
+        if beta_market is None:
+            return None, None
+        symbol_daily = beta_daily[symbol]
+        if isinstance(beta_market, str):
+            return None, f"fetch_failed: {beta_market.split(':', 1)[0]}"
+        if isinstance(symbol_daily, str):
+            return None, f"fetch_failed: {symbol_daily.split(':', 1)[0]}"
+        return trailing_beta(symbol_daily, beta_market, date.fromisoformat(session))
+
     rows: list[dict[str, Any]] = []
     for symbol, entries in by_symbol.items():
         hourly = fetched[symbol]
         if isinstance(hourly, str):
             rows.extend(_fetch_failed_row(entry, symbol, hourly, market_reason) for entry in entries)
             continue
-        rows.extend(
-            _label_one(entry, symbol, hourly, max_hold_sessions, cost_bps, market, market_reason) for entry in entries
-        )
+        for entry in entries:
+            beta, beta_reason = beta_for(symbol, entry["decided_at"].astimezone(ET_TZ).date().isoformat())
+            rows.append(
+                _label_one(entry, symbol, hourly, max_hold_sessions, cost_bps, market, market_reason, beta, beta_reason)
+            )
 
     states: dict[str, TapeState] = {}
     for row in rows:
