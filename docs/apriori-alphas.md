@@ -243,3 +243,38 @@ digest-pinned SEC Form 3/4/5 archives and corporate actions) as one a priori hyp
 - **Result (2026-10-23): failed on P1.** +0.087R per trade (ci90 [−0.008, +0.189]) over 1,062 events; P2 holds
   (+0.070R over the matched controls, ci90 [+0.009, +0.134]), P3 and P4 hold. No probe. See
   [result](apriori-insider-2026-10-23.md).
+
+### Watch cards
+
+On 2026-10-23 the operator asked to see this leg's setups as discretionary cards despite the failed P1
+([spec](superpowers/specs/2026-10-23-insider-watch-cards-design.md)). The result is informative (+0.070R
+over matched names, P2 significant), so the **frozen** rule runs live and nothing about the leg changes.
+A watch card is not a probe: no registry entry, no enrolment, no shadow, holdout or promotion credit, and the
+card says "INSIDER WATCH — unvalidated".
+
+- **Decision.** At the 10:35 New York suggestion scan only (a gated, late or other-time scan journals a
+  `skipped` decision; lateness reuses `apriori.max_drift_lateness_seconds`, shared with PEAD). The frozen
+  rule (`insider-v1.json`, digest-pinned) is built for D = today on the study's own 2,681-session calendar,
+  pinned by SHA-256 (`WATCH_CALENDAR_SHA256`, Alpaca calendar only: a fallback or mismatched calendar is
+  `unavailable`), so the 63-session cooldown chain equals the study's. Eligibility is the study's as of D-1
+  (SIP daily bars: price at least $10, 20-session median dollar volume at least $5M, ATR14).
+- **History.** The pinned 2015q1-2026q3 archives merge with the journaled live Form 4 captures
+  ([operations](production.md#insider-watch-form-4-capture)); the archive wins where both cover a date. The
+  10x-median plausibility filter runs on the pooled cube's raw bars for archived rows (once per process) and
+  on live bars for new buyers; if it was not checked the decision is unavailable. The history must be current for
+  D (latest captured filing date at least D minus 1 day, so a Good Friday gap is tolerated), and a symbol with
+  an unparsed document in the cluster window plus cooldown is blocked, not carded.
+- **Selection.** Ranked by buyers, then opportunistic dollars over dollar volume, then symbol (display order,
+  not validated: 3+ buyers +0.165R against +0.066R for two is descriptive). At most
+  `insider_watch.max_cards_per_session` (2) cards, none while `max_open_positions` (4) watch positions are
+  open; owned names are skipped and journaled.
+- **Card and trade.** The study's bracket: 2 x ATR14 stop, 3R target, 20-session time exit
+  (`AprioriBracketPolicy` with `SessionLifetimePolicy`, one-session resting entry), risk capped at
+  `max_risk_per_trade_usd` ($100). The card shows the buyer count, total opportunistic dollars, filing dates, an
+  EDGAR issuer link and the study line (+0.087R, not significant on its own; +0.070R vs matched). The LLM writes
+  commentary only; every `risk/` rule still applies. The card is tap-only; nothing enters without the tap, and
+  admission refuses a signal whose `alpha_policy` differs byte for byte from the frozen contract.
+- **Evidence.** Every decision is one `insider_watch_decision` event (sent or not, with its outcome or
+  eligibility reason); `cards outcomes` labels them
+  ([block](card-evidence.md#insider-watch-outcomes)). Nothing here validates the leg: reopening it as an alpha
+  needs its own predeclared forward test.

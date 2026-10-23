@@ -1325,6 +1325,46 @@ itself.
   (`ok`, `unavailable` or empty) at the next scheduled 10:35 New York scan, and,
   if an event qualified, the drift card in Telegram.
 
+### Insider watch Form 4 capture
+
+The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a daemon worker
+(`agentic_trader/data/insider_capture.py`), enabled with `insider_watch.enabled`.
+
+- **Schedule.** After 06:00 New York, one pass per day; a pass that cannot finish retries every 30 minutes. It
+  yields to the suggestion-scan windows (`scan_window`), which are never delayed. It captures each missing
+  filing date in order, yesterday at the latest, starting from `insider_watch.backfill_from` (2026-10-01) on
+  the first run and from the last journaled date afterwards. A weekend or federal holiday is journaled
+  `no_index` without a request; a business-day index that is a 404 is held, requested once more when a later
+  index returns, and then recorded `no_index` (`closed_inferred`). A date is journaled only when all of its
+  cohort-v3 Form 4 documents parsed.
+- **Credential.** `EDGAR_USER_AGENT` (an identifying contact string, required by SEC) is read from the daemon's
+  environment only and sent as the `User-Agent`. Never print, log, journal or commit it; failures are logged by
+  exception type name. Without it the worker idles (`missing_user_agent`, logged once) and `insider_capture` reports not ready.
+- **Journal and files.** One `insider/form4/<filing date>` event per date on journal stream `insider/form4`
+  (transactions, index and row counts, per-rule drops, one record per document). Raw bytes are private files
+  under `<state>/data/insider/<filing date>/`, never in Git.
+- **Readiness.** `insider_capture` is ready while the latest captured filing date is at most 4 days old (a long
+  weekend); it is not a data-quality check. Inspect with `uv run copilot doctor --readiness` and the journal
+  stream. Parse errors of the trailing 30 days are appended to the detail.
+- **Decision journal.** The 10:35 scan journals one `insider_watch_decision` per session on `scan/<ET date>`
+  (`completed`, `skipped` or `unavailable`, its reason, counts, phase timings). A session without a card is
+  normal when no cluster qualifies (`completed`, zero events).
+- **Unavailable reasons.** An unavailable decision sends no card and queues one
+  `insider-watch-unavailable/<date>` notice; native and PEAD cards are unaffected.
+
+  | Reason | Meaning and action |
+  | --- | --- |
+  | `capture_not_current: latest filing date X` | The capture is behind D minus 1 day. Check `EDGAR_USER_AGENT`, the `insider/form4` stream and EDGAR reachability; the worker catches up on its next pass. |
+  | `calendar_source` / `calendar_mismatch` | The trading calendar was not Alpaca's, or its prefix differs from the study's pinned digest. Never relax the pin; investigate the calendar source. |
+  | `plausibility_not_checked` | The pooled cube's raw bars were unavailable for the archive plausibility filter (`insider_watch.pooled_cache_dir`). Restore the cache; there is no silent pass. |
+  | `not_a_trading_session` | The scan ran outside a regular session; no action. |
+  | `service unavailable: ...` / `insider watch source unavailable` | The frozen entry, its protocol or a client could not be built. The type name is in the reason; fix the config or digest and restart. |
+
+  A `skipped` decision (halt, gated session or late scan) is not a fault. Lateness uses
+  `apriori.max_drift_lateness_seconds`, the same cap as the PEAD probe: changing it moves both.
+- **Operate.** Use `copilot cards outcomes` for the evidence block. To stop new watch cards without touching
+  positions, set `insider_watch.enabled: false` and restart; open watch positions keep their protection.
+
 ## Provider read and forecast hardening
 
 See [forecast contract hardening](forecast-contract-hardening.md). Active `doctor` includes

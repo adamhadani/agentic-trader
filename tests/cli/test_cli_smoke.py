@@ -447,3 +447,51 @@ def test_cards_outcomes_prints_supply_and_the_empty_line(runner: CliRunner):
 def test_db_queue_default_kind_is_a_valid_choice(runner: CliRunner):
     result = runner.invoke(cli, ["db", "queue"])
     assert "is not one of" not in result.output, result.output
+
+
+def test_cards_outcomes_reports_the_insider_watch_block(runner: CliRunner):
+    """Journaled `insider_watch_decision` events are labelled with the frozen bracket; read-only and descriptive."""
+    fixed_now = datetime(2026, 10, 12, 20, 0, tzinfo=UTC)
+    session = "2026-10-05"
+    decision = datetime(2026, 10, 5, 14, 35, tzinfo=UTC)
+    hours = [datetime(2026, 10, 5, h, tzinfo=UTC) for h in (13, 14, 15, 16, 17)]  # 09:00..13:00 ET (EDT)
+    prices = [100.0, 100.0, 100.0, 112.0, 112.0]
+    hourly = pd.DataFrame(
+        {"Open": prices, "High": prices, "Low": prices, "Close": prices, "Volume": 1.0},
+        index=pd.DatetimeIndex(hours),
+    )
+    event = {
+        "event_id": "AAA-1",
+        "symbol": "AAA",
+        "session": session,
+        "decision_at": decision.isoformat(),
+        "atr": 2.0,
+        "buyers": 3,
+        "opp_dollars": 900_000.0,
+        "outcome": "sent",
+    }
+    payload = {"scan_id": "watch-scan", "session": session, "status": "completed", "events": [event]}
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    async def decision_events(db, days, *, now, kind):
+        return [payload] if kind == EventKind.INSIDER_WATCH_DECISION else []
+
+    fake_bars = _FakeBarSource(hourly)
+    with (
+        patch.object(cards_module, "datetime", _FrozenDateTime),
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
+        patch.object(cards_module, "build_bar_source", return_value=fake_bars),
+        patch.object(cards_module, "watch_signals", AsyncMock(return_value=[])),
+        patch.object(cards_module, "_decision_events", decision_events),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes", "--days", "10"])
+
+    assert result.exit_code == 0, result.output
+    assert "Insider watch:" in result.output and '"insider_watch"' in result.output
+    assert '"sent_events"' in result.output and '"taps": 0' in result.output and '"n": 1' in result.output
+    assert {call[0] for call in fake_bars.calls} >= {"AAA", "SPY"}
+    assert all(call[4] == "all" for call in fake_bars.calls if call[0] == "AAA")

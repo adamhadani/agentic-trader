@@ -19,6 +19,14 @@ from agentic_trader.research.apriori.catalog import load_pead_entry
 from agentic_trader.research.apriori.pead_events import EVENT_COLUMNS
 from agentic_trader.research.apriori.pead_study import label_events
 from agentic_trader.research.apriori.probe_outcomes import decision_frame, probe_signals, summarize_probe
+from agentic_trader.research.apriori.watch_contract import frozen_watch_contract
+from agentic_trader.research.apriori.watch_outcomes import (
+    decision_frame as decision_frame_watch,
+    label_watch_events,
+    summarize_watch,
+    watch_bars,
+    watch_signals,
+)
 from agentic_trader.research.setups.execution_evidence import collect_execution, summarize_execution
 from agentic_trader.research.setups.outcomes import (
     CF_COLUMN_PREFIX,
@@ -41,8 +49,8 @@ def cards_group() -> None:
     """Suggestion-card evidence commands."""
 
 
-async def _pead_decision_events(db: SignalDatabase, days: int, *, now: datetime) -> list[dict[str, Any]]:
-    """Every ``pead_decision`` event's payload journaled on each ET calendar date in the window.
+async def _decision_events(db: SignalDatabase, days: int, *, now: datetime, kind: EventKind) -> list[dict[str, Any]]:
+    """Every ``kind`` decision event's payload journaled on each ET calendar date in the window.
 
     Mirrors ``scan_ranked_events``' per-day stream walk, but returns the journaled
     payload itself (``decision_frame`` consumes payloads, not the wrapped event).
@@ -52,9 +60,7 @@ async def _pead_decision_events(db: SignalDatabase, days: int, *, now: datetime)
     for offset in range(days):
         day = et_today - timedelta(days=offset)
         day_events = await db.workflows.events(stream=f"scan/{day.isoformat()}")
-        payloads.extend(
-            event.get("payload", event) for event in day_events if event.get("kind") == EventKind.PEAD_DECISION
-        )
+        payloads.extend(event.get("payload", event) for event in day_events if event.get("kind") == kind)
     return payloads
 
 
@@ -96,7 +102,7 @@ async def outcomes_cmd(days: int) -> None:
             click.echo("Execution evidence:")
             click.echo(execution.to_string(index=False))
 
-        payloads = await _pead_decision_events(db, days, now=now)
+        payloads = await _decision_events(db, days, now=now, kind=EventKind.PEAD_DECISION)
         if payloads:
             entry = load_pead_entry(Path(config.apriori.pead_entry_path)).entry
             decisions = decision_frame(payloads)
@@ -134,5 +140,30 @@ async def outcomes_cmd(days: int) -> None:
             summary["bar_failures"] = bar_failures
             click.echo("PEAD probe:")
             click.echo(json.dumps(summary, indent=2, default=str))
+
+        watch_payloads = await _decision_events(db, days, now=now, kind=EventKind.INSIDER_WATCH_DECISION)
+        if watch_payloads:
+            watch = decision_frame_watch(watch_payloads)
+            contract = frozen_watch_contract()
+            pacer = RequestPacer(max(1, config.market_data.max_requests_per_minute))
+
+            def fetch(symbol: str, timeframe: str, start: datetime, end: datetime) -> pd.DataFrame:
+                pacer.acquire()
+                return bars.fetch_bars(symbol, timeframe, start, end, adjustment="all")
+
+            watch_data = await asyncio.to_thread(watch_bars, fetch, watch, now)
+            watch_labels = label_watch_events(
+                watch,
+                watch_data.hourly,
+                watch_data.daily,
+                watch_data.market_hourly,
+                watch_data.market_daily,
+                contract.spec.bracket,
+                contract.spec.decision_cost_bps,
+            )
+            watch_summary = summarize_watch(watch, watch_labels, await watch_signals(db, now - timedelta(days=days)))
+            watch_summary["bar_failures"] = watch_data.failures
+            click.echo("Insider watch:")
+            click.echo(json.dumps({"insider_watch": watch_summary}, indent=2, default=str))
     finally:
         await db.engine.dispose()
