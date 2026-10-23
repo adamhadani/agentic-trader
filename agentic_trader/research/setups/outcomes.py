@@ -36,6 +36,7 @@ from agentic_trader.research.setups.labels import (
     regular_session_bars,
 )
 from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS, TapeState, tape_buckets, tape_state
+from agentic_trader.screeners.coverage import REGULAR_SESSION_HOURS_NY
 
 
 if TYPE_CHECKING:
@@ -240,6 +241,44 @@ def market_r(
         return None
     sign = 1.0 if direction == "LONG" else -1.0
     return sign * (close_price / open_price - 1.0) * float(entry) / risk_unit
+
+
+def buy_and_hold_r(
+    direction: str,
+    entry: float,
+    stop: float,
+    entry_time: datetime | pd.Timestamp,
+    hourly: pd.DataFrame,
+    max_hold_sessions: int,
+) -> float | None:
+    """The candidate's own buy-and-hold return over the bracket's full horizon, in its R units.
+
+    From the open of the first regular bar at or after ``entry_time`` (the labeler's entry) to the
+    close of the last regular bar of the ``max_hold_sessions``-th New York session counted from the
+    entry session -- the bracket's own timeout exit -- signed by direction, uncosted. None until
+    that session has closed (a later session's bar, or its final regular-hour bar, exists), when
+    the entry bar is missing or the geometry has no risk unit.
+    """
+    risk_unit = abs(float(entry) - float(stop))
+    if not risk_unit or hourly is None or hourly.empty or max_hold_sessions < 1:
+        return None
+    regular = regular_session_bars(hourly)
+    walk = regular.loc[regular.index >= pd.Timestamp(entry_time)]
+    if walk.empty:
+        return None
+    local = pd.DatetimeIndex(walk.index).tz_convert(ET_TZ)
+    dates = list(dict.fromkeys(local.normalize()))
+    if len(dates) < max_hold_sessions:
+        return None
+    horizon_bars = walk.loc[local.normalize() == dates[max_hold_sessions - 1]]
+    last_hour = pd.DatetimeIndex(horizon_bars.index).tz_convert(ET_TZ)[-1].hour
+    if len(dates) == max_hold_sessions and last_hour != max(REGULAR_SESSION_HOURS_NY):
+        return None
+    open_price = float(walk["Open"].iloc[0])
+    if not open_price:
+        return None
+    sign = 1.0 if direction == "LONG" else -1.0
+    return sign * (float(horizon_bars["Close"].iloc[-1]) / open_price - 1.0) * float(entry) / risk_unit
 
 
 def _immature_row(entry: dict[str, Any], symbol: str, market_reason: str | None = None) -> dict[str, Any]:
@@ -459,8 +498,8 @@ def _label_one(
     ):
         market_value = market_r(direction, levels.entry, levels.stop, outcome.entry_time, outcome.exit_time, market)
     hold_value = None
-    if outcome.r_cost is not None and outcome.entry_time is not None and outcome.exit_time is not None:
-        hold_value = market_r(direction, levels.entry, levels.stop, outcome.entry_time, outcome.exit_time, hourly)
+    if outcome.r_cost is not None and outcome.entry_time is not None:
+        hold_value = buy_and_hold_r(direction, levels.entry, levels.stop, outcome.entry_time, hourly, max_hold_sessions)
     counterfactual: dict[str, Any] = {}
     for arm in LIVE_COUNTERFACTUAL_ARMS:
         arm_outcome = label_bracket(
@@ -771,20 +810,26 @@ def _finite_mean(frame: pd.DataFrame, column: str) -> float | None:
     return float(values.mean()) if len(values) else None
 
 
-def _exposure(frame: pd.DataFrame) -> dict[str, Any] | None:
-    if frame.empty:
+def _exposure(controlled: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any] | None:
+    """SPY-controlled means over ``controlled`` rows; hold/timing and beta coverage over every
+    ``mature`` row of the class (a row without a SPY ``market_r`` still has its own hold)."""
+    if mature.empty:
         return None
+    with_beta_excess = controlled.dropna(subset=["beta_excess_r"])
+    beta_reasons = mature["beta_reason"].dropna()
     return {
-        "n": len(frame),
-        "mean_r_cost": float(frame["r_cost"].mean()),
-        "mean_market_r": float(frame["market_r"].mean()),
-        "mean_excess_r": float(frame["excess_r"].mean()),
-        "n_beta": int(pd.to_numeric(frame["beta"], errors="coerce").notna().sum()),
-        "mean_beta": _finite_mean(frame, "beta"),
-        "mean_beta_market_r": _finite_mean(frame, "beta_market_r"),
-        "mean_beta_excess_r": _finite_mean(frame, "beta_excess_r"),
-        "mean_hold_r": _finite_mean(frame, "hold_r"),
-        "mean_timing_r": _finite_mean(frame, "timing_r"),
+        "n": len(controlled),
+        "mean_r_cost": _finite_mean(controlled, "r_cost"),
+        "mean_market_r": _finite_mean(controlled, "market_r"),
+        "mean_excess_r": _finite_mean(controlled, "excess_r"),
+        "n_beta": int(pd.to_numeric(controlled["beta"], errors="coerce").notna().sum()),
+        "mean_beta": _finite_mean(controlled, "beta"),
+        "mean_beta_market_r": _finite_mean(controlled, "beta_market_r"),
+        "mean_beta_excess_r": _finite_mean(controlled, "beta_excess_r"),
+        "mean_excess_r_same_rows": _finite_mean(with_beta_excess, "excess_r"),
+        "beta_reasons": {str(reason): int(count) for reason, count in beta_reasons.value_counts().items()},
+        "mean_hold_r": _finite_mean(mature, "hold_r"),
+        "mean_timing_r": _finite_mean(mature, "timing_r"),
     }
 
 
@@ -1120,7 +1165,10 @@ def summarize(frame: pd.DataFrame, *, asset_classes: Mapping[str, str] | None = 
     controlled = mature.dropna(subset=["market_r"])
     market_reasons = frame["market_reason"].dropna()
     market_exposure = {
-        **{name: _exposure(controlled.loc[mask.loc[controlled.index]]) for name, mask in classes.items()},
+        **{
+            name: _exposure(controlled.loc[mask.loc[controlled.index]], mature.loc[mask.loc[mature.index]])
+            for name, mask in classes.items()
+        },
         # Why the control is missing when the proxy fetch failed (one fetch, so one reason).
         "reason": str(market_reasons.iloc[0]) if len(market_reasons) else None,
     }

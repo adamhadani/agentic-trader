@@ -34,13 +34,14 @@ In:
   - `beta_market_r = beta × market_r` and `beta_excess_r = r_cost − beta_market_r`.
   - The beta-one columns stay unchanged beside them.
 - **Own-asset buy-and-hold control.**
-  - `hold_r` is the candidate's own open-to-close return over its holding window, in R units,
-    uncosted. It is `market_r`'s formula applied to the candidate's own hourly bars.
-  - `timing_r = r_cost − hold_r`, the value the bracket and its timing add over simply holding the
-    name for the same window.
+  - `hold_r` is the candidate's own buy-and-hold return over the bracket's full horizon: from the
+    open of the entry bar to the close of the last regular bar of the `max_hold_sessions`-th
+    session counted from the entry session, signed by direction, in R units, uncosted.
+  - `timing_r = r_cost − hold_r`, the value the bracket's stop and target add over simply holding
+    the name for the full horizon.
 - **Summaries.**
   - `market_exposure` per outcome class adds `n_beta`, `mean_beta`, `mean_beta_market_r`,
-    `mean_beta_excess_r`, `mean_hold_r` and `mean_timing_r`.
+    `mean_beta_excess_r`, `mean_excess_r_same_rows`, `beta_reasons`, `mean_hold_r` and `mean_timing_r`.
   - `counterfactual` arms add `mean_beta_excess_r`, using the candidate's beta times the arm's
     `market_r`.
   - A new `by_asset_class` block covers mature rows per class, with `n`, `mean_r_cost`,
@@ -85,7 +86,7 @@ Out:
   variance gives `None` with `short_history`.
 - A row without `market_r` (no proxy) has `beta_market_r` and `beta_excess_r` as `None`, with
   `beta` still recorded.
-- `hold_r` is `None` when `market_r`'s own preconditions fail on the candidate's own bars.
+- `hold_r` is `None` until the horizon session has closed, and when the entry bar is missing.
 - The **erratum script** (`scripts/yardstick_erratum.py`, research only, reads local caches only):
   - for each arm and window (primary and robustness), it computes the mean `excess_r` (beta-one as
     frozen), the mean `r_cost − trailing_beta × market_r` (rows without a beta are dropped and
@@ -105,7 +106,7 @@ Out:
 - `label_journaled`:
   - beta columns are present;
   - a daily fetch failure gives a reason per symbol and the other columns are unchanged;
-  - `hold_r` uses the candidate's own bars;
+  - `hold_r` is the full-horizon buy-and-hold (stop exit then rally, timeout, immature horizon, SHORT sign);
   - `timing_r` arithmetic.
 - `summarize`:
   - the new `market_exposure` keys;

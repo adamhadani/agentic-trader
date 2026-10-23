@@ -57,6 +57,7 @@ from agentic_trader.constants import (
 )
 from agentic_trader.market.bars import BAR_DURATIONS
 from agentic_trader.research.alpha.probe import MAX_PROBE_TERM_DAYS
+from agentic_trader.research.alpha.universe import ETF_RESEARCH_UNIVERSE
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -169,6 +170,17 @@ class UniverseConfig(BaseModel):
             for group, entries in self.groups.items()
             for entry in entries
         }
+
+    def outcome_asset_classes(self) -> dict[str, str]:
+        """``asset_classes`` for the outcome report, with the research ETF cohorts beneath it so a
+        symbol removed from the configured universe (BIL, SHY) keeps its class in journaled rows.
+        The configured universe is authoritative where both list a symbol."""
+        research = {
+            symbol: cohort if cohort in ("rates_credit", "metals") else "etf_equity"
+            for cohort, symbols in ETF_RESEARCH_UNIVERSE.cohorts
+            for symbol in symbols
+        }
+        return {**research, **self.asset_classes()}
 
     def sector_groups(self) -> dict[str, list[str]]:
         groups: dict[str, list[str]] = {}

@@ -44,3 +44,13 @@ def test_shipped_asset_classes():
     assert set(classes) == set(config.universe.symbols)
     for removed in ("BIL", "SHY"):
         assert removed not in classes and removed not in config.universe.symbols
+
+
+def test_outcome_asset_classes_fall_back_to_research_etf_cohorts():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+    classes = config.universe.outcome_asset_classes()
+
+    assert classes["BIL"] == "rates_credit" and classes["SHY"] == "rates_credit"
+    assert classes["TLT"] == "rates_credit" and classes["AAPL"] == "single_stock"
+    assert classes["GLD"] == "metals" and classes["EFA"] == "etf_equity"
+    assert "ZZZZ" not in classes
