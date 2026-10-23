@@ -22,6 +22,7 @@ from agentic_trader.execution.durable import (
 )
 from agentic_trader.execution.lifetime_policy import entry_lifetime_of, lifetime_from_dict
 from agentic_trader.execution.lifetimes import (
+    FILLED_BEFORE_CANCEL,
     INCOMPLETE_OR_CHANGED_GROUP,
     UNFILLED_TERMINAL,
     CancelCause,
@@ -237,14 +238,20 @@ class LifetimeRepository:
                 )
             )
             # The broker refused the DELETE because the entry already filled, cleanly and protected.
-            filled_first = not complete and filled_before_cancel(identity, effective, item.payload["order_ids"])
+            # Only a fresh, successful exact read decides it: a failed lookup (``reason``) stays UNKNOWN.
+            filled_first = (
+                not complete
+                and reason is None
+                and bool(orders)
+                and filled_before_cancel(identity, effective, item.payload["order_ids"])
+            )
             if not complete and not filled_first and allow_pending:
                 return False
             status = WorkStatus.ACCEPTED if complete else WorkStatus.REJECTED if filled_first else WorkStatus.UNKNOWN
             reason = (
                 "confirmed_unfilled_cancellation"
                 if complete
-                else "filled_before_cancel"
+                else FILLED_BEFORE_CANCEL
                 if filled_first
                 else (reason or "unconfirmed_cancellation_or_fill_race")
             )
@@ -262,6 +269,7 @@ class LifetimeRepository:
                 or (row.status == status and json.loads(row.result) == payload)
             ):
                 return True
+            previous = row.status
             row.status, row.result = status, encode(payload)
             await self.store.append(
                 session,
@@ -291,6 +299,8 @@ class LifetimeRepository:
             if filled_first:
                 # The signal stays EXECUTED: exact entry reconciliation records the fill as usual.
                 text = f"Entry #{signal_id} filled before the {cause} cancellation; the position is open and protected."
+                if previous == WorkStatus.UNKNOWN:
+                    text += " The earlier halt stays until /resume."
             else:
                 text = f"Entry #{signal_id} {cause} cancellation: {reason}. " + (
                     "Broker confirms no fills."

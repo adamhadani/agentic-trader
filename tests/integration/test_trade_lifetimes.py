@@ -891,6 +891,12 @@ def fill_race(c, *, filled, child=None):
                 c.venue.stop.update(status="canceled")
             elif child == "replaced":
                 c.venue.stop["replaced_by"] = "00000000-0000-0000-0000-000000000099"
+            elif child == "both_held":
+                c.venue.take_profit.update(status="held")
+            elif child == "two_limits":
+                c.venue.stop.update(type="limit", limit_price="95", stop_price=None)
+            elif child == "take_profit_accepted":
+                c.venue.take_profit.update(status="accepted")
             return 422, {"code": 42210000, "message": "order is already filled"}
         return None
 
@@ -936,7 +942,17 @@ async def test_full_fill_before_cancel_is_terminal_without_halt(lifecycle_case, 
 
 
 @pytest.mark.parametrize("cause", ["operator", "deadline"])
-@pytest.mark.parametrize(("filled", "child"), [("2", None), ("10", "canceled"), ("10", "replaced")])
+@pytest.mark.parametrize(
+    ("filled", "child"),
+    [
+        ("2", None),
+        ("10", "canceled"),
+        ("10", "replaced"),
+        ("10", "both_held"),
+        ("10", "two_limits"),
+        ("10", "take_profit_accepted"),
+    ],
+)
 async def test_partial_or_unprotected_fill_race_stays_unknown_and_halts(lifecycle_case, cause, filled, child):
     c = lifecycle_case
     fill_race(c, filled=filled, child=child)
@@ -944,3 +960,38 @@ async def test_partial_or_unprotected_fill_race_stays_unknown_and_halts(lifecycl
     assert item.status == WorkStatus.UNKNOWN
     assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
     assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+
+
+async def test_a_later_cancel_of_a_filled_before_cancel_entry_says_so(lifecycle_case):
+    c = lifecycle_case
+    fill_race(c, filled="10")
+    await race_cancel(c, "operator")
+    again = await c.services[1].cancel_resting_entry(c.signal_id, confirm=True)
+    assert (again.status, again.reason) == ("refused", "filled_before_cancel")
+    assert len(deletes(c)) == 1
+
+
+async def test_a_failed_lookup_never_resolves_filled_before_cancel(lifecycle_case):
+    """Projected fill evidence alone is not a fresh exact read: UNKNOWN, the lookup reason kept, halt.
+
+    A later successful read may upgrade it, and the notice says the earlier halt remains.
+    """
+    c = lifecycle_case
+    resting(c)
+    repository, identity, orders = await claim_inputs(c)
+    item = await repository.begin_cancel(c.signal_id, identity, orders, None, now=datetime.now(UTC), reason="operator")
+    assert isinstance(item, WorkItem)
+    c.venue.entry.update(
+        status="filled", filled_qty="10", filled_avg_price="100", filled_at=datetime.now(UTC).isoformat()
+    )
+    filled = await c.broker.read_entry_group(identity.order_id)
+    await c.db.workflows.observe_orders(filled)
+    await repository.resolve_cancel(item, [], reason="lookup_failed:APIError")
+    (stored,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert stored.status == WorkStatus.UNKNOWN and stored.result["reason"] == "lookup_failed:APIError"
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    await repository.resolve_cancel(stored, filled)
+    (upgraded,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert upgraded.status == WorkStatus.REJECTED and upgraded.result["reason"] == "filled_before_cancel"
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert any("The earlier halt stays until /resume." in t for t in await notice_texts(c))

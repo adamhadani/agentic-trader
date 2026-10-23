@@ -14,7 +14,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
-from agentic_trader.constants import CloseRequestStatus, SignalStatus
+from agentic_trader.constants import CloseRequestStatus, OrderType, SignalStatus
+from agentic_trader.execution.capacity import protective_stop
 from agentic_trader.execution.durable import OrderObservation, WorkItem, WorkKind, WorkStatus
 from agentic_trader.execution.lifetime_policy import (
     LifetimePolicy,
@@ -45,13 +46,16 @@ class LifetimeAction(StrEnum):
 BRACKET_EXIT_COUNT = 2
 UNFILLED_TERMINAL = frozenset({"canceled", "expired", "rejected"})
 WORKING_ENTRY = frozenset({"new", "accepted", "pending_new", "accepted_for_bidding", "done_for_day"})
-# A live bracket exit after the parent fills: Alpaca holds the stop leg while the take-profit works.
-WORKING_EXIT = WORKING_ENTRY | {"held"}
+# The only statuses a filled bracket's live exits show: Alpaca holds the stop while the take-profit works.
+PROTECTED_EXIT = frozenset({"new", "held"})
+MAX_SIGNAL_ID_DIGITS = 18
 
 
 # Why an entry_cancel work item exists: the resting deadline passed, or the operator asked.
 CancelCause = Literal["deadline", "operator"]
 INCOMPLETE_OR_CHANGED_GROUP = "incomplete_or_changed_bracket_group"
+# A cancel the broker refused because the entry already filled with protection (WorkStatus.REJECTED).
+FILLED_BEFORE_CANCEL = "filled_before_cancel"
 
 
 @dataclass(frozen=True)
@@ -66,8 +70,9 @@ class RestingCancelResult:
 
 
 def parse_signal_id(text: str) -> int | None:
-    """An operator-typed signal id: ASCII decimal digits only (``int`` also takes "４２" or "٤٢")."""
-    return int(text) if text.isascii() and text.isdecimal() else None
+    """An operator-typed signal id: at most 18 ASCII decimal digits (``int`` also takes "４２" or "٤٢")."""
+    valid = text.isascii() and text.isdecimal() and len(text) <= MAX_SIGNAL_ID_DIGITS
+    return int(text) if valid else None
 
 
 def holding_calendar_span_days(holding_sessions: int) -> int:
@@ -192,12 +197,14 @@ def bracket_group_refusal(identity: EntryIdentity, orders: Sequence[OrderObserva
 
 
 def filled_before_cancel(identity: EntryIdentity, orders: Sequence[OrderObservation], order_ids: Sequence[str]) -> bool:
-    """The DELETE lost a clean fill race: the exact parent fully filled, both exits intact and working.
+    """The DELETE lost a clean fill race: the exact parent fully filled and its exits protect it.
 
-    Anything less (a partial fill, a missing, changed, filled or terminal exit) is not this outcome.
+    Protection is the capacity rule (`protective_stop`) plus exactly one limit take-profit. Anything
+    less (a partial fill; a missing, changed, filled, terminal or merely pending exit) is not this outcome.
     """
     by_id = {o.order_id: o for o in orders}
     parent = by_id.get(identity.order_id)
+    exits = [o for o in orders if o.order_id != identity.order_id]
     return (
         parent is not None
         and identity.matches(parent)
@@ -205,7 +212,9 @@ def filled_before_cancel(identity: EntryIdentity, orders: Sequence[OrderObservat
         and Decimal(parent.filled_quantity) == Decimal(parent.quantity)
         and set(order_ids) <= by_id.keys()
         and bracket_group_refusal(identity, orders) is None
-        and all(o.status in WORKING_EXIT for o in orders if o.order_id != identity.order_id)
+        and all(o.status in PROTECTED_EXIT for o in exits)
+        and sum(o.order_type == OrderType.LIMIT.lower() for o in exits) == 1
+        and protective_stop(exits, side=identity.side, quantity=Decimal(identity.quantity)) is not None
     )
 
 
@@ -344,6 +353,8 @@ class TradeLifetimeService:
             return RestingCancelResult("refused", reason, signal_id, symbol, work_status)
 
         if (existing := await self.repository.cancel_item(signal_id)) is not None:
+            if existing.status == WorkStatus.REJECTED:
+                return refused(FILLED_BEFORE_CANCEL, existing.status)
             return refused("cancel_in_progress", existing.status)
         if (
             signal["status"] != SignalStatus.EXECUTED

@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from agentic_trader.cli.main import cli
 from agentic_trader.execution.durable import WorkStatus
-from agentic_trader.execution.lifetimes import RestingCancelResult
+from agentic_trader.execution.lifetimes import RestingCancelResult, parse_signal_id
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter
 
@@ -52,7 +52,7 @@ async def test_telegram_cancel_preview_and_buttons():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("args", [[], ["abc"], ["1", "2"], ["²"], ["４２"], ["٤٢"], ["-1"]])
+@pytest.mark.parametrize("args", [[], ["abc"], ["1", "2"], ["²"], ["４２"], ["٤٢"], ["-1"], ["1" * 19]])
 async def test_telegram_cancel_usage_never_calls_the_handler(args):
     handler = AsyncMock()
     notifier = TelegramNotifier(None, "1", cancel_handler=handler)
@@ -168,7 +168,7 @@ async def test_telegram_confirm_callback_rejects_non_ascii_ids(data):
     assert query.answer.await_args.kwargs == {"show_alert": True}
 
 
-@pytest.mark.parametrize("raw", ["４２", "٤٢", "abc"])
+@pytest.mark.parametrize("raw", ["４２", "٤٢", "abc", "1" * 19])
 def test_cli_cancel_rejects_non_ascii_ids(raw):
     with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
         copilot = MagicMock()
@@ -178,3 +178,21 @@ def test_cli_cancel_rejects_non_ascii_ids(raw):
         result = CliRunner().invoke(cli, ["cancel", raw])
     assert result.exit_code != 0
     copilot.cancel_resting_entry.assert_not_awaited()
+
+
+def test_parse_signal_id_bounds_length():
+    assert parse_signal_id("9" * 18) == int("9" * 18)
+    assert parse_signal_id("9" * 19) is None
+
+
+def test_filled_before_cancel_refusal_renders_the_outcome():
+    refused = RestingCancelResult(
+        status="refused",
+        reason="filled_before_cancel",
+        signal_id=42,
+        symbol="SPY",
+        work_status=WorkStatus.REJECTED,
+    )
+    text = TelegramHtmlFormatter.format_resting_cancel_html(refused)
+    assert "filled before" in text and "open and protected" in text
+    assert "already exists" not in text and "(rejected)" not in text
