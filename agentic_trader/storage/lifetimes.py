@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -19,7 +20,7 @@ from agentic_trader.execution.durable import (
     WorkKind,
     WorkStatus,
 )
-from agentic_trader.execution.lifetime_policy import lifetime_from_dict
+from agentic_trader.execution.lifetime_policy import entry_lifetime_of, lifetime_from_dict
 from agentic_trader.execution.lifetimes import UNFILLED_TERMINAL, EntryIdentity, LifetimeAction, assess_lifetime
 from agentic_trader.storage.models import (
     CloseRequestRecord,
@@ -75,9 +76,12 @@ class LifetimeRepository:
                 or signal.status != SignalStatus.EXECUTED
                 or signal.executed_at is not None
                 or signal.broker_order_id != identity.order_id
-                or not signal.alpha_policy
-                or json.loads(signal.alpha_policy).get("lifetime") != lifetime
             ):
+                return None
+            stored = entry_lifetime_of(
+                {"alpha_policy": signal.alpha_policy, "decision_provenance": signal.decision_provenance}
+            )
+            if stored is None or asdict(stored) != lifetime:
                 return None
             entry = await session.scalar(
                 select(WorkItemRecord).where(

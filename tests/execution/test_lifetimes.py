@@ -1,5 +1,7 @@
 """Expiry never converts partial/ambiguous broker evidence into released exposure."""
 
+import json
+from dataclasses import asdict
 from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -9,10 +11,12 @@ import pytest
 from agentic_trader.execution.durable import OrderObservation
 from agentic_trader.execution.lifetime_policy import (
     DAILY_ENTRY_LIFETIME_SECONDS,
+    NATIVE_ENTRY_LIFETIME_KEY,
     TRADE_LIFETIME_VERSION_INDEPENDENT,
     SessionLifetimePolicy,
     TradeLifetimePolicy,
     daily_entry_lifetime,
+    entry_lifetime_of,
 )
 from agentic_trader.execution.lifetimes import EntryIdentity, LifetimeAction, TradeLifetimeService, assess_lifetime
 from agentic_trader.market.session import MarketCalendarDay
@@ -191,3 +195,33 @@ async def test_the_fetched_calendar_span_grows_with_the_policys_holding_sessions
     ((start, end),) = calendar.requests
     assert start == date(2026, 11, 2)
     assert (end - start).days == 77  # ceil(45 * 7 / 5) + 14
+
+
+def test_resolver_prefers_alpha_policy():
+    declared = TradeLifetimePolicy(resting_seconds=120, holding_seconds=180)
+    signal = {
+        "alpha_policy": {"lifetime": asdict(declared)},
+        "decision_provenance": {NATIVE_ENTRY_LIFETIME_KEY: asdict(daily_entry_lifetime())},
+    }
+    assert entry_lifetime_of(signal) == declared
+
+
+@pytest.mark.parametrize("as_text", [False, True])
+def test_resolver_reads_native_marker(as_text):
+    provenance = {NATIVE_ENTRY_LIFETIME_KEY: asdict(daily_entry_lifetime())}
+    signal = {"alpha_policy": None, "decision_provenance": json.dumps(provenance) if as_text else provenance}
+    assert entry_lifetime_of(signal) == daily_entry_lifetime()
+
+
+@pytest.mark.parametrize(
+    "signal",
+    [{}, {"alpha_policy": None, "decision_provenance": None}, {"alpha_policy": {}, "decision_provenance": {"x": 1}}],
+)
+def test_resolver_none_without_either(signal):
+    assert entry_lifetime_of(signal) is None
+
+
+@pytest.mark.parametrize("marker", ["nope", {"bogus": 1}, [1]])
+def test_resolver_rejects_malformed_marker(marker):
+    with pytest.raises(ValueError):
+        entry_lifetime_of({"decision_provenance": {NATIVE_ENTRY_LIFETIME_KEY: marker}})

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
@@ -82,6 +83,35 @@ def native_entry_lifetime_marker(config: AppConfig) -> dict[str, Any] | None:
     if config.execution.native_entry_lifetime != "session" or config.execution_mode != "alpaca":
         return None
     return asdict(daily_entry_lifetime())
+
+
+def _document(value: Any) -> Mapping[str, Any]:
+    """A stored JSON column as an object: the ORM text, a parsed dict, or empty when absent."""
+    if isinstance(value, str | bytes):
+        value = json.loads(value) if value else None
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("Stored policy document is not an object")  # noqa: TRY004
+    return value
+
+
+def entry_lifetime_of(signal: Mapping[str, Any]) -> LifetimePolicy | None:
+    """The one entry-lifetime resolver: `alpha_policy["lifetime"]`, else a native card's marker.
+
+    Raises ValueError for a malformed document; lifetime callers send that to review.
+    """
+    declared = _document(signal.get("alpha_policy")).get("lifetime")
+    if declared is None:
+        declared = _document(signal.get("decision_provenance")).get(NATIVE_ENTRY_LIFETIME_KEY)
+    if declared is None:
+        return None
+    if not isinstance(declared, Mapping):
+        raise ValueError("Entry lifetime is not an object")  # noqa: TRY004
+    try:
+        return lifetime_from_dict(declared)
+    except TypeError as exc:
+        raise ValueError(f"Malformed entry lifetime: {exc}") from exc
 
 
 SESSION_LIFETIME_VERSION = "session_count_v1"

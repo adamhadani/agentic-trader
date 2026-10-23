@@ -6,6 +6,7 @@ Fixtures seed already-accepted timed orders; session-alpha admission stays disab
 import asyncio
 import json
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime, time as dt_time, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -18,8 +19,10 @@ from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import EventKind, WorkKind, WorkStatus
 from agentic_trader.execution.lifetime_policy import (
     DAILY_ENTRY_LIFETIME_SECONDS,
+    NATIVE_ENTRY_LIFETIME_KEY,
     SessionLifetimePolicy,
     TradeLifetimePolicy,
+    daily_entry_lifetime,
 )
 from agentic_trader.execution.lifetimes import TradeLifetimeService
 from agentic_trader.market.session import AlpacaCalendarProvider, MarketCalendarDay
@@ -419,6 +422,67 @@ async def test_daily_entry_only_policy_never_schedules_a_holding_close(lifecycle
     await asyncio.gather(*(service.reconcile() for service in c.services))
     assert not any(call[0] != "GET" for call in c.venue.calls)
     assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+
+
+async def mark_native(c, *, submitted_seconds_ago):
+    """Turn the fixture signal into a marked native card: no alpha_policy, provenance marker only."""
+    provenance = {NATIVE_ENTRY_LIFETIME_KEY: asdict(daily_entry_lifetime())}
+    async with c.db.session_factory() as session, session.begin():
+        row = await session.get(SignalRecord, c.signal_id)
+        row.alpha_policy, row.timeframe = None, "4h"
+        row.decision_provenance = json.dumps(provenance, allow_nan=False)
+    c.venue.entry.update(submitted_at=(datetime.now(UTC) - timedelta(seconds=submitted_seconds_ago)).isoformat())
+
+
+async def test_marked_native_entry_cancelled_once_after_deadline(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1)
+
+    def response(method, path, query, body):
+        if method == "DELETE":
+            assert path == f"/v2/orders/{c.venue.entry['id']}"
+            complete_cancel(c)
+            return 204, None
+        return None
+
+    c.venue.override = response
+    await asyncio.gather(*(service.reconcile() for service in c.services))
+    await c.services[1].reconcile()
+    cancels = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert len(cancels) == 1 and cancels[0].status == WorkStatus.ACCEPTED
+    assert len([call for call in c.venue.calls if call[0] == "DELETE"]) == 1
+    assert not any(call[0] in ("POST", "PATCH") for call in c.venue.calls)
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.FAILED
+    assert await c.db.workflows.list_work(WorkKind.NOTIFICATION)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+
+
+async def test_marked_native_entry_untouched_before_deadline(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS - 60)
+    await c.services[0].reconcile()
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+
+
+async def test_partial_fill_on_marked_native_entry_halts(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1)
+    c.venue.entry.update(status="partially_filled", filled_qty="2")
+    await c.services[0].reconcile()
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
+async def test_resume_blockers_include_marked_native_signals(lifecycle_case):
+    c = lifecycle_case
+    await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS - 60)
+    assert not await c.services[0].resume_blockers()
+    c.venue.entry.update(status="partially_filled", filled_qty="2")
+    assert await c.services[0].resume_blockers() == [c.signal_id]
+    assert not any(call[0] != "GET" for call in c.venue.calls)
 
 
 class AllDaysCalendar:

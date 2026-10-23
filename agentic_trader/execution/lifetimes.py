@@ -21,7 +21,7 @@ from agentic_trader.execution.lifetime_policy import (
     SessionEvidenceError,
     SessionLifetimePolicy,
     aware_utc,
-    lifetime_from_dict,
+    entry_lifetime_of,
 )
 
 
@@ -207,12 +207,12 @@ class TradeLifetimeService:
         )
         blocked = {item.payload["signal_id"] for item in unresolved}
         for signal in await self.store.db.get_active_positions():
-            if not signal.get("alpha_policy"):
-                continue
-            if "lifetime" not in signal["alpha_policy"] or signal["id"] in blocked:
+            if signal["id"] in blocked:
                 continue
             try:
-                lifetime = lifetime_from_dict(signal["alpha_policy"]["lifetime"])
+                lifetime = entry_lifetime_of(signal)
+                if lifetime is None:
+                    continue
                 await self._reconcile_signal(signal, lifetime)
             except Exception as exc:
                 await self.repository.review(signal["id"], f"lifecycle_evidence_unavailable:{type(exc).__name__}", {})
@@ -221,10 +221,10 @@ class TradeLifetimeService:
         """Fresh read-only checks: /resume cannot waive unresolved timed-position evidence."""
         blocked = []
         for signal in await self.store.db.get_active_positions():
-            if "lifetime" not in (signal.get("alpha_policy") or {}):
-                continue
             try:
-                lifetime = lifetime_from_dict(signal["alpha_policy"]["lifetime"])
+                lifetime = entry_lifetime_of(signal)
+                if lifetime is None:
+                    continue
                 identity = await self._entry_identity(signal)
                 if identity is None:
                     blocked.append(signal["id"])

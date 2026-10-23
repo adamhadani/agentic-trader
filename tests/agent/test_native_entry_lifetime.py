@@ -7,6 +7,7 @@ import pytest
 from agentic_trader.broker.base import TimeInForce
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import ExecutionMode
+from agentic_trader.execution.durable import WorkKind
 from agentic_trader.execution.lifetime_policy import (
     NATIVE_ENTRY_LIFETIME_KEY,
     daily_entry_lifetime,
@@ -95,3 +96,30 @@ def test_card_text_says_unfilled_entry_cancels(eval_res):  # noqa: F811
         assert CARD_LINE in render(eval_res, "TREND_PULLBACK", entry_session_bound=True)
         assert CARD_LINE not in render(eval_res, "TREND_PULLBACK")
         assert CARD_LINE not in render(eval_res, "TREND_PULLBACK", entry_session_bound=False)
+
+
+async def test_reprice_keeps_the_marker_and_the_card_flag(tap_desk, temp_db):  # noqa: F811
+    marker = asdict(daily_entry_lifetime())
+    sid = await record_card(temp_db, age_seconds=3600, provenance_extra={NATIVE_ENTRY_LIFETIME_KEY: marker})
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0  # +0.4R -> REPRICE
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    [notification] = await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+    arguments = notification.payload["arguments"]
+    assert arguments["entry_session_bound"] is True
+    replacement = await temp_db.get_signal_by_id(arguments["signal_id"])
+    assert replacement["decision_provenance"][NATIVE_ENTRY_LIFETIME_KEY] == marker
+
+
+async def test_reprice_of_an_unmarked_card_stays_unmarked(tap_desk, temp_db):  # noqa: F811
+    sid = await record_card(temp_db, age_seconds=3600)
+    tap_desk.data_fetcher.fetch_latest_price.return_value = 102.0
+
+    await tap_desk.execute_signal_by_id(sid)
+
+    [notification] = await temp_db.workflows.list_work(WorkKind.NOTIFICATION)
+    arguments = notification.payload["arguments"]
+    assert "entry_session_bound" not in arguments
+    replacement = await temp_db.get_signal_by_id(arguments["signal_id"])
+    assert NATIVE_ENTRY_LIFETIME_KEY not in replacement["decision_provenance"]
