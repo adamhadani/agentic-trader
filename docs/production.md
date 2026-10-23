@@ -1335,8 +1335,16 @@ The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a 
   filing date in order, yesterday at the latest, starting from `insider_watch.backfill_from` (2026-10-01) on
   the first run and from the last journaled date afterwards. A weekend or federal holiday is journaled
   `no_index` without a request; a business-day index that is a 404 is held, requested once more when a later
-  index returns, and then recorded `no_index` (`closed_inferred`). A date is journaled only when all of its
-  cohort-v3 Form 4 documents parsed.
+  index returns, and then recorded `no_index` (`closed_inferred`). A date is journaled once every one of its
+  cohort-v3 Form 4 documents was read. A document that does not parse (its exception type name), answers 404
+  (`document_not_found`) or exceeds the 16 MiB body budget (`document_too_large`) is recorded as that
+  document's `error`: the date is still journaled, and the issuer's symbols are blocked from watch cards while
+  that date is inside the cluster window plus cooldown. A transport error (after one retry), a 429 or a 5xx
+  records nothing for the date, which the next pass retries.
+- **First deploy.** The first backfill from 2026-10-01 is about 1,900 SEC requests (about 16 minutes at 2 per
+  second). Deploy before about 10:00 New York or after the 10:35 decision, so it finishes outside the scan
+  window it yields to. `insider_capture` readiness is not ready until that first pass finishes, and a 10:35
+  decision before then is `capture_not_current`.
 - **Credential.** `EDGAR_USER_AGENT` (an identifying contact string, required by SEC) is read from the daemon's
   environment only and sent as the `User-Agent`. Never print, log, journal or commit it; failures are logged by
   exception type name. Without it the worker idles (`missing_user_agent`, logged once) and `insider_capture` reports not ready.
@@ -1355,10 +1363,14 @@ The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a 
   | Reason | Meaning and action |
   | --- | --- |
   | `capture_not_current: latest filing date X` | The capture is behind D minus 1 day. Check `EDGAR_USER_AGENT`, the `insider/form4` stream and EDGAR reachability; the worker catches up on its next pass. |
+  | `scope_mismatch: <date>` | The capture of that date was taken under another scope (cohort CIKs or owner rules) than the history reads, so the history ends before it. The worker refuses to capture over an archive that is not the pinned one (`InsiderArchiveMismatch` in `insider_capture` readiness); restore the pinned archive. Journaled captures are never rewritten: investigate before changing anything. |
   | `calendar_source` / `calendar_mismatch` | The trading calendar was not Alpaca's, or its prefix differs from the study's pinned digest. Never relax the pin; investigate the calendar source. |
-  | `plausibility_not_checked` | The pooled cube's raw bars were unavailable for the archive plausibility filter (`insider_watch.pooled_cache_dir`). Restore the cache; there is no silent pass. |
+  | `plausibility_cache_missing` | The pooled cube's raw-bar cache (`insider_watch.pooled_cache_dir`) is not on this machine. Restore the cache; there is no silent pass. |
+  | `plausibility_not_checked` | Defensive: the archive was read without the study's plausibility bars. The daemon always builds the reader, so this is not expected; there is no silent pass. |
+  | `timeout` | The preparation outlasted the scan's shared 60 s bound: a cold archive read near 10:35 (the read continues; the next decision finds it done) or a PEAD preparation that used most of the shared time. Check the phase timings in the journal. |
+  | `error: <Type>` | The preparation raised (for example a cube or digest mismatch, or a history seeded under another entry). The type name is in the reason; the daemon log has the traceback. |
   | `not_a_trading_session` | The scan ran outside a regular session; no action. |
-  | `service unavailable: ...` / `insider watch source unavailable` | The frozen entry, its protocol or a client could not be built. The type name is in the reason; fix the config or digest and restart. |
+  | `service unavailable: <Type>` / `insider watch source unavailable` | The frozen entry, its protocol or a client could not be built. The exception's type name (only) is in the reason; fix the config or digest and restart. |
 
   A `skipped` decision (halt, gated session or late scan) is not a fault. Lateness uses
   `apriori.max_drift_lateness_seconds`, the same cap as the PEAD probe: changing it moves both.

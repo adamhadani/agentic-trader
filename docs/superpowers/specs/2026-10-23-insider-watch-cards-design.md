@@ -153,7 +153,7 @@ check (`workflow.py:479-480`).
 - the buyers, with roles where parsed;
 - the total opportunistic dollars and the filing dates;
 - the study line: "Study v1 (2016–2026): +0.087R/trade, not significant on its own; +0.070R vs matched
-  names (significant). Your call."
+  names (90% CI excludes 0). Your call."
 
 Then the standard levels, risk and buttons.
 

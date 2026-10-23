@@ -22,14 +22,24 @@ One decision per New York session (``CatalogCardSource``):
    their own plausibility check. A cold load that outlasts the scan's preparation deadline makes that
    decision ``unavailable`` (``timeout``) without cancelling the load. A history that does not reach the
    previous calendar day (``WatchHistory.current_for``) makes the session ``unavailable``: never a
-   decision on a partial history. Then ``build_insider_events`` runs narrowed to D = today, as
-   ``pead_live`` narrows PEAD. Name changes of the event symbols (Alpaca corporate actions, read live;
+   decision on a partial history (``scope_mismatch: <date>`` when a capture taken under another scope ended
+   it, ``capture_not_current`` otherwise). A live buyer whose bars came back empty is journaled
+   (``counts["live_buyers_without_bars"]``) and keeps its trades, as the study keeps a trade without a
+   dollar volume; its bars are requested again on the next date. Then ``build_insider_events`` runs
+   narrowed to D = today, as ``pead_live`` narrows PEAD. Name changes of the event symbols (Alpaca corporate actions, read live;
    digest and request time journaled) are the identity breaks; the rule is re-run with them. Each phase's
    wall time is journaled (``counts["elapsed_seconds"]``).
 3. Eligibility as of D-1 on SIP daily bars: the cube's own ``point_in_time_eligibility`` ($10 raw close,
    $5M 20-session median raw dollar volume, ATR14 on adjusted bars), per event symbol. A symbol whose
-   captured documents failed to parse inside the cluster + cooldown span is not carded.
-4. Display order only: buyers (desc), opportunistic dollars over dollar volume (desc), symbol.
+   captured documents failed to be read inside the cluster + cooldown span is not carded. That span
+   (84 sessions) covers a missing document's direct effect on today's cluster and its cooldown; it does
+   not follow a cooldown chain back through an older unread document (a missed trigger more than 84
+   sessions ago that would have suppressed a later one). Live capture began 2026-10-01 (the archive
+   covers everything before), so this cannot matter before about February 2027.
+4. Share-class siblings, as the study: the events of one issuer CIK (a symbol without one is its own
+   issuer) keep only the class with the highest dollar volume at D (an ineligible class counts as minus
+   infinity; the first on a tie); the others are journaled ``share_class_sibling`` and never carded.
+5. Display order only: buyers (desc), opportunistic dollars over dollar volume (desc), symbol.
 
 The card is policy-locked (``alpha_policy`` = the cube bracket, ``session_close`` validity), its LLM pass
 is commentary, it carries news context like a native card, and it is exempt from ``card_policy``, book
@@ -105,7 +115,9 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "CARDED_THIS_SCAN",
     "INSIDER_WATCH_POSITION_CAP_REACHED",
+    "SHARE_CLASS_SIBLING",
     "InsiderWatchSource",
     "LiveWatchHistory",
     "PlausibilityCacheMissing",
@@ -127,6 +139,9 @@ logger = logging.getLogger(__name__)
 _LIVE_DV_WARMUP_SESSIONS = 30
 _ALPACA_CALENDAR_SOURCE = "alpaca_api"
 INSIDER_WATCH_POSITION_CAP_REACHED = "insider watch position cap reached"
+# A watch event on a symbol a native or PEAD card of the same scan already carded (copilot's send loop).
+CARDED_THIS_SCAN = "carded_this_scan"
+SHARE_CLASS_SIBLING = "share_class_sibling"
 # Calendar days looked ahead for the 20-session time exit shown on the card.
 _EXIT_CALENDAR_DAYS = 45
 _DOLLAR_TOLERANCE = 0.01
@@ -350,6 +365,7 @@ class _SessionHistory:
     raw: Mapping[str, pd.DataFrame]  # live raw bars (symbols with a captured purchase since the archive)
     implausible: int  # live trades dropped; the archive's drops are in the process state's provenance
     plausibility_archive: Mapping[str, Any]  # the process state's provenance (study_bars, counts)
+    live_without_bars: tuple[str, ...] = ()  # live buyers whose plausibility bars came back empty
 
 
 class WatchHistorySource(Protocol):
@@ -599,7 +615,8 @@ class InsiderWatchSource:
         self, symbols: Sequence[str], trading: tuple[date, ...], archive_through: date
     ) -> dict[str, pd.DataFrame]:
         """Raw SIP bars through D-1 for the symbols with a live-captured purchase, cached per process and
-        extended per date: a new symbol from shortly before the archive's end, a known one from its last bar."""
+        extended per date: a new symbol from shortly before the archive's end, a known one from its last read.
+        Only a non-empty read advances a symbol, so an empty one is requested again on the next date."""
         end = trading[-2]  # D-1: no bar of D is read
         first_live = int(np.searchsorted(np.array([d.toordinal() for d in trading]), archive_through.toordinal() + 1))
         fresh_start = trading[max(0, first_live - _LIVE_DV_WARMUP_SESSIONS)]
@@ -613,10 +630,11 @@ class InsiderWatchSource:
             fetched = await self._daily(members, start, end, "raw")
             for symbol in members:
                 frame = fetched.get(symbol)
-                if frame is not None and not frame.empty:
-                    known = self._live_raw.get(symbol)
-                    joined = frame if known is None else pd.concat([known, frame])
-                    self._live_raw[symbol] = joined[~joined.index.duplicated(keep="last")].sort_index()
+                if frame is None or frame.empty:
+                    continue
+                known = self._live_raw.get(symbol)
+                joined = frame if known is None else pd.concat([known, frame])
+                self._live_raw[symbol] = joined[~joined.index.duplicated(keep="last")].sort_index()
                 self._live_through[symbol] = end
         return {symbol: self._live_raw[symbol] for symbol in symbols if symbol in self._live_raw}
 
@@ -639,6 +657,8 @@ class InsiderWatchSource:
         if history.provenance.get("entry_sha256") != self.contract.entry_sha256:
             raise ValueError("the watch history was seeded under another insider entry")
         if not history.current_for(session):
+            if history.provenance.get("scope_mismatch"):
+                return f"scope_mismatch: {history.provenance['scope_mismatch']}"
             return f"capture_not_current: latest filing date {history.latest_filing_date.isoformat()}"
         started = monotonic()
         live_buyers = sorted(
@@ -650,7 +670,10 @@ class InsiderWatchSource:
         phases["bars"] += monotonic() - started
         max_trade_rel = float(history.provenance["max_trade_rel"])  # the protocol's own threshold
         transactions, implausible = _apply_plausibility(history, trading, state.implausible, raw, max_trade_rel)
-        result = _SessionHistory(session, trading, history, transactions, raw, implausible, dict(state.provenance))
+        without_bars = tuple(symbol for symbol in live_buyers if symbol not in raw)
+        result = _SessionHistory(
+            session, trading, history, transactions, raw, implausible, dict(state.provenance), without_bars
+        )
         self._cache = result
         return result
 
@@ -731,6 +754,7 @@ class InsiderWatchSource:
         counts = {
             **counts,
             "implausible_live": seeded.implausible,
+            "live_buyers_without_bars": list(seeded.live_without_bars),
             "plausibility_archive": seeded.plausibility_archive,
             "identity_breaks": {s: d.isoformat() for s, d in sorted(breaks.items())},
             "corporate_actions": actions_read,
@@ -755,8 +779,7 @@ class InsiderWatchSource:
         missing_raw = [symbol for symbol in event_symbols if symbol not in seeded.raw]
         raw_floor = {**seeded.raw, **await self._daily(missing_raw, trading[-41], trading[-2], "raw")}
         phases["bars"] += monotonic() - started
-        eligible: list[dict] = []
-        excluded: list[dict] = []
+        measured: list[tuple[dict, str | None, float | None, float | None]] = []
         started = monotonic()
         for row in rows:
             symbol = row["symbol"]
@@ -778,12 +801,29 @@ class InsiderWatchSource:
                 reason = f"incomplete filings: {', '.join(incomplete[symbol])}"
             elif reason is not None:
                 reason = f"ineligible: {reason}"
+            measured.append((document, reason, atr, volume))
+
+        # Share-class siblings (the study's ``dv_at``): per issuer, only the highest dollar volume at D.
+        def dollar_volume_at(index: int) -> float:
+            volume = measured[index][3]
+            return volume if volume is not None and math.isfinite(volume) else -math.inf
+
+        issuers: dict[object, list[int]] = {}
+        for index, (document, *_) in enumerate(measured):
+            issuers.setdefault(history.issuer_ciks.get(document["symbol"], document["symbol"]), []).append(index)
+        winners = {max(group, key=dollar_volume_at) for group in issuers.values()}  # max keeps the first on a tie
+
+        eligible: list[dict] = []
+        excluded: list[dict] = []
+        for index, (document, reason, atr, volume) in enumerate(measured):
+            if index not in winners:
+                reason = SHARE_CLASS_SIBLING
             if reason is not None:
                 excluded.append({**document, "reason": reason})
                 continue
             assert atr is not None and volume is not None
             eligible.append(
-                {**document, "atr": atr, "dollar_volume": volume, "opp_rel": float(row["opp_dollars"]) / volume}
+                {**document, "atr": atr, "dollar_volume": volume, "opp_rel": float(document["opp_dollars"]) / volume}
             )
 
         phases["rule"] += monotonic() - started
@@ -924,14 +964,14 @@ def build_insider_watch_source(
     first decision.
 
     Never raises: a contract or a client that cannot be built leaves a source whose decision scan journals
-    ``service unavailable: <type>: <message>``.
+    ``service unavailable: <type>`` (the exception's type name only: its text may carry paths or SDK detail).
     """
     contract: WatchContract | None = None
     try:
         contract = load_watch_contract(repo_root)
         bars, actions = clients()
     except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
+        error = type(exc).__name__
         logger.warning(
             "Insider watch source unavailable: %s", error, extra={"event": "insider_watch_unavailable", "error": error}
         )

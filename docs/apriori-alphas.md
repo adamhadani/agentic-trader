@@ -262,8 +262,11 @@ card says "INSIDER WATCH — unvalidated".
   ([operations](production.md#insider-watch-form-4-capture)); the archive wins where both cover a date. The
   10x-median plausibility filter runs on the pooled cube's raw bars for archived rows (once per process) and
   on live bars for new buyers; if it was not checked the decision is unavailable. The history must be current for
-  D (latest captured filing date at least D minus 1 day, so a Good Friday gap is tolerated), and a symbol with
-  an unparsed document in the cluster window plus cooldown is blocked, not carded.
+  D (latest captured filing date at least D minus 1 day: the Monday after Good Friday needs Friday's capture,
+  since EDGAR is open that day), and a symbol with an unread document (a parse error, a 404 or an over-budget
+  body) in the cluster window plus cooldown is blocked, not carded. Share-class siblings of one issuer keep
+  only the class with the higher dollar volume at D, as in the study (`share_class_sibling`), and a symbol
+  already carded by a native or PEAD card of the same scan is not carded again (`carded_this_scan`).
 - **Selection.** Ranked by buyers, then opportunistic dollars over dollar volume, then symbol (display order,
   not validated: 3+ buyers +0.165R against +0.066R for two is descriptive). At most
   `insider_watch.max_cards_per_session` (2) cards, none while `max_open_positions` (4) watch positions are
@@ -271,8 +274,8 @@ card says "INSIDER WATCH — unvalidated".
 - **Card and trade.** The study's bracket: 2 x ATR14 stop, 3R target, 20-session time exit
   (`AprioriBracketPolicy` with `SessionLifetimePolicy`, one-session resting entry), risk capped at
   `max_risk_per_trade_usd` ($100). The card shows the buyer count, total opportunistic dollars, filing dates, an
-  EDGAR issuer link and the study line (+0.087R, not significant on its own; +0.070R vs matched). The LLM writes
-  commentary only; every `risk/` rule still applies. The card is tap-only; nothing enters without the tap, and
+  EDGAR issuer link and the study line (+0.087R, not significant on its own; +0.070R vs matched, 90% CI
+  excludes 0). The LLM writes commentary only; every `risk/` rule still applies. The card is tap-only; nothing enters without the tap, and
   admission refuses a signal whose `alpha_policy` differs byte for byte from the frozen contract.
 - **Evidence.** Every decision is one `insider_watch_decision` event (sent or not, with its outcome or
   eligibility reason); `cards outcomes` labels them

@@ -27,10 +27,12 @@ from agentic_trader.data.insider_capture import (
     CAPTURE_STREAM,
     CaptureScope,
     CaptureStatus,
+    InsiderArchiveMismatch,
     InsiderCaptureStore,
     InsiderCaptureWorker,
     WatchCohort,
     capture_filing_dates,
+    capture_scope,
     daily_index_url,
     edgar_business_day,
     load_watch_cohort,
@@ -274,6 +276,85 @@ async def test_a_failed_document_journals_nothing_for_its_date_and_keeps_earlier
         await _capture(sec, capture_store, [oct1, oct2])
     assert [c["filing_date"] for c in await capture_store.captures()] == ["2026-10-01"]
     assert not (capture_store.directory / "2026-10-02").exists()
+
+
+async def test_a_missing_document_is_recorded_per_document_and_the_date_is_still_journaled(capture_store):
+    oct1, oct2 = date(2026, 10, 1), date(2026, 10, 2)
+    sec = FakeSec(
+        indexes={oct1: index_body(oct1, CROX, LPG), oct2: index_body(oct2)},
+        documents=documents(LPG),  # CROX's document answers 404
+    )
+    result = await _capture(sec, capture_store, [oct1, oct2])
+    assert result.recorded == (oct1, oct2) and result.pending is None
+    first = (await capture_store.captures())[0]
+    assert first["errors"] == {"document_not_found": 1}
+    by_path = {d["path"]: d for d in first["documents"]}
+    assert by_path[_path(CROX)]["error"] == "document_not_found" and by_path[_path(CROX)]["sha256"] is None
+    assert by_path[_path(LPG)]["error"] is None
+    assert [t["symbol"] for t in first["transactions"]] == ["LPG"]
+    assert not (capture_store.directory / "2026-10-01" / f"{CROX[0]}.txt").exists()
+
+
+async def test_an_oversized_document_is_recorded_per_document_and_the_date_is_still_journaled(
+    capture_store, monkeypatch
+):
+    oct1 = date(2026, 10, 1)
+    index = index_body(oct1, CROX)
+    monkeypatch.setattr(insider_capture, "MAX_DOCUMENT_BYTES", len(index) + 1)  # the index fits; the document not
+    sec = FakeSec(indexes={oct1: index}, documents={_path(CROX): b"x" * (len(index) + 2)})
+    result = await _capture(sec, capture_store, [oct1])
+    assert result.recorded == (oct1,)
+    [capture] = await capture_store.captures()
+    assert capture["errors"] == {"document_too_large": 1}
+    assert capture["documents"][0]["error"] == "document_too_large" and capture["transactions"] == []
+
+
+async def test_an_oversized_index_still_raises(capture_store, monkeypatch):
+    oct1 = date(2026, 10, 1)
+    monkeypatch.setattr(insider_capture, "MAX_DOCUMENT_BYTES", 10)
+    sec = FakeSec(indexes={oct1: index_body(oct1)})
+    with pytest.raises(ValueError, match="budget"):
+        await _capture(sec, capture_store, [oct1])
+    assert await capture_store.captures() == []
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_a_throttled_or_failed_document_still_holds_its_date(capture_store, status):
+    oct1 = date(2026, 10, 1)
+    sec = FakeSec(
+        indexes={oct1: index_body(oct1, CROX)},
+        documents=documents(CROX),
+        failures={f"https://www.sec.gov/Archives/{_path(CROX)}": status},
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await _capture(sec, capture_store, [oct1])
+    assert await capture_store.captures() == []
+
+
+async def test_a_document_transport_error_after_its_retry_still_holds_its_date(capture_store):
+    oct1 = date(2026, 10, 1)
+    index = index_body(oct1, CROX)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == daily_index_url(oct1):
+            return httpx.Response(200, content=index)
+        raise httpx.ConnectError("refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(httpx.ConnectError):
+            await capture_filing_dates(client, capture_store, [oct1], scope=SCOPE, user_agent=UA, pace=_no_pace)
+    assert await capture_store.captures() == []
+
+
+async def test_a_missing_document_marks_its_issuer_incomplete_in_the_history(tmp_path, capture_store):
+    archive, inputs = _archive(tmp_path, {"2026q3": _trades()})
+    oct1 = date(2026, 10, 1)
+    sec = FakeSec(indexes={oct1: index_body(oct1, (CROX[0], CROX_CIK, CROX[2]))}, documents={})
+    scope = CaptureScope({CROX_CIK: ("CROX",), LPG_CIK: ("LPG",)}, ROLES, False)
+    async with sec.client() as client:
+        await capture_filing_dates(client, capture_store, [oct1], scope=scope, user_agent=UA, pace=_no_pace)
+    history = await _seed(capture_store, archive, _cohort(inputs), _weekdays(date(2026, 7, 1), date(2026, 10, 5)))
+    assert history.incomplete == {"CROX": (oct1,)} and history.latest_filing_date == oct1
 
 
 async def test_a_server_error_on_the_index_raises_rather_than_reading_as_no_filings(capture_store):
@@ -769,6 +850,47 @@ async def test_the_watch_cohort_loads_the_frozen_entry_protocol_and_cohort(tmp_p
     assert len(cohort.symbols) == 1000 and cohort.filings.max_trade_rel == 10
     assert cohort.cik_to_symbols == {CROX_CIK: ("CROX",), LPG_CIK: ("LPG",)}
     assert cohort.scope().owner_roles == ("Officer", "Director") and cohort.scope().exclude_10b5_1 is False
+
+
+def test_the_capture_scope_is_the_cohort_s_only_over_the_pinned_archive(tmp_path):
+    directory, inputs = _archive(tmp_path, {"2026q3": _trades()})
+    cohort = _cohort(inputs)
+    assert capture_scope(cohort, directory) == cohort.scope()
+    at = datetime(2026, 10, 22, tzinfo=UTC)
+    body = b'{"0": {"cik_str": 1, "ticker": "NEW", "title": "x"}}'  # a refreshed ticker map: a new scope
+    InsiderFilingStore(directory).save_tickers(body, url="u", requested_at=at, received_at=at)
+    with pytest.raises(InsiderArchiveMismatch):
+        capture_scope(cohort, directory)
+
+
+async def test_a_scope_over_another_archive_fails_the_poll_by_type_name(capture_store, app_config):
+    shutdown = asyncio.Event()
+    seen: list[tuple[bool, str]] = []
+
+    async def observe(ok: bool, detail: str) -> None:
+        seen.append((ok, detail))
+        shutdown.set()
+
+    async def scope() -> CaptureScope:
+        raise InsiderArchiveMismatch("the insider archive does not match the pinned files_sha256")
+
+    sec = _quiet_sec(*_days(date(2026, 10, 1), date(2026, 10, 5)))
+    await asyncio.wait_for(
+        run_insider_capture_worker(
+            _config(app_config),
+            capture_store,
+            observe,
+            shutdown,
+            scope=scope,
+            environ={"EDGAR_USER_AGENT": UA},
+            transport=httpx.MockTransport(sec.handler),
+            clock=lambda: _et(date(2026, 10, 6), 7),
+            pace=_no_pace,
+        ),
+        timeout=5,
+    )
+    assert seen == [(False, "InsiderArchiveMismatch")]
+    assert sec.requests == [] and await capture_store.captures() == []
 
 
 def test_the_watch_cohort_fails_closed_without_a_ticker_map(tmp_path):

@@ -123,3 +123,13 @@ def test_watch_bars_fetches_each_symbol_and_the_proxy_once_and_records_failures(
     assert set(bars.hourly) == {"AAA"} and set(bars.daily) == {"AAA"}
     assert bars.failures == {"BBB": "RuntimeError: boom"}
     assert sorted(calls) == [("AAA", "1d"), ("AAA", "1h"), ("BBB", "1h"), ("SPY", "1d"), ("SPY", "1h")]
+
+
+def test_decision_frame_dedupes_by_event_id_across_scans_and_keeps_the_sent_row():
+    rerun = [_payload("s1", [_event("AAA", "sent")]), _payload("s2", [_event("AAA", "insider watch budget spent")])]
+    for payloads in (rerun, rerun[::-1]):
+        frame = decision_frame(payloads)
+        assert list(frame["symbol"]) == ["AAA"] and list(frame["scan_id"]) == ["s1"] and frame["sent"].all()
+    # Two events of one scan are two rows.
+    two = decision_frame([_payload("s1", [_event("AAA", "sent"), _event("BBB", "not sent")])])
+    assert sorted(two["event_id"]) == ["AAA-1", "BBB-1"]

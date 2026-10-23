@@ -55,36 +55,36 @@ _NOT_TAPPED = (SignalStatus.PENDING, SignalStatus.DISMISSED, SignalStatus.EXPIRE
 
 
 def decision_frame(payloads: list[dict[str, Any]]) -> pd.DataFrame:
-    """One row per sent or eligible-but-unsent journaled event, deduped by the journaling scan's ID.
+    """One row per sent or eligible-but-unsent journaled event, deduped by its ``event_id``.
 
-    Eligible means the event carries the ATR the eligibility rule measured; an ineligible or incomplete
-    event is journaled without one and is not part of this record. ``sent`` is the scan's own outcome.
+    The same event can be journaled by more than one decision scan of its session (a rerun); it is one
+    event, kept as the scan that sent it when one did, else the first. Eligible means the event carries the
+    ATR the eligibility rule measured; an ineligible or incomplete event is journaled without one and is not
+    part of this record. ``sent`` is the journaling scan's own outcome.
     """
-    seen: set[Any] = set()
-    rows: list[dict[str, Any]] = []
+    by_event: dict[Any, dict[str, Any]] = {}
     for payload in payloads:
         scan_id = payload.get("scan_id")
-        if scan_id in seen:
-            continue
-        seen.add(scan_id)
         for event in payload.get("events") or []:
             if event.get("atr") is None:
                 continue
-            rows.append(
-                {
-                    "scan_id": scan_id,
-                    "event_id": event.get("event_id"),
-                    "symbol": event["symbol"],
-                    "session": date.fromisoformat(event["session"]),
-                    "decision_at": datetime.fromisoformat(event["decision_at"]),
-                    "atr": float(event["atr"]),
-                    "buyers": event.get("buyers"),
-                    "opp_dollars": event.get("opp_dollars"),
-                    "outcome": event.get("outcome"),
-                    "sent": event.get("outcome") == "sent",
-                }
-            )
-    return pd.DataFrame(rows, columns=list(_COLUMNS))
+            key = event.get("event_id") or (scan_id, event["symbol"])
+            row = {
+                "scan_id": scan_id,
+                "event_id": event.get("event_id"),
+                "symbol": event["symbol"],
+                "session": date.fromisoformat(event["session"]),
+                "decision_at": datetime.fromisoformat(event["decision_at"]),
+                "atr": float(event["atr"]),
+                "buyers": event.get("buyers"),
+                "opp_dollars": event.get("opp_dollars"),
+                "outcome": event.get("outcome"),
+                "sent": event.get("outcome") == "sent",
+            }
+            kept = by_event.get(key)
+            if kept is None or (row["sent"] and not kept["sent"]):
+                by_event[key] = row
+    return pd.DataFrame(list(by_event.values()), columns=list(_COLUMNS))
 
 
 @dataclass

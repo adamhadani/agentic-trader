@@ -25,6 +25,7 @@ from agentic_trader.data.corporate_actions_worker import CorporateActionsWorker
 from agentic_trader.data.insider_capture import (
     CaptureScope,
     InsiderCaptureStore,
+    capture_scope,
     default_capture_directory,
     load_watch_cohort,
     run_insider_capture_worker,
@@ -441,14 +442,18 @@ async def run_insider_capture(copilot, config) -> None:
     """The nightly SEC Form 4 capture for insider watch cards (data/insider_capture.py).
 
     The cohort's issuer CIKs come from the frozen insider entry and the archive's ticker map, loaded on
-    the first poll that has dates to capture; a failure there is observed like any failed poll.
+    the first poll that has dates to capture, and only over the pinned archive (``capture_scope`` checks
+    its ``files_sha256``): a failure there, a refreshed archive included, is observed by type name like any
+    failed poll, and nothing is captured under a scope the watch history would not read.
     """
     policy = config.insider_watch
     store = InsiderCaptureStore(copilot.db.workflows, default_capture_directory())
 
+    def load_scope() -> CaptureScope:
+        return capture_scope(load_watch_cohort(REPO_ROOT, policy.archive_dir), policy.archive_dir)
+
     async def scope() -> CaptureScope:
-        cohort = await asyncio.to_thread(load_watch_cohort, REPO_ROOT, policy.archive_dir)
-        return cohort.scope()
+        return await asyncio.to_thread(load_scope)
 
     async def observe(ok: bool, detail: str) -> None:
         await copilot.readiness.observe(HealthComponent.INSIDER_CAPTURE, ok, detail)

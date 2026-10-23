@@ -480,11 +480,19 @@ def test_cards_outcomes_reports_the_insider_watch_block(runner: CliRunner):
     async def decision_events(db, days, *, now, kind):
         return [payload] if kind == EventKind.INSIDER_WATCH_DECISION else []
 
-    fake_bars = _FakeBarSource(hourly)
+    configured = _FakeBarSource(pd.DataFrame())  # the configured (IEX) feed: never read by the watch block
+    sip = _FakeBarSource(hourly)
+    providers: list[dict] = []
+
+    def provider(**kwargs):
+        providers.append(kwargs)
+        return sip
+
     with (
         patch.object(cards_module, "datetime", _FrozenDateTime),
         patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
-        patch.object(cards_module, "build_bar_source", return_value=fake_bars),
+        patch.object(cards_module, "build_bar_source", return_value=configured),
+        patch.object(cards_module, "AlpacaDataProvider", provider),
         patch.object(cards_module, "watch_signals", AsyncMock(return_value=[])),
         patch.object(cards_module, "_decision_events", decision_events),
     ):
@@ -493,5 +501,7 @@ def test_cards_outcomes_reports_the_insider_watch_block(runner: CliRunner):
     assert result.exit_code == 0, result.output
     assert "Insider watch:" in result.output and '"insider_watch"' in result.output
     assert '"sent_events"' in result.output and '"taps": 0' in result.output and '"n": 1' in result.output
-    assert {call[0] for call in fake_bars.calls} >= {"AAA", "SPY"}
-    assert all(call[4] == "all" for call in fake_bars.calls if call[0] == "AAA")
+    # The study, its +0.087R line and the PEAD record are all SIP: the watch block labels on SIP too.
+    assert [p["feed"] for p in providers] == ["sip"]
+    assert {call[0] for call in sip.calls} >= {"AAA", "SPY"} and configured.calls == []
+    assert all(call[4] == "all" for call in sip.calls if call[0] == "AAA")

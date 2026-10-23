@@ -83,8 +83,8 @@ CONTRACT = load_watch_contract(REPO_ROOT)
 D = date(2026, 10, 21)  # a Wednesday session; D-1 = 2026-10-20
 NOW = datetime.combine(D, time(10, 35), tzinfo=ET_TZ)
 STUDY_LINE = (
-    "Study v1 (2016–2026): +0.087R/trade, not significant on its own; +0.070R vs matched names (significant). "
-    "Your call."
+    "Study v1 (2016–2026): +0.087R/trade, not significant on its own; "
+    "+0.070R vs matched names (90% CI excludes 0). Your call."
 )
 
 
@@ -372,7 +372,7 @@ def test_an_unloadable_contract_leaves_an_unbuilt_source(app_config, tmp_path, t
     source = build_insider_watch_source(
         app_config, temp_db.workflows, repo_root=tmp_path, calendar=None, clients=lambda: (None, None)
     )
-    assert source.contract is None and source.service_error.startswith("FileNotFoundError")
+    assert source.contract is None and source.service_error == "FileNotFoundError"
     assert not source.applies("10:35")
     prep = source.unbuilt(app_config, None, "10:35", session=D)
     assert prep is not None and prep.status == "unavailable" and prep.reason.startswith("service unavailable:")
@@ -856,7 +856,7 @@ def test_an_enabled_copilot_builds_and_appends_the_watch_source(app_config, temp
     # The unit-test environment strips the Alpaca keys, so the clients cannot be built: the contract still
     # loads, and the 10:35 scan journals the decision unavailable rather than going silent.
     assert source.contract == CONTRACT and not source.applies("10:35")
-    assert source.service_error == "ValueError: You must supply a method of authentication"
+    assert source.service_error == "ValueError"
     prep = source.unbuilt(app_config, None, "10:35", session=D)
     assert prep.reason == f"service unavailable: {source.service_error}" and prep.policy == CONTRACT.policy
     assert desk._catalog_strategy_ids() == frozenset({PEAD_STRATEGY_ID, INSIDER_WATCH_STRATEGY_ID})
@@ -1270,3 +1270,123 @@ async def test_r3_a_failed_warm_read_logs_its_reason_token_once(app_config, capl
         "plausibility_cache_missing",
     )
     assert "/private/path" not in caplog.text
+
+
+# --- final review fix wave: share-class siblings, scope mismatch, live plausibility, same-symbol cards --
+
+
+async def test_f1_share_class_siblings_card_only_the_class_with_the_higher_dollar_volume(app_config):
+    rows = {
+        "FOX": [buy("FOX", D - timedelta(days=2), 1), buy("FOX", D - timedelta(days=1), 2)],
+        "FOXA": [buy("FOXA", D - timedelta(days=2), 1), buy("FOXA", D - timedelta(days=1), 2)],
+    }
+    seed = dataclasses.replace(history(rows), issuer_ciks={"FOX": 1754301, "FOXA": 1754301})
+    source, _ = source_with(seed, app_config, closes={"FOX": 50.0, "FOXA": 60.0})  # FOXA: $60M dollar volume
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert [e["symbol"] for e in prep.events] == ["FOXA"]
+    assert [(e["symbol"], e["reason"]) for e in prep.excluded_events] == [("FOX", "share_class_sibling")]
+
+
+async def test_f1_an_ineligible_class_counts_as_minus_infinity_so_its_sibling_is_carded(app_config):
+    rows = {
+        "FOX": [buy("FOX", D - timedelta(days=2), 1), buy("FOX", D - timedelta(days=1), 2)],
+        "FOXA": [buy("FOXA", D - timedelta(days=2), 1), buy("FOXA", D - timedelta(days=1), 2)],
+    }
+    seed = dataclasses.replace(history(rows), issuer_ciks={"FOX": 1754301, "FOXA": 1754301})
+    # FOXA's raw dollar volume would be higher, but its $5 close fails the price floor.
+    source, _ = source_with(seed, app_config, closes={"FOX": 50.0, "FOXA": 5.0})
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert [e["symbol"] for e in prep.events] == ["FOX"]
+    assert {e["symbol"]: e["reason"] for e in prep.excluded_events} == {"FOXA": "share_class_sibling"}
+
+
+async def test_f1_different_issuers_are_never_siblings(app_config):
+    seed = dataclasses.replace(history(clusters()), issuer_ciks={"AAA": 1, "BBB": 2})
+    source, _ = source_with(seed, app_config, closes=CLOSES)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    # A symbol without an issuer CIK is its own issuer, as in the study.
+    assert [e["symbol"] for e in prep.events] == ["BBB", "AAA", "DDD", "EEE"]
+    assert "share_class_sibling" not in {e["reason"] for e in prep.excluded_events}
+
+
+async def test_f4_a_capture_under_another_scope_is_named_in_the_unavailable_reason(app_config):
+    seed = history(clusters(), latest=D - timedelta(days=3))
+    seed = dataclasses.replace(seed, provenance={**seed.provenance, "scope_mismatch": "2026-10-19"})
+    source, _ = source_with(seed, app_config, closes=CLOSES)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert (prep.status, prep.reason) == ("unavailable", "scope_mismatch: 2026-10-19")
+
+
+async def test_f4_a_live_buyer_without_bars_is_journaled_and_requested_again_next_date(app_config):
+    rows = clusters() | {"NOB": [buy("NOB", D - timedelta(days=2), 30), buy("NOB", D - timedelta(days=1), 31)]}
+    source, _ = source_with(history(rows, latest=D), app_config, closes=CLOSES)  # no bars for NOB
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert prep.counts["live_buyers_without_bars"] == ["NOB"]
+    [first] = [call for call in source.bars.calls if call[3] == "raw" and "NOB" in call[0]][:1]
+    source.bars.calls.clear()
+    await source.prepare(now=NOW + timedelta(days=1), snapshot=None, owned={})
+    [again] = [call for call in source.bars.calls if call[3] == "raw" and "NOB" in call[0]][:1]
+    assert again[1] == first[1]  # never advanced past an empty read: the warm-up window is read again
+
+
+async def test_f4_a_watch_event_on_a_symbol_already_carded_this_scan_is_skipped(watch_desk, temp_db):
+    source = watch_desk.insider_watch_source
+    source.prep = watch_prep("DDD", "WINR", "WTCH")  # DDD: the native card; WINR: the PEAD card
+    source.candidates.update({"DDD": watch_candidate("DDD"), "WINR": watch_candidate("WINR")})
+
+    await suggestion_scan(watch_desk)
+
+    [event] = await _watch_events(temp_db)
+    assert {e["symbol"]: e["outcome"] for e in event["payload"]["events"]} == {
+        "DDD": "carded_this_scan",
+        "WINR": "carded_this_scan",
+        "WTCH": "sent",
+    }
+    assert sorted(s["contract"] for s in await _signals(temp_db)) == ["DDD", "WINR", "WTCH"]
+
+
+def test_f4_an_unbuildable_source_names_the_exception_type_only(app_config, tmp_path, temp_db):
+    app_config.insider_watch.enabled = True
+
+    def clients():
+        raise ValueError("secret detail /private/path")
+
+    source = build_insider_watch_source(
+        app_config, temp_db.workflows, repo_root=REPO_ROOT, calendar=None, clients=clients
+    )
+    assert source.service_error == "ValueError"
+    prep = source.unbuilt(app_config, None, "10:35", session=D)
+    assert prep.reason == "service unavailable: ValueError"
+
+
+def test_f4_an_unscheduled_watch_decision_time_is_warned_at_construction(app_config, temp_db, mock_notifier, caplog):
+    app_config.insider_watch.enabled = True
+    app_config.copilot_chat_enabled = False
+    app_config.scheduler.suggestion_scan_times_et = ["09:45", "14:35"]
+    with caplog.at_level("WARNING", logger="copilot"):
+        copilot_module.TradingCopilot(
+            app_config,
+            db=temp_db,
+            broker=MagicMock(supports_activity_ledger=False, supports_trade_stream=False),
+            notifier=mock_notifier,
+            entry_service=AsyncMock(),
+            alpha_repository=AsyncMock(),
+        )
+    [record] = [r for r in caplog.records if r.__dict__.get("event") == "insider_watch_decision_time_unscheduled"]
+    assert "10:35" in record.getMessage() and record.__dict__["decision_time_et"] == "10:35"
+
+
+def test_f4_a_scheduled_watch_decision_time_is_not_warned(app_config, temp_db, mock_notifier, caplog):
+    app_config.insider_watch.enabled = True
+    app_config.copilot_chat_enabled = False
+    assert "10:35" in app_config.scheduler.suggestion_scan_times_et
+    with caplog.at_level("WARNING", logger="copilot"):
+        copilot_module.TradingCopilot(
+            app_config,
+            db=temp_db,
+            broker=MagicMock(supports_activity_ledger=False, supports_trade_stream=False),
+            notifier=mock_notifier,
+            entry_service=AsyncMock(),
+            alpha_repository=AsyncMock(),
+        )
+    assert not [r for r in caplog.records if r.__dict__.get("event") == "insider_watch_decision_time_unscheduled"]

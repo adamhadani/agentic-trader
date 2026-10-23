@@ -32,7 +32,7 @@ from agentic_trader.agent.earnings import (
     earnings_blackout_reason,
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
-from agentic_trader.agent.insider_watch import InsiderWatchSource, build_insider_watch_source
+from agentic_trader.agent.insider_watch import CARDED_THIS_SCAN, InsiderWatchSource, build_insider_watch_source
 from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.news_context import NewsContextService, build_news_context_service, unavailable_block
 from agentic_trader.agent.regime import (
@@ -487,6 +487,15 @@ class TradingCopilot:
                 clients=watch_clients,
             )
             self.catalog_sources.append(self.insider_watch_source)
+            watch_time = self.insider_watch_source.decision_time_et
+            if watch_time not in config.scheduler.suggestion_scan_times_et:
+                logger.warning(
+                    "Insider watch decision time %s New York is not a scheduled suggestion scan time "
+                    "(scheduler.suggestion_scan_times_et: %s); no watch card will be decided.",
+                    watch_time,
+                    ", ".join(config.scheduler.suggestion_scan_times_et) or "none",
+                    extra={"event": "insider_watch_decision_time_unscheduled", "decision_time_et": watch_time},
+                )
         self.evaluator = RiskEvaluator(
             config,
             calendar=self.calendar,
@@ -1556,6 +1565,9 @@ class TradingCopilot:
 
             # One session-clock read per (contract, extended validity) that actually records a card.
             session_closes: dict[tuple[str, bool], str | None] = {}
+            # Contracts carded by this scan so far: a watch event never cards a symbol a native or PEAD card of
+            # the same scan already did (natives and earlier sources send first).
+            carded_contracts: set[str] = set()
             # SEND: a journal-only scan has no send phase (no LLM, no `record_signal`, no outbox); its
             # outcomes were set to `journal_only` above, so the loop is given nothing to send.
             for rank, (candidate, _det_res, account_risk) in enumerate([] if journal_only else ranked, 1):
@@ -1569,6 +1581,12 @@ class TradingCopilot:
                     if rank in broad_excluded:
                         # First, so the outcome never depends on how much budget is left.
                         reason, fixed_outcome = BROAD_INDEX_REASON, RankedOutcome.BROAD_INDEX_EXCLUDED
+                    elif (
+                        catalog is not None
+                        and catalog.source.kind == "watch"
+                        and candidate.contract in carded_contracts
+                    ):
+                        reason = CARDED_THIS_SCAN
                     elif catalog is not None and catalog.remaining <= 0:
                         reason = catalog.source.budget_spent_reason
                     elif not is_catalog and remaining_scan <= 0:
@@ -1801,6 +1819,7 @@ class TradingCopilot:
                     total_alerts += 1
                     outcomes[rank - 1] = RankedOutcome.SENT
                     signal_ids_by_rank[rank - 1] = sig_id
+                    carded_contracts.add(candidate.contract)
                     if catalog is not None:
                         catalog.remaining -= 1
                     else:

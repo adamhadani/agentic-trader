@@ -102,6 +102,21 @@ async def outcomes_cmd(days: int) -> None:
             click.echo("Execution evidence:")
             click.echo(execution.to_string(index=False))
 
+        # The PEAD and insider watch records are labelled on SIP, the feed their studies (and the watch card's
+        # +0.087R line) were measured on, never the configured feed: one provider, built on first use.
+        sip_provider: AlpacaDataProvider | None = None
+
+        def sip() -> AlpacaDataProvider:
+            nonlocal sip_provider
+            if sip_provider is None:
+                sip_provider = AlpacaDataProvider(
+                    api_key=config.alpaca_api_key,
+                    api_secret=config.alpaca_api_secret,
+                    feed="sip",
+                    request_timeout=config.market_data.timeout_seconds,
+                )
+            return sip_provider
+
         payloads = await _decision_events(db, days, now=now, kind=EventKind.PEAD_DECISION)
         if payloads:
             entry = load_pead_entry(Path(config.apriori.pead_entry_path)).entry
@@ -109,19 +124,14 @@ async def outcomes_cmd(days: int) -> None:
             bar_failures: dict[str, str] = {}
             hourly: dict[str, pd.DataFrame] = {}
             if not decisions.empty:
-                sip = AlpacaDataProvider(
-                    api_key=config.alpaca_api_key,
-                    api_secret=config.alpaca_api_secret,
-                    feed="sip",
-                    request_timeout=config.market_data.timeout_seconds,
-                )
+                pead_source = sip()
                 pacer = RequestPacer(max(1, config.market_data.max_requests_per_minute))
                 for symbol, group in decisions.groupby("symbol"):
                     start = datetime.combine(min(group["session"]) - timedelta(days=7), time.min, tzinfo=UTC)
                     await asyncio.to_thread(pacer.acquire)
                     try:
                         hourly[symbol] = await asyncio.to_thread(
-                            sip.fetch_bars, symbol, "1h", start, now, adjustment="all"
+                            pead_source.fetch_bars, symbol, "1h", start, now, adjustment="all"
                         )
                     except Exception as exc:
                         bar_failures[symbol] = f"{type(exc).__name__}: {exc}"
@@ -146,10 +156,11 @@ async def outcomes_cmd(days: int) -> None:
             watch = decision_frame_watch(watch_payloads)
             contract = frozen_watch_contract()
             pacer = RequestPacer(max(1, config.market_data.max_requests_per_minute))
+            watch_source = sip()
 
             def fetch(symbol: str, timeframe: str, start: datetime, end: datetime) -> pd.DataFrame:
                 pacer.acquire()
-                return bars.fetch_bars(symbol, timeframe, start, end, adjustment="all")
+                return watch_source.fetch_bars(symbol, timeframe, start, end, adjustment="all")
 
             watch_data = await asyncio.to_thread(watch_bars, fetch, watch, now)
             watch_labels = label_watch_events(

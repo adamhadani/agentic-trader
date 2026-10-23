@@ -491,10 +491,12 @@ nothing in `risk/`, `card_policy`, `card_stats` or admission reads it, and a wat
 
 - **Events.** Every journaled event that carries a measured ATR (so it passed the frozen eligibility rule):
   those sent as cards and those eligible but unsent (owned, over the card or position cap, late, and so on).
-  Ineligible and incomplete-filing events are journaled but not labelled. One scan ID counts once.
+  Ineligible and incomplete-filing events are journaled but not labelled. An event journaled by more than one
+  decision scan (a rerun) counts once by its event ID, as the scan that sent it when one did.
 - **Labels.** The frozen cube bracket (decision-bar close, 2 x ATR14 stop, 3R target, 20-session time exit, 15 bp
   decisive cost) walked on hourly bars with `label_bracket` from the 10:35 decision, the way the PEAD forward
-  record is labelled, on the configured feed with adjusted prices. `n` counts mature rows only; the rest are in
+  record is labelled, on SIP with adjusted prices (the feed the study, the card's +0.087R line and the PEAD
+  record use; never the configured feed). `n` counts mature rows only; the rest are in
   `unlabelled` by reason (`no_hourly_bars`, `no_decision_price`, `degenerate_levels`, `immature`).
 - **Blocks.** `all`, `sent_events` and `unsent_events`, each with `n`, `mean_r_cost` and `mean_beta_excess_r`:
   `r_cost` minus the past-only trailing beta (the controls above) times SPY's return over the same holding

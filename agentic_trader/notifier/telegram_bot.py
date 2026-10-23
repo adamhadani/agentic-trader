@@ -179,8 +179,8 @@ NEWS_LABEL = "📰 News (context, not a gate): "
 WATCH_HEADER = "👀 INSIDER WATCH — unvalidated"
 WATCH_ISSUER_URL = "https://www.sec.gov/cgi-bin/own-disp?action=getissuer&CIK={cik}"
 WATCH_STUDY_LINE = (
-    "Study v1 (2016–2026): +0.087R/trade, not significant on its own; +0.070R vs matched names (significant). "
-    "Your call."
+    "Study v1 (2016–2026): +0.087R/trade, not significant on its own; "
+    "+0.070R vs matched names (90% CI excludes 0). Your call."
 )
 NEWS_HEADLINE_CHARS = 110  # the card clips headlines at a fixed width; not configurable
 

@@ -6,9 +6,13 @@ For each SEC filing date F the capture reads the EDGAR daily form index, keeps t
 cohort-v3 issuers, fetches each filing's full-submission ``.txt``, parses it with
 ``edgar_form4.parse_form4`` (the data-set reader's rules) and journals one ``insider/form4/<F>`` event:
 every qualifying transaction, the index and row counts, the per-rule drops and one record per
-document. Raw bytes go to private files under ``<directory>/<F>/``. A date is journaled only once all
-of its documents were read, so the journal is never partial; a failed request raises and records nothing
-for that date.
+document. Raw bytes go to private files under ``<directory>/<F>/``. A date is journaled only once every
+one of its documents was read, so the journal is never partial. A document that answers 404
+(``document_not_found``), whose body exceeds ``MAX_DOCUMENT_BYTES`` (``document_too_large``) or that does
+not parse (its exception type name) is recorded as that document's ``error``: the date is journaled and the
+document's issuer is incomplete there (``WatchHistory.incomplete``), so one bad document never holds the
+capture forever. Any other failed request (a transport error after its one retry, a 429 or a 5xx, an
+index over the budget) raises and records nothing for that date, which the next poll retries.
 
 Every calendar date is journaled in order, so the journal is contiguous: a weekend or a federal holiday
 is ``no_index`` (``non_business_day``) without a request; a business day whose index is a 404 is held
@@ -99,12 +103,14 @@ __all__ = [
     "CaptureResult",
     "CaptureScope",
     "CaptureStatus",
+    "InsiderArchiveMismatch",
     "InsiderCaptureStore",
     "InsiderCaptureWorker",
     "WatchArchive",
     "WatchCohort",
     "WatchHistory",
     "capture_filing_dates",
+    "capture_scope",
     "daily_index_url",
     "default_capture_directory",
     "edgar_business_day",
@@ -137,6 +143,17 @@ _DOCUMENT_PATH = re.compile(r"edgar/data/\d{1,10}/(\d{10}-\d{2}-\d{6})\.txt")
 _NON_BUSINESS_DAY = "non_business_day"
 _CLOSED_INFERRED = "closed_inferred"
 _UNPUBLISHED = "unpublished"
+# Fixed per-document error tokens (a parse failure records its exception type name instead).
+DOCUMENT_NOT_FOUND = "document_not_found"
+DOCUMENT_TOO_LARGE = "document_too_large"
+
+
+class BodyTooLarge(ValueError):
+    """A response body exceeded ``MAX_DOCUMENT_BYTES``."""
+
+
+class InsiderArchiveMismatch(ValueError):
+    """The insider archive on disk is not the one the frozen protocol pins (``insider_filings.files_sha256``)."""
 
 
 class CaptureStatus(StrEnum):
@@ -276,7 +293,7 @@ async def _stream(client: httpx.AsyncClient, url: str, user_agent: str, *, missi
         async for chunk in response.aiter_bytes():
             total += len(chunk)
             if total > MAX_DOCUMENT_BYTES:
-                raise ValueError(f"{url}: exceeded the {MAX_DOCUMENT_BYTES}-byte budget")
+                raise BodyTooLarge(f"{url}: exceeded the {MAX_DOCUMENT_BYTES}-byte budget")
             chunks.append(chunk)
         return b"".join(chunks)
 
@@ -355,38 +372,46 @@ async def _capture_day(
     drops = dict.fromkeys(DROP_RULES, 0)
     errors: dict[str, int] = {}
     for path, row in by_path.items():
-        body = await _fetch(client, ARCHIVES_URL + path, user_agent, pace)
-        assert body is not None  # a 404 raises here
         error: str | None = None
         found: list[InsiderTransaction] = []
         try:
-            found, dropped = await asyncio.to_thread(
-                partial(
-                    parse_form4,
-                    body.decode("utf-8", errors="replace"),
-                    filing_date=row.date_filed,
-                    cik_to_symbols=scope.cik_to_symbols,
-                    owner_roles=scope.owner_roles,
-                    exclude_10b5_1=scope.exclude_10b5_1,
-                )
-            )
-        except ValueError as exc:  # recorded by type name; the rest of the date is still read
-            error = type(exc).__name__
-            errors[error] = errors.get(error, 0) + 1
+            # An indexed document that is missing or over the budget is this document's error, not the date's.
+            body = await _fetch(client, ARCHIVES_URL + path, user_agent, pace, missing_ok=True)
+        except BodyTooLarge:
+            body, error = None, DOCUMENT_TOO_LARGE
         else:
-            for rule, count in dropped.items():
-                drops[rule] += count
+            if body is None:
+                error = DOCUMENT_NOT_FOUND
+        if body is not None:
+            try:
+                found, dropped = await asyncio.to_thread(
+                    partial(
+                        parse_form4,
+                        body.decode("utf-8", errors="replace"),
+                        filing_date=row.date_filed,
+                        cik_to_symbols=scope.cik_to_symbols,
+                        owner_roles=scope.owner_roles,
+                        exclude_10b5_1=scope.exclude_10b5_1,
+                    )
+                )
+            except ValueError as exc:  # recorded by type name; the rest of the date is still read
+                error = type(exc).__name__
+            else:
+                for rule, count in dropped.items():
+                    drops[rule] += count
+            match = _DOCUMENT_PATH.fullmatch(path)
+            assert match is not None
+            files[f"{match.group(1)}.txt"] = body
+        if error is not None:
+            errors[error] = errors.get(error, 0) + 1
         transactions.extend(found)
-        match = _DOCUMENT_PATH.fullmatch(path)
-        assert match is not None
-        files[f"{match.group(1)}.txt"] = body
         documents.append(
             {
                 "path": path,
                 "index_cik": row.cik,
                 "date_filed": row.date_filed.isoformat(),
-                "sha256": hashlib.sha256(body).hexdigest(),
-                "bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest() if body is not None else None,
+                "bytes": len(body) if body is not None else None,
                 "transactions": len(found),
                 "error": error,
             }
@@ -633,6 +658,27 @@ class WatchCohort:
         )
 
 
+def _verify_archive(archive_dir: Path, filings: InsiderFilingInputs) -> tuple[Quarter, ...]:
+    """The pinned quarters, once the archive's digest (every quarter and the ticker map) is the pinned one."""
+    pinned = quarters_between(parse_quarter(filings.quarters_from), parse_quarter(filings.quarters_through))
+    mismatch = "the insider archive does not match the protocol's insider_filings.files_sha256"
+    try:
+        digest = files_sha256(InsiderFilingStore(archive_dir), pinned)
+    except ValueError as exc:  # a pinned quarter or the ticker map is missing or not present
+        raise InsiderArchiveMismatch(mismatch) from exc
+    if digest != filings.files_sha256:
+        raise InsiderArchiveMismatch(mismatch)
+    return tuple(pinned)
+
+
+def capture_scope(cohort: WatchCohort, archive_dir: Path) -> CaptureScope:
+    """The capture's scope, only over the pinned archive: the issuer CIKs come from its ticker map, so a
+    refreshed map would capture under a scope the history never reads (``InsiderArchiveMismatch``, which
+    fails the poll by type name). Blocking: call it in a worker thread."""
+    _verify_archive(archive_dir, cohort.filings)
+    return cohort.scope()
+
+
 def load_watch_cohort(repo_root: Path, archive_dir: Path) -> WatchCohort:
     """Load the frozen entry, its pooled protocol and cohort (each digest-checked) and the archive's ticker map."""
     loaded_entry = load_insider_entry(repo_root / WATCH_ENTRY)
@@ -674,8 +720,9 @@ class WatchHistory:
     journaled (weekends and closures as ``no_index``) and the worker runs from 06:00 New York, so on a
     decision date D the history is current only when it reaches D - 1 (``current_for``); a pending
     business day, such as Good Friday's index still unpublished on the Monday, keeps it short.
-    ``incomplete`` maps a symbol to the live filing dates with a document that did not parse: its trades on
-    those dates may be missing (``provenance["document_errors"]`` counts the documents).
+    ``incomplete`` maps a symbol to the live filing dates with a document that could not be read (a parse
+    error, a 404 or an over-budget body): its trades on those dates may be missing
+    (``provenance["document_errors"]`` counts the documents).
     """
 
     transactions: Mapping[str, tuple[InsiderTransaction, ...]]
@@ -730,9 +777,7 @@ def load_watch_archive(archive_dir: Path, cohort: WatchCohort, first_day: date) 
     needs: the routine rule looks one calendar year back from its first filing month. Blocking (seconds per
     quarter archive): call it in a worker thread."""
     filings = cohort.filings
-    pinned = quarters_between(parse_quarter(filings.quarters_from), parse_quarter(filings.quarters_through))
-    if files_sha256(InsiderFilingStore(archive_dir), pinned) != filings.files_sha256:
-        raise ValueError("the insider archive does not match the protocol's insider_filings.files_sha256")
+    pinned = _verify_archive(archive_dir, filings)
     first_needed = _quarter_of(date(first_day.year - 1, first_day.month, 1))
     read = tuple(quarter for quarter in pinned if quarter >= first_needed)
     archived: Mapping[str, tuple[InsiderTransaction, ...]] = {}
