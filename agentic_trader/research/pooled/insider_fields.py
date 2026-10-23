@@ -62,7 +62,9 @@ __all__ = [
     "InsiderFrames",
     "LoadedInsiderFilings",
     "build_insider_frames",
+    "dollar_volume_series",
     "load_insider_filings",
+    "plausible_transactions",
     "verify_insider_sources",
 ]
 
@@ -214,7 +216,7 @@ def _distinct_owners(positions: np.ndarray, owners: np.ndarray, n: int, window: 
     return np.where(step >= 0, values[np.maximum(step, 0)], 0.0)
 
 
-def _dollar_volume(raw: pd.DataFrame | None, days: Sequence[date]) -> np.ndarray:
+def dollar_volume_series(raw: pd.DataFrame | None, days: Sequence[date]) -> np.ndarray:
     """``DV_T``: the median raw ``Close x Volume`` over the last 20 finite sessions through T."""
     if raw is None or raw.empty:
         return np.full(len(days), np.nan)
@@ -241,6 +243,26 @@ def _per_session(position: np.ndarray, dollars: np.ndarray, keep: np.ndarray, n:
     )
 
 
+def plausible_transactions(
+    transactions: Sequence[InsiderTransaction],
+    day_ordinals: np.ndarray,
+    dollar_volume: np.ndarray,
+    max_trade_rel: float,
+) -> tuple[list[InsiderTransaction], int]:
+    """The transactions visible on the calendar and not implausibly large, in input order, and the
+    count dropped as implausible. ``day_ordinals`` must be non-empty."""
+    # Filings after the last session are never visible, not even to the routine set.
+    visible = [t for t in transactions if t.filing_date.toordinal() <= day_ordinals[-1]]
+    filed = np.array([t.filing_date.toordinal() for t in visible], dtype=np.int64)
+    position = np.searchsorted(day_ordinals, filed, side="left")  # a non-session rolls forward
+    before = filed < day_ordinals[0]  # no session position on this calendar
+    session_dv = np.where(before, np.nan, dollar_volume[position])
+    # A missing DV compares False: the transaction is kept.
+    plausible = ~(np.array([t.dollars for t in visible], dtype=float) > max_trade_rel * session_dv)
+    seen = [t for t, keep in zip(visible, plausible, strict=True) if keep]
+    return seen, int((~plausible).sum())
+
+
 def _symbol_fields(
     transactions: Sequence[InsiderTransaction],
     day_ordinals: np.ndarray,
@@ -255,19 +277,12 @@ def _symbol_fields(
     nan = np.full(n, np.nan)
     if not n:
         return {name: nan.copy() for name in INSIDER_FIELDS}, None, 0
-    # Filings after the last session are never visible, not even to the routine set.
-    visible = [t for t in transactions if t.filing_date.toordinal() <= day_ordinals[-1]]
-    filed = np.array([t.filing_date.toordinal() for t in visible], dtype=np.int64)
-    position = np.searchsorted(day_ordinals, filed, side="left")  # a non-session rolls forward
-    before = filed < day_ordinals[0]  # no session position on this calendar
-    session_dv = np.where(before, np.nan, dollar_volume[position])
-    # A missing DV compares False: the transaction is kept.
-    plausible = ~(np.array([t.dollars for t in visible], dtype=float) > max_trade_rel * session_dv)
-    implausible = int((~plausible).sum())
-    seen = [t for t, keep in zip(visible, plausible, strict=True) if keep]
+    seen, implausible = plausible_transactions(transactions, day_ordinals, dollar_volume, max_trade_rel)
     if not seen:
         return {name: nan.copy() for name in INSIDER_FIELDS}, None, implausible
-    position, before = position[plausible], before[plausible]
+    filed = np.array([t.filing_date.toordinal() for t in seen], dtype=np.int64)
+    position = np.searchsorted(day_ordinals, filed, side="left")
+    before = filed < day_ordinals[0]
     placed = ~before
     buy = np.array([t.code == "P" for t in seen])
     dollars = np.array([t.dollars for t in seen], dtype=float)
@@ -345,7 +360,7 @@ def build_insider_frames(
         columns, start, dropped = _symbol_fields(
             loaded.by_symbol.get(symbol, ()),
             day_ordinals,
-            _dollar_volume(raw.get(symbol), days),
+            dollar_volume_series(raw.get(symbol), days),
             params.buy_window,
             params.net_window,
             params.max_trade_rel,
