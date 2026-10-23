@@ -1,0 +1,48 @@
+{
+  "id": "insider",
+  "version": 1,
+  "title": "Opportunistic insider cluster purchases: two or more officers or directors buy within 21 sessions",
+  "references": [
+    "Seyhun (1986), Insiders' Profits, Costs of Trading, and Market Efficiency, Journal of Financial Economics",
+    "Lakonishok and Lee (2001), Are Insider Trades Informative?, Review of Financial Studies",
+    "Jeng, Metrick and Zeckhauser (2003), Estimating the Returns to Insider Trading, Review of Economics and Statistics",
+    "Cohen, Malloy and Pomorski (2012), Decoding Inside Information, Journal of Finance",
+    "Alldredge and Blank (2019), Do Insiders Cluster Trades with Colleagues?, Journal of Financial and Quantitative Analysis"
+  ],
+  "hypotheses": "LONG only, over decisions 2016-08-01..2026-07-31 on cohort v3 (config/research/pooled/cohort-v3.json, the 1,000-name liquidity band) with the bracket, eligibility and 15 bp decisive cost of the cached cohort-v3 label cube (10:35 New York decision, 2 x ATR14 stop, 3R target, 20-session time exit): an event fires on an SEC Form 4 filing date F when at least two distinct officers or directors have opportunistic open-market purchases of the issuer filed within the 21 sessions ending at F (a purchase is routine, and ignored, when the same owner filed a purchase of the same issuer in the same calendar month of the previous year; implausible trades above 10 x the 20-session median raw dollar volume are dropped first), at most once per name per 63 sessions; the trade is the cube cell on D, the first session strictly after F. Control = the mean of the 5 cube cells on the same session D in the event's dollar-volume tercile, without any qualifying purchase filed in the 126 sessions before D and not themselves events, nearest in 20-session return to D-1. P1: mean R_cost > 0 with the bootstrap ci90 lower bound > 0. P2: mean R_cost(leg) - mean R_cost(control) > 0 with the paired ci90 lower bound > 0, pairs keyed by D. P3: the 1%-trimmed mean > 0 and the mean over decisions from 2023-01-01 > 0. P4: at least 300 labelled events, at least 100 from 2023-01-01. Stationary session-block bootstrap over decision sessions, block mean 10, 2000 draws, seed 20261023; ci90 = [5th, 95th] percentiles. See docs/superpowers/specs/2026-10-23-apriori-insider-leg-design.md.",
+  "decision_rule": "The leg becomes eligible for a capped live paper probe (its own spec) only if P1, P2, P3 and P4 all hold; otherwise it stays off and is recorded as failed. No threshold, window, buyer count, cluster window, cooldown or control parameter is revisited after the run; any change is a new version with a new, non-overlapping window. The 60-session hold and every split are descriptive diagnostics and decide nothing. Running this leg reads insider-conditioned outcomes over the pooled lane's confirmation slice, so the pooled insider fixed sets stay retired.",
+  "window": {
+    "decisions": [
+      "2016-08-01",
+      "2026-07-31"
+    ],
+    "bars_through": "2026-09-01",
+    "recent_from": "2023-01-01"
+  },
+  "pooled_protocol": "config/research/pooled/cohort3-insider-v1.json",
+  "pooled_protocol_sha256": "969fc5df733e6147d9014082b2d83771cbee6a60a81d495383ea934cfa05a38d",
+  "cube_sha256": "75dbb80a710f64ddf0d7ef34c70eceef4afa5fe1bd291a324543b8514906bdb6",
+  "event": {
+    "cluster_window_sessions": 21,
+    "min_buyers": 2,
+    "cooldown_sessions": 63,
+    "routine_rule": "same_owner_same_month_prior_year"
+  },
+  "control": {
+    "matched_controls": 5,
+    "match_return_sessions": 20,
+    "liquidity_buckets": 3,
+    "exclusion_sessions": 126
+  },
+  "descriptive_hold_sessions": 60,
+  "bootstrap": {
+    "block_mean": 10,
+    "draws": 2000,
+    "seed": 20261023
+  },
+  "pass_rule": {
+    "min_events": 300,
+    "min_recent_events": 100,
+    "trim_fraction": 0.01
+  }
+}

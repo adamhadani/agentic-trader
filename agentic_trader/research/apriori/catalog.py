@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, time, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -24,15 +24,25 @@ from agentic_trader.execution.lifetime_policy import DAILY_ENTRY_LIFETIME_SECOND
 from agentic_trader.research.alpha.strategy import AprioriBracketPolicy
 
 
+if TYPE_CHECKING:
+    # cube imports apriori modules that import this one; only the annotation needs it.
+    from agentic_trader.research.pooled.cube import CubeSpec
+
+
 __all__ = [
     "ExdivEntry",
     "ExdivEvent",
     "ExdivTrade",
+    "InsiderControl",
+    "InsiderEntry",
+    "InsiderEvent",
     "LoadedEntry",
     "LoadedExdivEntry",
+    "LoadedInsiderEntry",
     "PeadEntry",
     "catalog_entry_id",
     "load_exdiv_entry",
+    "load_insider_entry",
     "load_pead_entry",
     "pead_execution_policy",
 ]
@@ -267,6 +277,62 @@ def load_exdiv_entry(path: Path) -> LoadedExdivEntry:
     raw = path.read_bytes()
     return LoadedExdivEntry(
         entry=ExdivEntry.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path
+    )
+
+
+class InsiderEvent(BaseModel, frozen=True, extra="forbid"):
+    cluster_window_sessions: int = Field(ge=1)
+    min_buyers: int = Field(ge=2)
+    cooldown_sessions: int = Field(ge=1)
+    routine_rule: Literal["same_owner_same_month_prior_year"]
+
+
+class InsiderControl(BaseModel, frozen=True, extra="forbid"):
+    matched_controls: int = Field(ge=1)
+    match_return_sessions: int = Field(ge=1)
+    liquidity_buckets: int = Field(ge=2)
+    exclusion_sessions: int = Field(ge=1)
+
+
+class InsiderEntry(BaseModel, frozen=True, extra="forbid"):
+    """The frozen opportunistic insider-cluster purchase protocol (catalog entry ``insider``)."""
+
+    id: Literal["insider"]
+    version: int = Field(ge=1)
+    title: str
+    references: tuple[str, ...]
+    hypotheses: str
+    decision_rule: str
+    window: PeadWindow
+    pooled_protocol: str = Field(min_length=1)
+    pooled_protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cube_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    event: InsiderEvent
+    control: InsiderControl
+    descriptive_hold_sessions: int = Field(ge=1)
+    bootstrap: BootstrapSpec
+    pass_rule: PassRule
+
+    def check_against(self, spec: CubeSpec) -> None:
+        """Refuse a cube whose bracket outlives the cooldown or whose decisions do not cover the window."""
+        if self.event.cooldown_sessions <= spec.bracket.max_hold_sessions:
+            raise ValueError("cooldown_sessions must exceed the cube bracket's max_hold_sessions")
+        start, end = self.window.decisions
+        if start < spec.decisions[0] or end > spec.decisions[1]:
+            raise ValueError("window.decisions must lie inside the cube spec's decisions")
+
+
+@dataclass(frozen=True)
+class LoadedInsiderEntry:
+    entry: InsiderEntry
+    sha256: str
+    path: Path
+
+
+def load_insider_entry(path: Path) -> LoadedInsiderEntry:
+    raw = path.read_bytes()
+    return LoadedInsiderEntry(
+        entry=InsiderEntry.model_validate_json(raw), sha256=hashlib.sha256(raw).hexdigest(), path=path
     )
 
 
