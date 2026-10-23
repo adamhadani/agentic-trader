@@ -15,6 +15,7 @@ from telegram import (
     BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LinkPreviewOptions,
     MenuButtonCommands,
     Update,
 )
@@ -241,13 +242,17 @@ def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | No
 ENTRY_SESSION_BOUND_LINE = "Unfilled entry is cancelled at the session close."
 
 
+def _is_watch(facts: dict[str, Any] | None) -> bool:
+    return facts is not None and facts.get("kind") == "insider_watch"
+
+
 def _watch_block(facts: dict[str, Any] | None, *, markup: bool) -> str:
     """An insider watch card's header and cluster facts (``card_facts`` of kind ``insider_watch``), or "".
 
     The buyers are counted, never named: the line links the issuer's EDGAR insider-transactions page
     (``issuer_cik``). The owner CIKs stay in the signal's provenance and the decision journal.
     """
-    if not facts or facts.get("kind") != "insider_watch":
+    if facts is None or not _is_watch(facts):
         return ""
     exit_at = _ny_datetime(facts.get("time_exit_at"))
     exit_text = (
@@ -1597,6 +1602,8 @@ class TelegramNotifier:
                 text=self._label(card_html),
                 parse_mode="HTML",
                 reply_markup=reply_markup,
+                # A watch card links the issuer's EDGAR page; it must not unfurl into a preview.
+                **({"link_preview_options": LinkPreviewOptions(is_disabled=True)} if _is_watch(card_facts) else {}),
             )
             if self.db:
                 await self.db.update_telegram_message_id(signal_id, msg.message_id)

@@ -437,8 +437,11 @@ class InsiderWatchConfig(BaseModel):
     max_risk_per_trade_usd: float = Field(default=100.0, gt=0, le=10000, allow_inf_nan=False)
     archive_dir: Path = Field(default=Path("~/agentic-trader-research/insider-filings-cache"), validate_default=True)
     backfill_from: date = date(2026, 10, 1)
+    # The pooled lane's bar cache holding the cube the insider v1 study ran on: its raw daily bars give the
+    # plausibility filter of every archived trade exactly as the study applied it (read once per process).
+    pooled_cache_dir: Path = Field(default=Path("~/agentic-trader-research/pooled-cache-v1"), validate_default=True)
 
-    @field_validator("archive_dir")
+    @field_validator("archive_dir", "pooled_cache_dir")
     @classmethod
     def expand_home(cls, value: Path) -> Path:
         return value.expanduser()

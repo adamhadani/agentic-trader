@@ -9,16 +9,23 @@ One decision per New York session (``CatalogCardSource``):
 
 1. The trigger calendar is the study's: every session from the cube spec's ``bars_from`` (2016-01-01)
    through D, so the 63-session cooldown chain is the frozen rule's, however far back it reaches. The
-   pinned quarterly archive (digest-checked, about 16 s) is read once per process in a worker thread
-   (``LiveWatchHistory``) and the journaled Form 4 captures are merged onto it per New York date. A cold
-   load that outlasts the scan's preparation deadline makes that decision ``unavailable`` (``timeout``)
-   without cancelling the load. A history that does not reach the previous calendar day
-   (``WatchHistory.current_for``) makes the session ``unavailable``: never a decision on a partial history.
-2. Apply the study's plausibility filter (a trade above 10 x the 20-session median raw dollar volume is
-   dropped) on SIP daily bars over the last ``PLAUSIBILITY_SESSIONS`` sessions, then run
-   ``build_insider_events`` narrowed to D = today, as ``pead_live`` narrows PEAD. Name changes of the
-   event symbols (Alpaca corporate actions, read live; digest and request time journaled) are the identity
-   breaks; the rule is re-run with them.
+   prefix through the spec's ``bars_through`` is read once per process, year by year, accepted only when
+   every day comes from the Alpaca API (``calendar_source`` otherwise: a fallback calendar misses one-off
+   closures) and its session count and digest are the study's recorded ones (``calendar_mismatch``
+   otherwise); only the days after it are read per New York date.
+2. The pinned quarterly archive (digest-checked) is read once per process in a worker thread
+   (``LiveWatchHistory``), together with the study's plausibility verdict on every archived purchase: the
+   10 x 20-session median raw dollar volume rule on the pooled cube's own raw-bar cache (the exact bars the
+   study used, digest-checked as the pooled runner checks them; ``plausibility_cache_missing`` without it).
+   The journaled Form 4 captures are merged onto it per New York date, and only symbols with a captured
+   purchase since the archive's end get live SIP raw bars (cached per process, extended per date) for
+   their own plausibility check. A cold load that outlasts the scan's preparation deadline makes that
+   decision ``unavailable`` (``timeout``) without cancelling the load. A history that does not reach the
+   previous calendar day (``WatchHistory.current_for``) makes the session ``unavailable``: never a
+   decision on a partial history. Then ``build_insider_events`` runs narrowed to D = today, as
+   ``pead_live`` narrows PEAD. Name changes of the event symbols (Alpaca corporate actions, read live;
+   digest and request time journaled) are the identity breaks; the rule is re-run with them. Each phase's
+   wall time is journaled (``counts["elapsed_seconds"]``).
 3. Eligibility as of D-1 on SIP daily bars: the cube's own ``point_in_time_eligibility`` ($10 raw close,
    $5M 20-session median raw dollar volume, ATR14 on adjusted bars), per event symbol. A symbol whose
    captured documents failed to parse inside the cluster + cooldown span is not carded.
@@ -30,9 +37,9 @@ sizing and the broad-index rule. Its risk is capped at ``insider_watch.max_risk_
 
 Residual differences from the study, both in the direction of keeping a trade:
 
-- Trades filed before the plausibility window have no dollar volume and are kept, which is the study's own
-  rule for a missing dollar volume; the study had bars back to 2016 and could drop an implausible old
-  trade. Such a trade only matters through the routine rule or an old link of the cooldown chain.
+- Archived trades filed after the cube's ``bars_through`` (2026-09-01) and on or before the archive's end
+  (2026-09-30) have no dollar volume in the study's bars and are kept, which is the study's own rule for a
+  missing dollar volume (the study never saw them).
 - A filing dated on a day without a session (Good Friday, when EDGAR is open and NYSE closed) rolls
   forward to D itself when D is the next session. D has no daily bar at 10:35, so that trade has no dollar
   volume and is kept; the study read D's bar.
@@ -47,7 +54,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from time import monotonic
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
 import pandas as pd
@@ -69,14 +77,20 @@ from agentic_trader.research.apriori.insider_events import build_insider_events,
 from agentic_trader.research.apriori.pead_live import event_document
 from agentic_trader.research.apriori.watch_contract import (
     INSIDER_WATCH_STRATEGY_ID,
+    WATCH_CALENDAR_SESSIONS,
+    WATCH_CALENDAR_SHA256,
     WATCH_DECISION_TIME_ET,
     WatchContract,
+    calendar_sha256,
     load_watch_contract,
 )
 from agentic_trader.research.insider_filings import InsiderTransaction
 from agentic_trader.research.pooled.cohort import point_in_time_eligibility
+from agentic_trader.research.pooled.cube import load_cube
 from agentic_trader.research.pooled.events import identity_breaks
 from agentic_trader.research.pooled.insider_fields import dollar_volume_series, plausible_transactions
+from agentic_trader.research.pooled.runner import _verify_bar_files
+from agentic_trader.research.setups.runner import _fetch_cached
 from agentic_trader.screeners.earnings_drift import catalog_candidate
 
 
@@ -92,21 +106,26 @@ if TYPE_CHECKING:
 
 __all__ = [
     "INSIDER_WATCH_POSITION_CAP_REACHED",
-    "PLAUSIBILITY_SESSIONS",
     "InsiderWatchSource",
     "LiveWatchHistory",
+    "PlausibilityCacheMissing",
+    "WatchArchiveState",
+    "WatchHistorySource",
     "WatchPreparation",
+    "WatchUnavailable",
+    "archive_implausible",
     "build_insider_watch_source",
     "cluster_members",
     "rank_events",
+    "read_study_raw_bars",
 ]
 
 logger = logging.getLogger(__name__)
 
-# Sessions of raw SIP daily bars read for the plausibility filter: the routine rule's look-back (the same
-# month a year earlier, at most 13 months, about 275 sessions), the cluster window plus the cooldown (84)
-# and the 20-session dollar-volume warm-up. Older trades keep a missing dollar volume (kept, as in the study).
-PLAUSIBILITY_SESSIONS = 380
+# Sessions of live raw bars read before the first live-captured filing date: the 20-session dollar-volume
+# median needs 20 finite sessions before it, with margin for missing bars.
+_LIVE_DV_WARMUP_SESSIONS = 30
+_ALPACA_CALENDAR_SOURCE = "alpaca_api"
 INSIDER_WATCH_POSITION_CAP_REACHED = "insider watch position cap reached"
 # Calendar days looked ahead for the 20-session time exit shown on the card.
 _EXIT_CALENDAR_DAYS = 45
@@ -140,12 +159,107 @@ class WatchPreparation:
     elapsed_seconds: float | None = None
 
 
-class LiveWatchHistory:
-    """The daemon's watch history: the pinned archive once per process, the captures merged per call.
+class WatchUnavailable(Exception):
+    """The decision cannot be made on the frozen rule's inputs; ``reason`` is journaled as the decision's."""
 
-    ``archive()`` starts the blocking archive read in a worker thread on first use (or on ``warm()``) and
-    awaits it shielded, so a caller's timeout never cancels the read: the next decision finds it done. A
-    failed read is retried by the next call.
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class PlausibilityCacheMissing(WatchUnavailable):
+    """The pooled cube's raw-bar cache (the study's own bars) is not on this machine."""
+
+    def __init__(self, where: Path | str):
+        super().__init__("plausibility_cache_missing")
+        self.where = str(where)
+
+
+@dataclass(frozen=True)
+class WatchArchiveState:
+    """Once per process: the archive, its cohort, and the archived trades the study's bars call implausible."""
+
+    implausible: frozenset[InsiderTransaction]
+    provenance: Mapping[str, Any]
+    cohort: Any = None
+    archive: Any = None
+
+
+def archive_implausible(
+    by_symbol: Mapping[str, Sequence[InsiderTransaction]],
+    prefix: Sequence[date],
+    raw: Mapping[str, pd.DataFrame],
+    max_trade_rel: float,
+) -> frozenset[InsiderTransaction]:
+    """The archived trades the study's plausibility filter dropped: ``plausible_transactions`` on the study's
+    calendar (``prefix``) and raw bars, exactly as ``insider_runner`` applies it. Trades filed after the
+    calendar have no dollar volume there and are never dropped here."""
+    ordinals = np.array([day.toordinal() for day in prefix], dtype=np.int64)
+    days = tuple(prefix)
+    dropped: set[InsiderTransaction] = set()
+    for symbol, rows in by_symbol.items():
+        frame = raw.get(symbol)
+        inside = [t for t in rows if t.filing_date <= days[-1]]
+        if frame is None or frame.empty or not inside:
+            continue
+        kept, removed = plausible_transactions(inside, ordinals, dollar_volume_series(frame, days), max_trade_rel)
+        if removed:
+            survivors = set(kept)
+            dropped.update(t for t in inside if t not in survivors)
+    return frozenset(dropped)
+
+
+class _CacheOnly:
+    """The pooled runner's bar source for a ``require_cached`` read: a cache miss is a missing cache."""
+
+    def fetch_bars(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime, *, adjustment: str
+    ) -> pd.DataFrame:
+        raise PlausibilityCacheMissing(f"{symbol}_{timeframe}/{adjustment}")
+
+
+async def _no_pace() -> None:
+    return None
+
+
+async def read_study_raw_bars(
+    cache_dir: Path, *, cohort_sha256: str, contract: WatchContract, symbols: Sequence[str]
+) -> dict[str, pd.DataFrame]:
+    """The raw daily bars the insider v1 study read, from the pooled cube's cache (no provider access).
+
+    The cube must be the one the frozen entry pins (``cube_sha256``) for this cohort and spec, and every bar
+    file it was built from must be unchanged (the pooled runner's own ``_verify_bar_files``); each symbol is
+    read through the runner's cache reader. Anything missing raises ``PlausibilityCacheMissing``; a
+    mismatch raises ``ValueError``.
+    """
+    spec = contract.spec
+    cube_path = cache_dir / f"cube-{cohort_sha256[:16]}-{spec.identity[:16]}.npz"
+    if not cube_path.exists():
+        raise PlausibilityCacheMissing(cube_path)
+    cube = await asyncio.to_thread(load_cube, cube_path)
+    if cube.spec_identity != spec.identity or cube.cohort_sha256 != cohort_sha256:
+        raise ValueError(f"cached cube {cube_path.name} does not match the watch contract's cohort and spec")
+    if await asyncio.to_thread(lambda: cube.sha256) != contract.entry.cube_sha256:
+        raise ValueError(f"cached cube {cube_path.name} is not the cube the insider entry pins")
+    bar_dir, raw_dir = cache_dir / "bars", cache_dir / "bars_raw"
+    await asyncio.to_thread(_verify_bar_files, cube.coverage, bar_dir, raw_dir)
+    start = datetime.combine(spec.bars_from, time.min, tzinfo=UTC)
+    end = datetime.combine(spec.bars_through, time.max, tzinfo=UTC)
+    out: dict[str, pd.DataFrame] = {}
+    for symbol in symbols:
+        frame = await _fetch_cached(symbol, "1d", _CacheOnly(), raw_dir, start, end, "raw", _no_pace)
+        if not frame.empty:
+            out[symbol] = frame
+    return out
+
+
+class LiveWatchHistory:
+    """The daemon's watch history: the archive and its plausibility verdict once per process, the captures
+    merged per call.
+
+    ``archive(prefix)`` starts the read in the background on first use (or on ``warm``) and awaits it
+    shielded, so a caller's timeout never cancels it: the next decision finds it done. A failed read is
+    logged by type name and retried by the next call. ``prefix`` is the verified study calendar.
     """
 
     def __init__(
@@ -154,31 +268,65 @@ class LiveWatchHistory:
         *,
         load_archive: Callable[[], tuple[Any, Any]],
         merge: Callable[..., WatchHistory] = merge_watch_history,
+        read_raw: Callable[[Any, Sequence[str]], Awaitable[Mapping[str, pd.DataFrame]]] | None = None,
     ):
         self.store = store
         self.load_archive = load_archive
         self.merge = merge
-        self._task: asyncio.Task[tuple[Any, Any]] | None = None
+        self.read_raw = read_raw
+        self._prefix: tuple[date, ...] = ()
+        self._task: asyncio.Task[WatchArchiveState] | None = None
 
-    def warm(self) -> None:
-        """Start the archive read now (inside a running event loop); a no-op once started."""
-        self._start()
+    def warm(self, prefix: Sequence[date] = ()) -> None:
+        """Start the read now (inside a running event loop); a no-op once started."""
+        self._start(prefix)
 
-    def _start(self) -> asyncio.Task[tuple[Any, Any]]:
+    def _start(self, prefix: Sequence[date]) -> asyncio.Task[WatchArchiveState]:
         task = self._task
         if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
-            task = asyncio.get_running_loop().create_task(asyncio.to_thread(self.load_archive))
+            if prefix:
+                self._prefix = tuple(prefix)
+            task = asyncio.get_running_loop().create_task(self._load(self._prefix))
+            task.add_done_callback(_log_failure)
             self._task = task
         return task
 
-    async def archive(self) -> tuple[Any, Any]:
-        return await asyncio.shield(self._start())
+    async def _load(self, prefix: tuple[date, ...]) -> WatchArchiveState:
+        cohort, archive = await asyncio.to_thread(self.load_archive)
+        if self.read_raw is None or not prefix:
+            return WatchArchiveState(frozenset(), {"plausibility": "not_checked"}, cohort, archive)
+        symbols = sorted(
+            symbol
+            for symbol, rows in archive.by_symbol.items()
+            if any(t.code == "P" and prefix[0] <= t.filing_date <= prefix[-1] for t in rows)
+        )
+        raw = await self.read_raw(cohort, symbols)
+        dropped = await asyncio.to_thread(
+            archive_implausible, archive.by_symbol, prefix, raw, cohort.filings.max_trade_rel
+        )
+        provenance = {"plausibility": "study_bars", "symbols_checked": len(symbols), "implausible": len(dropped)}
+        return WatchArchiveState(dropped, provenance, cohort, archive)
+
+    async def archive(self, prefix: Sequence[date] = ()) -> WatchArchiveState:
+        return await asyncio.shield(self._start(prefix))
 
     async def __call__(self, trading: Sequence[date]) -> WatchHistory:
-        cohort, archive = await self.archive()
+        state = await self.archive(self._prefix)
         assert self.store is not None
         captures = await self.store.captures()
-        return await asyncio.to_thread(self.merge, archive, cohort, tuple(trading), {}, (), captures)
+        return await asyncio.to_thread(self.merge, state.archive, state.cohort, tuple(trading), {}, (), captures)
+
+
+def _log_failure(task: asyncio.Task[Any]) -> None:
+    """Retrieve a failed background read's exception and log its type name only (paths and SDK text stay out)."""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.warning(
+            "Insider watch archive read failed; the next decision retries",
+            extra={"event": "insider_watch_archive_failed", "error": type(error).__name__},
+        )
 
 
 @dataclass(frozen=True)
@@ -189,11 +337,16 @@ class _SessionHistory:
     trading: tuple[date, ...]
     history: WatchHistory
     transactions: Mapping[str, tuple[InsiderTransaction, ...]]
-    raw: Mapping[str, pd.DataFrame]
-    implausible: int
+    raw: Mapping[str, pd.DataFrame]  # live raw bars (symbols with a captured purchase since the archive)
+    implausible: int  # live trades dropped; the archive's drops are in the process state's provenance
 
 
-HistoryLoader = Callable[[Sequence[date]], Awaitable[WatchHistory]]
+class WatchHistorySource(Protocol):
+    """Where the decision's history comes from (``LiveWatchHistory`` in the daemon)."""
+
+    async def archive(self, prefix: Sequence[date] = ()) -> WatchArchiveState: ...
+
+    async def __call__(self, trading: Sequence[date]) -> WatchHistory: ...
 
 
 def cluster_members(
@@ -224,22 +377,27 @@ def rank_events(events: Sequence[dict]) -> list[dict]:
     return sorted(events, key=lambda event: (-event["buyers"], -event["opp_rel"], event["symbol"]))
 
 
-def _plausible(
-    history: WatchHistory, trading: tuple[date, ...], raw: Mapping[str, pd.DataFrame], max_trade_rel: float
+def _apply_plausibility(
+    history: WatchHistory,
+    trading: tuple[date, ...],
+    archive_dropped: frozenset[InsiderTransaction],
+    raw: Mapping[str, pd.DataFrame],
+    max_trade_rel: float,
 ) -> tuple[dict[str, tuple[InsiderTransaction, ...]], int]:
-    """The study's plausibility filter on the symbols with bars (the others keep every trade, as in the study)."""
+    """Drop the archived trades the study's bars call implausible, then check the live-captured trades (filed
+    after the archive) of every symbol with live bars on those bars; the others keep every trade."""
     ordinals = np.array([day.toordinal() for day in trading], dtype=np.int64)
     out: dict[str, tuple[InsiderTransaction, ...]] = {}
     dropped = 0
     for symbol, rows in history.transactions.items():
-        if symbol not in raw or not rows:
-            out[symbol] = tuple(rows)
-            continue
-        kept, removed = plausible_transactions(
-            rows, ordinals, dollar_volume_series(raw[symbol], trading), max_trade_rel
-        )
-        out[symbol] = tuple(kept)
-        dropped += removed
+        archived = [t for t in rows if t.filing_date <= history.archive_through and t not in archive_dropped]
+        live = [t for t in rows if t.filing_date > history.archive_through]
+        if symbol in raw and live:
+            live, removed = plausible_transactions(
+                live, ordinals, dollar_volume_series(raw[symbol], trading), max_trade_rel
+            )
+            dropped += removed
+        out[symbol] = (*archived, *live)
     return out, dropped
 
 
@@ -287,13 +445,16 @@ class InsiderWatchSource:
     budget_spent_reason = "insider watch budget spent"
     position_cap_reason = INSIDER_WATCH_POSITION_CAP_REACHED
     news_context = True
+    # The study's recorded calendar (watch_contract); a test may substitute its own.
+    calendar_sessions = WATCH_CALENDAR_SESSIONS
+    calendar_sha256 = WATCH_CALENDAR_SHA256
 
     def __init__(
         self,
         config: AppConfig,
         contract: WatchContract | None,
         *,
-        history: HistoryLoader | None = None,
+        history: WatchHistorySource | None = None,
         calendar: Any = None,
         bars: Any = None,
         actions: CorporateActionsSource | None = None,
@@ -307,12 +468,25 @@ class InsiderWatchSource:
         self.actions = actions
         self.service_error = service_error
         self._cache: _SessionHistory | None = None
+        self._prefix: tuple[date, ...] | None = None  # the verified study calendar, once per process
+        self._tail: tuple[date, tuple[date, ...]] | None = None  # (session, sessions after the study's)
+        self._live_raw: dict[str, pd.DataFrame] = {}  # live raw bars per symbol, extended per date
+        self._live_through: dict[str, date] = {}
+        self._warm_task: asyncio.Task[Any] | None = None
 
     def warm(self) -> None:
-        """Start the once-per-process archive read early (daemon start), so the 10:35 decision finds it done."""
-        warm = getattr(self.history, "warm", None)
-        if self.config.insider_watch.enabled and callable(warm):
-            warm()
+        """Start the once-per-process calendar and archive reads now (daemon start, inside the event loop),
+        so the 10:35 decision finds them done. A failure is logged by type name; the decision retries."""
+        if not (self.config.insider_watch.enabled and self._built()):
+            return
+        task = asyncio.get_running_loop().create_task(self._warm())
+        task.add_done_callback(_log_failure)
+        self._warm_task = task
+
+    async def _warm(self) -> None:
+        prefix = await self._study_calendar()
+        assert self.history is not None
+        await self.history.archive(prefix)
 
     # --- limits and gating ------------------------------------------------------------------------
 
@@ -366,43 +540,101 @@ class InsiderWatchSource:
 
     # --- preparation ------------------------------------------------------------------------------
 
+    @staticmethod
+    def _sessions(days: Sequence[Any]) -> tuple[date, ...]:
+        if any(day.source != _ALPACA_CALENDAR_SOURCE for day in days):
+            raise WatchUnavailable("calendar_source")  # a fallback calendar misses one-off closures
+        return tuple(sorted(day.date for day in days if day.is_trading_day))
+
+    async def _study_calendar(self) -> tuple[date, ...]:
+        """The study's sessions, ``bars_from``..``bars_through``, read year by year once per process and
+        accepted only as the recorded calendar (``calendar_mismatch`` otherwise)."""
+        if self._prefix is not None:
+            return self._prefix
+        assert self.contract is not None
+        spec = self.contract.spec
+        days: list[Any] = []
+        for year in range(spec.bars_from.year, spec.bars_through.year + 1):
+            start, end = max(date(year, 1, 1), spec.bars_from), min(date(year, 12, 31), spec.bars_through)
+            days.extend(await self.calendar.get_calendar_range(start, end))
+        sessions = self._sessions(days)
+        if len(sessions) != self.calendar_sessions or calendar_sha256(sessions) != self.calendar_sha256:
+            raise WatchUnavailable("calendar_mismatch")
+        self._prefix = sessions
+        return sessions
+
     async def _trading_days(self, session: date) -> tuple[date, ...]:
         """Every session from the study's first (the cube spec's ``bars_from``) through ``session``."""
         assert self.contract is not None
-        days = await self.calendar.get_calendar_range(self.contract.spec.bars_from, session)
-        return tuple(sorted(day.date for day in days if day.is_trading_day))
+        prefix = await self._study_calendar()
+        if self._tail is None or self._tail[0] != session:
+            after = self.contract.spec.bars_through + timedelta(days=1)
+            days = await self.calendar.get_calendar_range(after, session) if after <= session else []
+            self._tail = (session, self._sessions(days))
+        return prefix + self._tail[1]
 
-    async def _daily(
-        self, symbols: Sequence[str], trading: tuple[date, ...], adjustment: str, *, sessions: int
-    ) -> dict:
-        """Daily bars of ``symbols`` over the last ``sessions`` sessions through D-1."""
-        if not symbols:
+    async def _daily(self, symbols: Sequence[str], start: date, end: date, adjustment: str) -> dict:
+        if not symbols or start > end:
             return {}
-        start = datetime.combine(trading[max(0, len(trading) - 1 - sessions)], time.min, tzinfo=UTC)
-        end = datetime.combine(trading[-2], time(23, 59), tzinfo=UTC)  # through D-1: no bar of D is read
-        return await asyncio.to_thread(self.bars.fetch_daily_many, list(symbols), start, end, adjustment=adjustment)
+        return await asyncio.to_thread(
+            self.bars.fetch_daily_many,
+            list(symbols),
+            datetime.combine(start, time.min, tzinfo=UTC),
+            datetime.combine(end, time(23, 59), tzinfo=UTC),
+            adjustment=adjustment,
+        )
 
-    async def _session_history(self, session: date, trading: tuple[date, ...]) -> _SessionHistory | str:
+    async def _live_bars(
+        self, symbols: Sequence[str], trading: tuple[date, ...], archive_through: date
+    ) -> dict[str, pd.DataFrame]:
+        """Raw SIP bars through D-1 for the symbols with a live-captured purchase, cached per process and
+        extended per date: a new symbol from shortly before the archive's end, a known one from its last bar."""
+        end = trading[-2]  # D-1: no bar of D is read
+        first_live = int(np.searchsorted(np.array([d.toordinal() for d in trading]), archive_through.toordinal() + 1))
+        fresh_start = trading[max(0, first_live - _LIVE_DV_WARMUP_SESSIONS)]
+        groups: dict[date, list[str]] = {}
+        for symbol in symbols:
+            through = self._live_through.get(symbol)
+            start = fresh_start if through is None else through + timedelta(days=1)
+            if start <= end:
+                groups.setdefault(start, []).append(symbol)
+        for start, members in sorted(groups.items()):
+            fetched = await self._daily(members, start, end, "raw")
+            for symbol in members:
+                frame = fetched.get(symbol)
+                if frame is not None and not frame.empty:
+                    known = self._live_raw.get(symbol)
+                    joined = frame if known is None else pd.concat([known, frame])
+                    self._live_raw[symbol] = joined[~joined.index.duplicated(keep="last")].sort_index()
+                self._live_through[symbol] = end
+        return {symbol: self._live_raw[symbol] for symbol in symbols if symbol in self._live_raw}
+
+    async def _session_history(
+        self, session: date, trading: tuple[date, ...], phases: dict[str, float]
+    ) -> _SessionHistory | str:
         """The plausible history of ``session`` (cached per date once current), or why it is unavailable."""
         cached = self._cache
         if cached is not None and cached.session == session and cached.trading == trading:
             return cached
         assert self.history is not None and self.contract is not None  # applies() checked both
+        started = monotonic()
+        state = await self.history.archive(trading[: len(self._prefix or ())])
         history = await self.history(trading)
+        phases["archive"] += monotonic() - started
         if history.provenance.get("entry_sha256") != self.contract.entry_sha256:
             raise ValueError("the watch history was seeded under another insider entry")
         if not history.current_for(session):
             return f"capture_not_current: latest filing date {history.latest_filing_date.isoformat()}"
-        # Only purchases feed the rule, and only those inside the bar window can be measured.
-        first = trading[max(0, len(trading) - 1 - PLAUSIBILITY_SESSIONS)]
-        buyers = sorted(
+        started = monotonic()
+        live_buyers = sorted(
             symbol
             for symbol, rows in history.transactions.items()
-            if any(t.code == "P" and t.filing_date >= first for t in rows)
+            if any(t.code == "P" and t.filing_date > history.archive_through for t in rows)
         )
-        raw = await self._daily(buyers, trading, "raw", sessions=PLAUSIBILITY_SESSIONS)
+        raw = await self._live_bars(live_buyers, trading, history.archive_through)
+        phases["bars"] += monotonic() - started
         max_trade_rel = float(history.provenance["max_trade_rel"])  # the protocol's own threshold
-        transactions, implausible = _plausible(history, trading, raw, max_trade_rel)
+        transactions, implausible = _apply_plausibility(history, trading, state.implausible, raw, max_trade_rel)
         result = _SessionHistory(session, trading, history, transactions, raw, implausible)
         self._cache = result
         return result
@@ -439,21 +671,31 @@ class InsiderWatchSource:
             return self.unavailable(session, "insider watch source unavailable")
         contract = self.contract
         assert contract is not None
-        trading = await self._trading_days(session)
-        if len(trading) < 2 or trading[-1] != session:
-            return self.unavailable(session, "not_a_trading_session")
-        seeded = await self._session_history(session, trading)
+        phases = dict.fromkeys(("archive", "calendar", "bars", "rule"), 0.0)
+        try:
+            started = monotonic()
+            trading = await self._trading_days(session)
+            phases["calendar"] += monotonic() - started
+            if len(trading) < 2 or trading[-1] != session:
+                return self.unavailable(session, "not_a_trading_session")
+            seeded = await self._session_history(session, trading, phases)
+        except WatchUnavailable as exc:
+            return self.unavailable(session, exc.reason)
         if isinstance(seeded, str):
             return self.unavailable(session, seeded)
         history = seeded.history
+        started = monotonic()
         frame, counts = await asyncio.to_thread(self._events, seeded, {})
+        phases["rule"] += monotonic() - started
         breaks: dict[str, date] = {}
         actions_read: dict[str, Any] | None = None
         if not frame.empty:
             symbols = sorted(set(frame["symbol"]))
             start = min(frame["filing_date"])
             assert self.actions is not None  # _built() checked it
+            started = monotonic()
             page = await asyncio.to_thread(self.actions.fetch, symbols, start, session)
+            phases["bars"] += monotonic() - started
             actions_read = {
                 "requested_at": page.requested_at.isoformat(),
                 "received_at": page.received_at.isoformat(),
@@ -464,7 +706,9 @@ class InsiderWatchSource:
             }
             breaks = identity_breaks(page.actions, symbols)
             if breaks:
+                started = monotonic()
                 frame, counts = await asyncio.to_thread(self._events, seeded, breaks)
+                phases["rule"] += monotonic() - started
         counts = {
             **counts,
             "implausible_size": seeded.implausible,
@@ -484,10 +728,16 @@ class InsiderWatchSource:
 
         rows = frame.to_dict("records")
         event_symbols = sorted({row["symbol"] for row in rows})
-        # ATR14 through D-1 plus its previous close, with margin for holidays.
-        adjusted = await self._daily(event_symbols, trading, "all", sessions=40)
+        # ATR14 through D-1 plus its previous close, with margin for holidays (raw for the price and
+        # dollar-volume floors: the live bars of an event symbol, which has a live-captured purchase).
+        started = monotonic()
+        adjusted = await self._daily(event_symbols, trading[-41], trading[-2], "all")
+        missing_raw = [symbol for symbol in event_symbols if symbol not in seeded.raw]
+        raw_floor = {**seeded.raw, **await self._daily(missing_raw, trading[-41], trading[-2], "raw")}
+        phases["bars"] += monotonic() - started
         eligible: list[dict] = []
         excluded: list[dict] = []
+        started = monotonic()
         for row in rows:
             symbol = row["symbol"]
             members = cluster_members(seeded.transactions[symbol], trading, contract, row["filing_date"])
@@ -503,7 +753,7 @@ class InsiderWatchSource:
                 "owners": owners,
                 "filing_dates": sorted({t.filing_date.isoformat() for t in members}),
             }
-            reason, atr, volume = _eligibility(contract, trading, symbol, adjusted, seeded.raw)
+            reason, atr, volume = _eligibility(contract, trading, symbol, adjusted, raw_floor)
             if reason is None and symbol in incomplete:
                 reason = f"incomplete filings: {', '.join(incomplete[symbol])}"
             elif reason is not None:
@@ -515,6 +765,9 @@ class InsiderWatchSource:
             eligible.append(
                 {**document, "atr": atr, "dollar_volume": volume, "opp_rel": float(row["opp_dollars"]) / volume}
             )
+
+        phases["rule"] += monotonic() - started
+        counts["elapsed_seconds"] = {phase: round(seconds, 3) for phase, seconds in phases.items()}
 
         events, skipped, skipped_events = [], {}, []
         for event in rank_events(eligible):
@@ -662,10 +915,16 @@ def build_insider_watch_source(
         return InsiderWatchSource(config, contract, service_error=error)
     store = InsiderCaptureStore(workflows, capture_directory or default_capture_directory())
     first_day = contract.spec.bars_from
+    pooled_cache_dir = config.insider_watch.pooled_cache_dir
 
     def load_archive() -> tuple[WatchCohort, WatchArchive]:
         cohort = load_watch_cohort(repo_root, config.insider_watch.archive_dir)
         return cohort, load_watch_archive(config.insider_watch.archive_dir, cohort, first_day)
 
-    history = LiveWatchHistory(store, load_archive=load_archive)
+    async def read_raw(cohort: WatchCohort, symbols: Sequence[str]) -> Mapping[str, pd.DataFrame]:
+        return await read_study_raw_bars(
+            pooled_cache_dir, cohort_sha256=cohort.cohort_sha256, contract=contract, symbols=symbols
+        )
+
+    history = LiveWatchHistory(store, load_archive=load_archive, read_raw=read_raw)
     return InsiderWatchSource(config, contract, history=history, calendar=calendar, bars=bars, actions=actions)

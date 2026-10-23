@@ -27,12 +27,15 @@ from agentic_trader.agent.catalog_sources import CatalogCardSource, PeadDriftSou
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.agent.insider_watch import (
     INSIDER_WATCH_POSITION_CAP_REACHED,
-    PLAUSIBILITY_SESSIONS,
     InsiderWatchSource,
     LiveWatchHistory,
+    PlausibilityCacheMissing,
+    WatchArchiveState,
     WatchPreparation,
+    archive_implausible,
     build_insider_watch_source,
     rank_events,
+    read_study_raw_bars,
 )
 from agentic_trader.agent.macro import MacroInput
 from agentic_trader.agent.regime import RegimeUnavailable
@@ -51,6 +54,8 @@ from agentic_trader.notifier.telegram_bot import (
 from agentic_trader.research.alpha.strategy import AprioriBracketPolicy, execution_policy_from_dict
 from agentic_trader.research.apriori.watch_contract import (
     INSIDER_WATCH_STRATEGY_ID,
+    WATCH_CALENDAR_SESSIONS,
+    WATCH_CALENDAR_SHA256,
     WATCH_DECISION_TIME_ET,
     frozen_watch_contract,
     load_watch_contract,
@@ -140,23 +145,39 @@ class FakeActions:
         return CorporateActionsPage(self.actions, now, now, len(symbols), (start, end), 1, ("p",))
 
 
-def source_with(seed: WatchHistory, app_config, *, closes=None, actions=()):
-    loads: list[tuple[date, ...]] = []
+class FakeHistory:
+    """The per-process archive state (the study's plausibility drops) and the per-date merged history."""
 
-    async def load(trading):
-        loads.append(tuple(trading))
-        return seed
+    def __init__(self, seed: WatchHistory, *, implausible=frozenset(), error: Exception | None = None):
+        self.seed, self.implausible, self.error = seed, frozenset(implausible), error
+        self.loads: list[tuple[date, ...]] = []
+        self.archive_calls: list[tuple[date, ...]] = []
 
+    async def archive(self, prefix):
+        self.archive_calls.append(tuple(prefix))
+        if self.error is not None:
+            raise self.error
+        return WatchArchiveState(implausible=self.implausible, provenance={"fake": True})
+
+    async def __call__(self, trading):
+        self.loads.append(tuple(trading))
+        return self.seed
+
+
+def source_with(
+    seed: WatchHistory, app_config, *, closes=None, actions=(), implausible=frozenset(), archive_error=None
+):
     app_config.insider_watch.enabled = True
+    fake = FakeHistory(seed, implausible=implausible, error=archive_error)
     source = InsiderWatchSource(
         app_config,
         CONTRACT,
-        history=load,
-        calendar=DeterministicCalendarProvider(),
+        history=fake,
+        calendar=AlpacaLikeCalendar(),
         bars=FakeBars(closes or {}),
         actions=FakeActions(actions),
     )
-    return source, loads
+    return source, fake.loads
 
 
 def clusters() -> dict[str, list[InsiderTransaction]]:
@@ -841,7 +862,7 @@ def test_an_enabled_copilot_builds_and_appends_the_watch_source(app_config, temp
 def _frozen_sessions() -> list[date]:
     """The deterministic trading calendar from the cube spec's bars_from through D (the study's start)."""
     days = pd.bdate_range(CONTRACT.spec.bars_from, D).date
-    return [day for day in days if not MarketHolidayCalendar.is_equity_holiday(day)[0]]
+    return [day for day in days if not MarketHolidayCalendar.is_equity_holiday(day)[0] and day not in ONE_OFF_CLOSURES]
 
 
 def _back(k: int) -> date:
@@ -886,14 +907,6 @@ async def test_i1_a_trigger_whose_window_starts_before_a_short_calendar_still_su
     assert [(e["symbol"], e["buyers"]) for e in prep.events] == [("AAA", 2)]
 
 
-async def test_i1_plausibility_bars_cover_the_routine_look_back_and_the_cluster_span_only(app_config):
-    source, _ = source_with(history(clusters()), app_config, closes=CLOSES)
-    await source.prepare(now=NOW, snapshot=None, owned={})
-    raw = next(call for call in source.bars.calls if call[3] == "raw")
-    sessions = _frozen_sessions()
-    assert raw[1].date() == sessions[-1 - PLAUSIBILITY_SESSIONS] and raw[2].date() == D - timedelta(days=1)
-
-
 async def test_i1_the_archive_is_loaded_once_per_process_and_a_cold_load_never_blocks_the_decision():
     loads: list[int] = []
     gate = threading.Event()
@@ -908,8 +921,8 @@ async def test_i1_the_archive_is_loaded_once_per_process_and_a_cold_load_never_b
         async with asyncio.timeout(0.05):
             await live.archive()
     gate.set()  # the timed-out waiter did not cancel the load: it finishes in its thread
-    assert await live.archive() == ("cohort", "archive")
-    assert await live.archive() == ("cohort", "archive")
+    assert (await live.archive()).archive == "archive"
+    assert (await live.archive()).cohort == "cohort"
     assert loads == [1]
 
 
@@ -925,7 +938,7 @@ async def test_i1_a_failed_archive_load_is_retried_by_the_next_decision():
     live = LiveWatchHistory(store=None, load_archive=flaky)
     with pytest.raises(OSError):
         await live.archive()
-    assert await live.archive() == ("cohort", "archive") and len(attempts) == 2
+    assert (await live.archive()).archive == "archive" and len(attempts) == 2
 
 
 async def test_i2_the_card_links_the_issuer_s_edgar_insider_page_and_never_lists_owner_ciks(app_config):
@@ -1004,3 +1017,171 @@ async def test_i1_each_decision_merges_fresh_captures_onto_the_one_archive(app_c
     assert loads == [1]
     assert [m[5] for m in merges] == [("day1",), ("day1", "day2")]
     assert merges[0][:5] == ("archive", "cohort", (D - timedelta(days=1), D), {}, ())
+
+
+# --- fix round 2: the verified calendar, the study's plausibility cache, warm-up, previews, timings --
+
+ONE_OFF_CLOSURES = (date(2018, 12, 5), date(2025, 1, 9))  # Bush and Carter national days of mourning
+
+
+class AlpacaLikeCalendar:
+    """The exchange calendar as Alpaca serves it: the deterministic rules plus the one-off closures."""
+
+    def __init__(self, *, source: str = "alpaca_api", closures=ONE_OFF_CLOSURES):
+        self.inner, self.source, self.closures, self.calls = DeterministicCalendarProvider(), source, closures, []
+
+    async def get_calendar_range(self, start, end):
+        self.calls.append((start, end))
+        days = await self.inner.get_calendar_range(start, end)
+        return [
+            dataclasses.replace(
+                day, source=self.source, is_trading_day=day.is_trading_day and day.date not in self.closures
+            )
+            for day in days
+        ]
+
+
+def test_r2_the_pinned_calendar_is_the_study_s_recorded_one():
+    assert (WATCH_CALENDAR_SESSIONS, WATCH_CALENDAR_SHA256) == (
+        2681,
+        "e829346db48c18f155ba4d1cbedf5a55f553a165eadc65b99426c5991e3069dd",
+    )
+
+
+@pytest.mark.parametrize(
+    ("calendar", "reason"),
+    [
+        (AlpacaLikeCalendar(closures=()), "calendar_mismatch"),  # a fallback that misses the one-off closures
+        (AlpacaLikeCalendar(source="deterministic"), "calendar_source"),
+    ],
+    ids=["wrong-days", "fallback-source"],
+)
+async def test_r2_a_calendar_that_is_not_the_study_s_is_unavailable(app_config, calendar, reason):
+    source, loads = source_with(history(clusters()), app_config, closes=CLOSES)
+    source.calendar = calendar
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert (prep.status, prep.reason) == ("unavailable", reason)
+    assert loads == [] and source.bars.calls == []
+
+
+async def test_r2_a_fallback_day_after_the_study_window_is_unavailable(app_config):
+    class TailFallback(AlpacaLikeCalendar):
+        async def get_calendar_range(self, start, end):
+            days = await super().get_calendar_range(start, end)
+            return [
+                dataclasses.replace(day, source="finnhub_api") if day.date > date(2026, 9, 1) else day for day in days
+            ]
+
+    source, _ = source_with(history(clusters()), app_config, closes=CLOSES)
+    source.calendar = TailFallback()
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert (prep.status, prep.reason) == ("unavailable", "calendar_source")
+
+
+async def test_r2_the_study_calendar_is_read_once_per_process_by_year_and_the_tail_once_per_date(app_config):
+    source, _ = source_with(history(clusters()), app_config, closes=CLOSES)
+    calendar = source.calendar
+    await source.prepare(now=NOW, snapshot=None, owned={})
+    prefix_calls = [call for call in calendar.calls if call[1] <= date(2026, 9, 1)]
+    assert len(prefix_calls) == 11 and all(start.year == end.year for start, end in prefix_calls)
+
+    def backward(calls):  # the time exit's forward read (from D) is not the trigger calendar
+        return [(start, end) for start, end in calls if end <= D + timedelta(days=1) and start < D]
+
+    calls = len(calendar.calls)
+    await source.prepare(now=NOW + timedelta(minutes=1), snapshot=None, owned={})
+    assert backward(calendar.calls[calls:]) == []  # nothing re-read the same New York date
+    await source.prepare(now=NOW + timedelta(days=1), snapshot=None, owned={})
+    assert backward(calendar.calls[calls:]) == [(date(2026, 9, 2), D + timedelta(days=1))]  # only the new tail
+
+
+def test_r2_archive_plausibility_matches_the_study_on_the_study_calendar():
+    prefix = _frozen_sessions()[: _frozen_sessions().index(date(2026, 9, 1)) + 1]
+    big = buy("AAA", date(2026, 3, 2), 1, dollars=600_000_000.0)  # above 10 x $50M
+    fine = buy("AAA", date(2026, 3, 3), 2)
+    late = buy("AAA", date(2026, 9, 15), 3, dollars=600_000_000.0)  # after the study's bars: no DV, kept
+    raw = {"AAA": daily(prefix, 50.0)}
+    dropped = archive_implausible({"AAA": (big, fine, late)}, prefix, raw, 10.0)
+    assert dropped == frozenset({big})
+
+
+async def test_r2_the_archive_plausibility_drops_carry_into_the_decision(app_config):
+    rows = [buy("AAA", _back(5), 1), buy("AAA", _back(1), 2)]
+    seed = dataclasses.replace(history({"AAA": rows}), archive_through=D)  # every row is archive
+    source, _ = source_with(seed, app_config, closes=CLOSES, implausible=frozenset({rows[1]}))
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert prep.events == ()  # the -1 buyer was implausible in the study's own bars: no cluster
+    assert [call for call in source.bars.calls if call[3] == "raw"] == []  # no live buyer, no live bars
+
+
+async def test_r2_live_plausibility_bars_are_fetched_only_for_live_buyers_and_extended_per_date(app_config):
+    rows = clusters()
+    rows["OLD"] = [buy("OLD", date(2026, 9, 2), 40), buy("OLD", date(2026, 9, 3), 41)]  # archive only
+    source, _ = source_with(history(rows, latest=D), app_config, closes=CLOSES | {"OLD": 50.0})
+    await source.prepare(now=NOW, snapshot=None, owned={})
+    [raw] = [call for call in source.bars.calls if call[3] == "raw"]
+    assert "OLD" not in raw[0] and "AAA" in raw[0]
+    assert raw[2].date() == D - timedelta(days=1)
+    source.bars.calls.clear()
+    await source.prepare(now=NOW + timedelta(days=1), snapshot=None, owned={})
+    [extension] = [call for call in source.bars.calls if call[3] == "raw"]
+    assert extension[1].date() == D and extension[2].date() == D  # only the new session's bar
+
+
+async def test_r2_a_missing_plausibility_cache_is_unavailable(app_config, tmp_path):
+    state_error = PlausibilityCacheMissing(tmp_path / "cube.npz")
+    source, _ = source_with(history(clusters()), app_config, closes=CLOSES, archive_error=state_error)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    assert (prep.status, prep.reason) == ("unavailable", "plausibility_cache_missing")
+
+
+async def test_r2_the_real_cache_reader_refuses_a_missing_cube(tmp_path):
+    with pytest.raises(PlausibilityCacheMissing):
+        await read_study_raw_bars(tmp_path, cohort_sha256="c" * 64, contract=CONTRACT, symbols=("AAA",))
+
+
+async def test_r2_a_failed_warm_read_is_logged_by_type_and_retrieved(caplog):
+    def broken():
+        raise OSError("disk detail that must not be logged")
+
+    live = LiveWatchHistory(store=None, load_archive=broken)
+    live.warm()
+    await asyncio.sleep(0.05)
+    assert any(
+        r.__dict__.get("event") == "insider_watch_archive_failed" and r.__dict__.get("error") == "OSError"
+        for r in caplog.records
+    )
+    assert "disk detail" not in caplog.text
+
+
+async def test_r2_the_decision_journals_each_phase_s_elapsed_time(app_config):
+    source, _ = source_with(history(clusters()), app_config, closes=CLOSES)
+    prep = await source.prepare(now=NOW, snapshot=None, owned={})
+    phases = prep.counts["elapsed_seconds"]
+    assert set(phases) == {"archive", "calendar", "bars", "rule"}
+    assert all(isinstance(value, float) and value >= 0 for value in phases.values())
+
+
+async def test_r2_a_watch_card_is_sent_without_a_link_preview():
+    notifier = TelegramNotifier.__new__(TelegramNotifier)
+    sent = AsyncMock(return_value=SimpleNamespace(message_id=7))
+    notifier.app = SimpleNamespace(bot=SimpleNamespace(send_message=sent))
+    notifier.db, notifier.chat_id, notifier.portfolio_cash = None, 1, 100_000.0
+    notifier.execution_mode = "alpaca"
+    notifier.is_configured = lambda: True
+    notifier._label = lambda text: text
+    facts = {
+        "kind": "insider_watch",
+        "buyers": 2,
+        "issuer_cik": 1334036,
+        "filing_dates": ["2026-10-20"],
+        "opp_dollars": 1.0,
+        "holding_sessions": 20,
+        "time_exit_at": None,
+        "risk_cap": 100.0,
+    }
+    await notifier.send_signal_alert(_evaluation(), INSIDER_WATCH_STRATEGY_ID, 1, card_facts=facts)
+    assert sent.await_args.kwargs["link_preview_options"].is_disabled is True
+    sent.reset_mock()
+    await notifier.send_signal_alert(_evaluation(), "TREND_PULLBACK", 2)
+    assert "link_preview_options" not in sent.await_args.kwargs

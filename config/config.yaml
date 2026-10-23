@@ -572,3 +572,4 @@ insider_watch:
   max_risk_per_trade_usd: 100
   archive_dir: ~/agentic-trader-research/insider-filings-cache
   backfill_from: 2026-10-01
+  pooled_cache_dir: ~/agentic-trader-research/pooled-cache-v1

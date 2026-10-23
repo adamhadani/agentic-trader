@@ -10,7 +10,10 @@ exit) through the same session lifetime machinery as PEAD (``pead_execution_poli
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -25,9 +28,12 @@ from agentic_trader.research.pooled.entry import REPO_ROOT
 
 __all__ = [
     "INSIDER_WATCH_STRATEGY_ID",
+    "WATCH_CALENDAR_SESSIONS",
+    "WATCH_CALENDAR_SHA256",
     "WATCH_DECISION_TIME_ET",
     "WATCH_ENTRY",
     "WatchContract",
+    "calendar_sha256",
     "frozen_watch_contract",
     "load_watch_contract",
     "watch_execution_policy",
@@ -40,6 +46,17 @@ INSIDER_WATCH_STRATEGY_ID = "insider_watch_long"
 # The cube bracket's decision time. The source reads its own from the contract; this copy only places
 # the "service unavailable" decision when the contract cannot be loaded. A test pins it to the file.
 WATCH_DECISION_TIME_ET = "10:35"
+# The study's trading calendar, bars_from..bars_through of the cube spec (2016-01-01..2026-09-01), as the
+# frozen insider v1 run recorded it (~/agentic-trader-research/apriori-insider-v1-20261023/result.json,
+# inputs.calendar_sessions and inputs.calendar_sha256; computed by insider_runner.build_insider_leg_inputs).
+# The live decision refuses any calendar whose prefix differs: the cooldown chain runs on these sessions.
+WATCH_CALENDAR_SESSIONS = 2681
+WATCH_CALENDAR_SHA256 = "e829346db48c18f155ba4d1cbedf5a55f553a165eadc65b99426c5991e3069dd"
+
+
+def calendar_sha256(days: Sequence[date]) -> str:
+    """SHA-256 of the newline-joined ISO trading days (insider_runner's ``calendar_sha256``)."""
+    return hashlib.sha256("\n".join(day.isoformat() for day in days).encode()).hexdigest()
 
 
 @dataclass(frozen=True)

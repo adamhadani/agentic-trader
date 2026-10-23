@@ -84,4 +84,5 @@ def test_the_shipped_insider_watch_block_reaches_app_config():
     assert watch.max_risk_per_trade_usd == 100
     assert watch.archive_dir == Path("~/agentic-trader-research/insider-filings-cache").expanduser()
     assert watch.backfill_from.isoformat() == "2026-10-01"
-    assert {"enabled", "archive_dir", "backfill_from"} <= watch.model_fields_set
+    assert watch.pooled_cache_dir == Path("~/agentic-trader-research/pooled-cache-v1").expanduser()
+    assert {"enabled", "archive_dir", "backfill_from", "pooled_cache_dir"} <= watch.model_fields_set
