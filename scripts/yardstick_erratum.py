@@ -2,8 +2,9 @@
 
 Reads the frozen study frames and the study's adjusted daily-bar caches from local disk only (no
 provider, database or network) and prints, per window and arm, the frozen beta-one excess beside the
-past-only trailing-beta excess (``research/setups/beta.py``) and both again without the rates/credit
-and metals ETFs of the research ETF universe. The frozen ``no_change`` decision is not revisited.
+past-only trailing-beta excess (``research/setups/beta.py``), both again without the rates/credit and
+metals ETFs of the research ETF universe, and without only BIL and SHY (the native universe from
+2026-10-23). The frozen ``no_change`` decision is not revisited.
 
 Usage: uv run python scripts/yardstick_erratum.py STUDY_DIR PRIMARY_CACHE ROBUSTNESS_CACHE
 """
@@ -25,6 +26,7 @@ from agentic_trader.research.setups.bracket_counterfactual import winsorized
 
 MARKET = "SPY"
 EXCLUDED_COHORTS = ("rates_credit", "metals")
+REMOVED_FROM_UNIVERSE = ("BIL", "SHY")
 
 
 def _daily(cache: Path, symbol: str) -> pd.DataFrame | None:
@@ -78,6 +80,8 @@ def window_figures(frame_path: Path, cache: Path, r_cap: float) -> dict:
         out["arms"][arm] = {
             "all": _block(rows, r_cap),
             "ex_rates_metals": _block(rows.loc[~rows["symbol"].isin(excluded)], r_cap),
+            # The native universe from 2026-10-23: only the T-bill funds are gone.
+            "ex_bil_shy": _block(rows.loc[~rows["symbol"].isin(REMOVED_FROM_UNIVERSE)], r_cap),
         }
     return out
 
