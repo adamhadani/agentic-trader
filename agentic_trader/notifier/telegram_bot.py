@@ -47,7 +47,7 @@ from agentic_trader.constants import (
 )
 from agentic_trader.execution.card_evidence import format_evidence_lines, parse_card_evidence
 from agentic_trader.execution.freshness import ExecutionReply
-from agentic_trader.execution.lifetimes import RestingCancelResult
+from agentic_trader.execution.lifetimes import RestingCancelResult, parse_signal_id
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.transport import (
     ObservedPollingRequest,
@@ -1103,7 +1103,7 @@ class TelegramNotifier:
         if not self._is_authorized(update) or not update.message:
             return
         args = context.args or []
-        signal_id = int(args[0]) if len(args) == 1 and args[0].isdigit() else None
+        signal_id = parse_signal_id(args[0]) if len(args) == 1 else None
         if signal_id is None:
             await update.message.reply_text(
                 "Usage: <code>/cancel &lt;signal_id&gt;</code>\nPreviews one resting entry; the confirm button cancels it.",
@@ -1387,8 +1387,8 @@ class TelegramNotifier:
             else:
                 await query.answer("Re-evaluate handler unavailable.", show_alert=True)
         elif data.startswith("cancelentry_confirm:"):
-            raw_id = data.removeprefix("cancelentry_confirm:")
-            if not raw_id.isdigit():
+            cancel_id = parse_signal_id(data.removeprefix("cancelentry_confirm:"))
+            if cancel_id is None:
                 await query.answer("Invalid entry cancel button; nothing cancelled.", show_alert=True)
                 return
             if self.cancel_handler is None:
@@ -1396,7 +1396,7 @@ class TelegramNotifier:
                 return
             await query.answer("Cancelling entry…")
             await _safe_clear_markup()
-            result = await self.cancel_handler(int(raw_id), True)
+            result = await self.cancel_handler(cancel_id, True)
             if msg and hasattr(msg, "reply_text"):
                 await msg.reply_text(TelegramHtmlFormatter.format_resting_cancel_html(result), parse_mode="HTML")
         elif data == "cancelentry_keep":

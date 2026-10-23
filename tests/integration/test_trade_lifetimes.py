@@ -6,7 +6,7 @@ Fixtures seed already-accepted timed orders; session-alpha admission stays disab
 import asyncio
 import json
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, time as dt_time, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -501,8 +501,8 @@ async def assert_capacity_released(c):
         stop_loss=95,
         take_profit=110,
     )
-    _item, reason = await c.db.workflows.enqueue_entry(request, c.broker.config)
-    assert "cancellation" not in reason.lower()
+    item, reason = await c.db.workflows.enqueue_entry(request, c.broker.config)
+    assert item is not None, reason
 
 
 async def test_marked_native_entry_untouched_before_deadline(lifecycle_case):
@@ -672,6 +672,17 @@ async def test_preview_makes_no_delete(lifecycle_case):
     assert (result.status, result.reason, result.symbol) == ("preview", None, "SPY")
     assert not mutations(c)
     assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert not await c.db.workflows.list_work(WorkKind.NOTIFICATION)
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+
+
+async def test_preview_never_observes_broker_evidence(lifecycle_case):
+    """A preview writes nothing: even an unfilled-terminal parent is left to the projection pipeline."""
+    c = lifecycle_case
+    complete_cancel(c)
+    result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=False)
+    assert (result.status, result.reason) == ("refused", "not_resting")
+    assert not await c.db.workflows.list_work(WorkKind.NOTIFICATION)
     assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
 
 
@@ -800,8 +811,136 @@ async def test_begin_cancel_refuses_a_marked_native_signal_with_a_mismatched_pol
     await c.db.workflows.observe_orders(orders)
     other = asdict(TradeLifetimePolicy(resting_seconds=120, holding_seconds=180))
     refused = await service.repository.begin_cancel(c.signal_id, identity, orders, other, now=datetime.now(UTC))
-    assert not isinstance(refused, WorkItem)
+    assert refused == "lifetime_mismatch"
     assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
     matching = asdict(daily_entry_lifetime())
     claimed = await service.repository.begin_cancel(c.signal_id, identity, orders, matching, now=datetime.now(UTC))
     assert isinstance(claimed, WorkItem)
+
+
+async def claim_inputs(c):
+    service = c.services[0]
+    identity = await service._entry_identity(await c.db.get_signal_by_id(c.signal_id))
+    orders = await c.broker.read_entry_group(identity.order_id)
+    await c.db.workflows.observe_orders(orders)
+    return service.repository, identity, orders
+
+
+async def test_begin_cancel_ownership_mismatch_is_an_operator_refusal_and_a_deadline_error(lifecycle_case):
+    c = lifecycle_case
+    repository, identity, orders = await claim_inputs(c)
+    foreign = replace(identity, client_order_id="someone-else")
+    refused = await repository.begin_cancel(
+        c.signal_id, foreign, orders, None, now=datetime.now(UTC), reason="operator"
+    )
+    assert refused == "no_durable_entry"
+    lifetime = asdict(TradeLifetimePolicy(resting_seconds=120, holding_seconds=180))
+    with pytest.raises(ValueError, match="ownership"):
+        await repository.begin_cancel(c.signal_id, foreign, orders, lifetime, now=datetime.now(UTC))
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+
+
+@pytest.mark.parametrize(
+    ("change", "token"),
+    [
+        ("parent_fill", "not_resting"),
+        ("child_fill", "not_resting"),
+        ("child_replaced", "incomplete_or_changed_bracket_group"),
+        ("missing_projection", "incomplete_or_changed_bracket_group"),
+    ],
+)
+async def test_operator_claim_refuses_changed_projections_under_the_lock(lifecycle_case, change, token):
+    c = lifecycle_case
+    resting(c)
+    repository, identity, orders = await claim_inputs(c)
+    later = datetime.now(UTC) + timedelta(seconds=1)
+    parent = next(o for o in orders if o.order_id == identity.order_id)
+    child = next(o for o in orders if o.order_id != identity.order_id)
+    if change == "missing_projection":
+        orders = [*orders, child.model_copy(update={"order_id": "00000000-0000-0000-0000-000000000077"})]
+    else:
+        target, update = {
+            "parent_fill": (parent, {"status": "partially_filled", "filled_quantity": "2"}),
+            "child_fill": (child, {"status": "partially_filled", "filled_quantity": "2"}),
+            "child_replaced": (child, {"replaced_by": "00000000-0000-0000-0000-000000000099"}),
+        }[change]
+        await c.db.workflows.observe_orders(
+            [target.model_copy(update={**update, "updated_at": later, "source": "stream"})]
+        )
+    refused = await repository.begin_cancel(
+        c.signal_id, identity, orders, None, now=datetime.now(UTC), reason="operator"
+    )
+    assert refused == token
+    assert not await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert not mutations(c)
+
+
+# A DELETE that loses the fill race: the broker rejects it (422) because the entry already filled.
+
+
+def fill_race(c, *, filled, child=None):
+    def response(method, path, query, body):
+        if method == "DELETE":
+            c.venue.entry.update(
+                status="filled" if filled == "10" else "partially_filled",
+                filled_qty=filled,
+                filled_avg_price="100",
+                filled_at=datetime.now(UTC).isoformat(),
+            )
+            if child == "canceled":
+                c.venue.stop.update(status="canceled")
+            elif child == "replaced":
+                c.venue.stop["replaced_by"] = "00000000-0000-0000-0000-000000000099"
+            return 422, {"code": 42210000, "message": "order is already filled"}
+        return None
+
+    c.venue.override = response
+
+
+async def race_cancel(c, cause):
+    if cause == "operator":
+        resting(c)
+        result = await c.services[0].cancel_resting_entry(c.signal_id, confirm=True)
+        assert result.status == "submitted"
+    else:
+        await mark_native(c, submitted_seconds_ago=DAILY_ENTRY_LIFETIME_SECONDS + 1)
+        await c.services[0].reconcile()
+    assert len(deletes(c)) == 1
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    return item
+
+
+@pytest.mark.parametrize("cause", ["operator", "deadline"])
+async def test_full_fill_before_cancel_is_terminal_without_halt(lifecycle_case, cause):
+    c = lifecycle_case
+    fill_race(c, filled="10")
+    item = await race_cancel(c, cause)
+    assert item.status == WorkStatus.REJECTED and item.result["reason"] == "filled_before_cancel"
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED
+    texts = await notice_texts(c)
+    assert any(
+        f"Entry #{c.signal_id} filled before the {cause} cancellation; the position is open and protected." in t
+        for t in texts
+    )
+    assert not await c.db.workflows.list_work(
+        WorkKind.ENTRY_CANCEL, statuses=(WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)
+    )
+    assert not await c.services[1].resume_blockers()
+    await c.services[1].recover()
+    await c.services[1].reconcile()
+    assert len(deletes(c)) == 1
+    assert not any(call[0] in ("POST", "PATCH") for call in c.venue.calls)
+    (item,) = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert item.status == WorkStatus.REJECTED
+
+
+@pytest.mark.parametrize("cause", ["operator", "deadline"])
+@pytest.mark.parametrize(("filled", "child"), [("2", None), ("10", "canceled"), ("10", "replaced")])
+async def test_partial_or_unprotected_fill_race_stays_unknown_and_halts(lifecycle_case, cause, filled, child):
+    c = lifecycle_case
+    fill_race(c, filled=filled, child=child)
+    item = await race_cancel(c, cause)
+    assert item.status == WorkStatus.UNKNOWN
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert (await c.db.get_signal_by_id(c.signal_id))["status"] == SignalStatus.EXECUTED

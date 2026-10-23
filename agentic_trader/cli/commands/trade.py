@@ -8,6 +8,7 @@ from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.cli.utils import coro, get_copilot_and_config
 from agentic_trader.config import load_config
 from agentic_trader.constants import RuntimeEnvironment
+from agentic_trader.execution.lifetimes import parse_signal_id
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter, TerminalFormatter
 
@@ -65,8 +66,15 @@ async def close(signal_id: int, price: float | None, dry_run: bool) -> None:
     click.echo(res if dry_run else TelegramHtmlFormatter.strip_html(res))
 
 
+def _signal_id(_ctx: click.Context, _param: click.Parameter, value: str) -> int:
+    signal_id = parse_signal_id(value)
+    if signal_id is None:
+        raise click.BadParameter("a signal id is ASCII decimal digits")
+    return signal_id
+
+
 @click.command("cancel", help="Cancel one unfilled resting entry order; previews unless --confirm")
-@click.argument("signal_id", type=int)
+@click.argument("signal_id", callback=_signal_id)
 @click.option("--confirm", is_flag=True, help="Send one broker cancel for the exact resting entry (never retried)")
 @coro
 async def cancel(signal_id: int, confirm: bool) -> None:

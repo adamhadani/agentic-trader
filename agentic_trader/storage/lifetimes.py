@@ -28,6 +28,7 @@ from agentic_trader.execution.lifetimes import (
     EntryIdentity,
     LifetimeAction,
     assess_lifetime,
+    filled_before_cancel,
     resting_entry_refusal,
 )
 from agentic_trader.storage.models import (
@@ -125,6 +126,8 @@ class LifetimeRepository:
                 or json.loads(entry.payload)["client_order_id"] != identity.client_order_id
                 or json.loads(entry.result).get("order_id") != identity.order_id
             ):
+                if operator:
+                    return "no_durable_entry"
                 raise ValueError("Lifetime cancellation lacks exact durable entry ownership")
             projection = await session.get(OrderProjectionRecord, (self.store.scope, identity.order_id))
             if projection is None:
@@ -233,11 +236,17 @@ class LifetimeRepository:
                     for o in effective
                 )
             )
-            if not complete and allow_pending:
+            # The broker refused the DELETE because the entry already filled, cleanly and protected.
+            filled_first = not complete and filled_before_cancel(identity, effective, item.payload["order_ids"])
+            if not complete and not filled_first and allow_pending:
                 return False
-            status = WorkStatus.ACCEPTED if complete else WorkStatus.UNKNOWN
+            status = WorkStatus.ACCEPTED if complete else WorkStatus.REJECTED if filled_first else WorkStatus.UNKNOWN
             reason = (
-                "confirmed_unfilled_cancellation" if complete else (reason or "unconfirmed_cancellation_or_fill_race")
+                "confirmed_unfilled_cancellation"
+                if complete
+                else "filled_before_cancel"
+                if filled_first
+                else (reason or "unconfirmed_cancellation_or_fill_race")
             )
             payload: dict[str, Any] = {"reason": reason, "orders": [o.model_dump(mode="json") for o in effective]}
             row = await session.get(WorkItemRecord, item.id)
@@ -249,6 +258,7 @@ class LifetimeRepository:
                 or row.scope != self.store.scope
                 or row.kind != WorkKind.ENTRY_CANCEL
                 or (row.status == WorkStatus.ACCEPTED and (not complete or not transport_error))
+                or row.status == WorkStatus.REJECTED
                 or (row.status == status and json.loads(row.result) == payload)
             ):
                 return True
@@ -271,23 +281,24 @@ class LifetimeRepository:
                 )
                 if signal:
                     signal.status = SignalStatus.FAILED
-            if not complete:
+            if not complete and not filled_first:
                 await self.store.halt(
                     session, f"Unconfirmed entry cancellation {row.id}; inspect fills/protection before resuming"
                 )
+            # Items claimed before causes were recorded were all deadline cancels.
+            cause = item.payload.get("cause", "deadline")
+            signal_id = item.payload["signal_id"]
+            if filled_first:
+                # The signal stays EXECUTED: exact entry reconciliation records the fill as usual.
+                text = f"Entry #{signal_id} filled before the {cause} cancellation; the position is open and protected."
+            else:
+                text = f"Entry #{signal_id} {cause} cancellation: {reason}. " + (
+                    "Broker confirms no fills."
+                    if complete
+                    else "New risk halted. Inspect exact broker fills and protective orders; no automatic retry."
+                )
             await self.store.add_notification(
-                session,
-                f"entry-cancel/{row.id}/{status}",
-                NotificationKind.MESSAGE,
-                {
-                    # Items claimed before causes were recorded were all deadline cancels.
-                    "text": f"Entry #{item.payload['signal_id']} {item.payload.get('cause', 'deadline')} cancellation: {reason}. "
-                    + (
-                        "Broker confirms no fills."
-                        if complete
-                        else "New risk halted. Inspect exact broker fills and protective orders; no automatic retry."
-                    )
-                },
+                session, f"entry-cancel/{row.id}/{status}", NotificationKind.MESSAGE, {"text": text}
             )
 
             return True

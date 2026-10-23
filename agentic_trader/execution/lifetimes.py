@@ -45,6 +45,8 @@ class LifetimeAction(StrEnum):
 BRACKET_EXIT_COUNT = 2
 UNFILLED_TERMINAL = frozenset({"canceled", "expired", "rejected"})
 WORKING_ENTRY = frozenset({"new", "accepted", "pending_new", "accepted_for_bidding", "done_for_day"})
+# A live bracket exit after the parent fills: Alpaca holds the stop leg while the take-profit works.
+WORKING_EXIT = WORKING_ENTRY | {"held"}
 
 
 # Why an entry_cancel work item exists: the resting deadline passed, or the operator asked.
@@ -61,6 +63,11 @@ class RestingCancelResult:
     signal_id: int
     symbol: str | None
     work_status: str | None
+
+
+def parse_signal_id(text: str) -> int | None:
+    """An operator-typed signal id: ASCII decimal digits only (``int`` also takes "４２" or "٤٢")."""
+    return int(text) if text.isascii() and text.isdecimal() else None
 
 
 def holding_calendar_span_days(holding_sessions: int) -> int:
@@ -182,6 +189,24 @@ def bracket_group_refusal(identity: EntryIdentity, orders: Sequence[OrderObserva
     ):
         return INCOMPLETE_OR_CHANGED_GROUP
     return None
+
+
+def filled_before_cancel(identity: EntryIdentity, orders: Sequence[OrderObservation], order_ids: Sequence[str]) -> bool:
+    """The DELETE lost a clean fill race: the exact parent fully filled, both exits intact and working.
+
+    Anything less (a partial fill, a missing, changed, filled or terminal exit) is not this outcome.
+    """
+    by_id = {o.order_id: o for o in orders}
+    parent = by_id.get(identity.order_id)
+    return (
+        parent is not None
+        and identity.matches(parent)
+        and parent.status == "filled"
+        and Decimal(parent.filled_quantity) == Decimal(parent.quantity)
+        and set(order_ids) <= by_id.keys()
+        and bracket_group_refusal(identity, orders) is None
+        and all(o.status in WORKING_EXIT for o in orders if o.order_id != identity.order_id)
+    )
 
 
 class TradeLifetimeService:
@@ -337,7 +362,9 @@ class TradeLifetimeService:
             orders = await self.broker.read_entry_group(identity.order_id)
         except Exception as exc:
             return refused(f"entry_group_unavailable:{type(exc).__name__}")
-        await self.store.observe_orders(orders)
+        if confirm:
+            # A preview writes nothing; the confirming call re-reads and journals the evidence.
+            await self.store.observe_orders(orders)
         parent = next((o for o in orders if o.order_id == identity.order_id), None)
         if parent is None:
             return refused(INCOMPLETE_OR_CHANGED_GROUP)

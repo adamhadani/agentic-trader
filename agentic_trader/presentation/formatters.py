@@ -364,15 +364,21 @@ class TelegramHtmlFormatter:
             return (
                 f"<b>Cancel the resting entry {symbol} (signal #{sid})?</b>\n"
                 "One broker cancel is sent and never retried. The entry stays reserved until the broker "
-                "confirms no fills."
+                "confirms no fills. If it partially fills before the cancel arrives, new entries halt until reviewed."
             )
         if result.status == "refused":
             token = result.reason or "refused"
             detail = cls.RESTING_CANCEL_REFUSALS.get(token.split(":", 1)[0])
             explanation = f" {detail.format(id=sid, symbol=symbol)}" if detail else ""
+            if token == "cancel_in_progress" and result.work_status:
+                explanation += f" ({html.escape(result.work_status)})"
             return f"❌ Entry cancel refused (<code>{html.escape(token)}</code>).{explanation} Nothing was cancelled."
         if result.work_status == WorkStatus.ACCEPTED:
             return f"✅ Entry {symbol} (signal #{sid}) cancelled. The broker confirms no fills."
+        if result.work_status == WorkStatus.REJECTED:
+            return (
+                f"Entry {symbol} (signal #{sid}) filled before the cancel arrived; the position is open and protected."
+            )
         if result.work_status == WorkStatus.UNKNOWN:
             return (
                 f"⚠️ Cancel for {symbol} (signal #{sid}) is unconfirmed. New risk halted; inspect exact broker "

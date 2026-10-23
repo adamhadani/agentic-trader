@@ -9,6 +9,7 @@ from agentic_trader.cli.main import cli
 from agentic_trader.execution.durable import WorkStatus
 from agentic_trader.execution.lifetimes import RestingCancelResult
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
+from agentic_trader.presentation.formatters import TelegramHtmlFormatter
 
 
 PREVIEW = RestingCancelResult(status="preview", reason=None, signal_id=42, symbol="SPY", work_status=None)
@@ -51,7 +52,7 @@ async def test_telegram_cancel_preview_and_buttons():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("args", [[], ["abc"], ["1", "2"]])
+@pytest.mark.parametrize("args", [[], ["abc"], ["1", "2"], ["²"], ["４２"], ["٤٢"], ["-1"]])
 async def test_telegram_cancel_usage_never_calls_the_handler(args):
     handler = AsyncMock()
     notifier = TelegramNotifier(None, "1", cancel_handler=handler)
@@ -134,3 +135,46 @@ def test_cli_cancel_previews_without_confirm(flags, confirm):
     copilot.cancel_resting_entry.assert_awaited_once_with(42, confirm=confirm)
     assert "SPY" in result.output and "<b>" not in result.output
     assert ("copilot cancel 42 --confirm" in result.output) is (not confirm)
+
+
+def test_cancel_in_progress_refusal_shows_the_existing_work_status():
+    refused = RestingCancelResult(
+        status="refused", reason="cancel_in_progress", signal_id=42, symbol="SPY", work_status=WorkStatus.UNKNOWN
+    )
+    assert "(unknown)" in TelegramHtmlFormatter.format_resting_cancel_html(refused)
+
+
+def test_preview_warns_that_a_partial_fill_halts():
+    text = TelegramHtmlFormatter.format_resting_cancel_html(PREVIEW)
+    assert "If it partially fills before the cancel arrives, new entries halt until reviewed." in text
+
+
+def test_filled_before_cancel_reply_names_the_open_position():
+    raced = RestingCancelResult(
+        status="submitted", reason=None, signal_id=42, symbol="SPY", work_status=WorkStatus.REJECTED
+    )
+    text = TelegramHtmlFormatter.format_resting_cancel_html(raced)
+    assert "filled before" in text and "open and protected" in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", ["cancelentry_confirm:²", "cancelentry_confirm:４２", "cancelentry_confirm:"])
+async def test_telegram_confirm_callback_rejects_non_ascii_ids(data):
+    handler = AsyncMock()
+    notifier = TelegramNotifier(None, "1", cancel_handler=handler)
+    update, query = _callback_update(data)
+    await notifier.handle_button_callback(update, MagicMock())
+    handler.assert_not_awaited()
+    assert query.answer.await_args.kwargs == {"show_alert": True}
+
+
+@pytest.mark.parametrize("raw", ["４２", "٤٢", "abc"])
+def test_cli_cancel_rejects_non_ascii_ids(raw):
+    with patch("agentic_trader.cli.commands.trade.get_copilot_and_config") as mock_get:
+        copilot = MagicMock()
+        copilot.broker.connect = AsyncMock()
+        copilot.cancel_resting_entry = AsyncMock()
+        mock_get.return_value = (copilot, MagicMock())
+        result = CliRunner().invoke(cli, ["cancel", raw])
+    assert result.exit_code != 0
+    copilot.cancel_resting_entry.assert_not_awaited()
