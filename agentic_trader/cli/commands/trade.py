@@ -65,6 +65,20 @@ async def close(signal_id: int, price: float | None, dry_run: bool) -> None:
     click.echo(res if dry_run else TelegramHtmlFormatter.strip_html(res))
 
 
+@click.command("cancel", help="Cancel one unfilled resting entry order; previews unless --confirm")
+@click.argument("signal_id", type=int)
+@click.option("--confirm", is_flag=True, help="Send one broker cancel for the exact resting entry (never retried)")
+@coro
+async def cancel(signal_id: int, confirm: bool) -> None:
+    """Preview or confirm an operator cancel of one resting entry."""
+    copilot, _config = get_copilot_and_config()
+    await copilot.broker.connect()
+    result = await copilot.cancel_resting_entry(signal_id, confirm=confirm)
+    click.echo(TelegramHtmlFormatter.strip_html(TelegramHtmlFormatter.format_resting_cancel_html(result)))
+    if result.status == "preview":
+        click.echo(f"To cancel: copilot cancel {signal_id} --confirm")
+
+
 @click.command("flatten", help="Close all current broker positions without changing the trading halt")
 @click.option("--confirm", is_flag=True, help="Submit closes for the current broker snapshot")
 @click.option("--dry-run", is_flag=True, help="Read-only preview; never cancel or submit orders")

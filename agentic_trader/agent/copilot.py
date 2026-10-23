@@ -101,7 +101,7 @@ from agentic_trader.execution.freshness import (
     valid_until_from_provenance,
 )
 from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, native_entry_lifetime_marker
-from agentic_trader.execution.lifetimes import TradeLifetimeService
+from agentic_trader.execution.lifetimes import RestingCancelResult, TradeLifetimeService
 from agentic_trader.market.session import (
     ET_TZ,
     AlpacaCalendarProvider,
@@ -494,6 +494,7 @@ class TradingCopilot:
                 positions_provider=self.get_positions_summary_html,
                 close_handler=self.close_position_manual,
                 flatten_handler=self.flatten_positions,
+                cancel_handler=self.cancel_resting_entry,
                 execute_handler=self.execute_signal_by_id,
                 reevaluate_handler=self.reevaluate_signal,
                 symbol_scan_handler=self.request_symbol_scan,
@@ -3177,6 +3178,13 @@ class TradingCopilot:
             for event in await self.broker.reconcile_positions(positions):
                 await self.process_reconciliation_event(event, positions)
             return html.escape(response)
+
+    async def cancel_resting_entry(self, signal_id: int, confirm: bool = False) -> RestingCancelResult:
+        """Operator cancel (Telegram /cancel, CLI ``cancel``); confirming serializes with reconciliation."""
+        if not confirm:
+            return await self.lifetime_service.cancel_resting_entry(signal_id, confirm=False)
+        async with self._reconciliation_lock:
+            return await self.lifetime_service.cancel_resting_entry(signal_id, confirm=True)
 
     async def close_position_manual(
         self, signal_id: int, exit_price: float | None = None, *, allow_queued: bool = False

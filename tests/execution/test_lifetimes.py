@@ -4,10 +4,13 @@ import json
 from dataclasses import asdict
 from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from agentic_trader.broker.paper import PaperBroker
+from agentic_trader.config import AppConfig
 from agentic_trader.execution.durable import OrderObservation
 from agentic_trader.execution.lifetime_policy import (
     DAILY_ENTRY_LIFETIME_SECONDS,
@@ -225,3 +228,40 @@ def test_resolver_none_without_either(signal):
 def test_resolver_rejects_malformed_marker(marker):
     with pytest.raises(ValueError):
         entry_lifetime_of({"decision_provenance": {NATIVE_ENTRY_LIFETIME_KEY: marker}})
+
+
+def test_resolver_raises_on_a_present_but_null_alpha_lifetime():
+    """A declared-but-null alpha lifetime is malformed, never a fall-through to the native marker."""
+    signal = {
+        "alpha_policy": {"lifetime": None},
+        "decision_provenance": {NATIVE_ENTRY_LIFETIME_KEY: asdict(daily_entry_lifetime())},
+    }
+    with pytest.raises(ValueError):
+        entry_lifetime_of(signal)
+
+
+async def test_paper_mode_refused_broker_cannot_cancel():
+    """The simulator has no exact-order cancellation: a direct refusal, never a NotImplementedError halt."""
+    signal = {
+        "id": 7,
+        "contract": "SPY",
+        "status": "EXECUTED",
+        "executed_at": None,
+        "broker_order_id": "entry",
+        "alpha_policy": None,
+        "decision_provenance": None,
+    }
+    db = SimpleNamespace(get_signal_by_id=AsyncMock(return_value=signal))
+    repository = SimpleNamespace(
+        store=SimpleNamespace(db=db),
+        cancel_item=AsyncMock(return_value=None),
+        begin_cancel=AsyncMock(),
+        review=AsyncMock(),
+    )
+    broker = PaperBroker(AppConfig(), data_fetcher=MagicMock())
+    service = TradeLifetimeService(repository, broker, None, config=SimpleNamespace())
+    for confirm in (False, True):
+        result = await service.cancel_resting_entry(7, confirm=confirm)
+        assert (result.status, result.reason, result.signal_id) == ("refused", "broker_cannot_cancel", 7)
+    repository.begin_cancel.assert_not_awaited()
+    repository.review.assert_not_awaited()

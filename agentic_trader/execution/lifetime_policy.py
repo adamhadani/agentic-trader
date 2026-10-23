@@ -99,10 +99,15 @@ def _document(value: Any) -> Mapping[str, Any]:
 def entry_lifetime_of(signal: Mapping[str, Any]) -> LifetimePolicy | None:
     """The one entry-lifetime resolver: `alpha_policy["lifetime"]`, else a native card's marker.
 
-    Raises ValueError for a malformed document; lifetime callers send that to review.
+    Raises ValueError for a malformed document, including a present but null alpha lifetime;
+    lifetime callers send that to review.
     """
-    declared = _document(signal.get("alpha_policy")).get("lifetime")
-    if declared is None:
+    alpha = _document(signal.get("alpha_policy"))
+    if "lifetime" in alpha:
+        declared = alpha["lifetime"]
+        if declared is None:
+            raise ValueError("Alpha lifetime is declared but null")
+    else:
         declared = _document(signal.get("decision_provenance")).get(NATIVE_ENTRY_LIFETIME_KEY)
     if declared is None:
         return None

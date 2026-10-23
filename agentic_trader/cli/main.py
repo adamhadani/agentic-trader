@@ -25,6 +25,7 @@ from agentic_trader.cli.commands.service import daemon, doctor, eval_command, li
 from agentic_trader.cli.commands.stress import stress
 from agentic_trader.cli.commands.telemetry import metrics
 from agentic_trader.cli.commands.trade import (
+    cancel,
     close,
     execute,
     explain_macro,
@@ -84,6 +85,7 @@ cli.add_command(status)
 cli.add_command(positions)
 cli.add_command(perf)
 cli.add_command(close)
+cli.add_command(cancel)
 cli.add_command(flatten)
 cli.add_command(execute)
 cli.add_command(panic)

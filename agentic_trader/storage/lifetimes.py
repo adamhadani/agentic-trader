@@ -21,7 +21,15 @@ from agentic_trader.execution.durable import (
     WorkStatus,
 )
 from agentic_trader.execution.lifetime_policy import entry_lifetime_of, lifetime_from_dict
-from agentic_trader.execution.lifetimes import UNFILLED_TERMINAL, EntryIdentity, LifetimeAction, assess_lifetime
+from agentic_trader.execution.lifetimes import (
+    INCOMPLETE_OR_CHANGED_GROUP,
+    UNFILLED_TERMINAL,
+    CancelCause,
+    EntryIdentity,
+    LifetimeAction,
+    assess_lifetime,
+    resting_entry_refusal,
+)
 from agentic_trader.storage.models import (
     CloseRequestRecord,
     OrderProjectionRecord,
@@ -50,15 +58,35 @@ class LifetimeRepository:
             )
             return work_item(row) if row else None
 
+    async def cancel_item(self, signal_id: int) -> WorkItem | None:
+        """The signal's one entry_cancel work item, in any status (``dedup_key = signal_id``)."""
+        async with self.db.session_factory() as session:
+            row = await session.scalar(
+                select(WorkItemRecord).where(
+                    WorkItemRecord.scope == self.store.scope,
+                    WorkItemRecord.kind == WorkKind.ENTRY_CANCEL,
+                    WorkItemRecord.dedup_key == str(signal_id),
+                )
+            )
+            return work_item(row) if row else None
+
     async def begin_cancel(
         self,
         signal_id: int,
         identity: EntryIdentity,
         orders: list[OrderObservation],
-        lifetime: dict[str, Any],
+        lifetime: dict[str, Any] | None,
         *,
         now: datetime,
-    ) -> WorkItem | None:
+        reason: CancelCause = "deadline",
+    ) -> WorkItem | str:
+        """Claim the one entry_cancel for a signal, or return the refusal token.
+
+        ``reason="operator"`` skips only the deadline assessment and the policy-equality fence
+        (the operator may cancel an untimed or malformed-marker entry) and reports a changed
+        group as a refusal; the deadline path still raises for review.
+        """
+        operator = reason == "operator"
         async with self.db.session_factory() as session, session.begin():
             await self.store.lock(session)
             existing = await session.scalar(
@@ -69,7 +97,7 @@ class LifetimeRepository:
                 )
             )
             if existing:
-                return None
+                return "cancel_in_progress"
             signal = await session.scalar(select(SignalRecord).where(*self.db._scope(), SignalRecord.id == signal_id))
             if (
                 not signal
@@ -77,12 +105,13 @@ class LifetimeRepository:
                 or signal.executed_at is not None
                 or signal.broker_order_id != identity.order_id
             ):
-                return None
-            stored = entry_lifetime_of(
-                {"alpha_policy": signal.alpha_policy, "decision_provenance": signal.decision_provenance}
-            )
-            if stored is None or asdict(stored) != lifetime:
-                return None
+                return "not_resting"
+            if not operator:
+                stored = entry_lifetime_of(
+                    {"alpha_policy": signal.alpha_policy, "decision_provenance": signal.decision_provenance}
+                )
+                if stored is None or asdict(stored) != lifetime:
+                    return "lifetime_mismatch"
             entry = await session.scalar(
                 select(WorkItemRecord).where(
                     WorkItemRecord.scope == self.store.scope,
@@ -98,21 +127,22 @@ class LifetimeRepository:
             ):
                 raise ValueError("Lifetime cancellation lacks exact durable entry ownership")
             projection = await session.get(OrderProjectionRecord, (self.store.scope, identity.order_id))
-            if (
-                projection is None
-                or assess_lifetime(
-                    lifetime_from_dict(lifetime),
-                    identity,
-                    OrderObservation.model_validate_json(projection.payload),
-                    now,
-                ).action
+            if projection is None:
+                return INCOMPLETE_OR_CHANGED_GROUP
+            parent = OrderObservation.model_validate_json(projection.payload)
+            if operator:
+                if refusal := resting_entry_refusal(identity, parent):
+                    return refusal
+            elif (
+                lifetime is None
+                or assess_lifetime(lifetime_from_dict(lifetime), identity, parent, now).action
                 != LifetimeAction.CANCEL_ENTRY
             ):
-                return None
+                return "not_due"
             for observed in orders:
                 latest = await session.get(OrderProjectionRecord, (self.store.scope, observed.order_id))
                 if latest is None:
-                    return None
+                    return INCOMPLETE_OR_CHANGED_GROUP
                 current = OrderObservation.model_validate_json(latest.payload)
                 if (
                     Decimal(current.filled_quantity) != 0
@@ -121,7 +151,9 @@ class LifetimeRepository:
                     or current.symbol != identity.symbol
                     or Decimal(current.quantity) != Decimal(identity.quantity)
                 ):
-                    raise ValueError("Bracket evidence changed before cancellation claim")
+                    if not operator:
+                        raise ValueError("Bracket evidence changed before cancellation claim")
+                    return "not_resting" if Decimal(current.filled_quantity) != 0 else INCOMPLETE_OR_CHANGED_GROUP
             closing = await session.scalar(
                 select(CloseRequestRecord.id).where(
                     CloseRequestRecord.environment == self.db.environment,
@@ -131,10 +163,11 @@ class LifetimeRepository:
                 )
             )
             if closing:
-                return None
+                return "close_active"
             now = datetime.now(UTC)
             payload = {
                 "signal_id": signal_id,
+                "cause": reason,
                 "identity": identity.__dict__,
                 "lifetime": lifetime,
                 "order_ids": [o.order_id for o in orders],
@@ -157,13 +190,13 @@ class LifetimeRepository:
             )
             row.sequence = event.id
             session.add(row)
+            intent = (
+                f"Operator cancel requested for entry {identity.symbol} (signal {signal_id}); awaiting broker confirmation."
+                if operator
+                else f"Entry #{signal_id} reached its resting deadline. Cancellation intent recorded for {identity.symbol}; awaiting broker confirmation."
+            )
             await self.store.add_notification(
-                session,
-                f"entry-cancel/{row.id}/intent",
-                NotificationKind.MESSAGE,
-                {
-                    "text": f"Entry #{signal_id} reached its resting deadline. Cancellation intent recorded for {identity.symbol}; awaiting broker confirmation."
-                },
+                session, f"entry-cancel/{row.id}/intent", NotificationKind.MESSAGE, {"text": intent}
             )
             await session.flush()
             return work_item(row)
@@ -247,7 +280,8 @@ class LifetimeRepository:
                 f"entry-cancel/{row.id}/{status}",
                 NotificationKind.MESSAGE,
                 {
-                    "text": f"Entry #{item.payload['signal_id']} cancellation: {reason}. "
+                    # Items claimed before causes were recorded were all deadline cancels.
+                    "text": f"Entry #{item.payload['signal_id']} {item.payload.get('cause', 'deadline')} cancellation: {reason}. "
                     + (
                         "Broker confirms no fills."
                         if complete

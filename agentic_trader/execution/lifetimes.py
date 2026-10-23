@@ -11,10 +11,10 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
-from agentic_trader.constants import CloseRequestStatus
+from agentic_trader.constants import CloseRequestStatus, SignalStatus
 from agentic_trader.execution.durable import OrderObservation, WorkItem, WorkKind, WorkStatus
 from agentic_trader.execution.lifetime_policy import (
     LifetimePolicy,
@@ -45,6 +45,22 @@ class LifetimeAction(StrEnum):
 BRACKET_EXIT_COUNT = 2
 UNFILLED_TERMINAL = frozenset({"canceled", "expired", "rejected"})
 WORKING_ENTRY = frozenset({"new", "accepted", "pending_new", "accepted_for_bidding", "done_for_day"})
+
+
+# Why an entry_cancel work item exists: the resting deadline passed, or the operator asked.
+CancelCause = Literal["deadline", "operator"]
+INCOMPLETE_OR_CHANGED_GROUP = "incomplete_or_changed_bracket_group"
+
+
+@dataclass(frozen=True)
+class RestingCancelResult:
+    """An operator cancel's outcome; ``reason`` is a stable refusal token, never an exception message."""
+
+    status: Literal["preview", "submitted", "refused"]
+    reason: str | None
+    signal_id: int
+    symbol: str | None
+    work_status: str | None
 
 
 def holding_calendar_span_days(holding_sessions: int) -> int:
@@ -132,6 +148,40 @@ def assess_lifetime(
     return LifetimeDecision(
         LifetimeAction.CANCEL_ENTRY if now >= deadline else LifetimeAction.NONE, "resting_lifetime", deadline
     )
+
+
+def resting_entry_refusal(identity: EntryIdentity, parent: OrderObservation) -> str | None:
+    """An operator cancel needs the exact, working, wholly unfilled parent.
+
+    The deadline path gets the same guarantee from ``assess_lifetime`` returning CANCEL_ENTRY.
+    """
+    if not identity.matches(parent):
+        return INCOMPLETE_OR_CHANGED_GROUP
+    if Decimal(parent.filled_quantity) != 0 or parent.status not in WORKING_ENTRY:
+        return "not_resting"
+    return None
+
+
+def bracket_group_refusal(identity: EntryIdentity, orders: Sequence[OrderObservation]) -> str | None:
+    """Never cancel an incomplete or foreign group. Alpaca brackets contain two exits."""
+    parent = next((o for o in orders if o.order_id == identity.order_id), None)
+    children = [o for o in orders if o.order_id != identity.order_id]
+    if (
+        parent is None
+        or parent.order_class != "bracket"
+        or len(children) != BRACKET_EXIT_COUNT
+        or any(
+            o.symbol != identity.symbol
+            or o.side == identity.side
+            or Decimal(o.quantity) != Decimal(identity.quantity)
+            or Decimal(o.filled_quantity) != 0
+            or o.replaces
+            or o.replaced_by
+            for o in children
+        )
+    ):
+        return INCOMPLETE_OR_CHANGED_GROUP
+    return None
 
 
 class TradeLifetimeService:
@@ -244,6 +294,66 @@ class TradeLifetimeService:
                 blocked.append(signal["id"])
         return blocked
 
+    async def _submit_cancel(self, item: WorkItem, identity: EntryIdentity) -> None:
+        """The one DELETE for a claimed entry_cancel, never retried; exact lookup resolves it."""
+        transport_error = None
+        try:
+            await self.broker.cancel_order(identity.order_id)
+        except Exception as exc:
+            transport_error = type(exc).__name__
+        await self._recover_cancel(item, owner_finished=True, transport_error=transport_error)
+
+    async def cancel_resting_entry(self, signal_id: int, *, confirm: bool) -> RestingCancelResult:
+        """Operator cancel of one resting desk entry, timed or not: a preview, or one DELETE.
+
+        No deadline or lifetime policy is consulted, so an untimed historical entry or a malformed
+        marker can still be cancelled. Every other fence holds, and the claim rechecks them under
+        the scope lock. Refusals never halt; an unconfirmed outcome halts through ``resolve_cancel``.
+        """
+        signal = await self.store.db.get_signal_by_id(signal_id)
+        if signal is None:
+            return RestingCancelResult("refused", "unknown_signal", signal_id, None, None)
+        symbol = signal.get("contract")
+
+        def refused(reason: str, work_status: str | None = None) -> RestingCancelResult:
+            return RestingCancelResult("refused", reason, signal_id, symbol, work_status)
+
+        if (existing := await self.repository.cancel_item(signal_id)) is not None:
+            return refused("cancel_in_progress", existing.status)
+        if (
+            signal["status"] != SignalStatus.EXECUTED
+            or signal.get("executed_at") is not None
+            or not signal.get("broker_order_id")
+        ):
+            return refused("not_resting")
+        if not self.broker.supports_entry_cancellation:
+            return refused("broker_cannot_cancel")
+        identity = await self._entry_identity(signal)
+        if identity is None:
+            return refused("no_durable_entry")
+        if any(row["symbol"] == identity.symbol for row in await self.store.db.active_close_requests()):
+            return refused("close_active")
+        try:
+            orders = await self.broker.read_entry_group(identity.order_id)
+        except Exception as exc:
+            return refused(f"entry_group_unavailable:{type(exc).__name__}")
+        await self.store.observe_orders(orders)
+        parent = next((o for o in orders if o.order_id == identity.order_id), None)
+        if parent is None:
+            return refused(INCOMPLETE_OR_CHANGED_GROUP)
+        if refusal := resting_entry_refusal(identity, parent) or bracket_group_refusal(identity, orders):
+            return refused(refusal)
+        if not confirm:
+            return RestingCancelResult("preview", None, signal_id, identity.symbol, None)
+        claim = await self.repository.begin_cancel(
+            signal_id, identity, orders, None, now=self.clock(), reason="operator"
+        )
+        if not isinstance(claim, WorkItem):
+            return refused(claim)
+        await self._submit_cancel(claim, identity)
+        resolved = await self.repository.cancel_item(signal_id)
+        return RestingCancelResult("submitted", None, signal_id, identity.symbol, resolved.status if resolved else None)
+
     def _holding_request_id(self, signal_id: int, order_id: str) -> str:
         key = hashlib.sha256(f"{self.store.scope}/{signal_id}/{order_id}".encode()).hexdigest()[:32]
         return f"hold-{key}"
@@ -273,33 +383,14 @@ class TradeLifetimeService:
         if decision.action == LifetimeAction.REVIEW:
             await self.repository.review(signal["id"], decision.reason, parent.model_dump(mode="json"))
         elif decision.action == LifetimeAction.CANCEL_ENTRY:
-            # Never cancel an incomplete or foreign group. Alpaca brackets contain two exits.
-            children = [o for o in orders if o.order_id != parent.order_id]
-            if (
-                parent.order_class != "bracket"
-                or len(children) != BRACKET_EXIT_COUNT
-                or any(
-                    o.symbol != identity.symbol
-                    or o.side == identity.side
-                    or Decimal(o.quantity) != Decimal(identity.quantity)
-                    or Decimal(o.filled_quantity) != 0
-                    or o.replaces
-                    or o.replaced_by
-                    for o in children
-                )
-            ):
-                await self.repository.review(signal["id"], "incomplete_or_changed_bracket_group", {})
+            if refusal := bracket_group_refusal(identity, orders):
+                await self.repository.review(signal["id"], refusal, {})
                 return
-            item = await self.repository.begin_cancel(
+            claim = await self.repository.begin_cancel(
                 signal["id"], identity, orders, asdict(lifetime), now=self.clock()
             )
-            if item:
-                transport_error = None
-                try:
-                    await self.broker.cancel_order(identity.order_id)
-                except Exception as exc:
-                    transport_error = type(exc).__name__
-                await self._recover_cancel(item, owner_finished=True, transport_error=transport_error)
+            if isinstance(claim, WorkItem):
+                await self._submit_cancel(claim, identity)
         elif decision.action == LifetimeAction.CLOSE_POSITION and await self.broker.regular_session_open():
             children = [o for o in orders if o.order_id != identity.order_id]
             if signal.get("broker_exit_order_id") or any(
