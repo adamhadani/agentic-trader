@@ -160,6 +160,16 @@ class UniverseConfig(BaseModel):
             for entry in entries
         }
 
+    def asset_classes(self) -> dict[str, str]:
+        """Symbol -> asset class for the outcome report: ``etf_equity``, ``rates_credit``, ``metals``
+        (an ``etf*`` group split by sector) or ``single_stock`` (every other group)."""
+        by_sector = {"etf_rates_credit": "rates_credit", "etf_metals": "metals"}
+        return {
+            entry.symbol: by_sector.get(entry.sector, "etf_equity") if group.startswith("etf") else "single_stock"
+            for group, entries in self.groups.items()
+            for entry in entries
+        }
+
     def sector_groups(self) -> dict[str, list[str]]:
         groups: dict[str, list[str]] = {}
         for entries in self.groups.values():

@@ -17,6 +17,7 @@ reads journaled events and fetches bars.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -77,6 +78,7 @@ DEFAULT_COST_BPS_PER_SIDE = 5.0
 # A bar-fetch failure's own outcome, distinct from every ``BracketHit`` value: it means
 # "the labeler was never able to try", not "not enough elapsed bars yet" (IMMATURE).
 FETCH_FAILED_HIT = "fetch_failed"
+UNCLASSIFIED = "unclassified"
 
 # The four counterfactual exit arms of config/research/bracket-counterfactual-v1.json (the live
 # arm A0 is the journaled bracket itself). Hard-coded so the live report needs no file at import;
@@ -651,9 +653,12 @@ def label_journaled(
     beta_daily: dict[str, pd.DataFrame | str] = {}
     beta_market: pd.DataFrame | str | None = None
     if with_beta and market_symbol is not None and market_start is not None:
+        # Rows of a symbol whose hourly fetch failed never use its beta, so skip those requests.
+        # `starts` already widens the proxy's own window to the earliest decision of all.
         beta_daily = {
             symbol: fetch(symbol, start - timedelta(days=BETA_HISTORY_DAYS), "1d", "all")
             for symbol, start in starts.items()
+            if not isinstance(fetched[symbol], str)
         }
         beta_market = (
             beta_daily[market_symbol]
@@ -761,6 +766,11 @@ def _base_rate(frame: pd.DataFrame) -> dict[str, Any] | None:
     }
 
 
+def _finite_mean(frame: pd.DataFrame, column: str) -> float | None:
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    return float(values.mean()) if len(values) else None
+
+
 def _exposure(frame: pd.DataFrame) -> dict[str, Any] | None:
     if frame.empty:
         return None
@@ -769,6 +779,30 @@ def _exposure(frame: pd.DataFrame) -> dict[str, Any] | None:
         "mean_r_cost": float(frame["r_cost"].mean()),
         "mean_market_r": float(frame["market_r"].mean()),
         "mean_excess_r": float(frame["excess_r"].mean()),
+        "n_beta": int(pd.to_numeric(frame["beta"], errors="coerce").notna().sum()),
+        "mean_beta": _finite_mean(frame, "beta"),
+        "mean_beta_market_r": _finite_mean(frame, "beta_market_r"),
+        "mean_beta_excess_r": _finite_mean(frame, "beta_excess_r"),
+        "mean_hold_r": _finite_mean(frame, "hold_r"),
+        "mean_timing_r": _finite_mean(frame, "timing_r"),
+    }
+
+
+def _asset_class_summary(mature: pd.DataFrame, asset_classes: Mapping[str, str] | None) -> dict[str, Any]:
+    """Mean R, SPY excess and beta-matched excess of the mature rows per asset class (descriptive)."""
+    if mature.empty:
+        return {}
+    labelled = mature.assign(
+        asset_class=mature["contract"].map(lambda symbol: (asset_classes or {}).get(symbol, UNCLASSIFIED))
+    )
+    return {
+        str(name): {
+            "n": len(group),
+            "mean_r_cost": _finite_mean(group, "r_cost"),
+            "mean_excess_r": _finite_mean(group, "excess_r"),
+            "mean_beta_excess_r": _finite_mean(group, "beta_excess_r"),
+        }
+        for name, group in sorted(labelled.groupby("asset_class"))
     }
 
 
@@ -914,7 +948,9 @@ def _counterfactual_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[s
         paired = r_cost.notna()
         hits = mature.loc[paired, f"{prefix}hit"]
         n_pairs = int(paired.sum())
-        excess = r_cost - pd.to_numeric(mature[f"{prefix}market_r"], errors="coerce")
+        arm_market = pd.to_numeric(mature[f"{prefix}market_r"], errors="coerce")
+        excess = r_cost - arm_market
+        beta_excess = (r_cost - pd.to_numeric(mature["beta"], errors="coerce") * arm_market).dropna()
         advantage = (excess - live_excess).dropna()
         arms[arm.name] = {
             "n_pairs": n_pairs,
@@ -923,6 +959,7 @@ def _counterfactual_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[s
             "timeout_rate": float((hits == BracketHit.TIMEOUT.value).mean()) if n_pairs else None,
             "mean_r_cost": float(r_cost[paired].mean()) if n_pairs else None,
             "mean_excess_r": float(excess.dropna().mean()) if excess.notna().any() else None,
+            "mean_beta_excess_r": float(beta_excess.mean()) if len(beta_excess) else None,
             "advantage_vs_live_excess": float(advantage.mean()) if len(advantage) else None,
         }
     return {"caveat": "descriptive; not a gate", "arms": arms}
@@ -980,12 +1017,13 @@ def scan_supply(events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]
     return dict(sorted(supply.items()))
 
 
-def summarize(frame: pd.DataFrame) -> dict[str, Any]:
+def summarize(frame: pd.DataFrame, *, asset_classes: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Descriptive summary of a labelled frame.
 
     Counts by outcome class (sent, runner-up, journal-only) and maturity, base rates, per-scan
     selection quality by scorer, card-policy counts, book sizing, news, regime/tape and recurrence
-    blocks. A runner-up competed for a card and lost; a journal-only candidate (a swing scan's) never
+    blocks. ``asset_classes`` maps a symbol to its class for ``by_asset_class``; unmapped symbols
+    are ``unclassified``. A runner-up competed for a card and lost; a journal-only candidate (a swing scan's) never
     competed for one.
     """
     if frame.empty:
@@ -1025,6 +1063,7 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
             "regime_context": _regime_summary(frame, frame),
             "recurrence": _recurrence_summary(frame, frame),
             "counterfactual": _counterfactual_summary(frame, frame),
+            "by_asset_class": {},
         }
 
     is_immature = frame["hit"] == BracketHit.IMMATURE.value
@@ -1121,4 +1160,5 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
         "regime_context": _regime_summary(frame, mature),
         "recurrence": _recurrence_summary(frame, mature),
         "counterfactual": _counterfactual_summary(frame, mature),
+        "by_asset_class": _asset_class_summary(mature, asset_classes),
     }

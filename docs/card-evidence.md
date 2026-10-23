@@ -455,6 +455,27 @@ window the report prints `No journaled candidates in N day(s) (M scan events).`,
 zero-candidate or gated scans reads differently from an empty journal. Descriptive only: not read by
 `risk/`, `card_policy`, `card_stats` or admission.
 
+### Beta-matched and buy-and-hold controls
+
+Beside the SPY-matched `excess_r`, `cards outcomes` reports two further descriptive controls. Neither is a
+gate, and nothing in `risk/`, `card_policy`, `card_stats` or admission reads them. The daemon's `card_stats`
+labelling run skips the beta fetch entirely.
+
+- **Beta-matched excess.** `beta` is a past-only trailing beta of the candidate against SPY: 120 sessions
+  ending the session before the decision, on adjusted daily bars, with at least 100 paired returns. Rows
+  with fewer paired returns, or a failed daily fetch, carry `beta_reason` (`short_history`,
+  `fetch_failed: ...`) and no beta. `beta_market_r` is `beta` times `market_r`, and `beta_excess_r` is
+  `r_cost` minus `beta_market_r`. Each counterfactual arm also reports `mean_beta_excess_r`
+  (`r_cost - beta * arm_market_r`).
+- **Buy-and-hold.** `hold_r` is the candidate's own open-to-close return over the same holding window as the
+  bracket, in the bracket's R units (what holding the stock instead of the bracket would have earned).
+  `timing_r` is `r_cost - hold_r`: what the bracket's exits added or lost against holding.
+- **Summaries.** Each `market_exposure` class adds `n_beta`, `mean_beta`, `mean_beta_market_r`,
+  `mean_beta_excess_r`, `mean_hold_r` and `mean_timing_r`, each over the rows with a finite value.
+- **`by_asset_class`.** Mature rows grouped by `etf_equity`, `rates_credit`, `metals`, `single_stock` (from
+  the configured universe groups and sectors) or `unclassified`, with `n`, `mean_r_cost`, `mean_excess_r`
+  and `mean_beta_excess_r`. A symbol outside the configured universe (a dynamic name) is `unclassified`.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket

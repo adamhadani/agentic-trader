@@ -1512,6 +1512,7 @@ def test_counterfactual_summary_shapes_and_advantage():
         "timeout_rate": None,
         "mean_r_cost": None,
         "mean_excess_r": None,
+        "mean_beta_excess_r": None,
         "advantage_vs_live_excess": None,
     }
 
@@ -1610,3 +1611,133 @@ def test_spy_candidate_beta_one_and_hold_equals_market():
     assert row["hold_r"] == pytest.approx(row["market_r"])
     assert row["beta_market_r"] == pytest.approx(row["market_r"])
     assert len([call for call in source.calls if call[1] == "1d"]) == 1
+
+
+class _StartHonouringBarSource(DailyAwareBarSource):
+    """Like the real provider, a daily request returns only bars at or after ``start``."""
+
+    def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+        frame = super().fetch_bars(symbol, timeframe, start, end, adjustment=adjustment)
+        return frame.loc[frame.index >= pd.Timestamp(start)] if timeframe == "1d" else frame
+
+
+def test_market_proxy_beta_series_covers_the_earliest_decision_when_spy_is_ranked_later():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    later = DECIDED_AT + timedelta(days=60)
+    events = [
+        _event("s1", DECIDED_AT, [_candidate()]),
+        _event("s2", later, [_candidate(contract=MARKET_PROXY_SYMBOL, entry=500.0, stop=499.0, target=501.0)]),
+    ]
+    source = _StartHonouringBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily}
+    )
+    frame = label_journaled(events, source, now=NOW + timedelta(days=90), tape_symbol=None)
+    aapl = frame.loc[frame["contract"] == "AAPL"].iloc[0]
+    assert aapl["beta_reason"] is None and aapl["beta"] == pytest.approx(0.5, abs=1e-9)
+    spy_daily_calls = [c for c in source.calls if c[0] == "SPY" and c[1] == "1d"]
+    assert [c[2] for c in spy_daily_calls] == [DECIDED_AT - timedelta(days=200)]
+
+
+def test_no_daily_beta_fetch_for_a_symbol_whose_hourly_fetch_failed():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_BARS, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily}, raise_for={"AAPL"}
+    )
+    label_journaled([_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None)
+    assert [c[0] for c in source.calls if c[1] == "1d"] == ["SPY"]
+
+
+def _synthetic_mature_frame(rows):
+    """Mature rows built directly: (contract, r_cost, market_r, beta, hold_r, timing_r)."""
+    records = []
+    for i, (contract, r_cost, market, beta, hold, timing) in enumerate(rows):
+        record = dict.fromkeys(_COLUMNS)
+        beta_market = None if beta is None or market is None else beta * market
+        record.update(
+            scan_id="s1",
+            contract=contract,
+            rank=i + 1,
+            outcome="sent",
+            sent=True,
+            hit=BracketHit.TARGET.value,
+            r_cost=r_cost,
+            market_r=market,
+            excess_r=None if market is None else r_cost - market,
+            beta=beta,
+            beta_market_r=beta_market,
+            beta_excess_r=None if beta_market is None else r_cost - beta_market,
+            hold_r=hold,
+            timing_r=timing,
+            llm_ran=False,
+            llm_vetoed=False,
+            llm_bracket_edited=False,
+            card_policy_withheld=False,
+            prior_same_session=0,
+        )
+        records.append(record)
+    return pd.DataFrame(records, columns=list(_COLUMNS))
+
+
+def test_exposure_reports_beta_and_timing():
+    frame = _synthetic_mature_frame(
+        [("AAPL", 2.0, 1.0, 0.5, 1.5, 0.5), ("MSFT", 1.0, 2.0, 1.5, None, None), ("XLK", 0.0, 1.0, None, 0.5, -0.5)]
+    )
+    sent = summarize(frame)["market_exposure"]["sent"]
+    assert sent["n_beta"] == 2
+    assert sent["mean_beta"] == pytest.approx(1.0)
+    assert sent["mean_beta_market_r"] == pytest.approx((0.5 + 3.0) / 2)
+    assert sent["mean_beta_excess_r"] == pytest.approx(((2.0 - 0.5) + (1.0 - 3.0)) / 2)
+    assert sent["mean_hold_r"] == pytest.approx(1.0)
+    assert sent["mean_timing_r"] == pytest.approx(0.0)
+
+
+def test_exposure_beta_keys_are_none_without_any_beta():
+    frame = _synthetic_mature_frame([("AAPL", 1.0, 1.0, None, None, None)])
+    sent = summarize(frame)["market_exposure"]["sent"]
+    assert sent["n_beta"] == 0
+    assert sent["mean_beta"] is None and sent["mean_beta_excess_r"] is None and sent["mean_hold_r"] is None
+
+
+def test_by_asset_class_with_map():
+    frame = _synthetic_mature_frame(
+        [("AAPL", 2.0, 1.0, 0.5, None, None), ("MSFT", 1.0, 0.0, 1.0, None, None), ("TLT", -1.0, 1.0, None, None, None)]
+    )
+    classes = summarize(frame, asset_classes={"AAPL": "single_stock", "MSFT": "single_stock", "TLT": "rates_credit"})[
+        "by_asset_class"
+    ]
+    assert classes["single_stock"] == {
+        "n": 2,
+        "mean_r_cost": pytest.approx(1.5),
+        "mean_excess_r": pytest.approx((1.0 + 1.0) / 2),
+        "mean_beta_excess_r": pytest.approx((1.5 + 1.0) / 2),
+    }
+    assert classes["rates_credit"]["n"] == 1 and classes["rates_credit"]["mean_beta_excess_r"] is None
+
+
+def test_by_asset_class_unclassified_without_map():
+    frame = _synthetic_mature_frame([("AAPL", 2.0, 1.0, 0.5, None, None), ("TLT", 0.0, 0.0, None, None, None)])
+    classes = summarize(frame)["by_asset_class"]
+    assert list(classes) == ["unclassified"] and classes["unclassified"]["n"] == 2
+    assert summarize(frame, asset_classes={"AAPL": "single_stock"})["by_asset_class"].keys() == {
+        "single_stock",
+        "unclassified",
+    }
+
+
+def test_counterfactual_beta_excess():
+    frame = _synthetic_mature_frame([("AAPL", 2.0, 1.0, 0.5, None, None), ("MSFT", 1.0, 1.0, None, None, None)])
+    prefix = f"{CF_COLUMN_PREFIX}{LIVE_COUNTERFACTUAL_ARMS[0].name}_"
+    frame[f"{prefix}r_cost"] = [3.0, 1.0]
+    frame[f"{prefix}hit"] = [BracketHit.TARGET.value] * 2
+    frame[f"{prefix}market_r"] = [2.0, 1.0]
+    arm = summarize(frame)["counterfactual"]["arms"][LIVE_COUNTERFACTUAL_ARMS[0].name]
+    assert arm["mean_beta_excess_r"] == pytest.approx(3.0 - 0.5 * 2.0)
+    empty = summarize(frame)["counterfactual"]["arms"][LIVE_COUNTERFACTUAL_ARMS[1].name]
+    assert empty["mean_beta_excess_r"] is None
+
+
+def test_empty_frame_has_new_keys():
+    summary = summarize(pd.DataFrame(columns=list(_COLUMNS)))
+    assert summary["by_asset_class"] == {}
+    for arm in summary["counterfactual"]["arms"].values():
+        assert arm["mean_beta_excess_r"] is None
