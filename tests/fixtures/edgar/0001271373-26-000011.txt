@@ -1,0 +1,184 @@
+<SEC-DOCUMENT>0001271373-26-000011.txt : 20260918
+<SEC-HEADER>0001271373-26-000011.hdr.sgml : 20260918
+<ACCEPTANCE-DATETIME>20260918203137
+ACCESSION NUMBER:		0001271373-26-000011
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20260918
+FILED AS OF DATE:		20260918
+DATE AS OF CHANGE:		20260918
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			HELEN SUZANNE L
+		CENTRAL INDEX KEY:			0001271373
+		ORGANIZATION NAME:
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-13697
+		FILM NUMBER:		261392082
+
+	MAIL ADDRESS:
+		STREET 1:		C/O MOHAWK INDUSTRIES INC
+		STREET 2:		2001 ANTIOCH ROAD
+		CITY:			DALTON
+		STATE:			GA
+		ZIP:			30721
+
+ISSUER:
+
+	COMPANY DATA:
+		COMPANY CONFORMED NAME:			MOHAWK INDUSTRIES INC
+		CENTRAL INDEX KEY:			0000851968
+		STANDARD INDUSTRIAL CLASSIFICATION:	CARPETS AND RUGS [2273]
+		ORGANIZATION NAME:           	04 Manufacturing
+		EIN:				521604305
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	BUSINESS ADDRESS:
+		STREET 1:		160 S INDUSTRIAL BLVD
+		STREET 2:		PO BOX 12069
+		CITY:			CALHOUN
+		STATE:			GA
+		ZIP:			30701
+		BUSINESS PHONE:		706-624-2032
+
+	MAIL ADDRESS:
+		STREET 1:		160 S INDUSTRIAL BLVD
+		STREET 2:		P O BOX 12069
+		CITY:			CALHOUN
+		STATE:			GA
+		ZIP:			30703
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>primary_doc.xml
+<DESCRIPTION>PRIMARY DOCUMENT
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-09-18</periodOfReport>
+
+    <notSubjectToSection16>0</notSubjectToSection16>
+
+    <issuer>
+        <issuerCik>0000851968</issuerCik>
+        <issuerName>MOHAWK INDUSTRIES INC</issuerName>
+        <issuerTradingSymbol>MHK</issuerTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001271373</rptOwnerCik>
+            <rptOwnerName>HELEN SUZANNE L</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O MOHAWK INDUSTRIES INC</rptOwnerStreet1>
+            <rptOwnerStreet2>2001 ANTIOCH ROAD</rptOwnerStreet2>
+            <rptOwnerCity>DALTON</rptOwnerCity>
+            <rptOwnerState>GA</rptOwnerState>
+            <rptOwnerZipCode>30721</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>0</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>0</isTenPercentOwner>
+            <isOther>1</isOther>
+            <otherText>Possible Member of Group</otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>0</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-09-18</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>S</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionTimeliness>
+                <value></value>
+            </transactionTimeliness>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>800</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>125.62</value>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>5332</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>By PASTrust fbo Suzanne Helen</value>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Common Stock</value>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>141646</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>By Family Ltd Ptrshp</value>
+                    <footnoteId id="F2"/>
+                    <footnoteId id="F3"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+    </nonDerivativeTable>
+
+    <footnotes>
+        <footnote id="F1">The price shown is the weighted average price at which shares were sold in multiple sales transactions made pursuant to a single market order. The range of prices for the transactions made was $125.47 to $125.79. Upon request by SEC staff, the issuer or a security holder of the issuer, the reporting person will provide full information regarding the number of shares sold at each separate price.</footnote>
+        <footnote id="F2">Reporting Person may be considered part of a &quot;group&quot; with certain family members holding issuer shares; however, Reporting Person disclaims existence of such a &quot;group&quot; and disclaims beneficial ownership of any shares not reported herein.</footnote>
+        <footnote id="F3">Reporting Person is one of three family members who share equal control over the general partner of this limited partnership. Reporting Person disclaims beneficial ownership in the number of shares held by the limited partnership to the extent that she does not have a pecuniary interest.</footnote>
+    </footnotes>
+
+    <ownerSignature>
+        <signatureName>Suzanne Helen</signatureName>
+        <signatureDate>2026-09-18</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

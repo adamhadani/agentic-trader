@@ -15,6 +15,7 @@ from telegram import (
     BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LinkPreviewOptions,
     MenuButtonCommands,
     Update,
 )
@@ -174,6 +175,13 @@ def _corporate_action_line(block: dict[str, Any] | None, *, markup: bool) -> str
 
 
 NEWS_LABEL = "📰 News (context, not a gate): "
+# Insider watch cards (agent/insider_watch.py): the header and the frozen v1 study's result, verbatim.
+WATCH_HEADER = "👀 INSIDER WATCH — unvalidated"
+WATCH_ISSUER_URL = "https://www.sec.gov/cgi-bin/own-disp?action=getissuer&CIK={cik}"
+WATCH_STUDY_LINE = (
+    "Study v1 (2016–2026): +0.087R/trade, not significant on its own; "
+    "+0.070R vs matched names (90% CI excludes 0). Your call."
+)
 NEWS_HEADLINE_CHARS = 110  # the card clips headlines at a fixed width; not configurable
 
 
@@ -234,6 +242,46 @@ def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | No
 ENTRY_SESSION_BOUND_LINE = "Unfilled entry is cancelled at the session close."
 
 
+def _is_watch(facts: dict[str, Any] | None) -> bool:
+    return facts is not None and facts.get("kind") == "insider_watch"
+
+
+def _watch_block(facts: dict[str, Any] | None, *, markup: bool) -> str:
+    """An insider watch card's header and cluster facts (``card_facts`` of kind ``insider_watch``), or "".
+
+    The buyers are counted, never named: the line links the issuer's EDGAR insider-transactions page
+    (``issuer_cik``). The owner CIKs stay in the signal's provenance and the decision journal.
+    """
+    if facts is None or not _is_watch(facts):
+        return ""
+    exit_at = _ny_datetime(facts.get("time_exit_at"))
+    exit_text = (
+        f"{exit_at:%H:%M} NY on {exit_at.date().isoformat()}"
+        if exit_at
+        else f"15:45 NY on session {facts['holding_sessions']}"
+    )
+    filed = ", ".join(str(day) for day in facts.get("filing_dates") or ())
+    issuer = facts.get("issuer_cik")
+    url = WATCH_ISSUER_URL.format(cik=int(issuer)) if issuer is not None else None
+    header = WATCH_HEADER.removeprefix("👀 ")
+    if markup:
+        header = f"<b>{header}</b>"
+        filed = html.escape(filed)
+        link = f' · <a href="{html.escape(url)}">EDGAR insider filings</a>' if url else ""
+        study = html.escape(WATCH_STUDY_LINE)
+    else:
+        link = f" · EDGAR insider filings: {url}" if url else ""
+        study = WATCH_STUDY_LINE
+    return (
+        f"👀 {header} — risk capped at ${float(facts['risk_cap']):,.0f}; "
+        "tap-only, never auto-entered; earns no promotion credit\n"
+        f"👥 {int(facts['buyers'])} officer/director buyers · "
+        f"${float(facts['opp_dollars']):,.0f} opportunistic open-market purchases · filed {filed}{link}\n"
+        f"⏱️ {facts['holding_sessions']}-session hold · time exit {exit_text} unless the stop or target fills first\n"
+        f"📚 {study}\n\n"
+    )
+
+
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
@@ -249,11 +297,15 @@ def format_alert_card(
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
     entry_session_bound: bool = False,
+    card_facts: dict[str, Any] | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
     ``drift`` (a PEAD catalog-probe card's ``drift_card_facts``) adds the event and
     holding facts between the probe header and the card; None leaves the card unchanged.
+    ``card_facts`` is the generic catalog-source facts keyword (``CatalogCardSource.card_facts``): an
+    insider watch card's facts (``kind == "insider_watch"``) render the watch header, the cluster and the
+    study line before the card; facts of any other kind render nothing.
     ``card_evidence`` (the scan's ``CardEvidence`` dump) renders the measured-record block
     right after the target line; None renders none.
     """
@@ -380,6 +432,7 @@ def format_alert_card(
 
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
+        f"{_watch_block(card_facts, markup=True)}"
         f"{drift_block}"
         f"{updated_card_prefix}"
         f"📋 <b>SETUP: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
@@ -423,11 +476,13 @@ def format_terminal_card(
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
     entry_session_bound: bool = False,
+    card_facts: dict[str, Any] | None = None,
 ) -> str:
     """ASCII/plain text formatted card for terminal display.
 
     ``card_evidence`` renders the same measured-record block as the Telegram card, from the
-    same helper, right after the target line; None renders none.
+    same helper, right after the target line; None renders none. An insider watch card's
+    ``card_facts`` render its header and cluster in plain text before the card.
     """
     risk_pct = round((eval_res.risk_dollars / portfolio_cash) * 100.0, 2)
     macro_status = (
@@ -531,9 +586,10 @@ def format_terminal_card(
     )
 
     border = "=" * 65
+    watch_block = _watch_block(card_facts, markup=False)
     return f"""
 {border}
-{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})
+{watch_block}{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})
 Strategy: {strategy}
 
 📊 Levels
@@ -1441,10 +1497,12 @@ class TelegramNotifier:
         card_evidence: dict[str, Any] | None = None,
         book_sizing: dict[str, Any] | None = None,
         entry_session_bound: bool = False,
+        card_facts: dict[str, Any] | None = None,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
         # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
-        # (a PEAD catalog-probe scan card only) is rendered on the Telegram card.
+        # (a PEAD catalog-probe scan card only) is rendered on the Telegram card;
+        # ``card_facts`` (a catalog source's generic facts; an insider watch card's) is rendered on both cards.
         # ``card_evidence`` (native scan cards and their replacements) renders the
         # measured-record block on both cards; payloads queued before it existed omit it.
         # The signal row is read once: its timestamp dates ``Valid until`` (a close after the
@@ -1466,6 +1524,7 @@ class TelegramNotifier:
                 book_sizing=book_sizing,
                 entry_session_bound=entry_session_bound,
                 issued_at=issued_at,
+                card_facts=card_facts,
             )
         )
 
@@ -1491,6 +1550,7 @@ class TelegramNotifier:
             book_sizing=book_sizing,
             entry_session_bound=entry_session_bound,
             issued_at=issued_at,
+            card_facts=card_facts,
         )
 
         # A retried SIGNAL delivery can land after the card already left PENDING -- for
@@ -1542,6 +1602,8 @@ class TelegramNotifier:
                 text=self._label(card_html),
                 parse_mode="HTML",
                 reply_markup=reply_markup,
+                # A watch card links the issuer's EDGAR page; it must not unfurl into a preview.
+                **({"link_preview_options": LinkPreviewOptions(is_disabled=True)} if _is_watch(card_facts) else {}),
             )
             if self.db:
                 await self.db.update_telegram_message_id(signal_id, msg.message_id)

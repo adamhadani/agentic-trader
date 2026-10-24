@@ -1,0 +1,535 @@
+<SEC-DOCUMENT>0000921895-26-002305.txt : 20260825
+<SEC-HEADER>0000921895-26-002305.hdr.sgml : 20260825
+<ACCEPTANCE-DATETIME>20260825150227
+ACCESSION NUMBER:		0000921895-26-002305
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20260821
+FILED AS OF DATE:		20260825
+DATE AS OF CHANGE:		20260825
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			CONTINENTAL GENERAL INSURANCE CO
+		CENTRAL INDEX KEY:			0000024046
+		STANDARD INDUSTRIAL CLASSIFICATION:	LIFE INSURANCE [6311]
+		ORGANIZATION NAME:           	02 Finance
+		STATE OF INCORPORATION:			TX
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-38735
+		FILM NUMBER:		261315050
+
+	BUSINESS ADDRESS:
+		STREET 1:		11001 LAKELINE BLVD., STE. 120
+		CITY:			AUSTIN
+		STATE:			TX
+		ZIP:			78717
+		BUSINESS PHONE:		4023973200
+
+	MAIL ADDRESS:
+		STREET 1:		11001 LAKELINE BLVD., STE. 120
+		CITY:			AUSTIN
+		STATE:			TX
+		ZIP:			78717
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			Continental Insurance Group, Ltd.
+		CENTRAL INDEX KEY:			0001663139
+		ORGANIZATION NAME:
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-38735
+		FILM NUMBER:		261315049
+
+	BUSINESS ADDRESS:
+		STREET 1:		11001 LAKELINE BLVD., STE. 120
+		CITY:			AUSTIN
+		STATE:			TX
+		ZIP:			78717
+		BUSINESS PHONE:		7038650700
+
+	MAIL ADDRESS:
+		STREET 1:		11001 LAKELINE BLVD., STE. 120
+		CITY:			AUSTIN
+		STATE:			TX
+		ZIP:			78717
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			Percy Rockdale LLC
+		CENTRAL INDEX KEY:			0001801092
+		ORGANIZATION NAME:
+		STATE OF INCORPORATION:			MI
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-38735
+		FILM NUMBER:		261315052
+
+	BUSINESS ADDRESS:
+		STREET 1:		595 MADISON AVENUE
+		STREET 2:		29TH FLOOR
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10022
+		BUSINESS PHONE:		646-896-4446
+
+	MAIL ADDRESS:
+		STREET 1:		595 MADISON AVENUE
+		STREET 2:		29TH FLOOR
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10022
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			Continental General Holdings LLC
+		CENTRAL INDEX KEY:			0001872137
+		ORGANIZATION NAME:
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-38735
+		FILM NUMBER:		261315048
+
+	BUSINESS ADDRESS:
+		STREET 1:		11001 LAKELINE BLVD., STE. 120
+		CITY:			AUSTIN
+		STATE:			TX
+		ZIP:			78717
+		BUSINESS PHONE:		866-830-0607
+
+	MAIL ADDRESS:
+		STREET 1:		11001 LAKELINE BLVD., STE. 120
+		CITY:			AUSTIN
+		STATE:			TX
+		ZIP:			78717
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			Gorzynski Michael
+		CENTRAL INDEX KEY:			0001812551
+		ORGANIZATION NAME:
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-38735
+		FILM NUMBER:		261315053
+
+	MAIL ADDRESS:
+		STREET 1:		595 MADISON AVE
+		STREET 2:		30TH FLOOR
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10022
+
+REPORTING-OWNER:
+
+	OWNER DATA:
+		COMPANY CONFORMED NAME:			MG Capital Management Ltd.
+		CENTRAL INDEX KEY:			0001872134
+		ORGANIZATION NAME:
+
+	FILING VALUES:
+		FORM TYPE:		4
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-38735
+		FILM NUMBER:		261315051
+
+	BUSINESS ADDRESS:
+		STREET 1:		C/O CAMPBELLS LLP
+		STREET 2:		FLOOR 4, WILLOW HOUSE, CRICKET SQUARE
+		CITY:			GRAND CAYMAN
+		STATE:			E9
+		ZIP:			KY1-9010
+		BUSINESS PHONE:		646-896-4446
+
+	MAIL ADDRESS:
+		STREET 1:		C/O CAMPBELLS LLP
+		STREET 2:		FLOOR 4, WILLOW HOUSE, CRICKET SQUARE
+		CITY:			GRAND CAYMAN
+		STATE:			E9
+		ZIP:			KY1-9010
+
+ISSUER:
+
+	COMPANY DATA:
+		COMPANY CONFORMED NAME:			Alpha Metallurgical Resources, Inc.
+		CENTRAL INDEX KEY:			0001704715
+		STANDARD INDUSTRIAL CLASSIFICATION:	BITUMINOUS COAL & LIGNITE SURFACE MINING [1221]
+		ORGANIZATION NAME:           	01 Energy & Transportation
+		EIN:				000000000
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	BUSINESS ADDRESS:
+		STREET 1:		340 MARTIN LUTHER KING JR. BLVD.
+		CITY:			BRISTOL
+		STATE:			TN
+		ZIP:			37620
+		BUSINESS PHONE:		(423) 573-0300
+
+	MAIL ADDRESS:
+		STREET 1:		340 MARTIN LUTHER KING JR. BLVD.
+		CITY:			BRISTOL
+		STATE:			TN
+		ZIP:			37620
+
+	FORMER COMPANY:
+		FORMER CONFORMED NAME:	Contura Energy, Inc.
+		DATE OF NAME CHANGE:	20170425
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>form413108004_08252026.xml
+<DESCRIPTION>OWNERSHIP DOCUMENT
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-08-21</periodOfReport>
+
+    <notSubjectToSection16>0</notSubjectToSection16>
+
+    <issuer>
+        <issuerCik>0001704715</issuerCik>
+        <issuerName>Alpha Metallurgical Resources, Inc.</issuerName>
+        <issuerTradingSymbol>AMR</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001812551</rptOwnerCik>
+            <rptOwnerName>Gorzynski Michael</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>595 MADISON AVE</rptOwnerStreet1>
+            <rptOwnerStreet2>30TH FLOOR</rptOwnerStreet2>
+            <rptOwnerCity>NEW YORK</rptOwnerCity>
+            <rptOwnerState>NY</rptOwnerState>
+            <rptOwnerZipCode>10022</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>1</isOther>
+            <officerTitle></officerTitle>
+            <otherText>See Remarks</otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001801092</rptOwnerCik>
+            <rptOwnerName>Percy Rockdale LLC</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>595 MADISON AVENUE</rptOwnerStreet1>
+            <rptOwnerStreet2>29TH FLOOR</rptOwnerStreet2>
+            <rptOwnerCity>NEW YORK</rptOwnerCity>
+            <rptOwnerState>NY</rptOwnerState>
+            <rptOwnerZipCode>10022</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>1</isOther>
+            <officerTitle></officerTitle>
+            <otherText>See Remarks</otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001872134</rptOwnerCik>
+            <rptOwnerName>MG Capital Management Ltd.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>true</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O CAMPBELLS LLP</rptOwnerStreet1>
+            <rptOwnerStreet2>FLOOR 4, WILLOW HOUSE, CRICKET SQUARE</rptOwnerStreet2>
+            <rptOwnerCity>GRAND CAYMAN</rptOwnerCity>
+            <rptOwnerNonUSStateTerritory></rptOwnerNonUSStateTerritory>
+            <rptOwnerCountry>E9</rptOwnerCountry>
+            <rptOwnerZipCode>KY1-9010</rptOwnerZipCode>
+            <rptOwnerStateDescription>CAYMAN ISLANDS</rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>1</isOther>
+            <officerTitle></officerTitle>
+            <otherText>See Remarks</otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0000024046</rptOwnerCik>
+            <rptOwnerName>CONTINENTAL GENERAL INSURANCE CO</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>11001 LAKELINE BLVD., STE. 120</rptOwnerStreet1>
+            <rptOwnerStreet2></rptOwnerStreet2>
+            <rptOwnerCity>AUSTIN</rptOwnerCity>
+            <rptOwnerState>TX</rptOwnerState>
+            <rptOwnerZipCode>78717</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>1</isOther>
+            <officerTitle></officerTitle>
+            <otherText>See Remarks</otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001663139</rptOwnerCik>
+            <rptOwnerName>Continental Insurance Group, Ltd.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>11001 LAKELINE BLVD., STE. 120</rptOwnerStreet1>
+            <rptOwnerStreet2></rptOwnerStreet2>
+            <rptOwnerCity>AUSTIN</rptOwnerCity>
+            <rptOwnerState>TX</rptOwnerState>
+            <rptOwnerZipCode>78717</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>1</isOther>
+            <officerTitle></officerTitle>
+            <otherText>See Remarks</otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001872137</rptOwnerCik>
+            <rptOwnerName>Continental General Holdings LLC</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>11001 LAKELINE BLVD., STE. 120</rptOwnerStreet1>
+            <rptOwnerStreet2></rptOwnerStreet2>
+            <rptOwnerCity>AUSTIN</rptOwnerCity>
+            <rptOwnerState>TX</rptOwnerState>
+            <rptOwnerZipCode>78717</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>1</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>1</isOther>
+            <officerTitle></officerTitle>
+            <otherText>See Remarks</otherText>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>0</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Common Stock, $0.01 par value per share</value>
+                <footnoteId id="F1"/>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-08-21</value>
+            </transactionDate>
+            <deemedExecutionDate></deemedExecutionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionTimeliness></transactionTimeliness>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>10000</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>208.9169</value>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>A</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>654025</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>By Continental General Insurance Company</value>
+                    <footnoteId id="F2"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Common Stock, $0.01 par value per share</value>
+                <footnoteId id="F1"/>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>787097</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>By Percy Rockdale LLC</value>
+                    <footnoteId id="F3"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Common Stock, $0.01 par value per share</value>
+                <footnoteId id="F1"/>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>1691</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>By MG Capital Management, Ltd.</value>
+                    <footnoteId id="F4"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Common Stock, $0.01 par value per share</value>
+                <footnoteId id="F1"/>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>4486</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>By Spouse</value>
+                    <footnoteId id="F5"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Common Stock, $0.01 par value per share</value>
+                <footnoteId id="F1"/>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>5713</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+    </nonDerivativeTable>
+
+    <footnotes>
+        <footnote id="F1">This Form 4 is filed jointly by Percy Rockdale LLC (&quot;Percy Rockdale&quot;), MG Capital Management, Ltd. (&quot;MG Capital Management&quot;), Continental General Insurance Company (&quot;CGIC&quot;), Continental Insurance Group, Ltd. (&quot;CIG&quot;), Continental General Holdings LLC (&quot;CGH&quot;) and Michael Gorzynski (collectively, the &quot;Reporting Persons&quot;). Each Reporting Person may be deemed to be a member of a Section 13(d) group that collective beneficially owns more than 10% of the Issuer's outstanding shares of Common Stock. Each Reporting Person disclaims beneficial ownership of the securities of the Issuer reported herein except to the extent of his or its pecuniary interest therein, and this report shall not be deemed to be an admission that any Reporting Person is the beneficial owner of such securities for purposes of Section 16 or for any other purpose.</footnote>
+        <footnote id="F2">Represents securities directly held by CGIC. CIG serves as the parent operating company of CGIC. CGH serves as an investment holding company and the sole owner of CIG. Mr. Gorzynski serves as the Manager of CGH. By virtue of the foregoing relationships, each of CIG, CGH and Mr. Gorzynski may be deemed to beneficially own the securities reported herein as beneficially owned directly by CGIC.</footnote>
+        <footnote id="F3">Represents securities directly held by Percy Rockdale. As the sole Manager of Percy Rockdale, Mr. Gorzynski may be deemed to beneficially own the securities reported herein as beneficially owned directly by Percy Rockdale.</footnote>
+        <footnote id="F4">Represents securities directly held by MG Capital Management. As the sole Director of MG Capital Management, Mr. Gorzynski may be deemed to beneficially own the securities reported herein as beneficially owned directly by MG Capital Management.</footnote>
+        <footnote id="F5">Represents securities directly held by Mr. Gorzynski's wife. Mr. Gorzynski disclaims beneficial ownership of the securities reported herein as beneficially owned directly by his wife except to the extent of his pecuniary interest therein, and this report shall not be deemed to be an admission that Mr. Gorzynski is the beneficial owner of such securities for purposes of Section 16 or for any other purpose.</footnote>
+    </footnotes>
+
+    <remarks>Mr. Gorzynski is a director of the Issuer. For purposes of Section 16 of the Securities Exchange Act of 1934, as amended, each of the Reporting Persons (other than Mr. Gorzynski) may be deemed a director by deputization by virtue of Mr. Gorzynski's service on the Board of Directors of the Issuer.</remarks>
+
+    <ownerSignature>
+        <signatureName>/s/ Michael Gorzynski</signatureName>
+        <signatureDate>2026-08-25</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>Percy Rockdale LLC; By: /s/ Michael Gorzynski, Sole Manager</signatureName>
+        <signatureDate>2026-08-25</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>MG Capital Management, Ltd.; By: /s/ Michael Gorzynski, Sole Director</signatureName>
+        <signatureDate>2026-08-25</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>Continental General Insurance Company; By: /s/ Michael Gorzynski, Executive Chairman</signatureName>
+        <signatureDate>2026-08-25</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>Continental Insurance Group, Ltd.; By: /s/ Michael Gorzynski, Chairman &amp; President</signatureName>
+        <signatureDate>2026-08-25</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>Continental General Holdings, LLC; By: /s/ Michael Gorzynski, Manager</signatureName>
+        <signatureDate>2026-08-25</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

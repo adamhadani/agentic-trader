@@ -561,3 +561,15 @@ news:
   enabled: true
   window_hours: 48
   max_scored_per_scan: 6
+
+# Insider watch cards (docs/superpowers/specs/2026-10-23-insider-watch-cards-design.md): a nightly SEC Form 4
+# capture for cohort v3 (EDGAR_USER_AGENT from the environment) feeds the frozen `insider` v1 cluster rule; the
+# 10:35 scan sends at most 2 tap-only, unvalidated watch cards. Never auto-entered, no probe or promotion credit.
+insider_watch:
+  enabled: true
+  max_cards_per_session: 2
+  max_open_positions: 4
+  max_risk_per_trade_usd: 100
+  archive_dir: ~/agentic-trader-research/insider-filings-cache
+  backfill_from: 2026-10-01
+  pooled_cache_dir: ~/agentic-trader-research/pooled-cache-v1

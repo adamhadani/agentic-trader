@@ -22,6 +22,14 @@ from agentic_trader.config import AppConfig, ScanBudget, corporate_actions_live,
 from agentic_trader.constants import MAX_DAILY_COMPARISONS, AssetClass, AuditEventType
 from agentic_trader.data.corporate_actions import AlpacaCorporateActionsSource
 from agentic_trader.data.corporate_actions_worker import CorporateActionsWorker
+from agentic_trader.data.insider_capture import (
+    CaptureScope,
+    InsiderCaptureStore,
+    capture_scope,
+    default_capture_directory,
+    load_watch_cohort,
+    run_insider_capture_worker,
+)
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diagnostics
 from agentic_trader.diagnostics.monitor import OperationsMonitor
@@ -37,6 +45,7 @@ from agentic_trader.research.alpha.daily_plan import DailyComparisonPlan, DailyP
 from agentic_trader.research.alpha.decisions import SessionDecisionService
 from agentic_trader.research.alpha.models import DecisionStatus
 from agentic_trader.research.alpha.observation import SessionObservationService
+from agentic_trader.research.pooled.entry import REPO_ROOT
 from agentic_trader.research.setups.card_stats_worker import CardStatsUnavailable, CardStatsWorker
 from agentic_trader.runtime import runtime_identity
 from agentic_trader.screeners.earnings_drift import PEAD_DECISION_TIME_ET
@@ -429,6 +438,29 @@ async def run_corporate_actions_worker(copilot, config, readiness) -> None:
             await asyncio.wait_for(shutdown.wait(), timeout=policy.poll_seconds)
 
 
+async def run_insider_capture(copilot, config) -> None:
+    """The nightly SEC Form 4 capture for insider watch cards (data/insider_capture.py).
+
+    The cohort's issuer CIKs come from the frozen insider entry and the archive's ticker map, loaded on
+    the first poll that has dates to capture, and only over the pinned archive (``capture_scope`` checks
+    its ``files_sha256``): a failure there, a refreshed archive included, is observed by type name like any
+    failed poll, and nothing is captured under a scope the watch history would not read.
+    """
+    policy = config.insider_watch
+    store = InsiderCaptureStore(copilot.db.workflows, default_capture_directory())
+
+    def load_scope() -> CaptureScope:
+        return capture_scope(load_watch_cohort(REPO_ROOT, policy.archive_dir), policy.archive_dir)
+
+    async def scope() -> CaptureScope:
+        return await asyncio.to_thread(load_scope)
+
+    async def observe(ok: bool, detail: str) -> None:
+        await copilot.readiness.observe(HealthComponent.INSIDER_CAPTURE, ok, detail)
+
+    await run_insider_capture_worker(config, store, observe, copilot._shutdown_event, scope=scope)
+
+
 def _slot_due_at(slot_et: str) -> datetime:
     """The instant a New York ``HH:MM`` suggestion-scan slot was due today."""
     return datetime.combine(datetime.now(ET_TZ).date(), dt_time.fromisoformat(slot_et), tzinfo=ET_TZ)
@@ -725,6 +757,13 @@ async def daemon(no_llm: bool) -> None:
         if corporate_actions_live(config)
         else None
     )
+    # Nightly SEC Form 4 capture for insider watch cards; EDGAR_USER_AGENT is read inside the worker.
+    insider_capture_task = (
+        asyncio.create_task(run_insider_capture(copilot, config)) if config.insider_watch.enabled else None
+    )
+    if copilot.insider_watch_source is not None:
+        # The pinned insider archive (about 16 s) is read once per process in a worker thread, from now.
+        copilot.insider_watch_source.warm()
 
     scheduler = AsyncIOScheduler(
         job_defaults={
@@ -801,6 +840,18 @@ async def daemon(no_llm: bool) -> None:
             except Exception:
                 logger.exception(
                     "Corporate-actions worker ended with an error", extra={"event": "corporate_actions_task_failed"}
+                )
+        if insider_capture_task is not None:
+            insider_capture_task.cancel()
+            try:
+                await insider_capture_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # Type name only: an exception's text may carry a request header.
+                logger.warning(
+                    "Insider-capture worker ended with an error",
+                    extra={"event": "insider_capture_task_failed", "reason": type(exc).__name__},
                 )
         workflow_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

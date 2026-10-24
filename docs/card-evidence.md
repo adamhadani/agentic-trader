@@ -483,6 +483,32 @@ labelling run skips the beta fetch entirely.
   and `mean_beta_excess_r`. A symbol outside the configured universe falls back to the research ETF cohorts (so a removed BIL or SHY is
   `rates_credit`); any other dynamic name is `unclassified`.
 
+### Insider watch outcomes
+
+`cards outcomes` appends an `insider_watch` block after the PEAD probe when the window holds
+`insider_watch_decision` events ([watch cards](apriori-alphas.md#watch-cards)). It is descriptive and read-only:
+nothing in `risk/`, `card_policy`, `card_stats` or admission reads it, and a watch card is unvalidated.
+
+- **Events.** Every journaled event that carries a measured ATR (so it passed the frozen eligibility rule):
+  those sent as cards and those eligible but unsent (owned, over the card or position cap, late, and so on).
+  Ineligible and incomplete-filing events are journaled but not labelled. An event journaled by more than one
+  decision scan (a rerun) counts once by its event ID, as the scan that sent it when one did.
+- **Labels.** The frozen cube bracket (decision-bar close, 2 x ATR14 stop, 3R target, 20-session time exit, 15 bp
+  decisive cost) walked on hourly bars with `label_bracket` from the 10:35 decision, the way the PEAD forward
+  record is labelled, on SIP with adjusted prices (the feed the study, the card's +0.087R line and the PEAD
+  record use; never the configured feed). Without the SIP subscription a read must end at least 15 minutes
+  ago, so every SIP read of the PEAD and watch blocks ends 16 minutes before now, and an hourly bar that had
+  not closed by then never matures a label. `n` counts mature rows only; the rest are in
+  `unlabelled` by reason (`no_hourly_bars`, `no_decision_price`, `degenerate_levels`, `immature`).
+- **Blocks.** `all`, `sent_events` and `unsent_events`, each with `n`, `mean_r_cost` and `mean_beta_excess_r`:
+  `r_cost` minus the past-only trailing beta (the controls above) times SPY's return over the same holding
+  window in R units. A row without a beta (`short_history`, a failed daily read) is left out of the excess mean.
+- **Taps and fills.** From `insider_watch_long` signals in the window: `taps` counts signals that left the card
+  (any status but pending, dismissed or expired) and `fills` those with an `executed_at`. `bar_failures`
+  names symbols whose bars could not be read.
+- **Reading it.** The sent-versus-unsent comparison is the only view of whether the discretionary tap helps or
+  hurts; both are small, censored samples, so read them as a record, never as a gate or an edge estimate.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket

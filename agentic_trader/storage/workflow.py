@@ -39,6 +39,7 @@ from agentic_trader.execution.durable import (
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.research.apriori.probe import CATALOG_KIND, CATALOG_STRATEGY_IDS
+from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID, frozen_watch_contract
 from agentic_trader.risk import drawdown_risk_factor, requires_account_risk
 from agentic_trader.storage.models import (
     AlphaProjectionRecord,
@@ -75,6 +76,10 @@ def _event_view(row: DomainEventRecord) -> dict[str, Any]:
     }
 
 
+# The decision_provenance key of an insider watch card's event (InsiderWatchSource.provenance_key).
+WATCH_PROVENANCE_KEY = "insider_watch"
+
+
 def _catalog_signal_rejection(signal: SignalRecord, definition: dict) -> str | None:
     """A catalog probe has no symbol universe: its signal must carry a same-session event
     naming its own symbol, the frozen leg and the frozen bracket policy."""
@@ -92,6 +97,31 @@ def _catalog_signal_rejection(signal: SignalRecord, definition: dict) -> str | N
         or event.get("session") != session
     ):
         return "Catalog signal differs from its immutable strategy contract."
+    return None
+
+
+def _watch_signal_rejection(signal: SignalRecord) -> str | None:
+    """An insider watch card has no registry entry: its signal must carry the frozen cube bracket byte
+    for byte and a same-session event of the frozen entry naming its own contract."""
+    try:
+        contract = frozen_watch_contract()
+    except Exception as exc:
+        return f"Insider watch contract unavailable: {type(exc).__name__}."
+    provenance = json.loads(signal.decision_provenance or "{}")
+    event = provenance.get(WATCH_PROVENANCE_KEY) if isinstance(provenance, dict) else None
+    session = signal.timestamp.astimezone(ET_TZ).date().isoformat()
+    if (
+        signal.alpha_version
+        or signal.timeframe != "1d"
+        or str(signal.direction).upper() != "LONG"
+        or not signal.alpha_policy
+        or encode(json.loads(signal.alpha_policy)) != encode(contract.policy)
+        or not isinstance(event, dict)
+        or event.get("entry_sha256") != contract.entry_sha256
+        or event.get("symbol") != signal.contract.upper()
+        or event.get("session") != session
+    ):
+        return "Insider watch signal differs from its frozen contract."
     return None
 
 
@@ -476,6 +506,9 @@ class WorkflowStore:
             return work_item(row)
 
     async def _alpha_entry_rejection(self, session: AsyncSession, signal: SignalRecord) -> str | None:
+        if signal.strategy == INSIDER_WATCH_STRATEGY_ID:
+            # Not a registry alpha: its contract is the frozen entry and cube bracket, never the registry.
+            return _watch_signal_rejection(signal)
         strategy = signal.strategy.lower()
         if not signal.alpha_version and not strategy.startswith("alpha_") and strategy not in CATALOG_STRATEGY_IDS:
             return None
