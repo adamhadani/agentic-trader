@@ -155,6 +155,60 @@ After deploying this change the operator must run
 `--entry-policy gtc`; otherwise the scheduled ETF32 benchmark would silently adopt
 the new `session` default for daily mining.
 
+## Native entries
+
+`TradeLifetimeService` resolves a signal's entry lifetime through `entry_lifetime_of`:
+`alpha_policy["lifetime"]` when declared, else the native marker in
+`decision_provenance["entry_lifetime"]`. A new native card records that marker
+(`native_entry_lifetime_marker`, a `NativeEntryLifetimePolicy`, version `session_close_v1`)
+only when `execution.native_entry_lifetime` is `session` (shipped value; code default
+`off`), `execution_mode` is `alpaca` and the broker executes the card's asset class (a
+futures card under alpaca gets no marker and no card line). Cards recorded before deploy
+carry no marker and are not bounded. The marker written before the session-close bound
+(the daily `elapsed_utc_v2` policy, 57,600 s, no holding) reads as the same native
+policy; any other marker shape is malformed and goes to review. Only the marker resolves
+to the native policy; an `alpha_policy` lifetime never does, so alpha, PEAD/catalog and
+probe entries keep their own semantics.
+
+An unfilled marked entry is due at the **earlier** of its submission session's regular
+close + 5 minutes (16:05 New York, 13:05 on an early close, from the strict broker
+calendar for the New York date of the broker's `submitted_at`) and `submitted_at +
+57,600 s` (the one-session outer bound). The close is inside the window
+`scripts/awake.sh` keeps the host awake (09:15–16:30 New York), so a stale GTC entry is
+cancelled in its own session instead of overnight, when the host may sleep and the entry
+could fill at the next open. If the calendar is unavailable or its read fails, the outer
+bound alone applies (nothing halts and nothing is cancelled early); a submission outside
+a regular session goes to review. The due entry is cancelled once through the existing
+`entry_cancel` path. The card says "Unfilled entry is cancelled at the session close."
+
+A working partial fill of a marked entry rests like its unfilled remainder until the
+deadline ("within resting lifetime": no halt, no review); at or after the deadline it goes
+to review and halts. A terminal partial, and every alpha, catalog or probe partial, is
+reviewed at once as before. Once a marked entry fully fills (`executed_at` set) it has
+nothing left to time: reconciliation and `/resume` checks make no broker read for it, so a
+transient read error cannot halt (the same holds for any policy without a holding
+deadline). If its recorded fill is at or after the deadline, the cancel was missed (late
+reconciliation or a sleeping host): one `entry_lifetime_missed` event on
+`signal/<id>/lifetime` and one notice, no halt, decided from the journaled order
+projection and `executed_at` only.
+
+The bound is a service cancel, not DAY time-in-force: Alpaca uses one TIF for the whole
+bracket, so DAY would also expire the protective legs after a fill. It does not reuse
+`alpha_policy`, which belongs to alpha identity and qualification.
+
+A cancel (deadline or operator) resolves one of three ways:
+
+- **Confirmed no fill** (complete, zero-fill terminal group by exact read): `accepted`,
+  the signal becomes `FAILED` and capacity is released.
+- **Filled before the cancel** (the broker refused the DELETE, so the DELETE call itself
+  errored, for example 422 not cancelable or a lost reply, and a fresh exact read shows
+  the full entry quantity filled with the protective exits intact by the shared
+  `protective_stop` capacity rule): work status `rejected` with reason
+  `filled_before_cancel`. The position is open and protected; no halt.
+- **Anything else** (partial fill, replacement, incomplete group, failed lookup, or an
+  accepted DELETE whose parent then reads filled: polled within the owner's window, then
+  this): `unknown`, new risk halts and the reservation is retained.
+
 ## Known limits
 
 The journaled RUN/manifest record now also carries the requested
@@ -162,9 +216,10 @@ The journaled RUN/manifest record now also carries the requested
 `definition` (`execution`/`semantics_version`) and its `evidence.execution_model`
 label (`gtc_limit_conservative_brackets_v2` or `session_limit_conservative_brackets_v1`)
 independently record the policy it was actually evaluated under. Built-in
-(non-alpha) strategies still submit GTC limit entries at the observed price:
-`TradeLifetimeService` only reconciles signals carrying `alpha_policy.lifetime`, so
-this contract changes nothing about built-in strategy execution. The simulator
+(non-alpha) strategies submit GTC limit entries at the observed price; since the
+native-entry change (see [Native entries](#native-entries)) only new native cards
+recorded with `execution.native_entry_lifetime: session` in alpaca mode carry a
+session-close bound, and signals recorded earlier stay unbounded. The simulator
 grants a session-bounded entry the entire next session including its opening
 print; live, the order is submitted inside the session and sees only the
 remainder of it and can never take the open. The research fill rate is therefore

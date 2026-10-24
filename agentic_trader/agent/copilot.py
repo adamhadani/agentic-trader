@@ -64,6 +64,7 @@ from agentic_trader.constants import (
     SignalStatus,
     StopAdjustmentReason,
     SystemStateKey,
+    TimeInForce,
     executes_asset_class,
     normalize_asset_class,
 )
@@ -99,7 +100,8 @@ from agentic_trader.execution.freshness import (
     round_to_tick,
     valid_until_from_provenance,
 )
-from agentic_trader.execution.lifetimes import TradeLifetimeService
+from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, native_entry_lifetime_marker
+from agentic_trader.execution.lifetimes import RestingCancelResult, TradeLifetimeService
 from agentic_trader.market.session import (
     ET_TZ,
     AlpacaCalendarProvider,
@@ -492,6 +494,7 @@ class TradingCopilot:
                 positions_provider=self.get_positions_summary_html,
                 close_handler=self.close_position_manual,
                 flatten_handler=self.flatten_positions,
+                cancel_handler=self.cancel_resting_entry,
                 execute_handler=self.execute_signal_by_id,
                 reevaluate_handler=self.reevaluate_signal,
                 symbol_scan_handler=self.request_symbol_scan,
@@ -1635,6 +1638,15 @@ class TradingCopilot:
                         )
                     valid_until = session_closes[(candidate.contract, extend)]
                     validity = {"valid_until": valid_until} if valid_until else {}
+                    # Only a plain native card the broker can execute is session-bounded: alpha and
+                    # catalog cards (drift, probes) are policy-locked and carry their own
+                    # `alpha_policy.lifetime`; a futures card under alpaca is never submitted.
+                    lifetime_marker = (
+                        None
+                        if is_drift or candidate.alpha_policy or candidate.alpha_version
+                        else native_entry_lifetime_marker(self.config, str(eval_res.asset_class))
+                    )
+                    lifetime = {NATIVE_ENTRY_LIFETIME_KEY: lifetime_marker} if lifetime_marker else {}
 
                     # Record to database
                     sig_id = await self.db.record_signal(
@@ -1667,6 +1679,7 @@ class TradingCopilot:
                                 else self._dynamic_tag(candidate.contract, dynamic_sources)
                             ),
                             **validity,
+                            **lifetime,
                         },
                         contract=eval_res.contract,
                         strategy=candidate.strategy,
@@ -1699,6 +1712,7 @@ class TradingCopilot:
                             ),
                             **({"card_evidence": card_evidence} if card_evidence is not None else {}),
                             "book_sizing": book_block,
+                            **({"entry_session_bound": True} if lifetime else {}),
                             **validity,
                         },
                     )
@@ -3166,6 +3180,13 @@ class TradingCopilot:
                 await self.process_reconciliation_event(event, positions)
             return html.escape(response)
 
+    async def cancel_resting_entry(self, signal_id: int, confirm: bool = False) -> RestingCancelResult:
+        """Operator cancel (Telegram /cancel, CLI ``cancel``); confirming serializes with reconciliation."""
+        if not confirm:
+            return await self.lifetime_service.cancel_resting_entry(signal_id, confirm=False)
+        async with self._reconciliation_lock:
+            return await self.lifetime_service.cancel_resting_entry(signal_id, confirm=True)
+
     async def close_position_manual(
         self, signal_id: int, exit_price: float | None = None, *, allow_queued: bool = False
     ) -> str:
@@ -3362,6 +3383,9 @@ class TradingCopilot:
             stop_loss=stop_loss,
             take_profit=take_profit,
             quantity=target_qty,
+            # Explicit, not the field default: a DAY bracket would drop its legs at the close, so the
+            # session bound comes from the lifetime service's cancel, never from the order itself.
+            time_in_force=TimeInForce.GTC,
         )
         if self.config.execution.card_freshness.enabled:
             tick_size = (
@@ -3796,6 +3820,7 @@ class TradingCopilot:
             **({"card_evidence": old_provenance["card_evidence"]} if old_provenance.get("card_evidence") else {}),
             # The original card's book-sizing decision, unchanged (decision-time evidence, like the above).
             "book_sizing": old_provenance.get("book_sizing"),
+            **({"entry_session_bound": True} if old_provenance.get(NATIVE_ENTRY_LIFETIME_KEY) else {}),
             "reprices": signal_id,
             "first_issued_at": first_issued_at,
         }

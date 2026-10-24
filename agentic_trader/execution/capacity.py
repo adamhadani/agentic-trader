@@ -8,6 +8,7 @@ must acquire their own fresh funding evidence before submission.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Final
@@ -47,6 +48,41 @@ TERMINAL_STATUSES: Final = frozenset(
 # Alpaca holds a filled bracket's stop leg of an OCO exit pair in status `held`,
 # not `new`; it is still the real, broker-triggered protective order.
 PROTECTIVE_STOP_STATUSES: Final = frozenset((OrderStatus.NEW, OrderStatus.HELD))
+
+
+def protective_stop(legs: Iterable[OrderObservation], *, side: str, quantity: Decimal) -> OrderObservation | None:
+    """The one exact protective stop among an entry's exit legs, or None when protection is unconfirmed.
+
+    Exactly one stop/stop-limit leg in `new` or `held`. A `held` stop counts only while exactly one
+    live `new` limit take-profit sibling (opposite side, same quantity, unfilled) keeps it held.
+    """
+    legs = list(legs)
+    stops = [
+        leg
+        for leg in legs
+        if leg.order_type in (OrderType.STOP.lower(), OrderType.STOP_LIMIT.lower())
+        and leg.status in PROTECTIVE_STOP_STATUSES
+    ]
+    if len(stops) != 1:
+        return None
+    stop = stops[0]
+    if stop.status == OrderStatus.HELD:
+        # Alpaca only holds the stop leg while its OCO take-profit sibling is
+        # still live; a held stop with no live NEW take-profit is an anomaly
+        # or an in-flight transient, not confirmed exact protection.
+        live_take_profits = [
+            leg
+            for leg in legs
+            if leg.order_id != stop.order_id
+            and leg.order_type == OrderType.LIMIT.lower()
+            and leg.status == OrderStatus.NEW
+            and leg.side != side
+            and decimal(leg.quantity) == quantity
+            and decimal(leg.filled_quantity) == 0
+        ]
+        if len(live_take_profits) != 1:
+            return None
+    return stop
 
 
 class CapacityAssessment(BaseModel):
@@ -159,30 +195,9 @@ def _exposure(reservations: list[dict[str, Any]], context: BrokerEntryContext) -
             mark = decimal(holding.current_price)
             if mark <= 0:
                 raise ValueError("Broker exposure has no valid market mark")
-            stops = [
-                orders[identity]
-                for identity in family - {root_id}
-                if orders[identity].order_type in (OrderType.STOP.lower(), OrderType.STOP_LIMIT.lower())
-                and orders[identity].status in PROTECTIVE_STOP_STATUSES
-            ]
-            if len(stops) != 1:
+            stop = protective_stop((orders[identity] for identity in family - {root_id}), side=side, quantity=quantity)
+            if stop is None:
                 raise ValueError("Exact active stop protection is unavailable for existing exposure")
-            stop = stops[0]
-            if stop.status == OrderStatus.HELD:
-                # Alpaca only holds the stop leg while its OCO take-profit sibling is
-                # still live; a held stop with no live NEW take-profit is an anomaly
-                # or an in-flight transient, not confirmed exact protection.
-                live_take_profits = [
-                    orders[identity]
-                    for identity in family - {root_id, stop.order_id}
-                    if orders[identity].order_type == OrderType.LIMIT.lower()
-                    and orders[identity].status == OrderStatus.NEW
-                    and orders[identity].side != side
-                    and decimal(orders[identity].quantity) == quantity
-                    and decimal(orders[identity].filled_quantity) == 0
-                ]
-                if len(live_take_profits) != 1:
-                    raise ValueError("Exact active stop protection is unavailable for existing exposure")
             if (
                 stop.side == side
                 or decimal(stop.quantity) != quantity

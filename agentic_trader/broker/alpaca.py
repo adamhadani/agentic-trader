@@ -708,6 +708,10 @@ class AlpacaBroker(BaseBroker):
             )
         return list(observations.values())
 
+    @property
+    def supports_entry_cancellation(self) -> bool:
+        return True
+
     async def read_entry_group(self, order_id: str, known_ids: tuple[str, ...] = ()) -> list[OrderObservation]:
         if not self.client and not await self.connect():
             raise RuntimeError("Alpaca lifecycle connection failed")

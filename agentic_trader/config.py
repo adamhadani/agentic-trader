@@ -646,6 +646,8 @@ class ExecutionConfig(BaseModel):
     notification_retry_seconds: float = Field(default=5, gt=0)
     notification_max_retry_seconds: float = Field(default=900, gt=0)
     card_freshness: CardFreshnessConfig = Field(default_factory=CardFreshnessConfig)
+    # "session": new native cards record a one-session entry lifetime (Alpaca only); "off": untimed GTC.
+    native_entry_lifetime: Literal["off", "session"] = "off"
 
     broker_request_timeout_seconds: float = Field(default=10, gt=0, le=60)
     stop_replace_timeout_seconds: float = Field(default=10, gt=0, le=60)

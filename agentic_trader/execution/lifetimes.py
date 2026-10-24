@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
 import time
 from collections.abc import Callable, Sequence
@@ -11,17 +12,20 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
-from agentic_trader.constants import CloseRequestStatus
+from agentic_trader.constants import CloseRequestStatus, OrderType, SignalStatus
+from agentic_trader.execution.capacity import protective_stop
 from agentic_trader.execution.durable import OrderObservation, WorkItem, WorkKind, WorkStatus
 from agentic_trader.execution.lifetime_policy import (
     LifetimePolicy,
+    NativeEntryLifetimePolicy,
     SessionEvidenceError,
     SessionLifetimePolicy,
     aware_utc,
-    lifetime_from_dict,
+    entry_lifetime_of,
+    has_holding_deadline,
 )
 
 
@@ -33,6 +37,7 @@ if TYPE_CHECKING:
     from agentic_trader.storage.lifetimes import LifetimeRepository
 
 NEW_YORK = ZoneInfo("America/New_York")
+logger = logging.getLogger(__name__)
 
 
 class LifetimeAction(StrEnum):
@@ -45,6 +50,41 @@ class LifetimeAction(StrEnum):
 BRACKET_EXIT_COUNT = 2
 UNFILLED_TERMINAL = frozenset({"canceled", "expired", "rejected"})
 WORKING_ENTRY = frozenset({"new", "accepted", "pending_new", "accepted_for_bidding", "done_for_day"})
+# The only statuses a filled bracket's live exits show: Alpaca holds the stop while the take-profit works.
+PROTECTED_EXIT = frozenset({"new", "held"})
+# signals.id is a 32-bit Integer column: a larger id can never exist and would fail the lookup.
+MAX_SIGNAL_ID = 2_147_483_647
+
+
+# Why an entry_cancel work item exists: the resting deadline passed, or the operator asked.
+CancelCause = Literal["deadline", "operator"]
+INCOMPLETE_OR_CHANGED_GROUP = "incomplete_or_changed_bracket_group"
+# The DELETE itself errored (the broker refused it, e.g. 422 not cancelable, or its reply was lost) and a
+# fresh exact read shows the entry fully filled with its exits protecting it (WorkStatus.REJECTED). An
+# accepted DELETE followed by a filled read is never this outcome: it stays pending, then UNKNOWN.
+FILLED_BEFORE_CANCEL = "filled_before_cancel"
+
+
+@dataclass(frozen=True)
+class RestingCancelResult:
+    """An operator cancel's outcome; ``reason`` is a stable refusal token, never an exception message."""
+
+    status: Literal["preview", "submitted", "refused"]
+    reason: str | None
+    signal_id: int
+    symbol: str | None
+    work_status: str | None
+    # The signal's status on a ``not_resting`` refusal, so the reply can tell an untapped card apart.
+    signal_status: str | None = None
+
+
+def parse_signal_id(text: str) -> int | None:
+    """An operator-typed signal id: ASCII decimal digits (``int`` also takes "４２" or "٤٢") within the
+    ``signals.id`` column's range."""
+    if not (text.isascii() and text.isdecimal()) or len(text) > len(str(MAX_SIGNAL_ID)):
+        return None
+    value = int(text)
+    return value if value <= MAX_SIGNAL_ID else None
 
 
 def holding_calendar_span_days(holding_sessions: int) -> int:
@@ -83,6 +123,24 @@ class LifetimeDecision:
     deadline: datetime | None = None
 
 
+def _resting_deadline(
+    policy: LifetimePolicy, order: OrderObservation, now: datetime, sessions: Sequence[MarketCalendarDay] | None
+) -> datetime | LifetimeDecision | None:
+    """The entry deadline, or the REVIEW decision when the submission evidence cannot establish it.
+
+    Only a native policy reads ``sessions`` (its submission session's close); every other policy's
+    resting deadline is elapsed time from ``submitted_at``.
+    """
+    if order.submitted_at is None or aware_utc(order.submitted_at) > now:
+        return LifetimeDecision(LifetimeAction.REVIEW, "missing_or_future_submission_time")
+    if isinstance(policy, NativeEntryLifetimePolicy):
+        try:
+            return policy.entry_deadline(order.submitted_at, sessions)
+        except SessionEvidenceError as exc:
+            return LifetimeDecision(LifetimeAction.REVIEW, str(exc))
+    return policy.entry_deadline(order.submitted_at)
+
+
 def assess_lifetime(
     policy: LifetimePolicy,
     identity: EntryIdentity,
@@ -90,6 +148,8 @@ def assess_lifetime(
     now: datetime,
     sessions: Sequence[MarketCalendarDay] | None = None,
 ) -> LifetimeDecision:
+    """``sessions``: from the fill date for a session-counted holding exit, or the submission date for
+    a native entry's session-close bound (``None`` leaves a native entry its elapsed outer bound)."""
     now = aware_utc(now)
     quantity, filled = Decimal(order.quantity), Decimal(order.filled_quantity)
     if (
@@ -119,18 +179,80 @@ def assess_lifetime(
             LifetimeAction.CLOSE_POSITION if now >= deadline else LifetimeAction.NONE, "holding_lifetime", deadline
         )
     if filled:
+        # A native entry's working partial fill rests like the unfilled remainder until its deadline;
+        # alpha, catalog and probe partials, and any terminal partial, go to review at once.
+        if isinstance(policy, NativeEntryLifetimePolicy) and order.status == "partially_filled":
+            resting = _resting_deadline(policy, order, now, sessions)
+            if isinstance(resting, datetime) and now < resting:
+                return LifetimeDecision(LifetimeAction.NONE, "within_resting_lifetime", resting)
         return LifetimeDecision(LifetimeAction.REVIEW, "partial_entry_requires_protection_review")
     if order.status in UNFILLED_TERMINAL:
         return LifetimeDecision(LifetimeAction.NONE, "unfilled_terminal")
     if order.status not in WORKING_ENTRY:
         return LifetimeDecision(LifetimeAction.REVIEW, "unconfirmed_order_transition")
-    if order.submitted_at is None or aware_utc(order.submitted_at) > now:
-        return LifetimeDecision(LifetimeAction.REVIEW, "missing_or_future_submission_time")
-    deadline = policy.entry_deadline(order.submitted_at)
-    if deadline is None:
+    resting = _resting_deadline(policy, order, now, sessions)
+    if isinstance(resting, LifetimeDecision):
+        return resting
+    if resting is None:
         return LifetimeDecision(LifetimeAction.NONE, "resting_lifetime_disabled")
     return LifetimeDecision(
-        LifetimeAction.CANCEL_ENTRY if now >= deadline else LifetimeAction.NONE, "resting_lifetime", deadline
+        LifetimeAction.CANCEL_ENTRY if now >= resting else LifetimeAction.NONE, "resting_lifetime", resting
+    )
+
+
+def resting_entry_refusal(identity: EntryIdentity, parent: OrderObservation) -> str | None:
+    """An operator cancel needs the exact, working, wholly unfilled parent.
+
+    The deadline path gets the same guarantee from ``assess_lifetime`` returning CANCEL_ENTRY.
+    """
+    if not identity.matches(parent):
+        return INCOMPLETE_OR_CHANGED_GROUP
+    if Decimal(parent.filled_quantity) != 0 or parent.status not in WORKING_ENTRY:
+        return "not_resting"
+    return None
+
+
+def bracket_group_refusal(identity: EntryIdentity, orders: Sequence[OrderObservation]) -> str | None:
+    """Never cancel an incomplete or foreign group. Alpaca brackets contain two exits."""
+    parent = next((o for o in orders if o.order_id == identity.order_id), None)
+    children = [o for o in orders if o.order_id != identity.order_id]
+    if (
+        parent is None
+        or parent.order_class != "bracket"
+        or len(children) != BRACKET_EXIT_COUNT
+        or any(
+            o.symbol != identity.symbol
+            or o.side == identity.side
+            or Decimal(o.quantity) != Decimal(identity.quantity)
+            or Decimal(o.filled_quantity) != 0
+            or o.replaces
+            or o.replaced_by
+            for o in children
+        )
+    ):
+        return INCOMPLETE_OR_CHANGED_GROUP
+    return None
+
+
+def filled_before_cancel(identity: EntryIdentity, orders: Sequence[OrderObservation], order_ids: Sequence[str]) -> bool:
+    """The DELETE lost a clean fill race: the exact parent fully filled and its exits protect it.
+
+    Protection is the capacity rule (`protective_stop`) plus exactly one limit take-profit. Anything
+    less (a partial fill; a missing, changed, filled, terminal or merely pending exit) is not this outcome.
+    """
+    by_id = {o.order_id: o for o in orders}
+    parent = by_id.get(identity.order_id)
+    exits = [o for o in orders if o.order_id != identity.order_id]
+    return (
+        parent is not None
+        and identity.matches(parent)
+        and parent.status == "filled"
+        and Decimal(parent.filled_quantity) == Decimal(parent.quantity)
+        and set(order_ids) <= by_id.keys()
+        and bracket_group_refusal(identity, orders) is None
+        and all(o.status in PROTECTED_EXIT for o in exits)
+        and sum(o.order_type == OrderType.LIMIT.lower() for o in exits) == 1
+        and protective_stop(exits, side=identity.side, quantity=Decimal(identity.quantity)) is not None
     )
 
 
@@ -154,7 +276,25 @@ class TradeLifetimeService:
         self.calendar = calendar
 
     async def _sessions(self, lifetime: LifetimePolicy, parent: OrderObservation) -> list | None:
-        """Broker sessions from the fill date; ``None`` when this policy counts no sessions."""
+        """Broker sessions the policy's deadline counts; ``None`` when it counts none.
+
+        A session-counted holding exit reads from the fill date and fails loudly without a calendar.
+        A native entry reads its submission date only; without a calendar, or when the read fails, its
+        elapsed outer bound alone applies, so a calendar outage never halts or cancels early.
+        """
+        if isinstance(lifetime, NativeEntryLifetimePolicy):
+            if self.calendar is None or parent.submitted_at is None:
+                return None
+            submitted = aware_utc(parent.submitted_at).astimezone(NEW_YORK).date()
+            try:
+                return [
+                    day for day in await self.calendar.get_calendar_range(submitted, submitted) if day.is_trading_day
+                ]
+            except Exception as exc:
+                logger.warning(
+                    "Native entry session calendar unavailable (%s); using the outer bound", type(exc).__name__
+                )
+                return None
         if not isinstance(lifetime, SessionLifetimePolicy) or parent.filled_at is None:
             return None
         if self.calendar is None:
@@ -163,6 +303,34 @@ class TradeLifetimeService:
         span = timedelta(days=holding_calendar_span_days(lifetime.holding_sessions))
         days = await self.calendar.get_calendar_range(start, start + span)
         return [day for day in days if day.is_trading_day]
+
+    async def _missed_native_bound(self, signal: dict[str, Any], lifetime: NativeEntryLifetimePolicy) -> None:
+        """A marked entry that filled at or after its deadline missed the cancel (late reconciliation,
+        or a host asleep): one journaled notice, no halt. Durable evidence only, never a broker order read."""
+        try:
+            parent = await self.repository.order(signal["broker_order_id"])
+            if parent is None or parent.submitted_at is None or signal.get("executed_at") is None:
+                return
+            filled_at = signal["executed_at"]
+            if isinstance(filled_at, str):
+                filled_at = datetime.fromisoformat(filled_at)
+            if filled_at.tzinfo is None:
+                filled_at = filled_at.replace(tzinfo=UTC)
+            deadline = lifetime.entry_deadline(parent.submitted_at, await self._sessions(lifetime, parent))
+            if aware_utc(filled_at) >= deadline:
+                await self.repository.missed_bound(
+                    signal["id"],
+                    signal.get("contract"),
+                    {
+                        "order_id": parent.order_id,
+                        "submitted_at": aware_utc(parent.submitted_at).isoformat(),
+                        "filled_at": aware_utc(filled_at).isoformat(),
+                        "deadline": deadline.isoformat(),
+                    },
+                )
+        except Exception as exc:
+            # Descriptive evidence only: never a reason to halt a filled, protected position.
+            logger.warning("Missed native entry bound check failed signal=%s: %s", signal["id"], type(exc).__name__)
 
     async def _recover_cancel(
         self, item: WorkItem, *, owner_finished: bool = False, transport_error: str | None = None
@@ -200,6 +368,11 @@ class TradeLifetimeService:
         ):
             await self._recover_cancel(item)  # Read-only recovery, including a crash before DELETE.
 
+    @staticmethod
+    def _nothing_left_to_time(signal: dict[str, Any], lifetime: LifetimePolicy) -> bool:
+        """A fully filled entry (``executed_at`` set) whose policy has no holding deadline."""
+        return signal.get("executed_at") is not None and not has_holding_deadline(lifetime)
+
     async def reconcile(self) -> None:
         await self.recover()
         unresolved = await self.store.list_work(
@@ -207,12 +380,16 @@ class TradeLifetimeService:
         )
         blocked = {item.payload["signal_id"] for item in unresolved}
         for signal in await self.store.db.get_active_positions():
-            if not signal.get("alpha_policy"):
-                continue
-            if "lifetime" not in signal["alpha_policy"] or signal["id"] in blocked:
+            if signal["id"] in blocked:
                 continue
             try:
-                lifetime = lifetime_from_dict(signal["alpha_policy"]["lifetime"])
+                lifetime = entry_lifetime_of(signal)
+                if lifetime is None:
+                    continue
+                if self._nothing_left_to_time(signal, lifetime):
+                    if isinstance(lifetime, NativeEntryLifetimePolicy):
+                        await self._missed_native_bound(signal, lifetime)
+                    continue
                 await self._reconcile_signal(signal, lifetime)
             except Exception as exc:
                 await self.repository.review(signal["id"], f"lifecycle_evidence_unavailable:{type(exc).__name__}", {})
@@ -221,10 +398,10 @@ class TradeLifetimeService:
         """Fresh read-only checks: /resume cannot waive unresolved timed-position evidence."""
         blocked = []
         for signal in await self.store.db.get_active_positions():
-            if "lifetime" not in (signal.get("alpha_policy") or {}):
-                continue
             try:
-                lifetime = lifetime_from_dict(signal["alpha_policy"]["lifetime"])
+                lifetime = entry_lifetime_of(signal)
+                if lifetime is None or self._nothing_left_to_time(signal, lifetime):
+                    continue
                 identity = await self._entry_identity(signal)
                 if identity is None:
                     blocked.append(signal["id"])
@@ -243,6 +420,71 @@ class TradeLifetimeService:
             except Exception:
                 blocked.append(signal["id"])
         return blocked
+
+    async def _submit_cancel(self, item: WorkItem, identity: EntryIdentity) -> None:
+        """The one DELETE for a claimed entry_cancel, never retried; exact lookup resolves it."""
+        transport_error = None
+        try:
+            await self.broker.cancel_order(identity.order_id)
+        except Exception as exc:
+            transport_error = type(exc).__name__
+        await self._recover_cancel(item, owner_finished=True, transport_error=transport_error)
+
+    async def cancel_resting_entry(self, signal_id: int, *, confirm: bool) -> RestingCancelResult:
+        """Operator cancel of one resting desk entry, timed or not: a preview, or one DELETE.
+
+        No deadline or lifetime policy is consulted, so an untimed historical entry or a malformed
+        marker can still be cancelled. Every other fence holds, and the claim rechecks them under
+        the scope lock. Refusals never halt; an unconfirmed outcome halts through ``resolve_cancel``.
+        """
+        signal = await self.store.db.get_signal_by_id(signal_id)
+        if signal is None:
+            return RestingCancelResult("refused", "unknown_signal", signal_id, None, None)
+        symbol = signal.get("contract")
+
+        def refused(reason: str, work_status: str | None = None) -> RestingCancelResult:
+            status = signal["status"] if reason == "not_resting" else None
+            return RestingCancelResult("refused", reason, signal_id, symbol, work_status, status)
+
+        if (existing := await self.repository.cancel_item(signal_id)) is not None:
+            if existing.status == WorkStatus.REJECTED:
+                return refused(FILLED_BEFORE_CANCEL, existing.status)
+            return refused("cancel_in_progress", existing.status)
+        if (
+            signal["status"] != SignalStatus.EXECUTED
+            or signal.get("executed_at") is not None
+            or not signal.get("broker_order_id")
+        ):
+            return refused("not_resting")
+        if not self.broker.supports_entry_cancellation:
+            return refused("broker_cannot_cancel")
+        identity = await self._entry_identity(signal)
+        if identity is None:
+            return refused("no_durable_entry")
+        if any(row["symbol"] == identity.symbol for row in await self.store.db.active_close_requests()):
+            return refused("close_active")
+        try:
+            orders = await self.broker.read_entry_group(identity.order_id)
+        except Exception as exc:
+            return refused(f"entry_group_unavailable:{type(exc).__name__}")
+        if confirm:
+            # A preview writes nothing; the confirming call re-reads and journals the evidence.
+            await self.store.observe_orders(orders)
+        parent = next((o for o in orders if o.order_id == identity.order_id), None)
+        if parent is None:
+            return refused(INCOMPLETE_OR_CHANGED_GROUP)
+        if refusal := resting_entry_refusal(identity, parent) or bracket_group_refusal(identity, orders):
+            return refused(refusal)
+        if not confirm:
+            return RestingCancelResult("preview", None, signal_id, identity.symbol, None)
+        claim = await self.repository.begin_cancel(
+            signal_id, identity, orders, None, now=self.clock(), reason="operator"
+        )
+        if not isinstance(claim, WorkItem):
+            return refused(claim)
+        await self._submit_cancel(claim, identity)
+        resolved = await self.repository.cancel_item(signal_id)
+        return RestingCancelResult("submitted", None, signal_id, identity.symbol, resolved.status if resolved else None)
 
     def _holding_request_id(self, signal_id: int, order_id: str) -> str:
         key = hashlib.sha256(f"{self.store.scope}/{signal_id}/{order_id}".encode()).hexdigest()[:32]
@@ -269,37 +511,19 @@ class TradeLifetimeService:
         orders = await self.broker.read_entry_group(identity.order_id)
         await self.store.observe_orders(orders)
         parent = next(o for o in orders if o.order_id == identity.order_id)
-        decision = assess_lifetime(lifetime, identity, parent, self.clock(), await self._sessions(lifetime, parent))
+        sessions = await self._sessions(lifetime, parent)
+        decision = assess_lifetime(lifetime, identity, parent, self.clock(), sessions)
         if decision.action == LifetimeAction.REVIEW:
             await self.repository.review(signal["id"], decision.reason, parent.model_dump(mode="json"))
         elif decision.action == LifetimeAction.CANCEL_ENTRY:
-            # Never cancel an incomplete or foreign group. Alpaca brackets contain two exits.
-            children = [o for o in orders if o.order_id != parent.order_id]
-            if (
-                parent.order_class != "bracket"
-                or len(children) != BRACKET_EXIT_COUNT
-                or any(
-                    o.symbol != identity.symbol
-                    or o.side == identity.side
-                    or Decimal(o.quantity) != Decimal(identity.quantity)
-                    or Decimal(o.filled_quantity) != 0
-                    or o.replaces
-                    or o.replaced_by
-                    for o in children
-                )
-            ):
-                await self.repository.review(signal["id"], "incomplete_or_changed_bracket_group", {})
+            if refusal := bracket_group_refusal(identity, orders):
+                await self.repository.review(signal["id"], refusal, {})
                 return
-            item = await self.repository.begin_cancel(
-                signal["id"], identity, orders, asdict(lifetime), now=self.clock()
+            claim = await self.repository.begin_cancel(
+                signal["id"], identity, orders, asdict(lifetime), now=self.clock(), sessions=sessions
             )
-            if item:
-                transport_error = None
-                try:
-                    await self.broker.cancel_order(identity.order_id)
-                except Exception as exc:
-                    transport_error = type(exc).__name__
-                await self._recover_cancel(item, owner_finished=True, transport_error=transport_error)
+            if isinstance(claim, WorkItem):
+                await self._submit_cancel(claim, identity)
         elif decision.action == LifetimeAction.CLOSE_POSITION and await self.broker.regular_session_open():
             children = [o for o in orders if o.order_id != identity.order_id]
             if signal.get("broker_exit_order_id") or any(

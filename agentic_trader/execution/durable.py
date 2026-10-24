@@ -33,6 +33,7 @@ class EventKind(StrEnum):
     ENTRY_CANCEL_REQUESTED = "entry_cancel_requested"
     ENTRY_CANCEL_RESOLVED = "entry_cancel_resolved"
     LIFETIME_REVIEW = "lifetime_review"
+    ENTRY_LIFETIME_MISSED = "entry_lifetime_missed"
     CLOSE_REQUESTED = "close_requested"
     CLOSE_RESOLVED = "close_resolved"
     ENTRY_QUEUED = "entry_queued"

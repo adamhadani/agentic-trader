@@ -12,14 +12,17 @@ from agentic_trader.constants import (
     DEFAULT_BACKTEST_LOOKBACK,
     DEFAULT_RESEARCH_SYMBOL,
     ExecutionMode,
+    SignalStatus,
     VolatilityRegime,
 )
+from agentic_trader.execution.durable import WorkStatus
 
 
 if TYPE_CHECKING:
     from agentic_trader.agent.macro import MacroIntelligenceReport
     from agentic_trader.agent.regime import RegimeSnapshot
     from agentic_trader.backtest.models import BacktestResult
+    from agentic_trader.execution.lifetimes import RestingCancelResult
     from agentic_trader.research.alpha.models import AlphaCandidate, RegistrySnapshot
 
 
@@ -340,6 +343,52 @@ class TelegramHtmlFormatter:
                 f"• <b>Contract:</b> {view.contract} ({view.direction})\n"
                 f"• <b>Error:</b> {html.escape(view.error_message or 'Unknown error')}"
             )
+
+    # Operator-cancel refusal tokens; anything else renders its token alone.
+    RESTING_CANCEL_REFUSALS: ClassVar[dict[str, str]] = {
+        "unknown_signal": "No signal #{id} exists.",
+        "filled_before_cancel": "Entry {symbol} (signal #{id}) filled before the cancel and opened with its protective exits.",
+        "not_resting": "Signal #{id} is not a resting entry (filled, closed or failed).",
+        "cancel_in_progress": "An entry cancel for signal #{id} already exists (cancelling or cancelled).",
+        "close_active": "A close is active for {symbol}.",
+        "incomplete_or_changed_bracket_group": "The bracket group for signal #{id} is incomplete or changed; inspect the broker orders.",
+        "broker_cannot_cancel": "This broker has no exact-order cancel.",
+        "no_durable_entry": "Signal #{id} has no durable desk entry for its broker order.",
+        "entry_group_unavailable": "The broker entry group for signal #{id} could not be read.",
+    }
+
+    @classmethod
+    def format_resting_cancel_html(cls, result: RestingCancelResult) -> str:
+        """One operator-cancel reply (Telegram and CLI); tokens and type names only."""
+        symbol = html.escape(result.symbol or "")
+        sid = result.signal_id
+        if result.status == "preview":
+            return (
+                f"<b>Cancel the resting entry {symbol} (signal #{sid})?</b>\n"
+                "One broker cancel is sent and never retried. The entry stays reserved until the broker "
+                "confirms no fills. If it partially fills before the cancel arrives, new entries halt until reviewed."
+            )
+        if result.status == "refused":
+            token = result.reason or "refused"
+            detail = cls.RESTING_CANCEL_REFUSALS.get(token.split(":", 1)[0])
+            if token == "not_resting" and result.signal_status == SignalStatus.PENDING:
+                detail = "Signal #{id} is not submitted yet (an untapped card); there is no broker entry to cancel."
+            explanation = f" {detail.format(id=sid, symbol=symbol)}" if detail else ""
+            if token == "cancel_in_progress" and result.work_status:
+                explanation += f" ({html.escape(result.work_status)})"
+            return f"❌ Entry cancel refused (<code>{html.escape(token)}</code>).{explanation} Nothing was cancelled."
+        if result.work_status == WorkStatus.ACCEPTED:
+            return f"✅ Entry {symbol} (signal #{sid}) cancelled. The broker confirms no fills."
+        if result.work_status == WorkStatus.REJECTED:
+            return (
+                f"Entry {symbol} (signal #{sid}) filled before the cancel arrived; the position is open and protected."
+            )
+        if result.work_status == WorkStatus.UNKNOWN:
+            return (
+                f"⚠️ Cancel for {symbol} (signal #{sid}) is unconfirmed. New risk halted; inspect exact broker "
+                "fills and protective orders. No automatic retry."
+            )
+        return f"Cancel for {symbol} (signal #{sid}) sent; awaiting broker confirmation."
 
     @staticmethod
     def format_manual_close_html(view: ManualCloseResultView) -> str:

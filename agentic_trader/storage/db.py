@@ -445,7 +445,9 @@ class SignalDatabase:
         """Check if an active or recent signal was emitted for this contract and strategy within `hours`.
 
         A FAILED card does not count: the system, not the operator, failed to place it
-        (e.g. a preflight refusal), so the setup may be carded again. Pending, dismissed,
+        (e.g. a preflight refusal), or its entry was cancelled unfilled after its session
+        (the native session-close bound, or an operator cancel), so the setup may be carded
+        again, typically next session; that is intended. Pending, dismissed,
         expired and executed cards still suppress repeats; a FAILED card still spends the
         session's card budget (``signals_since``).
         """

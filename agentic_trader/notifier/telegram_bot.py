@@ -47,6 +47,7 @@ from agentic_trader.constants import (
 )
 from agentic_trader.execution.card_evidence import format_evidence_lines, parse_card_evidence
 from agentic_trader.execution.freshness import ExecutionReply
+from agentic_trader.execution.lifetimes import RestingCancelResult, parse_signal_id
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.transport import (
     ObservedPollingRequest,
@@ -230,6 +231,9 @@ def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | No
     return NEWS_LABEL + (html.escape(text, quote=False) if markup else text) + "\n"
 
 
+ENTRY_SESSION_BOUND_LINE = "Unfilled entry is cancelled at the session close."
+
+
 def format_alert_card(
     eval_res: LLMTradeEvaluation,
     strategy: str,
@@ -244,6 +248,7 @@ def format_alert_card(
     card_evidence: dict[str, Any] | None = None,
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
+    entry_session_bound: bool = False,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
@@ -262,6 +267,7 @@ def format_alert_card(
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
     valid_until_text = _valid_until_text(valid_until, issued_at)
     valid_until_line = f"• <b>Valid until:</b> {valid_until_text}\n" if valid_until_text else ""
+    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -416,6 +422,7 @@ def format_terminal_card(
     card_evidence: dict[str, Any] | None = None,
     issued_at: str | None = None,
     book_sizing: dict[str, Any] | None = None,
+    entry_session_bound: bool = False,
 ) -> str:
     """ASCII/plain text formatted card for terminal display.
 
@@ -432,6 +439,7 @@ def format_terminal_card(
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
     valid_until_text = _valid_until_text(valid_until, issued_at)
     valid_until_line = f"• Valid until:      {valid_until_text}\n" if valid_until_text else ""
+    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -602,6 +610,7 @@ class TelegramNotifier:
         positions_provider: Callable[[], Awaitable[str]] | None = None,
         close_handler: Callable[[int, float | None], Awaitable[str]] | None = None,
         flatten_handler: Callable[[bool], Awaitable[str]] | None = None,
+        cancel_handler: Callable[[int, bool], Awaitable[RestingCancelResult]] | None = None,
         execute_handler: Callable[..., Awaitable[ExecutionReply]] | None = None,
         reevaluate_handler: Callable[[int], Awaitable[ExecutionReply]] | None = None,
         symbol_scan_handler: Callable[[str], Awaitable[ExecutionReply]] | None = None,
@@ -637,6 +646,7 @@ class TelegramNotifier:
         self.positions_provider = positions_provider
         self.close_handler = close_handler
         self.flatten_handler = flatten_handler
+        self.cancel_handler = cancel_handler
         self.execute_handler = execute_handler
         self.reevaluate_handler = reevaluate_handler
         self.symbol_scan_handler = symbol_scan_handler
@@ -797,6 +807,7 @@ class TelegramNotifier:
                 BotCommand("backtest", "Offline backtest simulation"),
                 BotCommand("scan", "Universe scan, or /scan SYMBOL for one name"),
                 BotCommand("close", "Close one position without halting trading"),
+                BotCommand("cancel", "Preview, then cancel one resting entry order"),
                 BotCommand("flatten", "Preview or close all positions without a trading halt"),
                 BotCommand("panic", "EMERGENCY: cancel all orders, liquidate positions & halt"),
                 BotCommand("resume", "Resume trading operations after panic halt"),
@@ -854,6 +865,7 @@ class TelegramNotifier:
             self.app.add_handler(CommandHandler("scan", self._observe_handler(self.handle_scan_command)))
             self.app.add_handler(CommandHandler("positions", self._observe_handler(self.handle_positions_command)))
             self.app.add_handler(CommandHandler("close", self._observe_handler(self.handle_close_command)))
+            self.app.add_handler(CommandHandler("cancel", self._observe_handler(self.handle_cancel_command)))
             self.app.add_handler(CommandHandler("flatten", self._observe_handler(self.handle_flatten_command)))
             self.app.add_handler(CommandHandler("perf", self._observe_handler(self.handle_perf_command)))
             self.app.add_handler(CommandHandler("macro", self._observe_handler(self.handle_macro_command)))
@@ -946,6 +958,7 @@ class TelegramNotifier:
             "• /gex [sym] - View market maker gamma exposure (GEX), walls, and gamma flip (e.g. <code>/gex SPY</code>)\n"
             "• /backtest [sym] [lookback] - Run an offline backtest (e.g. <code>/backtest SPY 1y</code>)\n"
             "• /close &lt;id&gt; - Request broker closure; accounting waits for fills\n"
+            "• /cancel &lt;id&gt; - Preview, then cancel one unfilled resting entry (one broker cancel, never retried)\n"
             "• /scan - Trigger an on-demand quantitative scan across universe\n"
             "• /scan SYMBOL - Scan one configured contract or liquid US equity (e.g. <code>/scan XOM</code>)\n"
             "• /flatten [confirm] - Preview/close all broker positions; halt state unchanged\n"
@@ -1084,6 +1097,36 @@ class TelegramNotifier:
             await self.safe_reply_text(update.message, resp)
         else:
             await update.message.reply_text("Close handler not attached.")
+
+    async def handle_cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Preview an operator cancel; only the "Cancel entry" button sends the broker cancel."""
+        if not self._is_authorized(update) or not update.message:
+            return
+        args = context.args or []
+        signal_id = parse_signal_id(args[0]) if len(args) == 1 else None
+        if signal_id is None:
+            await update.message.reply_text(
+                "Usage: <code>/cancel &lt;signal_id&gt;</code>\nPreviews one resting entry; the confirm button cancels it.",
+                parse_mode="HTML",
+            )
+            return
+        if self.cancel_handler is None:
+            await update.message.reply_text("Cancel handler not attached.")
+            return
+        result = await self.cancel_handler(signal_id, False)
+        text = TelegramHtmlFormatter.format_resting_cancel_html(result)
+        if result.status != "preview":
+            await update.message.reply_text(text, parse_mode="HTML")
+            return
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Cancel entry", callback_data=f"cancelentry_confirm:{signal_id}"),
+                    InlineKeyboardButton("Keep", callback_data="cancelentry_keep"),
+                ]
+            ]
+        )
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
     async def handle_flatten_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -1343,6 +1386,24 @@ class TelegramNotifier:
                     await msg.reply_text(reply.text, parse_mode="HTML")
             else:
                 await query.answer("Re-evaluate handler unavailable.", show_alert=True)
+        elif data.startswith("cancelentry_confirm:"):
+            cancel_id = parse_signal_id(data.removeprefix("cancelentry_confirm:"))
+            if cancel_id is None:
+                await query.answer("Invalid entry cancel button; nothing cancelled.", show_alert=True)
+                return
+            if self.cancel_handler is None:
+                await query.answer("Cancel handler unavailable; nothing cancelled.", show_alert=True)
+                return
+            await query.answer("Cancelling entry…")
+            await _safe_clear_markup()
+            result = await self.cancel_handler(cancel_id, True)
+            if msg and hasattr(msg, "reply_text"):
+                await msg.reply_text(TelegramHtmlFormatter.format_resting_cancel_html(result), parse_mode="HTML")
+        elif data == "cancelentry_keep":
+            await query.answer("Entry kept")
+            await _safe_clear_markup()
+            if msg and hasattr(msg, "reply_text"):
+                await msg.reply_text("Entry kept; nothing was cancelled.")
         elif data == "panic_confirm":
             await query.answer("Executing emergency kill switch...")
             await _safe_clear_markup()
@@ -1379,6 +1440,7 @@ class TelegramNotifier:
         drift: dict[str, Any] | None = None,
         card_evidence: dict[str, Any] | None = None,
         book_sizing: dict[str, Any] | None = None,
+        entry_session_bound: bool = False,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
         # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
@@ -1402,6 +1464,7 @@ class TelegramNotifier:
                 first_issued_at=first_issued_at,
                 card_evidence=card_evidence,
                 book_sizing=book_sizing,
+                entry_session_bound=entry_session_bound,
                 issued_at=issued_at,
             )
         )
@@ -1426,6 +1489,7 @@ class TelegramNotifier:
             drift=drift,
             card_evidence=card_evidence,
             book_sizing=book_sizing,
+            entry_session_bound=entry_session_bound,
             issued_at=issued_at,
         )
 
