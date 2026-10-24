@@ -40,11 +40,12 @@ from agentic_trader.agent.insider_watch import (
 )
 from agentic_trader.agent.macro import MacroInput
 from agentic_trader.agent.regime import RegimeUnavailable
-from agentic_trader.constants import AssetClass, SignalStatus
+from agentic_trader.constants import AssetClass, ExecutionMode, SignalStatus
 from agentic_trader.data.corporate_actions import CorporateAction, CorporateActionKind, CorporateActionsPage
 from agentic_trader.data.edgar_form4 import IndexRow, select_form4
 from agentic_trader.data.insider_capture import WatchHistory
 from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
+from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY
 from agentic_trader.market.session import ET_TZ, DeterministicCalendarProvider, MarketHolidayCalendar
 from agentic_trader.notifier.telegram_bot import (
     WATCH_STUDY_LINE,
@@ -528,6 +529,21 @@ async def test_rf4_a_watch_card_is_sent_beside_pead_and_native_with_independent_
     assert await _event_keys(temp_db, EventKind.INSIDER_WATCH_DECISION) == [
         f"insider_watch_decision/{summary['scan_id']}"
     ]
+
+
+async def test_a_watch_card_never_carries_the_native_entry_lifetime_marker(
+    watch_desk, temp_db, app_config, monkeypatch
+):
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    app_config.execution_mode = ExecutionMode.ALPACA
+    app_config.execution.native_entry_lifetime = "session"
+
+    await suggestion_scan(watch_desk)
+
+    provenance = {s["contract"]: s["decision_provenance"] for s in await _signals(temp_db)}
+    assert NATIVE_ENTRY_LIFETIME_KEY in provenance["DDD"]  # the native card in the same scan is bounded
+    # The watch card's lifetime is its own alpha_policy (the cube bracket's session-count exit).
+    assert NATIVE_ENTRY_LIFETIME_KEY not in provenance["WTCH"]
 
 
 async def test_the_pead_decision_keeps_its_journal_key(watch_desk, temp_db):

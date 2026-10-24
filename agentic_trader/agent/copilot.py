@@ -1734,11 +1734,11 @@ class TradingCopilot:
                     valid_until = session_closes[(candidate.contract, extend)]
                     validity = {"valid_until": valid_until} if valid_until else {}
                     # Only a plain native card the broker can execute is session-bounded: alpha and
-                    # catalog cards (drift, probes) are policy-locked and carry their own
+                    # catalog cards (drift, insider watch, probes) are policy-locked and carry their own
                     # `alpha_policy.lifetime`; a futures card under alpaca is never submitted.
                     lifetime_marker = (
                         None
-                        if is_drift or candidate.alpha_policy or candidate.alpha_version
+                        if is_catalog or candidate.alpha_policy or candidate.alpha_version
                         else native_entry_lifetime_marker(self.config, str(eval_res.asset_class))
                     )
                     lifetime = {NATIVE_ENTRY_LIFETIME_KEY: lifetime_marker} if lifetime_marker else {}
