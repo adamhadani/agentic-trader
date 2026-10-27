@@ -1,4 +1,9 @@
-"""The scan journals an LLM veto as a fixed outcome, with the verdict and the card id."""
+"""The scan journals an LLM veto as a fixed outcome, with the verdict and the card id.
+
+The journaled ``llm`` block and ``decision_provenance["llm_verdict"]`` carry the nine keys of the evaluator's
+verdict: the five decision keys, then the gate's identity (``model``, ``prompt_sha256``) and its failure
+(``error``, ``malformed``).
+"""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,14 +15,36 @@ from tests.agent.test_scan_budget import budget_desk, evaluation  # noqa: F401  
 from tests.agent.test_scan_shadow_ranker import shadow_desk  # noqa: F401  (fixture)
 
 
-def verdict(approved: bool, *, stop=98.0, target=104.0, applied=True, reason=None) -> dict:
+PROMPT_SHA256 = "ab" * 32
+
+
+def verdict(
+    approved: bool,
+    *,
+    stop=98.0,
+    target=104.0,
+    applied=True,
+    reason=None,
+    model="gpt-5.6-sol",
+    error=None,
+    malformed=False,
+) -> dict:
     return {
         "approved": approved,
         "rejection_reason": reason,
         "stop_loss": stop,
         "take_profit": target,
         "applied": applied,
+        "model": model,
+        "prompt_sha256": PROMPT_SHA256,
+        "error": error,
+        "malformed": malformed,
     }
+
+
+def error_verdict(error: str, *, applied=True) -> dict:
+    """The evaluator's verdict for a gate error: no LLM bracket, no model, the error's type name."""
+    return verdict(False, stop=None, target=None, applied=applied, model=None, error=error)
 
 
 def with_verdict(cand, use_llm, **fields):
@@ -135,6 +162,27 @@ async def test_malformed_verdict_fields_are_coerced_not_raised(shadow_desk, temp
         "stop_loss": None,
         "take_profit": 104.0,
         "applied": True,
+        "model": "gpt-5.6-sol",
+        "prompt_sha256": PROMPT_SHA256,
+        "error": None,
+        "malformed": False,
     }
+    [signal] = await temp_db.get_recent_signals(limit=10)
+    assert signal["decision_provenance"]["llm_verdict"] == sent["llm"]
+
+
+async def test_a_verdict_recorded_before_the_identity_keys_journals_all_nine(shadow_desk, temp_db):  # noqa: F811
+    """An older five-key verdict (or a test double's) gains null identity, no error and ``malformed`` false."""
+    five_keys = {"approved": True, "rejection_reason": None, "stop_loss": 98.0, "take_profit": 104.0, "applied": True}
+
+    async def evaluate(cand, use_llm=False, **kwargs):
+        return with_verdict(cand, use_llm, llm_verdict={**five_keys} if use_llm else None)
+
+    shadow_desk.evaluator.evaluate_candidate = AsyncMock(side_effect=evaluate)
+    await shadow_desk.run_scan(use_llm=True, dry_run=False, budget=ScanBudget.FULL, shadow_evidence=True)
+
+    [event] = await _ranked(temp_db)
+    sent = next(c for c in event["payload"]["candidates"] if c["outcome"] == "sent")
+    assert sent["llm"] == {**five_keys, "model": None, "prompt_sha256": None, "error": None, "malformed": False}
     [signal] = await temp_db.get_recent_signals(limit=10)
     assert signal["decision_provenance"]["llm_verdict"] == sent["llm"]

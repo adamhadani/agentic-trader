@@ -45,6 +45,7 @@ from tests.agent.test_card_freshness_tap import original_evaluation, session_inf
 from tests.agent.test_insider_watch import watch_desk  # noqa: F401  (fixture)
 from tests.agent.test_scan_budget import budget_desk  # noqa: F401  (fixture)
 from tests.agent.test_scan_drift import drift_desk, suggestion_scan  # noqa: F401  (fixture + helper)
+from tests.agent.test_scan_llm_unavailable import Gate, install
 from tests.calendar_doubles import clear_check, union_double
 
 
@@ -237,6 +238,33 @@ async def test_suggestion_scan_marks_native_card(drift_desk, temp_db, app_config
     assert card["auto_entry"] == "placing"
     # The durable payload is deliverable by the real Telegram notifier signature.
     inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **card)
+
+
+async def test_an_llm_unavailable_candidate_is_never_auto_entered_and_an_approved_card_still_is(
+    drift_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    monkeypatch,
+):
+    """LLM gate hygiene, review focus 3: a native candidate the gate could not evaluate is never recorded, so the
+    sweep cannot select it; an approved native card of the same scan is still marked and entered."""
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    app_config.scan.max_cards_per_scan = 2  # DDD is carded first; CCC, the next native rank, then errors
+    install(drift_desk, Gate(CCC="Timeout"))
+
+    await suggestion_scan(drift_desk)
+
+    recorded = await _recorded(temp_db)
+    assert sorted(recorded) == ["DDD", "WINR"]
+    provenance, card = recorded["DDD"]
+    assert provenance[AUTO_ENTRY_KEY] == {"mode": "paper"} and card["auto_entry"] == "placing"
+    [ddd] = [s["id"] for s in await temp_db.get_recent_signals(limit=10) if s["contract"] == "DDD"]
+    execute = stub_execute(drift_desk)
+
+    attempts = await drift_desk.auto_enter_pending()
+
+    assert [a.signal_id for a in attempts] == [ddd]
+    assert [call.args for call in execute.await_args_list] == [(ddd, None)]
 
 
 def _swing(desk):

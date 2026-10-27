@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 __all__ = [
     "LLM_KEY_MISSING",
+    "LLM_UNAVAILABLE_EARLIER_IN_SCAN",
     "MALFORMED_VETO_REASON",
     "VETO_WITHOUT_REASON",
     "GateReply",
@@ -32,6 +33,8 @@ MALFORMED_VETO_REASON = "malformed veto"
 VETO_WITHOUT_REASON = "veto without a reason"
 # The error type name of an LLM scan with no LLM API key configured (not an exception: nothing is called).
 LLM_KEY_MISSING = "LLMKeyMissing"
+# The error type name of a gate call the scan's circuit breaker skipped: an earlier call in the same scan errored.
+LLM_UNAVAILABLE_EARLIER_IN_SCAN = "LLMUnavailableEarlierInScan"
 
 
 class GateReplyFields(BaseModel):

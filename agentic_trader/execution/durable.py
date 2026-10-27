@@ -112,6 +112,7 @@ class RankedOutcome(StrEnum):
 
     SENT = "sent"
     LLM_VETOED = "llm_vetoed"
+    LLM_UNAVAILABLE = "llm_unavailable"  # the LLM gate errored or its breaker was open: a native card withheld
     CARD_POLICY_WITHHELD = "card_policy_withheld"
     BOOK_SIZING_BLOCKED = "book_sizing_blocked"  # enforce: the scaled default tier fell below the minimum size
     JOURNAL_ONLY = "journal_only"  # a journal-only scan ranks and journals; it sends no card

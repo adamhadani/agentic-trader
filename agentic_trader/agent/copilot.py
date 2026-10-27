@@ -33,6 +33,7 @@ from agentic_trader.agent.earnings import (
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.insider_watch import CARDED_THIS_SCAN, InsiderWatchSource, build_insider_watch_source
+from agentic_trader.agent.llm_gate import LLM_UNAVAILABLE_EARLIER_IN_SCAN
 from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.news_context import NewsContextService, build_news_context_service, unavailable_block
 from agentic_trader.agent.regime import (
@@ -220,6 +221,9 @@ DRIFT_PREPARE_TIMEOUT_SECONDS = 60.0
 # under card_policy.validity == "next_session_close", where a card can outlive the duplicate window.
 LIVE_CARD_PENDING = "live card pending"
 BROAD_INDEX_REASON = "broad index ETF: excluded from native cards (scan.broad_index_etfs)"
+# A native candidate the LLM gate could not evaluate (``RankedOutcome.LLM_UNAVAILABLE``): its runner-up reason is
+# this, then the error's type name in parentheses. The digest counts it apart and never lists it under "top:".
+LLM_UNAVAILABLE_REASON = "LLM unavailable"
 # `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
@@ -788,8 +792,12 @@ class TradingCopilot:
     def _llm_block(evaluation: Any) -> dict[str, Any] | None:
         """The evaluation's recorded LLM verdict with finite prices, or None when the LLM did not decide.
 
-        ``record_signal`` encodes provenance with ``allow_nan=False``; an evaluation object
-        without the attribute (older shapes, test doubles) has no verdict.
+        Always the verdict's nine keys: the decision (``approved``, ``rejection_reason``, ``stop_loss``,
+        ``take_profit``, ``applied``), the gate's identity (``model``, ``prompt_sha256``) and its failure
+        (``error``, a type name; ``malformed``). A verdict without the last four (recorded before them, or a
+        test double) gets null identity, no error and ``malformed`` false. ``record_signal`` encodes
+        provenance with ``allow_nan=False``; an evaluation object without the attribute (older shapes, test
+        doubles) has no verdict.
         """
         verdict = getattr(evaluation, "llm_verdict", None)
         if not isinstance(verdict, dict):
@@ -802,13 +810,19 @@ class TradingCopilot:
             except TypeError, ValueError:
                 return None
 
-        reason = verdict.get("rejection_reason")
+        def text(value: Any) -> str | None:
+            return None if value is None else str(value)
+
         return {
             "approved": bool(verdict.get("approved")),
-            "rejection_reason": None if reason is None else str(reason),
+            "rejection_reason": text(verdict.get("rejection_reason")),
             "stop_loss": price(verdict.get("stop_loss")),
             "take_profit": price(verdict.get("take_profit")),
             "applied": bool(verdict.get("applied")),
+            "model": text(verdict.get("model")),
+            "prompt_sha256": text(verdict.get("prompt_sha256")),
+            "error": text(verdict.get("error")),
+            "malformed": bool(verdict.get("malformed")),
         }
 
     async def run_scan(
@@ -861,6 +875,12 @@ class TradingCopilot:
         nothing: no shadow ranker, book preparation, ``card_stats`` read, card policy, news, budget read,
         LLM, ``record_signal`` or outbox item, and no PEAD drift. It still observes SCAN readiness and
         monitors positions. ``ScanBudget.NONE`` still means no limits and still sends.
+
+        The LLM gate fails closed (docs/superpowers/specs/2026-10-27-llm-gate-hygiene-design.md): a native
+        candidate whose gate errored is journaled ``llm_unavailable`` and never recorded or notified. The first
+        error opens this scan's breaker: every later candidate that would call the gate gets the error result
+        without a call (``LLMUnavailableEarlierInScan``), still spending the LLM budget; a catalog card is sent
+        as labelled commentary. The summary counts ``llm_vetoed`` and ``llm_unavailable`` for the digest.
 
         ``dedup_exempt_setups`` skips the recent-duplicate rule for exactly those
         ``(contract, strategy, timeframe, alpha_version)`` setups: an operator's explicit
@@ -1573,6 +1593,12 @@ class TradingCopilot:
                     for group in self._scan_groups(row["contract"], dynamic=self._counts_as_dynamic(row)):
                         groups_used[group] = groups_used.get(group, 0) + 1
             llm_budget = cfg.max_llm_evaluations_per_scan
+            # LLM CIRCUIT BREAKER (this scan only; the next scan starts closed): after the first gate error, native
+            # or catalog, every later candidate that would call the gate gets the error result without a call
+            # (``LLMUnavailableEarlierInScan``), so an outage costs one ``llm_gate.timeout_seconds``. A skipped
+            # evaluation spends the LLM budget as a call would: the candidates it withholds are exactly those a
+            # working gate would have evaluated.
+            llm_breaker: str | None = None
 
             def card_groups(contract: str, *, drift: bool) -> set[str]:
                 """Groups a card on this contract counts toward. A catalog (``drift``) card is
@@ -1676,19 +1702,38 @@ class TradingCopilot:
                         current_equity=float(account_risk.equity) if account_risk else None,
                         corporate_actions=corporate_lookup,
                         news_context=news_by_rank[rank - 1],
+                        skip_llm_reason=llm_breaker,
                     )
 
-                    llm_by_rank[rank - 1] = self._llm_block(eval_res)
+                    verdict = llm_by_rank[rank - 1] = self._llm_block(eval_res)
+                    # Keyed on the presence of an error, never on its type name (a deadline is named by
+                    # whichever timer fires first).
+                    llm_error = verdict["error"] if verdict is not None else None
+                    if llm_error is not None and llm_breaker is None:
+                        llm_breaker = LLM_UNAVAILABLE_EARLIER_IN_SCAN
+                        logger.warning(
+                            "LLM gate unavailable (%s); no further LLM calls in this scan",
+                            llm_error,
+                            extra={
+                                "event": "llm_gate_breaker_open",
+                                "contract": candidate.contract,
+                                "error_type": llm_error,
+                                "rank": rank,
+                            },
+                        )
                     if not eval_res.approved:
-                        verdict = llm_by_rank[rank - 1]
-                        vetoed = bool(verdict and verdict["applied"] and not verdict["approved"])
-                        outcomes[rank - 1] = (
-                            RankedOutcome.LLM_VETOED if vetoed else f"rejected: {eval_res.rejection_reason}"
-                        )
-                        label = "LLM vetoed" if vetoed else "rejected"
-                        summary["runners_up"].append(
-                            self._runner_up(candidate, f"{label}: {eval_res.rejection_reason}")
-                        )
+                        if llm_error is not None:
+                            # Fail closed: a native card the gate could not evaluate is withheld, with no
+                            # signal and no notification (so never auto-entered). A catalog card on error stays
+                            # approved commentary and is sent below with its unavailable label.
+                            outcomes[rank - 1] = RankedOutcome.LLM_UNAVAILABLE
+                            runner_reason = f"{LLM_UNAVAILABLE_REASON} ({llm_error})"
+                        elif verdict is not None and verdict["applied"] and not verdict["approved"]:
+                            outcomes[rank - 1] = RankedOutcome.LLM_VETOED
+                            runner_reason = f"LLM vetoed: {eval_res.rejection_reason}"
+                        else:
+                            outcomes[rank - 1] = runner_reason = f"rejected: {eval_res.rejection_reason}"
+                        summary["runners_up"].append(self._runner_up(candidate, runner_reason))
                         logger.info(
                             "Candidate rejected by risk engine: %s",
                             eval_res.rejection_reason,
@@ -1965,6 +2010,9 @@ class TradingCopilot:
 
             summary["candidates"] = total_candidates
             summary["sent"] = total_alerts
+            # The digest's LLM lines: native candidates the gate vetoed, and those it could not evaluate.
+            summary["llm_vetoed"] = sum(1 for outcome in outcomes if outcome == RankedOutcome.LLM_VETOED)
+            summary["llm_unavailable"] = sum(1 for outcome in outcomes if outcome == RankedOutcome.LLM_UNAVAILABLE)
             summary["duration_seconds"] = round(time.monotonic() - started, 3)
             self._record_scan_summary(summary)
             self.metrics.observe_histogram(
@@ -5095,9 +5143,17 @@ class TradingCopilot:
                 }
             )
             durations = ", ".join(f"{s.get('duration_seconds', 0):.0f}s" for s in scans)
-            # A listed index is scanned every session: counted apart, so it never fills the "top:" slots.
-            actionable = [r for r in runners if r.get("reason") != BROAD_INDEX_REASON]
-            index_excluded = len(runners) - len(actionable)
+            llm_vetoed = sum(s.get("llm_vetoed", 0) for s in scans)
+            llm_unavailable = sum(s.get("llm_unavailable", 0) for s in scans)
+            # A listed index is scanned every session: counted apart, so it never fills the "top:" slots. Nor
+            # does a candidate the LLM could not evaluate: the "LLM unavailable" count below reports it.
+            index_excluded = sum(1 for r in runners if r.get("reason") == BROAD_INDEX_REASON)
+            actionable = [
+                r
+                for r in runners
+                if r.get("reason") != BROAD_INDEX_REASON
+                and not str(r.get("reason")).startswith(f"{LLM_UNAVAILABLE_REASON} (")
+            ]
             top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in actionable[:5])
             text = (
                 f"📋 Scan digest {et_date}: {len(scans)} scan(s), {scanned} scanned, "
@@ -5107,7 +5163,8 @@ class TradingCopilot:
                 + (f"; {index_excluded} broad-index ETF(s) excluded" if index_excluded else "")
                 + ". "
                 f"Fetch failures: {len(failed)}" + (f" ({', '.join(failed[:8])})" if failed else "") + "; "
-                f"coverage excluded: {len(excluded)}; scan durations: {durations}."
+                f"coverage excluded: {len(excluded)}; scan durations: {durations}. "
+                f"LLM vetoes: {llm_vetoed}; LLM unavailable: {llm_unavailable}."
             )
             dynamic = [s["dynamic"] for s in scans if s.get("dynamic")]
             if dynamic:
