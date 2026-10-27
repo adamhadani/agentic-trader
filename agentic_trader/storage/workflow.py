@@ -29,6 +29,7 @@ from agentic_trader.execution.capacity import assess_entry_capacity
 from agentic_trader.execution.durable import (
     ENTRY_BLOCKING,
     LEDGER_LOCK,
+    EntryTrigger,
     EventKind,
     NotificationKind,
     OrderObservation,
@@ -361,7 +362,22 @@ class WorkflowStore:
             raise ValueError("Observed account equity is nonpositive; new entries blocked")
         return risk
 
-    async def enqueue_entry(self, request: OrderRequest, config: AppConfig) -> tuple[WorkItem | None, str]:
+    async def entry_trigger_of(self, session: AsyncSession, signal_id: int) -> EntryTrigger | None:
+        """The trigger of a signal's entry work item; None without one, a tap when it predates the key."""
+        raw = await session.scalar(
+            select(WorkItemRecord.payload).where(
+                WorkItemRecord.scope == self.scope,
+                WorkItemRecord.kind == WorkKind.ENTRY,
+                WorkItemRecord.dedup_key == str(signal_id),
+            )
+        )
+        if raw is None:
+            return None
+        return EntryTrigger(json.loads(raw).get("entry_trigger", EntryTrigger.TAP))
+
+    async def enqueue_entry(
+        self, request: OrderRequest, config: AppConfig, *, trigger: EntryTrigger = EntryTrigger.TAP
+    ) -> tuple[WorkItem | None, str]:
 
         async with self.db.session_factory() as session, session.begin():
             await self.lock(session)
@@ -442,7 +458,7 @@ class WorkflowStore:
             command_id = f"entry-{uuid4().hex}"
             request = request.model_copy(update={"client_order_id": command_id})
             now = datetime.now(UTC)
-            payload = request.model_dump(mode="json")
+            payload = {**request.model_dump(mode="json"), "entry_trigger": str(trigger)}
             row = WorkItemRecord(
                 id=command_id,
                 scope=self.scope,

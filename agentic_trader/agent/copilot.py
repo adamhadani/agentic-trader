@@ -85,6 +85,7 @@ from agentic_trader.execution.card_evidence import CardEvidence, CardStatsReposi
 from agentic_trader.execution.card_policy import CardPolicyDecision, decide, journal_block
 from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import (
+    EntryTrigger,
     EventKind,
     OrderObservation,
     RankedOutcome,
@@ -3369,7 +3370,9 @@ class TradingCopilot:
         )
         return TelegramHtmlFormatter.format_manual_close_html(view)
 
-    async def execute_signal_by_id(self, signal_id: int, quantity: float | None = None) -> ExecutionReply:
+    async def execute_signal_by_id(
+        self, signal_id: int, quantity: float | None = None, *, trigger: EntryTrigger = EntryTrigger.TAP
+    ) -> ExecutionReply:
         """
         Execute an approved trade setup by signal ID.
         Submits bracket orders to the active broker and registers the position in the database.
@@ -3444,11 +3447,17 @@ class TradingCopilot:
                 contract_info.tick_size if contract_info else (0.01 if asset_class == AssetClass.EQUITY else 0.25)
             )
             refusal = await self._assess_card_tap(
-                sig, req, ticker=ticker, asset_class=str(asset_class), multiplier=multiplier, tick_size=tick_size
+                sig,
+                req,
+                ticker=ticker,
+                asset_class=str(asset_class),
+                multiplier=multiplier,
+                tick_size=tick_size,
+                trigger=trigger,
             )
             if refusal is not None:
                 return refusal
-        item, reason = await self.entry_service.authorize(req)
+        item, reason = await self.entry_service.authorize(req, trigger=trigger)
         if item is None:
             return ExecutionReply(False, f"⚠️ <b>Execution Rejected:</b> {html.escape(reason)}")
         if item.status in (WorkStatus.QUEUED, WorkStatus.CHECKING):
@@ -3740,6 +3749,7 @@ class TradingCopilot:
         applied: bool,
         policy_locked: bool,
         new_signal_id: int | None = None,
+        trigger: EntryTrigger = EntryTrigger.TAP,
     ) -> None:
         """Journal the assessment after its state transition, so the evidence matches the final state.
 
@@ -3759,6 +3769,7 @@ class TradingCopilot:
             "applied": applied,
             "new_signal_id": new_signal_id,
             "policy_locked": policy_locked,
+            "entry_trigger": str(trigger),
         }
         logger.info(
             "Card #%d tap assessed: %s (%s)",
@@ -3931,6 +3942,7 @@ class TradingCopilot:
         asset_class: str,
         multiplier: float,
         tick_size: float,
+        trigger: EntryTrigger = EntryTrigger.TAP,
     ) -> ExecutionReply | None:
         """Re-judge a PENDING card at tap time; None means ``EXECUTE`` (continue into authorization).
 
@@ -3956,7 +3968,9 @@ class TradingCopilot:
             unavailable = CardAssessment(
                 CardOutcome.UNAVAILABLE, reason, None, (tapped_at - issued_at).total_seconds(), price
             )
-            await self._journal_card_tap(signal_id, unavailable, tapped_at, applied=False, policy_locked=policy_locked)
+            await self._journal_card_tap(
+                signal_id, unavailable, tapped_at, applied=False, policy_locked=policy_locked, trigger=trigger
+            )
             return ExecutionReply(False, reply_text, retryable=True)
 
         checks_unavailable = "⚠️ Checks unavailable; try again shortly."
@@ -4016,7 +4030,9 @@ class TradingCopilot:
         )
         if assessment.outcome == CardOutcome.WAITING:
             # Nothing changes: the card stays PENDING and the button is restored for a later tap.
-            await self._journal_card_tap(signal_id, assessment, tapped_at, applied=False, policy_locked=policy_locked)
+            await self._journal_card_tap(
+                signal_id, assessment, tapped_at, applied=False, policy_locked=policy_locked, trigger=trigger
+            )
             return ExecutionReply(
                 False, f"⏳ {html.escape(assessment.reason)} {self._next_open_sentence(info)}", retryable=True
             )
@@ -4049,6 +4065,7 @@ class TradingCopilot:
                 applied=applied,
                 policy_locked=policy_locked,
                 new_signal_id=new_signal_id,
+                trigger=trigger,
             )
 
         if assessment.outcome == CardOutcome.EXECUTE:

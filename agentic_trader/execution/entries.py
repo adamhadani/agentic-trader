@@ -21,7 +21,7 @@ from agentic_trader.config import AppConfig
 from agentic_trader.constants import SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import authorization_expiry, reservation_rejection
 from agentic_trader.execution.capacity import assess_entry_capacity
-from agentic_trader.execution.durable import WorkItem, WorkKind, WorkStatus
+from agentic_trader.execution.durable import EntryTrigger, WorkItem, WorkKind, WorkStatus
 from agentic_trader.risk import requires_account_risk
 from agentic_trader.storage.workflow import WorkflowStore
 
@@ -47,8 +47,10 @@ class EntryExecutionService:
         self.executor, self.macro_check = executor, macro_check
         self.ledger = ledger
 
-    async def authorize(self, request: OrderRequest) -> tuple[WorkItem | None, str]:
-        item, reason = await self.store.enqueue_entry(request, self.config)
+    async def authorize(
+        self, request: OrderRequest, *, trigger: EntryTrigger = EntryTrigger.TAP
+    ) -> tuple[WorkItem | None, str]:
+        item, reason = await self.store.enqueue_entry(request, self.config, trigger=trigger)
         if item and item.status == WorkStatus.QUEUED:
             # CLI/Telegram may help drain the same queue as the daemon. Durable
             # fencing, not a process-local lock, grants submission authority.

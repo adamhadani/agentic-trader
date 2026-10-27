@@ -677,6 +677,8 @@ class ExecutionConfig(BaseModel):
     card_freshness: CardFreshnessConfig = Field(default_factory=CardFreshnessConfig)
     # "session": new native cards record a one-session entry lifetime (Alpaca only); "off": untimed GTC.
     native_entry_lifetime: Literal["off", "session"] = "off"
+    # "paper": native suggestion-scan cards are entered automatically on the Alpaca paper account; "off": tap only.
+    auto_entry: Literal["off", "paper"] = "off"
 
     broker_request_timeout_seconds: float = Field(default=10, gt=0, le=60)
     stop_replace_timeout_seconds: float = Field(default=10, gt=0, le=60)
@@ -1275,4 +1277,12 @@ def load_config(
         alpaca_data_feed=alpaca_data_feed,
         alpaca_paper=alpaca_paper,
     )
+    if config.execution.auto_entry == "paper":
+        if execution_mode == ExecutionMode.ALPACA and not alpaca_paper:
+            raise ValueError("execution.auto_entry: paper is refused on a live Alpaca account; set it to off")
+        if config.execution.native_entry_lifetime != "session":
+            raise ValueError(
+                "execution.auto_entry: paper requires execution.native_entry_lifetime: session "
+                "(an auto entry must never rest as an untimed GTC order)"
+            )
     return config

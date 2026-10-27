@@ -66,6 +66,18 @@ class EventKind(StrEnum):
     CARD_STATS_SNAPSHOT = "card_stats_snapshot"
     INSIDER_FORM4_CAPTURE = "insider_form4_capture"
     INSIDER_WATCH_DECISION = "insider_watch_decision"
+    AUTO_ENTRY_ATTEMPTED = "auto_entry_attempted"
+
+
+class EntryTrigger(StrEnum):
+    """Who asked for an entry: an operator tap (or CLI) or the paper auto-entry sweep.
+
+    Stored on the entry work item and its ``entry_queued`` event; it names the caller and
+    changes no admission, risk or broker rule.
+    """
+
+    TAP = "tap"
+    AUTO = "auto"
 
 
 class ScanTrigger(StrEnum):
@@ -113,6 +125,7 @@ class NotificationKind(StrEnum):
     SIGNAL = "signal"
     STOP = "stop"
     CARD_EXPIRED = "card_expired"
+    CARD_AUTO_ENTERED = "card_auto_entered"
 
 
 @dataclass(frozen=True)
