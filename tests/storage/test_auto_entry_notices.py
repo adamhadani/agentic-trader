@@ -7,11 +7,12 @@ refusals, UNKNOWN outcomes and exits keep every notice.
 """
 
 import json
+import logging
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from agentic_trader.broker.base import OrderRequest, OrderResult
 from agentic_trader.config import load_config
@@ -19,9 +20,10 @@ from agentic_trader.constants import ExitReason, SignalStatus
 from agentic_trader.execution.durable import EntryTrigger, EventKind, OrderObservation, WorkKind
 from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, NativeEntryLifetimePolicy
 from agentic_trader.execution.lifetimes import EntryIdentity
+from agentic_trader.market.session import ET_TZ
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.lifetimes import LifetimeRepository
-from agentic_trader.storage.models import WorkItemRecord
+from agentic_trader.storage.models import SignalRecord, WorkItemRecord
 
 
 @pytest.fixture
@@ -40,12 +42,18 @@ async def event_kinds(db) -> list[str]:
 
 
 def observation(
-    *, status: str, submitted_at: datetime, client_order_id: str, order_id: str = "entry-1", filled: str = "0"
+    *,
+    status: str,
+    submitted_at: datetime,
+    client_order_id: str,
+    order_id: str = "entry-1",
+    filled: str = "0",
+    symbol: str = "SPY",
 ) -> OrderObservation:
     return OrderObservation(
         order_id=order_id,
         client_order_id=client_order_id,
-        symbol="SPY",
+        symbol=symbol,
         side="buy",
         status=status,
         quantity="10",
@@ -57,7 +65,7 @@ def observation(
     )
 
 
-async def staged_entry(db, trigger: EntryTrigger, *, resolve: bool = True):
+async def staged_entry(db, trigger: EntryTrigger, *, resolve: bool = True, order_id: str = "entry-1"):
     """A native-marked signal with its entry work item; accepted and EXECUTED (resting) when ``resolve``."""
     sid = await db.record_signal(
         contract="SPY",
@@ -88,7 +96,7 @@ async def staged_entry(db, trigger: EntryTrigger, *, resolve: bool = True):
     if resolve:
         claimed = await db.workflows.claim_entry(lease_seconds=60)
         await db.update_signal_status(sid, SignalStatus.SUBMITTING)
-        await db.workflows.resolve_entry(claimed, OrderResult(success=True, order_id="entry-1"))
+        await db.workflows.resolve_entry(claimed, OrderResult(success=True, order_id=order_id))
     return sid, item
 
 
@@ -114,13 +122,16 @@ async def deadline_unfilled_result(db, sid, item):
     return f"entry-cancel/{cancel.id}/accepted"
 
 
-async def begin_cancel(db, sid, item, cause):
+async def begin_cancel(db, sid, item, cause, *, order_id: str = "entry-1", symbol: str = "SPY"):
     client = item.payload["client_order_id"]
     submitted = datetime.now(UTC) - timedelta(hours=17)
     repo = LifetimeRepository(db.workflows)
-    await db.workflows.observe_orders([observation(status="new", submitted_at=submitted, client_order_id=client)])
-    identity = EntryIdentity("entry-1", client, "SPY", "buy", "10")
-    orders = [observation(status="new", submitted_at=submitted, client_order_id=client)]
+    resting = observation(
+        status="new", submitted_at=submitted, client_order_id=client, order_id=order_id, symbol=symbol
+    )
+    await db.workflows.observe_orders([resting])
+    identity = EntryIdentity(order_id, client, symbol, "buy", "10")
+    orders = [resting]
     item = await repo.begin_cancel(
         sid, identity, orders, asdict(NativeEntryLifetimePolicy()), now=datetime.now(UTC), reason=cause
     )
@@ -128,12 +139,14 @@ async def begin_cancel(db, sid, item, cause):
     return item
 
 
-async def resolve_cancel(db, cancel, item):
+async def resolve_cancel(db, cancel, item, *, order_id: str = "entry-1", symbol: str = "SPY"):
     repo = LifetimeRepository(db.workflows)
     canceled = observation(
         status="canceled",
         submitted_at=datetime.now(UTC) - timedelta(hours=17),
         client_order_id=item.payload["client_order_id"],
+        order_id=order_id,
+        symbol=symbol,
     )
     await db.workflows.observe_orders([canceled])
     assert await repo.resolve_cancel(cancel, [canceled])
@@ -310,3 +323,100 @@ async def test_trailing_stop_ratchet_notice_unchanged_for_auto(db):
     assert await db.update_position_stop(sid, 97.0, reason="ratchet", notification={"contract": "SPY"})
 
     assert f"signal/{sid}/stop/97.0" in await notice_keys(db)
+
+
+# --- a fold never loses a notice the digest can no longer report (M1) ---------------------------
+
+
+async def queue_todays_digest(db, sid):
+    """The digest of the entry's New York date is already queued: a later routine notice must be delivered."""
+    signal = await db.get_signal_by_id(sid)
+    et_date = datetime.fromisoformat(signal["timestamp"]).replace(tzinfo=UTC).astimezone(ET_TZ).date()
+    assert await db.workflows.queue_auto_entry_digest(et_date, "digest")
+
+
+async def created_yesterday(db, sid):
+    """An entry from an earlier New York date: its digest was due long ago."""
+    async with db.session_factory() as session, session.begin():
+        await session.execute(
+            update(SignalRecord)
+            .where(SignalRecord.id == sid)
+            .values(timestamp=datetime.now(UTC).astimezone(ET_TZ) - timedelta(days=1))
+        )
+
+
+async def staged_accepting(db, sid, item):
+    claimed = await db.workflows.claim_entry(lease_seconds=60)
+    await db.update_signal_status(sid, SignalStatus.SUBMITTING)
+    await db.workflows.resolve_entry(claimed, OrderResult(success=True, order_id="entry-1"))
+    return f"entry/{item.id}/accepted"
+
+
+@pytest.mark.parametrize("after", [queue_todays_digest, created_yesterday], ids=["digest_queued", "earlier_date"])
+@pytest.mark.parametrize("step", [staged_accepting, deadline_intent, deadline_unfilled_result])
+async def test_a_routine_auto_notice_the_digest_can_no_longer_report_is_delivered(db, step, after):
+    sid, item = await staged_entry(db, EntryTrigger.AUTO, resolve=step is not staged_accepting)
+    await after(db, sid)
+
+    key = await step(db, sid, item)
+
+    assert key in await notice_keys(db)
+
+
+async def test_deadline_cancel_result_before_the_digest_is_folded_and_after_it_delivered(db):
+    first_sid, first_item = await staged_entry(db, EntryTrigger.AUTO)
+    folded = await deadline_unfilled_result(db, first_sid, first_item)
+    assert folded not in await notice_keys(db)
+
+    await queue_todays_digest(db, first_sid)
+    second_sid, second_item = await staged_entry(db, EntryTrigger.AUTO, order_id="entry-2")
+    cancel = await begin_cancel(db, second_sid, second_item, "deadline", order_id="entry-2")
+    assert f"entry-cancel/{cancel.id}/intent" in await notice_keys(db)
+    await resolve_cancel(db, cancel, second_item, order_id="entry-2")
+
+    assert f"entry-cancel/{cancel.id}/accepted" in await notice_keys(db)
+    assert folded not in await notice_keys(db)
+
+
+# --- display-only trigger reads never raise inside a fact transaction (M3) ----------------------
+
+
+async def corrupt_trigger(db, sid):
+    async with db.session_factory() as session, session.begin():
+        row = await session.scalar(
+            select(WorkItemRecord).where(WorkItemRecord.kind == WorkKind.ENTRY, WorkItemRecord.dedup_key == str(sid))
+        )
+        row.payload = json.dumps({**json.loads(row.payload), "entry_trigger": "robot"})
+
+
+async def fill(db, sid, item):
+    await db.update_signal_execution(sid, "entry-1", fill_price=100.25, quantity=10, executed_at=datetime.now(UTC))
+
+
+@pytest.mark.parametrize("step", [staged_accepting, deadline_intent, deadline_unfilled_result, fill])
+async def test_an_unknown_stored_trigger_reads_as_tap_with_a_warning(db, step, caplog):
+    sid, item = await staged_entry(db, EntryTrigger.AUTO, resolve=step is not staged_accepting)
+    await corrupt_trigger(db, sid)
+
+    with caplog.at_level(logging.WARNING, logger="agentic_trader.storage.workflow"):
+        key = await step(db, sid, item)
+
+    notices = await notice_keys(db)
+    if key is not None:
+        assert key in notices  # never folded
+    assert f"signal/{sid}/auto-filled" not in notices  # no fill notice
+    if step is fill:
+        assert (await db.get_signal_by_id(sid))["executed_at"] is not None  # the fact still committed
+    warnings = [r for r in caplog.records if r.__dict__.get("event") == "entry_trigger_unreadable"]
+    assert warnings and all(r.__dict__.get("reason") == "ValueError" for r in warnings)
+    assert all("robot" not in r.getMessage() for r in warnings)
+
+
+async def test_entry_trigger_of_stays_strict(db):
+    sid, _ = await staged_entry(db, EntryTrigger.AUTO)
+    await corrupt_trigger(db, sid)
+
+    with pytest.raises(ValueError):
+        await db.workflows.entry_trigger(sid)
+    async with db.session_factory() as session:
+        assert await db.workflows.display_entry_trigger(session, sid) == EntryTrigger.TAP

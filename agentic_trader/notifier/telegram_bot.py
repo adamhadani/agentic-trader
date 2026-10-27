@@ -247,6 +247,12 @@ AUTO_ENTRY_LINE = (
 AUTO_REFUSED_LINE = "🤖 Auto-entry refused: {reason}. Tap Execute to enter it yourself."
 AUTO_ABANDONED_LINE = "🤖 Auto-entry was not placed in time. Tap Execute to enter it yourself."
 CANCEL_ENTRY_ASK_LABEL = "Cancel entry…"
+# The signal statuses in which each payload ``auto_entry`` line is true at delivery.
+_AUTO_LINE_STATUSES: dict[str, tuple[str, ...]] = {
+    "placing": (SignalStatus.PENDING, SignalStatus.SUBMITTING, SignalStatus.EXECUTED),
+    "refused": (SignalStatus.PENDING,),
+    "abandoned": (SignalStatus.PENDING,),
+}
 
 
 def _cancel_entry_ask_markup(signal_id: int) -> InlineKeyboardMarkup:
@@ -344,9 +350,11 @@ def format_alert_card(
     )
     earnings_line = f"• <b>Earnings:</b> {html.escape(eval_res.earnings_note)}\n" if eval_res.earnings_note else ""
     regime_line = f"• <b>Regime:</b> {html.escape(regime_summary)}\n" if regime_summary else ""
+    auto_block = _auto_entry_line(auto_entry, auto_refusal, markup=True)
     valid_until_text = _valid_until_text(valid_until, issued_at)
     valid_until_line = f"• <b>Valid until:</b> {valid_until_text}\n" if valid_until_text else ""
-    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound else ""
+    # The placing line already says it (ruling R11); re-cards and tap cards keep the bullet.
+    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound and auto_entry != "placing" else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -460,7 +468,7 @@ def format_alert_card(
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
         f"{_watch_block(card_facts, markup=True)}"
-        f"{_auto_entry_line(auto_entry, auto_refusal, markup=True)}"
+        f"{auto_block}"
         f"{drift_block}"
         f"{updated_card_prefix}"
         f"📋 <b>SETUP: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
@@ -522,9 +530,11 @@ def format_terminal_card(
     )
     earnings_line = f"• Earnings:         {eval_res.earnings_note}\n" if eval_res.earnings_note else ""
     regime_line = f"• Volatility Regime:{regime_summary}\n" if regime_summary else ""
+    auto_block = _auto_entry_line(auto_entry, auto_refusal, markup=False)
     valid_until_text = _valid_until_text(valid_until, issued_at)
     valid_until_line = f"• Valid until:      {valid_until_text}\n" if valid_until_text else ""
-    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound else ""
+    # The placing line already says it (ruling R11); re-cards and tap cards keep the bullet.
+    valid_until_line += f"• {ENTRY_SESSION_BOUND_LINE}\n" if entry_session_bound and auto_entry != "placing" else ""
     updated_card_prefix = ""
     if reprices is not None:
         first_issued_hhmm = _ny_hhmm(first_issued_at)
@@ -617,7 +627,6 @@ def format_terminal_card(
 
     border = "=" * 65
     watch_block = _watch_block(card_facts, markup=False)
-    auto_block = _auto_entry_line(auto_entry, auto_refusal, markup=False)
     return f"""
 {border}
 {watch_block}{auto_block}{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})
@@ -1560,8 +1569,9 @@ class TelegramNotifier:
         # issue date names its day) and its status guards the buttons below.
         row = await self.db.get_signal_by_id(signal_id) if self.db else None
         issued_at = _issued_at(row)
-        if auto_entry in ("refused", "abandoned") and row is not None and row["status"] != SignalStatus.PENDING:
-            # The re-card's "Tap Execute" line is true only while the card is live; otherwise it renders as today.
+        if auto_entry is not None and row is not None and row["status"] not in _AUTO_LINE_STATUSES.get(auto_entry, ()):
+            # Each auto line is true only in its statuses ("placing": not yet refused or ended; a re-card's
+            # "Tap Execute": live); any other status renders exactly as a tap card (spec 2.3, "as today").
             auto_entry, auto_refusal = None, None
         # Always output to terminal/logs
         print(

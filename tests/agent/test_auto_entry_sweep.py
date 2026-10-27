@@ -24,7 +24,13 @@ from agentic_trader.agent.earnings import EarningsLookup
 from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.broker.base import OrderResult
 from agentic_trader.constants import AssetClass, ExecutionMode, SignalStatus
-from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt, attempt_reason
+from agentic_trader.execution.auto_entry import (
+    AUTO_ENTRY_KEY,
+    AUTO_ENTRY_MARKER,
+    AutoEntryAttempt,
+    attempt_reason,
+    sweep_reason,
+)
 from agentic_trader.execution.durable import EntryTrigger, EventKind, NotificationKind, ScanTrigger, WorkKind
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, NativeEntryLifetimePolicy
@@ -103,7 +109,7 @@ async def record_auto_card(
     provenance_extra: dict | None = None,
 ) -> int:
     """Record a marked native card exactly as ``run_scan`` does: provenance, marker and its queued card."""
-    evaluation = original_evaluation()
+    evaluation = original_evaluation().model_copy(update={"contract": contract})
     valid_until = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
     provenance = {
         "setup_quality": 0.9,
@@ -177,6 +183,7 @@ async def the_attempt(db, signal_id: int) -> dict:
         "work_status",
         "signal_status",
         "attempted_at",
+        "expiry_kind",
     }
     return event["payload"]
 
@@ -434,24 +441,125 @@ async def test_a_synchronous_rejection_journals_a_fixed_reason_never_the_reply_t
     assert "refused: rejected at submission" in digest and "BROKER-SECRET-77" not in digest
 
 
-@pytest.mark.parametrize(("price", "reason"), [(102.0, "repriced"), (94.0, "expired")])
-async def test_reprice_or_missed_is_expired_refused_and_not_recarded(auto_desk, temp_db, price, reason):
-    sid = await record_auto_card(temp_db)
+_EXPIRED_CASES = {
+    # case: (latest price, provenance override, expected attempt reason, expiry kind)
+    "missed": (94.0, {}, "price 94.00 is at or through the stop at 95.00", "expired"),
+    "expired": (100.5, {"valid_until": "PAST"}, "Card expired: its session has ended", "expired"),
+    "repriced": (102.0, {}, "re-priced", "repriced"),
+}
+
+
+@pytest.mark.parametrize("case", list(_EXPIRED_CASES))
+@pytest.mark.parametrize(("contract", "reevaluable"), [("SPY", True), ("ZZZZ", False)])
+async def test_missed_expired_or_repriced_strikes_the_card_and_says_not_placed(
+    auto_desk, temp_db, case, contract, reevaluable
+):
+    """An EXPIRED auto card must not keep claiming an entry: the expiry strike plus one "not placed" notice."""
+    price, override, reason, kind = _EXPIRED_CASES[case]
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    sid = await record_auto_card(
+        temp_db, contract=contract, provenance_extra={k: past if v == "PAST" else v for k, v in override.items()}
+    )
     auto_desk.data_fetcher.fetch_latest_price.return_value = price  # +0.4R -> REPRICE; through the stop -> MISSED
+
+    await auto_desk.auto_enter_pending()
+
+    payload = await the_attempt(temp_db, sid)
+    assert (payload["outcome"], payload["reason"], payload["expiry_kind"], payload["signal_status"]) == (
+        "refused",
+        reason,
+        kind,
+        SignalStatus.EXPIRED,
+    )
+    queued = await notifications(temp_db)
+    replacements = [
+        key for key, value in queued.items() if key.endswith("/created") and value["arguments"].get("reprices") == sid
+    ]
+    assert len(replacements) == (1 if case == "repriced" else 0)
+    assert set(queued) == {
+        f"signal/{sid}/created",
+        f"signal/{sid}/expired",
+        f"signal/{sid}/auto-not-placed",
+        *replacements,
+    }
+    assert queued[f"signal/{sid}/expired"] == {
+        "kind": NotificationKind.CARD_EXPIRED,
+        "arguments": {"signal_id": sid, "contract": contract, "reevaluable": reevaluable},
+    }
+    if case == "repriced":
+        new_id = queued[replacements[0]]["arguments"]["signal_id"]
+        text = f"🤖 Auto-entry #{sid} {contract} not placed: re-priced; review card #{new_id}."
+    else:
+        text = f"🤖 Auto-entry #{sid} {contract} not placed: {reason}."
+    assert queued[f"signal/{sid}/auto-not-placed"] == {"kind": NotificationKind.MESSAGE, "arguments": {"text": text}}
+    auto_desk.entry_service.authorize.assert_not_awaited()
+    # The sweep never re-attempts the replacement: it carries no marker.
+    assert await auto_desk.auto_enter_pending() == []
+    # The digest still names the expiry.
+    rows = await temp_db.workflows.auto_entry_digest_rows(datetime.now(ET_TZ).date())
+    detail = "re-priced" if case == "repriced" else f"expired ({reason})"
+    assert [(row.signal_id, row.outcome, row.detail) for row in rows] == [(sid, "refused", detail)]
+
+
+async def test_an_exception_after_the_card_expired_still_strikes_it(auto_desk, temp_db):
+    sid = await record_auto_card(temp_db)
+
+    async def expire_then_raise(signal_id):
+        assert await temp_db.expire_signal(signal_id)
+        raise RuntimeError("secret broker detail")
+
+    stub_execute(auto_desk, side_effect=expire_then_raise)
+
+    [attempt] = await auto_desk.auto_enter_pending()
+
+    assert (attempt.outcome, attempt.reason, attempt.expiry_kind) == ("refused", "RuntimeError", "expired")
+    queued = await notifications(temp_db)
+    assert set(queued) == {f"signal/{sid}/created", f"signal/{sid}/expired", f"signal/{sid}/auto-not-placed"}
+    assert queued[f"signal/{sid}/auto-not-placed"]["arguments"] == {
+        "text": f"🤖 Auto-entry #{sid} SPY not placed: card expired."
+    }
+    assert "secret broker detail" not in json.dumps([await attempt_events(temp_db, sid), queued])
+
+
+async def test_an_account_risk_refusal_journals_a_fixed_reason(auto_desk, temp_db, app_config, monkeypatch):
+    """``Account risk unavailable: {exc}`` embeds an exception's text; the journal and re-card never carry it."""
+    enqueue_for_real(auto_desk, temp_db, app_config, monkeypatch)
+    monkeypatch.setattr(WorkflowStore, "_entry_risk", AsyncMock(side_effect=ValueError("SECRET-CHECKPOINT detail")))
+    sid = await record_auto_card(temp_db)
 
     await auto_desk.auto_enter_pending()
 
     payload = await the_attempt(temp_db, sid)
     assert (payload["outcome"], payload["reason"], payload["signal_status"]) == (
         "refused",
-        reason,
-        SignalStatus.EXPIRED,
+        "account risk unavailable",
+        SignalStatus.PENDING,
     )
     queued = await notifications(temp_db)
-    assert not any(key.startswith(f"signal/{sid}/auto-") for key in queued)
-    auto_desk.entry_service.authorize.assert_not_awaited()
-    # The sweep never re-attempts the replacement: it carries no marker.
-    assert await auto_desk.auto_enter_pending() == []
+    assert queued[f"signal/{sid}/auto-refused"]["arguments"]["auto_refusal"] == "account risk unavailable"
+    assert "SECRET-CHECKPOINT" not in json.dumps([await attempt_events(temp_db, sid), queued])
+
+
+@pytest.mark.parametrize(
+    ("reply", "reason"),
+    [
+        (
+            "⚠️ <b>Execution Rejected:</b> Account risk unavailable: stale checkpoint. No order submitted.",
+            "account risk unavailable",
+        ),
+        (
+            "Admission evidence unavailable (ValueError: secret). No order submitted.",
+            "admission evidence unavailable",
+        ),
+        (
+            "❌ <b>Execution Failed (ALPACA):</b>\n• <b>Contract:</b> SPY (LONG)\n• <b>Error:</b> secret broker text",
+            "rejected at submission",
+        ),
+        ("⚠️ <b>Execution Rejected:</b> cap reached.", "cap reached"),
+    ],
+)
+def test_sweep_reason_maps_exception_bearing_refusals_to_fixed_phrases(reply, reason):
+    assert sweep_reason(reply) == reason
 
 
 async def test_dismissed_after_selection_before_the_call_is_skipped(auto_desk, temp_db, monkeypatch):

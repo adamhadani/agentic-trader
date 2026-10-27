@@ -10,11 +10,20 @@ from sqlalchemy import select
 from agentic_trader.broker.base import OrderRequest, OrderResult
 from agentic_trader.config import AppConfig
 from agentic_trader.constants import AssetClass, SignalStatus
-from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt, ExpiredCard
 from agentic_trader.execution.durable import EntryTrigger, EventKind, NotificationKind, WorkKind, WorkStatus
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import DomainEventRecord, WorkItemRecord
 from agentic_trader.storage.workflow import encode
+from tests.storage.test_auto_entry_notices import (
+    begin_cancel,
+    deadline_intent,
+    deadline_unfilled_result,
+    notice_keys,
+    queue_todays_digest,
+    resolve_cancel,
+    staged_entry,
+)
 
 
 pytestmark = [pytest.mark.postgres, pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
@@ -201,5 +210,109 @@ async def test_fill_notice_and_signal_update_share_a_transaction_and_folded_noti
             )
         assert f"signal/{sid}/auto-filled" in keys
         assert "entry/client-auto-1/accepted" not in keys
+    finally:
+        await db.engine.dispose()
+
+
+@pytest.mark.parametrize("trigger", [EntryTrigger.TAP, EntryTrigger.AUTO])
+async def test_enqueue_entry_stores_the_trigger_on_the_work_item_and_entry_queued(postgres_test_db, trigger):
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await db.init_db()
+        _sid, item = await staged_entry(db, trigger, resolve=False)
+        assert item is not None
+        [work] = await db.workflows.list_work(WorkKind.ENTRY)
+        assert work.payload["entry_trigger"] == str(trigger)
+        [queued] = [
+            e for e in await db.workflows.events(stream=f"entry/{item.id}") if e["kind"] == EventKind.ENTRY_QUEUED
+        ]
+        assert queued["payload"]["entry_trigger"] == str(trigger)
+        async with db.session_factory() as session:
+            assert await db.workflows.entry_trigger_of(session, _sid) == trigger
+    finally:
+        await db.engine.dispose()
+
+
+@pytest.mark.parametrize("step", [deadline_intent, deadline_unfilled_result])
+@pytest.mark.parametrize("trigger", [EntryTrigger.TAP, EntryTrigger.AUTO])
+async def test_lifetime_folds_on_postgres(postgres_test_db, step, trigger):
+    """A deadline cancel's intent and confirmed-unfilled result: folded for auto, delivered for tap."""
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await db.init_db()
+        sid, item = await staged_entry(db, trigger)
+        key = await step(db, sid, item)
+        assert (key in await notice_keys(db)) is (trigger == EntryTrigger.TAP)
+        kinds = [event["kind"] for event in await db.workflows.events()]
+        assert EventKind.ENTRY_CANCEL_REQUESTED in kinds  # the journal is unchanged either way
+    finally:
+        await db.engine.dispose()
+
+
+async def test_a_deadline_cancel_after_the_digest_is_delivered_on_postgres(postgres_test_db):
+    db = SignalDatabase(db_url=postgres_test_db)
+    try:
+        await db.init_db()
+        sid, item = await staged_entry(db, EntryTrigger.AUTO)
+        await queue_todays_digest(db, sid)
+        cancel = await begin_cancel(db, sid, item, "deadline")
+        await resolve_cancel(db, cancel, item)
+        notices = await notice_keys(db)
+        assert f"entry-cancel/{cancel.id}/intent" in notices
+        assert f"entry-cancel/{cancel.id}/accepted" in notices
+    finally:
+        await db.engine.dispose()
+
+
+async def test_an_expired_attempt_strike_and_notice_share_its_transaction(postgres_test_db, monkeypatch):
+    db = SignalDatabase(db_url=postgres_test_db, config=_paper())
+    try:
+        await db.init_db()
+        sid = await _marked_card(db)
+        assert await db.expire_signal(sid)
+        attempt = AutoEntryAttempt(
+            sid, None, "refused", "price at the stop", None, "EXPIRED", datetime.now(UTC), expiry_kind="expired"
+        )
+        follow_up = ExpiredCard(notice=f"🤖 Auto-entry #{sid} SPY not placed: price at the stop.", reevaluable=True)
+        add_notification = db.workflows.add_notification
+        calls = 0
+
+        async def fail_on_the_notice(session, key, kind, payload):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("outbox write failed")
+            return await add_notification(session, key, kind, payload)
+
+        monkeypatch.setattr(db.workflows, "add_notification", fail_on_the_notice)
+        with pytest.raises(RuntimeError):
+            await db.workflows.record_auto_entry_attempt(attempt, recard=None, entered=False, expired=follow_up)
+        async with db.session_factory() as session:
+            keys = set(
+                await session.scalars(
+                    select(WorkItemRecord.dedup_key).where(WorkItemRecord.kind == WorkKind.NOTIFICATION)
+                )
+            )
+        assert keys == {f"signal/{sid}/created"}  # the event and the strike rolled back with the notice
+        assert await _rows(db, sid) == ([], {})
+
+        monkeypatch.setattr(db.workflows, "add_notification", add_notification)
+        await db.workflows.record_auto_entry_attempt(attempt, recard=None, entered=False, expired=follow_up)
+        events, notices = await _rows(db, sid)
+        assert events == [f"auto-entry/{sid}"]
+        assert notices == {
+            f"signal/{sid}/auto-not-placed": {
+                "kind": NotificationKind.MESSAGE,
+                "arguments": {"text": f"🤖 Auto-entry #{sid} SPY not placed: price at the stop."},
+            }
+        }
+        async with db.session_factory() as session:
+            strike = await session.scalar(
+                select(WorkItemRecord.payload).where(WorkItemRecord.dedup_key == f"signal/{sid}/expired")
+            )
+        assert json.loads(strike) == {
+            "kind": NotificationKind.CARD_EXPIRED,
+            "arguments": {"signal_id": sid, "contract": "SPY", "reevaluable": True},
+        }
     finally:
         await db.engine.dispose()

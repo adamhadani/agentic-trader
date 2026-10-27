@@ -19,6 +19,21 @@ ABANDONED_REASON = "not_attempted_in_time"
 NOT_PAPER_REASON = "not_paper_scope"
 # A synchronous preflight or broker rejection: the reply embeds broker or exception text, which the journal never carries.
 REJECTED_AT_SUBMISSION_REASON = "rejected at submission"
+# A card the sweep's own tap assessment expired: re-priced (a replacement card was sent), or expired with
+# no journaled assessment reason to quote.
+REPRICED_REASON = "re-priced"
+EXPIRED_REASON = "card expired"
+# Refusal texts that interpolate an exception's text, by their desk-authored prefix (after
+# ``attempt_reason``): the sweep journals the fixed phrase instead. Admission's own replies are unchanged.
+_EXCEPTION_BEARING_REFUSALS = (
+    # ``WorkflowStore.enqueue_entry``: f"Account risk unavailable: {exc}. No order submitted."
+    ("Account risk unavailable", "account risk unavailable"),
+    # ``EntryExecutionService.dispatch_one`` around ``_preflight``: f"Admission evidence unavailable ({type}: {exc})…"
+    ("Admission evidence unavailable", "admission evidence unavailable"),
+    # ``execute_signal_by_id``'s failure view (``format_execution_html``), whose Error line is the work item's
+    # ``error_message``: ``_preflight``'s ``str(exc)`` from the capacity check, the line above, or broker text.
+    ("Execution Failed", REJECTED_AT_SUBMISSION_REASON),
+)
 
 _MARKUP = re.compile(r"<[^>]*>")
 # A reply's leading symbols and Title Case label ("⚠️ Execution Rejected: "), which the re-card line restates.
@@ -65,11 +80,18 @@ def auto_entry_marker(
 
 
 AutoEntryOutcome = Literal["entered", "refused", "skipped_not_pending", "abandoned"]
+# Why a ``refused`` attempt left its card ``EXPIRED``: the digest and ``cards outcomes`` read this token,
+# while ``reason`` carries the desk-authored assessment reason (or "re-priced").
+ExpiryKind = Literal["repriced", "expired"]
 
 
 @dataclass(frozen=True)
 class AutoEntryAttempt:
-    """One sweep attempt on one marked card: the ``auto_entry_attempted`` event's payload."""
+    """One sweep attempt on one marked card: the ``auto_entry_attempted`` event's payload.
+
+    ``expiry_kind`` is set only for an attempt that left its card ``EXPIRED`` (``MISSED``/``EXPIRED`` or
+    ``REPRICE`` at the sweep's tap assessment); otherwise it is null.
+    """
 
     signal_id: int
     scan_id: str | None
@@ -78,6 +100,7 @@ class AutoEntryAttempt:
     work_status: str | None
     signal_status: str
     attempted_at: datetime
+    expiry_kind: ExpiryKind | None = None
 
     def payload(self) -> dict[str, Any]:
         return {**asdict(self), "attempted_at": self.attempted_at.isoformat()}
@@ -92,6 +115,34 @@ def attempt_reason(reply_text: str) -> str:
     """
     text = " ".join(html.unescape(_MARKUP.sub("", reply_text)).split())
     return _REPLY_LABEL.sub("", text).removesuffix(".")[:AUTO_ENTRY_REASON_CHARS]
+
+
+def sweep_reason(reply_text: str) -> str:
+    """The journaled reason of a reply: ``attempt_reason``, with exception-bearing refusals as fixed phrases."""
+    reason = attempt_reason(reply_text)
+    for prefix, fixed in _EXCEPTION_BEARING_REFUSALS:
+        if reason.startswith(prefix):
+            return fixed
+    return reason
+
+
+@dataclass(frozen=True)
+class ExpiredCard:
+    """The follow-up of an attempt that left its card ``EXPIRED``: the expiry strike and one notice.
+
+    ``reevaluable`` is decided as the card-expiry sweep decides it (the contract is configured); ``notice`` is
+    the "not placed" text, queued raw (desk-authored, never exception text).
+    """
+
+    notice: str
+    reevaluable: bool
+
+
+def not_placed_notice(signal_id: int, symbol: str, reason: str, *, new_signal_id: int | None = None) -> str:
+    """The "not placed" notice of an auto card the sweep's tap assessment expired (or re-priced)."""
+    if new_signal_id is not None:
+        return f"🤖 Auto-entry #{signal_id} {symbol} not placed: re-priced; review card #{new_signal_id}."
+    return f"🤖 Auto-entry #{signal_id} {symbol} not placed: {reason}."
 
 
 def outcome_after_call(signal_status: str, entry_trigger: EntryTrigger | None) -> AutoEntryOutcome:

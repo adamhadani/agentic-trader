@@ -443,6 +443,7 @@ async def _card(
     work_status=WorkStatus.ACCEPTED,
     fill=None,
     attempt: str | None = None,
+    expiry: str | None = None,
     cancel_cause: str | None = None,
     tap_trigger: str | None = None,
 ) -> int:
@@ -508,7 +509,7 @@ async def _card(
                 session,
                 stream=f"card/{signal_id}",
                 kind=EventKind.AUTO_ENTRY_ATTEMPTED,
-                payload={"signal_id": signal_id, "outcome": attempt, "reason": None},
+                payload={"signal_id": signal_id, "outcome": attempt, "reason": None, "expiry_kind": expiry},
                 key=f"auto-entry/{signal_id}",
             )
         if tap_trigger is not None:
@@ -614,6 +615,18 @@ _PER_ROW_CASES = {
         {"status": SignalStatus.EXPIRED, "marked": True, "trigger": None},
         "none",
         "expired",
+    ),
+    # The sweep's own tap assessment expired it (MISSED/EXPIRED/REPRICE, ``expiry_kind`` on the attempt):
+    # a desk refusal, on neither side of kept-vs-vetoed, not an untouched expiry.
+    "marked_expired_by_the_sweep": (
+        {"status": SignalStatus.EXPIRED, "marked": True, "trigger": None, "attempt": "refused", "expiry": "expired"},
+        "none",
+        "auto_refused",
+    ),
+    "marked_repriced_by_the_sweep": (
+        {"status": SignalStatus.EXPIRED, "marked": True, "trigger": None, "attempt": "refused", "expiry": "repriced"},
+        "none",
+        "auto_refused",
     ),
     "marked_refused_then_tapped": (
         {"status": SignalStatus.EXECUTED, "marked": True, "trigger": "tap", "attempt": "refused", "tap_trigger": "tap"},

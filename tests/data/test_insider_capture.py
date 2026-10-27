@@ -571,6 +571,23 @@ async def test_insider_freshness_not_due_before_first_pass(capture_store, app_co
         assert (ready, detail) == (False, "no capture yet")
 
 
+async def test_insider_freshness_stays_not_ready_after_a_pass_without_capture(capture_store, app_config):
+    """Ruling R12: once a pass ran in this process and captured nothing, a later waiting or scan-window
+    status does not flip readiness back to ``not_due``; a capture does."""
+    sec = FakeSec()  # Monday 10-05's index is not yet published: the pass holds it and records nothing
+    async with sec.client() as client:
+        worker = _worker(client, capture_store, _config(app_config, backfill=date(2026, 10, 5)))
+        assert await worker.freshness(_et(date(2026, 10, 6), 5), "waiting") == (True, "not_due; no capture yet")
+        assert await worker.run_once(_et(date(2026, 10, 6), 6, 1)) == "pending"
+        assert await capture_store.captures() == []
+        for status, at in (("pending", (6, 2)), ("scan_window", (10, 31)), ("waiting", (5, 0))):
+            day = date(2026, 10, 7) if status == "waiting" else date(2026, 10, 6)
+            assert await worker.freshness(_et(day, *at), status) == (False, "no capture yet")
+    await capture_store.record({"filing_date": "2026-10-05", "status": "captured", "errors": {}}, {})
+    ready, detail = await worker.freshness(_et(date(2026, 10, 6), 10, 31), "scan_window")
+    assert ready is True and detail.startswith("latest filing date 2026-10-05")
+
+
 def test_readiness_duplicates_the_capture_age_limit():
     assert INSIDER_CAPTURE_MAX_AGE_SECONDS == insider_capture.CAPTURE_MAX_AGE_SECONDS == 4 * 86400
 

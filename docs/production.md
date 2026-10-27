@@ -1271,20 +1271,32 @@ off`, refuses to start with it set, and the simulator leaves it inactive. `/stat
   after the restart the sweep and digest jobs are not registered, so a marked card still `PENDING` is not
   entered: it keeps its Dismiss-only card and expires with the session.
 - **Card states.** A new native card says "Paper auto-entry: entered for you on the paper account; no tap
-  needed" with **Dismiss** until the entry is placed, then **Cancel entry...** (its callback opens the `/cancel`
-  preview with Cancel entry and Keep). If risk or admission refuses, or the sweep ran more than
-  `execution.card_freshness.fresh_seconds` (1,800 s) after the card, a fresh card says "Auto-entry refused:
-  {reason}" or "was not placed in time" and carries the normal Execute and Dismiss.
+  needed" (it carries no separate session-close bullet: that line says it) with **Dismiss** until the entry is
+  placed, then **Cancel entry...** (its callback opens the `/cancel` preview with Cancel entry and Keep). The
+  line shows only while the card is `PENDING`, `SUBMITTING` or `EXECUTED`; a card delivered in any other status
+  renders exactly as a tap card. Not every refusal gets a fresh card:
+  - still `PENDING` (risk or admission refused, or the sweep ran more than
+    `execution.card_freshness.fresh_seconds`, 1,800 s, after the card): a fresh card says "Auto-entry refused:
+    {reason}" or "was not placed in time" and carries the normal Execute and Dismiss;
+  - expired, missed or re-priced at the sweep's tap check: the card's buttons are struck (Re-evaluate for a
+    configured contract) and one notice says "Auto-entry #id SYMBOL not placed: {reason}." (a re-price says
+    "re-priced; review card #new_id", the replacement being an ordinary tap card);
+  - `FAILED` (rejected at submission): the existing `entry/{work_id}/rejected` notice.
 - **Vetoes.** Dismiss before placement; Cancel entry... or `/cancel <id>` while the entry rests (one DELETE,
   never retried; a fill racing it halts new risk until reviewed). The session-bounded lifetime cancels an
-  unfilled entry at the submission session's close + 5 minutes.
+  unfilled entry at the submission session's close + 5 minutes. The Dismiss-before-placement window is short,
+  from seconds up to about one minute, because the sweep runs right after the scan and every minute, so most
+  vetoes will be cancels of resting entries.
 - **Messages.** Each filled auto entry sends one `Auto-entry #id SYMBOL filled ...` notice. Three routine
   notices are folded into the **digest** at the regular close + 15 minutes (16:15 New York, earlier on an
   early close): the `accepted` resolution, the deadline cancel intent and the deadline cancel result confirmed
-  unfilled. Never folded: anything resolving an `UNKNOWN` outcome, operator cancels, `entry-terminal` (a
-  broker-side end), refusals, ratchets, exits, partial fills, missed bounds and halts.
+  unfilled. A routine notice the digest can no longer report is queued as usual: once the digest of the entry's
+  New York date is queued, or for an entry of an earlier date. Never folded: anything resolving an `UNKNOWN`
+  outcome, operator cancels, `entry-terminal` (a broker-side end), refusals, ratchets, exits, partial fills,
+  missed bounds and halts.
 - **Where to look.** The `card/{signal_id}` stream's `auto_entry_attempted` event (outcome, reason,
-  signal and work status; a synchronous rejection reads `rejected at submission`);
+  signal and work status, `expiry_kind` `expired` or `repriced` for a card the sweep's tap check expired; a
+  synchronous rejection reads `rejected at submission`);
   `copilot db queue --kind entry`; `copilot cards outcomes` for `entry_trigger`, `operator_action` and the
   `operator` block ([card evidence](card-evidence.md#operator-outcomes)). The 20-session pass criteria are in
   the [auto-entry doc](paper-auto-entry.md#measurement).
@@ -1381,7 +1393,9 @@ The [watch cards](apriori-alphas.md#watch-cards) read SEC Form 4 filings from a 
 - **First deploy.** The first backfill from 2026-10-01 is about 1,900 SEC requests (about 16 minutes at 2 per
   second). Deploy before about 10:00 New York or after the 10:35 decision, so it finishes outside the scan
   window it yields to. `insider_capture` readiness is not ready until that first pass finishes, and a 10:35
-  decision before then is `capture_not_current`.
+  decision before then is `capture_not_current`. With no capture yet it reads ready (`not_due; no capture yet`)
+  only until a pass has run in this process: once a pass has run and captured nothing, it stays not ready
+  until a capture exists, through later waiting and scan-window polls.
 - **Credential.** `EDGAR_USER_AGENT` (an identifying contact string, required by SEC) is read from the daemon's
   environment only and sent as the `User-Agent`. Never print, log, journal or commit it; failures are logged by
   exception type name. Without it the worker idles (`missing_user_agent`, logged once) and `insider_capture` reports not ready.

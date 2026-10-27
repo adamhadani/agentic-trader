@@ -85,7 +85,7 @@ unfilled entry at its session close.
   | `SUBMITTING` or `EXECUTED` (work item `QUEUED`, `CHECKING`, `SUBMITTING`, `ACCEPTED` or `UNKNOWN`) | `entered` | edit the card in place (2.3) |
   | `PENDING` (a queue-time refusal, or a retryable tap-check refusal) | `refused` | the `auto-refused` re-card (2.3) |
   | `FAILED` (a synchronous preflight or broker rejection) | `refused` | none: its existing immediate `entry/{id}/rejected` notice stays |
-  | `EXPIRED` (`MISSED`, `EXPIRED`, or `REPRICE`, which also sends the replacement card) | `refused` (reason `expired` or `repriced`) | none |
+  | `EXPIRED` (`MISSED`, `EXPIRED`, or `REPRICE`, which also sends the replacement card) | `refused`, `expiry_kind` `expired` or `repriced` | the `CARD_EXPIRED` strike (`signal/{id}/expired`, the card-expiry sweep's kind and payload) and a `MESSAGE` `signal/{id}/auto-not-placed`: "🤖 Auto-entry #{id} {symbol} not placed: {reason}." or, for `REPRICE`, "🤖 Auto-entry #{id} {symbol} not placed: re-priced; review card #{new_id}." |
   | not `PENDING` before the call (dismissed, or a tap won the race) | `skipped_not_pending` | none; the existing `signal_id` dedup already prevents a second entry |
 
   A rejection that happens later, after an `entered` outcome (the FIFO head belonged to another entry),
@@ -94,7 +94,11 @@ unfilled entry at its session close.
 - **Journal.** One `auto_entry_attempted` event (new `EventKind.AUTO_ENTRY_ATTEMPTED`) per selected card
   on stream `card/{signal_id}`, keyed `auto-entry/{signal_id}`, payload: `signal_id`, `scan_id`,
   `outcome` (`entered | refused | skipped_not_pending | abandoned`), `reason`, `work_status` (the
-  signal's latest entry work item status, or null), `signal_status`, `attempted_at`. `reason` is the
+  signal's latest entry work item status, or null), `signal_status`, `attempted_at`, `expiry_kind`
+  (`expired | repriced` for a card the attempt left `EXPIRED`, else null; the token the digest and
+  `cards outcomes` recognise). For an `EXPIRED` card, `reason` is the sweep's own assessment reason (the
+  `reason` of its applied `card_tap_assessed` event with `entry_trigger: auto`, cleaned as below; `card
+  expired` when there is none) or `re-priced`, never a bare token. Otherwise `reason` is the
   desk-authored reply text with markup stripped and cut to 300 characters, or an exception's type name;
   never exception text. A `refused` attempt whose signal is `FAILED` (a synchronous preflight or broker
   rejection) journals the fixed reason `rejected at submission` instead of the reply text, because that
@@ -112,14 +116,17 @@ status at that moment and the payload:
 
 The auto card's line is the same before and after placement, so the card text never needs editing:
 "🤖 Paper auto-entry: entered for you on the paper account; no tap needed. Unfilled entry is
-cancelled at the session close." Only the buttons depend on the state:
+cancelled at the session close." It prints only while the status is `PENDING`, `SUBMITTING` or
+`EXECUTED`. Because the line already says it, a `placing` card omits the separate "Unfilled entry is
+cancelled at the session close." validity bullet; refused and abandoned re-cards, and any card rendered
+as a tap card, keep it. Only the buttons depend on the state:
 
 | State at delivery | Line on the card | Buttons |
 |---|---|---|
 | payload `auto_entry: "placing"`, status `PENDING` | the auto line | **Dismiss** (a veto before placement) |
 | payload `auto_entry: "placing"`, status `SUBMITTING` or `EXECUTED` (a late delivery) | the auto line | **Cancel entry…** |
 | re-card (`auto_entry: "refused"` or `"abandoned"`), status `PENDING` | "🤖 Auto-entry refused: {reason}. Tap Execute to enter it yourself." (or "🤖 Auto-entry was not placed in time. Tap Execute to enter it yourself.") | the normal Execute and Dismiss |
-| any other status | as today | as today (none, or Re-evaluate) |
+| any other status (for `placing`: not `PENDING`, `SUBMITTING` or `EXECUTED`; for a re-card: not `PENDING`) | none: the card renders exactly as a tap card | as today (none, or Re-evaluate) |
 
 - **Buttons swapped in place once placed.** An `entered` outcome queues, in the same transaction as its
   journal event, a new `NotificationKind.CARD_AUTO_ENTERED` notification keyed
@@ -137,7 +144,8 @@ cancelled at the session close." Only the buttons depend on the state:
   the journal event, a `NotificationKind.SIGNAL` notification keyed `signal/{id}/auto-refused` carrying
   the original card payload plus `auto_entry: "refused"` (or `"abandoned"`) and `auto_refusal` (the
   reason, queued raw and escaped once by the renderer). Only when the signal is still `PENDING`; a `FAILED` or `EXPIRED` card gets no
-  re-card, and `skipped_not_pending` sends nothing.
+  re-card (a `FAILED` card keeps its `entry/{work_id}/rejected` notice; an `EXPIRED` one gets the strike and
+  the "not placed" notice of 2.2), and `skipped_not_pending` sends nothing.
 - The watch card's existing "tap-only, never auto-entered" line stays true and is pinned by a test.
 
 ### 2.4 Notices and the digest
@@ -159,6 +167,12 @@ For an entry whose work item carries `entry_trigger: auto`:
   - the deadline-cause cancel result when it is confirmed unfilled.
   An operator-cause cancel keeps both its notices. A notice that resolves an `UNKNOWN` outcome (an
   `accepted` resolution or a cancel result that clears it) is never folded: its halt was announced.
+  Nor is a notice the digest can no longer report: once `auto-entry-digest/{et_date}` for the entry's
+  New York date (the signal's creation date) is queued, or when that date is before today (New York),
+  the notice is queued normally. These fold decisions, and the fill notice above, read the trigger with a
+  tolerant helper: an unknown stored `entry_trigger` value reads as a tap (never folded, no fill notice)
+  with a warning naming only its error's type, so a display decision never raises inside the fact
+  transaction it sits in.
   `signal/{id}/entry-terminal` is **kept** for auto entries: for them it fires only when the broker
   ends the order itself (rejected, expired or an external cancel), which is not routine.
 - **Daily auto-entry digest.** One `MESSAGE` notice keyed `auto-entry-digest/{et_date}`, sent at the
@@ -169,7 +183,7 @@ For an entry whose work item carries `entry_trigger: auto`:
   - `filled {qty} @ ${price}` (with the current open/closed state);
   - `cancelled unfilled at the close`;
   - `not yet resolved (entry or cancel pending)`;
-  - `refused: {reason}`;
+  - `refused: {reason}` (`refused: expired ({reason})` or `refused: re-priced` when `expiry_kind` is set);
   - `dismissed before placement` / `cancelled by you`;
   - `not placed in time` (abandoned);
   and the closing line "Paper fills are optimistic: no queue position or market impact." The digest

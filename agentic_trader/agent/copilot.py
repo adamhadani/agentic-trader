@@ -83,14 +83,20 @@ from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessServi
 from agentic_trader.execution.auto_entry import (
     ABANDONED_REASON,
     AUTO_ENTRY_KEY,
+    EXPIRED_REASON,
     NOT_PAPER_REASON,
     REJECTED_AT_SUBMISSION_REASON,
+    REPRICED_REASON,
     AutoEntryAttempt,
     AutoEntryOutcome,
+    ExpiredCard,
+    ExpiryKind,
     attempt_reason,
     auto_entry_marker,
     auto_entry_status_line,
+    not_placed_notice,
     outcome_after_call,
+    sweep_reason,
 )
 from agentic_trader.execution.book_sizing import BookSizer, BookSizingDecision
 from agentic_trader.execution.card_evidence import CardEvidence, CardStatsRepository, lookup
@@ -4420,8 +4426,9 @@ class TradingCopilot:
         scan_id = provenance.get("scan_id") if isinstance(provenance, dict) else None
         attempted_at = (now or datetime.now(UTC)).astimezone(UTC)
         recard: dict[str, Any] | None
+        expired: ExpiredCard | None
         try:
-            attempt, recard = await self._auto_entry_attempt(signal_id, scan_id, attempted_at)
+            attempt, recard, expired = await self._auto_entry_attempt(signal_id, scan_id, attempted_at)
         except Exception as exc:
             logger.exception(
                 "Auto-entry attempt for card #%d failed",
@@ -4435,7 +4442,22 @@ class TradingCopilot:
                 outcome = outcome_after_call(status, trigger)
             except Exception:
                 status, work_status, outcome = str(sig["status"]), None, "refused"
-            attempt = AutoEntryAttempt(signal_id, scan_id, outcome, reason, work_status, status, attempted_at)
+            expiry_kind: ExpiryKind | None = None
+            expired = None
+            if outcome == "refused" and status == SignalStatus.EXPIRED:
+                # Expired before the exception: the card must still stop claiming an entry.
+                try:
+                    expiry_kind, _, expired = await self._auto_entry_expiry(signal_id, str(sig["contract"]))
+                except Exception as follow_up_exc:
+                    logger.warning(
+                        "Auto-entry expiry follow-up unavailable for card #%d (%s)",
+                        signal_id,
+                        type(follow_up_exc).__name__,
+                        extra={"event": "auto_entry_expiry_follow_up_failed", "signal_id": signal_id},
+                    )
+            attempt = AutoEntryAttempt(
+                signal_id, scan_id, outcome, reason, work_status, status, attempted_at, expiry_kind
+            )
             # The store re-cards only a signal still PENDING under its lock.
             refused_pending = outcome == "refused" and status == SignalStatus.PENDING
             recard = {"auto_entry": "refused", "auto_refusal": reason} if refused_pending else None
@@ -4448,7 +4470,7 @@ class TradingCopilot:
         )
         try:
             await self.db.workflows.record_auto_entry_attempt(
-                attempt, recard=recard, entered=attempt.outcome == "entered"
+                attempt, recard=recard, entered=attempt.outcome == "entered", expired=expired
             )
         except Exception:
             logger.exception(
@@ -4460,55 +4482,56 @@ class TradingCopilot:
 
     async def _auto_entry_attempt(
         self, signal_id: int, scan_id: str | None, attempted_at: datetime
-    ) -> tuple[AutoEntryAttempt, dict[str, Any] | None]:
-        """The attempt and its re-card fields (None: no re-card), per the outcome table of the design.
+    ) -> tuple[AutoEntryAttempt, dict[str, Any] | None, ExpiredCard | None]:
+        """The attempt, its re-card fields and its expiry follow-up (None: none), per the design's outcome table.
 
         Only a refusal that leaves the card ``PENDING`` re-cards it; a ``FAILED`` card keeps its immediate
-        rejection notice and an ``EXPIRED`` one (``MISSED``/``EXPIRED``, or ``REPRICE`` with its replacement
-        card) gets nothing.
+        rejection notice; an ``EXPIRED`` one (``MISSED``/``EXPIRED``, or ``REPRICE`` with its replacement card)
+        gets the expiry strike and one "not placed" notice, so it never keeps saying it was entered.
         """
 
         def attempt(
-            outcome: AutoEntryOutcome, reason: str | None, status: str, work_status: str | None = None
+            outcome: AutoEntryOutcome,
+            reason: str | None,
+            status: str,
+            work_status: str | None = None,
+            expiry_kind: ExpiryKind | None = None,
         ) -> AutoEntryAttempt:
-            return AutoEntryAttempt(signal_id, scan_id, outcome, reason, work_status, status, attempted_at)
+            return AutoEntryAttempt(signal_id, scan_id, outcome, reason, work_status, status, attempted_at, expiry_kind)
 
         # Read immediately before the call: a card dismissed (or tapped) since selection keeps its veto.
         sig = await self.db.get_signal_by_id(signal_id)
         if sig is None or sig["status"] != SignalStatus.PENDING:
             status, work_status, _ = await self._auto_entry_state(signal_id)
-            return attempt("skipped_not_pending", None, status, work_status), None
+            return attempt("skipped_not_pending", None, status, work_status), None, None
         status = str(sig["status"])
         issued_at = datetime.fromisoformat(sig["timestamp"]).replace(tzinfo=UTC)
         if (attempted_at - issued_at).total_seconds() > self.config.execution.card_freshness.fresh_seconds:
             # Too late to place: the card is re-sent as a tap card, so none is left saying "no tap needed".
-            return attempt("abandoned", ABANDONED_REASON, status), {
-                "auto_entry": "abandoned",
-                "auto_refusal": ABANDONED_REASON,
-            }
+            recard = {"auto_entry": "abandoned", "auto_refusal": ABANDONED_REASON}
+            return attempt("abandoned", ABANDONED_REASON, status), recard, None
         if not is_paper_scope(self.db.workflows.scope):
             # Defence in depth: the switch already requires Alpaca paper.
-            return attempt("refused", NOT_PAPER_REASON, status), {
-                "auto_entry": "refused",
-                "auto_refusal": NOT_PAPER_REASON,
-            }
+            recard = {"auto_entry": "refused", "auto_refusal": NOT_PAPER_REASON}
+            return attempt("refused", NOT_PAPER_REASON, status), recard, None
 
         reply = await self.execute_signal_by_id(signal_id, None, trigger=EntryTrigger.AUTO)
         status, work_status, trigger = await self._auto_entry_state(signal_id)
         outcome = outcome_after_call(status, trigger)
         if outcome == "skipped_not_pending":
-            return attempt(outcome, None, status, work_status), None
+            return attempt(outcome, None, status, work_status), None, None
         if status == SignalStatus.EXPIRED:
-            reason = "repriced" if await self._auto_entry_repriced(signal_id) else "expired"
-            return attempt(outcome, reason, status, work_status), None
+            kind, reason, expired = await self._auto_entry_expiry(signal_id, str(sig["contract"]))
+            return attempt(outcome, reason, status, work_status, kind), None, expired
         if status == SignalStatus.FAILED:
             # The reply embeds the broker's or an exception's text; the journal and digest carry a fixed phrase.
-            return attempt(outcome, REJECTED_AT_SUBMISSION_REASON, status, work_status), None
-        reason = attempt_reason(reply.text) or "no reason given"
+            return attempt(outcome, REJECTED_AT_SUBMISSION_REASON, status, work_status), None, None
+        reason = sweep_reason(reply.text) or "no reason given"
         if status == SignalStatus.PENDING:
-            return attempt(outcome, reason, status, work_status), {"auto_entry": "refused", "auto_refusal": reason}
+            recard = {"auto_entry": "refused", "auto_refusal": reason}
+            return attempt(outcome, reason, status, work_status), recard, None
         # Entered: the button swap follows.
-        return attempt(outcome, reason, status, work_status), None
+        return attempt(outcome, reason, status, work_status), None, None
 
     async def _auto_entry_state(self, signal_id: int) -> tuple[str, str | None, EntryTrigger | None]:
         """The signal's status, its entry work item's status and that item's trigger (None without one)."""
@@ -4520,10 +4543,30 @@ class TradingCopilot:
             return status, None, None
         return status, str(item.status), await self.db.workflows.entry_trigger(signal_id)
 
-    async def _auto_entry_repriced(self, signal_id: int) -> bool:
-        """True when the card's latest tap assessment recorded a replacement card (``REPRICE``)."""
+    async def _auto_entry_expiry(self, signal_id: int, contract: str) -> tuple[ExpiryKind, str, ExpiredCard]:
+        """Why the sweep's attempt left this card ``EXPIRED``, its journaled reason and its follow-up.
+
+        Read from this attempt's own applied ``card_tap_assessed`` event (``entry_trigger: auto``; the sweep
+        makes one per card): a replacement card means ``repriced``; otherwise the desk-authored assessment
+        reason, cleaned like any attempt reason. A card another path expired (no applied auto assessment) reads
+        ``card expired``. The strike offers Re-evaluate exactly as the card-expiry sweep decides it.
+        """
         events = await self.db.workflows.recent_events(EventKind.CARD_TAP_ASSESSED, streams=[f"card/{signal_id}"])
-        return bool(events) and events[0]["payload"].get("new_signal_id") is not None
+        assessed = next(
+            (
+                event["payload"]
+                for event in events
+                if event["payload"].get("entry_trigger") == EntryTrigger.AUTO and event["payload"].get("applied")
+            ),
+            None,
+        )
+        reevaluable = contract in self.config.contracts
+        new_id = assessed.get("new_signal_id") if assessed else None
+        if new_id is not None:
+            notice = not_placed_notice(signal_id, contract, REPRICED_REASON, new_signal_id=int(new_id))
+            return "repriced", REPRICED_REASON, ExpiredCard(notice, reevaluable)
+        reason = (attempt_reason(str(assessed.get("reason") or "")) if assessed else "") or EXPIRED_REASON
+        return "expired", reason, ExpiredCard(not_placed_notice(signal_id, contract, reason), reevaluable)
 
     async def cancel_background_scans(self) -> None:
         """Cancel and await every in-flight background operator scan (daemon shutdown)."""

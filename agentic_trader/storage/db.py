@@ -829,7 +829,7 @@ class SignalDatabase:
                 first_fill
                 and fill_facts is not None
                 and updated
-                and await self.workflows.entry_trigger_of(session, signal_id) == EntryTrigger.AUTO
+                and await self.workflows.display_entry_trigger(session, signal_id) == EntryTrigger.AUTO
             ):
                 symbol, qty, price, stop, target = fill_facts
                 await self.workflows.add_notification(

@@ -26,7 +26,13 @@ from agentic_trader.accounting.risk import AccountRiskSnapshot, require_risk_che
 from agentic_trader.broker.base import BrokerEntryContext, OrderRequest
 from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, AuditEventType, ExecutionMode, SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import authorization_expiry, reservation_rejection
-from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt, AutoEntryDigestRow
+from agentic_trader.execution.auto_entry import (
+    AUTO_ENTRY_KEY,
+    AUTO_ENTRY_MARKER,
+    AutoEntryAttempt,
+    AutoEntryDigestRow,
+    ExpiredCard,
+)
 from agentic_trader.execution.capacity import assess_entry_capacity
 from agentic_trader.execution.durable import (
     ENTRY_BLOCKING,
@@ -178,7 +184,11 @@ def _digest_row(
     if status in (SignalStatus.SUBMITTING, SignalStatus.EXECUTED):
         return AutoEntryDigestRow(signal.id, symbol, "still_resting")
     if attempt is not None and attempt.get("outcome") == "refused":
-        return AutoEntryDigestRow(signal.id, symbol, "refused", attempt.get("reason"))
+        reason = attempt.get("reason")
+        if attempt.get("expiry_kind") == "expired":
+            # The sweep's own tap assessment expired the card: say so beside its reason.
+            reason = f"expired ({reason})" if reason else "expired"
+        return AutoEntryDigestRow(signal.id, symbol, "refused", reason)
     if status == SignalStatus.FAILED and entry is not None:
         if entry.status == WorkStatus.REJECTED:
             return AutoEntryDigestRow(signal.id, symbol, "refused", "rejected after it was queued")
@@ -408,16 +418,25 @@ class WorkflowStore:
         ]
 
     async def record_auto_entry_attempt(
-        self, attempt: AutoEntryAttempt, *, recard: dict[str, Any] | None, entered: bool
+        self,
+        attempt: AutoEntryAttempt,
+        *,
+        recard: dict[str, Any] | None,
+        entered: bool,
+        expired: ExpiredCard | None = None,
     ) -> None:
         """Journal one auto-entry attempt and queue its follow-up in one transaction (delivery contract).
 
         The ``auto_entry_attempted`` event (stream ``card/{id}``, key ``auto-entry/{id}``) is written
         once: a later call for the same card writes nothing. ``entered`` queues the
-        ``CARD_AUTO_ENTERED`` button swap. ``recard`` (its ``auto_entry`` and raw ``auto_refusal``)
-        queues a fresh card: the original card's payload from its ``signal/{id}/created`` outbox row
-        with those fields, only while the signal is still ``PENDING`` under the lock. Without that row
-        there is nothing to re-send: the attempt is still journaled and a warning is logged.
+        ``CARD_AUTO_ENTERED`` button swap. ``expired`` (a card the attempt left ``EXPIRED``) queues, only
+        while the signal is ``EXPIRED`` under the lock, the card-expiry sweep's own ``CARD_EXPIRED`` strike
+        (key ``signal/{id}/expired``, payload ``signal_id``, ``contract``, ``reevaluable``) and the
+        ``signal/{id}/auto-not-placed`` notice, so the card stops saying it was entered. ``recard`` (its
+        ``auto_entry`` and raw ``auto_refusal``) queues a fresh card: the original card's payload from its
+        ``signal/{id}/created`` outbox row with those fields, only while the signal is still ``PENDING``
+        under the lock. Without that row there is nothing to re-send: the attempt is still journaled and a
+        warning is logged.
         """
         signal_id = attempt.signal_id
         key = f"auto-entry/{signal_id}"
@@ -446,6 +465,18 @@ class WorkflowStore:
                     f"signal/{signal_id}/auto-entered",
                     NotificationKind.CARD_AUTO_ENTERED,
                     {"signal_id": signal_id, "contract": signal.contract},
+                )
+            if expired is not None and signal.status == SignalStatus.EXPIRED:
+                # The original card's message id is untouched on this path (a re-priced card is a new
+                # signal), so the strike reaches the card that says "no tap needed".
+                await self.add_notification(
+                    session,
+                    f"signal/{signal_id}/expired",
+                    NotificationKind.CARD_EXPIRED,
+                    {"signal_id": signal_id, "contract": signal.contract, "reevaluable": expired.reevaluable},
+                )
+                await self.add_notification(
+                    session, f"signal/{signal_id}/auto-not-placed", NotificationKind.MESSAGE, {"text": expired.notice}
                 )
             if recard is not None and signal.status == SignalStatus.PENDING:
                 original = await session.scalar(
@@ -636,18 +667,68 @@ class WorkflowStore:
             raise ValueError("Observed account equity is nonpositive; new entries blocked")
         return risk
 
-    async def entry_trigger_of(self, session: AsyncSession, signal_id: int) -> EntryTrigger | None:
-        """The trigger of a signal's entry work item; None without one, a tap when it predates the key."""
-        raw = await session.scalar(
+    async def _entry_payload(self, session: AsyncSession, signal_id: int) -> str | None:
+        return await session.scalar(
             select(WorkItemRecord.payload).where(
                 WorkItemRecord.scope == self.scope,
                 WorkItemRecord.kind == WorkKind.ENTRY,
                 WorkItemRecord.dedup_key == str(signal_id),
             )
         )
+
+    async def entry_trigger_of(self, session: AsyncSession, signal_id: int) -> EntryTrigger | None:
+        """The trigger of a signal's entry work item; None without one, a tap when it predates the key.
+
+        Strict: an unknown stored value raises ``ValueError``. A display-only caller inside a fact
+        transaction uses ``display_entry_trigger`` instead.
+        """
+        raw = await self._entry_payload(session, signal_id)
         if raw is None:
             return None
         return EntryTrigger(json.loads(raw).get("entry_trigger", EntryTrigger.TAP))
+
+    async def display_entry_trigger(self, session: AsyncSession, signal_id: int) -> EntryTrigger | None:
+        """``entry_trigger_of`` for the fold and fill-notice decisions inside a fact transaction: never raises
+        on the stored value. An unknown or unreadable value reads as ``TAP`` (never folds, no fill notice),
+        with a warning naming only its error's type; the database read itself still raises."""
+        raw = await self._entry_payload(session, signal_id)
+        if raw is None:
+            return None
+        try:
+            return EntryTrigger(json.loads(raw).get("entry_trigger", EntryTrigger.TAP))
+        except (ValueError, TypeError, AttributeError) as exc:
+            logger.warning(
+                "Entry trigger of signal #%d is unreadable (%s); notices treat it as a tap",
+                signal_id,
+                type(exc).__name__,
+                extra={"event": "entry_trigger_unreadable", "signal_id": signal_id, "reason": type(exc).__name__},
+            )
+            return EntryTrigger.TAP
+
+    async def folds_into_auto_digest(self, session: AsyncSession, signal_id: int) -> bool:
+        """Whether a routine notice of this signal's entry is folded into the daily auto-entry digest.
+
+        Only an auto entry folds, and only while the digest can still report it: never once the digest of
+        the signal's New York creation date is queued, nor when that date is before today (New York).
+        """
+        if await self.display_entry_trigger(session, signal_id) != EntryTrigger.AUTO:
+            return False
+        created = await session.scalar(
+            select(SignalRecord.timestamp).where(*self.db._scope(), SignalRecord.id == signal_id)
+        )
+        if created is None:
+            return False
+        et_date = created.astimezone(ET_TZ).date()
+        if et_date < datetime.now(UTC).astimezone(ET_TZ).date():
+            return False
+        queued = await session.scalar(
+            select(WorkItemRecord.id).where(
+                WorkItemRecord.scope == self.scope,
+                WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                WorkItemRecord.dedup_key == f"auto-entry-digest/{et_date.isoformat()}",
+            )
+        )
+        return queued is None
 
     async def entry_trigger(self, signal_id: int) -> EntryTrigger | None:
         """``entry_trigger_of`` in its own session, for a caller outside a workflow transaction."""
@@ -1005,7 +1086,7 @@ class WorkflowStore:
             folded = (
                 row.status == WorkStatus.ACCEPTED
                 and previous != WorkStatus.UNKNOWN
-                and await self.entry_trigger_of(session, item.payload["signal_id"]) == EntryTrigger.AUTO
+                and await self.folds_into_auto_digest(session, item.payload["signal_id"])
             )
             if not folded:
                 await self.add_notification(

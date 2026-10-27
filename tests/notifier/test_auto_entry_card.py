@@ -19,6 +19,7 @@ from agentic_trader.notifier.telegram_bot import (
     AUTO_ENTRY_LINE,
     AUTO_REFUSED_LINE,
     CANCEL_ENTRY_ASK_LABEL,
+    ENTRY_SESSION_BOUND_LINE,
     TelegramNotifier,
     format_alert_card,
     format_terminal_card,
@@ -119,6 +120,54 @@ async def test_auto_card_failed_or_expired_renders_like_today(temp_db, eval_res)
     assert failed["reply_markup"] is None
     signal_id, expired = await _send(temp_db, eval_res, status=SignalStatus.EXPIRED, auto_entry="placing")
     assert _buttons(expired["reply_markup"]) == [[("🔄 Re-evaluate", f"reval_{signal_id}")]]
+    # Spec 2.3 "any other status -> as today": the text too, never the "no tap needed" line.
+    for status, sent in ((SignalStatus.FAILED, failed), (SignalStatus.EXPIRED, expired)):
+        _, plain = await _send(temp_db, eval_res, status=status)
+        assert AUTO_ENTRY_LINE not in sent["text"] and "auto-entry" not in sent["text"].lower()
+        assert sent["text"] == plain["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [SignalStatus.FAILED, SignalStatus.EXPIRED, SignalStatus.DISMISSED, SignalStatus.CLOSED_WIN],
+)
+async def test_placing_card_off_live_status_renders_exactly_as_a_tap_card(temp_db, eval_res, status):
+    _, plain = await _send(temp_db, eval_res, status=status, entry_session_bound=True)
+    _, sent = await _send(temp_db, eval_res, status=status, entry_session_bound=True, auto_entry="placing")
+    assert sent["text"] == plain["text"]
+    assert f"• {ENTRY_SESSION_BOUND_LINE}" in sent["text"]  # rendered as a non-auto card, bullet included
+    if plain["reply_markup"] is None:
+        assert sent["reply_markup"] is None
+    else:
+        assert [t for row in _buttons(sent["reply_markup"]) for t, _ in row] == [
+            t for row in _buttons(plain["reply_markup"]) for t, _ in row
+        ]
+
+
+@pytest.mark.parametrize(
+    ("auto", "bullet_shown"),
+    [
+        ({"auto_entry": "placing"}, False),
+        ({"auto_entry": "refused", "auto_refusal": "cap"}, True),
+        ({"auto_entry": "abandoned"}, True),
+        ({}, True),
+    ],
+    ids=["placing", "refused", "abandoned", "non_auto"],
+)
+def test_only_a_placing_card_omits_the_separate_session_bound_bullet(eval_res, auto, bullet_shown):
+    """Ruling R11 (corrected): the placing line already says it; re-cards and non-auto cards keep the bullet."""
+    bullet = f"• {ENTRY_SESSION_BOUND_LINE}"
+    for render in (format_alert_card, format_terminal_card):
+        assert (bullet in render(eval_res, "S", entry_session_bound=True, **auto)) is bullet_shown
+        assert bullet not in render(eval_res, "S", **auto)  # never without the session bound
+
+
+@pytest.mark.asyncio
+async def test_delivered_auto_card_omits_the_session_bound_bullet(temp_db, eval_res):
+    _, sent = await _send(temp_db, eval_res, entry_session_bound=True, auto_entry="placing")
+    assert AUTO_ENTRY_LINE in sent["text"]
+    assert f"• {ENTRY_SESSION_BOUND_LINE}" not in sent["text"]
 
 
 @pytest.mark.asyncio

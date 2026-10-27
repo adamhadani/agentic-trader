@@ -520,7 +520,7 @@ the paper account by [auto-entry](paper-auto-entry.md). All of it is descriptive
   averages taps only.
 - **`operator_action`** per card row, the first matching rule: `cancelled` (an operator-cause entry cancel; a
   deadline cancel is not an operator act), `auto_entered`, `auto_refused` (the sweep's attempt was `refused`,
-  or the auto entry was rejected without a fill), `tapped` (a tap-trigger entry exists, including a marked
+  including a card its tap check expired or re-priced, or the auto entry was rejected without a fill), `tapped` (a tap-trigger entry exists, including a marked
   card the sweep refused or abandoned and the operator then tapped), `dismissed`, `abandoned` (the sweep never
   got to it), `expired`, else `none`. Cards recorded without the `auto_entry` marker use only `cancelled`,
   `tapped`, `dismissed`, `expired` and `none`.
