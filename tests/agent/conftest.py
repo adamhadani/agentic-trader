@@ -1,12 +1,21 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import litellm
 import pandas as pd
 import pytest
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.research.alpha.models import RegistrySnapshot
 from tests.calendar_doubles import clear_check, union_double
+
+
+@pytest.fixture(autouse=True)
+def _global_stays_false():
+    """``litellm.drop_params`` is process-wide: a test may never leave it changed."""
+    assert litellm.drop_params is False
+    yield
+    assert litellm.drop_params is False
 
 
 @pytest.fixture(autouse=True)

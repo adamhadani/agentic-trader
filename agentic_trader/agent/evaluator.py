@@ -140,7 +140,9 @@ class RiskEvaluator:
         # None by default: never construct a network client implicitly (tests
         # block network I/O); the gate/note are simply skipped when unset.
         self.earnings_calendar = earnings_calendar
-        litellm.drop_params = True
+        # No ``litellm.drop_params = True``: it is process-wide and makes litellm drop any parameter the model
+        # rejects, which also defeats the gate's per-call ``drop_params=False``. Callers that want dropping
+        # (macro explainer, doctor, chat) ask per call.
         # The gate prompt's identity (config only), recorded in every ``llm_verdict``.
         self.prompt_sha256 = gate_prompt_sha256(config)
 

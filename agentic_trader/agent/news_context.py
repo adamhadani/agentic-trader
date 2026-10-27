@@ -122,8 +122,8 @@ class NewsScorer:
                     {"role": "user", "content": self.user_message(symbol, items)},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0,
                 timeout=self.timeout_seconds,
+                drop_params=False,
             ),
             timeout=self.timeout_seconds,
         )

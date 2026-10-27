@@ -280,13 +280,13 @@ async def check_llm(config: AppConfig) -> ComponentHealth:
     """Check LiteLLM model completion and API credentials."""
     model = config.llm_model
     try:
-        litellm.drop_params = True
         response = await asyncio.wait_for(
             litellm.acompletion(
                 api_key=config.llm_api_key,
                 model=model,
                 messages=[{"role": "user", "content": "Respond with 'OK'"}],
                 max_tokens=5,
+                drop_params=True,
             ),
             timeout=10.0,
         )
