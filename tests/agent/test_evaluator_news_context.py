@@ -66,8 +66,8 @@ async def test_llm_path_attaches_block_pops_reply_key_and_keeps_news_out_of_the_
 
     async def fake_completion(**kwargs):
         calls.append(kwargs)
-        # A veto carrying a malformed `news_context`: without the pop the reply fails validation and the
-        # fallback would approve, so the veto standing proves the key was removed before validation.
+        # A veto carrying a malformed `news_context`: the reply's key is never read, so the veto stands
+        # well-formed (not malformed) and the block on the result is the scan's.
         return llm_reply(approved=False, rejection_reason="LLM veto", news_context="junk")
 
     monkeypatch.setattr(evaluator_module.litellm, "acompletion", fake_completion)
@@ -76,13 +76,15 @@ async def test_llm_path_attaches_block_pops_reply_key_and_keeps_news_out_of_the_
     assert len(calls) == 1
     assert eval_res.approved is False
     assert eval_res.llm_verdict is not None and eval_res.llm_verdict["approved"] is False
+    assert eval_res.llm_verdict["malformed"] is False
     assert eval_res.news_context == BLOCK  # ours, never the reply's
     prompt_text = json.dumps(calls[0]["messages"])
     assert "SECRET-HEADLINE" not in prompt_text and "news" not in prompt_text.lower()
 
 
-async def test_fallback_path_attaches_the_block(config, evaluator_factory, monkeypatch):  # noqa: F811
+async def test_error_path_attaches_the_block(config, evaluator_factory, monkeypatch):  # noqa: F811
     monkeypatch.setattr(evaluator_module.litellm, "acompletion", AsyncMock(side_effect=RuntimeError("down")))
     evaluator = evaluator_factory(config=config.model_copy(update={"openai_api_key": "k"}))
     eval_res = await evaluator.evaluate_candidate(create_equity_candidate(), use_llm=True, news_context=BLOCK)
-    assert eval_res.news_context == BLOCK and eval_res.llm_verdict is None
+    assert eval_res.news_context == BLOCK and eval_res.approved is False
+    assert eval_res.llm_verdict is not None and eval_res.llm_verdict["error"] == "RuntimeError"

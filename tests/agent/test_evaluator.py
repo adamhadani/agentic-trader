@@ -452,8 +452,10 @@ async def test_an_unverified_calendar_sets_macro_note_and_never_says_cleared(eva
     monkeypatch.setattr(
         "agentic_trader.agent.evaluator.litellm.acompletion", AsyncMock(side_effect=RuntimeError("provider down"))
     )
-    fallback = await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
-    assert fallback.approved is True and fallback.macro_note == "static tier-1 calendar expired; live feed ok"
+    # An LLM error never approves a native card; the deterministic macro note still rides on the result.
+    unavailable = await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
+    assert unavailable.approved is False and unavailable.macro_note == "static tier-1 calendar expired; live feed ok"
+    assert unavailable.llm_verdict is not None and unavailable.llm_verdict["error"] == "RuntimeError"
 
 
 async def test_a_verified_calendar_still_says_macro_cleared(evaluator_factory):

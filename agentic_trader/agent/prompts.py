@@ -1,3 +1,4 @@
+import hashlib
 from typing import TYPE_CHECKING
 
 from agentic_trader.constants import APP_DISPLAY_NAME
@@ -73,3 +74,10 @@ Respond with a JSON object with keys:
 "macro_clearance" (boolean),
 "thesis_summary" (string)
 """
+
+
+def gate_prompt_sha256(config: AppConfig) -> str:
+    """The gate prompt's identity, recorded as ``llm_verdict["prompt_sha256"]``: SHA-256 of the rendered
+    system prompt (config only) followed by the unrendered ``USER_EVALUATION_TEMPLATE``, i.e. the prompt
+    without the per-card values."""
+    return hashlib.sha256((build_system_prompt(config) + USER_EVALUATION_TEMPLATE).encode()).hexdigest()
