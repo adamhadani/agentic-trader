@@ -33,6 +33,7 @@ from agentic_trader.research.setups.outcomes import (
     CF_COLUMN_PREFIX,
     DEFAULT_COST_BPS_PER_SIDE,
     DEFAULT_MAX_HOLD_SESSIONS,
+    attach_execution,
     label_journaled,
     scan_supply,
     summarize,
@@ -99,9 +100,13 @@ async def outcomes_cmd(days: int) -> None:
             now=now,
             max_requests_per_minute=config.market_data.max_requests_per_minute,
         )
-        summary = summarize(frame, asset_classes=config.universe.outcome_asset_classes())
-        summary["supply"] = scan_supply(events)
         execution = await collect_execution(db, frame)
+        summary = summarize(
+            attach_execution(frame, execution),
+            asset_classes=config.universe.outcome_asset_classes(),
+            slots=config.scheduler.suggestion_scan_times_et,
+        )
+        summary["supply"] = scan_supply(events)
         summary["execution"] = summarize_execution(execution)
         click.echo(json.dumps(summary, indent=2, default=str))
         if frame.empty:

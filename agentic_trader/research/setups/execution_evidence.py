@@ -17,7 +17,8 @@ from typing import Any
 import pandas as pd
 
 from agentic_trader.constants import SignalStatus
-from agentic_trader.execution.durable import EventKind
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY
+from agentic_trader.execution.durable import EntryTrigger, EventKind, WorkStatus
 from agentic_trader.execution.freshness import CardOutcome
 from agentic_trader.storage.db import SignalDatabase
 
@@ -29,6 +30,7 @@ __all__ = [
     "execute_tap",
     "fill_slip_r",
     "observed_fill",
+    "operator_action",
     "reprice_target",
     "summarize_execution",
 ]
@@ -62,7 +64,13 @@ COLUMNS = (
     "fill_slip_r",
     "tap_age_seconds",
     "tap_r_consumed",
+    "auto_marked",
+    "entry_trigger",
+    "operator_action",
 )
+
+# Who entered a card: the auto-entry sweep, an operator tap, or nobody (no entry item).
+NO_ENTRY = "none"
 
 
 def fill_slip_r(
@@ -124,13 +132,18 @@ def observed_fill(events: list[dict[str, Any]]) -> tuple[float | None, float | N
 
 
 def execute_tap(events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The applied ``execute`` tap assessment's age and consumed R, else None."""
+    """The applied ``execute`` tap assessment's age and consumed R, else None.
+
+    The auto-entry sweep writes the same assessment with ``entry_trigger: auto``; that is no operator
+    tap and is skipped. An assessment that predates the key is a tap.
+    """
     for event in reversed(events):
         payload = event.get("payload") or {}
         if (
             event.get("kind") == EventKind.CARD_TAP_ASSESSED
             and payload.get("outcome") == CardOutcome.EXECUTE
             and payload.get("applied")
+            and payload.get("entry_trigger", EntryTrigger.TAP) == EntryTrigger.TAP
         ):
             return {"age_seconds": payload.get("age_seconds"), "r_consumed": payload.get("r_consumed")}
     return None
@@ -204,6 +217,64 @@ def _planned_levels(raw_response: Any, record: dict[str, Any]) -> tuple[float | 
     return _value(record.get("entry")), stop, "journal"
 
 
+def operator_action(
+    *,
+    marked: bool,
+    entry_trigger: str,
+    status: str | None,
+    work_status: str | None,
+    filled: bool,
+    operator_cancelled: bool,
+    attempt: str | None,
+) -> str:
+    """What the operator (or the auto-entry sweep) did with one sent card; the first matching rule wins.
+
+    A card recorded with the ``auto_entry`` marker (``marked``):
+
+    - ``cancelled``: an operator-cause ``entry_cancel`` exists (a deadline cancel is not an operator act);
+    - ``auto_entered``: the entry item's trigger is ``auto``, unless that entry was later rejected
+      without a fill, which is ``auto_refused``;
+    - ``dismissed``: the card was dismissed (before any placement);
+    - ``auto_refused``: the sweep's attempt outcome was ``refused``;
+    - ``abandoned``: the attempt outcome was ``abandoned`` (the sweep never got to it);
+    - ``expired``: the card expired with no attempt journaled;
+    - otherwise the unmarked rules below (an operator tap that beat the sweep reads ``tapped``).
+
+    An unmarked (tap-era or ineligible) card: ``cancelled`` when its entry was operator-cancelled,
+    ``tapped`` when a tap-trigger entry exists, ``dismissed``, ``expired``, else ``none``.
+    """
+    entered = entry_trigger != NO_ENTRY
+    if operator_cancelled and entered:
+        return "cancelled"
+    if marked:
+        if entry_trigger == EntryTrigger.AUTO:
+            rejected = work_status == WorkStatus.REJECTED and not filled
+            return "auto_refused" if rejected else "auto_entered"
+        if status == SignalStatus.DISMISSED:
+            return "dismissed"
+        if attempt == "refused":
+            return "auto_refused"
+        if attempt == "abandoned":
+            return "abandoned"
+        if status == SignalStatus.EXPIRED and attempt is None and not entered:
+            return "expired"
+    if entry_trigger == EntryTrigger.TAP:
+        return "tapped"
+    if status == SignalStatus.DISMISSED:
+        return "dismissed"
+    if status == SignalStatus.EXPIRED:
+        return "expired"
+    return "none"
+
+
+def _attempt_outcome(events: list[dict[str, Any]]) -> str | None:
+    """The latest ``auto_entry_attempted`` outcome on a card, else None."""
+    for event in reversed(events):
+        if event.get("kind") == EventKind.AUTO_ENTRY_ATTEMPTED:
+            return (event.get("payload") or {}).get("outcome")
+    return None
+
+
 async def collect_execution(db: SignalDatabase, frame: pd.DataFrame) -> pd.DataFrame:
     """One row per sent card with a ``signal_id`` in ``frame`` (the outcome report's rows).
 
@@ -215,7 +286,10 @@ async def collect_execution(db: SignalDatabase, frame: pd.DataFrame) -> pd.DataF
         return pd.DataFrame(columns=list(COLUMNS))
     records = sent.to_dict("records")
     chains = [await _follow_reprices(db, int(record["signal_id"])) for record in records]
-    item_ids = await db.workflows.entry_item_ids([final_id for final_id, _ in chains])
+    final_ids = [final_id for final_id, _ in chains]
+    item_ids = await db.workflows.entry_item_ids(final_ids)
+    work_states = await db.workflows.entry_work_states(final_ids)
+    cancel_causes = await db.workflows.entry_cancel_causes(final_ids)
     rows: list[dict[str, Any]] = []
     for record, (final_id, card_events) in zip(records, chains, strict=True):
         signal_id = int(record["signal_id"])
@@ -232,6 +306,12 @@ async def collect_execution(db: SignalDatabase, frame: pd.DataFrame) -> pd.DataF
             if price is not None:
                 fill_price, filled_quantity, fill_source = price, quantity, "entry_resolved"
         tap = execute_tap(card_events)
+        # The marker and the sweep's attempt belong to the card as sent; the entry itself to the final card.
+        sent_card = signal if final_id == signal_id else (await db.get_signal_by_id(signal_id) or {})
+        sent_events = card_events if final_id == signal_id else await db.workflows.events(stream=f"card/{signal_id}")
+        marked = bool((sent_card.get("decision_provenance") or {}).get(AUTO_ENTRY_KEY))
+        work_status, trigger = work_states.get(final_id, (None, None))
+        entry_trigger = str(trigger) if trigger is not None else NO_ENTRY
         planned_entry, stop, planned_source = _planned_levels(signal.get("raw_response"), record)
         rows.append(
             {
@@ -250,6 +330,17 @@ async def collect_execution(db: SignalDatabase, frame: pd.DataFrame) -> pd.DataF
                 "fill_slip_r": fill_slip_r(direction, planned_entry, stop, fill_price),
                 "tap_age_seconds": tap["age_seconds"] if tap else None,
                 "tap_r_consumed": tap["r_consumed"] if tap else None,
+                "auto_marked": marked,
+                "entry_trigger": entry_trigger,
+                "operator_action": operator_action(
+                    marked=marked,
+                    entry_trigger=entry_trigger,
+                    status=signal.get("status"),
+                    work_status=work_status,
+                    filled=fill_price is not None,
+                    operator_cancelled="operator" in cancel_causes.get(final_id, set()),
+                    attempt=_attempt_outcome(sent_events),
+                ),
             }
         )
     return pd.DataFrame(rows, columns=list(COLUMNS))
@@ -276,5 +367,8 @@ def summarize_execution(frame: pd.DataFrame) -> dict[str, Any]:
             source: int((with_fill["fill_source"] == source).sum()) if len(with_fill) else 0 for source in FILL_SOURCES
         },
         "mean_fill_slip_r": _mean(with_fill["fill_slip_r"]),
+        # An auto entry carries no tap age, but the counts are explicit so they never blur.
         "mean_tap_age_seconds": _mean(frame["tap_age_seconds"]),
+        "taps": int((frame["entry_trigger"] == EntryTrigger.TAP).sum()) if not frame.empty else 0,
+        "auto_entries": int((frame["entry_trigger"] == EntryTrigger.AUTO).sum()) if not frame.empty else 0,
     }

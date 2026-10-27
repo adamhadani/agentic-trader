@@ -444,6 +444,20 @@ def test_cards_outcomes_prints_supply_and_the_empty_line(runner: CliRunner):
     assert "No journaled candidates in 30 day(s) (1 scan events)." in result.output
 
 
+def test_cards_outcomes_prints_operator_block(runner: CliRunner):
+    """The summary carries the descriptive `operator` block (an empty window is `insufficient`, never a gate)."""
+    with (
+        patch.object(cards_module, "scan_ranked_events", AsyncMock(return_value=[])),
+        patch.object(cards_module, "build_bar_source", return_value=_FakeBarSource(pd.DataFrame())),
+    ):
+        result = runner.invoke(cli, ["cards", "outcomes"])
+
+    assert result.exit_code == 0, result.output
+    for key in ('"operator"', '"by_slot"', '"tap_latency"', '"kept_vs_vetoed"', '"tap_era"'):
+        assert key in result.output
+    assert '"status": "insufficient"' in result.output
+
+
 def test_db_queue_default_kind_is_a_valid_choice(runner: CliRunner):
     result = runner.invoke(cli, ["db", "queue"])
     assert "is not one of" not in result.output, result.output

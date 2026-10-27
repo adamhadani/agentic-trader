@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from agentic_trader.constants import SignalStatus
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER
 from agentic_trader.execution.durable import EventKind, OrderObservation, WorkKind, WorkStatus
 from agentic_trader.research.setups.execution_evidence import (
     collect_execution,
@@ -183,6 +184,8 @@ async def test_collect_execution_joins_signal_fill_and_tap(temp_db):
         "fill_source": {"order_observed": 0, "entry_resolved": 1},
         "mean_fill_slip_r": pytest.approx(0.25),
         "mean_tap_age_seconds": 75.5,
+        "taps": 1,
+        "auto_entries": 0,
     }
 
 
@@ -224,6 +227,8 @@ async def test_collect_execution_skips_rows_without_a_signal_id(temp_db):
         "fill_source": {"order_observed": 0, "entry_resolved": 0},
         "mean_fill_slip_r": None,
         "mean_tap_age_seconds": None,
+        "taps": 0,
+        "auto_entries": 0,
     }
 
 
@@ -424,3 +429,296 @@ async def test_a_fill_without_a_defined_slip_is_not_averaged_as_nan(temp_db):
     frame = await collect_execution(temp_db, _frame(signal_id).assign(direction=None))
     summary = summarize_execution(frame)
     assert summary["filled"] == 1 and summary["mean_fill_slip_r"] is None
+
+
+# --- entry_trigger and operator_action -------------------------------------------------------------
+
+
+async def _card(
+    temp_db,
+    *,
+    status,
+    marked: bool,
+    trigger: str | None,
+    work_status=WorkStatus.ACCEPTED,
+    fill=None,
+    attempt: str | None = None,
+    cancel_cause: str | None = None,
+    tap_trigger: str | None = None,
+) -> int:
+    """One card with an optional entry item (trigger, status, fill), auto attempt, cancel item and tap."""
+    async with temp_db.session_factory() as session, session.begin():
+        await temp_db.workflows.lock(session)
+        signal = SignalRecord(
+            timestamp=T0,
+            contract="AAPL",
+            strategy="BREAKOUT",
+            direction="LONG",
+            entry_price=100.25,
+            stop_loss=99.0,
+            take_profit=102.0,
+            risk_dollars=5.0,
+            status=str(status),
+            decision_provenance=json.dumps({AUTO_ENTRY_KEY: AUTO_ENTRY_MARKER} if marked else {}),
+            environment=temp_db.environment,
+            execution_mode=temp_db.execution_mode,
+        )
+        session.add(signal)
+        await session.flush()
+        signal_id = signal.id
+        if trigger is not None:
+            item_id = f"client-{signal_id}"
+            session.add(
+                WorkItemRecord(
+                    id=item_id,
+                    scope=temp_db.workflows.scope,
+                    dedup_key=str(signal_id),
+                    kind=WorkKind.ENTRY,
+                    status=work_status,
+                    payload=json.dumps({"signal_id": signal_id, "entry_trigger": trigger}),
+                    result="{}",
+                    available_at=T0,
+                    created_at=T0,
+                )
+            )
+            await session.flush()
+            if fill is not None:
+                await temp_db.workflows.append(
+                    session,
+                    stream=f"entry/{item_id}",
+                    kind=EventKind.ENTRY_RESOLVED,
+                    payload={"status": "accepted", "result": {"fill_price": fill, "filled_quantity": 4.0}},
+                )
+        if cancel_cause is not None:
+            session.add(
+                WorkItemRecord(
+                    id=f"cancel-{signal_id}",
+                    scope=temp_db.workflows.scope,
+                    dedup_key=str(signal_id),
+                    kind=WorkKind.ENTRY_CANCEL,
+                    status=WorkStatus.ACCEPTED,
+                    payload=json.dumps({"signal_id": signal_id, "cause": cancel_cause}),
+                    result="{}",
+                    available_at=T0,
+                    created_at=T0,
+                )
+            )
+        if attempt is not None:
+            await temp_db.workflows.append(
+                session,
+                stream=f"card/{signal_id}",
+                kind=EventKind.AUTO_ENTRY_ATTEMPTED,
+                payload={"signal_id": signal_id, "outcome": attempt, "reason": None},
+                key=f"auto-entry/{signal_id}",
+            )
+        if tap_trigger is not None:
+            await temp_db.workflows.append(
+                session,
+                stream=f"card/{signal_id}",
+                kind=EventKind.CARD_TAP_ASSESSED,
+                payload={
+                    "signal_id": signal_id,
+                    "outcome": "execute",
+                    "applied": True,
+                    "age_seconds": 120.0,
+                    "r_consumed": 0.0,
+                    "entry_trigger": tap_trigger,
+                },
+                key=f"card_tap_assessed/{signal_id}/execute",
+            )
+        return signal_id
+
+
+_PER_ROW_CASES = {
+    # name: (card kwargs, expected entry_trigger, expected operator_action)
+    "tapped": (
+        {"status": SignalStatus.EXECUTED, "marked": False, "trigger": "tap", "fill": 100.25, "tap_trigger": "tap"},
+        "tap",
+        "tapped",
+    ),
+    "tapped_legacy_item_without_key": (
+        {"status": SignalStatus.EXECUTED, "marked": False, "trigger": "tap"},
+        "tap",
+        "tapped",
+    ),
+    "unmarked_cancelled": (
+        {"status": SignalStatus.EXECUTED, "marked": False, "trigger": "tap", "cancel_cause": "operator"},
+        "tap",
+        "cancelled",
+    ),
+    "unmarked_deadline_cancel_is_still_tapped": (
+        {"status": SignalStatus.EXECUTED, "marked": False, "trigger": "tap", "cancel_cause": "deadline"},
+        "tap",
+        "tapped",
+    ),
+    "unmarked_dismissed": ({"status": SignalStatus.DISMISSED, "marked": False, "trigger": None}, "none", "dismissed"),
+    "unmarked_expired": ({"status": SignalStatus.EXPIRED, "marked": False, "trigger": None}, "none", "expired"),
+    "unmarked_pending": ({"status": SignalStatus.PENDING, "marked": False, "trigger": None}, "none", "none"),
+    "auto_entered": (
+        {
+            "status": SignalStatus.EXECUTED,
+            "marked": True,
+            "trigger": "auto",
+            "fill": 100.25,
+            "attempt": "entered",
+            "tap_trigger": "auto",
+        },
+        "auto",
+        "auto_entered",
+    ),
+    "auto_entered_then_deadline_cancel_is_kept": (
+        {
+            "status": SignalStatus.EXPIRED,
+            "marked": True,
+            "trigger": "auto",
+            "attempt": "entered",
+            "cancel_cause": "deadline",
+        },
+        "auto",
+        "auto_entered",
+    ),
+    "auto_cancelled_by_operator": (
+        {
+            "status": SignalStatus.EXECUTED,
+            "marked": True,
+            "trigger": "auto",
+            "attempt": "entered",
+            "cancel_cause": "operator",
+        },
+        "auto",
+        "cancelled",
+    ),
+    "marked_dismissed": ({"status": SignalStatus.DISMISSED, "marked": True, "trigger": None}, "none", "dismissed"),
+    "auto_refused_attempt": (
+        {"status": SignalStatus.PENDING, "marked": True, "trigger": None, "attempt": "refused"},
+        "none",
+        "auto_refused",
+    ),
+    "auto_later_rejected_without_fill": (
+        {
+            "status": SignalStatus.FAILED,
+            "marked": True,
+            "trigger": "auto",
+            "work_status": WorkStatus.REJECTED,
+            "attempt": "entered",
+        },
+        "auto",
+        "auto_refused",
+    ),
+    "abandoned": (
+        {"status": SignalStatus.PENDING, "marked": True, "trigger": None, "attempt": "abandoned"},
+        "none",
+        "abandoned",
+    ),
+    "marked_expired_without_attempt": (
+        {"status": SignalStatus.EXPIRED, "marked": True, "trigger": None},
+        "none",
+        "expired",
+    ),
+    "marked_operator_tapped_first": (
+        {
+            "status": SignalStatus.EXECUTED,
+            "marked": True,
+            "trigger": "tap",
+            "attempt": "skipped_not_pending",
+            "tap_trigger": "tap",
+        },
+        "tap",
+        "tapped",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_PER_ROW_CASES))
+async def test_entry_trigger_and_operator_action_per_row(temp_db, name):
+    """Every ``operator_action`` value, and the ``entry_trigger`` of the card's entry item."""
+    kwargs, trigger, action = _PER_ROW_CASES[name]
+    signal_id = await _card(temp_db, **kwargs)
+    [row] = (await collect_execution(temp_db, _frame(signal_id))).to_dict("records")
+    assert (row["entry_trigger"], row["operator_action"]) == (trigger, action)
+    assert row["auto_marked"] is kwargs["marked"]
+
+
+async def test_auto_entry_assessment_is_not_a_tap(temp_db):
+    """An auto entry's own ``card_tap_assessed`` (``entry_trigger: auto``) carries no tap age."""
+    auto = await _card(
+        temp_db,
+        status=SignalStatus.EXECUTED,
+        marked=True,
+        trigger="auto",
+        fill=100.25,
+        attempt="entered",
+        tap_trigger="auto",
+    )
+    tap = await _card(
+        temp_db, status=SignalStatus.EXECUTED, marked=False, trigger="tap", fill=100.25, tap_trigger="tap"
+    )
+    frame = await collect_execution(temp_db, pd.concat([_frame(auto), _frame(tap)], ignore_index=True))
+    by_id = frame.set_index("signal_id")
+    assert pd.isna(by_id.loc[auto, "tap_age_seconds"]) and by_id.loc[tap, "tap_age_seconds"] == 120.0
+
+
+def test_execute_tap_ignores_auto_assessments():
+    events = [
+        {
+            "kind": EventKind.CARD_TAP_ASSESSED,
+            "payload": {
+                "outcome": "execute",
+                "applied": True,
+                "age_seconds": 5.0,
+                "r_consumed": 0.0,
+                "entry_trigger": "auto",
+            },
+        }
+    ]
+    assert execute_tap(events) is None
+    legacy = [
+        {"kind": EventKind.CARD_TAP_ASSESSED, "payload": {"outcome": "execute", "applied": True, "age_seconds": 9.0}}
+    ]
+    assert execute_tap(legacy) == {"age_seconds": 9.0, "r_consumed": None}
+
+
+def test_summarize_execution_keeps_taps_and_auto_apart():
+    frame = pd.DataFrame(
+        [
+            {
+                "status": "EXECUTED",
+                "repriced": False,
+                "fill_price": 100.0,
+                "fill_source": "order_observed",
+                "fill_slip_r": 0.1,
+                "tap_age_seconds": 100.0,
+                "entry_trigger": "tap",
+            },
+            {
+                "status": "EXECUTED",
+                "repriced": False,
+                "fill_price": 100.0,
+                "fill_source": "order_observed",
+                "fill_slip_r": 0.1,
+                "tap_age_seconds": 300.0,
+                "entry_trigger": "tap",
+            },
+            {
+                "status": "EXECUTED",
+                "repriced": False,
+                "fill_price": 100.0,
+                "fill_source": "order_observed",
+                "fill_slip_r": 0.1,
+                "tap_age_seconds": None,
+                "entry_trigger": "auto",
+            },
+            {
+                "status": "PENDING",
+                "repriced": False,
+                "fill_price": None,
+                "fill_source": None,
+                "fill_slip_r": None,
+                "tap_age_seconds": None,
+                "entry_trigger": "none",
+            },
+        ]
+    )
+    summary = summarize_execution(frame)
+    assert summary["taps"] == 2 and summary["auto_entries"] == 1
+    assert summary["mean_tap_age_seconds"] == 200.0

@@ -566,6 +566,48 @@ class WorkflowStore:
             )
             return {keys[dedup_key]: item_id for dedup_key, item_id in rows}
 
+    async def entry_work_states(self, signal_ids: Collection[int]) -> dict[int, tuple[str, EntryTrigger]]:
+        """``(work status, entry trigger)`` of each signal's entry item, for journal readers.
+
+        A signal with no entry item is absent; an item that predates the trigger key reads as a tap.
+        """
+        if not signal_ids:
+            return {}
+        keys = {str(int(signal_id)): int(signal_id) for signal_id in signal_ids}
+        async with self.db.session_factory() as session:
+            rows = await session.execute(
+                select(WorkItemRecord.dedup_key, WorkItemRecord.status, WorkItemRecord.payload).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.ENTRY,
+                    WorkItemRecord.dedup_key.in_(list(keys)),
+                )
+            )
+            return {
+                keys[dedup_key]: (str(status), EntryTrigger(json.loads(payload).get("entry_trigger", EntryTrigger.TAP)))
+                for dedup_key, status, payload in rows
+            }
+
+    async def entry_cancel_causes(self, signal_ids: Collection[int]) -> dict[int, set[str]]:
+        """The causes (``deadline`` or ``operator``) of each signal's entry-cancel items, for journal readers.
+
+        Items claimed before causes were recorded were all deadline cancels.
+        """
+        if not signal_ids:
+            return {}
+        keys = {str(int(signal_id)): int(signal_id) for signal_id in signal_ids}
+        causes: dict[int, set[str]] = {}
+        async with self.db.session_factory() as session:
+            rows = await session.execute(
+                select(WorkItemRecord.dedup_key, WorkItemRecord.payload).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.ENTRY_CANCEL,
+                    WorkItemRecord.dedup_key.in_(list(keys)),
+                )
+            )
+            for dedup_key, payload in rows:
+                causes.setdefault(keys[dedup_key], set()).add(str(json.loads(payload).get("cause", "deadline")))
+        return causes
+
     async def unresolved_cancellation(self, session: AsyncSession, *, symbol: str | None = None) -> bool:
         query = select(WorkItemRecord.id).where(
             WorkItemRecord.scope == self.scope,
