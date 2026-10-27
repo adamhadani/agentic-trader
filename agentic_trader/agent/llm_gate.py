@@ -21,11 +21,13 @@ from pydantic import BaseModel, ValidationError, field_validator
 __all__ = [
     "LLM_KEY_MISSING",
     "LLM_UNAVAILABLE_EARLIER_IN_SCAN",
+    "LLM_UNAVAILABLE_PREFIX",
     "MALFORMED_VETO_REASON",
     "VETO_WITHOUT_REASON",
     "GateReply",
     "GateReplyFields",
     "classify_gate_reply",
+    "llm_unavailable_reason",
 ]
 
 # A veto's reason when the reply gives no non-blank string: a malformed reply's, and a well-formed one's.
@@ -35,6 +37,14 @@ VETO_WITHOUT_REASON = "veto without a reason"
 LLM_KEY_MISSING = "LLMKeyMissing"
 # The error type name of a gate call the scan's circuit breaker skipped: an earlier call in the same scan errored.
 LLM_UNAVAILABLE_EARLIER_IN_SCAN = "LLMUnavailableEarlierInScan"
+# How a native card the gate could not evaluate is named (``llm_unavailable_reason``): the evaluator's reason and
+# thesis, the scan's runner-up reason and the digest's "top:" filter all read this one prefix.
+LLM_UNAVAILABLE_PREFIX = "LLM unavailable ("
+
+
+def llm_unavailable_reason(error_type: str) -> str:
+    """A native card's reason when the gate errored: the error's type name only, never exception text."""
+    return f"{LLM_UNAVAILABLE_PREFIX}{error_type})"
 
 
 class GateReplyFields(BaseModel):

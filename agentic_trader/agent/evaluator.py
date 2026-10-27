@@ -19,7 +19,7 @@ from agentic_trader.agent.earnings import (
     earnings_blackout_reason,
     earnings_note,
 )
-from agentic_trader.agent.llm_gate import LLM_KEY_MISSING, classify_gate_reply
+from agentic_trader.agent.llm_gate import LLM_KEY_MISSING, classify_gate_reply, llm_unavailable_reason
 from agentic_trader.agent.position_sizing import PositionSizingResult, calculate_dynamic_sizing
 from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt, gate_prompt_sha256
 from agentic_trader.agent.regime import RegimeDetector
@@ -776,7 +776,7 @@ class RiskEvaluator:
         def unavailable(error_type: str) -> LLMTradeEvaluation:
             """An LLM error: a native card is withheld, a catalog card is sent as labelled commentary.
             Desk-authored text with the error's type name, never exception text."""
-            label = f"LLM unavailable ({error_type})" if applied else f"LLM commentary unavailable ({error_type})"
+            label = llm_unavailable_reason(error_type) if applied else f"LLM commentary unavailable ({error_type})"
             return on_deterministic_bracket(label, label, verdict(False, None, None, None, error=error_type))
 
         def failed(error_type: str, failure: Exception | None = None) -> LLMTradeEvaluation:

@@ -240,17 +240,20 @@ async def test_suggestion_scan_marks_native_card(drift_desk, temp_db, app_config
     inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **card)
 
 
+@pytest.mark.parametrize("approve_errors", [False, True])
 async def test_an_llm_unavailable_candidate_is_never_auto_entered_and_an_approved_card_still_is(
+    approve_errors,
     drift_desk,  # noqa: F811
     temp_db,
     app_config,
     monkeypatch,
 ):
     """LLM gate hygiene, review focus 3: a native candidate the gate could not evaluate is never recorded, so the
-    sweep cannot select it; an approved native card of the same scan is still marked and entered."""
+    sweep cannot select it, even from an evaluation that wrongly claims approval; an approved native card of the
+    same scan is still marked and entered."""
     monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
     app_config.scan.max_cards_per_scan = 2  # DDD is carded first; CCC, the next native rank, then errors
-    install(drift_desk, Gate(CCC="Timeout"))
+    install(drift_desk, Gate(CCC="Timeout", approve_errors=approve_errors))
 
     await suggestion_scan(drift_desk)
 

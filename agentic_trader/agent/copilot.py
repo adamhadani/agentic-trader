@@ -33,7 +33,11 @@ from agentic_trader.agent.earnings import (
 )
 from agentic_trader.agent.evaluator import LLMTradeEvaluation, RiskEvaluator
 from agentic_trader.agent.insider_watch import CARDED_THIS_SCAN, InsiderWatchSource, build_insider_watch_source
-from agentic_trader.agent.llm_gate import LLM_UNAVAILABLE_EARLIER_IN_SCAN
+from agentic_trader.agent.llm_gate import (
+    LLM_UNAVAILABLE_EARLIER_IN_SCAN,
+    LLM_UNAVAILABLE_PREFIX,
+    llm_unavailable_reason,
+)
 from agentic_trader.agent.macro_explainer import MacroExplainer
 from agentic_trader.agent.news_context import NewsContextService, build_news_context_service, unavailable_block
 from agentic_trader.agent.regime import (
@@ -221,9 +225,6 @@ DRIFT_PREPARE_TIMEOUT_SECONDS = 60.0
 # under card_policy.validity == "next_session_close", where a card can outlive the duplicate window.
 LIVE_CARD_PENDING = "live card pending"
 BROAD_INDEX_REASON = "broad index ETF: excluded from native cards (scan.broad_index_etfs)"
-# A native candidate the LLM gate could not evaluate (``RankedOutcome.LLM_UNAVAILABLE``): its runner-up reason is
-# this, then the error's type name in parentheses. The digest counts it apart and never lists it under "top:".
-LLM_UNAVAILABLE_REASON = "LLM unavailable"
 # `/scan SYMBOL` of an unconfigured equity: its dynamic source, and how old the journaled
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
@@ -1721,22 +1722,24 @@ class TradingCopilot:
                                 "rank": rank,
                             },
                         )
-                    if not eval_res.approved:
-                        if llm_error is not None:
-                            # Fail closed: a native card the gate could not evaluate is withheld, with no
-                            # signal and no notification (so never auto-entered). A catalog card on error stays
-                            # approved commentary and is sent below with its unavailable label.
-                            outcomes[rank - 1] = RankedOutcome.LLM_UNAVAILABLE
-                            runner_reason = f"{LLM_UNAVAILABLE_REASON} ({llm_error})"
-                        elif verdict is not None and verdict["applied"] and not verdict["approved"]:
+                    runner_reason: str | None = None
+                    if llm_error is not None and verdict is not None and verdict["applied"]:
+                        # Fail closed on the verdict itself, whatever the evaluation's own approval says: a native
+                        # card the gate could not evaluate is withheld, with no signal and no notification (so
+                        # never auto-entered). A catalog card on error is commentary, sent below with its label.
+                        outcomes[rank - 1] = RankedOutcome.LLM_UNAVAILABLE
+                        runner_reason = llm_unavailable_reason(llm_error)
+                    elif not eval_res.approved:
+                        if verdict is not None and verdict["applied"] and not verdict["approved"]:
                             outcomes[rank - 1] = RankedOutcome.LLM_VETOED
                             runner_reason = f"LLM vetoed: {eval_res.rejection_reason}"
                         else:
                             outcomes[rank - 1] = runner_reason = f"rejected: {eval_res.rejection_reason}"
+                    if runner_reason is not None:
                         summary["runners_up"].append(self._runner_up(candidate, runner_reason))
                         logger.info(
                             "Candidate rejected by risk engine: %s",
-                            eval_res.rejection_reason,
+                            eval_res.rejection_reason or runner_reason,
                             extra={
                                 "event": "candidate_rejected",
                                 "phase": "send",
@@ -5151,8 +5154,7 @@ class TradingCopilot:
             actionable = [
                 r
                 for r in runners
-                if r.get("reason") != BROAD_INDEX_REASON
-                and not str(r.get("reason")).startswith(f"{LLM_UNAVAILABLE_REASON} (")
+                if r.get("reason") != BROAD_INDEX_REASON and not str(r.get("reason")).startswith(LLM_UNAVAILABLE_PREFIX)
             ]
             top = ", ".join(f"{r['contract']} {r['direction']} ({r['setup_quality']:.2f})" for r in actionable[:5])
             text = (
