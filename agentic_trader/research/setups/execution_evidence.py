@@ -234,11 +234,13 @@ def operator_action(
     - ``cancelled``: an operator-cause ``entry_cancel`` exists (a deadline cancel is not an operator act);
     - ``auto_entered``: the entry item's trigger is ``auto``, unless that entry was later rejected
       without a fill, which is ``auto_refused``;
+    - ``tapped``: a tap-trigger entry exists (an operator tap that beat the sweep, or that followed its
+      refusal or abandonment; such a card is on neither side of kept-vs-vetoed);
     - ``dismissed``: the card was dismissed (before any placement);
     - ``auto_refused``: the sweep's attempt outcome was ``refused``;
     - ``abandoned``: the attempt outcome was ``abandoned`` (the sweep never got to it);
     - ``expired``: the card expired with no attempt journaled;
-    - otherwise the unmarked rules below (an operator tap that beat the sweep reads ``tapped``).
+    - otherwise the unmarked rules below.
 
     An unmarked (tap-era or ineligible) card: ``cancelled`` when its entry was operator-cancelled,
     ``tapped`` when a tap-trigger entry exists, ``dismissed``, ``expired``, else ``none``.
@@ -250,6 +252,8 @@ def operator_action(
         if entry_trigger == EntryTrigger.AUTO:
             rejected = work_status == WorkStatus.REJECTED and not filled
             return "auto_refused" if rejected else "auto_entered"
+        if entry_trigger == EntryTrigger.TAP:
+            return "tapped"
         if status == SignalStatus.DISMISSED:
             return "dismissed"
         if attempt == "refused":

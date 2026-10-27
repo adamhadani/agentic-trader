@@ -98,6 +98,14 @@ def test_insufficient_below_30_setups_or_10_per_side():
     assert operator_block(pd.DataFrame())["kept_vs_vetoed"]["status"] == "insufficient"
 
 
+def test_refused_or_abandoned_then_tapped_is_on_neither_side_nor_excluded():
+    rows = _sides([0.5] * 20, [0.1] * 12)
+    rows += [_row(80 + i, action="tapped", trigger="tap", excess=-5.0) for i in range(4)]
+    block = operator_block(_frame(rows))["kept_vs_vetoed"]
+    assert block["excluded"] == {"auto_refused": 0, "abandoned": 0}
+    assert block["kept"]["n"] == 20 and block["vetoed"]["n"] == 12
+
+
 def test_unresolved_and_duplicate_setups_do_not_count():
     rows = _sides([0.5] * 20, [0.1] * 10)
     rows.append(_row(300, action="auto_entered", trigger="auto", excess=None, hit=BracketHit.IMMATURE.value))
@@ -117,7 +125,7 @@ def test_ci_is_session_block_bootstrap_and_seeded():
     again = operator_block(frame, seed=3)["kept_vs_vetoed"]
     other = operator_block(frame, seed=4)["kept_vs_vetoed"]
     assert one["ci90"] == again["ci90"]
-    assert one["ci90"][0] <= one["difference"] <= one["ci90"][1] or one["ci90"][0] < one["ci90"][1]
+    assert one["ci90"][0] <= one["difference"] <= one["ci90"][1]
     assert one["ci90"] != other["ci90"]
 
 

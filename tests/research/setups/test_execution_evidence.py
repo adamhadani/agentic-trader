@@ -615,6 +615,22 @@ _PER_ROW_CASES = {
         "none",
         "expired",
     ),
+    "marked_refused_then_tapped": (
+        {"status": SignalStatus.EXECUTED, "marked": True, "trigger": "tap", "attempt": "refused", "tap_trigger": "tap"},
+        "tap",
+        "tapped",
+    ),
+    "marked_abandoned_then_tapped": (
+        {
+            "status": SignalStatus.EXECUTED,
+            "marked": True,
+            "trigger": "tap",
+            "attempt": "abandoned",
+            "tap_trigger": "tap",
+        },
+        "tap",
+        "tapped",
+    ),
     "marked_operator_tapped_first": (
         {
             "status": SignalStatus.EXECUTED,
