@@ -35,6 +35,7 @@ from agentic_trader.diagnostics.doctor import format_doctor_cli_output, run_diag
 from agentic_trader.diagnostics.monitor import OperationsMonitor
 from agentic_trader.diagnostics.probe import probe_readiness
 from agentic_trader.diagnostics.readiness import HealthComponent
+from agentic_trader.execution.auto_entry import auto_entry_active
 from agentic_trader.execution.durable import ScanTrigger
 from agentic_trader.market.bars import ObservationStatus
 from agentic_trader.market.session import ET_TZ
@@ -470,7 +471,10 @@ def make_suggestion_scan(copilot: Any, *, use_llm: bool):
     """The session-aligned suggestion scan: a full-budget equity scan, then an optional digest.
 
     The digest runs in a ``finally``: a closed session, a gated scan and a scan that raised are all
-    reportable sessions. A digest failure is logged and never masks the scan's own exception.
+    reportable sessions. A digest failure is logged and never masks the scan's own exception. With
+    paper auto-entry active, the same ``finally`` first runs the auto-entry sweep (outside the scan
+    lock, whether or not the scan raised): the normal, immediate path for this scan's marked cards.
+    A sweep failure is logged and never stops the digest.
     """
 
     async def run_suggestion_scan(digest: bool = False, scheduled_time_et: str | None = None) -> None:
@@ -495,6 +499,11 @@ def make_suggestion_scan(copilot: Any, *, use_llm: bool):
                     "Suggestion scan skipped: %s", reason, extra={"event": "suggestion_scan_skipped", "reason": reason}
                 )
         finally:
+            try:
+                if auto_entry_active(copilot.config):
+                    await copilot.auto_enter_pending()
+            except Exception:
+                logger.exception("Auto-entry sweep failed", extra={"event": "auto_entry_sweep_failed"})
             if digest:
                 try:
                     await copilot.publish_scan_digest()
@@ -688,6 +697,25 @@ def register_card_expiry_sweep(scheduler: Any, copilot: Any) -> None:
     )
 
 
+def register_auto_entry_jobs(scheduler: Any, copilot: Any, config: AppConfig) -> None:
+    """Register the paper auto-entry jobs; nothing unless ``auto_entry_active(config)``.
+
+    The sweep runs every minute and once at startup, so a card recorded before a restart (or by a
+    scan that raised) is still attempted, or abandoned once too old, without waiting for the next
+    suggestion scan. ``auto_enter_pending`` serializes itself and never raises into the scheduler.
+    """
+    if not auto_entry_active(config):
+        return
+    scheduler.add_job(
+        copilot.auto_enter_pending,
+        "interval",
+        minutes=1,
+        id="auto_entry_sweep",
+        next_run_time=datetime.now(UTC),
+    )
+    # Further auto-entry jobs register here, behind the same switch.
+
+
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")
 @click.option(
     "--no-llm",
@@ -794,6 +822,8 @@ async def daemon(no_llm: bool) -> None:
     )
     # Strike an untapped card's buttons once its session ends; runs regardless of halt.
     register_card_expiry_sweep(scheduler, copilot)
+    # Paper auto-entry of marked suggestion cards (Alpaca paper with session-bounded entries only).
+    register_auto_entry_jobs(scheduler, copilot, config)
     # Schedule daily morning macro briefing (Monday - Friday)
     if config.scheduler.macro_briefing_enabled:
         scheduler.add_job(

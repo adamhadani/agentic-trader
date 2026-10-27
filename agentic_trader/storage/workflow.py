@@ -11,7 +11,7 @@ import hashlib
 import json
 from collections.abc import Collection
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -25,6 +25,7 @@ from agentic_trader.accounting.risk import AccountRiskSnapshot, require_risk_che
 from agentic_trader.broker.base import BrokerEntryContext, OrderRequest
 from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, AuditEventType, ExecutionMode, SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import authorization_expiry, reservation_rejection
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AutoEntryAttempt
 from agentic_trader.execution.capacity import assess_entry_capacity
 from agentic_trader.execution.durable import (
     ENTRY_BLOCKING,
@@ -236,6 +237,102 @@ class WorkflowStore:
                 key=key,
             )
             return True
+
+    async def pending_auto_entries(self, et_date: date) -> list[dict[str, Any]]:
+        """The marked cards of New York date ``et_date`` still awaiting their one auto-entry attempt.
+
+        This scope's ``PENDING`` signals carrying the ``auto_entry`` marker with no ``auto-entry/{id}``
+        event, ordered by recording time, then rank. A card whose entry was queued is ``SUBMITTING``,
+        so a crash after queueing never selects it again.
+        """
+        start = datetime.combine(et_date, time.min, tzinfo=ET_TZ)
+        end = datetime.combine(et_date + timedelta(days=1), time.min, tzinfo=ET_TZ)
+        async with self.db.session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(SignalRecord).where(
+                        *self.db._scope(),
+                        SignalRecord.status == SignalStatus.PENDING,
+                        SignalRecord.timestamp >= start,
+                        SignalRecord.timestamp < end,
+                    )
+                )
+            ).all()
+            marked: list[tuple[SignalRecord, Any]] = []
+            for row in rows:
+                provenance = json.loads(row.decision_provenance or "{}")
+                if isinstance(provenance, dict) and provenance.get(AUTO_ENTRY_KEY):
+                    marked.append((row, provenance.get("rank")))
+            keys = [f"auto-entry/{row.id}" for row, _ in marked]
+            attempted = (
+                set(
+                    await session.scalars(
+                        select(DomainEventRecord.event_key).where(
+                            DomainEventRecord.scope == self.scope, DomainEventRecord.event_key.in_(keys)
+                        )
+                    )
+                )
+                if keys
+                else set()
+            )
+        selected = [(row, rank) for row, rank in marked if f"auto-entry/{row.id}" not in attempted]
+        selected.sort(key=lambda pair: (pair[0].timestamp, pair[1] if isinstance(pair[1], int) else float("inf")))
+        return [row.to_dict() for row, _ in selected]
+
+    async def record_auto_entry_attempt(
+        self, attempt: AutoEntryAttempt, *, recard: dict[str, Any] | None, entered: bool
+    ) -> None:
+        """Journal one auto-entry attempt and queue its follow-up in one transaction (delivery contract).
+
+        The ``auto_entry_attempted`` event (stream ``card/{id}``, key ``auto-entry/{id}``) is written
+        once: a later call for the same card writes nothing. ``entered`` queues the
+        ``CARD_AUTO_ENTERED`` button swap. ``recard`` (its ``auto_entry`` and raw ``auto_refusal``)
+        queues a fresh card: the original card's payload from its ``signal/{id}/created`` outbox row
+        with those fields, only while the signal is still ``PENDING`` under the lock.
+        """
+        signal_id = attempt.signal_id
+        key = f"auto-entry/{signal_id}"
+        async with self.db.session_factory() as session, session.begin():
+            await self.lock(session)
+            journaled = await session.scalar(
+                select(DomainEventRecord.id).where(
+                    DomainEventRecord.scope == self.scope, DomainEventRecord.event_key == key
+                )
+            )
+            if journaled is not None:
+                return
+            await self.append(
+                session,
+                stream=f"card/{signal_id}",
+                kind=EventKind.AUTO_ENTRY_ATTEMPTED,
+                payload=attempt.payload(),
+                key=key,
+            )
+            signal = await session.scalar(select(SignalRecord).where(*self.db._scope(), SignalRecord.id == signal_id))
+            if signal is None:
+                return
+            if entered:
+                await self.add_notification(
+                    session,
+                    f"signal/{signal_id}/auto-entered",
+                    NotificationKind.CARD_AUTO_ENTERED,
+                    {"signal_id": signal_id, "contract": signal.contract},
+                )
+            if recard is not None and signal.status == SignalStatus.PENDING:
+                original = await session.scalar(
+                    select(WorkItemRecord.payload).where(
+                        WorkItemRecord.scope == self.scope,
+                        WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                        WorkItemRecord.dedup_key == f"signal/{signal_id}/created",
+                    )
+                )
+                if original is not None:
+                    await self.add_notification(
+                        session,
+                        f"signal/{signal_id}/auto-refused",
+                        NotificationKind.SIGNAL,
+                        {**json.loads(original)["arguments"], **recard},
+                    )
 
     async def events(self, stream: str | None = None, *, limit: int | None = None) -> list[dict[str, Any]]:
         async with self.db.session_factory() as session:

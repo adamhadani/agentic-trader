@@ -80,6 +80,16 @@ from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
+from agentic_trader.execution.auto_entry import (
+    ABANDONED_REASON,
+    AUTO_ENTRY_KEY,
+    NOT_PAPER_REASON,
+    AutoEntryAttempt,
+    AutoEntryOutcome,
+    attempt_reason,
+    auto_entry_marker,
+    outcome_after_call,
+)
 from agentic_trader.execution.book_sizing import BookSizer, BookSizingDecision
 from agentic_trader.execution.card_evidence import CardEvidence, CardStatsRepository, lookup
 from agentic_trader.execution.card_policy import CardPolicyDecision, decide, journal_block
@@ -132,7 +142,7 @@ from agentic_trader.presentation.formatters import (
     TerminalFormatter,
 )
 from agentic_trader.research.alpha.evidence import load_forward_evidence
-from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
+from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG, is_paper_scope
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
 from agentic_trader.research.pooled.entry import REPO_ROOT
@@ -618,6 +628,10 @@ class TradingCopilot:
         self._session_scan_stats: dict[str, list[dict[str, Any]]] = {}
         self._shutdown_event = asyncio.Event()
         self._scan_lock = asyncio.Lock()
+        # Serializes the paper auto-entry sweep (the suggestion job's call and the interval job). The set
+        # holds this process's attempted cards, so a failed attempt journal never leads to a second attempt.
+        self._auto_entry_lock = asyncio.Lock()
+        self._auto_entry_attempted: set[int] = set()
         # Strong references to background operator scans (card re-evaluations and
         # `/scan SYMBOL`), so they are never garbage-collected; shutdown cancels them all.
         self.background_scan_tasks: set[asyncio.Task[None]] = set()
@@ -1743,6 +1757,15 @@ class TradingCopilot:
                         else native_entry_lifetime_marker(self.config, str(eval_res.asset_class))
                     )
                     lifetime = {NATIVE_ENTRY_LIFETIME_KEY: lifetime_marker} if lifetime_marker else {}
+                    # Paper auto-entry (item 1.4): a native, lifetime-marked card of a scheduled suggestion scan
+                    # is entered by the sweep (`auto_enter_pending`) instead of waiting for a tap.
+                    auto_marker = auto_entry_marker(
+                        self.config,
+                        trigger=trigger,
+                        is_catalog=is_catalog,
+                        alpha=bool(candidate.alpha_policy or candidate.alpha_version),
+                        lifetime_marker=lifetime_marker,
+                    )
 
                     # Record to database
                     sig_id = await self.db.record_signal(
@@ -1780,6 +1803,7 @@ class TradingCopilot:
                             ),
                             **validity,
                             **lifetime,
+                            **({AUTO_ENTRY_KEY: auto_marker} if auto_marker else {}),
                         },
                         contract=eval_res.contract,
                         strategy=candidate.strategy,
@@ -1810,6 +1834,7 @@ class TradingCopilot:
                             **({"card_evidence": card_evidence} if card_evidence is not None else {}),
                             "book_sizing": book_block,
                             **({"entry_session_bound": True} if lifetime else {}),
+                            **({"auto_entry": "placing"} if auto_marker else {}),
                             **validity,
                         },
                     )
@@ -3859,7 +3884,9 @@ class TradingCopilot:
         old_provenance = dict(old_provenance) if isinstance(old_provenance, dict) else {}
         first_issued_at = old_provenance.get("first_issued_at") or issued_at.isoformat()
         provenance = {
-            **old_provenance,  # carries valid_until, rank, probe tag and the rest unchanged
+            # Carries valid_until, rank, probe tag and the rest unchanged; never the auto-entry marker: a
+            # re-priced card is an ordinary tap card.
+            **{key: value for key, value in old_provenance.items() if key != AUTO_ENTRY_KEY},
             "reprices": signal_id,
             "first_issued_at": first_issued_at,
             "tap_latency_seconds": round(assessment.age_seconds, 3),
@@ -4347,6 +4374,139 @@ class TradingCopilot:
                 len(expired_ids),
                 extra={"event": "cards_expired", "signal_ids": expired_ids},
             )
+
+    async def auto_enter_pending(self, now: datetime | None = None) -> list[AutoEntryAttempt]:
+        """Paper auto-entry sweep: one attempt per marked, still-``PENDING`` card of today's New York date.
+
+        Selects from the database (``WorkflowStore.pending_auto_entries``), never from a scan's return
+        value, so a scan that raised after recording its cards loses nothing. Each card goes through the
+        one entry path a tap uses, ``execute_signal_by_id(id, None, trigger=EntryTrigger.AUTO)``, at its
+        default size; its outcome is read from the signal and its entry work item after the call, never
+        from the reply, and journaled with its follow-up in one transaction. One attempt per card, no
+        retry of any kind. Serialized by ``_auto_entry_lock`` and run outside the scan lock; never
+        raises: a failing card is journaled ``refused`` with its exception's type name and the next one runs.
+        """
+        async with self._auto_entry_lock:
+            try:
+                today = (now or datetime.now(UTC)).astimezone(ET_TZ).date()
+                pending = await self.db.workflows.pending_auto_entries(today)
+            except Exception:
+                logger.exception("Auto-entry selection failed", extra={"event": "auto_entry_sweep_failed"})
+                return []
+            attempts: list[AutoEntryAttempt] = []
+            for sig in pending:
+                signal_id = int(sig["id"])
+                if signal_id in self._auto_entry_attempted:
+                    continue
+                self._auto_entry_attempted.add(signal_id)
+                attempts.append(await self._auto_enter_card(sig, now))
+            return attempts
+
+    async def _auto_enter_card(self, sig: dict[str, Any], now: datetime | None) -> AutoEntryAttempt:
+        """Attempt one selected card and journal it; any exception becomes a ``refused`` attempt."""
+        signal_id = int(sig["id"])
+        provenance = sig.get("decision_provenance")
+        scan_id = provenance.get("scan_id") if isinstance(provenance, dict) else None
+        attempted_at = (now or datetime.now(UTC)).astimezone(UTC)
+        recard: dict[str, Any] | None
+        try:
+            attempt, recard = await self._auto_entry_attempt(signal_id, scan_id, attempted_at)
+        except Exception as exc:
+            logger.exception(
+                "Auto-entry attempt for card #%d failed",
+                signal_id,
+                extra={"event": "auto_entry_attempt_failed", "signal_id": signal_id},
+            )
+            reason = type(exc).__name__
+            try:
+                status, work_status, _ = await self._auto_entry_state(signal_id)
+            except Exception:
+                status, work_status = str(sig["status"]), None
+            attempt = AutoEntryAttempt(signal_id, scan_id, "refused", reason, work_status, status, attempted_at)
+            recard = {"auto_entry": "refused", "auto_refusal": reason}
+        logger.info(
+            "Auto-entry card #%d: %s (%s)",
+            signal_id,
+            attempt.outcome,
+            attempt.reason,
+            extra={"event": EventKind.AUTO_ENTRY_ATTEMPTED, **attempt.payload()},
+        )
+        try:
+            await self.db.workflows.record_auto_entry_attempt(
+                attempt, recard=recard, entered=attempt.outcome == "entered"
+            )
+        except Exception:
+            logger.exception(
+                "Auto-entry attempt journal failed for card #%d",
+                signal_id,
+                extra={"event": "auto_entry_journal_failed", "signal_id": signal_id},
+            )
+        return attempt
+
+    async def _auto_entry_attempt(
+        self, signal_id: int, scan_id: str | None, attempted_at: datetime
+    ) -> tuple[AutoEntryAttempt, dict[str, Any] | None]:
+        """The attempt and its re-card fields (None: no re-card), per the outcome table of the design.
+
+        Only a refusal that leaves the card ``PENDING`` re-cards it; a ``FAILED`` card keeps its immediate
+        rejection notice and an ``EXPIRED`` one (``MISSED``/``EXPIRED``, or ``REPRICE`` with its replacement
+        card) gets nothing.
+        """
+
+        def attempt(
+            outcome: AutoEntryOutcome, reason: str | None, status: str, work_status: str | None = None
+        ) -> AutoEntryAttempt:
+            return AutoEntryAttempt(signal_id, scan_id, outcome, reason, work_status, status, attempted_at)
+
+        # Read immediately before the call: a card dismissed (or tapped) since selection keeps its veto.
+        sig = await self.db.get_signal_by_id(signal_id)
+        if sig is None or sig["status"] != SignalStatus.PENDING:
+            status, work_status, _ = await self._auto_entry_state(signal_id)
+            return attempt("skipped_not_pending", None, status, work_status), None
+        status = str(sig["status"])
+        issued_at = datetime.fromisoformat(sig["timestamp"]).replace(tzinfo=UTC)
+        if (attempted_at - issued_at).total_seconds() > self.config.execution.card_freshness.fresh_seconds:
+            # Too late to place: the card is re-sent as a tap card, so none is left saying "no tap needed".
+            return attempt("abandoned", ABANDONED_REASON, status), {
+                "auto_entry": "abandoned",
+                "auto_refusal": ABANDONED_REASON,
+            }
+        if not is_paper_scope(self.db.workflows.scope):
+            # Defence in depth: the switch already requires Alpaca paper.
+            return attempt("refused", NOT_PAPER_REASON, status), {
+                "auto_entry": "refused",
+                "auto_refusal": NOT_PAPER_REASON,
+            }
+
+        reply = await self.execute_signal_by_id(signal_id, None, trigger=EntryTrigger.AUTO)
+        status, work_status, trigger = await self._auto_entry_state(signal_id)
+        outcome = outcome_after_call(status, trigger)
+        if outcome == "skipped_not_pending":
+            return attempt(outcome, None, status, work_status), None
+        if status == SignalStatus.EXPIRED:
+            reason = "repriced" if await self._auto_entry_repriced(signal_id) else "expired"
+            return attempt(outcome, reason, status, work_status), None
+        reason = attempt_reason(reply.text) or "no reason given"
+        if status == SignalStatus.PENDING:
+            return attempt(outcome, reason, status, work_status), {"auto_entry": "refused", "auto_refusal": reason}
+        # Entered (the button swap follows), or FAILED: its existing rejection notice stays.
+        return attempt(outcome, reason, status, work_status), None
+
+    async def _auto_entry_state(self, signal_id: int) -> tuple[str, str | None, str | None]:
+        """The signal's status, its entry work item's status and that item's trigger (None without one)."""
+        sig = await self.db.get_signal_by_id(signal_id)
+        status = str(sig["status"]) if sig else "missing"
+        item_id = (await self.db.workflows.entry_item_ids([signal_id])).get(signal_id)
+        item = await self.db.workflows.get_work(item_id) if item_id else None
+        if item is None:
+            return status, None, None
+        # An item queued before the trigger key existed was a tap.
+        return status, str(item.status), str(item.payload.get("entry_trigger", EntryTrigger.TAP))
+
+    async def _auto_entry_repriced(self, signal_id: int) -> bool:
+        """True when the card's latest tap assessment recorded a replacement card (``REPRICE``)."""
+        events = await self.db.workflows.recent_events(EventKind.CARD_TAP_ASSESSED, streams=[f"card/{signal_id}"])
+        return bool(events) and events[0]["payload"].get("new_signal_id") is not None
 
     async def cancel_background_scans(self) -> None:
         """Cancel and await every in-flight background operator scan (daemon shutdown)."""
