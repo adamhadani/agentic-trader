@@ -552,6 +552,31 @@ headlines); see [news context](news-context.md). Inspect it with `copilot db eve
 (`news_context`). A fetch or scoring failure shows as `unavailable` or `scoring failed` on the card and
 never changes the scan, readiness or the halt state; `news.enabled: false` removes the step.
 
+### LLM gate outage
+
+The native-card LLM gate has a deadline: `llm_gate.timeout_seconds` (default 60, 0 < x <= 180), applied both as
+`asyncio.wait_for` and as litellm's `timeout`. A timeout, an exception, a non-JSON or non-object reply, an invalid
+approval or a missing LLM API key on an LLM scan is an error, and an error never approves. During an outage:
+
+- no native card is sent; each affected candidate is journaled with the outcome `llm_unavailable` and an `llm`
+  block carrying the error type name (`Timeout` or `TimeoutError` for a deadline), and no signal is recorded;
+- catalog (drift/probe) cards are still sent, labelled "LLM commentary unavailable ({TypeName})";
+- the first error opens a per-scan breaker: later candidates in that scan make no LLM call and read
+  `LLMUnavailableEarlierInScan`, so a hung provider costs one `timeout_seconds` per scan. The breaker resets at the
+  next scan. A breaker-skipped candidate still spends LLM budget, so at most
+  `max_llm_evaluations_per_scan` candidates are journaled `llm_unavailable` and the rest read `per-scan budget spent`;
+- the end-of-session digest reads "LLM vetoes: N; LLM unavailable: N."; unavailable candidates are not listed in
+  its "top:" runners-up;
+- `copilot cards outcomes` reports them as `llm_gate.llm_errors`, and `copilot db events --stream scan/<date>`
+  shows the outcome. Exception text never reaches the card, journal or provenance.
+
+The gate sends `model`, `messages`, `response_format`, `timeout` and `drop_params=False`, with no `temperature`:
+`openai/gpt-5.6` with reasoning on only accepts the default, so production has always run at the model's default
+temperature and the old `0.2` was dropped silently. No code sets litellm's global `drop_params`; the macro
+explainer, doctor and chat graph opt in per call. Running at temperature 0.2 would need reasoning off, a behaviour
+change that requires its own prompt evaluation (traces plus the replay harness) first. See
+[card evidence](card-evidence.md#llm-gate-identity-and-outages).
+
 ### Shadow card ranker
 
 `scan.shadow_ranker_artifact` scores every ranked candidate in shadow only, whether or

@@ -147,6 +147,13 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
    `risk.macro_calendar_renewal_days` (30) left before `valid_through`; publishing
    `us-tier1-vN+1.json` and pinning its digest before the check degrades is a standing operator duty
    ([runbook](docs/production.md#tier-1-calendar-renewal)).
+   LLM gate hygiene: an LLM error never approves. A native card is withheld as `llm_unavailable` (no signal)
+   behind a per-scan breaker (the first error stops LLM calls for the rest of that scan), a catalog card is sent
+   labelled "LLM commentary unavailable ({TypeName})", and only the JSON boolean `true` approves, so a malformed veto
+   fails closed. `llm_verdict` carries `model` and `prompt_sha256`, and `cards outcomes` groups the gate by them.
+   The gate sends no temperature (production has always run with reasoning on at the default temperature) and
+   `drop_params=False`; no code sets litellm's global `drop_params`
+   ([card evidence](docs/card-evidence.md#llm-gate-identity-and-outages), [outage](docs/production.md#llm-gate-outage)).
    Every LLM-evaluated card records `llm_verdict` (applied for native cards, commentary for
    catalog probes) and `cards outcomes` decomposes selection, LLM gate, market exposure (a beta-one SPY
    control beside a past-only 120-session beta-matched one and an own-asset buy-and-hold control, with

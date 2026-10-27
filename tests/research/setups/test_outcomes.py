@@ -502,8 +502,56 @@ def test_summary_blocks_on_an_empty_frame():
         "bracket_edit_mature": 0,
         "bracket_edit_mean_delta_r": None,
         "vetoed_bracket_edit_mean_delta_r": None,
+        "llm_errors": 0,
+        "by_identity": {},
     }
     assert summary["market_exposure"] == {"sent": None, "runner_up": None, "journal_only": None, "reason": None}
+
+
+_ERROR_BLOCK = {"error": "Timeout", "applied": True, "approved": False, "model": None, "prompt_sha256": "p2"}
+
+
+def _identity_frame():
+    bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
+    ok = {"approved": True, "rejection_reason": None, "stop_loss": 99.0, "take_profit": 102.0, "applied": True}
+    new = {**ok, "model": "gpt-5.6-sol", "prompt_sha256": "p2", "error": None, "malformed": False}
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "llm": ok, "signal_id": 1},  # old row: five keys
+                {**_candidate(rank=2), "llm": new, "signal_id": 2},
+                {**_candidate(rank=3, outcome="llm_vetoed"), "llm": {**new, "approved": False}},
+                {**_candidate(rank=4, outcome="llm_unavailable"), "llm": _ERROR_BLOCK},
+                {**_candidate(rank=5, outcome="llm_vetoed"), "llm": {**ok, "approved": False}},
+            ],
+        )
+    ]
+    return label_journaled(events, bars, now=NOW).sort_values("rank")
+
+
+def test_rows_carry_the_llm_identity_and_an_error_row_did_not_run():
+    rows = _identity_frame().to_dict("records")
+    assert all(pd.isna(rows[0][name]) for name in ("llm_model", "llm_prompt_sha256", "llm_error"))
+    assert rows[1]["llm_model"] == "gpt-5.6-sol" and rows[1]["llm_prompt_sha256"] == "p2"
+    assert rows[3]["llm_ran"] is False and rows[3]["llm_vetoed"] is False
+    assert rows[3]["llm_error"] == "Timeout" and pd.isna(rows[3]["llm_model"])
+    assert [row["llm_ran"] for row in rows] == [True, True, True, False, True]
+
+
+def test_error_rows_are_counted_not_attributed_and_by_identity_groups():
+    frame = _identity_frame()
+    gate = summarize(frame)["llm_gate"]
+    assert gate["llm_errors"] == 1
+    assert gate["ran"] == 4 and gate["vetoed"] == 2 and gate["approved"] == 2
+    assert set(gate["by_identity"]) == {"null|null", "gpt-5.6-sol|p2"}
+    old, new = gate["by_identity"]["null|null"], gate["by_identity"]["gpt-5.6-sol|p2"]
+    assert (old["ran"], old["vetoed"], old["approved"]) == (2, 1, 1)
+    assert (new["ran"], new["vetoed"], new["approved"]) == (2, 1, 1)
+    assert new["approved_mean_r_cost"] == pytest.approx(frame.loc[frame["rank"] == 2, "r_cost"].iloc[0])
+    assert "by_identity" not in new
+    assert sum(group["ran"] for group in gate["by_identity"].values()) == gate["ran"]
 
 
 def test_rows_carry_the_applied_llm_stop_for_execution_evidence():
