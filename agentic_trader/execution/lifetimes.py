@@ -324,7 +324,6 @@ class TradeLifetimeService:
             if filled_at.tzinfo is None:
                 filled_at = filled_at.replace(tzinfo=UTC)
             deadline = lifetime.entry_deadline(parent.submitted_at, await self._sessions(lifetime, parent))
-            self._missed_bound_checked.add(signal["id"])
             if aware_utc(filled_at) >= deadline:
                 await self.repository.missed_bound(
                     signal["id"],
@@ -336,6 +335,8 @@ class TradeLifetimeService:
                         "deadline": deadline.isoformat(),
                     },
                 )
+            # Final only once the verdict is recorded: a failed write is retried on the next reconcile.
+            self._missed_bound_checked.add(signal["id"])
         except Exception as exc:
             # Descriptive evidence only: never a reason to halt a filled, protected position.
             logger.warning("Missed native entry bound check failed signal=%s: %s", signal["id"], type(exc).__name__)

@@ -168,9 +168,10 @@ For an entry whose work item carries `entry_trigger: auto`:
   run at or after that time; the key makes it once per date. One line per card, in rank order: symbol, signal id and outcome:
   - `filled {qty} @ ${price}` (with the current open/closed state);
   - `cancelled unfilled at the close`;
-  - `still resting` (a cancel not yet confirmed);
+  - `not yet resolved (entry or cancel pending)`;
   - `refused: {reason}`;
   - `dismissed before placement` / `cancelled by you`;
+  - `not placed in time` (abandoned);
   and the closing line "Paper fills are optimistic: no queue position or market impact." The digest
   reads only the journal and the signals table; it is idempotent by key; a day with no marked cards queues and
   journals nothing.

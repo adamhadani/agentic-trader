@@ -267,3 +267,15 @@ async def test_an_undecided_missed_bound_check_is_retried():
     await service.reconcile()
     await service.reconcile()
     assert repository.order.await_count == 2  # no order observation yet: not a final verdict
+
+
+async def test_a_failed_missed_bound_write_is_retried_and_then_final():
+    signal = {**_filled_signal(asdict(NATIVE)), "executed_at": "2026-10-21T21:30:00+00:00"}
+    service, _broker, repository = _desk(signal)
+    repository.order.return_value = _order(datetime(2026, 10, 21, 10, 40, tzinfo=NY))
+    repository.missed_bound.side_effect = [ConnectionError("transient"), None]
+    await service.reconcile()
+    await service.reconcile()
+    await service.reconcile()
+    assert repository.missed_bound.await_count == 2  # retried once after the failure, then final
+    assert repository.order.await_count == 2
