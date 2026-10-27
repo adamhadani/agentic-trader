@@ -55,8 +55,11 @@ unfilled entry at its session close.
   (scan time, then rank). It does not depend on `run_scan`'s return value, so a scan that raises after
   recording its cards loses nothing. It is called:
   - in the scheduled suggestion job's `finally`, after `run_scan` (whether or not it raised) and before
-    the end-of-session digest, outside the scan lock;
-  - once at daemon start (a restart between recording and the attempt).
+    the end-of-session digest, outside the scan lock (the normal, immediate path);
+  - by an interval job every minute, registered like `register_card_expiry_sweep`
+    (`cli/commands/service.py` ~L675) with `next_run_time=now`, so it also runs at daemon start (a
+    restart between recording and the attempt). Both jobs are registered only when
+    `auto_entry_active(config)`.
   Calls are serialized by one `asyncio.Lock` on the copilot. Selection by `PENDING` plus the existing
   `signal_id` dedup in `enqueue_entry` make it idempotent: a crash after the entry was queued leaves the
   signal `SUBMITTING`, so it is never selected again.
@@ -105,20 +108,26 @@ The card is still queued in `record_signal`'s transaction (contract 6), with pay
 signal is still `PENDING`, before the sweep places the entry. Rendering at delivery uses the signal's
 status at that moment and the payload:
 
+The auto card's line is the same before and after placement, so the card text never needs editing:
+"🤖 Paper auto-entry: entered for you on the paper account; no tap needed. Unfilled entry is
+cancelled at the session close." Only the buttons depend on the state:
+
 | State at delivery | Line on the card | Buttons |
 |---|---|---|
-| payload `auto_entry: "placing"`, status `PENDING` | "🤖 Paper auto-entry: being placed now; no tap needed." | **Dismiss** (a veto before placement) |
-| payload `auto_entry: "placing"`, status `SUBMITTING` or `EXECUTED` (a late delivery) | "🤖 Auto-entered (paper). Unfilled entry is cancelled at the session close." | **Cancel entry…** |
-| re-card (`auto_entry: "refused"` or `"abandoned"`), status `PENDING` | "🤖 Auto-entry refused: {reason}. Tap Execute to enter it yourself." (or "…was not placed in time…") | the normal Execute and Dismiss |
+| payload `auto_entry: "placing"`, status `PENDING` | the auto line | **Dismiss** (a veto before placement) |
+| payload `auto_entry: "placing"`, status `SUBMITTING` or `EXECUTED` (a late delivery) | the auto line | **Cancel entry…** |
+| re-card (`auto_entry: "refused"` or `"abandoned"`), status `PENDING` | "🤖 Auto-entry refused: {reason}. Tap Execute to enter it yourself." (or "🤖 Auto-entry was not placed in time. Tap Execute to enter it yourself.") | the normal Execute and Dismiss |
 | any other status | as today | as today (none, or Re-evaluate) |
 
-- **Edit in place once placed.** An `entered` outcome queues, in the same transaction as its journal
-  event, a new `NotificationKind.CARD_AUTO_ENTERED` notification keyed `signal/{id}/auto-entered`. Its
-  delivery edits the original card message the way `CARD_EXPIRED` does (`notifier/telegram_bot.py`
-  ~L1636, same message-id lookup and the same fallback when the original message is unknown): the
-  auto-entry line becomes the "Auto-entered (paper)…" line and the keyboard becomes **Cancel entry…**.
-  An auto-entered card never receives the expiry strike (expiry applies only to `PENDING` cards), so
-  the two edits cannot race.
+- **Buttons swapped in place once placed.** An `entered` outcome queues, in the same transaction as its
+  journal event, a new `NotificationKind.CARD_AUTO_ENTERED` notification keyed
+  `signal/{id}/auto-entered`. Its delivery replaces the original card's keyboard with **Cancel entry…**
+  through `edit_message_reply_markup`, exactly as `strike_expired_card` does (`notifier/telegram_bot.py`
+  ~L1636): the message id is read at delivery time; a card never delivered (no `telegram_message_id`)
+  is acknowledged without calling Telegram, since its late delivery renders from the status; the same
+  `BadRequest` cases are acknowledged; any other failure is retried by the outbox. An auto-entered card
+  never receives the expiry strike (expiry applies only to `PENDING` cards), so the two edits cannot
+  race.
 - **Cancel entry…** has callback `cancelentry_ask:{signal_id}`, which runs the 1.3 `/cancel` preview
   (`cancel_handler(signal_id, False)`) and replies with its **Cancel entry** / **Keep** buttons. No
   one-tap cancel. `/cancel {id}` works throughout.
@@ -151,7 +160,8 @@ For an entry whose work item carries `entry_trigger: auto`:
 - **Daily auto-entry digest.** One `MESSAGE` notice keyed `auto-entry-digest/{et_date}`, sent at the
   regular session close + 15 minutes (early closes included, from the same calendar the lifetime
   service uses; 16:15 New York on a normal day, inside the host's awake window), only on a session with
-  at least one auto-eligible card. One line per card, in rank order: symbol, signal id and outcome:
+  at least one auto-eligible card. A 5-minute interval job (the second job above) sends it on its first
+  run at or after that time; the key makes it once per date. One line per card, in rank order: symbol, signal id and outcome:
   - `filled {qty} @ ${price}` (with the current open/closed state);
   - `cancelled unfilled at the close`;
   - `still resting` (a cancel not yet confirmed);
