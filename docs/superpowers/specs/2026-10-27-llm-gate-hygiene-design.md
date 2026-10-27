@@ -45,7 +45,7 @@ One function classifies the reply; there are exactly three results:
 | Reply | Native card | Catalog card (commentary) |
 |---|---|---|
 | Valid reply (parses, validates as `LLMTradeEvaluation`) whose raw `approved` is the JSON boolean `true` | approved (as today) | sent, commentary (as today) |
-| Parses as a JSON object whose raw `approved` is anything other than the JSON boolean `true` (`false`, `"true"`, `"yes"`, `1`, missing; including a reply that then fails validation) | **veto** (`approved: false`, `rejection_reason` from the reply if it is a string, else `"malformed veto"`) | sent, commentary |
+| Parses as a JSON object whose raw `approved` is anything other than the JSON boolean `true` (`false`, `"true"`, `"yes"`, `1`, missing; including a reply that then fails validation) | **veto** (`approved: false`, `rejection_reason` from the reply if it is a non-blank string, else `"malformed veto"` for a malformed reply and `"veto without a reason"` for a well-formed one) | sent, commentary |
 | Anything else: exception, timeout, non-JSON, non-object, a JSON-`true` approval that fails validation, or no LLM API key on an LLM scan | **error**: card withheld | sent, labelled "LLM commentary unavailable ({TypeName})" |
 
 Only the JSON boolean `true` approves; the classifier reads the raw parsed value before pydantic's lax

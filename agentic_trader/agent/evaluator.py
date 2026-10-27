@@ -758,20 +758,26 @@ class RiskEvaluator:
                 "malformed": malformed,
             }
 
-        def unavailable(error_type: str) -> LLMTradeEvaluation:
-            """An LLM error on the deterministic card: a native card is withheld, a catalog card is sent as
-            labelled commentary. Desk-authored text with the error's type name, never exception text."""
-            label = f"LLM unavailable ({error_type})" if applied else f"LLM commentary unavailable ({error_type})"
+        def on_deterministic_bracket(
+            rejection_reason: str | None, thesis: str, llm_verdict: dict[str, Any]
+        ) -> LLMTradeEvaluation:
+            """A gate result on the deterministic card: a native card is not approved, a catalog card is."""
             return LLMTradeEvaluation(
                 **deterministic_card,
                 approved=not applied,
-                rejection_reason=label if applied else None,
-                thesis_summary=label,
+                rejection_reason=rejection_reason if applied else None,
+                thesis_summary=thesis,
                 sizing_tiers=sizing_tiers,
                 gating_reasons=gating_reasons,
                 session_type=current_session_type,
-                llm_verdict=verdict(False, None, None, None, error=error_type),
+                llm_verdict=llm_verdict,
             )
+
+        def unavailable(error_type: str) -> LLMTradeEvaluation:
+            """An LLM error: a native card is withheld, a catalog card is sent as labelled commentary.
+            Desk-authored text with the error's type name, never exception text."""
+            label = f"LLM unavailable ({error_type})" if applied else f"LLM commentary unavailable ({error_type})"
+            return on_deterministic_bracket(label, label, verdict(False, None, None, None, error=error_type))
 
         def failed(error_type: str, failure: Exception | None = None) -> LLMTradeEvaluation:
             """Log a gate error and return its result. The message and extras carry the type name only; the
@@ -818,6 +824,8 @@ class RiskEvaluator:
 
         # One deadline, enforced here even if the client ignores ``timeout``. The request says exactly what is
         # sent: no temperature, and ``drop_params=False`` so an unsupported parameter fails instead of vanishing.
+        # A missed deadline is named by whichever fires first, litellm's ``Timeout`` or asyncio's
+        # ``TimeoutError``: callers count errors and must not key on the exact type name.
         timeout_seconds = self.config.llm_gate.timeout_seconds
         response: Any = None
         failure: Exception | None = None
@@ -843,10 +851,19 @@ class RiskEvaluator:
         if reply.data is None:
             return failed(str(reply.error_type), failure)
         data = reply.data
-        model = getattr(response, "model", None)  # the provider's snapshot, e.g. gpt-5.6-sol
         # An approval or a veto. A malformed veto carries no levels, so it keeps the deterministic bracket.
+        approved = reply.kind == "approve"
+        raw_model = getattr(response, "model", None)  # the provider's snapshot, e.g. gpt-5.6-sol
+        model = raw_model if isinstance(raw_model, str) else None
+        reason = data.get("rejection_reason")
+        thesis = data.get("thesis_summary")
+        if not isinstance(thesis, str):  # a malformed veto's reply may carry none
+            thesis = reason or ""
+        if not applied:
+            # A catalog probe tests the unfiltered study rule: the verdict is recorded, its text
+            # shown as commentary, and it never vetoes (deterministic gates already ran).
+            thesis = f"LLM commentary (not a gate): {thesis}".strip()
         try:
-            approved = reply.kind == "approve"
             # Invalidation guarantee: stop distance >= 1.5 * ATR
             llm_stop = float(data.get("stop_loss", stop_loss))
             llm_stop_dist = abs(entry - llm_stop)
@@ -868,7 +885,7 @@ class RiskEvaluator:
             if candidate.alpha_policy is not None:
                 llm_stop, llm_target = stop_loss, take_profit
                 llm_stop_dist, llm_target_dist = stop_distance, target_distance
-                rr = target_distance / stop_distance
+                rr = round(target_distance / stop_distance, 2)
 
             # Final-bracket check (``_final_bracket``), so the card as sent -- every tier offered on it --
             # passes its own tap gate under this regime: a bracket other than the deterministic one must
@@ -909,14 +926,6 @@ class RiskEvaluator:
                     card_notional = resized.default_tier.notional_dollars
                     card_leverage = round(card_notional / self.config.portfolio.cash, 2)
 
-            reason = data.get("rejection_reason")
-            thesis = data.get("thesis_summary")
-            if not isinstance(thesis, str):  # a malformed veto's reply may carry none
-                thesis = reason or ""
-            if not applied:
-                # A catalog probe tests the unfiltered study rule: the verdict is recorded, its text
-                # shown as commentary, and it never vetoes (deterministic gates already ran).
-                thesis = f"LLM commentary (not a gate): {thesis}".strip()
             return LLMTradeEvaluation(
                 approved=approved or not applied,
                 rejection_reason=reason if applied else None,
@@ -950,9 +959,25 @@ class RiskEvaluator:
                     reason,
                     llm_stop,
                     llm_target,
-                    model=model if isinstance(model, str) else None,
+                    model=model,
                     malformed=reply.malformed,
                 ),
             )
-        except Exception as exc:  # an unusable reply never approves: it is an error like any other
-            return failed(type(exc).__name__, exc)
+        except Exception as exc:
+            if approved:  # an approval that cannot be applied never approves: it is an error like any other
+                return failed(type(exc).__name__, exc)
+            # A veto stands even when its levels cannot be applied: it keeps the deterministic bracket, as a
+            # malformed veto does.
+            logger.warning(
+                "LLM veto kept on the deterministic bracket (%s)",
+                type(exc).__name__,
+                exc_info=exc,
+                extra={
+                    "contract": candidate.contract,
+                    "strategy": candidate.strategy,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return on_deterministic_bracket(
+                reason, thesis, verdict(False, reason, stop_loss, take_profit, model=model, malformed=reply.malformed)
+            )

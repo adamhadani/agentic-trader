@@ -18,9 +18,18 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError, field_validator
 
 
-__all__ = ["LLM_KEY_MISSING", "MALFORMED_VETO_REASON", "GateReply", "GateReplyFields", "classify_gate_reply"]
+__all__ = [
+    "LLM_KEY_MISSING",
+    "MALFORMED_VETO_REASON",
+    "VETO_WITHOUT_REASON",
+    "GateReply",
+    "GateReplyFields",
+    "classify_gate_reply",
+]
 
+# A veto's reason when the reply gives no non-blank string: a malformed reply's, and a well-formed one's.
 MALFORMED_VETO_REASON = "malformed veto"
+VETO_WITHOUT_REASON = "veto without a reason"
 # The error type name of an LLM scan with no LLM API key configured (not an exception: nothing is called).
 LLM_KEY_MISSING = "LLMKeyMissing"
 
@@ -52,9 +61,10 @@ class GateReply:
     """One classified gate reply.
 
     ``data`` is None for an error. For an approval or a well-formed veto it holds the validated fields the
-    reply set (a veto's ``rejection_reason`` always a string); for a malformed veto only ``approved``
-    (false), ``rejection_reason`` and, when the reply's is a string, ``thesis_summary``: its levels are not
-    read. ``error_type`` names the error's type; ``malformed`` is only ever true for a veto.
+    reply set, a well-formed veto's ``rejection_reason`` always a non-blank string (``veto without a reason``
+    when the reply gives none). For a malformed veto it holds only ``approved`` (false), ``rejection_reason``
+    (``malformed veto`` when the reply gives none) and, when the reply's is a string, ``thesis_summary``: its
+    levels are not read. ``error_type`` names the error's type; ``malformed`` is only ever true for a veto.
     """
 
     kind: Literal["approve", "veto", "error"]
@@ -67,14 +77,14 @@ def _error(error_type: str) -> GateReply:
     return GateReply(kind="error", data=None, error_type=error_type, malformed=False)
 
 
-def _veto_reason(payload: dict[str, Any]) -> str:
-    """The reply's reason when it is a non-blank string, else the fixed ``malformed veto``."""
+def _veto_reason(payload: dict[str, Any], default: str) -> str:
+    """The reply's reason when it is a non-blank string, else ``default``."""
     reason = payload.get("rejection_reason")
-    return reason if isinstance(reason, str) and reason.strip() else MALFORMED_VETO_REASON
+    return reason if isinstance(reason, str) and reason.strip() else default
 
 
 def _malformed_veto(payload: dict[str, Any]) -> GateReply:
-    data: dict[str, Any] = {"approved": False, "rejection_reason": _veto_reason(payload)}
+    data: dict[str, Any] = {"approved": False, "rejection_reason": _veto_reason(payload, MALFORMED_VETO_REASON)}
     if isinstance(thesis := payload.get("thesis_summary"), str):
         data["thesis_summary"] = thesis
     return GateReply(kind="veto", data=data, error_type=None, malformed=True)
@@ -100,6 +110,6 @@ def classify_gate_reply(content: str | None, *, error: BaseException | None = No
     if approved is True:
         return GateReply(kind="approve", data=fields.model_dump(exclude_unset=True), error_type=None, malformed=False)
     if approved is False:
-        data = {**fields.model_dump(exclude_unset=True), "rejection_reason": _veto_reason(payload)}
+        data = {**fields.model_dump(exclude_unset=True), "rejection_reason": _veto_reason(payload, VETO_WITHOUT_REASON)}
         return GateReply(kind="veto", data=data, error_type=None, malformed=False)
     return _malformed_veto(payload)

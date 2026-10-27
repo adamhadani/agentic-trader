@@ -18,7 +18,12 @@ import pytest
 from agentic_trader.agent.llm_gate import GateReply, classify_gate_reply
 from agentic_trader.agent.prompts import USER_EVALUATION_TEMPLATE, build_system_prompt, gate_prompt_sha256
 from agentic_trader.config import LLMGateConfig
-from tests.agent.test_evaluator import create_candidate, evaluator_factory  # noqa: F401  (fixture)
+from agentic_trader.research.alpha.strategy import AlphaExecutionPolicy
+from tests.agent.test_evaluator import (
+    create_candidate,
+    create_equity_candidate,
+    evaluator_factory,  # noqa: F401  (fixture)
+)
 from tests.agent.test_evaluator_catalog import drift_candidate
 
 
@@ -86,6 +91,13 @@ def test_a_missing_approved_is_a_malformed_veto_with_the_fixed_reason():
 def test_a_malformed_veto_without_a_string_reason_says_malformed_veto(reason):
     result = classify_gate_reply(reply({"approved": "no", "rejection_reason": reason}))
     assert result.kind == "veto" and result.data is not None and result.data["rejection_reason"] == "malformed veto"
+
+
+@pytest.mark.parametrize("reason", [None, "", "   "])
+def test_a_well_formed_veto_without_a_reason_is_not_called_malformed(reason):
+    result = classify_gate_reply(reply({**VETO, "rejection_reason": reason}))
+    assert result.kind == "veto" and result.malformed is False
+    assert result.data is not None and result.data["rejection_reason"] == "veto without a reason"
 
 
 def test_a_veto_with_a_non_numeric_stop_is_malformed_not_an_error():
@@ -361,6 +373,75 @@ async def test_a_failure_while_applying_a_reply_is_an_error_not_an_approval(eval
     assert result.llm_verdict is not None and result.llm_verdict["error"] == "KeyError"
     assert (result.stop_loss, result.take_profit) == (deterministic.stop_loss, deterministic.take_profit)
     assert "PLANTED" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("document", "malformed"),
+    [(VETO, False), ({key: value for key, value in VETO.items() if key != "thesis_summary"}, True)],
+)
+async def test_a_failure_while_applying_a_veto_keeps_the_veto_on_the_deterministic_bracket(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+    document,
+    malformed,
+):
+    evaluator = keyed(evaluator_factory())
+    deterministic = await evaluator.evaluate_candidate(create_candidate(), use_llm=False)
+    completion(monkeypatch, {**document, "stop_loss": deterministic.stop_loss - 5.0})
+
+    def broken(*args, **kwargs):
+        raise KeyError(PLANTED)
+
+    monkeypatch.setattr(evaluator, "_final_bracket", broken)
+    # A malformed veto's levels are never read, so only the well-formed one reaches the bracket check.
+    result = await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
+
+    assert result.approved is False and result.rejection_reason == "thesis too thin"
+    assert (result.stop_loss, result.take_profit) == (deterministic.stop_loss, deterministic.take_profit)
+    assert result.macro_clearance is deterministic.macro_clearance
+    assert result.llm_verdict is not None
+    assert result.llm_verdict["error"] is None and result.llm_verdict["malformed"] is malformed
+    assert result.llm_verdict["approved"] is False and result.llm_verdict["rejection_reason"] == "thesis too thin"
+    assert (result.llm_verdict["stop_loss"], result.llm_verdict["take_profit"]) == (
+        deterministic.stop_loss,
+        deterministic.take_profit,
+    )
+    assert result.llm_verdict["model"] == "gpt-5.6-sol"
+    assert "PLANTED" not in result.model_dump_json()
+
+
+def noise_alpha_candidate():
+    """A native card on a 2R alpha policy whose float reward/risk is 1.9999999999999976 (20.35, 17.33, 26.39)."""
+    candidate = create_equity_candidate(price=20.35, atr=1.0, swing_low=17.35, swing_high=30.0)
+    return candidate.model_copy(update={"alpha_policy": AlphaExecutionPolicy().to_dict(), "alpha_version": "frozen"})
+
+
+async def test_a_two_r_alpha_bracket_with_float_noise_is_approved_by_a_valid_approval(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+):
+    evaluator = keyed(evaluator_factory())
+    deterministic = await evaluator.evaluate_candidate(noise_alpha_candidate(), use_llm=False)
+    assert (deterministic.entry_price, deterministic.stop_loss, deterministic.take_profit) == (20.35, 17.33, 26.39)
+    assert deterministic.approved is True
+    completion(monkeypatch)
+
+    result = await evaluator.evaluate_candidate(noise_alpha_candidate(), use_llm=True)
+
+    assert result.approved is True and result.risk_reward_ratio == 2.0
+    assert (result.stop_loss, result.take_profit) == (17.33, 26.39)
+    assert result.llm_verdict is not None and result.llm_verdict["error"] is None
+
+
+async def test_a_two_r_alpha_bracket_with_float_noise_keeps_a_well_formed_veto(evaluator_factory, monkeypatch):  # noqa: F811
+    evaluator = keyed(evaluator_factory())
+    completion(monkeypatch, VETO)
+
+    result = await evaluator.evaluate_candidate(noise_alpha_candidate(), use_llm=True)
+
+    assert result.approved is False and result.rejection_reason == "thesis too thin"
+    assert result.llm_verdict is not None
+    assert result.llm_verdict["error"] is None and result.llm_verdict["malformed"] is False
 
 
 async def test_a_veto_keeps_the_deterministic_macro_clearance(evaluator_factory, monkeypatch):  # noqa: F811

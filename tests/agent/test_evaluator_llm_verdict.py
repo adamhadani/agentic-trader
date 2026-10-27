@@ -1,4 +1,5 @@
-"""Every parsed LLM answer is recorded as ``llm_verdict``; only a native card applies it."""
+"""Every LLM-evaluated card records ``llm_verdict`` -- an approval, a veto or an error -- and only a
+native card applies it."""
 
 import json
 from types import SimpleNamespace
