@@ -84,10 +84,12 @@ from agentic_trader.execution.auto_entry import (
     ABANDONED_REASON,
     AUTO_ENTRY_KEY,
     NOT_PAPER_REASON,
+    REJECTED_AT_SUBMISSION_REASON,
     AutoEntryAttempt,
     AutoEntryOutcome,
     attempt_reason,
     auto_entry_marker,
+    auto_entry_status_line,
     outcome_after_call,
 )
 from agentic_trader.execution.book_sizing import BookSizer, BookSizingDecision
@@ -4499,10 +4501,13 @@ class TradingCopilot:
         if status == SignalStatus.EXPIRED:
             reason = "repriced" if await self._auto_entry_repriced(signal_id) else "expired"
             return attempt(outcome, reason, status, work_status), None
+        if status == SignalStatus.FAILED:
+            # The reply embeds the broker's or an exception's text; the journal and digest carry a fixed phrase.
+            return attempt(outcome, REJECTED_AT_SUBMISSION_REASON, status, work_status), None
         reason = attempt_reason(reply.text) or "no reason given"
         if status == SignalStatus.PENDING:
             return attempt(outcome, reason, status, work_status), {"auto_entry": "refused", "auto_refusal": reason}
-        # Entered (the button swap follows), or FAILED: its existing rejection notice stays.
+        # Entered: the button swap follows.
         return attempt(outcome, reason, status, work_status), None
 
     async def _auto_entry_state(self, signal_id: int) -> tuple[str, str | None, EntryTrigger | None]:
@@ -4939,6 +4944,7 @@ class TradingCopilot:
             dxy_value=regime.dxy,
             breakout_allowed=regime.breakout_allowed,
             recent_signals=signals,
+            auto_entry=auto_entry_status_line(self.config),
         )
 
     async def show_status(self) -> None:

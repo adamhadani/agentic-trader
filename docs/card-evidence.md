@@ -509,6 +509,38 @@ nothing in `risk/`, `card_policy`, `card_stats` or admission reads it, and a wat
 - **Reading it.** The sent-versus-unsent comparison is the only view of whether the discretionary tap helps or
   hurts; both are small, censored samples, so read them as a record, never as a gate or an edge estimate.
 
+## Operator outcomes
+
+`cards outcomes` records what was done with each sent card, now that native suggestion cards are entered on
+the paper account by [auto-entry](paper-auto-entry.md). All of it is descriptive; nothing in `risk/`,
+`card_policy` or admission reads it.
+
+- **`entry_trigger`** per card row: `auto` (the sweep's entry), `tap` (an operator tap or the CLI) or `none`
+  (no entry item). `summarize_execution` reports `taps` and `auto_entries` apart; `mean_tap_age_seconds`
+  averages taps only.
+- **`operator_action`** per card row, the first matching rule: `cancelled` (an operator-cause entry cancel; a
+  deadline cancel is not an operator act), `auto_entered`, `auto_refused` (the sweep's attempt was `refused`,
+  or the auto entry was rejected without a fill), `tapped` (a tap-trigger entry exists, including a marked
+  card the sweep refused or abandoned and the operator then tapped), `dismissed`, `abandoned` (the sweep never
+  got to it), `expired`, else `none`. Cards recorded without the `auto_entry` marker use only `cancelled`,
+  `tapped`, `dismissed`, `expired` and `none`.
+- **`operator` block** of `summarize()`: counts of sent, tapped, auto-entered, dismissed, cancelled and
+  expired cards `by_slot` (`10:35`, `14:35`), `by_trigger` and `by_strategy`; `tap_latency` (median, p90 and
+  `n`, taps only); `kept_vs_vetoed`; and `tap_era`.
+- **`kept_vs_vetoed`** reads auto-marked cards only, so its count starts at the deploy. `kept` is
+  `auto_entered`, `vetoed` is `dismissed` (before placement) or `cancelled` by the operator; each side
+  reports `n` and `mean_excess_r` (the beta-matched excess R, one row per resolved setup on a session), with
+  `difference`, a session-block bootstrap `ci90` and `status`: `insufficient` below 30 distinct resolved
+  setups in total or below 10 on either side (no interval then). `excluded` counts `auto_refused` and
+  `abandoned` cards, which are on neither side.
+- **`tap_era`** compares unmarked cards that were tapped with those that were not (`tapped`, `untapped`,
+  `difference`). It is not part of the rule: before auto-entry "untapped" mostly meant the operator was not
+  looking.
+
+The predeclared reading, recorded in [paper auto-entry](paper-auto-entry.md#measurement) and not enforced in
+code: once `kept_vs_vetoed` is sufficient, keep human selection as a gate only if the kept-minus-vetoed CI is
+above zero.
+
 ## Limits
 
 - **Proxy bracket.** Labels use the journaled deterministic COLLECT bracket (not the LLM-edited bracket

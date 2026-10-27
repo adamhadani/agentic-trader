@@ -544,16 +544,31 @@ async def test_a_pending_index_retries_on_the_next_poll(capture_store, app_confi
 
 async def test_freshness_is_the_latest_captured_filing_date_within_four_days(capture_store, app_config):
     worker = _worker(None, capture_store, _config(app_config))
-    ready, detail = await worker.freshness(_et(date(2026, 10, 6), 7))
+    ready, detail = await worker.freshness(_et(date(2026, 10, 6), 7), "captured")
     assert not ready and "no capture" in detail
     await capture_store.record({"filing_date": "2026-09-01", "status": "captured", "errors": {"ValueError": 5}}, {})
     await capture_store.record({"filing_date": "2026-10-02", "status": "captured", "errors": {"ValueError": 2}}, {})
     await capture_store.record({"filing_date": "2026-10-03", "status": "no_index"}, {})
-    ready, detail = await worker.freshness(_et(date(2026, 10, 6), 7))
+    ready, detail = await worker.freshness(_et(date(2026, 10, 6), 7), "present")
     assert ready is True  # 4 days (a long weekend)
     assert detail.endswith("document errors (30 days): 2")  # the September errors are outside the window
-    ready, detail = await worker.freshness(_et(date(2026, 10, 7), 7))
+    ready, detail = await worker.freshness(_et(date(2026, 10, 7), 7), "present")
     assert not ready and "2026-10-02" in detail  # a weekend no-index day does not refresh it
+
+
+@pytest.mark.parametrize("status", ["waiting", "scan_window", "captured", "pending", "present"])
+@pytest.mark.parametrize("has_capture", [False, True])
+async def test_insider_freshness_not_due_before_first_pass(capture_store, app_config, status, has_capture):
+    worker = _worker(None, capture_store, _config(app_config))
+    if has_capture:
+        await capture_store.record({"filing_date": "2026-10-05", "status": "captured", "errors": {}}, {})
+    ready, detail = await worker.freshness(_et(date(2026, 10, 6), 7), status)
+    if has_capture:
+        assert ready is True and detail.startswith("latest filing date 2026-10-05")
+    elif status in ("waiting", "scan_window"):
+        assert (ready, detail) == (True, "not_due; no capture yet")
+    else:
+        assert (ready, detail) == (False, "no capture yet")
 
 
 def test_readiness_duplicates_the_capture_age_limit():

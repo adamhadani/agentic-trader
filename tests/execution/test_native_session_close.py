@@ -247,3 +247,23 @@ async def test_a_filled_alpha_position_with_a_holding_deadline_is_still_read():
     # Its durable identity is missing in this fixture, so the alpha path still reviews as before.
     repository.review.assert_awaited_once()
     assert await service.resume_blockers() == [7]
+
+
+@pytest.mark.parametrize("executed_at", ["2026-10-21T15:00:00+00:00", "2026-10-21T21:30:00+00:00"])
+async def test_missed_bound_verdict_cached_both_ways(executed_at):
+    """The order read and calendar range happen once per signal per process, missed or not."""
+    signal = {**_filled_signal(asdict(NATIVE)), "executed_at": executed_at}
+    service, _broker, repository = _desk(signal)
+    repository.order.return_value = _order(datetime(2026, 10, 21, 10, 40, tzinfo=NY))
+    await service.reconcile()
+    await service.reconcile()
+    assert repository.order.await_count == 1
+    assert repository.missed_bound.await_count == (1 if executed_at.startswith("2026-10-21T21") else 0)
+    assert service.calendar.requests == [(REGULAR.date, REGULAR.date)]
+
+
+async def test_an_undecided_missed_bound_check_is_retried():
+    service, _broker, repository = _desk(_filled_signal(asdict(NATIVE)))
+    await service.reconcile()
+    await service.reconcile()
+    assert repository.order.await_count == 2  # no order observation yet: not a final verdict

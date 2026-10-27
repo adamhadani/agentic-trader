@@ -31,6 +31,7 @@ from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, 
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import AUTO_REFUSED_LINE, TelegramNotifier, format_alert_card
+from agentic_trader.presentation.auto_entry_digest import format_auto_entry_digest
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import DomainEventRecord, SignalRecord, WorkItemRecord
 from agentic_trader.storage.workflow import WorkflowStore
@@ -400,6 +401,37 @@ async def test_synchronous_rejection_is_failed_refused_and_not_recarded(auto_des
     assert f"signal/{sid}/auto-refused" not in queued and f"signal/{sid}/auto-entered" not in queued
     # Its existing immediate rejection notice stays the operator's word on it.
     assert any(key.startswith("entry/") and key.endswith("/rejected") for key in queued)
+
+
+async def test_a_synchronous_rejection_journals_a_fixed_reason_never_the_reply_text(
+    auto_desk, temp_db, app_config, monkeypatch
+):
+    enqueue_for_real(auto_desk, temp_db, app_config, monkeypatch)
+    queue = auto_desk.entry_service.authorize.side_effect
+    store = temp_db.workflows
+
+    async def reject(request, *, trigger=EntryTrigger.TAP):
+        item, reason = await queue(request, trigger=trigger)
+        claimed = await store.claim_entry(lease_seconds=60)
+        await store.resolve_entry(claimed, OrderResult(success=False, error_message="BROKER-SECRET-77 insufficient"))
+        return await store.get_work(item.id), reason
+
+    auto_desk.entry_service.authorize.side_effect = reject
+    sid = await record_auto_card(temp_db)
+
+    await auto_desk.auto_enter_pending()
+
+    payload = await the_attempt(temp_db, sid)
+    assert (payload["outcome"], payload["signal_status"], payload["reason"]) == (
+        "refused",
+        SignalStatus.FAILED,
+        "rejected at submission",
+    )
+    [event] = await attempt_events(temp_db, sid)
+    assert "BROKER-SECRET-77" not in json.dumps(event)
+    rows = await store.auto_entry_digest_rows(datetime.now(ET_TZ).date())
+    digest = format_auto_entry_digest(rows, et_date=datetime.now(ET_TZ).date())
+    assert "refused: rejected at submission" in digest and "BROKER-SECRET-77" not in digest
 
 
 @pytest.mark.parametrize(("price", "reason"), [(102.0, "repriced"), (94.0, "expired")])

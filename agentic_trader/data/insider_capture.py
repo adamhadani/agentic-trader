@@ -603,12 +603,18 @@ class InsiderCaptureWorker:
         self._done = today
         return "captured"
 
-    async def freshness(self, now: datetime) -> tuple[bool, str]:
-        """Ready while the latest captured filing date is at most ``CAPTURE_MAX_AGE_DAYS`` before today (New York)."""
+    async def freshness(self, now: datetime, status: WorkerStatus) -> tuple[bool, str]:
+        """Ready while the latest captured filing date is at most ``CAPTURE_MAX_AGE_DAYS`` before today (New York).
+
+        With no capture yet the worker is ready (``not_due``) while its status is ``waiting`` or ``scan_window``:
+        no pass has been able to run. After a pass that produced none it is not ready.
+        """
         today = now.astimezone(ET_TZ).date()
         captures = await self.store.captures()
         captured = [c for c in captures if c.get("status") == CaptureStatus.CAPTURED]
         if not captured:
+            if status in ("waiting", "scan_window"):
+                return True, "not_due; no capture yet"
             return False, "no capture yet"
         latest = date.fromisoformat(captured[-1]["filing_date"])
         since = (today - timedelta(days=RECENT_ERROR_DAYS)).isoformat()
@@ -672,7 +678,7 @@ async def run_insider_capture_worker(
         while not shutdown.is_set():
             try:
                 status = await worker.run_once()
-                ready, detail = await worker.freshness(now())
+                ready, detail = await worker.freshness(now(), status)
                 await observe(ready, f"{status}; {detail}")
             except Exception as exc:
                 status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None

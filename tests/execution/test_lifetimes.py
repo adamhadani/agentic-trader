@@ -268,3 +268,32 @@ async def test_paper_mode_refused_broker_cannot_cancel():
         assert (result.status, result.reason, result.signal_id) == ("refused", "broker_cannot_cancel", 7)
     repository.begin_cancel.assert_not_awaited()
     repository.review.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("status", "executed_at", "order_id", "expected"),
+    [
+        ("PENDING", None, None, "PENDING"),
+        ("DISMISSED", None, None, "DISMISSED"),
+        ("EXPIRED", None, None, "EXPIRED"),
+        ("SUBMITTING", None, None, "SUBMITTING"),
+        ("EXECUTED", None, None, "SUBMITTING"),  # accepted by the desk, no broker order id yet
+        ("EXECUTED", "2026-10-21T15:00:00+00:00", "entry", "EXECUTED"),
+        ("FAILED", None, None, "FAILED"),
+    ],
+)
+async def test_not_resting_carries_the_status_that_picks_the_reply(status, executed_at, order_id, expected):
+    signal = {
+        "id": 7,
+        "contract": "SPY",
+        "status": status,
+        "executed_at": executed_at,
+        "broker_order_id": order_id,
+        "alpha_policy": None,
+        "decision_provenance": None,
+    }
+    db = SimpleNamespace(get_signal_by_id=AsyncMock(return_value=signal))
+    repository = SimpleNamespace(store=SimpleNamespace(db=db), cancel_item=AsyncMock(return_value=None))
+    service = TradeLifetimeService(repository, MagicMock(), None, config=SimpleNamespace())
+    result = await service.cancel_resting_entry(7, confirm=False)
+    assert (result.reason, result.signal_status) == ("not_resting", expected)

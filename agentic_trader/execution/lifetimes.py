@@ -274,6 +274,8 @@ class TradeLifetimeService:
         self.config = config
         self.clock = clock or (lambda: datetime.now(UTC))
         self.calendar = calendar
+        # Signal ids whose missed-bound verdict is final (either way); a restart re-checks each once.
+        self._missed_bound_checked: set[int] = set()
 
     async def _sessions(self, lifetime: LifetimePolicy, parent: OrderObservation) -> list | None:
         """Broker sessions the policy's deadline counts; ``None`` when it counts none.
@@ -306,7 +308,12 @@ class TradeLifetimeService:
 
     async def _missed_native_bound(self, signal: dict[str, Any], lifetime: NativeEntryLifetimePolicy) -> None:
         """A marked entry that filled at or after its deadline missed the cancel (late reconciliation,
-        or a host asleep): one journaled notice, no halt. Durable evidence only, never a broker order read."""
+        or a host asleep): one journaled notice, no halt. Durable evidence only, never a broker order read.
+
+        Once the fill time has been compared with the deadline the verdict is final whichever way it went,
+        so each signal is checked once per process."""
+        if signal["id"] in self._missed_bound_checked:
+            return
         try:
             parent = await self.repository.order(signal["broker_order_id"])
             if parent is None or parent.submitted_at is None or signal.get("executed_at") is None:
@@ -317,6 +324,7 @@ class TradeLifetimeService:
             if filled_at.tzinfo is None:
                 filled_at = filled_at.replace(tzinfo=UTC)
             deadline = lifetime.entry_deadline(parent.submitted_at, await self._sessions(lifetime, parent))
+            self._missed_bound_checked.add(signal["id"])
             if aware_utc(filled_at) >= deadline:
                 await self.repository.missed_bound(
                     signal["id"],
@@ -444,6 +452,12 @@ class TradeLifetimeService:
 
         def refused(reason: str, work_status: str | None = None) -> RestingCancelResult:
             status = signal["status"] if reason == "not_resting" else None
+            if (
+                status == SignalStatus.EXECUTED
+                and signal.get("executed_at") is None
+                and not signal.get("broker_order_id")
+            ):
+                status = SignalStatus.SUBMITTING  # accepted by the desk, no broker order yet: still being submitted
             return RestingCancelResult("refused", reason, signal_id, symbol, work_status, status)
 
         if (existing := await self.repository.cancel_item(signal_id)) is not None:

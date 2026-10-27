@@ -11,6 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from agentic_trader.config import ExecutionConfig, load_config
+from agentic_trader.execution.auto_entry import auto_entry_active
 
 
 PRODUCTION = {"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""}
@@ -93,6 +94,13 @@ def test_shipped_config_enables_paper_auto_entry():
 
     assert config.execution.auto_entry == "paper"
     assert "auto_entry" in config.execution.model_fields_set
+
+
+def test_shipped_auto_entry_is_inactive_under_the_simulator():
+    config = load_config(str(SHIPPED), environ={**PRODUCTION, "EXECUTION_MODE": "paper"})
+
+    assert config.execution.auto_entry == "paper"
+    assert auto_entry_active(config) is False
 
 
 def test_auto_entry_defaults_off():

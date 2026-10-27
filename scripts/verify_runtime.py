@@ -11,7 +11,9 @@ import asyncio
 import json
 import os
 import time
+import urllib.error
 import urllib.request
+from typing import Any
 
 from telegram import Bot, BotCommandScopeAllPrivateChats, BotCommandScopeChat
 
@@ -20,8 +22,9 @@ from agentic_trader.accounting.service import AccountLedgerService
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.broker.alpaca import AlpacaBroker
 from agentic_trader.broker.base import BrokerPosition
-from agentic_trader.config import load_config
+from agentic_trader.config import AppConfig, load_config
 from agentic_trader.constants import AuditEventType, ExecutionMode, RuntimeEnvironment, SystemStateKey
+from agentic_trader.execution.auto_entry import auto_entry_active
 from agentic_trader.notifier.telegram_bot import TelegramNotifier
 from agentic_trader.presentation.formatters import TelegramHtmlFormatter, TerminalFormatter
 from agentic_trader.risk import drawdown_risk_factor
@@ -47,6 +50,42 @@ async def verified_account_report(ledger: AccountLedgerService) -> LedgerReport:
     if not report.ready:
         raise RuntimeError("Account activity reconciliation failed: " + "; ".join(report.issues))
     return report
+
+
+READINESS_NOT_READY_STATUS = 503
+
+
+def fetch_readiness(health_url: str, *, attempts: int = 3, delay_seconds: float = 2.0) -> dict[str, Any]:
+    """The daemon's ``/readyz`` body. A 503 (not ready; a GET, so safe to repeat) is retried, then named.
+
+    Any other HTTP error propagates. A persistent 503 raises ``RuntimeError`` listing each not-ready
+    check and its detail instead of a traceback.
+    """
+    report: dict[str, Any] = {}
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(f"{health_url}/readyz", timeout=5) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code != READINESS_NOT_READY_STATUS:
+                raise
+            try:
+                report = json.load(exc)
+            except ValueError:
+                report = {}
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    failing = [
+        f"{name}: {check.get('detail', 'not ready')}"
+        for name, check in report.get("checks", {}).items()
+        if not check.get("ready")
+    ]
+    raise RuntimeError("Readiness is not ready: " + ("; ".join(failing) or str(report.get("detail", "no detail"))))
+
+
+def auto_entry_report(config: AppConfig) -> dict[str, Any]:
+    """The paper auto-entry switch and whether this account acts on it."""
+    return {"setting": config.execution.auto_entry, "active": auto_entry_active(config)}
 
 
 async def main() -> None:
@@ -95,9 +134,7 @@ async def main() -> None:
         with response:
             if response.status != 200:
                 raise RuntimeError("Health endpoint failed")
-        response = await asyncio.to_thread(urllib.request.urlopen, f"{health_url}/readyz", timeout=5)
-        with response:
-            readiness = json.load(response)
+        readiness = await asyncio.to_thread(fetch_readiness, health_url)
         if not readiness["ready"] or readiness["run_id"] != identity["run_id"]:
             raise RuntimeError("Readiness is unhealthy or belongs to a different daemon run")
         response = await asyncio.to_thread(urllib.request.urlopen, f"{health_url}/metrics", timeout=5)
@@ -145,6 +182,7 @@ async def main() -> None:
                     "runtime": identity,
                     "readiness": readiness,
                     "alpaca_paper": True,
+                    "auto_entry": auto_entry_report(config),
                     "telegram_identity_and_chat": "verified",
                     "telegram_poll_age_seconds": round(poll_age, 2),
                     "event_loop_lag_seconds": metrics.get("trader_event_loop_lag_seconds"),

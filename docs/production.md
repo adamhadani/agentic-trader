@@ -52,7 +52,10 @@ its launchd shell sources `.envrc`. `com.agentictrader.watchdog` checks the PID 
   predeclared pooled campaigns under operator approval
   ([pooled mining](alpha-pooled-mining.md)). The manual `alpha mine` command remains.
 
-Scans stage suggestions; an operator approves entry orders. Configuration loads at construction. The journal-backed alpha registry reloads
+Scans stage suggestions; on a live or simulator account an operator approves entry orders. On the Alpaca
+paper account with `execution.auto_entry: paper` (shipped) the scheduled suggestion job also enters its sent
+native cards itself ([auto-entry runbook](#auto-entry-paper)); catalog, watch, alpha and probe cards stay
+tap-only. Configuration loads at construction. The journal-backed alpha registry reloads
 atomically between scans; external config edits still require restart.
 
 ### Suggestion scans
@@ -1244,7 +1247,7 @@ reviewed. Refusal tokens (nothing was cancelled, no halt):
 | Token | Meaning |
 | --- | --- |
 | `unknown_signal` | no such signal |
-| `not_resting` | filled, closed or failed already; an untapped card replies "not submitted yet" |
+| `not_resting` | filled, closed or failed already; an untapped card replies "not submitted yet", a dismissed or expired one "never entered ... nothing to cancel", an entry not yet at the broker "still being submitted; try again in a minute" |
 | `cancel_in_progress` | a cancel exists for this signal (cancelling or cancelled) |
 | `filled_before_cancel` | an earlier cancel found the entry filled and protected |
 | `close_active` | a close is active for the symbol |
@@ -1254,6 +1257,37 @@ reviewed. Refusal tokens (nothing was cancelled, no halt):
 | `entry_group_unavailable:<Type>` | the broker group could not be read |
 
 Inspect with `copilot db queue --kind entry_cancel`.
+
+### Auto-entry (paper)
+
+Contract and measurement: [paper auto-entry](paper-auto-entry.md). `execution.auto_entry: paper` is active only
+on Alpaca paper with `execution.native_entry_lifetime: session`; a live account, or `native_entry_lifetime:
+off`, refuses to start with it set, and the simulator leaves it inactive. `/status` and
+`scripts/verify_runtime.py` show the setting and whether it is active.
+
+- **Turn it off.** Set `execution.auto_entry: off` in `config/config.yaml` and do the
+  [controlled restart](#controlled-maintenance-and-restart). There is no runtime command; `/panic` halts all
+  new risk at once, and `/resume` follows the usual rules. Cards recorded while it was on keep their marker;
+  after the restart the sweep and digest jobs are not registered, so a marked card still `PENDING` is not
+  entered: it keeps its Dismiss-only card and expires with the session.
+- **Card states.** A new native card says "Paper auto-entry: entered for you on the paper account; no tap
+  needed" with **Dismiss** until the entry is placed, then **Cancel entry...** (its callback opens the `/cancel`
+  preview with Cancel entry and Keep). If risk or admission refuses, or the sweep ran more than
+  `execution.card_freshness.fresh_seconds` (1,800 s) after the card, a fresh card says "Auto-entry refused:
+  {reason}" or "was not placed in time" and carries the normal Execute and Dismiss.
+- **Vetoes.** Dismiss before placement; Cancel entry... or `/cancel <id>` while the entry rests (one DELETE,
+  never retried; a fill racing it halts new risk until reviewed). The session-bounded lifetime cancels an
+  unfilled entry at the submission session's close + 5 minutes.
+- **Messages.** Each filled auto entry sends one `Auto-entry #id SYMBOL filled ...` notice. Three routine
+  notices are folded into the **digest** at the regular close + 15 minutes (16:15 New York, earlier on an
+  early close): the `accepted` resolution, the deadline cancel intent and the deadline cancel result confirmed
+  unfilled. Never folded: anything resolving an `UNKNOWN` outcome, operator cancels, `entry-terminal` (a
+  broker-side end), refusals, ratchets, exits, partial fills, missed bounds and halts.
+- **Where to look.** The `card/{signal_id}` stream's `auto_entry_attempted` event (outcome, reason,
+  signal and work status; a synchronous rejection reads `rejected at submission`);
+  `copilot db queue --kind entry`; `copilot cards outcomes` for `entry_trigger`, `operator_action` and the
+  `operator` block ([card evidence](card-evidence.md#operator-outcomes)). The 20-session pass criteria are in
+  the [auto-entry doc](paper-auto-entry.md#measurement).
 
 ### Timed alpha lifecycle operations
 

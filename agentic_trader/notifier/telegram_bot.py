@@ -1560,6 +1560,9 @@ class TelegramNotifier:
         # issue date names its day) and its status guards the buttons below.
         row = await self.db.get_signal_by_id(signal_id) if self.db else None
         issued_at = _issued_at(row)
+        if auto_entry in ("refused", "abandoned") and row is not None and row["status"] != SignalStatus.PENDING:
+            # The re-card's "Tap Execute" line is true only while the card is live; otherwise it renders as today.
+            auto_entry, auto_refusal = None, None
         # Always output to terminal/logs
         print(
             format_terminal_card(

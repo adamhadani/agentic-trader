@@ -17,6 +17,8 @@ AUTO_ENTRY_MARKER = {"mode": "paper"}
 AUTO_ENTRY_REASON_CHARS = 300
 ABANDONED_REASON = "not_attempted_in_time"
 NOT_PAPER_REASON = "not_paper_scope"
+# A synchronous preflight or broker rejection: the reply embeds broker or exception text, which the journal never carries.
+REJECTED_AT_SUBMISSION_REASON = "rejected at submission"
 
 _MARKUP = re.compile(r"<[^>]*>")
 # A reply's leading symbols and Title Case label ("⚠️ Execution Rejected: "), which the re-card line restates.
@@ -31,6 +33,15 @@ def auto_entry_active(config: AppConfig) -> bool:
         and config.alpaca_paper
         and config.execution.native_entry_lifetime == "session"
     )
+
+
+def auto_entry_status_line(config: AppConfig) -> str:
+    """The ``/status`` line: the switch and whether this account can act on it."""
+    if auto_entry_active(config):
+        return "Auto-entry: paper (on)"
+    if config.execution.auto_entry == "off":
+        return "Auto-entry: off"
+    return "Auto-entry: inactive (not an Alpaca paper account)"
 
 
 def auto_entry_marker(

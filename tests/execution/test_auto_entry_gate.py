@@ -9,6 +9,7 @@ from agentic_trader.execution.auto_entry import (
     AUTO_ENTRY_MARKER,
     auto_entry_active,
     auto_entry_marker,
+    auto_entry_status_line,
 )
 from agentic_trader.execution.durable import ScanTrigger
 
@@ -35,6 +36,19 @@ def _config(*, mode=ExecutionMode.ALPACA, paper=True, lifetime="session", auto="
 )
 def test_auto_entry_active_truth_table(config, active):
     assert auto_entry_active(config) is active
+
+
+@pytest.mark.parametrize(
+    ("config", "line"),
+    [
+        (_config(), "Auto-entry: paper (on)"),
+        (_config(auto="off"), "Auto-entry: off"),
+        (_config(mode=ExecutionMode.PAPER), "Auto-entry: inactive (not an Alpaca paper account)"),
+        (_config(lifetime="off"), "Auto-entry: inactive (not an Alpaca paper account)"),
+    ],
+)
+def test_status_shows_auto_entry_line(config, line):
+    assert auto_entry_status_line(config) == line
 
 
 def test_constants():

@@ -121,6 +121,27 @@ async def test_auto_card_failed_or_expired_renders_like_today(temp_db, eval_res)
     assert _buttons(expired["reply_markup"]) == [[("🔄 Re-evaluate", f"reval_{signal_id}")]]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "auto", [{"auto_entry": "refused", "auto_refusal": "cap reached"}, {"auto_entry": "abandoned"}]
+)
+@pytest.mark.parametrize(
+    "status", [SignalStatus.EXECUTED, SignalStatus.FAILED, SignalStatus.EXPIRED, SignalStatus.DISMISSED]
+)
+async def test_refused_or_abandoned_recard_off_pending_renders_like_today(temp_db, eval_res, status, auto):
+    _, plain = await _send(temp_db, eval_res, status=status)
+    _, sent = await _send(temp_db, eval_res, status=status, **auto)
+    for line in (AUTO_ENTRY_LINE, AUTO_ABANDONED_LINE, "auto-entry"):
+        assert line.lower() not in sent["text"].lower()
+    assert sent["text"] == plain["text"]
+    if plain["reply_markup"] is None:
+        assert sent["reply_markup"] is None
+    else:
+        assert [t for row in _buttons(sent["reply_markup"]) for t, _ in row] == [
+            t for row in _buttons(plain["reply_markup"]) for t, _ in row
+        ]
+
+
 def test_cards_without_auto_entry_are_unchanged(eval_res):
     assert "auto-entry" not in format_alert_card(eval_res, "S").lower()
     assert "auto-entry" not in format_terminal_card(eval_res, "S").lower()

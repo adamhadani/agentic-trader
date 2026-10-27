@@ -96,7 +96,9 @@ unfilled entry at its session close.
   `outcome` (`entered | refused | skipped_not_pending | abandoned`), `reason`, `work_status` (the
   signal's latest entry work item status, or null), `signal_status`, `attempted_at`. `reason` is the
   desk-authored reply text with markup stripped and cut to 300 characters, or an exception's type name;
-  never exception text. Admission's refusal strings already name the rule; no change to admission or
+  never exception text. A `refused` attempt whose signal is `FAILED` (a synchronous preflight or broker
+  rejection) journals the fixed reason `rejected at submission` instead of the reply text, because that
+  reply embeds the broker's or an exception's text; the digest therefore shows the fixed phrase. Admission's refusal strings already name the rule; no change to admission or
   `risk/` is made to produce tokens.
 - **Failure isolation.** An exception for one card is journaled as `refused` with its type name and
   does not stop the others or the digest. `auto_enter_pending` never raises into the job or startup.
@@ -134,7 +136,7 @@ cancelled at the session close." Only the buttons depend on the state:
 - **A refusal that leaves the card `PENDING` sends a fresh card.** It queues, in the same transaction as
   the journal event, a `NotificationKind.SIGNAL` notification keyed `signal/{id}/auto-refused` carrying
   the original card payload plus `auto_entry: "refused"` (or `"abandoned"`) and `auto_refusal` (the
-  reason, HTML-escaped). Only when the signal is still `PENDING`; a `FAILED` or `EXPIRED` card gets no
+  reason, queued raw and escaped once by the renderer). Only when the signal is still `PENDING`; a `FAILED` or `EXPIRED` card gets no
   re-card, and `skipped_not_pending` sends nothing.
 - The watch card's existing "tap-only, never auto-entered" line stays true and is pinned by a test.
 
@@ -154,9 +156,11 @@ For an entry whose work item carries `entry_trigger: auto`:
   unchanged):
   - the resolution notice `entry/{work_id}/{status}` when the status is `accepted`;
   - the deadline-cause cancel intent `entry-cancel/{id}/intent`;
-  - the deadline-cause cancel result when it is confirmed unfilled;
-  - the "ended … without fills" notice `signal/{id}/entry-terminal`.
-  An operator-cause cancel keeps both its notices.
+  - the deadline-cause cancel result when it is confirmed unfilled.
+  An operator-cause cancel keeps both its notices. A notice that resolves an `UNKNOWN` outcome (an
+  `accepted` resolution or a cancel result that clears it) is never folded: its halt was announced.
+  `signal/{id}/entry-terminal` is **kept** for auto entries: for them it fires only when the broker
+  ends the order itself (rejected, expired or an external cancel), which is not routine.
 - **Daily auto-entry digest.** One `MESSAGE` notice keyed `auto-entry-digest/{et_date}`, sent at the
   regular session close + 15 minutes (early closes included, from the same calendar the lifetime
   service uses; 16:15 New York on a normal day, inside the host's awake window), only on a session with
@@ -168,8 +172,8 @@ For an entry whose work item carries `entry_trigger: auto`:
   - `refused: {reason}`;
   - `dismissed before placement` / `cancelled by you`;
   and the closing line "Paper fills are optimistic: no queue position or market impact." The digest
-  reads only the journal and the signals table; it is idempotent by key and skipped (journaled) when
-  there is nothing to report.
+  reads only the journal and the signals table; it is idempotent by key; a day with no marked cards queues and
+  journals nothing.
 
 ### 2.5 Measurement (`cards outcomes`)
 
@@ -260,8 +264,8 @@ For an entry whose work item carries `entry_trigger: auto`:
 - **Card rendering:** each row of the table in 2.3; the `CARD_AUTO_ENTERED` edit (including the
   unknown-message fallback); the `cancelentry_ask` callback reaching the preview; a re-priced card
   rendering as a tap card.
-- **Notices:** the auto fill notice is queued exactly once in the fill transaction; the four routine
-  notices are not queued for an auto entry and still are for a tap entry; an operator cancel of an auto
+- **Notices:** the auto fill notice is queued exactly once in the fill transaction; the three routine
+  notices are not queued for an auto entry and still are for a tap entry, and `entry-terminal` is kept; an operator cancel of an auto
   entry keeps its notices; ratchet, exit, `UNKNOWN` and partial-fill notices are unchanged.
 - **Digest:** content for each outcome; sent once per date at close + 15 (early close covered); nothing
   sent on a session without auto-eligible cards.
