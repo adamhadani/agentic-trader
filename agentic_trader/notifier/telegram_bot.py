@@ -240,6 +240,31 @@ def _news_line(block: dict[str, Any] | None, *, markup: bool, now: datetime | No
 
 
 ENTRY_SESSION_BOUND_LINE = "Unfilled entry is cancelled at the session close."
+AUTO_ENTRY_LINE = (
+    "🤖 Paper auto-entry: entered for you on the paper account; no tap needed. "
+    "Unfilled entry is cancelled at the session close."
+)
+AUTO_REFUSED_LINE = "🤖 Auto-entry refused: {reason}. Tap Execute to enter it yourself."
+AUTO_ABANDONED_LINE = "🤖 Auto-entry was not placed in time. Tap Execute to enter it yourself."
+CANCEL_ENTRY_ASK_LABEL = "Cancel entry…"
+
+
+def _cancel_entry_ask_markup(signal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(CANCEL_ENTRY_ASK_LABEL, callback_data=f"cancelentry_ask:{signal_id}")]]
+    )
+
+
+def _auto_entry_line(auto_entry: str | None, auto_refusal: str | None, *, markup: bool) -> str:
+    """The auto-entry line a card carries (payload ``auto_entry``), or "" for a plain tap card."""
+    if auto_entry == "placing":
+        return AUTO_ENTRY_LINE + "\n"
+    if auto_entry == "refused":
+        reason = auto_refusal or "unknown"
+        return AUTO_REFUSED_LINE.format(reason=html.escape(reason, quote=False) if markup else reason) + "\n"
+    if auto_entry == "abandoned":
+        return AUTO_ABANDONED_LINE + "\n"
+    return ""
 
 
 def _is_watch(facts: dict[str, Any] | None) -> bool:
@@ -298,6 +323,8 @@ def format_alert_card(
     book_sizing: dict[str, Any] | None = None,
     entry_session_bound: bool = False,
     card_facts: dict[str, Any] | None = None,
+    auto_entry: str | None = None,
+    auto_refusal: str | None = None,
 ) -> str:
     """Format alert message matching Section 8 of the specification.
 
@@ -433,6 +460,7 @@ def format_alert_card(
     # Using HTML formatting for rock-solid reliability with special characters
     text = (
         f"{_watch_block(card_facts, markup=True)}"
+        f"{_auto_entry_line(auto_entry, auto_refusal, markup=True)}"
         f"{drift_block}"
         f"{updated_card_prefix}"
         f"📋 <b>SETUP: {qty_str} {html.escape(eval_res.contract)} ({html.escape(eval_res.direction)})</b>\n"
@@ -477,6 +505,8 @@ def format_terminal_card(
     book_sizing: dict[str, Any] | None = None,
     entry_session_bound: bool = False,
     card_facts: dict[str, Any] | None = None,
+    auto_entry: str | None = None,
+    auto_refusal: str | None = None,
 ) -> str:
     """ASCII/plain text formatted card for terminal display.
 
@@ -587,9 +617,10 @@ def format_terminal_card(
 
     border = "=" * 65
     watch_block = _watch_block(card_facts, markup=False)
+    auto_block = _auto_entry_line(auto_entry, auto_refusal, markup=False)
     return f"""
 {border}
-{watch_block}{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})
+{watch_block}{auto_block}{updated_card_prefix}📋 SETUP: {qty_str} {eval_res.contract} ({eval_res.direction})
 Strategy: {strategy}
 
 📊 Levels
@@ -1169,10 +1200,17 @@ class TelegramNotifier:
         if self.cancel_handler is None:
             await update.message.reply_text("Cancel handler not attached.")
             return
-        result = await self.cancel_handler(signal_id, False)
+        await self._reply_cancel_preview(update.message, signal_id, self.cancel_handler)
+
+    @staticmethod
+    async def _reply_cancel_preview(
+        message: Any, signal_id: int, cancel_handler: Callable[[int, bool], Awaitable[RestingCancelResult]]
+    ) -> None:
+        """Reply with the operator-cancel preview; its Cancel entry / Keep buttons confirm or drop it."""
+        result = await cancel_handler(signal_id, False)
         text = TelegramHtmlFormatter.format_resting_cancel_html(result)
         if result.status != "preview":
-            await update.message.reply_text(text, parse_mode="HTML")
+            await message.reply_text(text, parse_mode="HTML")
             return
         keyboard = InlineKeyboardMarkup(
             [
@@ -1182,7 +1220,7 @@ class TelegramNotifier:
                 ]
             ]
         )
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+        await message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
     async def handle_flatten_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.message:
@@ -1442,6 +1480,17 @@ class TelegramNotifier:
                     await msg.reply_text(reply.text, parse_mode="HTML")
             else:
                 await query.answer("Re-evaluate handler unavailable.", show_alert=True)
+        elif data.startswith("cancelentry_ask:"):
+            ask_id = parse_signal_id(data.removeprefix("cancelentry_ask:"))
+            if ask_id is None:
+                await query.answer("Invalid entry cancel button; nothing cancelled.", show_alert=True)
+                return
+            if self.cancel_handler is None:
+                await query.answer("Cancel handler unavailable; nothing cancelled.", show_alert=True)
+                return
+            await query.answer()
+            if msg and hasattr(msg, "reply_text"):
+                await self._reply_cancel_preview(msg, ask_id, self.cancel_handler)
         elif data.startswith("cancelentry_confirm:"):
             cancel_id = parse_signal_id(data.removeprefix("cancelentry_confirm:"))
             if cancel_id is None:
@@ -1498,6 +1547,8 @@ class TelegramNotifier:
         book_sizing: dict[str, Any] | None = None,
         entry_session_bound: bool = False,
         card_facts: dict[str, Any] | None = None,
+        auto_entry: str | None = None,
+        auto_refusal: str | None = None,
     ) -> int | None:
         # ``valid_until``/``reprices``/``first_issued_at`` arrive in card payloads recorded
         # by the scan and by tap-time re-pricing; rendered on both cards below. ``drift``
@@ -1525,6 +1576,8 @@ class TelegramNotifier:
                 entry_session_bound=entry_session_bound,
                 issued_at=issued_at,
                 card_facts=card_facts,
+                auto_entry=auto_entry,
+                auto_refusal=auto_refusal,
             )
         )
 
@@ -1551,6 +1604,8 @@ class TelegramNotifier:
             entry_session_bound=entry_session_bound,
             issued_at=issued_at,
             card_facts=card_facts,
+            auto_entry=auto_entry,
+            auto_refusal=auto_refusal,
         )
 
         # A retried SIGNAL delivery can land after the card already left PENDING -- for
@@ -1559,7 +1614,15 @@ class TelegramNotifier:
         # an EXPIRED card still gets a Re-evaluate button (the handler itself refuses a
         # non-configured contract with a clear message).
         current_status = (row or {}).get("status") if self.db else None
-        if current_status is not None and current_status != SignalStatus.PENDING:
+        reply_markup: InlineKeyboardMarkup | None
+        if auto_entry == "placing" and current_status == SignalStatus.PENDING:
+            # A veto before the sweep places the entry: Dismiss only, never Execute.
+            reply_markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("❌ Dismiss Signal", callback_data=f"dism_{signal_id}")]]
+            )
+        elif auto_entry == "placing" and current_status in (SignalStatus.SUBMITTING, SignalStatus.EXECUTED):
+            reply_markup = _cancel_entry_ask_markup(signal_id)
+        elif current_status is not None and current_status != SignalStatus.PENDING:
             reply_markup = (
                 InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Re-evaluate", callback_data=f"reval_{signal_id}")]])
                 if current_status == SignalStatus.EXPIRED
@@ -1663,6 +1726,37 @@ class TelegramNotifier:
             bot = self.app.bot
             await bot.edit_message_reply_markup(chat_id=self.chat_id, message_id=message_id, reply_markup=markup)
             return f"struck buttons on card #{signal_id} ({contract})"
+        except BadRequest as exc:
+            reason = str(exc).lower()
+            if (
+                "message is not modified" in reason
+                or "message to edit not found" in reason
+                or "can't be edited" in reason
+                or "message_id_invalid" in reason
+            ):
+                return f"acknowledged unmodifiable card #{signal_id}: {exc}"
+            raise
+
+    async def mark_auto_entered_card(self, signal_id: int, contract: str) -> str | bool:
+        """CARD_AUTO_ENTERED delivery: swap an auto-entered card's Dismiss for Cancel entry….
+
+        Mirrors ``strike_expired_card``: the message id is read at delivery time; a card never
+        delivered is acknowledged without calling Telegram (its late delivery renders Cancel
+        entry… from the signal status); the same unmodifiable ``BadRequest`` cases are
+        acknowledged; any other failure propagates so the outbox retries.
+        """
+        if not self.is_configured() or not self.app:
+            return False
+        sig = await self.db.get_signal_by_id(signal_id) if self.db else None
+        message_id = sig.get("telegram_message_id") if sig else None
+        if not message_id:
+            return "no telegram message"
+        try:
+            bot = self.app.bot
+            await bot.edit_message_reply_markup(
+                chat_id=self.chat_id, message_id=message_id, reply_markup=_cancel_entry_ask_markup(signal_id)
+            )
+            return f"swapped buttons on auto-entered card #{signal_id} ({contract})"
         except BadRequest as exc:
             reason = str(exc).lower()
             if (
