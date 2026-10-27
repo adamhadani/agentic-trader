@@ -635,6 +635,7 @@ class TradingCopilot:
         # holds this process's attempted cards, so a failed attempt journal never leads to a second attempt.
         self._auto_entry_lock = asyncio.Lock()
         self._auto_entry_attempted: set[int] = set()
+        self._digest_calendar_warned: set[date] = set()
         # Strong references to background operator scans (card re-evaluations and
         # `/scan SYMBOL`), so they are never garbage-collected; shutdown cancels them all.
         self.background_scan_tasks: set[asyncio.Task[None]] = set()
@@ -4965,13 +4966,25 @@ class TradingCopilot:
         current = (now or datetime.now(UTC)).astimezone(ET_TZ)
         et_date = current.date()
         try:
+            if await self.db.workflows.auto_entry_digest_queued(et_date):
+                return False
             calendar = self.lifetime_service.calendar
             if calendar is None:
-                logger.info("Auto-entry digest skipped: no session calendar", extra={"event": "auto_entry_digest"})
+                logger.debug("Auto-entry digest skipped: no session calendar", extra={"event": "auto_entry_digest"})
                 return False
-            day = await calendar.get_trading_day(et_date)
+            try:
+                day = await calendar.get_trading_day(et_date)
+            except Exception as exc:
+                if et_date not in self._digest_calendar_warned:
+                    self._digest_calendar_warned.add(et_date)
+                    logger.warning(
+                        "Auto-entry digest calendar unavailable (%s); retrying every run",
+                        type(exc).__name__,
+                        extra={"event": "auto_entry_digest_calendar_unavailable"},
+                    )
+                return False
             if not day.is_trading_day or day.close_time is None:
-                logger.info("Auto-entry digest skipped: not a trading day", extra={"event": "auto_entry_digest"})
+                logger.debug("Auto-entry digest skipped: not a trading day", extra={"event": "auto_entry_digest"})
                 return False
             if current < datetime.combine(day.date, day.close_time, tzinfo=ET_TZ) + AUTO_ENTRY_DIGEST_DELAY:
                 return False

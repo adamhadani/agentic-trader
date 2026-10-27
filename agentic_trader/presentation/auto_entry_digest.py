@@ -5,24 +5,12 @@ Pure formatting. The rows come from the journal, the signals table and the entry
 """
 
 import html
-from dataclasses import dataclass
 from datetime import date
-from typing import Literal
 
+from agentic_trader.execution.auto_entry import AutoEntryDigestRow
 
-DigestOutcome = Literal[
-    "filled", "cancelled_unfilled", "still_resting", "refused", "dismissed", "cancelled_by_operator", "abandoned"
-]
 
 DIGEST_FOOTER = "Paper fills are optimistic: no queue position or market impact."
-
-
-@dataclass(frozen=True)
-class AutoEntryDigestRow:
-    signal_id: int
-    symbol: str
-    outcome: DigestOutcome
-    detail: str | None = None
 
 
 def _wording(row: AutoEntryDigestRow) -> str:
@@ -33,7 +21,7 @@ def _wording(row: AutoEntryDigestRow) -> str:
         case "cancelled_unfilled":
             return "cancelled unfilled at the close"
         case "still_resting":
-            return "still resting"
+            return "not yet resolved (entry or cancel pending)"
         case "refused":
             return f"refused: {detail}" if detail else "refused"
         case "dismissed":
@@ -41,7 +29,7 @@ def _wording(row: AutoEntryDigestRow) -> str:
         case "cancelled_by_operator":
             return "cancelled by you"
         case "abandoned":
-            return f"abandoned: {detail}" if detail else "abandoned"
+            return "not placed in time"
 
 
 def format_auto_entry_digest(rows: list[AutoEntryDigestRow], *, et_date: date) -> str:

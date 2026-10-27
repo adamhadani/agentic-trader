@@ -26,7 +26,7 @@ from agentic_trader.accounting.risk import AccountRiskSnapshot, require_risk_che
 from agentic_trader.broker.base import BrokerEntryContext, OrderRequest
 from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, AuditEventType, ExecutionMode, SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import authorization_expiry, reservation_rejection
-from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt, AutoEntryDigestRow
 from agentic_trader.execution.capacity import assess_entry_capacity
 from agentic_trader.execution.durable import (
     ENTRY_BLOCKING,
@@ -40,13 +40,13 @@ from agentic_trader.execution.durable import (
     WorkStatus,
 )
 from agentic_trader.market.session import ET_TZ
-from agentic_trader.presentation.auto_entry_digest import AutoEntryDigestRow
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.research.apriori.probe import CATALOG_KIND, CATALOG_STRATEGY_IDS
 from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID, frozen_watch_contract
 from agentic_trader.risk import drawdown_risk_factor, requires_account_risk
 from agentic_trader.storage.models import (
     AlphaProjectionRecord,
+    AuditEventRecord,
     CloseRequestRecord,
     DomainEventRecord,
     LedgerCheckpointRecord,
@@ -145,10 +145,22 @@ def work_item(row: WorkItemRecord) -> WorkItem:
     )
 
 
+# The broker's unfilled terminal order statuses that fail a resting entry (and the only ones a digest renders).
+BROKER_TERMINAL_STATUSES = frozenset({"canceled", "rejected", "expired"})
+
+
 def _digest_row(
-    signal: SignalRecord, attempt: dict[str, Any] | None, entry: WorkItemRecord | None, cancel: WorkItemRecord | None
+    signal: SignalRecord,
+    attempt: dict[str, Any] | None,
+    entry: WorkItemRecord | None,
+    cancel: WorkItemRecord | None,
+    terminal: str | None,
 ) -> AutoEntryDigestRow:
-    """The digest outcome of one marked card from its signal, attempt event and entry/cancel work items."""
+    """The digest outcome of one marked card from its signal, attempt event and entry/cancel work items.
+
+    Details are desk-authored: the attempt's reason, a fixed phrase, or the broker's terminal order status
+    (one of canceled, rejected, expired). A work item's error text is never rendered.
+    """
     status = SignalStatus(signal.status)
     symbol = signal.contract
     if signal.executed_at is not None or status in CLOSED_STATUSES:
@@ -165,14 +177,16 @@ def _digest_row(
         return AutoEntryDigestRow(signal.id, symbol, "dismissed")
     if status in (SignalStatus.SUBMITTING, SignalStatus.EXECUTED):
         return AutoEntryDigestRow(signal.id, symbol, "still_resting")
+    if attempt is not None and attempt.get("outcome") == "refused":
+        return AutoEntryDigestRow(signal.id, symbol, "refused", attempt.get("reason"))
     if status == SignalStatus.FAILED and entry is not None:
         if entry.status == WorkStatus.REJECTED:
-            return AutoEntryDigestRow(signal.id, symbol, "refused", json.loads(entry.result).get("error_message"))
-        return AutoEntryDigestRow(signal.id, symbol, "cancelled_unfilled")
-    reason = attempt.get("reason") if attempt else None
-    if attempt is not None and attempt.get("outcome") == "refused":
-        return AutoEntryDigestRow(signal.id, symbol, "refused", reason)
-    return AutoEntryDigestRow(signal.id, symbol, "abandoned", reason or "not attempted")
+            return AutoEntryDigestRow(signal.id, symbol, "refused", "rejected after it was queued")
+        ended = (
+            f"broker ended the order {terminal} without fills" if terminal else "broker ended the order without fills"
+        )
+        return AutoEntryDigestRow(signal.id, symbol, "refused", ended)
+    return AutoEntryDigestRow(signal.id, symbol, "abandoned")
 
 
 class WorkflowStore:
@@ -369,13 +383,26 @@ class WorkflowStore:
                 .order_by(WorkItemRecord.created_at, WorkItemRecord.id)
             ):
                 cancels[item.dedup_key] = item
-        marked.sort(key=lambda pair: (pair[1] if isinstance(pair[1], int) else float("inf"), pair[0].timestamp))
+            terminals: dict[int, str] = {}
+            for audit in await session.scalars(
+                select(AuditEventRecord)
+                .where(
+                    AuditEventRecord.event_type == AuditEventType.ENTRY_EXECUTION_UPDATED,
+                    AuditEventRecord.signal_id.in_([row.id for row, _ in marked]),
+                )
+                .order_by(AuditEventRecord.id)
+            ):
+                evidence = json.loads(audit.payload)
+                if evidence.get("filled_quantity") == "0" and evidence.get("status") in BROKER_TERMINAL_STATUSES:
+                    terminals[int(audit.signal_id or 0)] = evidence["status"]
+        marked.sort(key=lambda pair: (pair[0].timestamp, pair[1] if isinstance(pair[1], int) else float("inf")))
         return [
             _digest_row(
                 row,
                 attempts.get(f"auto-entry/{row.id}"),
                 entries.get(str(row.id)),
                 cancels.get(str(row.id)),
+                terminals.get(row.id),
             )
             for row, _ in marked
         ]
@@ -888,6 +915,7 @@ class WorkflowStore:
                 return False
             if recovery and row.status not in (WorkStatus.SUBMITTING, WorkStatus.UNKNOWN):
                 return False
+            previous = row.status
             row.status = (
                 WorkStatus.ACCEPTED
                 if result.success
@@ -930,9 +958,11 @@ class WorkflowStore:
                 detail += (
                     " Conditions changed or the broker rejected this order. Run /scan for a new proposal and approval."
                 )
-            # An accepted auto entry is folded into the daily digest; every refusal keeps its notice.
+            # An accepted auto entry is folded into the daily digest; a refusal, and the acceptance that
+            # clears an UNKNOWN outcome (its halt was announced), keep their notice.
             folded = (
                 row.status == WorkStatus.ACCEPTED
+                and previous != WorkStatus.UNKNOWN
                 and await self.entry_trigger_of(session, item.payload["signal_id"]) == EntryTrigger.AUTO
             )
             if not folded:
@@ -974,6 +1004,19 @@ class WorkflowStore:
         )
         row.sequence = queued_event.id
         return item_id
+
+    async def auto_entry_digest_queued(self, et_date: date) -> bool:
+        """Whether this date's digest is already queued: a plain read, without the trading workflow lock."""
+        async with self.db.session_factory() as session:
+            return bool(
+                await session.scalar(
+                    select(WorkItemRecord.id).where(
+                        WorkItemRecord.scope == self.scope,
+                        WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                        WorkItemRecord.dedup_key == f"auto-entry-digest/{et_date.isoformat()}",
+                    )
+                )
+            )
 
     async def queue_auto_entry_digest(self, et_date: date, text: str) -> bool:
         """Queue the day's digest once: False (nothing queued) when this New York date's key already exists."""
@@ -1105,7 +1148,7 @@ class WorkflowStore:
                 projection = await session.get(OrderProjectionRecord, (self.scope, observation.order_id))
                 assert projection is not None
                 current = OrderObservation.model_validate_json(projection.payload)
-                if current.status in {"canceled", "rejected", "expired"} and Decimal(current.filled_quantity) == 0:
+                if current.status in BROKER_TERMINAL_STATUSES and Decimal(current.filled_quantity) == 0:
                     signal = await session.scalar(
                         select(SignalRecord).where(
                             *self.db._scope(),
@@ -1116,16 +1159,14 @@ class WorkflowStore:
                     )
                     if signal and not await self.unresolved_cancellation(session, symbol=signal.contract):
                         signal.status = SignalStatus.FAILED
-                        # An auto entry's unfilled end is folded into the daily digest.
-                        if await self.entry_trigger_of(session, signal.id) != EntryTrigger.AUTO:
-                            await self.add_notification(
-                                session,
-                                f"signal/{signal.id}/entry-terminal",
-                                NotificationKind.MESSAGE,
-                                {
-                                    "text": f"Entry #{signal.id} ended {current.status} without fills. Reservation released; run /scan for a new proposal."
-                                },
-                            )
+                        await self.add_notification(
+                            session,
+                            f"signal/{signal.id}/entry-terminal",
+                            NotificationKind.MESSAGE,
+                            {
+                                "text": f"Entry #{signal.id} ended {current.status} without fills. Reservation released; run /scan for a new proposal."
+                            },
+                        )
                         session.add(
                             self.db._audit(
                                 AuditEventType.ENTRY_EXECUTION_UPDATED,

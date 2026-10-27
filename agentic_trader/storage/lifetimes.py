@@ -330,6 +330,7 @@ class LifetimeRepository:
                 complete
                 and not filled_first
                 and cause == "deadline"
+                and previous != WorkStatus.UNKNOWN
                 and await self.store.entry_trigger_of(session, signal_id) == EntryTrigger.AUTO
             )
             if not folded:

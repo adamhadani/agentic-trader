@@ -96,3 +96,18 @@ def outcome_after_call(signal_status: str, entry_trigger: EntryTrigger | None) -
     if signal_status in (SignalStatus.PENDING, SignalStatus.FAILED, SignalStatus.EXPIRED):
         return "refused"
     return "skipped_not_pending"
+
+
+DigestOutcome = Literal[
+    "filled", "cancelled_unfilled", "still_resting", "refused", "dismissed", "cancelled_by_operator", "abandoned"
+]
+
+
+@dataclass(frozen=True)
+class AutoEntryDigestRow:
+    """One marked card's line in the daily digest: its outcome and a desk-authored detail (never error text)."""
+
+    signal_id: int
+    symbol: str
+    outcome: DigestOutcome
+    detail: str | None = None

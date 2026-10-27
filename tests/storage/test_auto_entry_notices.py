@@ -40,7 +40,7 @@ async def event_kinds(db) -> list[str]:
 
 
 def observation(
-    *, status: str, submitted_at: datetime, client_order_id: str, order_id: str = "entry-1"
+    *, status: str, submitted_at: datetime, client_order_id: str, order_id: str = "entry-1", filled: str = "0"
 ) -> OrderObservation:
     return OrderObservation(
         order_id=order_id,
@@ -49,7 +49,7 @@ def observation(
         side="buy",
         status=status,
         quantity="10",
-        filled_quantity="0",
+        filled_quantity=filled,
         order_type="limit",
         order_class="bracket",
         submitted_at=submitted_at,
@@ -96,13 +96,9 @@ async def accept_resolution(db, sid, item):
     return f"entry/{item.id}/accepted"
 
 
-async def observed_terminal(db, sid, item):
+async def observe_terminal(db, sid, item, status="canceled"):
     await db.workflows.observe_orders(
-        [
-            observation(
-                status="canceled", submitted_at=datetime.now(UTC), client_order_id=item.payload["client_order_id"]
-            )
-        ]
+        [observation(status=status, submitted_at=datetime.now(UTC), client_order_id=item.payload["client_order_id"])]
     )
     return f"signal/{sid}/entry-terminal"
 
@@ -143,7 +139,7 @@ async def resolve_cancel(db, cancel, item):
     assert await repo.resolve_cancel(cancel, [canceled])
 
 
-@pytest.mark.parametrize("step", [accept_resolution, observed_terminal, deadline_intent, deadline_unfilled_result])
+@pytest.mark.parametrize("step", [accept_resolution, deadline_intent, deadline_unfilled_result])
 async def test_folded_notices_skipped_for_auto_and_kept_for_tap(db, step):
     tap_sid, tap_item = await staged_entry(db, EntryTrigger.TAP, resolve=step is not accept_resolution)
     if step is accept_resolution:
@@ -157,7 +153,7 @@ async def test_folded_notices_skipped_for_auto_and_kept_for_tap(db, step):
     assert tap_key in await notice_keys(db)
 
 
-@pytest.mark.parametrize("step", [accept_resolution, observed_terminal, deadline_intent, deadline_unfilled_result])
+@pytest.mark.parametrize("step", [accept_resolution, deadline_intent, deadline_unfilled_result])
 async def test_auto_entry_folds_its_routine_notices_but_journals_them(tmp_path, step):
     database = SignalDatabase(str(tmp_path / "auto.db"))
     sid, item = await staged_entry(database, EntryTrigger.AUTO, resolve=step is not accept_resolution)
@@ -172,7 +168,6 @@ async def test_auto_entry_folds_its_routine_notices_but_journals_them(tmp_path, 
     kinds = await event_kinds(database)
     expected = {
         accept_resolution: EventKind.ENTRY_RESOLVED,
-        observed_terminal: EventKind.ORDER_OBSERVED,
         deadline_intent: EventKind.ENTRY_CANCEL_REQUESTED,
         deadline_unfilled_result: EventKind.ENTRY_CANCEL_RESOLVED,
     }[step]
@@ -255,3 +250,63 @@ async def test_exit_notice_unchanged_for_auto(db):
     assert await db.close_position(sid, 110.0, ExitReason.TAKE_PROFIT, 100.0, SignalStatus.CLOSED_WIN)
 
     assert f"signal/{sid}/closed" in await notice_keys(db)
+
+
+@pytest.mark.parametrize("status", ["canceled", "rejected", "expired"])
+async def test_broker_ended_auto_entry_keeps_its_entry_terminal_notice(db, status):
+    sid, item = await staged_entry(db, EntryTrigger.AUTO)
+
+    key = await observe_terminal(db, sid, item, status)
+
+    notices = await notice_keys(db)
+    assert f"ended {status} without fills" in notices[key]["text"]
+    assert (await db.get_signal_by_id(sid))["status"] == SignalStatus.FAILED
+
+
+async def test_unknown_entry_resolved_by_recovery_keeps_its_notice_for_auto(db):
+    _sid, item = await staged_entry(db, EntryTrigger.AUTO, resolve=False)
+    claimed = await db.workflows.claim_entry(lease_seconds=60)
+    await db.workflows.resolve_entry(
+        claimed, OrderResult(success=False, submission_uncertain=True, error_message="TimeoutError")
+    )
+
+    assert await db.workflows.resolve_entry(claimed, OrderResult(success=True, order_id="entry-1"), recovery=True)
+
+    assert f"entry/{item.id}/accepted" in await notice_keys(db)
+
+
+async def test_unknown_deadline_cancel_resolved_keeps_its_result_notice_for_auto(db):
+    sid, item = await staged_entry(db, EntryTrigger.AUTO)
+    cancel = await begin_cancel(db, sid, item, "deadline")
+    repo = LifetimeRepository(db.workflows)
+    assert await repo.resolve_cancel(cancel, [], "lookup failed")  # no evidence: UNKNOWN, the halt notice
+    assert f"entry-cancel/{cancel.id}/unknown" in await notice_keys(db)
+
+    await resolve_cancel(db, cancel, item)
+
+    assert f"entry-cancel/{cancel.id}/accepted" in await notice_keys(db)
+
+
+async def test_partial_fill_cancel_notice_unchanged_for_auto(db):
+    sid, item = await staged_entry(db, EntryTrigger.AUTO)
+    cancel = await begin_cancel(db, sid, item, "deadline")
+    partial = observation(
+        status="canceled",
+        submitted_at=datetime.now(UTC) - timedelta(hours=17),
+        client_order_id=item.payload["client_order_id"],
+        filled="2",
+    )
+    await db.workflows.observe_orders([partial])
+
+    assert await LifetimeRepository(db.workflows).resolve_cancel(cancel, [partial])
+
+    assert f"entry-cancel/{cancel.id}/unknown" in await notice_keys(db)
+
+
+async def test_trailing_stop_ratchet_notice_unchanged_for_auto(db):
+    sid, _ = await staged_entry(db, EntryTrigger.AUTO)
+    await db.update_signal_execution(sid, "entry-1", fill_price=100.0, quantity=10, executed_at=datetime.now(UTC))
+
+    assert await db.update_position_stop(sid, 97.0, reason="ratchet", notification={"contract": "SPY"})
+
+    assert f"signal/{sid}/stop/97.0" in await notice_keys(db)

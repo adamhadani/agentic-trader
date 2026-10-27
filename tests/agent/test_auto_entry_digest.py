@@ -6,11 +6,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import update
 
-from agentic_trader.constants import SignalStatus
-from agentic_trader.execution.auto_entry import AutoEntryAttempt
+from agentic_trader.constants import AuditEventType, SignalStatus
+from agentic_trader.execution.auto_entry import AutoEntryAttempt, AutoEntryDigestRow
 from agentic_trader.execution.durable import NotificationKind, WorkKind, WorkStatus
 from agentic_trader.market.session import MarketCalendarDay
-from agentic_trader.presentation.auto_entry_digest import AutoEntryDigestRow, format_auto_entry_digest
+from agentic_trader.presentation.auto_entry_digest import format_auto_entry_digest
 from agentic_trader.storage.models import SignalRecord, WorkItemRecord
 from agentic_trader.storage.workflow import encode
 from tests.agent.test_auto_entry_sweep import auto_desk, notifications, record_auto_card, temp_db  # noqa: F401
@@ -46,7 +46,7 @@ def test_digest_lines_for_each_outcome():
         AutoEntryDigestRow(5, "XLK", "refused", "cap reached"),
         AutoEntryDigestRow(6, "XLF", "dismissed"),
         AutoEntryDigestRow(7, "XLE", "cancelled_by_operator"),
-        AutoEntryDigestRow(8, "XLV", "abandoned", "card too old"),
+        AutoEntryDigestRow(8, "XLV", "abandoned"),
         AutoEntryDigestRow(9, "XLY", "refused", "price <$5 & thin"),
     ]
 
@@ -55,11 +55,11 @@ def test_digest_lines_for_each_outcome():
         "SPY #1: filled 10 @ $100.25 (open)",
         "QQQ #2: filled 5 @ $400.00 (closed)",
         "IWM #3: cancelled unfilled at the close",
-        "DIA #4: still resting",
+        "DIA #4: not yet resolved (entry or cancel pending)",
         "XLK #5: refused: cap reached",
         "XLF #6: dismissed before placement",
         "XLE #7: cancelled by you",
-        "XLV #8: abandoned: card too old",
+        "XLV #8: not placed in time",
         "XLY #9: refused: price &lt;$5 &amp; thin",
         FOOTER,
     ]
@@ -105,7 +105,20 @@ async def test_rows_are_derived_from_stored_state_in_rank_order(temp_db):  # noq
     issued = datetime(2026, 10, 21, 10, 35, tzinfo=NY)
     ids = {}
     for rank, name in enumerate(
-        ["filled", "closed", "unfilled", "resting", "refused", "rejected", "dismissed", "operator", "abandoned"], 1
+        [
+            "filled",
+            "closed",
+            "unfilled",
+            "resting",
+            "refused",
+            "rejected",
+            "dismissed",
+            "operator",
+            "abandoned",
+            "broker",
+            "broker_unrecorded",
+        ],
+        1,
     ):
         ids[name] = await record_auto_card(temp_db, rank=rank, contract=f"S{rank}", issued_at=issued)
     when = datetime.now(UTC)
@@ -132,7 +145,7 @@ async def test_rows_are_derived_from_stored_state_in_rank_order(temp_db):  # noq
         WorkKind.ENTRY,
         WorkStatus.REJECTED,
         payload={"entry_trigger": "auto"},
-        result={"error_message": "preflight refused"},
+        result={"error_message": "HTTPError: secret broker detail"},
     )
     await set_signal(temp_db, ids["dismissed"], status=SignalStatus.DISMISSED)
     await set_signal(temp_db, ids["operator"], status=SignalStatus.FAILED)
@@ -140,6 +153,17 @@ async def test_rows_are_derived_from_stored_state_in_rank_order(temp_db):  # noq
         temp_db, ids["operator"], WorkKind.ENTRY_CANCEL, WorkStatus.ACCEPTED, payload={"cause": "operator"}
     )
     await attempt(temp_db, ids["abandoned"], "abandoned", "card too old")
+    for name in ("broker", "broker_unrecorded"):
+        await set_signal(temp_db, ids[name], status=SignalStatus.FAILED)
+        await plant_work(temp_db, ids[name], WorkKind.ENTRY, WorkStatus.ACCEPTED, payload={"entry_trigger": "auto"})
+    await temp_db.record_audit(
+        AuditEventType.ENTRY_EXECUTION_UPDATED,
+        {"order_id": "entry-1", "status": "expired", "filled_quantity": "0"},
+        signal_id=ids["broker"],
+    )
+    # A 14:35 card of rank 1 sorts after every 10:35 card.
+    late = await record_auto_card(temp_db, rank=1, contract="LATE", issued_at=datetime(2026, 10, 21, 14, 35, tzinfo=NY))
+    await set_signal(temp_db, late, status=SignalStatus.DISMISSED)
 
     rows = await temp_db.workflows.auto_entry_digest_rows(date(2026, 10, 21))
 
@@ -149,11 +173,15 @@ async def test_rows_are_derived_from_stored_state_in_rank_order(temp_db):  # noq
         ("S3", "cancelled_unfilled", None),
         ("S4", "still_resting", None),
         ("S5", "refused", "cap reached"),
-        ("S6", "refused", "preflight refused"),
+        ("S6", "refused", "rejected after it was queued"),
         ("S7", "dismissed", None),
         ("S8", "cancelled_by_operator", None),
-        ("S9", "abandoned", "card too old"),
+        ("S9", "abandoned", None),
+        ("S10", "refused", "broker ended the order expired without fills"),
+        ("S11", "refused", "broker ended the order without fills"),
+        ("LATE", "dismissed", None),
     ]
+    assert "secret" not in repr(rows)
     assert await temp_db.workflows.auto_entry_digest_rows(date(2026, 10, 22)) == []
 
 
@@ -223,3 +251,39 @@ async def test_no_digest_without_a_trading_day_calendar_read(auto_desk, temp_db,
 
     assert await auto_desk.publish_auto_entry_digest(datetime(2026, 10, 24, 17, 0, tzinfo=NY)) is False
     assert not [k for k in await notifications(temp_db) if k.startswith("auto-entry-digest/")]
+
+
+async def test_digest_not_due_at_16_10_and_due_at_16_15(auto_desk, temp_db):  # noqa: F811
+    auto_desk.lifetime_service.calendar = FakeCalendar(REGULAR)
+    sid = await record_auto_card(temp_db, issued_at=datetime(2026, 10, 21, 10, 35, tzinfo=NY))
+    await set_signal(temp_db, sid, status=SignalStatus.DISMISSED)
+
+    assert await auto_desk.publish_auto_entry_digest(datetime(2026, 10, 21, 16, 10, tzinfo=NY)) is False
+    assert await auto_desk.publish_auto_entry_digest(datetime(2026, 10, 21, 16, 15, tzinfo=NY)) is True
+
+
+async def test_calendar_failure_warns_once_per_date_with_the_type_name(auto_desk, temp_db, caplog):  # noqa: F811
+    auto_desk.lifetime_service.calendar = FakeCalendar(REGULAR, error=RuntimeError("secret calendar detail"))
+    at = datetime(2026, 10, 21, 16, 20, tzinfo=NY)
+
+    with caplog.at_level("DEBUG", logger="copilot"):
+        for _ in range(3):
+            assert await auto_desk.publish_auto_entry_digest(at) is False
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "RuntimeError" in warnings[0].getMessage()
+    assert "secret" not in warnings[0].getMessage() and warnings[0].exc_info is None
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+async def test_sent_digest_is_a_cheap_no_op_that_skips_the_calendar(auto_desk, temp_db):  # noqa: F811
+    calendar = FakeCalendar(REGULAR)
+    auto_desk.lifetime_service.calendar = calendar
+    sid = await record_auto_card(temp_db, issued_at=datetime(2026, 10, 21, 10, 35, tzinfo=NY))
+    await set_signal(temp_db, sid, status=SignalStatus.DISMISSED)
+    at = datetime(2026, 10, 21, 16, 20, tzinfo=NY)
+    assert await auto_desk.publish_auto_entry_digest(at) is True
+
+    calendar.error = RuntimeError("must not be read")
+
+    assert await auto_desk.publish_auto_entry_digest(at + timedelta(minutes=5)) is False
