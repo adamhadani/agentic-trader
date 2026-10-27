@@ -564,7 +564,7 @@ approval or a missing LLM API key on an LLM scan is an error, and an error never
 - the first error opens a per-scan breaker: later candidates in that scan make no LLM call and read
   `LLMUnavailableEarlierInScan`, so a hung provider costs one `timeout_seconds` per scan. The breaker resets at the
   next scan. A breaker-skipped candidate still spends LLM budget, so at most
-  `max_llm_evaluations_per_scan` candidates are journaled `llm_unavailable` and the rest read `per-scan budget spent`;
+  `max_llm_evaluations_per_scan` candidates are journaled `llm_unavailable` and the rest read `LLM evaluation budget spent`;
 - the end-of-session digest reads "LLM vetoes: N; LLM unavailable: N."; unavailable candidates are not listed in
   its "top:" runners-up;
 - `copilot cards outcomes` reports them as `llm_gate.llm_errors`, and `copilot db events --stream scan/<date>`
