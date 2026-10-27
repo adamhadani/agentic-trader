@@ -900,7 +900,10 @@ def _identity_part(value: Any) -> str:
 
 def _llm_gate_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, Any]:
     """The LLM gate block: overall statistics, the outage count and the same statistics per
-    ``"{model}|{prompt_sha256}"`` (rows from before identity was recorded sit under ``null|null``)."""
+    ``"{model}|{prompt_sha256}"`` (rows from before identity was recorded sit under ``null|null``).
+
+    ``llm_errors`` counts mature error rows, the basis of ``ran``, ``vetoed`` and ``approved``, so the mature rows
+    that reached the gate are ``ran + llm_errors``."""
     ran_frame = frame.loc[frame["llm_ran"].astype(bool)]
     keys = pd.Series(
         [
@@ -917,7 +920,7 @@ def _llm_gate_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[str, An
     }
     return {
         **_llm_gate_stats(frame, mature),
-        "llm_errors": int(frame["llm_error"].notna().sum()),
+        "llm_errors": int(mature["llm_error"].notna().sum()),
         "by_identity": by_identity,
     }
 

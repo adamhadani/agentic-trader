@@ -54,8 +54,11 @@ Score vocabulary: `tone` negative, neutral or positive (for the company's shares
 trade direction); `relevance` company, sector or market; `catalyst` earnings, guidance, m_and_a,
 regulatory, product, analyst, macro or other. `one_line` is clipped to 160 characters. Items tagged
 with more than `max_symbols_per_item` (5) symbols are market-wide lists ("Companies reporting before
-the bell"): excluded and counted in `n_market_wide`. The scorer runs at temperature 0 with a JSON
-reply; `prompt_sha256` hashes its system prompt so a prompt change is visible in the journal.
+the bell"): excluded and counted in `n_market_wide`. The scorer asks for a JSON reply and sends no
+`temperature`, so it runs at the provider's default (with `openai/gpt-5.6`, a reasoning model, it never ran at
+temperature 0: litellm silently dropped the old `temperature=0`); it passes `drop_params=False`, opting out of
+litellm's parameter dropping, so an unsupported parameter fails instead of vanishing. `prompt_sha256` hashes its
+system prompt so a prompt change is visible in the journal.
 
 ## Card line
 

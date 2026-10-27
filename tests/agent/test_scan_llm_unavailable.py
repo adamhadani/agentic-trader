@@ -7,11 +7,14 @@ call the gate gets the error result without a call (``LLMUnavailableEarlierInSca
 closed. The scan withholds on the verdict's error itself, even from an evaluation that claims approval. A
 catalog card stays commentary and is sent with the unavailable label. A malformed veto is a veto.
 The session digest counts vetoes and unavailable candidates and never lists the latter under "top:".
+The first scheduled suggestion scan of a New York date that opens the breaker queues one outage notice
+(``llm-gate-unavailable/{et_date}``) with its journal event; operator, swing and single-name scans never do.
 """
 
 import asyncio
 import json
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -22,6 +25,7 @@ from agentic_trader.agent.llm_gate import (
     MALFORMED_VETO_REASON,
     llm_unavailable_reason,
 )
+from agentic_trader.agent.scan_journal import ScanNotice, llm_gate_unavailable_notice
 from agentic_trader.config import LLMGateConfig, ScanBudget
 from agentic_trader.execution.durable import EventKind, NotificationKind, RankedOutcome, ScanTrigger, WorkKind
 from agentic_trader.notifier.telegram_bot import format_alert_card
@@ -29,6 +33,7 @@ from tests.agent.test_evaluator_catalog import drift_candidate as catalog_candid
 from tests.agent.test_risk_policy_integration import desk, offer, pending_cards, setup  # noqa: F401  (desk: fixture)
 from tests.agent.test_scan_budget import budget_desk  # noqa: F401  (fixture)
 from tests.agent.test_scan_drift import FakeDrift, drift_event, ok_prep, suggestion_scan
+from tests.agent.test_scan_gates import notices, scan_date
 from tests.agent.test_scan_llm_verdict import error_verdict, verdict, with_verdict
 
 
@@ -98,6 +103,30 @@ def outcomes(candidates: dict[str, dict]) -> dict[str, str]:
     return {contract: c["outcome"] for contract, c in candidates.items()}
 
 
+async def signal_notifications(db) -> list:
+    """Queued card notifications (the outage notice is a plain message, never a card)."""
+    return [
+        item
+        for item in await db.workflows.list_work(WorkKind.NOTIFICATION)
+        if item.payload["kind"] == NotificationKind.SIGNAL
+    ]
+
+
+def outage_text(error: str, slot: str = "10:35") -> str:
+    return (
+        f"⚠️ LLM gate unavailable ({error}) at the {slot} scan: native cards are withheld until it recovers; "
+        "catalog cards are labelled. See logs."
+    )
+
+
+async def signal_payloads(db) -> list[dict]:
+    return [item.payload for item in await signal_notifications(db)]
+
+
+async def ranked_scan_dates(db) -> list[str]:
+    return [scan_date(e) for e in await db.workflows.events() if e["kind"] == EventKind.SCAN_CANDIDATES_RANKED]
+
+
 # --- a native error is withheld ------------------------------------------------------------------
 
 
@@ -112,14 +141,16 @@ async def test_a_native_llm_error_withholds_the_card_and_journals_llm_unavailabl
     assert ddd["llm"] == error_verdict("Timeout")
     assert ddd["llm"]["applied"] is True and ddd["llm"]["approved"] is False and ddd["llm"]["model"] is None
     assert ddd["signal_id"] is None
-    # Never recorded, never notified, so never auto-entered.
+    # Never recorded, never notified as a card, so never auto-entered; the only message is the outage notice.
     assert await temp_db.get_recent_signals(limit=10) == []
-    assert await temp_db.workflows.list_work(WorkKind.NOTIFICATION) == []
+    assert await signal_notifications(temp_db) == []
+    [day] = await ranked_scan_dates(temp_db)
+    assert list(await notices(temp_db)) == [f"llm-gate-unavailable/{day}"]
     assert summary["sent"] == 0
     reasons = {r["contract"]: r["reason"] for r in summary["runners_up"]}
     assert reasons["DDD"] == "LLM unavailable (Timeout)"
     # The operator's single-name reply names the outage, through the method the bot uses.
-    assert "LLM unavailable (Timeout)" in TradingCopilot._scan_result_text("DDD", summary)
+    assert TradingCopilot._scan_result_text("DDD", summary) == "LLM unavailable (Timeout); try again later."
 
 
 async def test_the_breaker_stops_later_gate_calls_and_resets_at_the_next_scan(budget_desk, temp_db):  # noqa: F811
@@ -174,7 +205,7 @@ async def test_an_error_verdict_withholds_a_native_card_the_evaluation_calls_app
     }
     assert scan["DDD"]["signal_id"] is None
     assert await temp_db.get_recent_signals(limit=10) == []
-    assert await temp_db.workflows.list_work(WorkKind.NOTIFICATION) == []
+    assert await signal_notifications(temp_db) == []
     assert (summary["sent"], summary["llm_unavailable"]) == (0, 4)
     assert {r["contract"]: r["reason"] for r in summary["runners_up"]}["DDD"] == "LLM unavailable (Timeout)"
 
@@ -199,7 +230,8 @@ async def test_a_slow_provider_costs_one_deadline_per_scan(desk, temp_db, app_co
     elapsed = time.monotonic() - started
 
     assert len(calls) == 1  # the proof: the breaker made no second call
-    assert timeout <= elapsed < timeout + 0.9
+    # A loose ceiling against a hang only: a second call would wait another deadline, which `calls` already rules out.
+    assert timeout <= elapsed < 5.0
     [scan] = await journaled(temp_db)
     assert outcomes(scan) == {"SPY": RankedOutcome.LLM_UNAVAILABLE, "QQQ": RankedOutcome.LLM_UNAVAILABLE}
     # The real error block. The deadline's type name depends on which timer fires first; only its presence
@@ -374,3 +406,118 @@ async def test_the_digest_reports_zero_llm_counts_for_a_deterministic_scan(budge
     await suggestion_scan(budget_desk, use_llm=False)
 
     assert "LLM vetoes: 0; LLM unavailable: 0." in await budget_desk.publish_scan_digest()
+
+
+# --- the outage notice: one per New York date, scheduled suggestion scans only -------------------
+
+
+def test_the_outage_notice_key_and_clock_are_new_york_s():
+    # 02:30 UTC on the 29th is 22:30 New York on the 28th; a scheduled scan names its configured slot.
+    at = datetime(2026, 10, 29, 2, 30, tzinfo=UTC)
+    assert llm_gate_unavailable_notice("Timeout", at=at, scheduled_time_et=None) == ScanNotice(
+        "llm-gate-unavailable/2026-10-28", outage_text("Timeout", "22:30")
+    )
+    assert llm_gate_unavailable_notice("APIConnectionError", at=at, scheduled_time_et="14:35") == ScanNotice(
+        "llm-gate-unavailable/2026-10-28", outage_text("APIConnectionError", "14:35")
+    )
+
+
+async def test_a_suggestion_scan_that_opens_the_breaker_queues_one_notice_per_new_york_date(
+    budget_desk,  # noqa: F811
+    temp_db,
+):
+    install(budget_desk, Gate(DDD="Timeout"))
+
+    await suggestion_scan(budget_desk, scheduled_time_et="10:35")
+    await suggestion_scan(budget_desk, scheduled_time_et="14:35")
+
+    first, second = await ranked_scan_dates(temp_db)
+    assert first == second
+    queued = await notices(temp_db)
+    assert list(queued) == [f"llm-gate-unavailable/{first}"]
+    # The first scan's: the error that opened its breaker, at its configured slot, as plain text.
+    assert queued[f"llm-gate-unavailable/{first}"] == {"text": outage_text("Timeout", "10:35"), "formatted": False}
+    assert await signal_notifications(temp_db) == []
+
+
+async def test_an_unjournaled_suggestion_scan_still_queues_the_notice(budget_desk, temp_db):  # noqa: F811
+    """A suggestion scan outside the journal contract (no budget) queues the notice alone, as a regime notice does."""
+    install(budget_desk, Gate(DDD="Timeout"))
+
+    await suggestion_scan(budget_desk, budget=ScanBudget.NONE)
+
+    assert await ranked_scan_dates(temp_db) == []
+    [(key, notice)] = (await notices(temp_db)).items()
+    assert key.startswith("llm-gate-unavailable/") and notice["text"] == outage_text("Timeout")
+
+
+async def test_a_suggestion_scan_whose_gate_works_queues_no_notice(budget_desk, temp_db):  # noqa: F811
+    install(budget_desk, Gate(DDD="veto"))
+
+    await suggestion_scan(budget_desk)
+
+    assert not any(key.startswith("llm-gate-unavailable/") for key in await notices(temp_db))
+
+
+async def test_operator_swing_single_name_and_dry_scans_queue_no_outage_notice(budget_desk, temp_db):  # noqa: F811
+    install(budget_desk, Gate(DDD="Timeout", CCC="Timeout", BBB="Timeout", AAA="Timeout", EEE="Timeout"))
+
+    operator = await suggestion_scan(budget_desk, trigger=ScanTrigger.OPERATOR_SCAN, shadow_evidence=False)
+    # Re-evaluate and /scan SYMBOL: one named contract, no budget, the operator trigger.
+    single = await budget_desk.run_scan(symbols=["DDD"], budget=ScanBudget.NONE)
+    dry = await suggestion_scan(budget_desk, dry_run=True)
+    await budget_desk.run_scan(use_llm=True, budget=ScanBudget.JOURNAL_ONLY, trigger=ScanTrigger.SWING_SCAN)
+
+    # Each opened its own breaker (the swing job calls no LLM at all), and none queued the notice.
+    assert operator["llm_unavailable"] > 0 and single["llm_unavailable"] == 1 and dry["llm_unavailable"] > 0
+    assert not any(key.startswith("llm-gate-unavailable/") for key in await notices(temp_db))
+
+
+async def test_the_outage_notice_carries_the_type_name_only(desk, temp_db, app_config, monkeypatch):  # noqa: F811
+    """Through the real evaluator: the provider's exception text reaches no queued message or journal event."""
+    planted = "PLANTED-SECRET-91c2 provider said api_key=sk-live-zzz"
+    pead_desk(desk, app_config, "SPY", "QQQ")
+    monkeypatch.setattr(
+        "agentic_trader.agent.evaluator.litellm.acompletion", AsyncMock(side_effect=ConnectionError(planted))
+    )
+
+    await suggestion_scan(desk)
+
+    [day] = await ranked_scan_dates(temp_db)
+    outages = {key: notice for key, notice in (await notices(temp_db)).items() if key.startswith("llm-gate-")}
+    assert outages == {f"llm-gate-unavailable/{day}": {"text": outage_text("ConnectionError"), "formatted": False}}
+    # The labelled catalog card was queued too; nothing queued or journaled carries the provider's text.
+    assert [card["arguments"]["eval_res"]["contract"] for card in await signal_payloads(temp_db)] == ["WINR"]
+    for item in await temp_db.workflows.list_work(WorkKind.NOTIFICATION):
+        assert "PLANTED" not in json.dumps(item.payload)
+    for event in await temp_db.workflows.events():
+        assert "PLANTED" not in json.dumps(event["payload"])
+
+
+# --- the operator's single-name reply -------------------------------------------------------------
+
+
+async def test_a_single_name_scan_that_hits_an_llm_error_says_so(budget_desk, temp_db):  # noqa: F811
+    """``/scan SYMBOL`` and Re-evaluate: the reply names the outage, not "No valid setup"."""
+    install(budget_desk, Gate(DDD="Timeout"))
+
+    await budget_desk._run_background_scan(
+        "DDD", notice_key="symbol-scan/DDD", busy_text="busy", failure_text="failed", log_extra={}
+    )
+
+    [(key, notice)] = (await notices(temp_db)).items()
+    assert key.startswith("symbol-scan/DDD/")
+    assert notice["text"] == "LLM unavailable (Timeout); try again later."
+    assert "No valid setup" not in notice["text"]
+
+
+def test_the_single_name_reply_names_a_breaker_skip_by_its_type_name():
+    summary = {"runners_up": [{"contract": "DDD", "reason": llm_unavailable_reason(LLM_UNAVAILABLE_EARLIER_IN_SCAN)}]}
+    assert TradingCopilot._scan_result_text("DDD", summary) == (
+        "LLM unavailable (LLMUnavailableEarlierInScan); try again later."
+    )
+    # A refusal of any other kind keeps its wording.
+    vetoed = {"runners_up": [{"contract": "DDD", "reason": "LLM vetoed: thesis weak"}]}
+    assert (
+        TradingCopilot._scan_result_text("DDD", vetoed) == "No valid setup for DDD right now: LLM vetoed: thesis weak."
+    )

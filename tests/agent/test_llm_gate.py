@@ -268,6 +268,51 @@ async def test_a_provider_error_withholds_a_native_card_with_type_names_only(
     assert "PLANTED" not in repr(extras)
 
 
+@pytest.mark.parametrize(
+    ("content", "error_type"),
+    [
+        ("not json " + "x" * 300, "JSONDecodeError"),
+        (json.dumps([APPROVAL] * 5), "TypeError"),
+        (json.dumps({"approved": True, "macro_clearance": True, "pad": "y" * 300}), "ValidationError"),
+    ],
+    ids=["not_json", "not_an_object", "invalid_approval"],
+)
+async def test_a_content_error_logs_the_reply_length_and_head_at_debug_only(
+    evaluator_factory,  # noqa: F811
+    monkeypatch,
+    caplog,
+    content,
+    error_type,
+):
+    """An unusable reply's length and first 200 characters go to the local DEBUG log, never into the result."""
+    evaluator = keyed(evaluator_factory())
+    completion(monkeypatch, content=content)
+
+    with caplog.at_level(logging.DEBUG, logger="agentic_trader.agent.evaluator"):
+        result = await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
+
+    assert result.llm_verdict is not None and result.llm_verdict["error"] == error_type
+    [record] = [r for r in caplog.records if getattr(r, "event", None) == "llm_gate_reply_unusable"]
+    assert record.levelno == logging.DEBUG
+    assert record.reply_chars == len(content) and record.error_type == error_type
+    message = record.getMessage()
+    assert str(len(content)) in message
+    assert repr(content[:200]) in message and content[:201] not in message
+    assert content[:200] not in result.model_dump_json()
+    extras = {key: value for key, value in vars(record).items() if key not in ("msg", "args", "message")}
+    assert content[:40] not in repr(extras)  # the head rides only in the local message, never an extra
+
+
+async def test_an_exception_logs_no_reply_head(evaluator_factory, monkeypatch, caplog):  # noqa: F811
+    evaluator = keyed(evaluator_factory())
+    failing(monkeypatch, RuntimeError(PLANTED))
+
+    with caplog.at_level(logging.DEBUG, logger="agentic_trader.agent.evaluator"):
+        await evaluator.evaluate_candidate(create_candidate(), use_llm=True)
+
+    assert not [r for r in caplog.records if getattr(r, "event", None) == "llm_gate_reply_unusable"]
+
+
 async def test_a_catalog_card_on_error_stays_commentary_with_the_unavailable_label(
     evaluator_factory,  # noqa: F811
     monkeypatch,

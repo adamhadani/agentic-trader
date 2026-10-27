@@ -1,7 +1,7 @@
 """Paper auto-entry: the marker at record time and the sweep that enters marked cards.
 
-A native card of a scheduled suggestion scan records ``decision_provenance["auto_entry"]`` and
-its card payload ``auto_entry: "placing"``. ``TradingCopilot.auto_enter_pending`` then makes
+A native card of a scheduled suggestion scan that the LLM approved records ``decision_provenance["auto_entry"]``
+and its card payload ``auto_entry: "placing"``; a card no LLM approved (a ``--no-llm`` scan's) is a tap card. ``TradingCopilot.auto_enter_pending`` then makes
 exactly one attempt per marked, still-``PENDING`` card through ``execute_signal_by_id(...,
 trigger=EntryTrigger.AUTO)``, derives the outcome from the signal it re-reads after the call,
 and journals one ``auto_entry_attempted`` event with its follow-up in one transaction.
@@ -230,14 +230,45 @@ async def _recorded(db) -> dict[str, tuple[dict, dict]]:
 
 async def test_suggestion_scan_marks_native_card(drift_desk, temp_db, app_config, monkeypatch):  # noqa: F811
     monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    install(drift_desk, Gate())  # the LLM approves every candidate
 
     await suggestion_scan(drift_desk)
 
     provenance, card = (await _recorded(temp_db))["DDD"]
+    assert provenance["llm_verdict"]["approved"] is True and provenance["llm_verdict"]["error"] is None
     assert provenance[AUTO_ENTRY_KEY] == {"mode": "paper"}
     assert card["auto_entry"] == "placing"
     # The durable payload is deliverable by the real Telegram notifier signature.
     inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **card)
+
+
+async def test_a_no_llm_suggestion_scan_marks_nothing_and_the_sweep_enters_nothing(
+    drift_desk,  # noqa: F811
+    temp_db,
+    app_config,
+    monkeypatch,
+):
+    """``copilot service daemon --no-llm``: the suggestion job scans with ``use_llm=False``, so its native cards carry
+    no LLM verdict. They are recorded and sent as ordinary tap cards, and the sweep never enters them."""
+    monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
+    gate = Gate()
+    install(drift_desk, gate)
+
+    await suggestion_scan(drift_desk, use_llm=False)
+
+    assert gate.calls == []
+    provenance, card = (await _recorded(temp_db))["DDD"]
+    assert provenance["llm_verdict"] is None
+    assert AUTO_ENTRY_KEY not in provenance
+    assert "auto_entry" not in card  # rendered as today's tap card
+    inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **card)
+    execute = stub_execute(drift_desk)
+
+    assert await drift_desk.auto_enter_pending() == []
+    execute.assert_not_awaited()
+    [ddd] = [s for s in await temp_db.get_recent_signals(limit=10) if s["contract"] == "DDD"]
+    assert ddd["status"] == SignalStatus.PENDING
+    assert await attempt_events(temp_db, ddd["id"]) == []
 
 
 @pytest.mark.parametrize("approve_errors", [False, True])
@@ -322,6 +353,7 @@ async def test_no_marker_for_operator_scan_swing_drift_watch_alpha_futures_or_in
 ):
     monkeypatch.setattr("agentic_trader.agent.copilot.requires_account_risk", lambda config: False)
     desk = request.getfixturevalue("watch_desk" if case == "watch" else "drift_desk")
+    install(desk, Gate())  # the LLM approves every candidate: only the case itself withholds the marker
     scan = suggestion_scan
     if case == "operator_scan":
         scan = _operator

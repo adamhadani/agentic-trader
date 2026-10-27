@@ -516,8 +516,8 @@ a sent card's `decision_provenance["llm_verdict"]` is the same block. It has nin
 `rejection_reason`, `stop_loss`, `take_profit`, `applied`, `model` (the provider's returned snapshot, null on
 error), `prompt_sha256` (SHA-256 of the rendered system prompt plus the user template, without per-card
 values; the hash is the prompt's identity), `error` (an exception type name such as `Timeout`, never its
-text) and `malformed` (true for a veto whose reply was malformed). Rows from before 2026-10-27 have only the
-first five.
+text) and `malformed` (true for a veto whose reply was malformed). Rows journaled before this change was deployed
+have only the first five.
 
 An LLM error never approves. A native card is journaled with the fixed outcome `llm_unavailable`
 (`RankedOutcome.LLM_UNAVAILABLE`, a runner-up class like `llm_vetoed`), records no signal and sends no card; its
@@ -526,7 +526,9 @@ malformed veto is `llm_vetoed` with `malformed: true`; a well-formed veto withou
 reason". Only the JSON boolean `true` approves.
 
 In `cards outcomes`, rows gain `llm_model`, `llm_prompt_sha256` and `llm_error`. An error row has `llm_ran`
-false: it is excluded from approved/vetoed attribution and counted in `llm_gate.llm_errors`. `llm_gate` also
+false: it is excluded from approved/vetoed attribution and counted in `llm_gate.llm_errors`, which, like `ran`,
+`vetoed` and `approved`, counts mature rows only (an immature or fetch-failed error row keeps its `llm_error`
+column but is not counted), so the mature rows that reached the gate are `ran + llm_errors`. `llm_gate` also
 carries `by_identity`, the same statistics (`ran`, `vetoed`, `approved`, mean R and bracket-edit fields)
 grouped by `"{model}|{prompt_sha256}"`, with rows that predate identity under `"null|null"`, so a prompt or
 model change is never averaged into the older sample. Both are descriptive, never a gate.

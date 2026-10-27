@@ -2,8 +2,9 @@
 
 A scan that loses its regime read journals ``status: regime_unavailable``; a scheduled suggestion
 scan also queues the New York date's one ``regime-unavailable/{et_date}`` notice beside it, so the
-event and the notice commit or roll back together. Errors here carry exception type names only,
-never provider text.
+event and the notice commit or roll back together. A completed scheduled suggestion scan whose LLM
+gate breaker opened queues the New York date's one ``llm-gate-unavailable/{et_date}`` notice the same
+way. Errors here carry exception type names only, never provider text.
 
 A completed scan's event carries its collect ``funnel`` (``ScanFunnel.journal_block``): what the
 scan selected and scanned, and where each native setup went. Admission refusals are typed
@@ -170,6 +171,21 @@ def regime_errors_text(errors: Mapping[str, str]) -> str:
     rank = {name: index for index, name in enumerate(DECISION_INPUTS)}
     ordered = sorted(errors.items(), key=lambda item: rank.get(item[0], len(DECISION_INPUTS)))
     return ", ".join(f"{name}: {error}" for name, error in ordered)
+
+
+def llm_gate_unavailable_notice(error_type: str, *, at: datetime, scheduled_time_et: str | None) -> ScanNotice:
+    """The New York date's one notice that a scheduled suggestion scan's LLM gate breaker opened at ``at``.
+
+    ``error_type`` is the type name of the error that opened the breaker, never its text. The scan is named by
+    its configured New York slot, or by ``at``'s New York clock when it has none.
+    """
+    local = at.astimezone(ET_TZ)
+    slot = scheduled_time_et or f"{local:%H:%M}"
+    return ScanNotice(
+        f"llm-gate-unavailable/{local.date().isoformat()}",
+        f"⚠️ LLM gate unavailable ({error_type}) at the {slot} scan: native cards are withheld until it recovers; "
+        "catalog cards are labelled. See logs.",
+    )
 
 
 def regime_unavailable_notice(

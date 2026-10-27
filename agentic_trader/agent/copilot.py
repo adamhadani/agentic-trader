@@ -52,6 +52,7 @@ from agentic_trader.agent.scan_journal import (
     ScanFunnel,
     ScanNotice,
     append_scan_journal,
+    llm_gate_unavailable_notice,
     regime_errors_text,
     regime_unavailable_gate,
     regime_unavailable_notice,
@@ -881,7 +882,10 @@ class TradingCopilot:
         candidate whose gate errored is journaled ``llm_unavailable`` and never recorded or notified. The first
         error opens this scan's breaker: every later candidate that would call the gate gets the error result
         without a call (``LLMUnavailableEarlierInScan``), still spending the LLM budget; a catalog card is sent
-        as labelled commentary. The summary counts ``llm_vetoed`` and ``llm_unavailable`` for the digest.
+        as labelled commentary. The summary counts ``llm_vetoed`` and ``llm_unavailable`` for the digest. A non-dry
+        scheduled suggestion scan whose breaker opens queues the New York date's one ``llm-gate-unavailable``
+        notice in its journal event's transaction; no other scan queues it. Only a native card the gate approved
+        (applied, approved, no error) is marked for paper auto-entry.
 
         ``dedup_exempt_setups`` skips the recent-duplicate rule for exactly those
         ``(contract, strategy, timeframe, alpha_version)`` setups: an operator's explicit
@@ -1598,8 +1602,10 @@ class TradingCopilot:
             # or catalog, every later candidate that would call the gate gets the error result without a call
             # (``LLMUnavailableEarlierInScan``), so an outage costs one ``llm_gate.timeout_seconds``. A skipped
             # evaluation spends the LLM budget as a call would: the candidates it withholds are exactly those a
-            # working gate would have evaluated.
+            # working gate would have evaluated. A scheduled suggestion scan that opens it queues the New York date's
+            # one outage notice with its journal event (``llm_gate_unavailable_notice``); no other scan does.
             llm_breaker: str | None = None
+            llm_notice: ScanNotice | None = None
 
             def card_groups(contract: str, *, drift: bool) -> set[str]:
                 """Groups a card on this contract counts toward. A catalog (``drift``) card is
@@ -1722,6 +1728,10 @@ class TradingCopilot:
                                 "rank": rank,
                             },
                         )
+                        if trigger == ScanTrigger.SUGGESTION_SCAN and not dry_run:
+                            llm_notice = llm_gate_unavailable_notice(
+                                llm_error, at=datetime.now(UTC), scheduled_time_et=scheduled_time_et
+                            )
                     runner_reason: str | None = None
                     if llm_error is not None and verdict is not None and verdict["applied"]:
                         # Fail closed on the verdict itself, whatever the evaluation's own approval says: a native
@@ -1818,13 +1828,15 @@ class TradingCopilot:
                     )
                     lifetime = {NATIVE_ENTRY_LIFETIME_KEY: lifetime_marker} if lifetime_marker else {}
                     # Paper auto-entry (item 1.4): a native, lifetime-marked card of a scheduled suggestion scan
-                    # is entered by the sweep (`auto_enter_pending`) instead of waiting for a tap.
+                    # that the LLM gate approved is entered by the sweep (`auto_enter_pending`) instead of waiting
+                    # for a tap. A card no LLM approved (a `--no-llm` scan's) stays an ordinary tap card.
                     auto_marker = auto_entry_marker(
                         self.config,
                         trigger=trigger,
                         is_catalog=is_catalog,
                         alpha=bool(candidate.alpha_policy or candidate.alpha_version),
                         lifetime_marker=lifetime_marker,
+                        llm_verdict=llm_by_rank[rank - 1],
                     )
 
                     # Record to database
@@ -1967,7 +1979,7 @@ class TradingCopilot:
                     continue
 
             # Every eligible scan journals once, a zero-candidate one included (the idle check above
-            # already ended a scan with nothing to select).
+            # already ended a scan with nothing to select). The LLM outage notice rides in the same transaction.
             if not dry_run and budget != ScanBudget.NONE and not symbols and timeframe is None:
                 await self._journal_scan_ranking(
                     scan_id=scan_id,
@@ -1980,6 +1992,7 @@ class TradingCopilot:
                     calendar_block=calendar_block,
                     regime_block=regime_block,
                     funnel=funnel.journal_block(),
+                    notice=llm_notice,
                     ranked=ranked[:native_count],
                     outcomes=outcomes[:native_count],
                     shadow_by_rank=shadow_by_rank[:native_count],
@@ -1992,6 +2005,18 @@ class TradingCopilot:
                     dynamic_sources=dynamic_sources,
                     summary=summary,
                 )
+            elif llm_notice is not None:
+                # Outside the journal contract (a suggestion scan always journals), the notice still goes out once.
+                try:
+                    await append_scan_journal(
+                        self.db,
+                        et_date=self.session_start_et(decided_at).date().isoformat(),
+                        scan_id=scan_id,
+                        payload=None,
+                        notice=llm_notice,
+                    )
+                except Exception as exc:
+                    self._scan_journal_failed(summary, exc)
 
             for run in catalog_runs:
                 prep = run.preparation
@@ -4689,7 +4714,10 @@ class TradingCopilot:
         """A single-name operator scan's result when it recorded no card.
 
         Such a scan fetches no coverage reference, so the bar-coverage gate never
-        excludes its name and no coverage wording appears here.
+        excludes its name and no coverage wording appears here. A candidate the LLM
+        gate could not evaluate says so by the error's type name ("LLM unavailable
+        (Timeout); try again later."), never "No valid setup". A re-evaluation's one
+        claim is spent all the same (``claim_card_reevaluation`` is a retained event).
         """
         name = html.escape(contract)
         if summary is None:
@@ -4707,6 +4735,9 @@ class TradingCopilot:
         if runners_up and runners_up[0].get("reason") == LIVE_CARD_PENDING:
             # The setup still exists; its earlier card is still live (next_session_close).
             return f"No new card for {name}: a live card for this setup is pending."
+        if runners_up and str(runners_up[0].get("reason")).startswith(LLM_UNAVAILABLE_PREFIX):
+            # The setup may be valid: the gate could not judge it (``llm_unavailable_reason``: a type name only).
+            return f"{html.escape(str(runners_up[0]['reason']))}; try again later."
         text = f"No valid setup for {name} right now"
         detail = None
         if runners_up:

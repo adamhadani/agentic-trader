@@ -67,6 +67,8 @@ logger = logging.getLogger(__name__)
 _INVALID_BRACKET = "Quantity and bracket prices must be finite and positive."
 # Float noise tolerated, in ticks, when a target is rounded away from the entry to a tick.
 _TICK_EPSILON = 1e-6
+# How much of an unusable gate reply the local DEBUG log keeps (never the journal or a card).
+REPLY_HEAD_CHARS = 200
 
 
 @dataclass(frozen=True)
@@ -830,6 +832,7 @@ class RiskEvaluator:
         # ``TimeoutError``: callers count errors and must not key on the exact type name.
         timeout_seconds = self.config.llm_gate.timeout_seconds
         response: Any = None
+        content: Any = None
         failure: Exception | None = None
         try:
             response = await asyncio.wait_for(
@@ -846,11 +849,28 @@ class RiskEvaluator:
                 ),
                 timeout=timeout_seconds,
             )
-            reply = classify_gate_reply(response.choices[0].message.content)
+            content = response.choices[0].message.content
+            reply = classify_gate_reply(content)
         except Exception as exc:
             failure, reply = exc, classify_gate_reply(None, error=exc)
 
         if reply.data is None:
+            if failure is None:
+                # A content-level error (not JSON, not an object, or a JSON-true approval that fails validation):
+                # the reply's length and head go to the local DEBUG log only, never the journal, a card or an extra.
+                text = "" if content is None else str(content)
+                logger.debug(
+                    "LLM gate reply unusable (%s): %d chars, head %r",
+                    reply.error_type,
+                    len(text),
+                    text[:REPLY_HEAD_CHARS],
+                    extra={
+                        "event": "llm_gate_reply_unusable",
+                        "contract": candidate.contract,
+                        "error_type": reply.error_type,
+                        "reply_chars": len(text),
+                    },
+                )
             return failed(str(reply.error_type), failure)
         data = reply.data
         # An approval or a veto. A malformed veto carries no levels, so it keeps the deterministic bracket.

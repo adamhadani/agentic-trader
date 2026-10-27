@@ -554,6 +554,28 @@ def test_error_rows_are_counted_not_attributed_and_by_identity_groups():
     assert sum(group["ran"] for group in gate["by_identity"].values()) == gate["ran"]
 
 
+def test_llm_errors_count_mature_rows_only_like_ran_vetoed_and_approved():
+    thin = _bars([("2026-03-01T14:00:00+00:00", 100.0, 100.0, 100.0, 100.0)])  # nothing after the decision
+    bars = FakeBarSource({"AAPL": AAPL_BARS, "MSFT": thin, MARKET_PROXY_SYMBOL: SPY_BARS})
+    ok = {"approved": True, "rejection_reason": None, "stop_loss": 99.0, "take_profit": 102.0, "applied": True}
+    events = [
+        _event(
+            "s1",
+            DECIDED_AT,
+            [
+                {**_candidate(rank=1), "llm": ok, "signal_id": 1},  # ran, mature
+                {**_candidate(rank=2, outcome="llm_unavailable"), "llm": _ERROR_BLOCK},  # error, mature
+                {**_candidate(contract="MSFT", rank=3), "llm": ok, "signal_id": 3},  # ran, immature
+                {**_candidate(contract="MSFT", rank=4, outcome="llm_unavailable"), "llm": _ERROR_BLOCK},  # immature
+            ],
+        )
+    ]
+    frame = label_journaled(events, bars, now=NOW)
+    assert frame["llm_error"].notna().sum() == 2  # both rows keep their error column
+    gate = summarize(frame)["llm_gate"]
+    assert (gate["ran"], gate["llm_errors"]) == (1, 1)
+
+
 def test_rows_carry_the_applied_llm_stop_for_execution_evidence():
     """``collect_execution`` falls back to the applied LLM stop when a card's raw_response is unusable."""
     bars = FakeBarSource({"AAPL": AAPL_BARS, MARKET_PROXY_SYMBOL: SPY_BARS})
