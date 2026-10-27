@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Collection
 from dataclasses import asdict
 from datetime import UTC, date, datetime, time, timedelta
@@ -25,7 +26,7 @@ from agentic_trader.accounting.risk import AccountRiskSnapshot, require_risk_che
 from agentic_trader.broker.base import BrokerEntryContext, OrderRequest
 from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, AuditEventType, ExecutionMode, SignalStatus, SystemStateKey
 from agentic_trader.execution.admission import authorization_expiry, reservation_rejection
-from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AutoEntryAttempt
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt
 from agentic_trader.execution.capacity import assess_entry_capacity
 from agentic_trader.execution.durable import (
     ENTRY_BLOCKING,
@@ -61,6 +62,9 @@ if TYPE_CHECKING:
     from agentic_trader.broker.base import OrderResult
     from agentic_trader.config import AppConfig
     from agentic_trader.storage.db import SignalDatabase
+
+
+logger = logging.getLogger(__name__)
 
 
 def encode(value: Any) -> str:
@@ -241,9 +245,9 @@ class WorkflowStore:
     async def pending_auto_entries(self, et_date: date) -> list[dict[str, Any]]:
         """The marked cards of New York date ``et_date`` still awaiting their one auto-entry attempt.
 
-        This scope's ``PENDING`` signals carrying the ``auto_entry`` marker with no ``auto-entry/{id}``
-        event, ordered by recording time, then rank. A card whose entry was queued is ``SUBMITTING``,
-        so a crash after queueing never selects it again.
+        This scope's ``PENDING`` signals whose ``auto_entry`` marker is exactly ``AUTO_ENTRY_MARKER``,
+        with no ``auto-entry/{id}`` event, ordered by recording time, then rank. A card whose entry was
+        queued is ``SUBMITTING``, so a crash after queueing never selects it again.
         """
         start = datetime.combine(et_date, time.min, tzinfo=ET_TZ)
         end = datetime.combine(et_date + timedelta(days=1), time.min, tzinfo=ET_TZ)
@@ -261,7 +265,7 @@ class WorkflowStore:
             marked: list[tuple[SignalRecord, Any]] = []
             for row in rows:
                 provenance = json.loads(row.decision_provenance or "{}")
-                if isinstance(provenance, dict) and provenance.get(AUTO_ENTRY_KEY):
+                if isinstance(provenance, dict) and provenance.get(AUTO_ENTRY_KEY) == AUTO_ENTRY_MARKER:
                     marked.append((row, provenance.get("rank")))
             keys = [f"auto-entry/{row.id}" for row, _ in marked]
             attempted = (
@@ -288,7 +292,8 @@ class WorkflowStore:
         once: a later call for the same card writes nothing. ``entered`` queues the
         ``CARD_AUTO_ENTERED`` button swap. ``recard`` (its ``auto_entry`` and raw ``auto_refusal``)
         queues a fresh card: the original card's payload from its ``signal/{id}/created`` outbox row
-        with those fields, only while the signal is still ``PENDING`` under the lock.
+        with those fields, only while the signal is still ``PENDING`` under the lock. Without that row
+        there is nothing to re-send: the attempt is still journaled and a warning is logged.
         """
         signal_id = attempt.signal_id
         key = f"auto-entry/{signal_id}"
@@ -326,13 +331,19 @@ class WorkflowStore:
                         WorkItemRecord.dedup_key == f"signal/{signal_id}/created",
                     )
                 )
-                if original is not None:
-                    await self.add_notification(
-                        session,
-                        f"signal/{signal_id}/auto-refused",
-                        NotificationKind.SIGNAL,
-                        {**json.loads(original)["arguments"], **recard},
+                if original is None:
+                    logger.warning(
+                        "Auto-entry re-card for card #%d skipped: its original card notification is missing",
+                        signal_id,
+                        extra={"event": "auto_entry_recard_missing", "signal_id": signal_id},
                     )
+                    return
+                await self.add_notification(
+                    session,
+                    f"signal/{signal_id}/auto-refused",
+                    NotificationKind.SIGNAL,
+                    {**json.loads(original)["arguments"], **recard},
+                )
 
     async def events(self, stream: str | None = None, *, limit: int | None = None) -> list[dict[str, Any]]:
         async with self.db.session_factory() as session:
@@ -471,6 +482,11 @@ class WorkflowStore:
         if raw is None:
             return None
         return EntryTrigger(json.loads(raw).get("entry_trigger", EntryTrigger.TAP))
+
+    async def entry_trigger(self, signal_id: int) -> EntryTrigger | None:
+        """``entry_trigger_of`` in its own session, for a caller outside a workflow transaction."""
+        async with self.db.session_factory() as session:
+            return await self.entry_trigger_of(session, signal_id)
 
     async def enqueue_entry(
         self, request: OrderRequest, config: AppConfig, *, trigger: EntryTrigger = EntryTrigger.TAP

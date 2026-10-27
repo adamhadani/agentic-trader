@@ -17,19 +17,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from agentic_trader.agent.copilot import TradingCopilot
 from agentic_trader.agent.earnings import EarningsLookup
+from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.broker.base import OrderResult
 from agentic_trader.constants import AssetClass, ExecutionMode, SignalStatus
-from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt
+from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt, attempt_reason
 from agentic_trader.execution.durable import EntryTrigger, EventKind, NotificationKind, ScanTrigger, WorkKind
 from agentic_trader.execution.freshness import ExecutionReply
 from agentic_trader.execution.lifetime_policy import NATIVE_ENTRY_LIFETIME_KEY, NativeEntryLifetimePolicy
 from agentic_trader.market.session import ET_TZ
 from agentic_trader.notifier.outbox import NotificationDispatcher
-from agentic_trader.notifier.telegram_bot import AUTO_REFUSED_LINE, TelegramNotifier
+from agentic_trader.notifier.telegram_bot import AUTO_REFUSED_LINE, TelegramNotifier, format_alert_card
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import DomainEventRecord, SignalRecord, WorkItemRecord
 from agentic_trader.storage.workflow import WorkflowStore
@@ -337,7 +338,7 @@ async def test_entered_queues_the_button_swap_and_no_recard(auto_desk, temp_db, 
     assert payload["signal_status"] == SignalStatus.SUBMITTING
     assert payload["work_status"] == "queued"
     assert payload["scan_id"] is None
-    assert payload["reason"].startswith(f"⏳ Entry #{sid} queued as entry-")
+    assert payload["reason"].startswith(f"Entry #{sid} queued as entry-")
     assert "<code>" not in payload["reason"]
     datetime.fromisoformat(payload["attempted_at"])
     queued = await notifications(temp_db)
@@ -359,7 +360,7 @@ async def test_queue_time_refusal_left_pending_is_refused_and_recarded(auto_desk
     payload = await the_attempt(temp_db, sid)
     assert payload["outcome"] == "refused"
     assert payload["signal_status"] == SignalStatus.PENDING and payload["work_status"] is None
-    assert payload["reason"] == "⚠️ Execution Rejected: stubbed admission"
+    assert payload["reason"] == "stubbed admission"  # the reply's "⚠️ Execution Rejected:" label dropped
     queued = await notifications(temp_db)
     recard = queued[f"signal/{sid}/auto-refused"]
     assert recard["kind"] == NotificationKind.SIGNAL
@@ -367,7 +368,7 @@ async def test_queue_time_refusal_left_pending_is_refused_and_recarded(auto_desk
     assert recard["arguments"] == {
         **original,
         "auto_entry": "refused",
-        "auto_refusal": "⚠️ Execution Rejected: stubbed admission",
+        "auto_refusal": "stubbed admission",
     }
     assert f"signal/{sid}/auto-entered" not in queued
     inspect.signature(TelegramNotifier.send_signal_alert).bind(None, **recard["arguments"])
@@ -495,6 +496,17 @@ async def test_sweep_selects_only_todays_new_york_cards(auto_desk, temp_db):
     assert await attempt_events(temp_db, yesterday) == []
 
 
+@pytest.mark.parametrize("marker", [{"mode": "live"}, {"mode": "paper", "extra": 1}, True, "paper"])
+async def test_an_unknown_marker_value_is_never_selected(auto_desk, temp_db, marker):
+    await record_auto_card(temp_db, provenance_extra={AUTO_ENTRY_KEY: marker})
+    execute = stub_execute(auto_desk)
+
+    today = datetime.now(UTC).astimezone(ET_TZ).date()
+    assert await temp_db.workflows.pending_auto_entries(today) == []
+    assert await auto_desk.auto_enter_pending() == []
+    execute.assert_not_awaited()
+
+
 async def test_sweep_is_idempotent(auto_desk, temp_db, app_config, monkeypatch):
     enqueue_for_real(auto_desk, temp_db, app_config, monkeypatch)
     spy = await record_auto_card(temp_db)
@@ -590,6 +602,55 @@ async def test_exception_in_one_card_is_refused_with_type_name_and_next_card_run
     assert "secret broker detail" not in json.dumps([await attempt_events(temp_db, broken), queued])
 
 
+def queue_then_raise(desk, db, config, monkeypatch) -> None:
+    """Authorization really queues the entry (signal SUBMITTING, work item ``auto``), then raises."""
+    enqueue_for_real(desk, db, config, monkeypatch)
+    queue = desk.entry_service.authorize.side_effect
+
+    async def raise_after_queueing(request, *, trigger=EntryTrigger.TAP):
+        await queue(request, trigger=trigger)
+        raise RuntimeError("secret claim detail")
+
+    desk.entry_service.authorize.side_effect = raise_after_queueing
+
+
+async def test_an_exception_after_the_entry_was_queued_is_entered_from_state(
+    auto_desk, temp_db, app_config, monkeypatch
+):
+    queue_then_raise(auto_desk, temp_db, app_config, monkeypatch)
+    sid = await record_auto_card(temp_db)
+
+    [attempt] = await auto_desk.auto_enter_pending()
+
+    assert (attempt.outcome, attempt.reason) == ("entered", "RuntimeError")
+    payload = await the_attempt(temp_db, sid)
+    assert (payload["outcome"], payload["reason"], payload["signal_status"], payload["work_status"]) == (
+        "entered",
+        "RuntimeError",
+        SignalStatus.SUBMITTING,
+        "queued",
+    )
+    queued = await notifications(temp_db)
+    assert queued[f"signal/{sid}/auto-entered"]["arguments"] == {"signal_id": sid, "contract": "SPY"}
+    assert f"signal/{sid}/auto-refused" not in queued
+    assert "secret claim detail" not in json.dumps([await attempt_events(temp_db, sid), queued])
+
+
+async def test_an_exception_whose_state_reread_also_fails_is_refused(auto_desk, temp_db, app_config, monkeypatch):
+    queue_then_raise(auto_desk, temp_db, app_config, monkeypatch)
+    sid = await record_auto_card(temp_db)
+    monkeypatch.setattr(auto_desk, "_auto_entry_state", AsyncMock(side_effect=ValueError("reread")))
+
+    [attempt] = await auto_desk.auto_enter_pending()
+
+    assert (attempt.outcome, attempt.reason) == ("refused", "RuntimeError")
+    payload = await the_attempt(temp_db, sid)
+    assert (payload["outcome"], payload["reason"]) == ("refused", "RuntimeError")
+    queued = await notifications(temp_db)
+    # No swap without state evidence; no re-card, since the signal is not PENDING under the journal's lock.
+    assert not any(key.startswith(f"signal/{sid}/auto-") for key in queued)
+
+
 async def test_a_failing_selection_never_raises(auto_desk, temp_db, monkeypatch, caplog):
     monkeypatch.setattr(temp_db.workflows, "pending_auto_entries", AsyncMock(side_effect=RuntimeError("db down")))
 
@@ -623,10 +684,62 @@ async def test_reason_is_stripped_and_capped_at_300(auto_desk, temp_db):
     await auto_desk.auto_enter_pending()
 
     reason = (await the_attempt(temp_db, sid))["reason"]
-    assert reason.startswith("⚠️ Execution Rejected: cap & limit xxx")
+    assert reason.startswith("cap & limit xxx")
     assert len(reason) == 300 and "<" not in reason and "&amp;" not in reason
     # Queued raw: the renderer escapes it.
     assert (await notifications(temp_db))[f"signal/{sid}/auto-refused"]["arguments"]["auto_refusal"] == reason
+
+
+@pytest.mark.parametrize(
+    ("reply", "reason"),
+    [
+        ("⚠️ <b>Execution Rejected:</b> cap reached.", "cap reached"),
+        (
+            "🛑 <b>Execution Blocked:</b> Emergency trading halt active (drill). Use /resume to unhalt.",
+            "Emergency trading halt active (drill). Use /resume to unhalt",
+        ),
+        ("⚠️ Checks unavailable; try again shortly.", "Checks unavailable; try again shortly"),
+        (
+            "⚠️ <b>Execution Rejected:</b> Account risk unavailable: stale. No order submitted.",
+            "Account risk unavailable: stale. No order submitted",
+        ),
+        ("Execution Rejected: quantity must be finite and positive.", "quantity must be finite and positive"),
+    ],
+)
+def test_attempt_reason_drops_the_reply_label_and_trailing_period(reply, reason):
+    assert attempt_reason(reply) == reason
+
+
+async def test_a_recard_reads_as_one_sentence(auto_desk, temp_db):
+    sid = await record_auto_card(temp_db)
+    stub_execute(auto_desk, reply_text="⚠️ <b>Execution Rejected:</b> cap reached.")
+
+    await auto_desk.auto_enter_pending()
+
+    recard = (await notifications(temp_db))[f"signal/{sid}/auto-refused"]["arguments"]
+    assert recard["auto_refusal"] == "cap reached"
+    text = format_alert_card(
+        LLMTradeEvaluation.model_validate(recard["eval_res"]),
+        recard["strategy"],
+        auto_entry=recard["auto_entry"],
+        auto_refusal=recard["auto_refusal"],
+    )
+    assert "🤖 Auto-entry refused: cap reached. Tap Execute to enter it yourself." in text
+
+
+async def test_a_missing_original_card_logs_and_still_journals_the_refusal(auto_desk, temp_db, caplog):
+    sid = await record_auto_card(temp_db)
+    async with temp_db.session_factory() as session, session.begin():
+        await session.execute(delete(WorkItemRecord).where(WorkItemRecord.dedup_key == f"signal/{sid}/created"))
+    stub_execute(auto_desk)
+
+    with caplog.at_level(logging.WARNING, logger="agentic_trader.storage.workflow"):
+        await auto_desk.auto_enter_pending()
+
+    assert (await the_attempt(temp_db, sid))["outcome"] == "refused"
+    assert f"signal/{sid}/auto-refused" not in await notifications(temp_db)
+    [record] = [r for r in caplog.records if r.__dict__.get("event") == "auto_entry_recard_missing"]
+    assert record.levelno == logging.WARNING and record.__dict__["signal_id"] == sid
 
 
 # --- review focus 5: the re-card owns the stored message id -------------------------------------
@@ -653,7 +766,7 @@ async def test_recard_moves_message_id_and_expiry_strikes_it(auto_desk, temp_db,
 
     assert (await temp_db.get_signal_by_id(sid))["telegram_message_id"] == 200
     recard = send.await_args_list[1].kwargs
-    assert AUTO_REFUSED_LINE.format(reason="⚠️ Execution Rejected: cap reached") in recard["text"]
+    assert AUTO_REFUSED_LINE.format(reason="cap reached") in recard["text"]
     callbacks = [b.callback_data for row in recard["reply_markup"].inline_keyboard for b in row]
     assert callbacks == [f"exec_{sid}", f"dism_{sid}"]
 

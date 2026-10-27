@@ -4403,7 +4403,12 @@ class TradingCopilot:
             return attempts
 
     async def _auto_enter_card(self, sig: dict[str, Any], now: datetime | None) -> AutoEntryAttempt:
-        """Attempt one selected card and journal it; any exception becomes a ``refused`` attempt."""
+        """Attempt one selected card and journal it, isolating any exception from the next card.
+
+        An exception's outcome is still read from state (it may come after the entry was queued, so
+        the card is entered and gets its button swap), with the exception's type name as the reason;
+        only when that re-read fails too is the attempt a plain ``refused``.
+        """
         signal_id = int(sig["id"])
         provenance = sig.get("decision_provenance")
         scan_id = provenance.get("scan_id") if isinstance(provenance, dict) else None
@@ -4418,12 +4423,16 @@ class TradingCopilot:
                 extra={"event": "auto_entry_attempt_failed", "signal_id": signal_id},
             )
             reason = type(exc).__name__
+            outcome: AutoEntryOutcome
             try:
-                status, work_status, _ = await self._auto_entry_state(signal_id)
+                status, work_status, trigger = await self._auto_entry_state(signal_id)
+                outcome = outcome_after_call(status, trigger)
             except Exception:
-                status, work_status = str(sig["status"]), None
-            attempt = AutoEntryAttempt(signal_id, scan_id, "refused", reason, work_status, status, attempted_at)
-            recard = {"auto_entry": "refused", "auto_refusal": reason}
+                status, work_status, outcome = str(sig["status"]), None, "refused"
+            attempt = AutoEntryAttempt(signal_id, scan_id, outcome, reason, work_status, status, attempted_at)
+            # The store re-cards only a signal still PENDING under its lock.
+            refused_pending = outcome == "refused" and status == SignalStatus.PENDING
+            recard = {"auto_entry": "refused", "auto_refusal": reason} if refused_pending else None
         logger.info(
             "Auto-entry card #%d: %s (%s)",
             signal_id,
@@ -4492,7 +4501,7 @@ class TradingCopilot:
         # Entered (the button swap follows), or FAILED: its existing rejection notice stays.
         return attempt(outcome, reason, status, work_status), None
 
-    async def _auto_entry_state(self, signal_id: int) -> tuple[str, str | None, str | None]:
+    async def _auto_entry_state(self, signal_id: int) -> tuple[str, str | None, EntryTrigger | None]:
         """The signal's status, its entry work item's status and that item's trigger (None without one)."""
         sig = await self.db.get_signal_by_id(signal_id)
         status = str(sig["status"]) if sig else "missing"
@@ -4500,8 +4509,7 @@ class TradingCopilot:
         item = await self.db.workflows.get_work(item_id) if item_id else None
         if item is None:
             return status, None, None
-        # An item queued before the trigger key existed was a tap.
-        return status, str(item.status), str(item.payload.get("entry_trigger", EntryTrigger.TAP))
+        return status, str(item.status), await self.db.workflows.entry_trigger(signal_id)
 
     async def _auto_entry_repriced(self, signal_id: int) -> bool:
         """True when the card's latest tap assessment recorded a replacement card (``REPRICE``)."""

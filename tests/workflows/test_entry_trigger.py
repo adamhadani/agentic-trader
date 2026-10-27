@@ -46,3 +46,10 @@ async def test_entry_trigger_of_reads_latest_entry_and_defaults_tap(store, entry
         row.payload = encode(payload)
     async with temp_db.session_factory() as session:
         assert await store.entry_trigger_of(session, other.signal_id) is EntryTrigger.TAP
+
+
+async def test_entry_trigger_wrapper_opens_its_own_session(store, entry, app_config):
+    request = await entry()
+    assert await store.entry_trigger(request.signal_id) is None
+    await store.enqueue_entry(request, app_config, trigger=EntryTrigger.AUTO)
+    assert await store.entry_trigger(request.signal_id) is EntryTrigger.AUTO

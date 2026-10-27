@@ -19,6 +19,8 @@ ABANDONED_REASON = "not_attempted_in_time"
 NOT_PAPER_REASON = "not_paper_scope"
 
 _MARKUP = re.compile(r"<[^>]*>")
+# A reply's leading symbols and Title Case label ("⚠️ Execution Rejected: "), which the re-card line restates.
+_REPLY_LABEL = re.compile(r"^[^\w(]*(?:[A-Z][a-z]+(?: [A-Z][a-z]+)*:(?:\s+|$))?")
 
 
 def auto_entry_active(config: AppConfig) -> bool:
@@ -73,12 +75,15 @@ class AutoEntryAttempt:
 def attempt_reason(reply_text: str) -> str:
     """A desk-authored reply as a journal reason: tags stripped, entities decoded, whitespace collapsed, capped.
 
-    Decoded because the reason is queued raw on a re-card, whose renderer escapes it.
+    The reply's leading symbols and label and its trailing period go too, so a re-card reads "Auto-entry
+    refused: cap reached. Tap Execute…". Decoded because the reason is queued raw on a re-card, whose
+    renderer escapes it.
     """
-    return " ".join(html.unescape(_MARKUP.sub("", reply_text)).split())[:AUTO_ENTRY_REASON_CHARS]
+    text = " ".join(html.unescape(_MARKUP.sub("", reply_text)).split())
+    return _REPLY_LABEL.sub("", text).removesuffix(".")[:AUTO_ENTRY_REASON_CHARS]
 
 
-def outcome_after_call(signal_status: str, entry_trigger: str | None) -> AutoEntryOutcome:
+def outcome_after_call(signal_status: str, entry_trigger: EntryTrigger | None) -> AutoEntryOutcome:
     """The attempt's outcome from the signal (and its entry work item's trigger) re-read after the entry call.
 
     An entry work item the sweep did not create means a tap (or the CLI) owns this card's entry, and
