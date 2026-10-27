@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from agentic_trader.constants import ACTIVE_CLOSE_STATUSES, SignalStatus
 from agentic_trader.execution.durable import (
+    EntryTrigger,
     EventKind,
     NotificationKind,
     OrderObservation,
@@ -212,9 +213,11 @@ class LifetimeRepository:
                 if operator
                 else f"Entry #{signal_id} reached its resting deadline. Cancellation intent recorded for {identity.symbol}; awaiting broker confirmation."
             )
-            await self.store.add_notification(
-                session, f"entry-cancel/{row.id}/intent", NotificationKind.MESSAGE, {"text": intent}
-            )
+            # A deadline cancel of an auto entry is routine and folded into the daily digest.
+            if operator or await self.store.entry_trigger_of(session, signal_id) != EntryTrigger.AUTO:
+                await self.store.add_notification(
+                    session, f"entry-cancel/{row.id}/intent", NotificationKind.MESSAGE, {"text": intent}
+                )
             await session.flush()
             return work_item(row)
 
@@ -323,9 +326,16 @@ class LifetimeRepository:
                     if complete
                     else "New risk halted. Inspect exact broker fills and protective orders; no automatic retry."
                 )
-            await self.store.add_notification(
-                session, f"entry-cancel/{row.id}/{status}", NotificationKind.MESSAGE, {"text": text}
+            folded = (
+                complete
+                and not filled_first
+                and cause == "deadline"
+                and await self.store.entry_trigger_of(session, signal_id) == EntryTrigger.AUTO
             )
+            if not folded:
+                await self.store.add_notification(
+                    session, f"entry-cancel/{row.id}/{status}", NotificationKind.MESSAGE, {"text": text}
+                )
 
             return True
 

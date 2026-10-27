@@ -93,14 +93,18 @@ def test_auto_entry_jobs_registered_only_when_active(config):
     scheduler, copilot = MagicMock(), MagicMock()
     service.register_auto_entry_jobs(scheduler, copilot, _active(config))
 
-    scheduler.add_job.assert_called_once()
-    call = scheduler.add_job.call_args
-    assert call.args[0] is copilot.auto_enter_pending
-    assert call.args[1] == "interval"
-    assert call.kwargs["minutes"] == 1
-    assert call.kwargs["id"] == "auto_entry_sweep"
-    next_run_time = call.kwargs["next_run_time"]
-    assert isinstance(next_run_time, datetime) and next_run_time.tzinfo is UTC  # also runs at daemon start
+    jobs = {call.kwargs["id"]: call for call in scheduler.add_job.call_args_list}
+    assert set(jobs) == {"auto_entry_sweep", "auto_entry_digest"}
+    for job_id, target, minutes in (
+        ("auto_entry_sweep", copilot.auto_enter_pending, 1),
+        ("auto_entry_digest", copilot.publish_auto_entry_digest, 5),
+    ):
+        call = jobs[job_id]
+        assert call.args[0] is target
+        assert call.args[1] == "interval"
+        assert call.kwargs["minutes"] == minutes
+        next_run_time = call.kwargs["next_run_time"]
+        assert isinstance(next_run_time, datetime) and next_run_time.tzinfo is UTC  # also runs at daemon start
 
 
 def test_the_simulator_registers_no_auto_entry_job(config):

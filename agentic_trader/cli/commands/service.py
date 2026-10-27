@@ -713,7 +713,14 @@ def register_auto_entry_jobs(scheduler: Any, copilot: Any, config: AppConfig) ->
         id="auto_entry_sweep",
         next_run_time=datetime.now(UTC),
     )
-    # Further auto-entry jobs register here, behind the same switch.
+    # Sent on its first run at or after regular close + 15 minutes; the key makes it once per date.
+    scheduler.add_job(
+        copilot.publish_auto_entry_digest,
+        "interval",
+        minutes=5,
+        id="auto_entry_digest",
+        next_run_time=datetime.now(UTC),
+    )
 
 
 @click.command("daemon", help="Run continuous daemon scanner and trade manager")

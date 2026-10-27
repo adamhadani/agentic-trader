@@ -7,12 +7,14 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from agentic_trader.broker.base import OrderRequest, OrderResult
 from agentic_trader.config import AppConfig
-from agentic_trader.constants import AssetClass
+from agentic_trader.constants import AssetClass, SignalStatus
 from agentic_trader.execution.auto_entry import AUTO_ENTRY_KEY, AUTO_ENTRY_MARKER, AutoEntryAttempt
-from agentic_trader.execution.durable import EventKind, NotificationKind, WorkKind
+from agentic_trader.execution.durable import EntryTrigger, EventKind, NotificationKind, WorkKind, WorkStatus
 from agentic_trader.storage.db import SignalDatabase
 from agentic_trader.storage.models import DomainEventRecord, WorkItemRecord
+from agentic_trader.storage.workflow import encode
 
 
 pytestmark = [pytest.mark.postgres, pytest.mark.enable_socket, pytest.mark.allow_hosts(["127.0.0.1", "localhost"])]
@@ -132,3 +134,72 @@ async def test_concurrent_attempts_journal_one_event_and_one_notification(postgr
     finally:
         await first.engine.dispose()
         await second.engine.dispose()
+
+
+async def test_fill_notice_and_signal_update_share_a_transaction_and_folded_notices_are_absent(postgres_test_db):
+    """The ``auto-filled`` notice rolls back with the fill; an accepted auto entry queues no resolution notice."""
+    db = SignalDatabase(db_url=postgres_test_db, config=_paper())
+    try:
+        await db.init_db()
+        sid = await _marked_card(db)
+        request = OrderRequest(
+            signal_id=sid,
+            symbol="SPY",
+            contract="SPY",
+            asset_class="EQUITY",
+            direction="LONG",
+            quantity=10,
+            entry_price=100,
+            stop_loss=95,
+            take_profit=120,
+        )
+        # Alpaca admission needs a fresh account journal, so the queued auto entry is planted directly.
+        now = datetime.now(UTC)
+        async with db.session_factory() as session, session.begin():
+            await db.workflows.lock(session)
+            event = await db.workflows.append(
+                session, stream="fixture/queued-entry", kind=EventKind.ENTRY_QUEUED, payload={"fixture": True}
+            )
+            item = WorkItemRecord(
+                id="client-auto-1",
+                scope=db.workflows.scope,
+                kind=WorkKind.ENTRY,
+                status=WorkStatus.QUEUED,
+                dedup_key=str(sid),
+                sequence=event.id,
+                payload=encode({**request.model_dump(mode="json"), "entry_trigger": str(EntryTrigger.AUTO)}),
+                result=encode({}),
+                attempts=0,
+                created_at=now,
+                available_at=now,
+            )
+            session.add(item)
+        claimed = await db.workflows.claim_entry(lease_seconds=60)
+        await db.update_signal_status(sid, SignalStatus.SUBMITTING)
+        await db.workflows.resolve_entry(claimed, OrderResult(success=True, order_id="order-1"))
+
+        add_notification = db.workflows.add_notification
+
+        async def fail(session, key, kind, payload):
+            raise RuntimeError("outbox write failed")
+
+        db.workflows.add_notification = fail
+        with pytest.raises(RuntimeError):
+            await db.update_signal_execution(
+                sid, "order-1", fill_price=100.25, quantity=10, executed_at=datetime.now(UTC)
+            )
+        assert (await db.get_signal_by_id(sid))["executed_at"] is None  # the update rolled back with the notice
+
+        db.workflows.add_notification = add_notification
+        await db.update_signal_execution(sid, "order-1", fill_price=100.25, quantity=10, executed_at=datetime.now(UTC))
+        assert (await db.get_signal_by_id(sid))["executed_at"] is not None
+        async with db.session_factory() as session:
+            keys = set(
+                await session.scalars(
+                    select(WorkItemRecord.dedup_key).where(WorkItemRecord.kind == WorkKind.NOTIFICATION)
+                )
+            )
+        assert f"signal/{sid}/auto-filled" in keys
+        assert "entry/client-auto-1/accepted" not in keys
+    finally:
+        await db.engine.dispose()

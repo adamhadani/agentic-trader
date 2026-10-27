@@ -40,6 +40,7 @@ from agentic_trader.execution.durable import (
     WorkStatus,
 )
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.presentation.auto_entry_digest import AutoEntryDigestRow
 from agentic_trader.research.alpha.validation import ValidationPolicy
 from agentic_trader.research.apriori.probe import CATALOG_KIND, CATALOG_STRATEGY_IDS
 from agentic_trader.research.apriori.watch_contract import INSIDER_WATCH_STRATEGY_ID, frozen_watch_contract
@@ -55,7 +56,7 @@ from agentic_trader.storage.models import (
     WorkflowLockRecord,
     WorkItemRecord,
 )
-from agentic_trader.storage.probe_state import probe_block_reason
+from agentic_trader.storage.probe_state import CLOSED_STATUSES, probe_block_reason
 
 
 if TYPE_CHECKING:
@@ -142,6 +143,36 @@ def work_item(row: WorkItemRecord) -> WorkItem:
         row.attempts,
         row.created_at,
     )
+
+
+def _digest_row(
+    signal: SignalRecord, attempt: dict[str, Any] | None, entry: WorkItemRecord | None, cancel: WorkItemRecord | None
+) -> AutoEntryDigestRow:
+    """The digest outcome of one marked card from its signal, attempt event and entry/cancel work items."""
+    status = SignalStatus(signal.status)
+    symbol = signal.contract
+    if signal.executed_at is not None or status in CLOSED_STATUSES:
+        state = "open" if status == SignalStatus.EXECUTED else "closed"
+        return AutoEntryDigestRow(
+            signal.id, symbol, "filled", f"{signal.quantity or 0:g} @ ${signal.entry_price:.2f} ({state})"
+        )
+    if cancel is not None:
+        operator = json.loads(cancel.payload).get("cause", "deadline") == "operator"
+        if cancel.status == WorkStatus.ACCEPTED:
+            return AutoEntryDigestRow(signal.id, symbol, "cancelled_by_operator" if operator else "cancelled_unfilled")
+        return AutoEntryDigestRow(signal.id, symbol, "still_resting")
+    if status == SignalStatus.DISMISSED:
+        return AutoEntryDigestRow(signal.id, symbol, "dismissed")
+    if status in (SignalStatus.SUBMITTING, SignalStatus.EXECUTED):
+        return AutoEntryDigestRow(signal.id, symbol, "still_resting")
+    if status == SignalStatus.FAILED and entry is not None:
+        if entry.status == WorkStatus.REJECTED:
+            return AutoEntryDigestRow(signal.id, symbol, "refused", json.loads(entry.result).get("error_message"))
+        return AutoEntryDigestRow(signal.id, symbol, "cancelled_unfilled")
+    reason = attempt.get("reason") if attempt else None
+    if attempt is not None and attempt.get("outcome") == "refused":
+        return AutoEntryDigestRow(signal.id, symbol, "refused", reason)
+    return AutoEntryDigestRow(signal.id, symbol, "abandoned", reason or "not attempted")
 
 
 class WorkflowStore:
@@ -282,6 +313,72 @@ class WorkflowStore:
         selected = [(row, rank) for row, rank in marked if f"auto-entry/{row.id}" not in attempted]
         selected.sort(key=lambda pair: (pair[0].timestamp, pair[1] if isinstance(pair[1], int) else float("inf")))
         return [row.to_dict() for row, _ in selected]
+
+    async def auto_entry_digest_rows(self, et_date: date) -> list[AutoEntryDigestRow]:
+        """One digest row per marked card of New York date ``et_date``, in rank order.
+
+        Reads only the signals table, the ``auto_entry_attempted`` events and the entry/cancel work items.
+        A fill wins; then an operator-cause cancel (``still_resting`` until the broker confirms it); then
+        the signal's own state, with a later broker rejection reported as the refusal.
+        """
+        start = datetime.combine(et_date, time.min, tzinfo=ET_TZ)
+        end = datetime.combine(et_date + timedelta(days=1), time.min, tzinfo=ET_TZ)
+        async with self.db.session_factory() as session:
+            signals = (
+                await session.scalars(
+                    select(SignalRecord).where(
+                        *self.db._scope(), SignalRecord.timestamp >= start, SignalRecord.timestamp < end
+                    )
+                )
+            ).all()
+            marked: list[tuple[SignalRecord, Any]] = []
+            for row in signals:
+                provenance = json.loads(row.decision_provenance or "{}")
+                if isinstance(provenance, dict) and provenance.get(AUTO_ENTRY_KEY) == AUTO_ENTRY_MARKER:
+                    marked.append((row, provenance.get("rank")))
+            if not marked:
+                return []
+            ids = [str(row.id) for row, _ in marked]
+            attempts = {
+                event.event_key: json.loads(event.payload)
+                for event in await session.scalars(
+                    select(DomainEventRecord).where(
+                        DomainEventRecord.scope == self.scope,
+                        DomainEventRecord.event_key.in_([f"auto-entry/{i}" for i in ids]),
+                    )
+                )
+            }
+            entries = {
+                item.dedup_key: item
+                for item in await session.scalars(
+                    select(WorkItemRecord).where(
+                        WorkItemRecord.scope == self.scope,
+                        WorkItemRecord.kind == WorkKind.ENTRY,
+                        WorkItemRecord.dedup_key.in_(ids),
+                    )
+                )
+            }
+            cancels: dict[str, WorkItemRecord] = {}
+            for item in await session.scalars(
+                select(WorkItemRecord)
+                .where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.ENTRY_CANCEL,
+                    WorkItemRecord.dedup_key.in_(ids),
+                )
+                .order_by(WorkItemRecord.created_at, WorkItemRecord.id)
+            ):
+                cancels[item.dedup_key] = item
+        marked.sort(key=lambda pair: (pair[1] if isinstance(pair[1], int) else float("inf"), pair[0].timestamp))
+        return [
+            _digest_row(
+                row,
+                attempts.get(f"auto-entry/{row.id}"),
+                entries.get(str(row.id)),
+                cancels.get(str(row.id)),
+            )
+            for row, _ in marked
+        ]
 
     async def record_auto_entry_attempt(
         self, attempt: AutoEntryAttempt, *, recard: dict[str, Any] | None, entered: bool
@@ -833,9 +930,15 @@ class WorkflowStore:
                 detail += (
                     " Conditions changed or the broker rejected this order. Run /scan for a new proposal and approval."
                 )
-            await self.add_notification(
-                session, f"entry/{row.id}/{row.status}", NotificationKind.MESSAGE, {"text": detail}
+            # An accepted auto entry is folded into the daily digest; every refusal keeps its notice.
+            folded = (
+                row.status == WorkStatus.ACCEPTED
+                and await self.entry_trigger_of(session, item.payload["signal_id"]) == EntryTrigger.AUTO
             )
+            if not folded:
+                await self.add_notification(
+                    session, f"entry/{row.id}/{row.status}", NotificationKind.MESSAGE, {"text": detail}
+                )
             return True
 
     async def add_notification(self, session: AsyncSession, key: str, kind: str, payload: dict[str, Any]) -> str:
@@ -871,6 +974,22 @@ class WorkflowStore:
         )
         row.sequence = queued_event.id
         return item_id
+
+    async def queue_auto_entry_digest(self, et_date: date, text: str) -> bool:
+        """Queue the day's digest once: False (nothing queued) when this New York date's key already exists."""
+        key = f"auto-entry-digest/{et_date.isoformat()}"
+        async with self.db.session_factory() as session, session.begin():
+            await self.lock(session)
+            if await session.scalar(
+                select(WorkItemRecord.id).where(
+                    WorkItemRecord.scope == self.scope,
+                    WorkItemRecord.kind == WorkKind.NOTIFICATION,
+                    WorkItemRecord.dedup_key == key,
+                )
+            ):
+                return False
+            await self.add_notification(session, key, NotificationKind.MESSAGE, {"text": text, "formatted": True})
+            return True
 
     async def enqueue_notification(self, key: str, kind: str, payload: dict[str, Any]) -> str:
         async with self.db.session_factory() as session, session.begin():
@@ -997,14 +1116,16 @@ class WorkflowStore:
                     )
                     if signal and not await self.unresolved_cancellation(session, symbol=signal.contract):
                         signal.status = SignalStatus.FAILED
-                        await self.add_notification(
-                            session,
-                            f"signal/{signal.id}/entry-terminal",
-                            NotificationKind.MESSAGE,
-                            {
-                                "text": f"Entry #{signal.id} ended {current.status} without fills. Reservation released; run /scan for a new proposal."
-                            },
-                        )
+                        # An auto entry's unfilled end is folded into the daily digest.
+                        if await self.entry_trigger_of(session, signal.id) != EntryTrigger.AUTO:
+                            await self.add_notification(
+                                session,
+                                f"signal/{signal.id}/entry-terminal",
+                                NotificationKind.MESSAGE,
+                                {
+                                    "text": f"Entry #{signal.id} ended {current.status} without fills. Reservation released; run /scan for a new proposal."
+                                },
+                            )
                         session.add(
                             self.db._audit(
                                 AuditEventType.ENTRY_EXECUTION_UPDATED,

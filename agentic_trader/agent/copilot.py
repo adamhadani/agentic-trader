@@ -130,6 +130,7 @@ from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
 from agentic_trader.pairs import PairEvaluation, PairsScreener, format_pairs_telegram
+from agentic_trader.presentation.auto_entry_digest import format_auto_entry_digest
 from agentic_trader.presentation.formatters import (
     ExecutionResultView,
     ManualCloseResultView,
@@ -215,6 +216,8 @@ BROAD_INDEX_REASON = "broad index ETF: excluded from native cards (scan.broad_in
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
 OPERATOR_REFERENCE_MAX_AGE = timedelta(days=7)
+# The paper auto-entry digest goes out this long after the regular session close.
+AUTO_ENTRY_DIGEST_DELAY = timedelta(minutes=15)
 # An operator scan request that arrives after daemon shutdown began: its task would never be
 # cancelled or awaited (``cancel_background_scans`` already ran), so it is refused instead.
 SHUTTING_DOWN_TEXT = "Daemon is shutting down; try again after restart."
@@ -4951,6 +4954,36 @@ class TradingCopilot:
     def _is_suggestion_scan(summary: dict[str, Any]) -> bool:
         """A scheduled suggestion scan's summary (``make_suggestion_scan``), completed or gated."""
         return summary.get("trigger") == ScanTrigger.SUGGESTION_SCAN
+
+    async def publish_auto_entry_digest(self, now: datetime | None = None) -> bool:
+        """Queue today's paper auto-entry digest once, from regular close + 15 minutes; True when queued.
+
+        Due on a trading day only, at the New York close of the broker calendar the lifetime service
+        reads (an early close is due at 13:15). A calendar failure, a non-trading day, a session with no
+        marked card, or a digest already queued returns False; nothing raises into the scheduler.
+        """
+        current = (now or datetime.now(UTC)).astimezone(ET_TZ)
+        et_date = current.date()
+        try:
+            calendar = self.lifetime_service.calendar
+            if calendar is None:
+                logger.info("Auto-entry digest skipped: no session calendar", extra={"event": "auto_entry_digest"})
+                return False
+            day = await calendar.get_trading_day(et_date)
+            if not day.is_trading_day or day.close_time is None:
+                logger.info("Auto-entry digest skipped: not a trading day", extra={"event": "auto_entry_digest"})
+                return False
+            if current < datetime.combine(day.date, day.close_time, tzinfo=ET_TZ) + AUTO_ENTRY_DIGEST_DELAY:
+                return False
+            rows = await self.db.workflows.auto_entry_digest_rows(et_date)
+            if not rows:
+                return False
+            return await self.db.workflows.queue_auto_entry_digest(
+                et_date, format_auto_entry_digest(rows, et_date=et_date)
+            )
+        except Exception:
+            logger.exception("Auto-entry digest failed", extra={"event": "auto_entry_digest_failed"})
+            return False
 
     async def publish_scan_digest(self, et_date: str | None = None) -> str:
         """Publish exactly one end-of-session digest of this New York date's suggestion scans.
