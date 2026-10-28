@@ -38,7 +38,7 @@ from agentic_trader.research.setups.outcomes import (
     scan_supply,
     summarize,
 )
-from agentic_trader.research.setups.sources import build_bar_source, scan_ranked_events
+from agentic_trader.research.setups.sources import build_bar_source, build_daily_bar_source, scan_ranked_events
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 
@@ -95,6 +95,7 @@ async def outcomes_cmd(days: int) -> None:
         frame = label_journaled(
             events,
             bars,
+            daily_bars=build_daily_bar_source(config),
             max_hold_sessions=DEFAULT_MAX_HOLD_SESSIONS,
             cost_bps=DEFAULT_COST_BPS_PER_SIDE,
             now=now,

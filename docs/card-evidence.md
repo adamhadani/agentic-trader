@@ -473,6 +473,16 @@ labelling run skips the beta fetch entirely.
   uncosted. It is `None` until that session has closed and when bars are missing. A stop or target exit does
   not shorten it, so `timing_r` is `r_cost - hold_r`: the value the bracket's stop and target added over simply
   holding for the full horizon.
+- **Net excess (`net_excess_r_v1`).** `net_excess_r` is the one cost-adjusted, beta-matched unit shared by
+  the labeller and `card_stats`: `clip(clip(r - cost_r, ±10) - beta * market_r, ±10)` with
+  `cost_r = 2 * c / 1e4 * fill / risk_unit`, `fill` the entry-bar open and `risk_unit` the planned
+  `|entry - stop|`. The per-name cost `c` is a 5 bp floor plus a square-root impact term from the name's
+  past 20-session volatility and median dollar volume for a $1,000-risk order, capped at 200 bp; with fewer
+  than 15 past returns, no bars or a failed fetch it is the floor and `cost_reason` says why
+  (`short_history`, `no_daily_bars`, `fetch_failed: ...`). Beta and cost inputs come from SIP adjusted daily
+  bars in every caller (`build_daily_bar_source`); hourly labelling keeps the configured feed. Abdi-Ranaldo
+  and Corwin-Schultz daily high-low spread estimators were rejected because on this liquid universe they are
+  dominated by estimator error (spec §4.2). `beta_excess_r` keeps its unclipped flat-cost definition.
 - **Summaries.** Each `market_exposure` class adds `n_beta`, `mean_beta`, `mean_beta_market_r`,
   `mean_beta_excess_r`, `mean_excess_r_same_rows` (the beta-one excess over exactly the rows that carry a
   `beta_excess_r`), `beta_reasons` (a count per missing-beta reason) and `mean_hold_r` / `mean_timing_r`. The

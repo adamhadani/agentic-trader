@@ -20,18 +20,26 @@ if TYPE_CHECKING:
     from agentic_trader.config import AppConfig
     from agentic_trader.storage.db import SignalDatabase
 
-__all__ = ["build_bar_source", "scan_ranked_events"]
+__all__ = ["build_bar_source", "build_daily_bar_source", "scan_ranked_events"]
 
 
-def build_bar_source(config: AppConfig) -> AlpacaDataProvider:
-    """The suggestion scan's own market-data provider path: raw adjustment, the configured feed."""
+def build_bar_source(config: AppConfig, *, feed: str | None = None) -> AlpacaDataProvider:
+    """The suggestion scan's own market-data provider path: raw adjustment, the configured feed.
+
+    ``feed`` overrides ``config.market_data.alpaca_feed`` when given.
+    """
     return AlpacaDataProvider(
         api_key=config.alpaca_api_key,
         api_secret=config.alpaca_api_secret,
-        feed=config.market_data.alpaca_feed,
+        feed=feed if feed is not None else config.market_data.alpaca_feed,
         request_timeout=config.market_data.timeout_seconds,
         evidence=BarEvidenceStore(state_directory() / "market-data", config.market_data.evidence),
     )
+
+
+def build_daily_bar_source(config: AppConfig) -> AlpacaDataProvider:
+    """The daily-bar source for beta and cost inputs: SIP in every caller."""
+    return build_bar_source(config, feed="sip")
 
 
 async def scan_ranked_events(db: SignalDatabase, days: int, *, now: datetime) -> list[dict[str, Any]]:
