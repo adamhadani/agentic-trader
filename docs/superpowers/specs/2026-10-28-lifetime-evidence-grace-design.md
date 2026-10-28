@@ -28,8 +28,19 @@ approaches").
 ## 3. Decision
 
 - `TradeLifetimeService.reconcile()` counts **consecutive failed sweeps per signal** in memory
-  (`self._evidence_failures: dict[int, int]`). Any exception from `entry_lifetime_of`,
-  `_missed_native_bound` or `_reconcile_signal` adds one.
+  (`self._evidence_failures: dict[int, int]`). Only an exception raised while **reading the
+  evidence** adds one. The read phase is the durable entry identity, the broker order-group read,
+  `observe_orders`, the parent lookup and the session calendar read.
+  - An exception **after** the evidence is read reviews on the first sweep, as today, with the same
+    `lifecycle_evidence_unavailable:{TypeName}` reason. This covers the decision and the action:
+    `begin_cancel`, including its "Bracket evidence changed before cancellation claim" integrity
+    refusal; the cancel submission; the holding close; and journal/outbox writes. Such an exception
+    means the evidence was read and found changed, or an action failed partway. That is the
+    review-worthy case in §2. A partial fill seen during a deadline cancel must keep blocking new
+    risk at once.
+  - `entry_lifetime_of` failing to parse a signal's own policy is deterministic, not a read. It also
+    reviews on the first sweep, as today.
+  - `_missed_native_bound` already swallows its own errors.
   - Below the threshold, it logs a warning with the type name only and does not review.
   - When the count reaches `execution.lifetime_evidence_review_after_failures`, it reviews with the
     same reason string as today (`lifecycle_evidence_unavailable:{TypeName}`). The halt and the
