@@ -38,26 +38,18 @@ from agentic_trader.research.setups.outcomes import (
     scan_supply,
     summarize,
 )
-from agentic_trader.research.setups.sources import build_bar_source, build_daily_bar_source, scan_ranked_events
+from agentic_trader.research.setups.sources import (
+    SIP_HISTORY_DELAY,
+    DelayedBars,
+    build_bar_source,
+    build_daily_bar_source,
+    scan_ranked_events,
+)
 from agentic_trader.storage.alpha import AlphaRepository
 from agentic_trader.storage.db import SignalDatabase
 
 
-__all__ = ["SIP_HISTORY_DELAY", "cards_group"]
-
-# Without the SIP subscription, historical SIP bars must end at least 15 minutes ago (an end of now is HTTP 403:
-# docs/research-data-sources.md); one minute of margin.
-SIP_HISTORY_DELAY = timedelta(minutes=16)
-
-
-class _DelayedBars:
-    """A bar source whose every read ends no later than ``through`` (the delayed-SIP bound)."""
-
-    def __init__(self, provider: Any, through: datetime):
-        self.provider, self.through = provider, through
-
-    def fetch_bars(self, symbol: str, timeframe: str, start: datetime, end: datetime, *, adjustment: str) -> Any:
-        return self.provider.fetch_bars(symbol, timeframe, start, min(end, self.through), adjustment=adjustment)
+__all__ = ["cards_group"]
 
 
 @click.group("cards", help="Suggestion-card evidence: read-only reports over journaled scans")
@@ -83,7 +75,13 @@ async def _decision_events(db: SignalDatabase, days: int, *, now: datetime, kind
 @cards_group.command(
     "outcomes", help="Label journaled scan_candidates_ranked outcomes; read-only, no orders or Telegram"
 )
-@click.option("--days", type=click.IntRange(1, 90), default=30, show_default=True, help="ET calendar days to inspect")
+@click.option(
+    "--days",
+    type=click.IntRange(1, 180),
+    default=30,
+    show_default=True,
+    help="ET calendar days to inspect (up to 180, the shipped card_policy.stats_window_days)",
+)
 @coro
 async def outcomes_cmd(days: int) -> None:
     config = load_config()
@@ -95,7 +93,7 @@ async def outcomes_cmd(days: int) -> None:
         frame = label_journaled(
             events,
             bars,
-            daily_bars=build_daily_bar_source(config),
+            daily_bars=build_daily_bar_source(config, now=now),
             max_hold_sessions=DEFAULT_MAX_HOLD_SESSIONS,
             cost_bps=DEFAULT_COST_BPS_PER_SIDE,
             now=now,
@@ -127,9 +125,9 @@ async def outcomes_cmd(days: int) -> None:
         # +0.087R line) were measured on, never the configured feed: one provider, built on first use. Every
         # read ends at ``sip_through`` (delayed SIP), which is also both blocks' maturity cutoff.
         sip_through = now - SIP_HISTORY_DELAY
-        sip_provider: _DelayedBars | None = None
+        sip_provider: DelayedBars | None = None
 
-        def sip() -> _DelayedBars:
+        def sip() -> DelayedBars:
             nonlocal sip_provider
             if sip_provider is None:
                 provider = AlpacaDataProvider(
@@ -138,7 +136,7 @@ async def outcomes_cmd(days: int) -> None:
                     feed="sip",
                     request_timeout=config.market_data.timeout_seconds,
                 )
-                sip_provider = _DelayedBars(provider, sip_through)
+                sip_provider = DelayedBars(provider, sip_through)
             return sip_provider
 
         payloads = await _decision_events(db, days, now=now, kind=EventKind.PEAD_DECISION)

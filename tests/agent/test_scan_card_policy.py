@@ -226,4 +226,6 @@ async def test_withheld_candidates_stay_journaled_and_keep_being_labelled(shadow
         "would_withhold": 5,
         "withheld_mean_r_cost": None,
         "would_withhold_mean_r_cost": None,
+        "would_withhold_n_net_excess": 0,
+        "would_withhold_mean_net_excess_r": None,
     }

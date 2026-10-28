@@ -736,19 +736,39 @@ blocks a card. After deploying, verify that the first scan's card provenance
 `cards outcomes` run has a `book_sizing` block. See
 [card evidence](card-evidence.md#book-aware-sizing).
 
-**Card statistics worker (October 8).** The daemon runs `card_stats` beside the research workers:
-once per New York date after `card_policy.stats_time_et` (08:30), outside the suggestion-scan
-windows and while no scan is running, it labels the last 90 days of journaled candidates and appends
-one `card_stats_snapshot` event (`copilot db events --stream card_stats`). `/readyz` includes
-`card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day
-without a snapshot the first poll labels before it reports `recorded`; it observes `labelling N scan
-events` first. A failed run (every bar fetch failed) writes nothing, turns `card_stats` not ready with
-`CardStatsUnavailable: every bar fetch failed for N candidates: TYPE` in its detail (exception type
-names only; any other error shows its type only; the log has the messages) and retries on the next
-poll. It stays not ready with that detail for the rest of the New York date, including the idle polls
-around the scan slots, until a poll finds or records today's snapshot; cards keep the previous
-snapshot until it is four days old and then say `statistics stale`. A shutdown during a labelling run records nothing, but
-process exit waits for the labelling thread's provider reads to finish. Details:
+**Card statistics worker (October 8; v2 since October 28).** The daemon runs `card_stats` beside the
+research workers: once per New York date after `card_policy.stats_time_et` (08:30), outside the
+suggestion-scan windows and while no scan is running, it reads the `scan_candidates_ranked` events of the
+last `card_policy.stats_window_days` New York dates (shipped 180) and labels the suggestion-scan population:
+scheduled `suggestion_scan` universe scans only, without broad index ETFs or the prior's excluded symbols
+(BIL, SHY), malformed candidates counted and dropped, and one row per contract, strategy, timeframe,
+direction and New York decision date (the earliest scan kept). Hourly bars come from the configured feed;
+beta and per-name cost come from SIP daily bars whose every read ends 16 minutes before the run, because
+the subscription refuses SIP history that ends now. It appends one `card_stats_snapshot` event under
+`card_stats/net_excess_r_v1/{et_date}` (`copilot db events --stream card_stats`). `/readyz` includes
+`card_stats` with a four-day limit, so weekends and holidays stay ready. After a restart on a day without a
+snapshot, the first poll observes `labelling N scan events` and then labels before it reports `recorded`.
+
+A failed run writes nothing and turns `card_stats` not ready. The detail is
+`CardStatsUnavailable: MESSAGE`, which carries fixed text and exception type names only (any other error
+shows its type only; the log has the messages):
+
+- `card statistics prior unavailable: REASON`: the frozen prior did not load, so no bar is read. REASON is
+  a fixed phrase (`prior digest is not configured`, `prior file not found`, `prior file unreadable`,
+  `prior digest mismatch`, `prior file invalid`, `prior version mismatch`, `prior unit mismatch`,
+  `prior constants differ from the code`). Check that the file at `card_policy.prior_path` exists in the
+  installed checkout and that `shasum -a 256` of it equals `card_policy.prior_sha256`.
+- `the market proxy hourly read failed: TYPE`: the SPY hourly read failed.
+- `every daily bar fetch failed for N candidates: TYPE`: every SIP daily read failed (SPY's, or every
+  symbol's) for the rows whose hourly read succeeded.
+- `every bar fetch failed for N candidates: TYPE`: every hourly read failed.
+
+The worker retries on the next poll. The component stays not ready with that detail for the rest of the
+New York date, including the idle polls around the scan slots, until a poll finds or records today's
+snapshot. Until then cards read the previous snapshot. On deploy day that is a v1 snapshot, which cards
+render as `no statistics in this scope`. After that, the previous v2 snapshot serves until it is four days
+old, and then cards say `statistics stale`. A shutdown during a labelling run records nothing, but process
+exit waits for the labelling thread's provider reads to finish. Details:
 [card evidence](card-evidence.md#card-statistics-snapshot).
 
 **Corporate-actions worker (October 11).** The daemon runs `corporate_actions` beside the research

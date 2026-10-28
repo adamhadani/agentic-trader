@@ -13,6 +13,7 @@ from agentic_trader.config import WORKSPACE_ROOT
 from agentic_trader.execution.durable import RankedOutcome
 from agentic_trader.research.setups.bracket_counterfactual import BracketCounterfactualProtocol
 from agentic_trader.research.setups.labels import BracketHit
+from agentic_trader.research.setups.net_excess import COST_FLOOR_BPS, cost_inputs, name_cost_bps, net_excess_r
 from agentic_trader.research.setups.outcomes import (
     _COLUMNS,
     CF_COLUMN_PREFIX,
@@ -284,6 +285,8 @@ def test_summary_empty_frame():
         "would_withhold": 0,
         "withheld_mean_r_cost": None,
         "would_withhold_mean_r_cost": None,
+        "would_withhold_n_net_excess": 0,
+        "would_withhold_mean_net_excess_r": None,
     }
 
 
@@ -704,6 +707,8 @@ def test_card_policy_columns_and_summary_block():
         "would_withhold": 1,
         "withheld_mean_r_cost": pytest.approx(withheld_r),
         "would_withhold_mean_r_cost": pytest.approx(withheld_r),
+        "would_withhold_n_net_excess": 0,  # no daily bars for a beta: no net excess
+        "would_withhold_mean_net_excess_r": None,
     }
     # The existing blocks are unchanged: a withheld candidate is still a runner-up there.
     assert summary["counts"]["runner_up"]["mature"] == 2
@@ -2012,3 +2017,71 @@ def test_exposure_reports_net_excess():
     assert sent["n_net_excess"] == 1
     assert sent["mean_net_excess_r"] == pytest.approx(1.0)
     assert sent["mean_name_cost_bps"] == pytest.approx(10.0)
+
+
+def test_card_policy_summary_reports_the_would_withhold_net_excess():
+    """`would_withhold` is a verdict on the posterior in net_excess_r_v1: the summary reports that unit beside R."""
+    frame = _synthetic_mature_frame(
+        [("AAPL", 2.0, 1.0, 0.5, None, None), ("MSFT", -1.0, 0.5, 1.0, None, None), ("NVDA", 1.0, 0.2, 1.0, None, None)]
+    )
+    frame["would_withhold"] = [True, True, False]
+    frame["net_excess_r"] = [1.25, None, 0.4]  # MSFT has no beta-matched excess
+    block = summarize(frame)["card_policy"]
+    assert (block["would_withhold"], block["would_withhold_mean_r_cost"]) == (2, pytest.approx(0.5))
+    assert block["would_withhold_n_net_excess"] == 1
+    assert block["would_withhold_mean_net_excess_r"] == pytest.approx(1.25)
+
+
+def _with_volume(daily, volume):
+    return daily.assign(Volume=float(volume))
+
+
+def test_a_daily_volume_prices_the_per_name_cost_into_net_excess():
+    """With volume in the daily bars the cost is the floor plus impact, and net_excess_r charges that cost."""
+    aapl_daily, spy_daily = _half_beta_dailies()
+    aapl_daily = _with_volume(aapl_daily, 10_000)  # about $0.5M a day: a $100k reference order has impact
+    source = DailyAwareBarSource(
+        {"AAPL": _RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": _with_volume(spy_daily, 1e8)}
+    )
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [_candidate()])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    expected_cost = name_cost_bps(row["fill_price"], row["risk_unit"], cost_inputs(aapl_daily, DECIDED_AT.date()))
+    assert row["cost_reason"] is None and row["name_cost_bps"] > COST_FLOOR_BPS
+    assert row["name_cost_bps"] == pytest.approx(expected_cost)
+    assert row["net_excess_r"] == pytest.approx(
+        net_excess_r(row["r"], row["fill_price"], row["risk_unit"], expected_cost, row["beta"], row["market_r"])
+    )
+    # The flat 5 bp beta excess charges less than the per-name cost does.
+    assert row["net_excess_r"] < row["beta_excess_r"]
+
+
+# A SHORT that opens at 100 and reaches its 98 target on the second bar, then the rest of the session and the next
+# session's first bar (a one-session horizon has closed).
+_SHORT_RESOLVING_FULL_DAY = _bars(
+    [
+        ("2026-03-02T14:30:00Z", 100.0, 100.5, 99.5, 99.8),
+        ("2026-03-02T15:30:00Z", 99.8, 100.0, 97.5, 97.8),
+    ]
+    + [(f"2026-03-02T{hour}:30:00Z", 97.8, 98.2, 97.0, 97.5) for hour in (16, 17, 18, 19, 20)]
+    + [("2026-03-03T14:30:00Z", 97.5, 97.8, 97.2, 97.4)]
+)
+
+
+def test_a_short_candidates_net_excess_uses_its_signed_r_and_market_r():
+    aapl_daily, spy_daily = _half_beta_dailies()
+    source = DailyAwareBarSource(
+        {"AAPL": _SHORT_RESOLVING_FULL_DAY, "SPY": _SPY_HOURLY}, {"AAPL": aapl_daily, "SPY": spy_daily}
+    )
+    short = _candidate(direction="SHORT", entry=100.0, stop=101.0, target=98.0)
+    [row] = label_journaled(
+        [_event("s1", DECIDED_AT, [short])], source, now=NOW, tape_symbol=None, max_hold_sessions=1
+    ).to_dict("records")
+    assert (row["direction"], row["hit"]) == ("SHORT", BracketHit.TARGET.value)
+    # The short gains as the name falls; SPY rose over the hold, which a short's beta-matched control credits.
+    assert row["r"] == pytest.approx(2.0) and row["market_r"] == pytest.approx(-(501.0 / 500.0 - 1.0) * 100.0)
+    assert row["beta"] == pytest.approx(0.5, abs=1e-9) and row["name_cost_bps"] == COST_FLOOR_BPS
+    expected = net_excess_r(
+        row["r"], row["fill_price"], row["risk_unit"], row["name_cost_bps"], row["beta"], row["market_r"]
+    )
+    assert row["net_excess_r"] == pytest.approx(expected) == pytest.approx(2.0 - 0.1 + 0.5 * 0.2)

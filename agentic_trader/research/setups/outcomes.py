@@ -1429,6 +1429,8 @@ def summarize(
                 "would_withhold": 0,
                 "withheld_mean_r_cost": None,
                 "would_withhold_mean_r_cost": None,
+                "would_withhold_n_net_excess": 0,
+                "would_withhold_mean_net_excess_r": None,
             },
             "book_sizing": _book_sizing_summary(frame, frame),
             "news_context": _news_summary(frame, frame),
@@ -1485,11 +1487,15 @@ def summarize(
         fetch_failed_reasons = frame.loc[is_fetch_failed, "reason"].value_counts().to_dict()
     withheld = frame["card_policy_withheld"].astype(bool)
     would = frame["would_withhold"].map(lambda value: value is True).astype(bool)
+    would_mature = mature.loc[would.loc[mature.index]]
     card_policy = {
         "withheld": int(withheld.sum()),
         "would_withhold": int(would.sum()),
         "withheld_mean_r_cost": _mean_r_cost(mature.loc[withheld.loc[mature.index]]),
-        "would_withhold_mean_r_cost": _mean_r_cost(mature.loc[would.loc[mature.index]]),
+        "would_withhold_mean_r_cost": _mean_r_cost(would_mature),
+        # The policy's own unit: the verdict is on the posterior net excess, so report it beside R.
+        "would_withhold_n_net_excess": int(pd.to_numeric(would_mature["net_excess_r"], errors="coerce").notna().sum()),
+        "would_withhold_mean_net_excess_r": _finite_mean(would_mature, "net_excess_r"),
     }
 
     # Scans and sent cards per calling path; pre-trigger events have none and report "unknown".

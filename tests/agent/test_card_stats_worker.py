@@ -16,6 +16,7 @@ from agentic_trader.diagnostics.readiness import HealthComponent
 from agentic_trader.execution.card_evidence import CardStatsRepository, lookup
 from agentic_trader.execution.durable import EventKind
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.setups import sources
 from agentic_trader.research.setups.card_stats_worker import CardStatsUnavailable, CardStatsWorker, in_scan_window
 from agentic_trader.research.setups.sources import build_daily_bar_source
 from tests.agent.test_scan_budget import budget_desk  # noqa: F401  (fixture)
@@ -64,7 +65,7 @@ def worker_for(db, config, bars=None, daily=None, **kwargs):
         config,
         revision="test-rev",
         bar_source=lambda _config: bars,
-        daily_bar_source=lambda _config: daily,
+        daily_bar_source=lambda _config, _now: daily,
         **kwargs,
     ), bars
 
@@ -148,7 +149,8 @@ async def test_worker_raises_without_prior(temp_db, app_config):
     worker, bars = worker_for(temp_db, app_config)
     with pytest.raises(CardStatsUnavailable) as raised:
         await worker.run_once(DUE)
-    assert str(raised.value) == "card statistics prior unavailable: PriorUnavailable"
+    # The loader's fixed text (no path, no file content) names which check refused the prior.
+    assert str(raised.value) == "card statistics prior unavailable: prior digest is not configured"
     assert bars.calls == [] and await worker.repository.latest() is None
     assert not await worker.repository.exists(DUE.astimezone(ET_TZ).date())
 
@@ -208,6 +210,27 @@ def test_worker_defaults_to_the_sip_daily_builder(temp_db, app_config):
     assert worker.daily_bar_source is build_daily_bar_source
 
 
+async def test_every_daily_read_ends_at_least_fifteen_minutes_before_the_run(temp_db, app_config, monkeypatch):
+    """The account refuses SIP history ending later than 15 minutes ago (HTTP 403): the default daily source,
+    built with the run's own ``now``, ends every read at ``now - SIP_HISTORY_DELAY``."""
+    daily, feeds = FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS}), []
+
+    def build(config, *, feed=None):
+        feeds.append(feed)
+        return daily
+
+    monkeypatch.setattr(sources, "build_bar_source", build)
+    await plant_scan(temp_db)
+    hourly = FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS})
+    worker = CardStatsWorker(
+        temp_db, CardStatsRepository(temp_db.workflows), app_config, revision="r", bar_source=lambda _config: hourly
+    )
+    assert await worker.run_once(DUE) == "recorded"
+    daily_reads = [call for call in daily.calls if call[1] == "1d"]
+    assert feeds == ["sip"] and {call[0] for call in daily_reads} == {"AAPL", "SPY"}
+    assert all(call[3] <= DUE - timedelta(minutes=15) for call in daily_reads)
+
+
 async def test_worker_recomputes_when_only_v1_key_exists(temp_db, app_config):
     """A v1 ``card_stats/{date}`` event for today does not make the v2 key present."""
     await plant_scan(temp_db)
@@ -245,6 +268,25 @@ async def test_swing_and_index_candidates_are_outside_the_population(temp_db, ap
     assert await worker.run_once(DUE) == "recorded"
     snapshot = await worker.repository.latest()
     assert snapshot.rows_labelled == 0 and snapshot.events_considered == 1 and bars.calls == []
+
+
+async def test_the_priors_excluded_symbols_are_outside_the_population(temp_db, app_config):
+    """BIL is excluded by the prior (never in its replay), so it is never carded live either, even when the
+    configured broad index list does not name it."""
+    app_config.scan.broad_index_etfs = ["QQQ"]
+    await plant_scan(
+        temp_db,
+        decided_at=MATURE_AT,
+        candidates=[
+            _candidate(contract="BIL", rank=1, outcome="sent"),
+            _candidate(contract="AAPL", rank=2, outcome="sent"),
+        ],
+    )
+    frames = {"AAPL": AAPL_BARS, "SPY": SPY_BARS, "BIL": AAPL_BARS}
+    worker, bars = worker_for(temp_db, app_config, bars=FakeBarSource(frames), daily=FakeBarSource(frames))
+    assert await worker.run_once(DUE) == "recorded"
+    snapshot = await worker.repository.latest()
+    assert snapshot.rows_labelled == 1 and "BIL" not in {call[0] for call in bars.calls}
 
 
 async def test_labelling_runs_off_the_event_loop(temp_db, app_config):

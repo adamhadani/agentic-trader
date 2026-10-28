@@ -46,16 +46,21 @@ event does not count), and no scan holds the scan lock (`TradingCopilot.scan_run
 intraday or operator scans, including a late misfire-grace run), it reads every `scan_candidates_ranked`
 event of the last `stats_window_days` ET dates (`research/setups/sources.scan_ranked_events`), builds the
 population, labels it in a worker thread (`label_journaled`: 20 sessions, SPY proxy, beta and per-name cost
-from SIP daily bars) and appends one `card_stats_snapshot` event to stream `card_stats` (idempotent;
-retention keeps it). The scan checks apply when a run starts; a scan that begins during a labelling run
+from SIP daily bars, every read ending `SIP_HISTORY_DELAY` (16 minutes) before the run, since the subscription
+refuses SIP history that ends now: `research/setups/sources.build_daily_bar_source`) and appends one
+`card_stats_snapshot` event to stream `card_stats` (idempotent; retention keeps it). The scan checks apply when a run starts; a scan that begins during a labelling run
 shares the provider with it. The worker runs every calendar day without a trading-day check.
 
 Population (`card_population`, `agentic_trader/research/setups/card_stats.py`):
 
-- only `scope == "universe"` events with `trigger == "suggestion_scan"` (swing, intraday and operator scans
-  are journal-only or unpriced for cards); contracts in `scan.broad_index_etfs` are never carded and so never counted;
-- malformed candidates (no LONG/SHORT direction, a non-finite entry or stop, or `entry == stop`) are dropped
-  before labelling and counted as `n_malformed` under their key (a missing part as `?`): displayed, never partial;
+- only `scope == "universe"` events with `trigger == "suggestion_scan"`: by the spec, the population is
+  suggestion scans only, so swing, intraday and operator scans never enter it; contracts in
+  `scan.broad_index_etfs` or in the prior's `excluded_symbols` (BIL, SHY: the replay excluded them) are never
+  carded and so never counted;
+- malformed candidates (`_plannable`: a direction other than LONG or SHORT, a missing or non-finite entry,
+  stop or target, or a geometry `SetupLevels` refuses, which is anything but `stop < entry < target` for a
+  LONG and `target < entry < stop` for a SHORT) are dropped before labelling and counted as `n_malformed`
+  under their key (a missing part as `?`): displayed, never partial;
 - one row per (contract, strategy, timeframe, direction, New York decision date), the earliest decision kept
   (10:35 beats 14:35), before labelling, so the duplicate costs no bar request.
 
@@ -83,8 +88,13 @@ Payload (`CardStatsSnapshot`):
   `prior_weight` the pseudo-count `k`); `mean_name_cost_bps` is the mean per-name cost. Every number is finite or
   null; rows without a strategy, timeframe or direction count only in the aggregate.
 
-Failures: a prior that cannot be loaded (unset or wrong digest, unreadable or invalid file) raises
-`CardStatsUnavailable("card statistics prior unavailable: PriorUnavailable")`; so do an SPY hourly read that failed
+Failures: a prior that cannot be loaded raises `CardStatsUnavailable("card statistics prior unavailable: REASON")`.
+`load_prior` checks, in order, the configured digest, the file, its SHA-256, the model (every field present
+and valid, no unknown key, `sd`, `tau`, `pooled_sd` and `pooled_tau` positive, `se_session` and the counts
+non-negative), `version`, `unit` and the cost, clip and beta constants, and REASON is one fixed phrase per
+check (`prior digest is not configured`, `prior file not found`, `prior file unreadable`,
+`prior digest mismatch`, `prior file invalid`, `prior version mismatch`, `prior unit mismatch`,
+`prior constants differ from the code`): never a path or file content. So do an SPY hourly read that failed
 for every row, and every row's beta read failing (the SPY daily read or every symbol's). Nothing is written and the
 previous snapshot stays authoritative until it ages out. A single symbol's failed daily read only makes its rows
 `n_fetch_failed`; its cost never falls back to the floor silently.
@@ -131,8 +141,9 @@ se_session²)`), so with no mature live rows the card states the prior alone, an
 covered gets a skeptical prior at zero.
 
 `lookup` returns `unavailable` for a snapshot whose `unit` is not `net_excess_r_v1`: a v1 snapshot read on
-deploy day renders "no statistics in this scope" and never withholds (`CardStatsSnapshot.snapshot_key` names
-a snapshot without a unit by the v1 key `card_stats/{date}`).
+deploy day renders "no statistics in this scope" and never withholds (`CardStatsSnapshot.snapshot_key` is
+`card_stats/{unit}/{date}` for the snapshot's own unit, and the v1 key `card_stats/{date}` for a snapshot
+without one).
 
 | Status | When | Lines |
 | --- | --- | --- |
@@ -155,9 +166,13 @@ cards. A stored payload is rendered by the same rule: `insufficient` only below 
 `measured` payload without a posterior or live mean renders the `unavailable` line. A queued notification
 whose `card_evidence` predates the unit parses with `unit` null and renders the `unavailable` line.
 
-The last line is always, in italics: "Not validated alpha. Replay prior (SIP 2021–26) and live record
+The last line is always, in italics: "Not validated alpha. Replay prior (PRIOR_FEED 2021–26) and live record
 (FEED) on journaled candidates' deterministic brackets; mature = 21+ sessions old; per-name cost ≥ 5
-bp/side." Evidence without a prior window (no snapshot) carries a shorter caveat. The old "Implied EV at
+bp/side." `PRIOR_FEED` is the snapshot's `prior_feed` upper-cased without its provider prefix (the shipped
+prior records `alpaca:sip`, so `SIP`); `CardEvidence.prior_feed` carries it. Evidence without a prior window
+or prior feed (no snapshot) carries a shorter caveat ending "per-name cost ≥ 5 bp/side." The snapshot's
+`prior_window_start` and `prior_window_end` are dates: the writer refuses a prior whose window is not ISO
+`YYYY-MM-DD`, so a scan's `lookup` never meets one. The old "Implied EV at
 R:R" line is gone: it mixed gross target and stop R with after-cost timeout R, and was computed from
 censored rates.
 
@@ -221,8 +236,11 @@ Evidence recorded:
 - A sent card's `decision_provenance` carries the same `card_policy` block and its `card_evidence`.
 - `preview` logs one `card_policy_would_withhold` line for each candidate that reaches the check.
 - `copilot cards outcomes` adds the `card_policy_withheld` and `would_withhold` columns and the summary
-  block `card_policy: {withheld, would_withhold, withheld_mean_r_cost, would_withhold_mean_r_cost}`
-  (counts over every row, means over mature rows). Withheld candidates stay in the journal and keep
+  block `card_policy: {withheld, would_withhold, withheld_mean_r_cost, would_withhold_mean_r_cost,
+  would_withhold_n_net_excess, would_withhold_mean_net_excess_r}` (counts over every row, means over mature
+  rows; the last two are the would-withhold rows in the policy's own unit, `net_excess_r_v1`, and how many
+  carry one). `--days` accepts up to 180, the shipped `stats_window_days`, so the report can cover the
+  window the cards measure. Withheld candidates stay in the journal and keep
   being labelled, so a strategy below the threshold keeps accruing evidence and can recover. The
   existing summary blocks are unchanged; a withheld candidate is still a runner-up there. The
   end-of-session digest counts it among the runners-up; the reason shows in the scan summary and in a
@@ -547,7 +565,8 @@ labelling run skips the beta fetch entirely.
   past 20-session volatility and median dollar volume for a $1,000-risk order, capped at 200 bp; with fewer
   than 15 past returns, no bars or a failed fetch it is the floor and `cost_reason` says why
   (`short_history`, `no_daily_bars`, `fetch_failed: ...`). Beta and cost inputs come from SIP adjusted daily
-  bars in every caller (`build_daily_bar_source`); hourly labelling keeps the configured feed. Abdi-Ranaldo
+  bars in every caller (`build_daily_bar_source`, whose reads end `SIP_HISTORY_DELAY`, 16 minutes, before now);
+  hourly labelling keeps the configured feed. Abdi-Ranaldo
   and Corwin-Schultz daily high-low spread estimators were rejected because on this liquid universe they are
   dominated by estimator error (spec §4.2). `beta_excess_r` keeps its unclipped flat-cost definition.
 - **Summaries.** Each `market_exposure` class adds `n_beta`, `mean_beta`, `mean_beta_market_r`,

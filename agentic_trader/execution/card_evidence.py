@@ -40,7 +40,7 @@ __all__ = [
 EvidenceStatus = Literal["measured", "insufficient", "stale", "unavailable"]
 CAVEAT = (
     "Not validated alpha. Expected excess is measured on journaled candidates' deterministic brackets; "
-    "mature = 21+ sessions old; per-name cost >= 5 bp/side."
+    "mature = 21+ sessions old; per-name cost \u2265 5 bp/side."
 )
 
 
@@ -75,6 +75,7 @@ class CardEvidence(BaseModel, frozen=True):
     prior_source: str | None = None
     prior_window_start: date | None = None
     prior_window_end: date | None = None
+    prior_feed: str | None = None
     window_start: date | None = None
     window_end: date | None = None
     feed: str | None = None
@@ -119,6 +120,7 @@ def lookup(
         "computed_at": snapshot.computed_at,
         "prior_window_start": snapshot.prior_window_start,
         "prior_window_end": snapshot.prior_window_end,
+        "prior_feed": snapshot.prior_feed,
     }
     stats = snapshot.stats(strategy, timeframe, direction)
     if stats is not None:
@@ -186,12 +188,21 @@ def _years(start: date, end: date) -> str:
 
 
 def _caveat(evidence: CardEvidence) -> str:
-    """The italic caveat: names the replay prior and the live feed when the evidence carries them."""
-    if evidence.unit is None or evidence.prior_window_start is None or evidence.prior_window_end is None:
+    """The italic caveat: names the replay prior's feed and window and the live feed when the evidence carries them.
+
+    The prior's feed is upper-cased without its provider prefix (the shipped prior records ``alpaca:sip``: ``SIP``).
+    """
+    if (
+        evidence.unit is None
+        or evidence.prior_feed is None
+        or evidence.prior_window_start is None
+        or evidence.prior_window_end is None
+    ):
         return CAVEAT
     years = _years(evidence.prior_window_start, evidence.prior_window_end)
+    prior_feed = evidence.prior_feed.rsplit(":", 1)[-1].upper()
     return (
-        f"Not validated alpha. Replay prior (SIP {years}) and live record ({evidence.feed}) on journaled "
+        f"Not validated alpha. Replay prior ({prior_feed} {years}) and live record ({evidence.feed}) on journaled "
         "candidates' deterministic brackets; mature = 21+ sessions old; per-name cost \u2265 5 bp/side."
     )
 

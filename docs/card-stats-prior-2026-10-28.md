@@ -3,7 +3,8 @@
 The shrinkage prior for `card_stats` v2 (`net_excess_r_v1`): per (strategy, timeframe, direction) key, the
 mean and spread of the replayed `A0_live` setups in the net-excess unit. It is estimated once, committed as
 `config/research/card-stats-prior-v1.json`, pinned by `card_policy.prior_sha256` and loaded with
-`load_prior` (digest, unit and constant checks; any failure is `PriorUnavailable`). **It never includes a
+`load_prior` (digest, model constraints, version, unit and constant checks; any failure is `PriorUnavailable`
+with one fixed message). **It never includes a
 live row**: live cards only move the posterior `(n*xbar + k*mean)/(n + k)`, `k = sd^2/(tau^2 + se_session^2)`.
 
 ## Provenance
@@ -17,7 +18,10 @@ live row**: live cards only move the posterior `(n*xbar + k*mean)/(n + k)`, `k =
   clipped again. Daily bars are the study's adjusted SIP caches; beta and cost inputs use only sessions
   before the decision date.
 - Regenerate: `uv run python scripts/card_stats_prior.py STUDY_DIR CACHE OUT_JSON` (offline; prints the
-  digest). Code revision recorded in the file: `research/prospective-equity-panel-iex-v1-20260918-69-g72438f9`.
+  digest; the recorded revision is the script's own checkout's, whatever the working directory). The
+  estimator refuses (`ValueError`) a frame with no finite row or with fewer than two pooled quarters of 20 or
+  more rows, rather than writing a prior whose pooled tau is only the floor. Code revision recorded in the
+  file: `research/prospective-equity-panel-iex-v1-20260918-69-g72438f9`.
 - Tau is the method-of-moments between-quarter standard deviation (quarters with at least 20 rows, floor
   0.05); a key with fewer than 8 such quarters takes the pooled tau (0.1643). Pooled sd
   1.395 over 8,250 rows. A key the replay never saw gets a skeptical entry:

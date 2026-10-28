@@ -193,6 +193,22 @@ def test_an_empty_frame_gives_the_prior_keys_aggregate_and_full_provenance():
     )
     snapshot = CardStatsSnapshot.model_validate(payload)
     assert snapshot.snapshot_key == card_stats_key(date(2026, 10, 8)) == "card_stats/net_excess_r_v1/2026-10-08"
+    assert (snapshot.prior_window_start, snapshot.prior_window_end) == (date(2021, 1, 4), date(2026, 6, 30))
+
+
+@pytest.mark.parametrize("bad", ["2021/01/04", "January 2021", "", 20210104])
+def test_a_non_iso_prior_window_fails_when_the_snapshot_is_written(bad):
+    """The writer refuses a prior window that is not an ISO date, so ``lookup`` (in the scan) never meets one."""
+    prior = make_prior()
+    prior = prior.model_copy(update={"source": {**prior.source, "window_start": bad}})
+    with pytest.raises(ValueError):
+        _compute(pd.DataFrame(columns=list(outcomes_module._COLUMNS)), prior=prior)
+
+
+def test_a_stored_snapshot_with_a_non_iso_prior_window_does_not_validate():
+    payload = _compute(pd.DataFrame(columns=list(outcomes_module._COLUMNS)))
+    with pytest.raises(ValueError):
+        CardStatsSnapshot.model_validate({**payload, "prior_window_end": "June 2026"})
 
 
 def test_the_snapshot_reads_back_and_finds_a_key():

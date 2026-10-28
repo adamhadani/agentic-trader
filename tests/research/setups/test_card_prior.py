@@ -1,16 +1,22 @@
 """The frozen replay prior for card_stats v2: estimator, posterior, loader and replay rows."""
 
+import ast
 import hashlib
+import json
 import math
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import agentic_trader.research.setups.card_prior as card_prior_module
+from agentic_trader.config import WORKSPACE_ROOT
 from agentic_trader.research.setups.beta import trailing_beta
 from agentic_trader.research.setups.card_prior import (
     PRIOR_TAU_FLOOR,
+    PRIOR_VERSION,
     CardStatsPrior,
     PriorEntry,
     PriorUnavailable,
@@ -127,6 +133,52 @@ def test_non_finite_rows_are_ignored():
     assert pooled_n == 224
 
 
+@pytest.mark.parametrize(
+    "frame",
+    [
+        synthetic(KEY, [0.0]),  # one qualifying quarter: tau has no between-quarter estimate
+        synthetic(KEY, [0.1 * i for i in range(9)], rows_per_quarter=19),  # nine quarters, none with 20 rows
+        synthetic(KEY, [0.1 * i for i in range(9)]).assign(net_excess_r=np.nan),  # no finite row
+    ],
+    ids=["one-quarter", "no-quarter-with-twenty-rows", "no-finite-rows"],
+)
+def test_estimate_prior_refuses_without_two_qualifying_pooled_quarters(frame):
+    """A pooled set this thin would write a floor-tau prior silently: the estimator refuses instead."""
+    with pytest.raises(ValueError, match="pooled"):
+        estimate_prior(frame)
+
+
+def test_quarters_under_twenty_rows_do_not_count_toward_the_key_tau():
+    """Nine quarters, two of them with 19 rows: seven qualify (< 8), so the key takes the pooled tau."""
+    full = synthetic(KEY, [0.1 * i for i in range(9)])
+    quarters = pd.to_datetime(full["session"]).dt.to_period("Q")
+    thin = set(quarters.unique()[:2])
+    frame = full[~quarters.isin(thin) | (full.groupby(quarters).cumcount() < 19)]
+    assert sorted(frame.groupby(pd.to_datetime(frame["session"]).dt.to_period("Q")).size().tolist()) == [
+        19,
+        19,
+        *[25] * 7,
+    ]
+    [got], _, pooled_tau, _ = estimate_prior(frame)
+    assert (got.tau_source, got.tau) == ("pooled", pooled_tau)
+    [unfiltered], _, _, _ = estimate_prior(full)
+    assert unfiltered.tau_source == "key"  # the same key with every quarter at 25 rows
+
+
+def test_se_session_clusters_rows_that_share_a_session():
+    """Five rows per session: the standard error is over session means, not the rows' sd / sqrt(n_rows)."""
+    frame = synthetic(KEY, [0.1 * i for i in range(9)])
+    first = pd.to_datetime(frame["session"]).dt.to_period("Q").dt.start_time
+    position = frame.groupby(first).cumcount()
+    frame["session"] = (first + pd.to_timedelta(position // 5, unit="D")).dt.date.map(date.isoformat)
+    [got], _, _, _ = estimate_prior(frame)
+    by_session = frame.groupby("session")["net_excess_r"].mean()
+    assert got.n_rows == 225 and got.n_sessions == 45 == len(by_session)
+    expected = float(np.std(by_session.to_numpy(), ddof=1)) / math.sqrt(45)
+    assert got.se_session == pytest.approx(expected, abs=1e-12)
+    assert got.se_session != pytest.approx(got.sd / math.sqrt(got.n_rows), rel=0.05)
+
+
 def minimal_prior(**overrides):
     fields = {
         "version": "card-stats-prior-v1",
@@ -182,15 +234,20 @@ def test_load_prior_refuses_digest_mismatch(tmp_path):
     path, _ = write_prior(tmp_path, minimal_prior())
     with pytest.raises(PriorUnavailable) as caught:
         load_prior(path, "0" * 64)
-    assert "pooled_sd" not in str(caught.value)
+    assert str(caught.value) == "prior digest mismatch"
 
 
 def test_load_prior_refuses_missing_file_and_none_sha(tmp_path):
     path, digest = write_prior(tmp_path, minimal_prior())
-    with pytest.raises(PriorUnavailable):
+    with pytest.raises(PriorUnavailable) as caught:
         load_prior(path, None)
-    with pytest.raises(PriorUnavailable):
+    assert str(caught.value) == "prior digest is not configured"
+    with pytest.raises(PriorUnavailable) as caught:
         load_prior(tmp_path / "absent.json", digest)
+    assert str(caught.value) == "prior file not found"  # never the path
+    with pytest.raises(PriorUnavailable) as caught:
+        load_prior(tmp_path, digest)  # a directory: unreadable, not missing
+    assert str(caught.value) == "prior file unreadable"
 
 
 def test_load_prior_refuses_invalid_content(tmp_path):
@@ -198,19 +255,120 @@ def test_load_prior_refuses_invalid_content(tmp_path):
     path.write_text("{not json SECRET")
     with pytest.raises(PriorUnavailable) as caught:
         load_prior(path, hashlib.sha256(path.read_bytes()).hexdigest())
-    assert "SECRET" not in str(caught.value)
+    assert str(caught.value) == "prior file invalid"
 
 
-def test_load_prior_refuses_unit_and_constant_mismatch(tmp_path):
-    for overrides in (
-        {"unit": "net_excess_r_v0"},
-        {"cost_model": {**minimal_prior().cost_model, "cost_floor_bps": 6.0}},
-        {"r_clip": 5.0},
-        {"beta_window_sessions": 60},
-    ):
-        path, digest = write_prior(tmp_path, minimal_prior(**overrides))
-        with pytest.raises(PriorUnavailable):
-            load_prior(path, digest)
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"unit": "net_excess_r_v0"}, "prior unit mismatch"),
+        ({"cost_model": {**minimal_prior().cost_model, "cost_floor_bps": 6.0}}, "prior constants differ from the code"),
+        ({"r_clip": 5.0}, "prior constants differ from the code"),
+        ({"beta_window_sessions": 60}, "prior constants differ from the code"),
+        ({"version": "card-stats-prior-v0"}, "prior version mismatch"),
+    ],
+)
+def test_load_prior_refuses_unit_version_and_constant_mismatch(tmp_path, overrides, message):
+    path, digest = write_prior(tmp_path, minimal_prior(**overrides))
+    with pytest.raises(PriorUnavailable) as caught:
+        load_prior(path, digest)
+    assert str(caught.value) == message
+
+
+def write_raw_prior(tmp_path, mutate):
+    """A prior file written from a mutated JSON dump, so values the model refuses can reach the loader."""
+    payload = json.loads(minimal_prior().model_dump_json())
+    mutate(payload)
+    path = tmp_path / "raw-prior.json"
+    path.write_text(json.dumps(payload))
+    return path, hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _set_key(field, value):
+    def mutate(payload):
+        payload["keys"][0][field] = value
+
+    return mutate
+
+
+def _set(field, value):
+    def mutate(payload):
+        payload[field] = value
+
+    return mutate
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _set_key("sd", 0.0),
+        _set_key("sd", -1.0),
+        _set_key("tau", 0.0),
+        _set_key("se_session", -0.01),
+        _set_key("n_rows", -1),
+        _set_key("n_sessions", -1),
+        _set("pooled_sd", 0.0),
+        _set("pooled_tau", 0.0),
+        _set("unexpected_key", 1),
+    ],
+    ids=[
+        "sd-zero",
+        "sd-negative",
+        "tau-zero",
+        "se-negative",
+        "rows-negative",
+        "sessions-negative",
+        "pooled-sd-zero",
+        "pooled-tau-zero",
+        "extra-key",
+    ],
+)
+def test_load_prior_refuses_a_value_outside_its_constraint(tmp_path, mutate):
+    path, digest = write_raw_prior(tmp_path, mutate)
+    with pytest.raises(PriorUnavailable) as caught:
+        load_prior(path, digest)
+    assert str(caught.value) == "prior file invalid"
+
+
+def test_the_shipped_prior_satisfies_every_constraint():
+    """The committed, digest-pinned prior still loads under the tightened model (its digest is unchanged)."""
+    path = WORKSPACE_ROOT / "config" / "research" / "card-stats-prior-v1.json"
+    prior = load_prior(path, "6bab4e8d76a53ca099f9e5c82cd249e6cee2b9d26c4fc7e1613bd1e8469e5432")
+    assert prior.version == PRIOR_VERSION and len(prior.keys) == 3
+
+
+PRIOR_UNAVAILABLE_MESSAGES = {
+    "prior digest is not configured",
+    "prior file not found",
+    "prior file unreadable",
+    "prior digest mismatch",
+    "prior file invalid",
+    "prior version mismatch",
+    "prior unit mismatch",
+    "prior constants differ from the code",
+}
+
+
+def test_every_prior_unavailable_message_is_fixed_text():
+    """Each refusal's text is a literal from a fixed set: never a path, an exception's text or file content,
+    because the worker puts it in readiness and so in a Telegram incident notice."""
+    tree = ast.parse(Path(card_prior_module.__file__).read_text())
+    raised = [
+        node.exc
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id == "PriorUnavailable"
+    ]
+    assert raised
+    messages = []
+    for call in raised:
+        assert not call.keywords and len(call.args) == 1
+        [argument] = call.args
+        assert isinstance(argument, ast.Constant) and isinstance(argument.value, str), ast.dump(argument)
+        messages.append(argument.value)
+    assert set(messages) == PRIOR_UNAVAILABLE_MESSAGES
 
 
 def daily(closes, volume=1_000_000.0):

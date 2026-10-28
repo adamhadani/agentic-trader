@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from agentic_trader.execution.card_evidence import (
+    CAVEAT,
     CardEvidence,
     CardStatsRepository,
     format_evidence_lines,
@@ -92,6 +93,10 @@ def test_snapshot_key_follows_the_unit():
     snapshot = make_snapshot(computed_at=NOW)
     assert snapshot.snapshot_key == "card_stats/net_excess_r_v1/2026-10-08"
     assert snapshot.model_copy(update={"unit": None}).snapshot_key == "card_stats/2026-10-08"
+    # The key names the snapshot's own unit, not the code's current one.
+    assert (
+        snapshot.model_copy(update={"unit": "net_excess_r_v2"}).snapshot_key == "card_stats/net_excess_r_v2/2026-10-08"
+    )
 
 
 def test_lookup_insufficient_carries_prior():
@@ -158,6 +163,25 @@ def test_card_lines_partial():
     snapshot = make_snapshot(keys=[key_stats(n_fetch_failed=1, n_unresolved=1)], computed_at=NOW)
     lines = format_evidence_lines(_lookup(snapshot), html=True)
     assert lines[1] == LINE_2_MEASURED + " · 2 unreadable (never withheld)"
+
+
+@pytest.mark.parametrize(("prior_feed", "label"), [("alpaca:sip", "SIP"), ("sip", "SIP"), ("iex", "IEX")])
+def test_the_caveat_names_the_priors_own_feed(prior_feed, label):
+    """The shipped prior records ``alpaca:sip``: the caveat names the feed the replay was measured on."""
+    snapshot = make_snapshot(computed_at=NOW).model_copy(update={"prior_feed": prior_feed})
+    evidence = _lookup(snapshot)
+    assert evidence.prior_feed == prior_feed
+    assert format_evidence_lines(evidence, html=False)[-1].startswith(
+        f"Not validated alpha. Replay prior ({label} 2021–26) and live record (iex) on journaled"
+    )
+
+
+def test_evidence_without_a_prior_feed_or_window_carries_the_short_caveat():
+    assert "≥ 5 bp/side" in CAVEAT and ">=" not in CAVEAT
+    for update in ({"prior_feed": None}, {"prior_window_start": None}):
+        evidence = _lookup().model_copy(update=update)
+        assert format_evidence_lines(evidence, html=False)[-1] == CAVEAT
+    assert CardEvidence(status="unavailable", strategy="S", direction="LONG").prior_feed is None
 
 
 def test_card_html_escapes():

@@ -213,18 +213,18 @@ class CardStatsSnapshot(BaseModel, frozen=True, allow_inf_nan=False):
     keys: tuple[CardKeyStats, ...] = ()
     unit: str | None = None
     prior_sha256: str | None = None
-    prior_window_start: str | None = None
-    prior_window_end: str | None = None
+    prior_window_start: date | None = None
+    prior_window_end: date | None = None
     prior_feed: str | None = None
     cohort_end: date | None = None
     n_malformed: int = 0
 
     @property
     def snapshot_key(self) -> str:
-        """The journal key this snapshot was written under: the v1 key when it carries no unit."""
+        """The journal key this snapshot was written under: ``card_stats/{unit}/{date}``, or the v1 key without a unit."""
         if self.unit is None:
             return f"card_stats/{self.window_end.isoformat()}"
-        return card_stats_key(self.window_end)
+        return f"card_stats/{self.unit}/{self.window_end.isoformat()}"
 
     def stats(self, strategy: str, timeframe: str, direction: str) -> CardKeyStats | None:
         return next(
@@ -235,6 +235,15 @@ class CardStatsSnapshot(BaseModel, frozen=True, allow_inf_nan=False):
             ),
             None,
         )
+
+
+def _iso_date(value: object) -> str | None:
+    """A prior-window bound as written: a canonical ISO date (``YYYY-MM-DD``) or None; anything else raises."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value:
+        raise ValueError("prior window bound is not an ISO date")
+    return value
 
 
 def _session_dates(frame: pd.DataFrame) -> pd.Series:
@@ -340,8 +349,9 @@ def compute_card_stats(
     its decision date from ``window_end``; younger rows count in ``n_young`` and nowhere else. Keys are
     the union of the frame's, the prior's and the malformed ones, plus the aggregate (no prior or
     posterior). The payload is validated as a ``CardStatsSnapshot`` before it is returned, so the
-    writer never persists what the reader would refuse, and every number is finite or None (the
-    journal encodes with ``allow_nan=False``).
+    writer never persists what the reader would refuse, every number is finite or None (the
+    journal encodes with ``allow_nan=False``) and the prior window is ISO dates (a prior whose
+    window is not raises ``ValueError`` here, never in a scan's ``lookup``).
     """
     frame = frame.reset_index(drop=True)
     if frame.empty:
@@ -385,8 +395,8 @@ def compute_card_stats(
         "keys": rows,
         "unit": NET_EXCESS_UNIT,
         "prior_sha256": prior_sha256,
-        "prior_window_start": prior.source.get("window_start"),
-        "prior_window_end": prior.source.get("window_end"),
+        "prior_window_start": _iso_date(prior.source.get("window_start")),
+        "prior_window_end": _iso_date(prior.source.get("window_end")),
         "prior_feed": prior.source.get("feed"),
         "cohort_end": cohort_end.isoformat() if cohort_end is not None else None,
         "n_malformed": sum(malformed.values()),

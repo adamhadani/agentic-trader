@@ -38,6 +38,8 @@ from agentic_trader.research.setups.net_excess import NET_EXCESS_UNIT, R_CLIP
 MARKET = "SPY"
 ARM = "A0_live"
 ALWAYS_EXCLUDED = ("BIL", "SHY")
+# The checkout this script belongs to: its revision is the prior's, whatever the working directory.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _daily(cache: Path, symbol: str) -> pd.DataFrame | None:
@@ -50,7 +52,9 @@ def _sha256(path: Path) -> str:
 
 
 def _revision() -> str:
-    result = subprocess.run(["git", "describe", "--always", "--dirty"], capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        ["git", "describe", "--always", "--dirty"], capture_output=True, text=True, check=False, cwd=REPO_ROOT
+    )
     return result.stdout.strip() or "unknown"
 
 

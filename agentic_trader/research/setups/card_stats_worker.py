@@ -65,7 +65,7 @@ class CardStatsWorker:
         *,
         revision: str,
         bar_source: Callable[[AppConfig], BarSource] = build_bar_source,
-        daily_bar_source: Callable[[AppConfig], BarSource] = build_daily_bar_source,
+        daily_bar_source: Callable[[AppConfig, datetime], BarSource] = build_daily_bar_source,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         scan_busy: Callable[[], bool] | None = None,
     ):
@@ -101,8 +101,11 @@ class CardStatsWorker:
         try:
             prior = load_prior(policy.prior_path, policy.prior_sha256)
         except PriorUnavailable as exc:
-            raise CardStatsUnavailable(f"card statistics prior unavailable: {type(exc).__name__}") from None
-        population = card_population(events, excluded=frozenset(self.config.scan.broad_index_etfs))
+            # The loader's messages are fixed text (never a path or file content): safe for readiness.
+            raise CardStatsUnavailable(f"card statistics prior unavailable: {exc}") from None
+        # The live record excludes what the replay prior excluded (BIL, SHY), not only the broad index ETFs.
+        excluded = frozenset(self.config.scan.broad_index_etfs) | frozenset(prior.excluded_symbols)
+        population = card_population(events, excluded=excluded)
         frame = label_journaled(
             population.events,
             self.bar_source(self.config),
@@ -112,7 +115,7 @@ class CardStatsWorker:
             max_requests_per_minute=self.config.market_data.max_requests_per_minute,
             tape_symbol=None,  # the daemon never reads the tape; the CLI report makes the one extra request
             with_beta=True,  # the beta and per-name cost inputs come from SIP daily bars
-            daily_bars=self.daily_bar_source(self.config),
+            daily_bars=self.daily_bar_source(self.config, now),
         )
         if len(frame):
             # The labeller's reason is "Type: message"; only the type reaches readiness (and so a

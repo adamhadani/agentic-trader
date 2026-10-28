@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from agentic_trader.research.setups.beta import BETA_WINDOW_SESSIONS, trailing_beta
 from agentic_trader.research.setups.net_excess import (
@@ -62,23 +62,25 @@ _KEY_COLUMNS = ["strategy", "timeframe", "direction"]
 
 
 class PriorUnavailable(RuntimeError):
-    """The frozen prior cannot be used; the message never carries file content."""
+    """The frozen prior cannot be used; the message is one fixed literal, never a path or file content."""
 
 
 class PriorEntry(BaseModel, frozen=True, allow_inf_nan=False):
+    """One key's replay moments. A positive ``sd`` and ``tau`` keep the posterior's weight ``k`` finite and positive."""
+
     strategy: str
     timeframe: str
     direction: str
-    n_rows: int
-    n_sessions: int
+    n_rows: int = Field(ge=0)
+    n_sessions: int = Field(ge=0)
     mean: float
-    sd: float
-    se_session: float
-    tau: float
+    sd: float = Field(gt=0)
+    se_session: float = Field(ge=0)
+    tau: float = Field(gt=0)
     tau_source: Literal["key", "pooled"]
 
 
-class CardStatsPrior(BaseModel, frozen=True, allow_inf_nan=False):
+class CardStatsPrior(BaseModel, frozen=True, allow_inf_nan=False, extra="forbid"):
     version: str
     unit: str
     cost_model: dict[str, float]
@@ -89,8 +91,8 @@ class CardStatsPrior(BaseModel, frozen=True, allow_inf_nan=False):
     min_quarters: int
     source: dict[str, str]
     excluded_symbols: tuple[str, ...]
-    pooled_sd: float
-    pooled_tau: float
+    pooled_sd: float = Field(gt=0)
+    pooled_tau: float = Field(gt=0)
     pooled_n_rows: int
     keys: tuple[PriorEntry, ...]
     cost_bps_quantiles: dict[str, float]
@@ -136,19 +138,23 @@ def cost_model_constants() -> dict[str, float]:
 
 
 def load_prior(path: Path, sha256: str | None) -> CardStatsPrior:
-    """Load the digest-pinned prior; any failure raises ``PriorUnavailable`` with fixed text."""
+    """Load the digest-pinned prior; any failure raises ``PriorUnavailable`` with one fixed literal message."""
     if sha256 is None:
         raise PriorUnavailable("prior digest is not configured")
     try:
         raw = path.read_bytes()
-    except OSError as exc:
-        raise PriorUnavailable(f"prior file unreadable ({type(exc).__name__})") from None
+    except FileNotFoundError:
+        raise PriorUnavailable("prior file not found") from None
+    except OSError:
+        raise PriorUnavailable("prior file unreadable") from None
     if hashlib.sha256(raw).hexdigest() != sha256:
         raise PriorUnavailable("prior digest mismatch")
     try:
         prior = CardStatsPrior.model_validate_json(raw)
     except ValidationError:
         raise PriorUnavailable("prior file invalid") from None
+    if prior.version != PRIOR_VERSION:
+        raise PriorUnavailable("prior version mismatch")
     if prior.unit != NET_EXCESS_UNIT:
         raise PriorUnavailable("prior unit mismatch")
     if (
@@ -183,9 +189,19 @@ def _sd(values: pd.Series) -> float:
 
 
 def estimate_prior(rows: pd.DataFrame) -> tuple[tuple[PriorEntry, ...], float, float, int]:
-    """Per-key moments over rows with a finite ``net_excess_r``: ``(keys, pooled_sd, pooled_tau, n)``."""
+    """Per-key moments over rows with a finite ``net_excess_r``: ``(keys, pooled_sd, pooled_tau, n)``.
+
+    Raises ``ValueError`` when no row is finite or the pooled set has fewer than two quarters with
+    ``PRIOR_MIN_ROWS_PER_QUARTER`` rows: its tau would be the floor by default, not an estimate.
+    """
     finite = rows[np.isfinite(pd.to_numeric(rows["net_excess_r"], errors="coerce"))]
-    pooled_tau, _ = _tau(finite["net_excess_r"], finite["session"])
+    if finite.empty:
+        raise ValueError("no finite net_excess_r rows for the pooled prior")
+    pooled_tau, pooled_quarters = _tau(finite["net_excess_r"], finite["session"])
+    if pooled_quarters < 2:
+        raise ValueError(
+            f"the pooled prior has {pooled_quarters} quarter(s) with {PRIOR_MIN_ROWS_PER_QUARTER}+ rows; it needs 2"
+        )
     entries: list[PriorEntry] = []
     for (strategy, timeframe, direction), group in finite.groupby(_KEY_COLUMNS, sort=True):
         key_tau, n_quarters = _tau(group["net_excess_r"], group["session"])
@@ -241,16 +257,11 @@ def prior_rows(
 
 
 def posterior(n: int, live_mean: float | None, entry: PriorEntry) -> tuple[float, float, float]:
-    """``(posterior_mean, posterior_se, prior_weight_k)``; ``n == 0`` returns the prior."""
+    """``(posterior_mean, posterior_se, prior_weight_k)``; ``n == 0`` returns the prior.
+
+    ``PriorEntry`` guarantees ``sd > 0`` and ``tau > 0``, so ``v0`` and ``k`` are positive and finite.
+    """
     v0 = entry.tau**2 + entry.se_session**2
-    if entry.sd <= 0:
-        # A degenerate (zero) spread carries no prior weight: any live rows stand alone.
-        has_live = n > 0 and live_mean is not None
-        return (
-            (live_mean if has_live and live_mean is not None else entry.mean),
-            (0.0 if has_live else math.sqrt(v0)),
-            0.0,
-        )
     k = entry.sd**2 / v0
     if n <= 0 or live_mean is None:
         return entry.mean, math.sqrt(v0), k
