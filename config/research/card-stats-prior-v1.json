@@ -1,6 +1,6 @@
 {
   "beta_window_sessions": 120,
-  "code_revision": "research/prospective-equity-panel-iex-v1-20260918-68-g310b8d1-dirty",
+  "code_revision": "research/prospective-equity-panel-iex-v1-20260918-69-g72438f9",
   "cost_bps_quantiles": {
     "max": 136.44386906753076,
     "p50": 6.185466676093411,

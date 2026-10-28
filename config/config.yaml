@@ -504,7 +504,7 @@ card_policy:
   stats_max_age_seconds: 345600
   validity: "session_close"
   prior_path: "config/research/card-stats-prior-v1.json"  # frozen replay prior (docs/card-stats-prior-2026-10-28.md)
-  prior_sha256: "db8364629c0036e46cd666aaf461eb1a85762434ddcb99b59bb9909d4da292d3"
+  prior_sha256: "6bab4e8d76a53ca099f9e5c82cd249e6cee2b9d26c4fc7e1613bd1e8469e5432"
 
 # Book-aware sizing (docs/card-evidence.md "Book-aware sizing").
 # Quote "off": YAML reads a bare off as false (the loader maps false back to "off").

@@ -17,7 +17,7 @@ live row**: live cards only move the posterior `(n*xbar + k*mean)/(n + k)`, `k =
   clipped again. Daily bars are the study's adjusted SIP caches; beta and cost inputs use only sessions
   before the decision date.
 - Regenerate: `uv run python scripts/card_stats_prior.py STUDY_DIR CACHE OUT_JSON` (offline; prints the
-  digest). Code revision recorded in the file: `research/prospective-equity-panel-iex-v1-20260918-68-g310b8d1-dirty`.
+  digest). Code revision recorded in the file: `research/prospective-equity-panel-iex-v1-20260918-69-g72438f9`.
 - Tau is the method-of-moments between-quarter standard deviation (quarters with at least 20 rows, floor
   0.05); a key with fewer than 8 such quarters takes the pooled tau (0.1643). Pooled sd
   1.395 over 8,250 rows. A key the replay never saw gets a skeptical entry:
