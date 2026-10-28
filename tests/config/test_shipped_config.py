@@ -147,3 +147,25 @@ def test_load_config_refuses_auto_entry_without_session_lifetime(tmp_path):
 
     with pytest.raises(ValueError, match="execution.auto_entry"):
         load_config(_auto_entry_yaml(tmp_path, "off"), environ=environ)
+
+
+def test_shipped_config_lifetime_evidence_threshold():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+
+    assert config.execution.lifetime_evidence_review_after_failures == 5
+    assert ExecutionConfig().lifetime_evidence_review_after_failures == 5
+
+
+@pytest.mark.parametrize("value", [0, 61])
+def test_lifetime_evidence_threshold_bounds(value):
+    with pytest.raises(ValueError, match="lifetime_evidence_review_after_failures"):
+        ExecutionConfig(lifetime_evidence_review_after_failures=value)
+
+
+def test_load_config_reads_lifetime_evidence_threshold(tmp_path):
+    path = tmp_path / "config.yaml"
+    document = yaml.safe_load(SHIPPED.read_text())
+    document["execution"]["lifetime_evidence_review_after_failures"] = 3
+    path.write_text(yaml.safe_dump(document))
+
+    assert load_config(str(path), environ=PRODUCTION).execution.lifetime_evidence_review_after_failures == 3

@@ -256,6 +256,14 @@ def filled_before_cancel(identity: EntryIdentity, orders: Sequence[OrderObservat
     )
 
 
+class EvidenceReadFailed(Exception):
+    """The broker/calendar evidence read failed; retried each sweep before a review halt."""
+
+    def __init__(self, type_name: str):
+        super().__init__(type_name)
+        self.type_name = type_name
+
+
 class TradeLifetimeService:
     """Coordinate only explicitly timed positions; historical policies have no timer."""
 
@@ -276,6 +284,8 @@ class TradeLifetimeService:
         self.calendar = calendar
         # Signal ids whose missed-bound verdict is final (either way); a restart re-checks each once.
         self._missed_bound_checked: set[int] = set()
+        # Consecutive failed evidence-read sweeps per signal; in memory, so a restart counts from zero.
+        self._evidence_failures: dict[int, int] = {}
 
     async def _sessions(self, lifetime: LifetimePolicy, parent: OrderObservation) -> list | None:
         """Broker sessions the policy's deadline counts; ``None`` when it counts none.
@@ -382,15 +392,25 @@ class TradeLifetimeService:
         """A fully filled entry (``executed_at`` set) whose policy has no holding deadline."""
         return signal.get("executed_at") is not None and not has_holding_deadline(lifetime)
 
-    async def reconcile(self) -> None:
+    async def reconcile(self) -> tuple[str, ...]:
+        """Sweep every timed position; return the exception type names of every signal that failed this pass.
+
+        That covers read failures, post-read failures and policy-parse failures. Only a failed evidence read
+        is retried: it is reviewed (a persisted halt) after ``lifetime_evidence_review_after_failures``
+        consecutive failed passes of that signal. Every other failure reviews on the first pass.
+        """
         await self.recover()
         unresolved = await self.store.list_work(
             WorkKind.ENTRY_CANCEL, statuses=(WorkStatus.SUBMITTING, WorkStatus.UNKNOWN)
         )
         blocked = {item.payload["signal_id"] for item in unresolved}
-        for signal in await self.store.db.get_active_positions():
+        failed: list[str] = []
+        active = await self.store.db.get_active_positions()
+        self._evidence_failures = {k: v for k, v in self._evidence_failures.items() if k in {s["id"] for s in active}}
+        for signal in active:
             if signal["id"] in blocked:
                 continue
+            prior = self._evidence_failures.pop(signal["id"], 0)  # a successful read phase resets it
             try:
                 lifetime = entry_lifetime_of(signal)
                 if lifetime is None:
@@ -400,8 +420,30 @@ class TradeLifetimeService:
                         await self._missed_native_bound(signal, lifetime)
                     continue
                 await self._reconcile_signal(signal, lifetime)
+            except EvidenceReadFailed as exc:
+                name = exc.type_name
+                failed.append(name)
+                count = self._evidence_failures[signal["id"]] = prior + 1
+                if count >= self.config.lifetime_evidence_review_after_failures:
+                    logger.warning(
+                        "Lifetime evidence read failed for signal %s (%s) for %d consecutive passes; reviewing",
+                        signal["id"],
+                        name,
+                        count,
+                    )
+                    await self.repository.review(signal["id"], f"lifecycle_evidence_unavailable:{name}", {})
+                else:
+                    logger.warning(
+                        "Lifetime evidence read failed for signal %s (%s, pass %d); retrying",
+                        signal["id"],
+                        name,
+                        count,
+                    )
             except Exception as exc:
+                # Anything outside the evidence read (policy parse, decision, action phase) is not retried.
+                failed.append(type(exc).__name__)
                 await self.repository.review(signal["id"], f"lifecycle_evidence_unavailable:{type(exc).__name__}", {})
+        return tuple(failed)
 
     async def resume_blockers(self) -> list[int]:
         """Fresh read-only checks: /resume cannot waive unresolved timed-position evidence."""
@@ -519,15 +561,27 @@ class TradeLifetimeService:
         )
 
     async def _reconcile_signal(self, signal: dict[str, Any], lifetime: LifetimePolicy) -> None:
-        identity = await self._entry_identity(signal)
+        try:
+            identity = await self._entry_identity(signal)
+        except Exception as exc:
+            raise EvidenceReadFailed(type(exc).__name__) from exc
         if identity is None:
             await self.repository.review(signal["id"], "missing_durable_entry_identity", {})
             return
-        orders = await self.broker.read_entry_group(identity.order_id)
-        await self.store.observe_orders(orders)
-        parent = next(o for o in orders if o.order_id == identity.order_id)
-        sessions = await self._sessions(lifetime, parent)
+        try:
+            orders = await self.broker.read_entry_group(identity.order_id)
+            await self.store.observe_orders(orders)
+            parent = next(o for o in orders if o.order_id == identity.order_id)
+            sessions = await self._sessions(lifetime, parent)
+        except Exception as exc:
+            raise EvidenceReadFailed(type(exc).__name__) from exc
         decision = assess_lifetime(lifetime, identity, parent, self.clock(), sessions)
+        session_open = False
+        if decision.action == LifetimeAction.CLOSE_POSITION:
+            try:
+                session_open = await self.broker.regular_session_open()
+            except Exception as exc:
+                raise EvidenceReadFailed(type(exc).__name__) from exc
         if decision.action == LifetimeAction.REVIEW:
             await self.repository.review(signal["id"], decision.reason, parent.model_dump(mode="json"))
         elif decision.action == LifetimeAction.CANCEL_ENTRY:
@@ -539,7 +593,7 @@ class TradeLifetimeService:
             )
             if isinstance(claim, WorkItem):
                 await self._submit_cancel(claim, identity)
-        elif decision.action == LifetimeAction.CLOSE_POSITION and await self.broker.regular_session_open():
+        elif decision.action == LifetimeAction.CLOSE_POSITION and session_open:
             children = [o for o in orders if o.order_id != identity.order_id]
             if signal.get("broker_exit_order_id") or any(
                 o.status == "filled" and Decimal(o.filled_quantity) == Decimal(identity.quantity) for o in children

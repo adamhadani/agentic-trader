@@ -691,6 +691,9 @@ class ExecutionConfig(BaseModel):
     native_entry_lifetime: Literal["off", "session"] = "off"
     # "paper": native suggestion-scan cards are entered automatically on the Alpaca paper account; "off": tap only.
     auto_entry: Literal["off", "paper"] = "off"
+    # Consecutive failed reconciliation passes of one timed signal's evidence read before it becomes a review halt
+    # (1: first failure). A pass is the 60 s monitor plus one per stream update and scan.
+    lifetime_evidence_review_after_failures: int = Field(default=5, ge=1, le=60)
 
     broker_request_timeout_seconds: float = Field(default=10, gt=0, le=60)
     stop_replace_timeout_seconds: float = Field(default=10, gt=0, le=60)

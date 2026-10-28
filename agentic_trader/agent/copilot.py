@@ -3025,7 +3025,9 @@ class TradingCopilot:
         """
         await self.entry_service.recover()
         try:
-            await self.lifetime_service.reconcile()
+            self._reconciliation_errors.extend(
+                f"trade_lifetimes:{name}" for name in await self.lifetime_service.reconcile()
+            )
         except Exception as exc:
             self._reconciliation_errors.append(f"trade_lifetimes:{type(exc).__name__}")
             logger.exception("Trade lifetime reconciliation failed; continuing exact position reconciliation")
