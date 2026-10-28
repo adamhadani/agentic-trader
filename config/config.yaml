@@ -361,7 +361,7 @@ sizing:
 execution:
   native_entry_lifetime: session # an unfilled native entry cancels before the next open (Alpaca only)
   auto_entry: paper # scheduled-scan native cards are entered automatically (Alpaca paper only; needs session lifetime)
-  lifetime_evidence_review_after_failures: 5 # failed 60 s sweeps of a timed position's evidence read before a review halt
+  lifetime_evidence_review_after_failures: 5 # consecutive failed reconciliation passes (60 s monitor + stream updates and scans; about 5 min when only the monitor runs) of a timed position's evidence read before a review halt
   entry_evidence_max_age_seconds: 30.0 # age starts before the first account/book read
   broker_request_timeout_seconds: 10.0
   stop_replace_timeout_seconds: 10.0

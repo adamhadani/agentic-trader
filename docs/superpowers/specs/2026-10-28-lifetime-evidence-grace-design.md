@@ -30,7 +30,8 @@ approaches").
 - `TradeLifetimeService.reconcile()` counts **consecutive failed sweeps per signal** in memory
   (`self._evidence_failures: dict[int, int]`). Only an exception raised while **reading the
   evidence** adds one. The read phase is the durable entry identity, the broker order-group read,
-  `observe_orders`, the parent lookup and the session calendar read.
+  `observe_orders`, the parent lookup, the session calendar read and, when the decision is a holding
+  close, the broker clock read (`regular_session_open`).
   - An exception **after** the evidence is read reviews on the first sweep, as today, with the same
     `lifecycle_evidence_unavailable:{TypeName}` reason. This covers the decision and the action:
     `begin_cancel`, including its "Bracket evidence changed before cancellation claim" integrity
@@ -45,15 +46,29 @@ approaches").
   - When the count reaches `execution.lifetime_evidence_review_after_failures`, it reviews with the
     same reason string as today (`lifecycle_evidence_unavailable:{TypeName}`). The halt and the
     journal event are unchanged.
-- **Counted in sweeps, not seconds.** A host asleep between two failures must not turn two failed
-  reads into a halt. The default is **5** (about 5 minutes at the 60 s sweep), with `ge=1, le=60`.
-  `1` restores today's behaviour.
+- **Counted in reconciliation passes, not seconds.** A host asleep between two failures must not
+  turn two failed reads into a halt. A pass is one `reconcile()` call. That is the 60 s monitor job,
+  plus one after each stream trade update and each non-dry scan. When REST reads fail while the
+  stream still delivers, N passes can therefore accrue faster than 60 s apart. That errs towards
+  halting sooner, which is safe, and is accepted.
+  - The default is **5** (about 5 minutes when only the monitor runs), with `ge=1, le=60`.
+  - `1` restores today's behaviour.
+  - At the threshold, a `logger.warning` records the type name and count. Logs carry type names
+    only, with no `exc_info`.
 - A sweep where the signal reconciles without an exception resets its count. Ids that leave the
   active set are dropped. A restart starts from zero, so a persistent failure halts within N sweeps
   of a new run.
-- **Visibility.** `reconcile()` always finishes the loop for every signal. It returns
-  `tuple[str, ...]`: the exception type name of each signal whose evidence read failed this sweep,
-  whether or not it reached the threshold. The result is empty when every read succeeded.
+- **Visibility.** `reconcile()` continues past a failing signal to the next one. It returns
+  `tuple[str, ...]`: the exception type name of each signal that failed this pass, whether a read
+  failure (under or at the threshold), a post-read failure or a policy parse failure. The result is
+  empty when nothing failed.
+  - As today, if `repository.review()` itself raises (for example on an outbox write), the
+    exception propagates to the caller's `except`.
+- **Parked (final review M1):** the group read itself can raise for evidence it read and found
+  wrong. With Alpaca: a different entry id, a duplicate bracket identity, or a group over the
+  lookup bound. These now wait up to N passes. They are practically unreachable, the delay is
+  bounded, readiness is not ready on every pass, and nothing is acted on without a read. A
+  dedicated adapter mismatch type would be a follow-up.
   - `TradingCopilot._monitor_positions` adds `trade_lifetimes:{TypeName}` to
     `_reconciliation_errors` for each name. This is the string a raised `reconcile()` already
     produces.

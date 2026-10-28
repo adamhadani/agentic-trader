@@ -864,6 +864,11 @@ async def test_failing_signal_does_not_block_healthy_signal(lifecycle_case):
         alpha_version="fixture-session-version",
         timeframe="15m",
     )
+    # Processed before the healthy signal: the failure must not stop the sweep.
+    async with c.db.session_factory() as session, session.begin():
+        failing_row = await session.get(SignalRecord, failing_id)
+        healthy_row = await session.get(SignalRecord, healthy_id)
+        failing_row.timestamp = healthy_row.timestamp - timedelta(hours=1)
     await c.db.update_signal_execution(failing_id, "failing-order-id")
     await seed_durable_entry(c, failing_id, "failing-order-id")
     real = c.broker.read_entry_group
@@ -878,7 +883,8 @@ async def test_failing_signal_does_not_block_healthy_signal(lifecycle_case):
     assert await service.reconcile() == ("ConnectionError",)
     assert service._evidence_failures == {failing_id: 1}
     # The healthy signal's expired entry was still cancelled in the same sweep.
-    assert await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    cancels = await c.db.workflows.list_work(WorkKind.ENTRY_CANCEL)
+    assert [item.payload["signal_id"] for item in cancels] == [healthy_id]
     assert healthy_id not in service._evidence_failures
     assert not await lifetime_reviews(c, failing_id)
 
@@ -895,6 +901,28 @@ async def test_entry_lifetime_of_failure_still_halts_first_sweep(lifecycle_case,
     assert [e["payload"]["reason"] for e in reviews] == ["lifecycle_evidence_unavailable:ValueError"]
     assert PLANTED not in json.dumps(reviews, default=str)
     assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+
+
+async def test_failed_broker_clock_read_retries_then_reviews(lifecycle_case, caplog):
+    c = lifecycle_case
+    filled_position(c)  # the holding deadline has passed, so the decision is a close needing the broker clock
+
+    async def clock_down():
+        raise ConnectionError(PLANTED)
+
+    c.broker.regular_session_open = clock_down
+    service = c.services[0]
+    for _ in range(4):
+        assert await service.reconcile() == ("ConnectionError",)
+        assert not await lifetime_reviews(c)
+        assert await c.db.get_state(SystemStateKey.TRADING_HALTED) != "true"
+        assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert await service.reconcile() == ("ConnectionError",)
+    reviews = await lifetime_reviews(c)
+    assert [e["payload"]["reason"] for e in reviews] == ["lifecycle_evidence_unavailable:ConnectionError"]
+    assert await c.db.get_state(SystemStateKey.TRADING_HALTED) == "true"
+    assert not any(call[0] != "GET" for call in c.venue.calls)
+    assert PLANTED not in caplog.text
 
 
 async def test_deterministic_review_still_halts_first_sweep(lifecycle_case):

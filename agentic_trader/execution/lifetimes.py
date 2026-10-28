@@ -393,10 +393,11 @@ class TradeLifetimeService:
         return signal.get("executed_at") is not None and not has_holding_deadline(lifetime)
 
     async def reconcile(self) -> tuple[str, ...]:
-        """Sweep every timed position; return the exception type names of evidence reads that failed.
+        """Sweep every timed position; return the exception type names of every signal that failed this pass.
 
-        A failed read is absence of evidence: it is retried each sweep and reviewed (a persisted halt)
-        only after ``lifetime_evidence_review_after_failures`` consecutive failed sweeps of that signal.
+        That covers read failures, post-read failures and policy-parse failures. Only a failed evidence read
+        is retried: it is reviewed (a persisted halt) after ``lifetime_evidence_review_after_failures``
+        consecutive failed passes of that signal. Every other failure reviews on the first pass.
         """
         await self.recover()
         unresolved = await self.store.list_work(
@@ -424,16 +425,22 @@ class TradeLifetimeService:
                 failed.append(name)
                 count = self._evidence_failures[signal["id"]] = prior + 1
                 if count >= self.config.lifetime_evidence_review_after_failures:
+                    logger.warning(
+                        "Lifetime evidence read failed for signal %s (%s) for %d consecutive passes; reviewing",
+                        signal["id"],
+                        name,
+                        count,
+                    )
                     await self.repository.review(signal["id"], f"lifecycle_evidence_unavailable:{name}", {})
                 else:
                     logger.warning(
-                        "Lifetime evidence read failed for signal %s (%s, sweep %d); retrying",
+                        "Lifetime evidence read failed for signal %s (%s, pass %d); retrying",
                         signal["id"],
                         name,
                         count,
                     )
             except Exception as exc:
-                # Anything outside the evidence read (identity, action phase) is not retried.
+                # Anything outside the evidence read (policy parse, decision, action phase) is not retried.
                 failed.append(type(exc).__name__)
                 await self.repository.review(signal["id"], f"lifecycle_evidence_unavailable:{type(exc).__name__}", {})
         return tuple(failed)
@@ -569,6 +576,12 @@ class TradeLifetimeService:
         except Exception as exc:
             raise EvidenceReadFailed(type(exc).__name__) from exc
         decision = assess_lifetime(lifetime, identity, parent, self.clock(), sessions)
+        session_open = False
+        if decision.action == LifetimeAction.CLOSE_POSITION:
+            try:
+                session_open = await self.broker.regular_session_open()
+            except Exception as exc:
+                raise EvidenceReadFailed(type(exc).__name__) from exc
         if decision.action == LifetimeAction.REVIEW:
             await self.repository.review(signal["id"], decision.reason, parent.model_dump(mode="json"))
         elif decision.action == LifetimeAction.CANCEL_ENTRY:
@@ -580,7 +593,7 @@ class TradeLifetimeService:
             )
             if isinstance(claim, WorkItem):
                 await self._submit_cancel(claim, identity)
-        elif decision.action == LifetimeAction.CLOSE_POSITION and await self.broker.regular_session_open():
+        elif decision.action == LifetimeAction.CLOSE_POSITION and session_open:
             children = [o for o in orders if o.order_id != identity.order_id]
             if signal.get("broker_exit_order_id") or any(
                 o.status == "filled" and Decimal(o.filled_quantity) == Decimal(identity.quantity) for o in children

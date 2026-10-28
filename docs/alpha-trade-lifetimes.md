@@ -97,7 +97,7 @@ session-counted holding deadline:
   A calendar read that raises is a failed evidence read, not a `REVIEW`
   decision: it is retried each sweep and reviewed only after
   `execution.lifetime_evidence_review_after_failures` (5) consecutive failed
-  sweeps of that signal. A `REVIEW` decision still halts immediately.
+  reconciliation passes of that signal. A `REVIEW` decision still halts immediately.
 - Every existing `elapsed_utc_v1`/`elapsed_utc_v2` policy, hash and position is
   unchanged: `lifetime_from_dict` dispatches on the document's own `version`
   field, and `SessionLifetimePolicy` is a distinct dataclass with its own

@@ -160,3 +160,12 @@ def test_shipped_config_lifetime_evidence_threshold():
 def test_lifetime_evidence_threshold_bounds(value):
     with pytest.raises(ValueError, match="lifetime_evidence_review_after_failures"):
         ExecutionConfig(lifetime_evidence_review_after_failures=value)
+
+
+def test_load_config_reads_lifetime_evidence_threshold(tmp_path):
+    path = tmp_path / "config.yaml"
+    document = yaml.safe_load(SHIPPED.read_text())
+    document["execution"]["lifetime_evidence_review_after_failures"] = 3
+    path.write_text(yaml.safe_dump(document))
+
+    assert load_config(str(path), environ=PRODUCTION).execution.lifetime_evidence_review_after_failures == 3
