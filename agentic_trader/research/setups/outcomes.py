@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 
 from agentic_trader.data.pacing import RequestPacer
@@ -35,6 +36,7 @@ from agentic_trader.research.setups.labels import (
     label_bracket,
     regular_session_bars,
 )
+from agentic_trader.research.setups.study import session_block_bootstrap
 from agentic_trader.research.setups.tape import TAPE_BUCKETS, TAPE_HISTORY_DAYS, TapeState, tape_buckets, tape_state
 
 
@@ -49,13 +51,16 @@ __all__ = [
     "CF_COLUMN_PREFIX",
     "DEFAULT_COST_BPS_PER_SIDE",
     "DEFAULT_MAX_HOLD_SESSIONS",
+    "DEFAULT_SCAN_SLOTS",
     "FETCH_FAILED_HIT",
     "LIVE_COUNTERFACTUAL_ARMS",
     "MARKET_PROXY_SYMBOL",
     "PRIOR_OUTCOMES",
     "RESOLVED_HITS",
+    "attach_execution",
     "label_journaled",
     "market_r",
+    "operator_block",
     "scan_supply",
     "summarize",
     "with_recurrence",
@@ -1010,6 +1015,168 @@ def _counterfactual_summary(frame: pd.DataFrame, mature: pd.DataFrame) -> dict[s
     return {"caveat": "descriptive; not a gate", "arms": arms}
 
 
+# The kept-vs-vetoed comparison reads "insufficient" below these distinct resolved setups
+# (design 2026-10-27 section 2.5); the bootstrap is the setup study's stationary session-block one.
+OPERATOR_MIN_SETUPS_TOTAL = 30
+OPERATOR_MIN_SETUPS_PER_SIDE = 10
+OPERATOR_BOOTSTRAP_DRAWS = 2000
+OPERATOR_BOOTSTRAP_BLOCK_MEAN = 3
+DEFAULT_SCAN_SLOTS = ("10:35", "14:35")
+_OPERATOR_ACTIONS = ("tapped", "auto_entered", "dismissed", "cancelled", "expired")
+_SETUP_KEY = ["contract", "strategy", "direction", "session"]
+
+
+def attach_execution(frame: pd.DataFrame, execution: pd.DataFrame) -> pd.DataFrame:
+    """``frame`` with the execution evidence's operator columns joined on ``signal_id``.
+
+    Adds ``auto_marked``, ``entry_trigger``, ``operator_action`` and ``tap_age_seconds``; a row with no
+    execution evidence (not sent, or its card is gone) reads ``False``, ``"none"``, ``"none"`` and None.
+    """
+    out = frame.copy()
+    columns = ("auto_marked", "entry_trigger", "operator_action", "tap_age_seconds")
+    defaults: dict[str, Any] = {"auto_marked": False, "entry_trigger": "none", "operator_action": "none"}
+    for column in columns:
+        out[column] = defaults.get(column)
+    if execution.empty or "signal_id" not in out:
+        return out
+    by_signal = execution.drop_duplicates("signal_id").set_index("signal_id")
+    for column in columns:
+        mapped = out["signal_id"].map(by_signal[column])
+        out[column] = mapped.where(mapped.notna(), out[column]) if column != "tap_age_seconds" else mapped
+    out["auto_marked"] = out["auto_marked"].astype(bool)
+    return out
+
+
+def _resolved_setups(rows: pd.DataFrame) -> pd.DataFrame:
+    """Rows with a resolved bracket and a beta-matched excess R, one per setup instance.
+
+    A setup is ``(contract, strategy, direction)`` on one session; journaled twice the same session it
+    counts once (the earlier decision), as a repeated scan of the same setup is not a new observation.
+    """
+    if rows.empty:
+        return rows
+    resolved = rows.loc[rows["hit"].isin(RESOLVED_HITS) & rows["beta_excess_r"].notna()]
+    return resolved.sort_values("decided_at", kind="stable").drop_duplicates(_SETUP_KEY)
+
+
+def _side(rows: pd.DataFrame) -> dict[str, Any]:
+    return {"n": len(rows), "mean_excess_r": float(rows["beta_excess_r"].mean()) if len(rows) else None}
+
+
+def _kept_vs_vetoed_ci(kept: pd.DataFrame, vetoed: pd.DataFrame, seed: int) -> list[float] | None:
+    """90% interval of kept minus vetoed mean excess R, resampling whole sessions (stationary blocks)."""
+    sessions = sorted(set(kept["session"]) | set(vetoed["session"]))
+    kept_totals = kept.groupby("session")["beta_excess_r"].agg(["sum", "count"]).reindex(sessions, fill_value=0)
+    vetoed_totals = vetoed.groupby("session")["beta_excess_r"].agg(["sum", "count"]).reindex(sessions, fill_value=0)
+    kept_sum, kept_n = kept_totals["sum"].to_numpy(dtype=float), kept_totals["count"].to_numpy(dtype=float)
+    vetoed_sum, vetoed_n = vetoed_totals["sum"].to_numpy(dtype=float), vetoed_totals["count"].to_numpy(dtype=float)
+
+    def difference(positions: pd.Series) -> float:
+        picked = positions.to_numpy(dtype=int)
+        if kept_n[picked].sum() == 0 or vetoed_n[picked].sum() == 0:
+            return float("nan")
+        return float(kept_sum[picked].sum() / kept_n[picked].sum() - vetoed_sum[picked].sum() / vetoed_n[picked].sum())
+
+    draws = session_block_bootstrap(
+        pd.Series(np.arange(len(sessions), dtype=float), index=sessions),
+        difference,
+        block_mean=OPERATOR_BOOTSTRAP_BLOCK_MEAN,
+        draws=OPERATOR_BOOTSTRAP_DRAWS,
+        seed=seed,
+    )
+    draws = draws[~np.isnan(draws)]
+    if not len(draws):
+        return None
+    low, high = np.percentile(draws, [5, 95])
+    return [float(low), float(high)]
+
+
+def _kept_vs_vetoed(frame: pd.DataFrame, seed: int) -> dict[str, Any]:
+    marked = frame.loc[frame["auto_marked"].astype(bool)]
+    action = marked["operator_action"]
+    kept = _resolved_setups(marked.loc[action == "auto_entered"])
+    vetoed = _resolved_setups(marked.loc[action.isin(("dismissed", "cancelled"))])
+    sufficient = (
+        len(kept) + len(vetoed) >= OPERATOR_MIN_SETUPS_TOTAL
+        and len(kept) >= OPERATOR_MIN_SETUPS_PER_SIDE
+        and len(vetoed) >= OPERATOR_MIN_SETUPS_PER_SIDE
+    )
+    kept_side, vetoed_side = _side(kept), _side(vetoed)
+    both = kept_side["mean_excess_r"] is not None and vetoed_side["mean_excess_r"] is not None
+    return {
+        "kept": kept_side,
+        "vetoed": vetoed_side,
+        "difference": kept_side["mean_excess_r"] - vetoed_side["mean_excess_r"] if both else None,
+        "ci90": _kept_vs_vetoed_ci(kept, vetoed, seed) if sufficient else None,
+        "excluded": {name: int((action == name).sum()) for name in ("auto_refused", "abandoned")},
+        "status": "ok" if sufficient else "insufficient",
+    }
+
+
+def _action_counts(rows: pd.DataFrame) -> dict[str, int]:
+    return {"sent": len(rows), **{name: int((rows["operator_action"] == name).sum()) for name in _OPERATOR_ACTIONS}}
+
+
+def _grouped_actions(sent: pd.DataFrame, keys: pd.Series) -> dict[str, dict[str, int]]:
+    return {str(name): _action_counts(group) for name, group in sent.groupby(keys, sort=True)}
+
+
+def _slot_names(decided_at: pd.Series, slots: Sequence[str]) -> pd.Series:
+    """Each decision's scan slot: the latest configured slot at or before its New York time (else the first)."""
+    ordered = sorted(slots)
+
+    def slot(value: Any) -> str:
+        clock = pd.Timestamp(value).tz_convert(ET_TZ).strftime("%H:%M")
+        return next((name for name in reversed(ordered) if name <= clock), ordered[0])
+
+    return decided_at.map(slot)
+
+
+def operator_block(frame: pd.DataFrame, *, seed: int = 0, slots: Sequence[str] = DEFAULT_SCAN_SLOTS) -> dict[str, Any]:
+    """The descriptive ``operator`` block: what was done with each sent card, never a gate.
+
+    Needs the ``auto_marked``, ``entry_trigger``, ``operator_action`` and ``tap_age_seconds`` columns
+    (``attach_execution``); a frame without them reads as no operator evidence. Counts are over sent
+    cards by scan slot (``slots``, New York clock), scan trigger and strategy. ``tap_latency`` is over
+    operator taps only. ``kept_vs_vetoed`` reads auto-marked cards alone (the marker starts at the
+    deploy): mean beta-matched excess R of kept cards (auto-entered, not operator-cancelled) against
+    vetoed ones (dismissed before placement, or cancelled by the operator), per distinct resolved
+    setup, with a seeded session-block bootstrap 90% interval; ``auto_refused`` and ``abandoned`` cards
+    are on neither side and counted in ``excluded``. ``tap_era`` is the unmarked cards' tapped versus
+    untapped means, descriptive only: before auto-entry "untapped" mostly meant nobody looked.
+    """
+    needed = ("auto_marked", "entry_trigger", "operator_action", "tap_age_seconds")
+    if frame.empty or any(column not in frame for column in needed):
+        frame = frame.iloc[0:0].assign(
+            **{column: pd.Series(dtype=object) for column in needed},
+            **{column: pd.Series(dtype=object) for column in ("sent", "trigger", "strategy", "decided_at")},
+        )
+    sent = frame.loc[frame["sent"].astype(bool)]
+    taps = sent.loc[sent["entry_trigger"] == "tap", "tap_age_seconds"]
+    ages = pd.to_numeric(taps, errors="coerce").dropna()
+    unmarked = sent.loc[~sent["auto_marked"].astype(bool)]
+    tapped = _resolved_setups(unmarked.loc[unmarked["entry_trigger"] == "tap"])
+    untapped = _resolved_setups(unmarked.loc[unmarked["entry_trigger"] != "tap"])
+    tapped_side, untapped_side = _side(tapped), _side(untapped)
+    both = tapped_side["mean_excess_r"] is not None and untapped_side["mean_excess_r"] is not None
+    return {
+        "by_slot": _grouped_actions(sent, _slot_names(sent["decided_at"], slots)) if len(sent) else {},
+        "by_trigger": _grouped_actions(sent, sent["trigger"].fillna("unknown")) if len(sent) else {},
+        "by_strategy": _grouped_actions(sent, sent["strategy"].fillna("unknown")) if len(sent) else {},
+        "tap_latency": {
+            "median_seconds": float(ages.median()) if len(ages) else None,
+            "p90_seconds": float(np.percentile(ages, 90)) if len(ages) else None,
+            "n": len(ages),
+        },
+        "kept_vs_vetoed": _kept_vs_vetoed(frame, seed),
+        "tap_era": {
+            "tapped": tapped_side,
+            "untapped": untapped_side,
+            "difference": tapped_side["mean_excess_r"] - untapped_side["mean_excess_r"] if both else None,
+        },
+    }
+
+
 def _add_counts(total: dict[str, Any], key: str, value: Any) -> None:
     """Add one funnel field into ``total``: an integer sums, a ``{name: n}`` dict sums per name."""
     if isinstance(value, bool):
@@ -1062,14 +1229,20 @@ def scan_supply(events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]
     return dict(sorted(supply.items()))
 
 
-def summarize(frame: pd.DataFrame, *, asset_classes: Mapping[str, str] | None = None) -> dict[str, Any]:
+def summarize(
+    frame: pd.DataFrame,
+    *,
+    asset_classes: Mapping[str, str] | None = None,
+    slots: Sequence[str] = DEFAULT_SCAN_SLOTS,
+) -> dict[str, Any]:
     """Descriptive summary of a labelled frame.
 
     Counts by outcome class (sent, runner-up, journal-only) and maturity, base rates, per-scan
     selection quality by scorer, card-policy counts, book sizing, news, regime/tape and recurrence
     blocks. ``asset_classes`` maps a symbol to its class for ``by_asset_class``; unmapped symbols
     are ``unclassified``. A runner-up competed for a card and lost; a journal-only candidate (a swing scan's) never
-    competed for one.
+    competed for one. The ``operator`` block needs the columns ``attach_execution`` adds and reads
+    as empty without them.
     """
     if frame.empty:
         return {
@@ -1108,6 +1281,7 @@ def summarize(frame: pd.DataFrame, *, asset_classes: Mapping[str, str] | None = 
             "regime_context": _regime_summary(frame, frame),
             "recurrence": _recurrence_summary(frame, frame),
             "counterfactual": _counterfactual_summary(frame, frame),
+            "operator": operator_block(frame, slots=slots),
             "by_asset_class": {},
         }
 
@@ -1208,5 +1382,6 @@ def summarize(frame: pd.DataFrame, *, asset_classes: Mapping[str, str] | None = 
         "regime_context": _regime_summary(frame, mature),
         "recurrence": _recurrence_summary(frame, mature),
         "counterfactual": _counterfactual_summary(frame, mature),
+        "operator": operator_block(frame, slots=slots),
         "by_asset_class": _asset_class_summary(mature, asset_classes),
     }

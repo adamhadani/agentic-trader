@@ -80,11 +80,30 @@ from agentic_trader.data.market_data import MarketDataFetcher
 from agentic_trader.data.pacing import RequestPacer
 from agentic_trader.data.providers import AlpacaDataProvider
 from agentic_trader.diagnostics.readiness import HealthComponent, ReadinessService
+from agentic_trader.execution.auto_entry import (
+    ABANDONED_REASON,
+    AUTO_ENTRY_KEY,
+    EXPIRED_REASON,
+    NOT_PAPER_REASON,
+    REJECTED_AT_SUBMISSION_REASON,
+    REPRICED_REASON,
+    AutoEntryAttempt,
+    AutoEntryOutcome,
+    ExpiredCard,
+    ExpiryKind,
+    attempt_reason,
+    auto_entry_marker,
+    auto_entry_status_line,
+    not_placed_notice,
+    outcome_after_call,
+    sweep_reason,
+)
 from agentic_trader.execution.book_sizing import BookSizer, BookSizingDecision
 from agentic_trader.execution.card_evidence import CardEvidence, CardStatsRepository, lookup
 from agentic_trader.execution.card_policy import CardPolicyDecision, decide, journal_block
 from agentic_trader.execution.closing import PositionCloseService
 from agentic_trader.execution.durable import (
+    EntryTrigger,
     EventKind,
     OrderObservation,
     RankedOutcome,
@@ -119,6 +138,7 @@ from agentic_trader.notifier.outbox import NotificationDispatcher
 from agentic_trader.notifier.telegram_bot import TelegramNotifier, format_terminal_card
 from agentic_trader.options import OptionsDataFetcher, format_gex_telegram
 from agentic_trader.pairs import PairEvaluation, PairsScreener, format_pairs_telegram
+from agentic_trader.presentation.auto_entry_digest import format_auto_entry_digest
 from agentic_trader.presentation.formatters import (
     ExecutionResultView,
     ManualCloseResultView,
@@ -131,7 +151,7 @@ from agentic_trader.presentation.formatters import (
     TerminalFormatter,
 )
 from agentic_trader.research.alpha.evidence import load_forward_evidence
-from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG
+from agentic_trader.research.alpha.probe import PAPER_PROBE_TAG, is_paper_scope
 from agentic_trader.research.alpha.shadow import AlphaShadowService
 from agentic_trader.research.alpha.strategy import execution_policy_from_dict, policy_trails, trailing_price
 from agentic_trader.research.pooled.entry import REPO_ROOT
@@ -204,6 +224,8 @@ BROAD_INDEX_REASON = "broad index ETF: excluded from native cards (scan.broad_in
 # suggestion-scan liquidity reference it is gated against may be.
 OPERATOR_DYNAMIC_SOURCE = "operator"
 OPERATOR_REFERENCE_MAX_AGE = timedelta(days=7)
+# The paper auto-entry digest goes out this long after the regular session close.
+AUTO_ENTRY_DIGEST_DELAY = timedelta(minutes=15)
 # An operator scan request that arrives after daemon shutdown began: its task would never be
 # cancelled or awaited (``cancel_background_scans`` already ran), so it is refused instead.
 SHUTTING_DOWN_TEXT = "Daemon is shutting down; try again after restart."
@@ -617,6 +639,11 @@ class TradingCopilot:
         self._session_scan_stats: dict[str, list[dict[str, Any]]] = {}
         self._shutdown_event = asyncio.Event()
         self._scan_lock = asyncio.Lock()
+        # Serializes the paper auto-entry sweep (the suggestion job's call and the interval job). The set
+        # holds this process's attempted cards, so a failed attempt journal never leads to a second attempt.
+        self._auto_entry_lock = asyncio.Lock()
+        self._auto_entry_attempted: set[int] = set()
+        self._digest_calendar_warned: set[date] = set()
         # Strong references to background operator scans (card re-evaluations and
         # `/scan SYMBOL`), so they are never garbage-collected; shutdown cancels them all.
         self.background_scan_tasks: set[asyncio.Task[None]] = set()
@@ -1742,6 +1769,15 @@ class TradingCopilot:
                         else native_entry_lifetime_marker(self.config, str(eval_res.asset_class))
                     )
                     lifetime = {NATIVE_ENTRY_LIFETIME_KEY: lifetime_marker} if lifetime_marker else {}
+                    # Paper auto-entry (item 1.4): a native, lifetime-marked card of a scheduled suggestion scan
+                    # is entered by the sweep (`auto_enter_pending`) instead of waiting for a tap.
+                    auto_marker = auto_entry_marker(
+                        self.config,
+                        trigger=trigger,
+                        is_catalog=is_catalog,
+                        alpha=bool(candidate.alpha_policy or candidate.alpha_version),
+                        lifetime_marker=lifetime_marker,
+                    )
 
                     # Record to database
                     sig_id = await self.db.record_signal(
@@ -1779,6 +1815,7 @@ class TradingCopilot:
                             ),
                             **validity,
                             **lifetime,
+                            **({AUTO_ENTRY_KEY: auto_marker} if auto_marker else {}),
                         },
                         contract=eval_res.contract,
                         strategy=candidate.strategy,
@@ -1809,6 +1846,7 @@ class TradingCopilot:
                             **({"card_evidence": card_evidence} if card_evidence is not None else {}),
                             "book_sizing": book_block,
                             **({"entry_session_bound": True} if lifetime else {}),
+                            **({"auto_entry": "placing"} if auto_marker else {}),
                             **validity,
                         },
                     )
@@ -3369,7 +3407,9 @@ class TradingCopilot:
         )
         return TelegramHtmlFormatter.format_manual_close_html(view)
 
-    async def execute_signal_by_id(self, signal_id: int, quantity: float | None = None) -> ExecutionReply:
+    async def execute_signal_by_id(
+        self, signal_id: int, quantity: float | None = None, *, trigger: EntryTrigger = EntryTrigger.TAP
+    ) -> ExecutionReply:
         """
         Execute an approved trade setup by signal ID.
         Submits bracket orders to the active broker and registers the position in the database.
@@ -3444,11 +3484,17 @@ class TradingCopilot:
                 contract_info.tick_size if contract_info else (0.01 if asset_class == AssetClass.EQUITY else 0.25)
             )
             refusal = await self._assess_card_tap(
-                sig, req, ticker=ticker, asset_class=str(asset_class), multiplier=multiplier, tick_size=tick_size
+                sig,
+                req,
+                ticker=ticker,
+                asset_class=str(asset_class),
+                multiplier=multiplier,
+                tick_size=tick_size,
+                trigger=trigger,
             )
             if refusal is not None:
                 return refusal
-        item, reason = await self.entry_service.authorize(req)
+        item, reason = await self.entry_service.authorize(req, trigger=trigger)
         if item is None:
             return ExecutionReply(False, f"⚠️ <b>Execution Rejected:</b> {html.escape(reason)}")
         if item.status in (WorkStatus.QUEUED, WorkStatus.CHECKING):
@@ -3740,6 +3786,7 @@ class TradingCopilot:
         applied: bool,
         policy_locked: bool,
         new_signal_id: int | None = None,
+        trigger: EntryTrigger = EntryTrigger.TAP,
     ) -> None:
         """Journal the assessment after its state transition, so the evidence matches the final state.
 
@@ -3759,6 +3806,7 @@ class TradingCopilot:
             "applied": applied,
             "new_signal_id": new_signal_id,
             "policy_locked": policy_locked,
+            "entry_trigger": str(trigger),
         }
         logger.info(
             "Card #%d tap assessed: %s (%s)",
@@ -3848,7 +3896,9 @@ class TradingCopilot:
         old_provenance = dict(old_provenance) if isinstance(old_provenance, dict) else {}
         first_issued_at = old_provenance.get("first_issued_at") or issued_at.isoformat()
         provenance = {
-            **old_provenance,  # carries valid_until, rank, probe tag and the rest unchanged
+            # Carries valid_until, rank, probe tag and the rest unchanged; never the auto-entry marker: a
+            # re-priced card is an ordinary tap card.
+            **{key: value for key, value in old_provenance.items() if key != AUTO_ENTRY_KEY},
             "reprices": signal_id,
             "first_issued_at": first_issued_at,
             "tap_latency_seconds": round(assessment.age_seconds, 3),
@@ -3931,6 +3981,7 @@ class TradingCopilot:
         asset_class: str,
         multiplier: float,
         tick_size: float,
+        trigger: EntryTrigger = EntryTrigger.TAP,
     ) -> ExecutionReply | None:
         """Re-judge a PENDING card at tap time; None means ``EXECUTE`` (continue into authorization).
 
@@ -3956,7 +4007,9 @@ class TradingCopilot:
             unavailable = CardAssessment(
                 CardOutcome.UNAVAILABLE, reason, None, (tapped_at - issued_at).total_seconds(), price
             )
-            await self._journal_card_tap(signal_id, unavailable, tapped_at, applied=False, policy_locked=policy_locked)
+            await self._journal_card_tap(
+                signal_id, unavailable, tapped_at, applied=False, policy_locked=policy_locked, trigger=trigger
+            )
             return ExecutionReply(False, reply_text, retryable=True)
 
         checks_unavailable = "⚠️ Checks unavailable; try again shortly."
@@ -4016,7 +4069,9 @@ class TradingCopilot:
         )
         if assessment.outcome == CardOutcome.WAITING:
             # Nothing changes: the card stays PENDING and the button is restored for a later tap.
-            await self._journal_card_tap(signal_id, assessment, tapped_at, applied=False, policy_locked=policy_locked)
+            await self._journal_card_tap(
+                signal_id, assessment, tapped_at, applied=False, policy_locked=policy_locked, trigger=trigger
+            )
             return ExecutionReply(
                 False, f"⏳ {html.escape(assessment.reason)} {self._next_open_sentence(info)}", retryable=True
             )
@@ -4049,6 +4104,7 @@ class TradingCopilot:
                 applied=applied,
                 policy_locked=policy_locked,
                 new_signal_id=new_signal_id,
+                trigger=trigger,
             )
 
         if assessment.outcome == CardOutcome.EXECUTE:
@@ -4330,6 +4386,187 @@ class TradingCopilot:
                 len(expired_ids),
                 extra={"event": "cards_expired", "signal_ids": expired_ids},
             )
+
+    async def auto_enter_pending(self, now: datetime | None = None) -> list[AutoEntryAttempt]:
+        """Paper auto-entry sweep: one attempt per marked, still-``PENDING`` card of today's New York date.
+
+        Selects from the database (``WorkflowStore.pending_auto_entries``), never from a scan's return
+        value, so a scan that raised after recording its cards loses nothing. Each card goes through the
+        one entry path a tap uses, ``execute_signal_by_id(id, None, trigger=EntryTrigger.AUTO)``, at its
+        default size; its outcome is read from the signal and its entry work item after the call, never
+        from the reply, and journaled with its follow-up in one transaction. One attempt per card, no
+        retry of any kind. Serialized by ``_auto_entry_lock`` and run outside the scan lock; never
+        raises: a failing card is journaled ``refused`` with its exception's type name and the next one runs.
+        """
+        async with self._auto_entry_lock:
+            try:
+                today = (now or datetime.now(UTC)).astimezone(ET_TZ).date()
+                pending = await self.db.workflows.pending_auto_entries(today)
+            except Exception:
+                logger.exception("Auto-entry selection failed", extra={"event": "auto_entry_sweep_failed"})
+                return []
+            attempts: list[AutoEntryAttempt] = []
+            for sig in pending:
+                signal_id = int(sig["id"])
+                if signal_id in self._auto_entry_attempted:
+                    continue
+                self._auto_entry_attempted.add(signal_id)
+                attempts.append(await self._auto_enter_card(sig, now))
+            return attempts
+
+    async def _auto_enter_card(self, sig: dict[str, Any], now: datetime | None) -> AutoEntryAttempt:
+        """Attempt one selected card and journal it, isolating any exception from the next card.
+
+        An exception's outcome is still read from state (it may come after the entry was queued, so
+        the card is entered and gets its button swap), with the exception's type name as the reason;
+        only when that re-read fails too is the attempt a plain ``refused``.
+        """
+        signal_id = int(sig["id"])
+        provenance = sig.get("decision_provenance")
+        scan_id = provenance.get("scan_id") if isinstance(provenance, dict) else None
+        attempted_at = (now or datetime.now(UTC)).astimezone(UTC)
+        recard: dict[str, Any] | None
+        expired: ExpiredCard | None
+        try:
+            attempt, recard, expired = await self._auto_entry_attempt(signal_id, scan_id, attempted_at)
+        except Exception as exc:
+            logger.exception(
+                "Auto-entry attempt for card #%d failed",
+                signal_id,
+                extra={"event": "auto_entry_attempt_failed", "signal_id": signal_id},
+            )
+            reason = type(exc).__name__
+            outcome: AutoEntryOutcome
+            try:
+                status, work_status, trigger = await self._auto_entry_state(signal_id)
+                outcome = outcome_after_call(status, trigger)
+            except Exception:
+                status, work_status, outcome = str(sig["status"]), None, "refused"
+            expiry_kind: ExpiryKind | None = None
+            expired = None
+            if outcome == "refused" and status == SignalStatus.EXPIRED:
+                # Expired before the exception: the card must still stop claiming an entry.
+                try:
+                    expiry_kind, _, expired = await self._auto_entry_expiry(signal_id, str(sig["contract"]))
+                except Exception as follow_up_exc:
+                    logger.warning(
+                        "Auto-entry expiry follow-up unavailable for card #%d (%s)",
+                        signal_id,
+                        type(follow_up_exc).__name__,
+                        extra={"event": "auto_entry_expiry_follow_up_failed", "signal_id": signal_id},
+                    )
+            attempt = AutoEntryAttempt(
+                signal_id, scan_id, outcome, reason, work_status, status, attempted_at, expiry_kind
+            )
+            # The store re-cards only a signal still PENDING under its lock.
+            refused_pending = outcome == "refused" and status == SignalStatus.PENDING
+            recard = {"auto_entry": "refused", "auto_refusal": reason} if refused_pending else None
+        logger.info(
+            "Auto-entry card #%d: %s (%s)",
+            signal_id,
+            attempt.outcome,
+            attempt.reason,
+            extra={"event": EventKind.AUTO_ENTRY_ATTEMPTED, **attempt.payload()},
+        )
+        try:
+            await self.db.workflows.record_auto_entry_attempt(
+                attempt, recard=recard, entered=attempt.outcome == "entered", expired=expired
+            )
+        except Exception:
+            logger.exception(
+                "Auto-entry attempt journal failed for card #%d",
+                signal_id,
+                extra={"event": "auto_entry_journal_failed", "signal_id": signal_id},
+            )
+        return attempt
+
+    async def _auto_entry_attempt(
+        self, signal_id: int, scan_id: str | None, attempted_at: datetime
+    ) -> tuple[AutoEntryAttempt, dict[str, Any] | None, ExpiredCard | None]:
+        """The attempt, its re-card fields and its expiry follow-up (None: none), per the design's outcome table.
+
+        Only a refusal that leaves the card ``PENDING`` re-cards it; a ``FAILED`` card keeps its immediate
+        rejection notice; an ``EXPIRED`` one (``MISSED``/``EXPIRED``, or ``REPRICE`` with its replacement card)
+        gets the expiry strike and one "not placed" notice, so it never keeps saying it was entered.
+        """
+
+        def attempt(
+            outcome: AutoEntryOutcome,
+            reason: str | None,
+            status: str,
+            work_status: str | None = None,
+            expiry_kind: ExpiryKind | None = None,
+        ) -> AutoEntryAttempt:
+            return AutoEntryAttempt(signal_id, scan_id, outcome, reason, work_status, status, attempted_at, expiry_kind)
+
+        # Read immediately before the call: a card dismissed (or tapped) since selection keeps its veto.
+        sig = await self.db.get_signal_by_id(signal_id)
+        if sig is None or sig["status"] != SignalStatus.PENDING:
+            status, work_status, _ = await self._auto_entry_state(signal_id)
+            return attempt("skipped_not_pending", None, status, work_status), None, None
+        status = str(sig["status"])
+        issued_at = datetime.fromisoformat(sig["timestamp"]).replace(tzinfo=UTC)
+        if (attempted_at - issued_at).total_seconds() > self.config.execution.card_freshness.fresh_seconds:
+            # Too late to place: the card is re-sent as a tap card, so none is left saying "no tap needed".
+            recard = {"auto_entry": "abandoned", "auto_refusal": ABANDONED_REASON}
+            return attempt("abandoned", ABANDONED_REASON, status), recard, None
+        if not is_paper_scope(self.db.workflows.scope):
+            # Defence in depth: the switch already requires Alpaca paper.
+            recard = {"auto_entry": "refused", "auto_refusal": NOT_PAPER_REASON}
+            return attempt("refused", NOT_PAPER_REASON, status), recard, None
+
+        reply = await self.execute_signal_by_id(signal_id, None, trigger=EntryTrigger.AUTO)
+        status, work_status, trigger = await self._auto_entry_state(signal_id)
+        outcome = outcome_after_call(status, trigger)
+        if outcome == "skipped_not_pending":
+            return attempt(outcome, None, status, work_status), None, None
+        if status == SignalStatus.EXPIRED:
+            kind, reason, expired = await self._auto_entry_expiry(signal_id, str(sig["contract"]))
+            return attempt(outcome, reason, status, work_status, kind), None, expired
+        if status == SignalStatus.FAILED:
+            # The reply embeds the broker's or an exception's text; the journal and digest carry a fixed phrase.
+            return attempt(outcome, REJECTED_AT_SUBMISSION_REASON, status, work_status), None, None
+        reason = sweep_reason(reply.text) or "no reason given"
+        if status == SignalStatus.PENDING:
+            recard = {"auto_entry": "refused", "auto_refusal": reason}
+            return attempt(outcome, reason, status, work_status), recard, None
+        # Entered: the button swap follows.
+        return attempt(outcome, reason, status, work_status), None, None
+
+    async def _auto_entry_state(self, signal_id: int) -> tuple[str, str | None, EntryTrigger | None]:
+        """The signal's status, its entry work item's status and that item's trigger (None without one)."""
+        sig = await self.db.get_signal_by_id(signal_id)
+        status = str(sig["status"]) if sig else "missing"
+        item_id = (await self.db.workflows.entry_item_ids([signal_id])).get(signal_id)
+        item = await self.db.workflows.get_work(item_id) if item_id else None
+        if item is None:
+            return status, None, None
+        return status, str(item.status), await self.db.workflows.entry_trigger(signal_id)
+
+    async def _auto_entry_expiry(self, signal_id: int, contract: str) -> tuple[ExpiryKind, str, ExpiredCard]:
+        """Why the sweep's attempt left this card ``EXPIRED``, its journaled reason and its follow-up.
+
+        Read from this attempt's own applied ``card_tap_assessed`` event (``entry_trigger: auto``; the sweep
+        makes one per card): a replacement card means ``repriced``; otherwise the desk-authored assessment
+        reason, cleaned like any attempt reason. A card another path expired (no applied auto assessment) reads
+        ``card expired``. The strike offers Re-evaluate exactly as the card-expiry sweep decides it.
+        """
+        events = await self.db.workflows.recent_events(EventKind.CARD_TAP_ASSESSED, streams=[f"card/{signal_id}"])
+        assessed = next(
+            (
+                event["payload"]
+                for event in events
+                if event["payload"].get("entry_trigger") == EntryTrigger.AUTO and event["payload"].get("applied")
+            ),
+            None,
+        )
+        reevaluable = contract in self.config.contracts
+        new_id = assessed.get("new_signal_id") if assessed else None
+        if new_id is not None:
+            notice = not_placed_notice(signal_id, contract, REPRICED_REASON, new_signal_id=int(new_id))
+            return "repriced", REPRICED_REASON, ExpiredCard(notice, reevaluable)
+        reason = (attempt_reason(str(assessed.get("reason") or "")) if assessed else "") or EXPIRED_REASON
+        return "expired", reason, ExpiredCard(not_placed_notice(signal_id, contract, reason), reevaluable)
 
     async def cancel_background_scans(self) -> None:
         """Cancel and await every in-flight background operator scan (daemon shutdown)."""
@@ -4750,6 +4987,7 @@ class TradingCopilot:
             dxy_value=regime.dxy,
             breakout_allowed=regime.breakout_allowed,
             recent_signals=signals,
+            auto_entry=auto_entry_status_line(self.config),
         )
 
     async def show_status(self) -> None:
@@ -4766,6 +5004,48 @@ class TradingCopilot:
     def _is_suggestion_scan(summary: dict[str, Any]) -> bool:
         """A scheduled suggestion scan's summary (``make_suggestion_scan``), completed or gated."""
         return summary.get("trigger") == ScanTrigger.SUGGESTION_SCAN
+
+    async def publish_auto_entry_digest(self, now: datetime | None = None) -> bool:
+        """Queue today's paper auto-entry digest once, from regular close + 15 minutes; True when queued.
+
+        Due on a trading day only, at the New York close of the broker calendar the lifetime service
+        reads (an early close is due at 13:15). A calendar failure, a non-trading day, a session with no
+        marked card, or a digest already queued returns False; nothing raises into the scheduler.
+        """
+        current = (now or datetime.now(UTC)).astimezone(ET_TZ)
+        et_date = current.date()
+        try:
+            if await self.db.workflows.auto_entry_digest_queued(et_date):
+                return False
+            calendar = self.lifetime_service.calendar
+            if calendar is None:
+                logger.debug("Auto-entry digest skipped: no session calendar", extra={"event": "auto_entry_digest"})
+                return False
+            try:
+                day = await calendar.get_trading_day(et_date)
+            except Exception as exc:
+                if et_date not in self._digest_calendar_warned:
+                    self._digest_calendar_warned.add(et_date)
+                    logger.warning(
+                        "Auto-entry digest calendar unavailable (%s); retrying every run",
+                        type(exc).__name__,
+                        extra={"event": "auto_entry_digest_calendar_unavailable"},
+                    )
+                return False
+            if not day.is_trading_day or day.close_time is None:
+                logger.debug("Auto-entry digest skipped: not a trading day", extra={"event": "auto_entry_digest"})
+                return False
+            if current < datetime.combine(day.date, day.close_time, tzinfo=ET_TZ) + AUTO_ENTRY_DIGEST_DELAY:
+                return False
+            rows = await self.db.workflows.auto_entry_digest_rows(et_date)
+            if not rows:
+                return False
+            return await self.db.workflows.queue_auto_entry_digest(
+                et_date, format_auto_entry_digest(rows, et_date=et_date)
+            )
+        except Exception:
+            logger.exception("Auto-entry digest failed", extra={"event": "auto_entry_digest_failed"})
+            return False
 
     async def publish_scan_digest(self, et_date: str | None = None) -> str:
         """Publish exactly one end-of-session digest of this New York date's suggestion scans.

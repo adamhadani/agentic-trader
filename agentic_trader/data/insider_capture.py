@@ -563,6 +563,8 @@ class InsiderCaptureWorker:
         self._scope: CaptureScope | None = None
         self._done: date | None = None
         self._held_documents: dict[tuple[date, str], datetime] = {}  # first-404 times, kept between passes
+        # Set once a pass gets past the waiting and scan-window gates in this process (ruling R12).
+        self._pass_ran = False
 
     def _in_scan_window(self, now: datetime) -> bool:
         return in_scan_window(now.astimezone(ET_TZ), self.config.scheduler.suggestion_scan_times_et)
@@ -575,6 +577,7 @@ class InsiderCaptureWorker:
             return "scan_window"
         if now_et.time() < CAPTURE_AFTER_ET:
             return "waiting"
+        self._pass_ran = True
         if self._done == today:
             return "present"
         latest = await self.store.latest_recorded_date()
@@ -603,12 +606,19 @@ class InsiderCaptureWorker:
         self._done = today
         return "captured"
 
-    async def freshness(self, now: datetime) -> tuple[bool, str]:
-        """Ready while the latest captured filing date is at most ``CAPTURE_MAX_AGE_DAYS`` before today (New York)."""
+    async def freshness(self, now: datetime, status: WorkerStatus) -> tuple[bool, str]:
+        """Ready while the latest captured filing date is at most ``CAPTURE_MAX_AGE_DAYS`` before today (New York).
+
+        With no capture yet the worker is ready (``not_due``) while its status is ``waiting`` or ``scan_window``
+        and no pass has run in this process. Once a pass has run and produced none it stays not ready until a
+        capture exists, whatever the later status.
+        """
         today = now.astimezone(ET_TZ).date()
         captures = await self.store.captures()
         captured = [c for c in captures if c.get("status") == CaptureStatus.CAPTURED]
         if not captured:
+            if status in ("waiting", "scan_window") and not self._pass_ran:
+                return True, "not_due; no capture yet"
             return False, "no capture yet"
         latest = date.fromisoformat(captured[-1]["filing_date"])
         since = (today - timedelta(days=RECENT_ERROR_DAYS)).isoformat()
@@ -672,7 +682,7 @@ async def run_insider_capture_worker(
         while not shutdown.is_set():
             try:
                 status = await worker.run_once()
-                ready, detail = await worker.freshness(now())
+                ready, detail = await worker.freshness(now(), status)
                 await observe(ready, f"{status}; {detail}")
             except Exception as exc:
                 status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None

@@ -212,9 +212,11 @@ class LifetimeRepository:
                 if operator
                 else f"Entry #{signal_id} reached its resting deadline. Cancellation intent recorded for {identity.symbol}; awaiting broker confirmation."
             )
-            await self.store.add_notification(
-                session, f"entry-cancel/{row.id}/intent", NotificationKind.MESSAGE, {"text": intent}
-            )
+            # A deadline cancel of an auto entry is routine and folded into the daily digest, while it can report it.
+            if operator or not await self.store.folds_into_auto_digest(session, signal_id):
+                await self.store.add_notification(
+                    session, f"entry-cancel/{row.id}/intent", NotificationKind.MESSAGE, {"text": intent}
+                )
             await session.flush()
             return work_item(row)
 
@@ -323,9 +325,17 @@ class LifetimeRepository:
                     if complete
                     else "New risk halted. Inspect exact broker fills and protective orders; no automatic retry."
                 )
-            await self.store.add_notification(
-                session, f"entry-cancel/{row.id}/{status}", NotificationKind.MESSAGE, {"text": text}
+            folded = (
+                complete
+                and not filled_first
+                and cause == "deadline"
+                and previous != WorkStatus.UNKNOWN
+                and await self.store.folds_into_auto_digest(session, signal_id)
             )
+            if not folded:
+                await self.store.add_notification(
+                    session, f"entry-cancel/{row.id}/{status}", NotificationKind.MESSAGE, {"text": text}
+                )
 
             return True
 

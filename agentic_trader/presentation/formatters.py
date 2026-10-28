@@ -100,6 +100,7 @@ class PortfolioStatusReport:
     recent_signals: list[dict[str, Any]] = field(default_factory=list)
 
     execution_mode: str = ExecutionMode.PAPER
+    auto_entry: str = ""  # the ready-made status line; empty renders nothing
 
 
 @dataclass
@@ -210,6 +211,7 @@ class TerminalFormatter:
             f"Active Position Count:{report.active_contract_count} positions",
             f"Telegram Configured:  {report.telegram_configured}",
             f"LLM Model Configured: {report.llm_model}",
+            *([report.auto_entry] if report.auto_entry else []),
             sub_sep,
             "Macro Calendar Context:",
             report.macro_summary,
@@ -297,7 +299,8 @@ class TelegramHtmlFormatter:
                 f"• <b>Active Exposure:</b> <code>${report.current_exposure:,.2f}</code> "
                 f"({report.effective_leverage:.2f}x leverage)"
             ),
-            f"• <b>Active Positions:</b> {report.active_contract_count} positions\n",
+            f"• <b>Active Positions:</b> {report.active_contract_count} positions"
+            + (f"\n• {html.escape(report.auto_entry)}\n" if report.auto_entry else "\n"),
             "<b>Market Context:</b>",
             f"• Volatility: <b>{report.vix_regime}</b> (VIX: {report.vix_value:.2f})",
         ]
@@ -373,6 +376,10 @@ class TelegramHtmlFormatter:
             detail = cls.RESTING_CANCEL_REFUSALS.get(token.split(":", 1)[0])
             if token == "not_resting" and result.signal_status == SignalStatus.PENDING:
                 detail = "Signal #{id} is not submitted yet (an untapped card); there is no broker entry to cancel."
+            elif token == "not_resting" and result.signal_status in (SignalStatus.DISMISSED, SignalStatus.EXPIRED):
+                detail = f"Signal #{{id}} was never entered ({result.signal_status}); there is nothing to cancel."
+            elif token == "not_resting" and result.signal_status == SignalStatus.SUBMITTING:
+                detail = "Signal #{id} is still being submitted; try again in a minute."
             explanation = f" {detail.format(id=sid, symbol=symbol)}" if detail else ""
             if token == "cancel_in_progress" and result.work_status:
                 explanation += f" ({html.escape(result.work_status)})"

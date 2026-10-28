@@ -79,6 +79,8 @@ class NotificationDispatcher:
             return await self.notifier.send_signal_alert(**args)
         if kind == NotificationKind.CARD_EXPIRED:
             return await self.notifier.strike_expired_card(**args)
+        if kind == NotificationKind.CARD_AUTO_ENTERED:
+            return await self.notifier.mark_auto_entered_card(**args)
         return await self.notifier.send_message(args["text"] if args.get("formatted") else html.escape(args["text"]))
 
     async def drain(self) -> int:

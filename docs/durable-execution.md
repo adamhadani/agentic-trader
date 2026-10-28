@@ -191,6 +191,33 @@ can cause a duplicate notification. Neither scenario repeats the trading action.
 There is no Redis/pubsub dependency: one Telegram destination needs a durable
 consumer, not another infrastructure tier. Multiple consumers remain DB-fenced.
 
+## Paper auto-entry tags and notices
+
+[Paper auto-entry](paper-auto-entry.md) adds no queue, table or entry path. The sweep calls the same
+`execute_signal_by_id` a tap does, with `EntryTrigger.AUTO` (`tap` is the default, so the Telegram callback and
+the CLI are unchanged). The trigger is stored as `entry_trigger` on the entry work item payload and journaled
+on `entry_queued` and `card_tap_assessed`, so an auto entry is never counted as a tap.
+
+- **Journal and card.** One `auto_entry_attempted` event per selected card (stream `card/{signal_id}`, key
+  `auto-entry/{signal_id}`). Its follow-up commits in the same transaction: a `CARD_AUTO_ENTERED` notification
+  (`signal/{id}/auto-entered`, replaces the card's keyboard with Cancel entry...) for `entered`; a
+  `signal/{id}/auto-refused` re-card for a refusal that leaves the card `PENDING`; or, for a card the sweep's
+  tap check expired, missed or re-priced, the card-expiry `CARD_EXPIRED` strike (`signal/{id}/expired`) and a
+  `signal/{id}/auto-not-placed` notice (`expiry_kind` on the event names which).
+- **Fill notice.** When fill sync first sets `executed_at` on an auto entry, a `MESSAGE`
+  `signal/{id}/auto-filled` is queued in that transaction. Tap entries get none.
+- **Folded notices.** For an auto entry, three routine notices are not queued (their journal events are
+  unchanged): `entry/{work_id}/accepted`, the deadline-cause `entry-cancel/{id}/intent` and the deadline-cause
+  cancel result confirmed unfilled. They appear in the daily digest instead
+  (`auto-entry-digest/{et_date}`, close + 15 minutes, once per date, nothing on a day without marked cards).
+  A notice the digest can no longer report is queued as usual: once the digest of the entry's New York date is
+  queued, or for an entry of an earlier date. These display decisions read the trigger tolerantly (an unknown
+  stored value is a tap, with a warning), so they never fail the fact transaction they sit in.
+- **Never folded.** A notice that resolves an `UNKNOWN` outcome (its halt was announced), an operator-cause
+  cancel's notices, `signal/{id}/entry-terminal` (for an auto entry it fires only on a broker-side rejected,
+  expired or external cancel), every refusal, ratchet, exit, partial fill, missed bound and
+  `filled_before_cancel`.
+
 ## Readiness and operators
 
 `/healthz` remains process liveness. `/readyz` returns JSON with HTTP 200 or 503,

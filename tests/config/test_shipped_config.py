@@ -11,6 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from agentic_trader.config import ExecutionConfig, load_config
+from agentic_trader.execution.auto_entry import auto_entry_active
 
 
 PRODUCTION = {"COPILOT_ENV": "production", "COPILOT_ENV_FILE": ""}
@@ -86,3 +87,46 @@ def test_the_shipped_insider_watch_block_reaches_app_config():
     assert watch.backfill_from.isoformat() == "2026-10-01"
     assert watch.pooled_cache_dir == Path("~/agentic-trader-research/pooled-cache-v1").expanduser()
     assert {"enabled", "archive_dir", "backfill_from", "pooled_cache_dir"} <= watch.model_fields_set
+
+
+def test_shipped_config_enables_paper_auto_entry():
+    config = load_config(str(SHIPPED), environ=PRODUCTION)
+
+    assert config.execution.auto_entry == "paper"
+    assert "auto_entry" in config.execution.model_fields_set
+
+
+def test_shipped_auto_entry_is_inactive_under_the_simulator():
+    config = load_config(str(SHIPPED), environ={**PRODUCTION, "EXECUTION_MODE": "paper"})
+
+    assert config.execution.auto_entry == "paper"
+    assert auto_entry_active(config) is False
+
+
+def test_auto_entry_defaults_off():
+    assert ExecutionConfig().auto_entry == "off"
+    with pytest.raises(ValidationError):
+        ExecutionConfig(auto_entry="live")
+
+
+def _auto_entry_yaml(tmp_path, lifetime: str) -> str:
+    path = tmp_path / "config.yaml"
+    document = yaml.safe_load(SHIPPED.read_text())
+    document["execution"]["auto_entry"] = "paper"
+    document["execution"]["native_entry_lifetime"] = lifetime
+    path.write_text(yaml.safe_dump(document))
+    return str(path)
+
+
+def test_load_config_refuses_auto_entry_on_live_alpaca(tmp_path):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "false"}
+
+    with pytest.raises(ValueError, match="execution.auto_entry"):
+        load_config(_auto_entry_yaml(tmp_path, "session"), environ=environ)
+
+
+def test_load_config_refuses_auto_entry_without_session_lifetime(tmp_path):
+    environ = {**PRODUCTION, "EXECUTION_MODE": "alpaca", "ALPACA_PAPER": "true"}
+
+    with pytest.raises(ValueError, match="execution.auto_entry"):
+        load_config(_auto_entry_yaml(tmp_path, "off"), environ=environ)

@@ -52,7 +52,11 @@ keys, frozen migrations, mathematical identities and explicit test examples inta
 ## Contracts to preserve
 
 1. **Entry authorization:** CLI/buttons call `EntryExecutionService`, atomically
-   reserve risk and join the durable FIFO. Only a valid preflight token commits
+   reserve risk and join the durable FIFO. On an Alpaca paper account with `execution.auto_entry: paper`
+   (shipped; requires `native_entry_lifetime: session`) the scheduled suggestion job's sweep calls the same
+   `execute_signal_by_id` for its sent native `SUGGESTION_SCAN` cards, tagged `entry_trigger: auto`; catalog,
+   watch, alpha and probe cards stay tap-only, and a live account refuses to start with it set
+   ([paper auto-entry](docs/paper-auto-entry.md)). Only a valid preflight token commits
    `submitting`; never expire or replay a broker submission. Unknown outcomes halt
    new risk and recover by exact client ID, including after a 404. Alpaca admission
    requires fresh journaled account drawdown; every tier shares its cap. Final

@@ -206,6 +206,9 @@ def test_filled_before_cancel_refusal_renders_the_outcome():
         ("PENDING", "is not submitted yet", "filled, closed or failed"),
         ("EXECUTED", "filled, closed or failed", "not submitted yet"),
         ("FAILED", "filled, closed or failed", "not submitted yet"),
+        ("DISMISSED", "was never entered (DISMISSED); there is nothing to cancel.", "filled, closed or failed"),
+        ("EXPIRED", "was never entered (EXPIRED); there is nothing to cancel.", "filled, closed or failed"),
+        ("SUBMITTING", "is still being submitted; try again in a minute.", "filled, closed or failed"),
     ],
 )
 def test_not_resting_reply_tells_an_untapped_card_apart(signal_status, expected, absent):
