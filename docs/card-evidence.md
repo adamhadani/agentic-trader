@@ -33,33 +33,59 @@ and rejects `on`/`true`.
 The daemon task `run_card_stats_worker` (readiness component `card_stats`) polls every
 `stats_poll_seconds`. When the New York time is at or after `stats_time_et`, outside every
 suggestion-scan window (each `scheduler.suggestion_scan_times_et` slot from 5 minutes before to 20
-minutes after), today's key `card_stats/{et_date}` is missing, and no scan holds the scan lock
-(`TradingCopilot.scan_running`: suggestion, swing, intraday or operator scans, including a late
-misfire-grace run), it reads every `scan_candidates_ranked` event of the last `stats_window_days` ET
-dates (`research/setups/sources.scan_ranked_events`), labels them in a worker thread with the
-outcome labeller's protocol defaults (`label_journaled`: 20 sessions, 5 bp per side, SPY proxy) on
-the configured feed, and appends one `card_stats_snapshot` event to stream `card_stats` with key
-`card_stats/{et_date}` (idempotent; retention keeps it). The scan checks apply when a run starts; a
-scan that begins during a labelling run shares the provider with it. The worker runs every calendar
-day without a trading-day check; consecutive non-trading days differ only where the window's oldest
-date drops out.
+minutes after), today's key `card_stats/net_excess_r_v1/{et_date}` is missing (a v1 `card_stats/{et_date}`
+event does not count), and no scan holds the scan lock (`TradingCopilot.scan_running`: suggestion, swing,
+intraday or operator scans, including a late misfire-grace run), it reads every `scan_candidates_ranked`
+event of the last `stats_window_days` ET dates (`research/setups/sources.scan_ranked_events`), builds the
+population, labels it in a worker thread (`label_journaled`: 20 sessions, SPY proxy, beta and per-name cost
+from SIP daily bars) and appends one `card_stats_snapshot` event to stream `card_stats` (idempotent;
+retention keeps it). The scan checks apply when a run starts; a scan that begins during a labelling run
+shares the provider with it. The worker runs every calendar day without a trading-day check.
 
-Payload (`CardStatsSnapshot`, `agentic_trader/research/setups/card_stats.py`):
+Population (`card_population`, `agentic_trader/research/setups/card_stats.py`):
 
-- provenance: `computed_at`, `window_start`, `window_end` (ET dates), `feed`, `cost_bps_per_side`,
-  `max_hold_sessions`, `labeller_protocol` (`setup-outcomes-v1`), `code_revision`,
-  `events_considered` (scan events read, zero-candidate and gated events included), `rows_labelled`;
-- `keys`: one row per `(strategy, direction)` plus the aggregate `("*", "*")`, each with `n_mature`,
-  `n_immature`, `n_fetch_failed`, `target_rate`, `stop_rate`, `timeout_rate`, `mean_r_cost`,
-  `mean_timeout_r`, `median_holding_sessions`, `first_decided_at`, `last_decided_at`. Rates are over
-  mature rows; fetch failures are counted and excluded from every rate; rows without a strategy or
-  direction count only in the aggregate. Every number is finite or null.
+- only `scope == "universe"` events with `trigger == "suggestion_scan"` (swing, intraday and operator scans
+  are journal-only or unpriced for cards); contracts in `scan.broad_index_etfs` are never carded and so never counted;
+- malformed candidates (no LONG/SHORT direction, a non-finite entry or stop, or `entry == stop`) are dropped
+  before labelling and counted as `n_malformed` under their key (a missing part as `?`): displayed, never partial;
+- one row per (contract, strategy, timeframe, direction, New York decision date), the earliest decision kept
+  (10:35 beats 14:35), before labelling, so the duplicate costs no bar request.
+
+Maturity: a row is eligible only when at least `max_hold_sessions + 1` (21) exchange sessions lie strictly
+after its decision date and strictly before the snapshot's New York date (`complete_sessions_between`:
+weekdays that are not `MarketHolidayCalendar` holidays). Younger rows are `n_young` and enter no statistic,
+which removes censoring exactly.
+
+Payload (`CardStatsSnapshot`):
+
+- provenance: `computed_at`, `window_start`, `window_end` (ET dates), `feed`, `cost_bps_per_side` (the 5 bp
+  cost floor), `max_hold_sessions`, `labeller_protocol` (`setup-outcomes-v1`), `code_revision`,
+  `events_considered` (suggestion-scan universe events read), `rows_labelled`, `unit` (`net_excess_r_v1`),
+  `prior_sha256`, `prior_window_start`, `prior_window_end`, `prior_feed`, `cohort_end` (the latest eligible
+  decision session) and `n_malformed`. A v1 payload still validates (all of these default);
+- `keys`: one row per (`strategy`, `timeframe`, `direction`): the union of the live keys, the prior's keys and
+  the malformed keys, plus the aggregate `("*", "*", "*")`, which has no prior or posterior. Counts: `n_mature`
+  (eligible with a finite `net_excess_r`), `n_young`, `n_unresolved` (eligible but still `immature`),
+  `n_immature` (= young + unresolved), `n_fetch_failed` (eligible, hourly or daily: a `fetch_failed` hit, or a
+  `beta_reason` or `cost_reason` starting `fetch_failed`), `n_no_beta` (eligible, resolved, no net excess, not a
+  fetch failure) and `n_malformed`. Rates, `mean_r_cost`, holding and decided-at are over the `n_mature` rows;
+  `live_mean` and `live_se` are the mean and standard error of `net_excess_r` (`live_se` is null below two rows);
+  `prior_*` and `posterior_*` come from the frozen prior (`prior_source` is `replay` for a prior key and
+  `skeptical` otherwise: zero mean at the pooled spread and tau; `prior_se` is `sqrt(tau² + se_session²)`,
+  `prior_weight` the pseudo-count `k`); `mean_name_cost_bps` is the mean per-name cost. Every number is finite or
+  null; rows without a strategy, timeframe or direction count only in the aggregate.
+
+Failures: a prior that cannot be loaded (unset or wrong digest, unreadable or invalid file) raises
+`CardStatsUnavailable("card statistics prior unavailable: PriorUnavailable")`; so do an SPY hourly read that failed
+for every row, and every row's beta read failing (the SPY daily read or every symbol's). Nothing is written and the
+previous snapshot stays authoritative until it ages out. A single symbol's failed daily read only makes its rows
+`n_fetch_failed`; its cost never falls back to the floor silently.
 
 Readiness: every successful poll (detail `not_due`, `scan_window`, `present`, `scan_busy` or
 `recorded`) and the start of a labelling run (`labelling N scan events`) observe `card_stats` ready unless a
 failure from the same New York date is held;
-a failure observes it failed. The detail of `CardStatsUnavailable` is `CardStatsUnavailable: every
-bar fetch failed for N candidates: TYPE, …` (up to three exception type names, first 200 characters);
+a failure observes it failed. The detail of `CardStatsUnavailable` is its message (`every bar fetch failed for N candidates: TYPE, …` with up to three exception type
+names, or one of the failures above), first 200 characters;
 any other error's detail is its type name only, because readiness details reach Telegram incident
 notices; messages go to the log. If every candidate's bar fetch fails, nothing is written
 (`CardStatsUnavailable`) and the previous snapshot stays authoritative until it is older than

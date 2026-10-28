@@ -76,13 +76,14 @@ class CardEvidence(BaseModel, frozen=True):
 def lookup(
     snapshot: CardStatsSnapshot | None,
     strategy: str,
+    timeframe: str,
     direction: str,
     *,
     now: datetime,
     max_age: timedelta,
     min_mature: int,
 ) -> CardEvidence:
-    """The evidence a card for ``(strategy, direction)`` displays, from the latest snapshot in this scope.
+    """The evidence a card for ``(strategy, timeframe, direction)`` displays, from the latest snapshot in this scope.
 
     ``stale`` past ``max_age``; ``insufficient`` below ``min_mature`` (or no row: the aggregate is
     never a fallback); ``unavailable`` without a snapshot or, over the floor, without rates and a
@@ -102,7 +103,7 @@ def lookup(
         "snapshot_key": snapshot.snapshot_key,
         "computed_at": snapshot.computed_at,
     }
-    stats = snapshot.stats(strategy, direction)
+    stats = snapshot.stats(strategy, timeframe, direction)
     if stats is not None:
         provenance["n_fetch_failed"] = stats.n_fetch_failed
         provenance["first_decided_at"] = stats.first_decided_at

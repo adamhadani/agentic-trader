@@ -1536,6 +1536,7 @@ class TradingCopilot:
                 else lookup(
                     snapshot,
                     candidate.strategy,
+                    candidate.timeframe,
                     candidate.direction,
                     now=decided_at,
                     max_age=timedelta(seconds=card_policy.stats_max_age_seconds),

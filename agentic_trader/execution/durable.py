@@ -83,8 +83,9 @@ class EntryTrigger(StrEnum):
 class ScanTrigger(StrEnum):
     """Which caller ran a full-universe scan; journaled in ``scan_candidates_ranked``.
 
-    It names the path a card came from and nothing else: ranking, budgets, sending, the
-    shadow ranker (``shadow_evidence``) and the card policy never read it.
+    It names the path a card came from. Ranking, budgets, sending, the shadow ranker
+    (``shadow_evidence``) and the card policy never read it; ``card_stats`` reads it only to keep
+    suggestion-scan candidates in its population.
     """
 
     SUGGESTION_SCAN = "suggestion_scan"  # the scheduled New York-time job (``make_suggestion_scan``)

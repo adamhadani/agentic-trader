@@ -7,13 +7,27 @@ from agentic_trader.agent.evaluator import LLMTradeEvaluation
 from agentic_trader.constants import AssetClass
 from agentic_trader.execution.card_evidence import lookup
 from agentic_trader.market.session import ET_TZ
+from agentic_trader.research.setups.card_prior import CardStatsPrior, PriorEntry
 from agentic_trader.research.setups.card_stats import CardStatsSnapshot
+from agentic_trader.research.setups.net_excess import (
+    COST_CAP_BPS,
+    COST_FLOOR_BPS,
+    COST_MIN_SESSIONS,
+    COST_WINDOW_SESSIONS,
+    IMPACT_COEFFICIENT,
+    NET_EXCESS_UNIT,
+    R_CLIP,
+    REFERENCE_RISK_USD,
+)
 
 
-def key_stats(strategy: str = "TREND_PULLBACK", direction: str = "LONG", **overrides: Any) -> dict[str, Any]:
+def key_stats(
+    strategy: str = "TREND_PULLBACK", direction: str = "LONG", timeframe: str = "4h", **overrides: Any
+) -> dict[str, Any]:
     """One snapshot key row: 30 mature, 20% target / 70% stop / 10% timeout, mean -0.35R, timeouts +0.5R."""
     row = {
         "strategy": strategy,
+        "timeframe": timeframe,
         "direction": direction,
         "n_mature": 30,
         "n_immature": 4,
@@ -49,6 +63,51 @@ def make_snapshot(
             "rows_labelled": 120,
             "keys": keys if keys is not None else [key_stats()],
         }
+    )
+
+
+def prior_entry(
+    strategy: str = "TREND_PULLBACK", timeframe: str = "4h", direction: str = "LONG", **overrides: Any
+) -> PriorEntry:
+    fields: dict[str, Any] = {
+        "n_rows": 400,
+        "n_sessions": 200,
+        "mean": -0.05,
+        "sd": 1.5,
+        "se_session": 0.05,
+        "tau": 0.25,
+        "tau_source": "key",
+    }
+    return PriorEntry(strategy=strategy, timeframe=timeframe, direction=direction, **{**fields, **overrides})
+
+
+def make_prior(keys: tuple[PriorEntry, ...] | None = None) -> CardStatsPrior:
+    """A hand-built prior: one replay key (TREND_PULLBACK, 4h, LONG) unless ``keys`` says otherwise."""
+    return CardStatsPrior(
+        version="card-stats-prior-v1",
+        unit=NET_EXCESS_UNIT,
+        cost_model={
+            "cost_floor_bps": COST_FLOOR_BPS,
+            "impact_coefficient": IMPACT_COEFFICIENT,
+            "reference_risk_usd": REFERENCE_RISK_USD,
+            "cost_cap_bps": COST_CAP_BPS,
+            "cost_window_sessions": float(COST_WINDOW_SESSIONS),
+            "cost_min_sessions": float(COST_MIN_SESSIONS),
+        },
+        r_clip=R_CLIP,
+        beta_window_sessions=120,
+        tau_floor=0.05,
+        min_rows_per_quarter=20,
+        min_quarters=8,
+        source={"window_start": "2021-01-04", "window_end": "2026-06-30", "feed": "sip"},
+        excluded_symbols=("BIL", "SHY"),
+        pooled_sd=1.4,
+        pooled_tau=0.2,
+        pooled_n_rows=1000,
+        keys=keys if keys is not None else (prior_entry(),),
+        cost_bps_quantiles={"p50": 6.0},
+        n_no_beta=0,
+        code_revision="test-rev",
     )
 
 
@@ -89,5 +148,5 @@ def real_evaluation(candidate: Any, *, rr: float = 2.0) -> LLMTradeEvaluation:
 
 
 EVIDENCE = lookup(
-    make_snapshot(), "TREND_PULLBACK", "LONG", now=datetime.now(UTC), max_age=timedelta(days=4), min_mature=20
+    make_snapshot(), "TREND_PULLBACK", "4h", "LONG", now=datetime.now(UTC), max_age=timedelta(days=4), min_mature=20
 ).model_dump(mode="json")

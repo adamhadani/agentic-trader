@@ -22,8 +22,10 @@ MAX_AGE = timedelta(seconds=345600)
 FRESH = make_snapshot(computed_at=NOW - timedelta(hours=6))
 
 
-def _lookup(snapshot=FRESH, strategy="TREND_PULLBACK", direction="LONG", **kw):
-    return lookup(snapshot, strategy, direction, now=NOW, max_age=MAX_AGE, min_mature=kw.get("min_mature", 20))
+def _lookup(snapshot=FRESH, strategy="TREND_PULLBACK", direction="LONG", timeframe="4h", **kw):
+    return lookup(
+        snapshot, strategy, timeframe, direction, now=NOW, max_age=MAX_AGE, min_mature=kw.get("min_mature", 20)
+    )
 
 
 def test_measured_evidence_carries_the_key_and_the_snapshot_provenance():
@@ -31,7 +33,7 @@ def test_measured_evidence_carries_the_key_and_the_snapshot_provenance():
     assert evidence.status == "measured" and evidence.n_mature == 30 and evidence.min_mature == 20
     assert (evidence.target_rate, evidence.stop_rate, evidence.timeout_rate) == (0.2, 0.7, 0.1)
     assert evidence.mean_r_cost == -0.35 and evidence.mean_timeout_r == 0.5
-    assert evidence.snapshot_key == "card_stats/2026-10-08" and evidence.feed == "iex"
+    assert evidence.snapshot_key == "card_stats/net_excess_r_v1/2026-10-08" and evidence.feed == "iex"
     assert evidence.cost_bps_per_side == 5.0 and evidence.window_start == date(2026, 7, 11)
     assert evidence.first_decided_at == datetime(2026, 7, 15, 14, 35, tzinfo=UTC)
     assert evidence.n_fetch_failed == 0
