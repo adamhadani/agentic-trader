@@ -123,16 +123,16 @@ class CardStatsWorker:
             if bool(frame["market_reason"].notna().all()):
                 types = sorted({str(reason).split(":", 1)[0].strip() for reason in frame["market_reason"].dropna()})[:3]
                 raise CardStatsUnavailable(f"the market proxy hourly read failed: {', '.join(types)}")
-            if bool(frame["beta_reason"].astype(str).str.startswith("fetch_failed").all()):
-                types = sorted(
-                    {
-                        str(reason).split(":", 1)[1].strip()
-                        for reason in frame["beta_reason"].dropna()
-                        if ":" in str(reason)
-                    }
-                )[:3]
+            # Rows whose hourly read failed never reach the beta step (beta_reason None): judge the
+            # daily read over the rows that did.
+            readable = frame["hit"] != FETCH_FAILED_HIT
+            beta_reasons = frame.loc[readable, "beta_reason"]
+            if bool(readable.any()) and bool(beta_reasons.astype(str).str.startswith("fetch_failed").all()):
+                types = sorted({str(reason).split(":", 1)[1].strip() for reason in beta_reasons if ":" in str(reason)})[
+                    :3
+                ]
                 raise CardStatsUnavailable(
-                    f"every daily bar fetch failed for {len(frame)} candidates: {', '.join(types)}"
+                    f"every daily bar fetch failed for {int(readable.sum())} candidates: {', '.join(types)}"
                 )
         window_end = now.astimezone(ET_TZ).date()
         return compute_card_stats(

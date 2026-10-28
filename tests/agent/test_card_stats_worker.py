@@ -172,6 +172,27 @@ async def test_worker_raises_on_daily_market_failure(temp_db, app_config):
     assert await worker.repository.latest() is None
 
 
+async def test_worker_raises_on_daily_market_failure_beside_an_hourly_failure(temp_db, app_config):
+    """AAPL reads hourly, MSFT does not, SPY's daily read fails: the daily rule judges the readable rows only."""
+    await plant_scan(
+        temp_db,
+        candidates=[
+            _candidate(contract="AAPL", rank=1, outcome="sent"),
+            _candidate(contract="MSFT", rank=2, outcome="sent"),
+        ],
+    )
+    worker, _ = worker_for(
+        temp_db,
+        app_config,
+        bars=FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS}, raise_for={"MSFT"}),
+        daily=FakeBarSource({"AAPL": AAPL_BARS}, raise_for={"SPY"}),
+    )
+    with pytest.raises(CardStatsUnavailable) as raised:
+        await worker.run_once(DUE)
+    assert str(raised.value) == "every daily bar fetch failed for 1 candidates: RuntimeError"
+    assert await worker.repository.latest() is None
+
+
 async def test_worker_uses_sip_daily_source(temp_db, app_config):
     await plant_scan(temp_db)
     daily = FakeBarSource({"AAPL": AAPL_BARS, "SPY": SPY_BARS})

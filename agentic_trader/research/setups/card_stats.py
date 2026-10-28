@@ -22,7 +22,7 @@ from pydantic import AwareDatetime, BaseModel
 from agentic_trader.execution.durable import EventKind, ScanTrigger
 from agentic_trader.market.session import ET_TZ, MarketHolidayCalendar
 from agentic_trader.research.setups.card_prior import posterior
-from agentic_trader.research.setups.labels import BracketHit
+from agentic_trader.research.setups.labels import BracketHit, SetupLevels
 from agentic_trader.research.setups.net_excess import COST_FLOOR_BPS, NET_EXCESS_UNIT
 from agentic_trader.research.setups.outcomes import FETCH_FAILED_HIT
 from agentic_trader.research.setups.ranker import finite_or_none
@@ -52,7 +52,6 @@ CARD_STATS_STREAM = "card_stats"
 LABELLER_PROTOCOL = "setup-outcomes-v1"
 # The all-candidates key: strategy, timeframe and direction are all "*".
 AGGREGATE = "*"
-_DIRECTIONS = frozenset({"LONG", "SHORT"})
 
 
 def card_stats_key(et_date: date) -> str:
@@ -100,6 +99,19 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _plannable(candidate: Mapping[str, Any]) -> bool:
+    """True when the labeller can judge the candidate: finite entry, stop and target forming a valid bracket."""
+    levels = [_finite(candidate.get(name)) for name in ("entry", "stop", "target")]
+    if None in levels:
+        return False
+    entry, stop, target = (float(level) for level in levels if level is not None)
+    try:
+        SetupLevels(direction=str(candidate.get("direction")), entry=entry, stop=stop, target=target)
+    except ValueError:
+        return False
+    return True
+
+
 def card_population(events: list[dict[str, Any]], *, excluded: frozenset[str]) -> CardPopulation:
     """Suggestion-scan universe candidates, malformed ones counted and dropped, one per setup per session.
 
@@ -130,15 +142,14 @@ def card_population(events: list[dict[str, Any]], *, excluded: frozenset[str]) -
             strategy, timeframe, direction = (
                 str(candidate.get(name) or "?") for name in ("strategy", "timeframe", "direction")
             )
-            entry, stop = _finite(candidate.get("entry")), _finite(candidate.get("stop"))
-            if direction not in _DIRECTIONS or entry is None or stop is None or entry == stop:
-                key = (strategy, timeframe, direction)
-                malformed[key] = malformed.get(key, 0) + 1
-                continue
             setup = (contract, strategy, timeframe, direction, session)
             if setup in seen:
                 continue
             seen.add(setup)
+            if not _plannable(candidate):
+                key = (strategy, timeframe, direction)
+                malformed[key] = malformed.get(key, 0) + 1
+                continue
             kept.setdefault(index, []).append({**candidate})
     population = [
         {**event, "payload": {**payload, "candidates": kept[index]}}
@@ -249,8 +260,8 @@ def _key_stats(
     net = pd.to_numeric(rows["net_excess_r"], errors="coerce")
     net = net.where(np.isfinite(net))
     fetch_failed = eligible & _is_fetch_failure(rows)
-    unresolved = eligible & (hit == BracketHit.IMMATURE.value)
-    resolved = eligible & ~unresolved & (hit != FETCH_FAILED_HIT)
+    unresolved = eligible & (hit == BracketHit.IMMATURE.value) & ~fetch_failed
+    resolved = eligible & ~unresolved & ~fetch_failed & (hit != BracketHit.IMMATURE.value)
     no_beta = resolved & net.isna() & ~fetch_failed
     mature_mask = eligible & net.notna()
     mature = rows.loc[mature_mask]

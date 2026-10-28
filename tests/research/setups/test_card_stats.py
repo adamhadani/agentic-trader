@@ -4,6 +4,7 @@ import json
 import math
 from datetime import UTC, date, datetime
 
+import numpy as np
 import pandas as pd
 import pytest
 from pydantic import AwareDatetime, BaseModel
@@ -23,7 +24,7 @@ from agentic_trader.research.setups.card_stats import (
 from agentic_trader.research.setups.net_excess import COST_FLOOR_BPS
 from agentic_trader.research.setups.outcomes import label_journaled
 from agentic_trader.research.setups.sources import scan_ranked_events
-from tests.execution.card_stats_fixtures import make_prior
+from tests.execution.card_stats_fixtures import make_prior, prior_entry
 from tests.research.setups.test_outcomes import (
     AAPL_BARS,
     DECIDED_AT,
@@ -238,10 +239,26 @@ def test_population_counts_malformed():
     flat = _candidate(contract="FLAT", entry=100.0, stop=100.0)
     no_direction = {**_candidate(contract="NODIR"), "direction": None}
     no_stop = {**_candidate(contract="NOSTOP"), "stop": float("nan")}
+    no_target = {k: v for k, v in _candidate(contract="NOTGT").items() if k != "target"}
+    inverted = _candidate(contract="INV", entry=100.0, stop=99.0, target=98.0)  # LONG target below entry
     good = _candidate(contract="GOOD")
-    population = card_population([_event_with([flat, no_direction, no_stop, good])], excluded=frozenset())
+    population = card_population(
+        [_event_with([flat, no_direction, no_stop, no_target, inverted, good])], excluded=frozenset()
+    )
     assert [c["contract"] for c in population.events[0]["payload"]["candidates"]] == ["GOOD"]
-    assert population.malformed == {("BREAKOUT", "1h", "LONG"): 2, ("BREAKOUT", "1h", "?"): 1}
+    assert population.malformed == {("BREAKOUT", "1h", "LONG"): 4, ("BREAKOUT", "1h", "?"): 1}
+
+
+def test_population_counts_a_malformed_setup_once_per_session():
+    am = datetime(2026, 3, 2, 15, 35, tzinfo=UTC)
+    pm = datetime(2026, 3, 2, 19, 35, tzinfo=UTC)
+    bad = _candidate(contract="FLAT", entry=100.0, stop=100.0)
+    events = [
+        _event_with([bad], scan_id="am", decided_at=am),
+        _event_with([bad], scan_id="pm", decided_at=pm),
+        _event_with([bad], scan_id="next", decided_at=am.replace(day=3)),
+    ]
+    assert card_population(events, excluded=frozenset()).malformed == {("BREAKOUT", "1h", "LONG"): 2}
 
 
 def test_complete_sessions_between_skips_holidays():
@@ -278,6 +295,27 @@ def test_fetch_failures_partial():
     ]
     row = _by_key(_compute(_labelled(rows)))[KEY]
     assert (row["n_fetch_failed"], row["n_no_beta"], row["n_mature"]) == (2, 1, 1)
+
+
+def test_counts_partition_the_key_rows():
+    rows = [
+        _row(),  # mature
+        _row(hit="immature", net=None, r_cost=None),  # unresolved
+        _row(hit="immature", net=None, r_cost=None, beta_reason="fetch_failed: ConnectionError"),  # fetch failed only
+        _row(hit="stop", net=None, beta_reason="short_history"),  # no beta
+        _row(hit="fetch_failed", net=None, r_cost=None),
+        _row(decided_at=_edge("2026-10-05")),  # young
+    ]
+    row = _by_key(_compute(_labelled(rows)))[KEY]
+    assert (row["n_mature"], row["n_unresolved"], row["n_fetch_failed"], row["n_no_beta"], row["n_young"]) == (
+        1,
+        1,
+        2,
+        1,
+        1,
+    )
+    total = sum(row[n] for n in ("n_young", "n_unresolved", "n_fetch_failed", "n_no_beta", "n_mature"))
+    assert total == len(rows)
 
 
 def test_malformed_counts_are_displayed_per_key_and_in_total():
@@ -455,6 +493,59 @@ def test_card_stats_ignores_cf_columns():
         if column.startswith(outcomes_module.CF_COLUMN_PREFIX):
             filled[column] = 0.7 if column.endswith(("r_cost", "market_r")) else "target"
     assert _compute(filled)["keys"] == _compute(plain)["keys"]
+
+
+class _SplitBars:
+    """Hourly and daily frames per symbol, as the worker's two sources provide them."""
+
+    def __init__(self, frames):
+        self.frames = frames
+
+    def fetch_bars(self, symbol, timeframe, start, end, *, adjustment):
+        return self.frames[symbol, timeframe]
+
+
+def _daily(symbol_scale, sessions=200):
+    days = pd.bdate_range(end="2026-01-19", periods=sessions)
+    index = pd.DatetimeIndex([pd.Timestamp(d.date().isoformat() + "T05:00:00+00:00") for d in days])
+    market_ret = 0.01 * np.sin(np.arange(sessions))
+    rets = symbol_scale * market_ret + 0.002 * np.cos(3.0 * np.arange(sessions))
+    close = 100.0 * np.cumprod(1.0 + rets)
+    return pd.DataFrame(
+        {"Open": close, "High": close, "Low": close, "Close": close, "Volume": 5_000_000.0}, index=index
+    )
+
+
+def test_a_mature_candidate_flows_through_the_real_labeller_into_a_shrunk_posterior():
+    decided_at = datetime(2026, 1, 20, 15, 35, tzinfo=UTC)
+    hourly = pd.DataFrame(
+        {"Open": [100.5, 100.6], "High": [100.8, 102.5], "Low": [100.2, 100.3], "Close": [100.6, 102.0]},
+        index=pd.DatetimeIndex(["2026-01-20T16:30:00+00:00", "2026-01-20T17:30:00+00:00"]),
+    )
+    spy_hourly = hourly.assign(Open=[500.0, 501.0], High=[501.0, 503.0], Low=[499.0, 500.0], Close=[500.5, 502.0])
+    source = _SplitBars(
+        {
+            ("AAPL", "1h"): hourly,
+            ("SPY", "1h"): spy_hourly,
+            ("AAPL", "1d"): _daily(1.2),
+            ("SPY", "1d"): _daily(1.0),
+        }
+    )
+    event = _event_with([_candidate(contract="AAPL", strategy="TREND_PULLBACK")], decided_at=decided_at)
+    population = card_population([event], excluded=frozenset())
+    frame = label_journaled(
+        population.events, source, now=datetime(2026, 3, 3, tzinfo=UTC), tape_symbol=None, daily_bars=source
+    )
+    key = ("TREND_PULLBACK", "1h", "LONG")
+    payload = _compute(
+        frame,
+        window_end=date(2026, 3, 3),
+        prior=make_prior(keys=(prior_entry(*key, mean=-0.2),)),
+    )
+    row = _by_key(payload)[key]
+    assert row["n_mature"] == 1 and row["n_no_beta"] == 0 and row["n_young"] == 0
+    assert row["live_mean"] is not None and math.isfinite(row["live_mean"])
+    assert row["live_mean"] > row["posterior_mean"] > row["prior_mean"] == -0.2
 
 
 def test_label_journaled_and_card_stats_see_the_same_rows_on_mixed_events():
